@@ -125,8 +125,13 @@ internal/
 ├── session/           # Session management
 ├── tools/             # Built-in tools
 ├── skills/            # Skill system
-├── memory/            # Memory system (future)
-├── rag/               # RAG system (future)
+├── mcp/               # MCP integration
+│   ├── client/        # MCP client
+│   │   ├── transport/ # stdio + SSE transport
+│   │   ├── handler.go # Request/response handling
+│   │   └── server.go  # Server connection management
+│   ├── types/         # MCP types (Resource, Tool, etc.)
+│   └── memory/        # Optional local memory MCP server
 └── tui/               # BubbleTea UI
     ├── app/           # Main application
     ├── intents/       # Workflow orchestrators
@@ -173,4 +178,67 @@ const (
     PermissionAsk
     PermissionDeny
 )
+```
+
+## MCP Integration
+
+FlowState acts as an MCP client, connecting to external MCP servers for memory, RAG, and other capabilities.
+
+### MCP Client Interface
+
+```go
+type MCPClient interface {
+    Connect(ctx context.Context, server ServerConfig) error
+    Disconnect(serverName string) error
+    ListServers() []ServerStatus
+    
+    // Resources
+    ListResources(serverName string) ([]Resource, error)
+    ReadResource(serverName, uri string) (ResourceContent, error)
+    
+    // Tools
+    ListTools(serverName string) ([]Tool, error)
+    CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (Result, error)
+}
+```
+
+### Transport Support
+
+```go
+type Transport interface {
+    Connect(ctx context.Context) error
+    Send(msg Message) error
+    Receive() <-chan Message
+    Close() error
+}
+
+// Implementations:
+// - StdioTransport: Connect via stdin/stdout to subprocess
+// - SSETransport: Connect via HTTP Server-Sent Events
+```
+
+### Permission Integration
+
+MCP tools use the existing `Allow/Ask/Deny` permission system:
+
+```go
+type MCPToolPermission struct {
+    ServerName string
+    ToolName   string
+    Permission Permission
+}
+```
+
+### Optional Local Memory Server
+
+When enabled via `--memory-server` flag:
+
+```go
+type MemoryServer struct {
+    db *sql.DB  // SQLite storage
+}
+
+func (s *MemoryServer) ListResources() []Resource
+func (s *MemoryServer) ReadResource(uri string) ResourceContent
+func (s *MemoryServer) WriteResource(uri string, content ResourceContent) error
 ```

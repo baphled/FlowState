@@ -8,10 +8,11 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 
 - **Ollama-first** - Local models are first-class citizens
 - **Provider-agnostic** - Easy to plug in any model provider
+- **MCP-first** - Connect to external memory, RAG, and tools via Model Context Protocol
+- **Local-first** - Optional local memory server with user control
 - **Domain-flexible** - Not locked to programming tasks
 - **Go-native** - Lean, fast, single binary
 - **BubbleTea TUI** - Rich terminal experience
-- **Privacy-focused** - Local memory with user control
 - **Git Worktrees** - Parallel development from day one
 
 ---
@@ -41,24 +42,19 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 - Quick access to commands
 - Model status display
 
-### 5. Memory System (Future)
-- User facts and preferences
-- Session summaries
-- Task history
-- Semi-automatic with approval workflow
+### 5. MCP Integration
+- Connect to external MCP servers (memory, RAG, filesystem, etc.)
+- Dual transport support (stdio + SSE)
+- Server discovery and management
+- Optional local memory MCP server (SQLite-based)
 
-### 6. RAG Knowledge Base (Future)
-- Index local documents (markdown, PDF)
-- Conversation history search
-- Semantic retrieval for context
-
-### 7. Tool System
+### 6. Tool System
 - Bash execution with permissions
 - File read/write
 - Web fetching
 - Granular permission model (Allow/Ask/Deny)
 
-### 8. Skills & Commands
+### 7. Skills & Commands
 - `/analyze` - Systems thinking analysis
 - `/challenge` - Devil's advocate evaluation
 - `/research` - Systematic investigation
@@ -76,10 +72,8 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 | Language | Go 1.22+ | Fast, single binary, strong concurrency |
 | TUI | BubbleTea | Elm architecture, excellent ecosystem |
 | Database | SQLite | Simple, embedded, reliable |
-| Vector Search | sqlite-vec | SQLite integration, local-first |
-| Embeddings | Ollama (`nomic-embed-text`) | Local, good quality |
+| MCP | stdio + SSE | Model Context Protocol for external integrations |
 | Markdown | goldmark | Standard, pure Go |
-| PDF | ledongthuc/pdf | Simple extraction |
 | Testing | Godog + Ginkgo | BDD-driven development |
 
 ---
@@ -143,8 +137,10 @@ flowstate/
 │   ├── session/             # Session management
 │   ├── tools/               # Built-in tools
 │   ├── skills/              # Skill system
-│   ├── memory/              # Memory system (future)
-│   ├── rag/                 # RAG system (future)
+│   ├── mcp/                 # MCP integration
+│   │   ├── client/          # MCP client (stdio + SSE transport)
+│   │   ├── types/           # MCP types (Resource, Tool, etc.)
+│   │   └── memory/          # Optional local memory MCP server
 │   └── tui/                 # BubbleTea UI
 ├── docs/                    # Documentation
 ├── rules/                   # Development rules
@@ -197,12 +193,13 @@ flowstate/
 - [ ] Built-in skills (analyze, challenge, research)
 - [ ] Custom command support
 
-### Phase 7: Memory & RAG (Future)
-- [ ] Memory store with sqlite-vec
-- [ ] Embedding service
-- [ ] Approval workflow
-- [ ] Document indexer
-- [ ] Semantic retrieval
+### Phase 7: MCP Integration
+- [ ] MCP client with stdio transport
+- [ ] SSE transport support
+- [ ] Server discovery (config file + env var)
+- [ ] MCP resource access (documents, memory)
+- [ ] MCP tool integration with permission prompts (Allow/Ask/Deny)
+- [ ] Optional local memory MCP server (SQLite, `--memory-server` flag)
 
 ---
 
@@ -308,6 +305,10 @@ type Intent interface {
 | `/task <description>` | Create new task |
 | `/models` | List/select models |
 | `/connect <provider>` | Add API credentials |
+| `/mcp add <server>` | Add MCP server connection |
+| `/mcp list` | List configured MCP servers |
+| `/mcp remove <name>` | Remove MCP server |
+| `/mcp status` | Show MCP connection status |
 | `/help` | Show available commands |
 
 ---

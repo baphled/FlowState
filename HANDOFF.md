@@ -109,8 +109,10 @@ FlowState.git/
 │   │   ├── provider/        # LLM providers (ollama, openai, anthropic)
 │   │   ├── session/         # Session management
 │   │   ├── tools/           # Built-in tools
-│   │   ├── memory/          # Memory (future)
-│   │   ├── rag/             # RAG (future)
+│   │   ├── mcp/             # MCP integration
+│   │   │   ├── client/      # MCP client (stdio + SSE)
+│   │   │   ├── types/       # MCP types
+│   │   │   └── memory/      # Optional local memory server
 │   │   └── tui/             # BubbleTea UI
 │   │       ├── app/
 │   │       ├── intents/

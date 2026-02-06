@@ -8,11 +8,12 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 
 - **Ollama-first** - Local models as first-class citizens
 - **Provider-agnostic** - Plug in any model provider (OpenAI, Anthropic, etc.)
+- **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol
 - **Vim navigation** - Full vim motions for efficient interaction
 - **Session management** - Persistent conversations with search
 - **Tool system** - Bash, file operations, web fetching with granular permissions
 - **Skills & commands** - `/analyze`, `/research`, `/challenge`, `/decide`, and more
-- **Privacy-focused** - Local memory with user control
+- **Local-first** - Optional local memory server with user control
 
 ## Requirements
 
