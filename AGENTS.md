@@ -8,9 +8,10 @@ FlowState uses git worktrees. The structure is:
 
 ```
 ~/Projects/
-├── FlowState.git/           # Bare repository
-│   └── main/                # Primary development worktree
-└── FlowState-feature-xxx/   # Feature worktrees (temporary)
+└── FlowState.git/           # Bare repository
+    ├── main/                # Primary development worktree
+    ├── feature-xxx/         # Feature worktrees (temporary)
+    └── hooks/               # Git hooks (shared)
 ```
 
 **Always work in a worktree, never in the bare repo directly.**
@@ -19,15 +20,15 @@ FlowState uses git worktrees. The structure is:
 
 ```bash
 cd /home/baphled/Projects/FlowState.git
-git worktree add -b feature/my-feature ../FlowState-feature-my-feature main
-cd ../FlowState-feature-my-feature
+git worktree add -b feature/my-feature feature-my-feature main
+cd feature-my-feature
 ```
 
 ### Cleaning Up
 
 ```bash
 cd /home/baphled/Projects/FlowState.git/main
-git worktree remove ../FlowState-feature-my-feature
+git worktree remove ../feature-my-feature
 git branch -d feature/my-feature
 ```
 

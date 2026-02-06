@@ -97,17 +97,17 @@ deps-tidy: ## Tidy dependencies
 #
 
 worktree-list: ## List all worktrees
-	@cd .. && git worktree list
+	@git worktree list
 
 worktree-new: ## Create new feature worktree (NAME=feature-name)
 	@echo "Creating worktree for feature/$(NAME)..."
-	@cd .. && git worktree add -b feature/$(NAME) ../FlowState-$(NAME) main
-	@echo "Worktree created at ../FlowState-$(NAME)"
-	@echo "Run: cd ../FlowState-$(NAME)"
+	@cd .. && git worktree add -b feature/$(NAME) $(NAME) main
+	@echo "Worktree created at ../$(NAME)"
+	@echo "Run: cd ../$(NAME)"
 
 worktree-remove: ## Remove feature worktree (NAME=feature-name)
 	@echo "Removing worktree $(NAME)..."
-	@cd .. && git worktree remove ../FlowState-$(NAME) 2>/dev/null || true
+	@cd .. && git worktree remove $(NAME) 2>/dev/null || true
 	@cd .. && git branch -d feature/$(NAME) 2>/dev/null || true
 	@echo "Worktree removed"
 

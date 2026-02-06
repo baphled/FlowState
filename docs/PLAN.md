@@ -84,28 +84,28 @@ FlowState uses git worktrees for parallel development:
 
 ```
 ~/Projects/
-├── FlowState.git/           # Bare repository
-│   ├── main/                # Primary development worktree
-│   └── hooks/               # Git hooks (shared)
-├── FlowState-feature-xxx/   # Feature worktree (temporary)
-└── FlowState-bugfix-xxx/    # Bugfix worktree (temporary)
+└── FlowState.git/           # Bare repository
+    ├── main/                # Primary development worktree
+    ├── feature-chat/        # Feature worktree (temporary)
+    ├── bugfix-xxx/          # Bugfix worktree (temporary)
+    └── hooks/               # Git hooks (shared)
 ```
 
 ### Working with Worktrees
 
 ```bash
-# Create feature worktree
+# Create feature worktree (within project directory)
 cd FlowState.git
-git worktree add -b feature/chat ../FlowState-feature-chat main
+git worktree add -b feature/chat feature-chat main
 
 # Work on feature
-cd ../FlowState-feature-chat
+cd feature-chat
 # ... make changes ...
 
 # Clean up when done
-cd ../FlowState.git/main
+cd ../main
 git merge feature/chat
-git worktree remove ../FlowState-feature-chat
+git worktree remove ../feature-chat
 git branch -d feature/chat
 ```
 
