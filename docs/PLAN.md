@@ -153,19 +153,29 @@ flowstate/
 
 ## Development Phases
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅ COMPLETE
 - [x] Project scaffolding with git worktrees
-- [ ] Basic TUI shell with BubbleTea
-- [ ] Provider interface definition
-- [ ] Ollama provider with streaming
-- [ ] Basic chat intent
+- [x] Basic TUI shell with BubbleTea
+- [x] Provider interface definition
+- [x] Ollama provider with streaming (mock implementation)
+- [x] Basic chat with mode switching (Normal/Insert)
+- [x] Message viewport with scrolling
+- [x] BDD test harness with godog
+- [x] First smoke test passing
+
+### Phase 1.5: UI Polish (IN PROGRESS)
+- [ ] OpenCode-inspired layout and styling
+- [ ] Improved header/footer design
+- [ ] Better message formatting and colors
+- [ ] Status bar with context info
+- [ ] Proper theme system
 
 ### Phase 2: Navigation & Input
 - [ ] Vim navigation (j/k, gg/G, Ctrl+u/d)
-- [ ] Mode state machine (Normal/Insert/Search)
-- [ ] Search with `/`, `n`, `N`
+- [x] Mode state machine (Normal/Insert) - Basic implementation
+- [ ] Search mode with `/`, `n`, `N`
 - [ ] $EDITOR integration
-- [ ] Message viewport with scrolling
+- [x] Message viewport with scrolling - Basic implementation
 
 ### Phase 3: Sessions
 - [ ] SQLite session store
