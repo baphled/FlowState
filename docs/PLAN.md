@@ -1,0 +1,324 @@
+# FlowState - Project Plan
+
+**A general-purpose AI assistant TUI for everyday tasks.**
+
+FlowState is inspired by opencode but not limited to coding. It provides AI-assisted workflows for research, analysis, decision-making, task management, and any domain where AI can help.
+
+## Vision
+
+- **Ollama-first** - Local models are first-class citizens
+- **Provider-agnostic** - Easy to plug in any model provider
+- **Domain-flexible** - Not locked to programming tasks
+- **Go-native** - Lean, fast, single binary
+- **BubbleTea TUI** - Rich terminal experience
+- **Privacy-focused** - Local memory with user control
+- **Git Worktrees** - Parallel development from day one
+
+---
+
+## Core Features
+
+### 1. Basic Chat
+- Streaming responses from LLMs
+- Multi-turn conversations with context
+- Support for multiple providers (Ollama, OpenAI, Anthropic)
+
+### 2. Session Management
+- Persistent conversations (SQLite)
+- Session browser with search
+- Fork/continue sessions
+- Auto-generated titles
+
+### 3. Vim Navigation
+- Full vim motions: `j/k`, `gg/G`, `Ctrl+u/d/f/b`
+- Search with `/`, navigate with `n/N`
+- Mode switching: Normal, Insert, Search
+- `$EDITOR` integration (`Ctrl+e`)
+
+### 4. Task Panel
+- View current tasks and progress
+- See recent changes
+- Quick access to commands
+- Model status display
+
+### 5. Memory System (Future)
+- User facts and preferences
+- Session summaries
+- Task history
+- Semi-automatic with approval workflow
+
+### 6. RAG Knowledge Base (Future)
+- Index local documents (markdown, PDF)
+- Conversation history search
+- Semantic retrieval for context
+
+### 7. Tool System
+- Bash execution with permissions
+- File read/write
+- Web fetching
+- Granular permission model (Allow/Ask/Deny)
+
+### 8. Skills & Commands
+- `/analyze` - Systems thinking analysis
+- `/challenge` - Devil's advocate evaluation
+- `/research` - Systematic investigation
+- `/decide` - Structured decision making
+- `/task` - Task creation
+- `/models` - Model selection
+- `/connect` - Provider configuration
+
+---
+
+## Technical Stack
+
+| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| Language | Go 1.22+ | Fast, single binary, strong concurrency |
+| TUI | BubbleTea | Elm architecture, excellent ecosystem |
+| Database | SQLite | Simple, embedded, reliable |
+| Vector Search | sqlite-vec | SQLite integration, local-first |
+| Embeddings | Ollama (`nomic-embed-text`) | Local, good quality |
+| Markdown | goldmark | Standard, pure Go |
+| PDF | ledongthuc/pdf | Simple extraction |
+| Testing | Godog + Ginkgo | BDD-driven development |
+
+---
+
+## Git Worktree Workflow
+
+FlowState uses git worktrees for parallel development:
+
+```
+~/Projects/
+├── FlowState.git/           # Bare repository
+│   ├── main/                # Primary development worktree
+│   └── hooks/               # Git hooks (shared)
+├── FlowState-feature-xxx/   # Feature worktree (temporary)
+└── FlowState-bugfix-xxx/    # Bugfix worktree (temporary)
+```
+
+### Working with Worktrees
+
+```bash
+# Create feature worktree
+cd FlowState.git
+git worktree add -b feature/chat ../FlowState-feature-chat main
+
+# Work on feature
+cd ../FlowState-feature-chat
+# ... make changes ...
+
+# Clean up when done
+cd ../FlowState.git/main
+git merge feature/chat
+git worktree remove ../FlowState-feature-chat
+git branch -d feature/chat
+```
+
+---
+
+## Architecture Overview
+
+### Layer Hierarchy
+
+```
+App -> Intents -> Screens/Modals -> UIKit -> Behaviors
+```
+
+### Key Patterns (from KaRiya)
+
+1. **Intent Pattern** - Workflow orchestrators with modified TEA
+2. **ScreenResult** - Type-safe communication from screens to intents
+3. **ContentProvider** - `AsScreen`/`AsModal` flexible rendering
+4. **Theme-Aware** - Components embed theme for consistent styling
+5. **Modal Registry** - Prioritized modal management
+
+### Directory Structure
+
+```
+flowstate/
+├── cmd/flowstate/           # CLI entry point
+├── internal/
+│   ├── provider/            # LLM provider abstraction
+│   ├── session/             # Session management
+│   ├── tools/               # Built-in tools
+│   ├── skills/              # Skill system
+│   ├── memory/              # Memory system (future)
+│   ├── rag/                 # RAG system (future)
+│   └── tui/                 # BubbleTea UI
+├── docs/                    # Documentation
+├── rules/                   # Development rules
+├── tasks/                   # Task tracking
+├── features/                # Cucumber features
+└── .flowstate/              # User config
+```
+
+---
+
+## Development Phases
+
+### Phase 1: Foundation
+- [x] Project scaffolding with git worktrees
+- [ ] Basic TUI shell with BubbleTea
+- [ ] Provider interface definition
+- [ ] Ollama provider with streaming
+- [ ] Basic chat intent
+
+### Phase 2: Navigation & Input
+- [ ] Vim navigation (j/k, gg/G, Ctrl+u/d)
+- [ ] Mode state machine (Normal/Insert/Search)
+- [ ] Search with `/`, `n`, `N`
+- [ ] $EDITOR integration
+- [ ] Message viewport with scrolling
+
+### Phase 3: Sessions
+- [ ] SQLite session store
+- [ ] Session CRUD operations
+- [ ] Session browser intent
+- [ ] Auto-generated titles
+
+### Phase 4: Task Panel & UI
+- [ ] Task panel component
+- [ ] Model selector
+- [ ] Command palette
+- [ ] Help system
+- [ ] Theme system
+
+### Phase 5: Tool System
+- [ ] Tool interface
+- [ ] Permission system
+- [ ] Bash tool
+- [ ] File read/write tools
+- [ ] Web fetch tool
+
+### Phase 6: Skills & Commands
+- [ ] Skill loader
+- [ ] Command loader
+- [ ] Built-in skills (analyze, challenge, research)
+- [ ] Custom command support
+
+### Phase 7: Memory & RAG (Future)
+- [ ] Memory store with sqlite-vec
+- [ ] Embedding service
+- [ ] Approval workflow
+- [ ] Document indexer
+- [ ] Semantic retrieval
+
+---
+
+## Vim Navigation Specification
+
+### Motions
+
+| Motion | Key(s) | Action |
+|--------|--------|--------|
+| Line up | `k`, `↑` | Scroll up one line |
+| Line down | `j`, `↓` | Scroll down one line |
+| Half page up | `Ctrl+u` | Scroll up half page |
+| Half page down | `Ctrl+d` | Scroll down half page |
+| Full page up | `Ctrl+b` | Scroll up full page |
+| Full page down | `Ctrl+f` | Scroll down full page |
+| Go to top | `gg` | Jump to first line |
+| Go to bottom | `G` | Jump to last line |
+| Search forward | `/` | Enter search mode |
+| Next match | `n` | Jump to next match |
+| Previous match | `N` | Jump to previous match |
+
+### Modes
+
+| Mode | Enter | Exit | Purpose |
+|------|-------|------|---------|
+| Normal | Default, `Esc` | `i`, `/` | Navigation |
+| Insert | `i`, `a` | `Esc`, `Ctrl+Enter` | Compose message |
+| Search | `/` | `Enter`, `Esc` | Search content |
+
+---
+
+## Task Panel Specification
+
+```
+┌─ Tasks ─────────────────────────────────────────┐
+│ [*] Researching vacation destinations           │
+│ [ ] Compare hotel options                       │
+│ [ ] Book flights                                │
+├─ Recent ────────────────────────────────────────┤
+│ + Created task: Book flights                    │
+│ ~ Modified: vacation-notes.md                   │
+│ > Ran: ls -la ~/Documents                       │
+├─ Model ─────────────────────────────────────────┤
+│ llama3.2 (Ollama) ▼                            │
+├─ Commands ──────────────────────────────────────┤
+│ /analyze /challenge /research /decide /task    │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Provider Interface
+
+```go
+type Provider interface {
+    Name() string
+    Models() ([]Model, error)
+    Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)
+    Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error)
+    Embed(ctx context.Context, text string) ([]float32, error)
+}
+```
+
+---
+
+## Intent Interface
+
+```go
+type Intent interface {
+    Init() tea.Cmd
+    Update(msg tea.Msg) tea.Cmd  // Note: returns Cmd only, not (Model, Cmd)
+    View() string
+    Result() *IntentResult
+}
+```
+
+---
+
+## Skills to Include
+
+### Core Skills (Generalized from KaRiya)
+
+| Skill | Purpose |
+|-------|---------|
+| `analyze` | Systems thinking, impact analysis |
+| `challenge` | Devil's advocate, assumption testing |
+| `research` | Systematic investigation |
+| `complete` | Task completion verification |
+| `plan` | Task breakdown and planning |
+| `checklist` | Track progress with discipline |
+| `efficient` | Token-efficient communication |
+
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `/analyze <topic>` | Systems analysis workflow |
+| `/challenge <idea>` | Devil's advocate evaluation |
+| `/decide <options>` | Structured decision making |
+| `/research <topic>` | Systematic research |
+| `/complete <task>` | Task completion check |
+| `/continue` | Resume previous work |
+| `/task <description>` | Create new task |
+| `/models` | List/select models |
+| `/connect <provider>` | Add API credentials |
+| `/help` | Show available commands |
+
+---
+
+## Next Steps
+
+1. Complete basic TUI shell
+2. Implement Ollama provider
+3. Create chat intent with streaming
+4. Add vim navigation
+5. Implement session persistence
+6. Build task panel
+
+See `tasks/` for current work items.
