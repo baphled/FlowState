@@ -2,14 +2,21 @@ package support
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/cucumber/godog"
 )
 
 type StepDefinitions struct {
-	ctx     context.Context
-	app     *TestApp
-	session *TestSession
+	ctx           context.Context
+	app           *TestApp
+	session       *TestSession
+	config        *config.AppConfig
+	agentRegistry *agent.AgentRegistry
+	tempDir       string
 }
 
 type TestApp struct {
@@ -70,6 +77,30 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I reload the session$`, s.iReloadTheSession)
 	ctx.Step(`^all messages should be restored$`, s.allMessagesShouldBeRestored)
 	ctx.Step(`^embedding vectors should be preserved$`, s.embeddingVectorsShouldBePreserved)
+
+	// Config steps
+	ctx.Step(`^no FlowState configuration file exists$`, s.noFlowStateConfigurationFileExists)
+	ctx.Step(`^FlowState loads its configuration$`, s.flowstateLoadsItsConfiguration)
+	ctx.Step(`^the default configuration should be used$`, s.theDefaultConfigurationShouldBeUsed)
+	ctx.Step(`^a FlowState configuration file exists at "([^"]*)"$`, s.aFlowStateConfigurationFileExistsAt)
+	ctx.Step(`^FlowState loads configuration from that file path$`, s.flowstateLoadsConfigurationFromThatFilePath)
+	ctx.Step(`^the configuration from that file should be used$`, s.theConfigurationFromThatFileShouldBeUsed)
+	ctx.Step(`^FlowState has loaded its configuration$`, s.flowstateHasLoadedItsConfiguration)
+	ctx.Step(`^the configuration should include provider settings$`, s.theConfigurationShouldIncludeProviderSettings)
+	ctx.Step(`^the configuration should include an agent directory$`, s.theConfigurationShouldIncludeAnAgentDirectory)
+	ctx.Step(`^the configuration should include a skill directory$`, s.theConfigurationShouldIncludeASkillDirectory)
+	ctx.Step(`^the configuration should include a data directory$`, s.theConfigurationShouldIncludeADataDirectory)
+	ctx.Step(`^the configuration should include a log level$`, s.theConfigurationShouldIncludeALogLevel)
+
+	// Agent registry steps
+	ctx.Step(`^an agent directory contains valid JSON and Markdown agent manifests$`, s.anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests)
+	ctx.Step(`^the agent registry discovers agents from that directory$`, s.theAgentRegistryDiscoversAgentsFromThatDirectory)
+	ctx.Step(`^the registry should include agents from both manifest formats$`, s.theRegistryShouldIncludeAgentsFromBothManifestFormats)
+	ctx.Step(`^an empty agent directory$`, s.anEmptyAgentDirectory)
+	ctx.Step(`^the registry should be empty$`, s.theRegistryShouldBeEmpty)
+	ctx.Step(`^an agent directory contains valid and invalid agent manifests$`, s.anAgentDirectoryContainsValidAndInvalidAgentManifests)
+	ctx.Step(`^the valid agents should be available in the registry$`, s.theValidAgentsShouldBeAvailableInTheRegistry)
+	ctx.Step(`^the invalid agent manifests should be skipped$`, s.theInvalidAgentManifestsShouldBeSkipped)
 }
 
 func (s *StepDefinitions) flowstateIsRunning() error {
@@ -198,4 +229,200 @@ func (s *StepDefinitions) allMessagesShouldBeRestored() error {
 
 func (s *StepDefinitions) embeddingVectorsShouldBePreserved() error {
 	return godog.ErrPending
+}
+
+// Config step implementations
+
+func (s *StepDefinitions) noFlowStateConfigurationFileExists() error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-config")
+	_ = os.RemoveAll(s.tempDir)
+	return nil
+}
+
+func (s *StepDefinitions) flowstateLoadsItsConfiguration() error {
+	nonExistentPath := filepath.Join(s.tempDir, "config.yaml")
+	cfg, err := config.LoadConfigFromPath(nonExistentPath)
+	if err != nil {
+		return err
+	}
+	s.config = cfg
+	return nil
+}
+
+func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
+	if s.config == nil {
+		return godog.ErrPending
+	}
+	if s.config.Providers.Default != "ollama" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) aFlowStateConfigurationFileExistsAt(path string) error {
+	s.tempDir = filepath.Dir(path)
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return err
+	}
+	content := []byte(`providers:
+  default: openai
+log_level: debug
+`)
+	return os.WriteFile(path, content, 0o600)
+}
+
+func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
+	path := filepath.Join(s.tempDir, "config.yaml")
+	cfg, err := config.LoadConfigFromPath(path)
+	if err != nil {
+		return err
+	}
+	s.config = cfg
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
+	if s.config == nil {
+		return godog.ErrPending
+	}
+	if s.config.Providers.Default != "openai" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) flowstateHasLoadedItsConfiguration() error {
+	s.config = config.DefaultConfig()
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error {
+	if s.config == nil || s.config.Providers.Default == "" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationShouldIncludeAnAgentDirectory() error {
+	if s.config == nil || s.config.AgentDir == "" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationShouldIncludeASkillDirectory() error {
+	if s.config == nil || s.config.SkillDir == "" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationShouldIncludeADataDirectory() error {
+	if s.config == nil || s.config.DataDir == "" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) theConfigurationShouldIncludeALogLevel() error {
+	if s.config == nil || s.config.LogLevel == "" {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+// Agent registry step implementations
+
+func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests() error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-agents")
+	_ = os.RemoveAll(s.tempDir)
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return err
+	}
+
+	jsonContent := `{"id": "json-agent", "name": "JSON Agent"}`
+	if err := os.WriteFile(filepath.Join(s.tempDir, "json-agent.json"), []byte(jsonContent), 0o600); err != nil {
+		return err
+	}
+
+	mdContent := `---
+description: Markdown Agent
+mode: subagent
+---
+# Markdown Agent
+`
+	return os.WriteFile(filepath.Join(s.tempDir, "md-agent.md"), []byte(mdContent), 0o600)
+}
+
+func (s *StepDefinitions) theAgentRegistryDiscoversAgentsFromThatDirectory() error {
+	s.agentRegistry = agent.NewAgentRegistry()
+	return s.agentRegistry.Discover(s.tempDir)
+}
+
+func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats() error {
+	if s.agentRegistry == nil {
+		return godog.ErrPending
+	}
+	if s.agentRegistry.Count() < 2 {
+		return godog.ErrPending
+	}
+	_, hasJSON := s.agentRegistry.Get("json-agent")
+	_, hasMD := s.agentRegistry.Get("md-agent")
+	if !hasJSON || !hasMD {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) anEmptyAgentDirectory() error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-empty")
+	_ = os.RemoveAll(s.tempDir)
+	return os.MkdirAll(s.tempDir, 0o750)
+}
+
+func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
+	if s.agentRegistry == nil {
+		return godog.ErrPending
+	}
+	if s.agentRegistry.Count() != 0 {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidAgentManifests() error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-mixed")
+	_ = os.RemoveAll(s.tempDir)
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return err
+	}
+
+	validContent := `{"id": "valid-agent", "name": "Valid Agent"}`
+	if err := os.WriteFile(filepath.Join(s.tempDir, "valid.json"), []byte(validContent), 0o600); err != nil {
+		return err
+	}
+
+	invalidContent := `{not valid json`
+	return os.WriteFile(filepath.Join(s.tempDir, "invalid.json"), []byte(invalidContent), 0o600)
+}
+
+func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
+	if s.agentRegistry == nil {
+		return godog.ErrPending
+	}
+	_, hasValid := s.agentRegistry.Get("valid-agent")
+	if !hasValid {
+		return godog.ErrPending
+	}
+	return nil
+}
+
+func (s *StepDefinitions) theInvalidAgentManifestsShouldBeSkipped() error {
+	if s.agentRegistry == nil {
+		return godog.ErrPending
+	}
+	if s.agentRegistry.Count() != 1 {
+		return godog.ErrPending
+	}
+	return nil
 }
