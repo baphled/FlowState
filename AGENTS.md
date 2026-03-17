@@ -94,14 +94,15 @@ refactor(chat): extract message formatting [REFACTOR]
 ### Layer Hierarchy (MUST follow)
 
 ```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
+App -> Intents -> UIKit + Behaviors
 ```
 
 ### Dependency Rules
 
-- `screens/` **NEVER** imports `intents/`
-- `uikit/` **NEVER** imports `screens/` or `intents/`
-- Use `ScreenResult` for screen -> intent communication
+- `uikit/` **NEVER** imports `intents/` or `behaviors/`
+- `behaviors/` **NEVER** imports `intents/`
+- Intents communicate results via `IntentResult[T]` — never direct state mutation
+- **NO `screens/` package** — screens are legacy; intents use UIKit directly
 
 ### Intent Pattern
 
@@ -111,6 +112,30 @@ type Intent interface {
     Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
     View() string
     Result() *IntentResult
+}
+```
+
+### BaseIntent Pattern
+
+All intents embed `*BaseIntent` for common functionality:
+
+```go
+type MyIntent struct {
+    *intents.BaseIntent
+    // ... intent-specific fields
+}
+
+func NewMyIntent() *MyIntent {
+    return &MyIntent{
+        BaseIntent: intents.NewBaseIntent(),
+    }
+}
+
+func (i *MyIntent) View() string {
+    view := i.CreateViewWithBreadcrumbs("Main", "My Intent")
+    view.WithContent(i.renderContent())
+    view.WithHelp(intents.ThemedNavigationFooter(i.Theme()))
+    return view.Render()
 }
 ```
 
