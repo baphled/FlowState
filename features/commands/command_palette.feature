@@ -7,14 +7,14 @@ Feature: Command Palette
     Given FlowState is running
     And I am in normal mode
 
-  @smoke
+  @legacy
   Scenario: Open command palette
     When I press Ctrl+p
     Then the command palette should open
     And I should see a search input
     And I should see a list of available commands
 
-  @smoke
+  @legacy
   Scenario: Filter commands by typing
     Given the command palette is open
     When I type "mod"

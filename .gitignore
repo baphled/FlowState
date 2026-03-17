@@ -34,9 +34,12 @@ Thumbs.db
 
 # Local config (keep .flowstate/config.json.example)
 .flowstate/config.json
+.env
+.env.*
 
 # Build artifacts
 dist/
+build/
 
 # Debug
 __debug_bin*

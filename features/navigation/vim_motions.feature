@@ -8,14 +8,14 @@ Feature: Vim Navigation
     And I have a conversation with multiple messages
     And I am in normal mode
 
-  @smoke
+  @legacy
   Scenario: Basic vertical navigation
     When I press "j"
     Then the viewport should scroll down one line
     When I press "k"
     Then the viewport should scroll up one line
 
-  @smoke
+  @legacy
   Scenario: Jump to top and bottom
     When I press "G"
     Then I should be at the bottom of the conversation
@@ -40,7 +40,7 @@ Feature: Vim Navigation
     When I press the up arrow
     Then the viewport should scroll up one line
 
-  @smoke
+  @legacy
   Scenario: Enter insert mode with i
     When I press "i"
     Then I should be in insert mode
