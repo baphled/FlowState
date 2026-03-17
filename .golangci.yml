@@ -1,0 +1,344 @@
+# FlowState Agent Platform golangci-lint Configuration
+version: "2"
+
+run:
+  tests: true
+  allow-parallel-runners: true
+
+output:
+  formats:
+    text:
+      path: stdout
+      colors: true
+      print-linter-name: true
+      print-issued-lines: true
+
+linters:
+  enable:
+    # Go Default Linters
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Go Idioms & Style
+    - revive
+    - misspell
+    - whitespace
+    - godot
+    - copyloopvar
+    - intrange
+    - perfsprint
+    - recvcheck
+
+    # Error Handling
+    - nilerr
+    - errorlint
+    - nilnil
+    - errname
+
+    # Code Quality & Complexity
+    - gocyclo
+    - gocognit
+    - funlen
+    - lll
+    - nestif
+    - gocritic
+    - unconvert
+    - unparam
+    - dupl
+    - wastedassign
+    - forcetypeassert
+
+    # Security
+    - gosec
+
+    # Architecture & Imports
+    - depguard
+    - importas
+
+    # Testing
+    - tparallel
+    - testifylint
+    - ginkgolinter
+    - thelper
+
+    # Comment Hygiene
+    - godox
+    - forbidigo
+    - nolintlint
+
+    # Context
+    - contextcheck
+    - fatcontext
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - io.Copy
+        - io.WriteString
+        - (*bytes.Buffer).WriteString
+        - (*strings.Builder).WriteString
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    revive:
+      severity: warning
+      confidence: 0.8
+      rules:
+        - name: var-naming
+          severity: warning
+        - name: package-comments
+          severity: warning
+        - name: exported
+          severity: warning
+        - name: error-return
+          severity: error
+        - name: error-strings
+          severity: warning
+        - name: error-naming
+          severity: warning
+        - name: blank-imports
+          severity: warning
+        - name: context-as-argument
+          severity: error
+        - name: context-keys-type
+          severity: warning
+        - name: dot-imports
+          severity: warning
+        - name: empty-block
+          severity: warning
+        - name: early-return
+          severity: warning
+        - name: unexported-return
+          severity: warning
+        - name: unused-parameter
+          severity: warning
+        - name: unnecessary-stmt
+          severity: warning
+        - name: unreachable-code
+          severity: error
+        - name: redefines-builtin-id
+          severity: error
+        - name: function-result-limit
+          severity: warning
+          arguments: [3]
+        - name: argument-limit
+          severity: warning
+          arguments: [5]
+        - name: cognitive-complexity
+          severity: warning
+          arguments: [20]
+        - name: cyclomatic
+          severity: warning
+          arguments: [15]
+        - name: import-shadowing
+          severity: warning
+
+    gocyclo:
+      min-complexity: 15
+
+    gocognit:
+      min-complexity: 20
+
+    funlen:
+      lines: 60
+      statements: 40
+      ignore-comments: true
+
+    nestif:
+      min-complexity: 4
+
+    lll:
+      line-length: 140
+      tab-width: 2
+
+    dupl:
+      threshold: 100
+
+    importas:
+      no-unaliased: false
+      alias:
+        - pkg: github.com/charmbracelet/bubbletea
+          alias: tea
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - opinionated
+      disabled-checks:
+        - whyNoLint
+        - hugeParam
+        - ifElseChain
+        - singleCaseSwitch
+        - unnamedResult
+        - paramTypeCombine
+
+    godox:
+      keywords:
+        - TODO
+        - FIXME
+        - HACK
+        - XXX
+        - BUG
+
+    gosec:
+      excludes:
+        - G104
+      config:
+        global:
+          audit: enabled
+
+    testifylint:
+      enable-all: true
+
+    ginkgolinter:
+      suppress-len-assertion: false
+      suppress-nil-assertion: false
+      suppress-err-assertion: false
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    forbidigo:
+      forbid:
+        - pattern: 'fmt\.Println'
+          msg: "Use structured logging instead of fmt.Println"
+      analyze-types: false
+
+    depguard:
+      rules:
+        # Provider layer cannot import agent or tui
+        provider-isolation:
+          files:
+            - "**/provider/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/agent"
+              desc: "ARCHITECTURE: provider/ cannot import agent/"
+            - pkg: "github.com/baphled/flowstate/internal/tui"
+              desc: "ARCHITECTURE: provider/ cannot import tui/"
+
+        # Tool layer cannot import agent or tui
+        tool-isolation:
+          files:
+            - "**/tool/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/agent"
+              desc: "ARCHITECTURE: tool/ cannot import agent/"
+            - pkg: "github.com/baphled/flowstate/internal/tui"
+              desc: "ARCHITECTURE: tool/ cannot import tui/"
+
+        # Skill layer cannot import agent or tui
+        skill-isolation:
+          files:
+            - "**/skill/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/agent"
+              desc: "ARCHITECTURE: skill/ cannot import agent/"
+            - pkg: "github.com/baphled/flowstate/internal/tui"
+              desc: "ARCHITECTURE: skill/ cannot import tui/"
+
+        # Main rule - allows all project internal packages and third-party deps
+        main:
+          files:
+            - $all
+          list-mode: strict
+          allow:
+            - $gostd
+            - github.com/baphled/flowstate
+            - github.com/charmbracelet
+            - github.com/google/uuid
+            - github.com/onsi/ginkgo/v2
+            - github.com/onsi/gomega
+            - github.com/spf13/cobra
+            - github.com/spf13/viper
+            - gopkg.in/yaml.v3
+            - github.com/cucumber/godog
+            - github.com/sashabaranov/go-openai
+
+  exclusions:
+    rules:
+      # EXC0001: errcheck - common close/flush/print errors
+      - linters:
+          - errcheck
+        text: 'Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked'
+
+      # EXC0004: govet - unsafe.Pointer false positives
+      - linters:
+          - govet
+        text: '(possible misuse of unsafe.Pointer|should have signature)'
+
+      # EXC0005: staticcheck - explicit break in switch
+      - linters:
+          - staticcheck
+        text: 'SA4011'
+
+      # EXC0008: gosec - duplicated errcheck
+      - linters:
+          - gosec
+        text: 'G104'
+
+      # EXC0009-0010: gosec - directory/file permissions and inclusions
+      - linters:
+          - gosec
+        text: '(G301|G302|G307|G304)'
+
+      # Test files - relaxed requirements
+      - path: '(.+)_test\.go'
+        linters:
+          - funlen
+          - dupl
+          - gocyclo
+          - gocognit
+          - godox
+          - errcheck
+          - lll
+          - forcetypeassert
+          - perfsprint
+          - wastedassign
+          - nolintlint
+          - thelper
+          - recvcheck
+
+      - path: '(.+)_test\.go'
+        linters:
+          - revive
+          - staticcheck
+        text: "dot-imports|unused-parameter|argument-limit"
+
+      - path: '(.+)_test\.go'
+        linters:
+          - depguard
+
+      # Generated files
+      - path: '(.*)_generated\.go'
+        linters:
+          - all
+
+      # BDD step definitions
+      - path: 'features/support/(.*)\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - errcheck
+
+      # Non-inherited context is OK
+      - linters:
+          - contextcheck
+        text: "non-inherited new context"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

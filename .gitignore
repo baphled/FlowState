@@ -48,3 +48,6 @@ debug.log
 # Test artifacts
 test-results/
 *.log
+
+# Sisyphus planning artefacts (never commit)
+.sisyphus/
