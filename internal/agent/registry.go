@@ -1,84 +1,95 @@
+// Package agent loads and manages FlowState agent manifests.
 package agent
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
-	"sync"
+	"sort"
 )
 
-// AgentRegistry manages discovered agent manifests.
 type AgentRegistry struct {
-	mu     sync.RWMutex
-	agents map[string]*AgentManifest
+	manifests map[string]*AgentManifest
 }
 
-// NewAgentRegistry creates a new empty agent registry.
 func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{
-		agents: make(map[string]*AgentManifest),
+		manifests: make(map[string]*AgentManifest),
 	}
 }
 
-// Discover scans a directory for agent manifests (*.json and *.md files).
-// Invalid manifests are skipped gracefully.
 func (r *AgentRegistry) Discover(dir string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.agents = make(map[string]*AgentManifest)
-
-	patterns := []string{
-		filepath.Join(dir, "*.json"),
-		filepath.Join(dir, "*.md"),
+	cleanDir := filepath.Clean(dir)
+	info, err := os.Stat(cleanDir)
+	if err != nil {
+		return fmt.Errorf("stat agent directory %q: %w", cleanDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("agent directory %q is not a directory", cleanDir)
 	}
 
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+	manifestPaths, err := discoverManifestPaths(cleanDir)
+	if err != nil {
+		return err
+	}
+
+	r.manifests = make(map[string]*AgentManifest)
+	for _, path := range manifestPaths {
+		manifest, err := LoadManifest(path)
 		if err != nil {
-			return fmt.Errorf("scanning directory %s: %w", dir, err)
+			log.Printf("skipping agent manifest %s: %v", path, err)
+			continue
 		}
-
-		for _, path := range matches {
-			manifest, err := LoadManifest(path)
-			if err != nil {
-				continue
-			}
-
-			if err := manifest.Validate(); err != nil {
-				continue
-			}
-
-			r.agents[manifest.ID] = manifest
+		if err := manifest.Validate(); err != nil {
+			log.Printf("skipping invalid agent manifest %s: %v", path, err)
+			continue
 		}
+		r.manifests[manifest.ID] = manifest
 	}
 
 	return nil
 }
 
-// Get retrieves an agent manifest by ID.
 func (r *AgentRegistry) Get(id string) (*AgentManifest, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	manifest, ok := r.agents[id]
+	manifest, ok := r.manifests[id]
 	return manifest, ok
 }
 
-// List returns all registered agent manifests.
 func (r *AgentRegistry) List() []*AgentManifest {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]*AgentManifest, 0, len(r.agents))
-	for _, m := range r.agents {
-		result = append(result, m)
+	if len(r.manifests) == 0 {
+		return nil
 	}
-	return result
+
+	ids := make([]string, 0, len(r.manifests))
+	for id := range r.manifests {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	manifests := make([]*AgentManifest, 0, len(ids))
+	for _, id := range ids {
+		manifests = append(manifests, r.manifests[id])
+	}
+
+	return manifests
 }
 
-// Count returns the number of registered agents.
-func (r *AgentRegistry) Count() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return len(r.agents)
+func discoverManifestPaths(dir string) ([]string, error) {
+	patterns := []string{
+		filepath.Join(dir, "*.json"),
+		filepath.Join(dir, "*.md"),
+	}
+
+	var paths []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("glob agent manifests with pattern %q: %w", pattern, err)
+		}
+		paths = append(paths, matches...)
+	}
+
+	sort.Strings(paths)
+	return paths, nil
 }

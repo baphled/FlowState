@@ -2,6 +2,7 @@ package support
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -17,6 +18,7 @@ type StepDefinitions struct {
 	config        *config.AppConfig
 	agentRegistry *agent.AgentRegistry
 	tempDir       string
+	configPath    string
 }
 
 type TestApp struct {
@@ -40,8 +42,12 @@ type Message struct {
 func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
 		s.ctx = ctx
-		s.app = &TestApp{provider: &MockProvider{}}
+		s.app = &TestApp{provider: NewMockProvider()}
 		s.session = &TestSession{embeddings: make(map[string][]float64)}
+		s.config = nil
+		s.agentRegistry = nil
+		s.tempDir = ""
+		s.configPath = ""
 		return ctx, nil
 	})
 
@@ -251,29 +257,54 @@ func (s *StepDefinitions) flowstateLoadsItsConfiguration() error {
 
 func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
 	if s.config == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected configuration to be loaded")
 	}
-	if s.config.Providers.Default != "ollama" {
-		return godog.ErrPending
+
+	defaults := config.DefaultConfig()
+	if s.config.Providers.Default != defaults.Providers.Default {
+		return fmt.Errorf("expected default provider %q, got %q", defaults.Providers.Default, s.config.Providers.Default)
 	}
+	if s.config.AgentDir != defaults.AgentDir {
+		return fmt.Errorf("expected agent dir %q, got %q", defaults.AgentDir, s.config.AgentDir)
+	}
+	if s.config.SkillDir != defaults.SkillDir {
+		return fmt.Errorf("expected skill dir %q, got %q", defaults.SkillDir, s.config.SkillDir)
+	}
+	if s.config.DataDir != defaults.DataDir {
+		return fmt.Errorf("expected data dir %q, got %q", defaults.DataDir, s.config.DataDir)
+	}
+	if s.config.LogLevel != defaults.LogLevel {
+		return fmt.Errorf("expected log level %q, got %q", defaults.LogLevel, s.config.LogLevel)
+	}
+
 	return nil
 }
 
 func (s *StepDefinitions) aFlowStateConfigurationFileExistsAt(path string) error {
 	s.tempDir = filepath.Dir(path)
+	s.configPath = path
+	if err := os.RemoveAll(s.tempDir); err != nil {
+		return fmt.Errorf("removing config directory %q: %w", s.tempDir, err)
+	}
 	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
-		return err
+		return fmt.Errorf("creating config directory %q: %w", s.tempDir, err)
 	}
 	content := []byte(`providers:
   default: openai
 log_level: debug
 `)
-	return os.WriteFile(path, content, 0o600)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("writing config file %q: %w", path, err)
+	}
+	return nil
 }
 
 func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
-	path := filepath.Join(s.tempDir, "config.yaml")
-	cfg, err := config.LoadConfigFromPath(path)
+	if s.configPath == "" {
+		return fmt.Errorf("expected config path to be set")
+	}
+
+	cfg, err := config.LoadConfigFromPath(s.configPath)
 	if err != nil {
 		return err
 	}
@@ -283,10 +314,13 @@ func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
 
 func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
 	if s.config == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected configuration to be loaded")
 	}
 	if s.config.Providers.Default != "openai" {
-		return godog.ErrPending
+		return fmt.Errorf("expected provider default \"openai\", got %q", s.config.Providers.Default)
+	}
+	if s.config.LogLevel != "debug" {
+		return fmt.Errorf("expected log level \"debug\", got %q", s.config.LogLevel)
 	}
 	return nil
 }
@@ -297,36 +331,54 @@ func (s *StepDefinitions) flowstateHasLoadedItsConfiguration() error {
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error {
-	if s.config == nil || s.config.Providers.Default == "" {
-		return godog.ErrPending
+	if s.config == nil {
+		return fmt.Errorf("expected configuration to be loaded")
+	}
+	if s.config.Providers.Default == "" {
+		return fmt.Errorf("expected default provider to be set")
+	}
+	if s.config.Providers.Ollama.Model == "" {
+		return fmt.Errorf("expected ollama provider settings to be present")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeAnAgentDirectory() error {
-	if s.config == nil || s.config.AgentDir == "" {
-		return godog.ErrPending
+	if s.config == nil {
+		return fmt.Errorf("expected configuration to be loaded")
+	}
+	if s.config.AgentDir == "" {
+		return fmt.Errorf("expected agent directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeASkillDirectory() error {
-	if s.config == nil || s.config.SkillDir == "" {
-		return godog.ErrPending
+	if s.config == nil {
+		return fmt.Errorf("expected configuration to be loaded")
+	}
+	if s.config.SkillDir == "" {
+		return fmt.Errorf("expected skill directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeADataDirectory() error {
-	if s.config == nil || s.config.DataDir == "" {
-		return godog.ErrPending
+	if s.config == nil {
+		return fmt.Errorf("expected configuration to be loaded")
+	}
+	if s.config.DataDir == "" {
+		return fmt.Errorf("expected data directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeALogLevel() error {
-	if s.config == nil || s.config.LogLevel == "" {
-		return godog.ErrPending
+	if s.config == nil {
+		return fmt.Errorf("expected configuration to be loaded")
+	}
+	if s.config.LogLevel == "" {
+		return fmt.Errorf("expected log level to be set")
 	}
 	return nil
 }
@@ -361,15 +413,15 @@ func (s *StepDefinitions) theAgentRegistryDiscoversAgentsFromThatDirectory() err
 
 func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats() error {
 	if s.agentRegistry == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected agent registry to be created")
 	}
-	if s.agentRegistry.Count() < 2 {
-		return godog.ErrPending
+	if len(s.agentRegistry.List()) < 2 {
+		return fmt.Errorf("expected at least 2 agents, got %d", len(s.agentRegistry.List()))
 	}
 	_, hasJSON := s.agentRegistry.Get("json-agent")
 	_, hasMD := s.agentRegistry.Get("md-agent")
 	if !hasJSON || !hasMD {
-		return godog.ErrPending
+		return fmt.Errorf("expected both json-agent and md-agent to be discovered")
 	}
 	return nil
 }
@@ -382,10 +434,10 @@ func (s *StepDefinitions) anEmptyAgentDirectory() error {
 
 func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 	if s.agentRegistry == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected agent registry to be created")
 	}
-	if s.agentRegistry.Count() != 0 {
-		return godog.ErrPending
+	if len(s.agentRegistry.List()) != 0 {
+		return fmt.Errorf("expected empty registry, got %d agents", len(s.agentRegistry.List()))
 	}
 	return nil
 }
@@ -408,21 +460,21 @@ func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidAgentManifests(
 
 func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
 	if s.agentRegistry == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected agent registry to be created")
 	}
 	_, hasValid := s.agentRegistry.Get("valid-agent")
 	if !hasValid {
-		return godog.ErrPending
+		return fmt.Errorf("expected valid-agent to be discovered")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theInvalidAgentManifestsShouldBeSkipped() error {
 	if s.agentRegistry == nil {
-		return godog.ErrPending
+		return fmt.Errorf("expected agent registry to be created")
 	}
-	if s.agentRegistry.Count() != 1 {
-		return godog.ErrPending
+	if len(s.agentRegistry.List()) != 1 {
+		return fmt.Errorf("expected only valid manifests to remain, got %d agents", len(s.agentRegistry.List()))
 	}
 	return nil
 }

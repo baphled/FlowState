@@ -1,4 +1,4 @@
-// Package config provides application configuration loading and management.
+// Package config loads FlowState application configuration.
 package config
 
 import (
@@ -9,60 +9,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AppConfig represents the FlowState application configuration.
 type AppConfig struct {
-	Providers ProviderConfig `yaml:"providers"`
-	AgentDir  string         `yaml:"agent_dir"`
-	SkillDir  string         `yaml:"skill_dir"`
-	DataDir   string         `yaml:"data_dir"`
-	LogLevel  string         `yaml:"log_level"`
+	Providers ProvidersConfig `json:"providers" yaml:"providers"`
+	AgentDir  string          `json:"agent_dir" yaml:"agent_dir"`
+	SkillDir  string          `json:"skill_dir" yaml:"skill_dir"`
+	DataDir   string          `json:"data_dir" yaml:"data_dir"`
+	LogLevel  string          `json:"log_level" yaml:"log_level"`
 }
 
-// ProviderConfig contains provider-related settings.
+type ProvidersConfig struct {
+	Default   string         `json:"default" yaml:"default"`
+	Ollama    ProviderConfig `json:"ollama" yaml:"ollama"`
+	OpenAI    ProviderConfig `json:"openai" yaml:"openai"`
+	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
+}
+
 type ProviderConfig struct {
-	Default   string          `yaml:"default"`
-	Ollama    OllamaConfig    `yaml:"ollama"`
-	OpenAI    OpenAIConfig    `yaml:"openai"`
-	Anthropic AnthropicConfig `yaml:"anthropic"`
+	Host   string `json:"host" yaml:"host"`
+	APIKey string `json:"api_key" yaml:"api_key"`
+	Model  string `json:"model" yaml:"model"`
 }
 
-// OllamaConfig contains Ollama provider settings.
-type OllamaConfig struct {
-	Host  string `yaml:"host"`
-	Model string `yaml:"model"`
-}
-
-// OpenAIConfig contains OpenAI provider settings.
-type OpenAIConfig struct {
-	APIKey string `yaml:"api_key"`
-	Model  string `yaml:"model"`
-}
-
-// AnthropicConfig contains Anthropic provider settings.
-type AnthropicConfig struct {
-	APIKey string `yaml:"api_key"`
-	Model  string `yaml:"model"`
-}
-
-// DefaultConfig returns the default configuration with sensible defaults.
 func DefaultConfig() *AppConfig {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
+	dataDir := filepath.Join(".flowstate")
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		dataDir = filepath.Join(homeDir, ".flowstate")
 	}
-	dataDir := filepath.Join(homeDir, ".flowstate")
 
 	return &AppConfig{
-		Providers: ProviderConfig{
+		Providers: ProvidersConfig{
 			Default: "ollama",
-			Ollama: OllamaConfig{
+			Ollama: ProviderConfig{
 				Host:  "http://localhost:11434",
 				Model: "llama3.2",
 			},
-			OpenAI: OpenAIConfig{
+			OpenAI: ProviderConfig{
 				Model: "gpt-4o",
 			},
-			Anthropic: AnthropicConfig{
+			Anthropic: ProviderConfig{
 				Model: "claude-sonnet-4-20250514",
 			},
 		},
@@ -73,58 +57,48 @@ func DefaultConfig() *AppConfig {
 	}
 }
 
-// LoadConfig loads configuration from the default location.
 func LoadConfig() (*AppConfig, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("getting home directory: %w", err)
+		return nil, fmt.Errorf("locating user home directory: %w", err)
 	}
-	path := filepath.Join(homeDir, ".flowstate", "config.yaml")
-	return LoadConfigFromPath(path)
+
+	return LoadConfigFromPath(filepath.Join(homeDir, ".flowstate", "config.yaml"))
 }
 
-// LoadConfigFromPath loads configuration from a specific file path.
-// Returns default config if the file does not exist.
 func LoadConfigFromPath(path string) (*AppConfig, error) {
 	cleanPath := filepath.Clean(path)
-
-	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-		return DefaultConfig(), nil
+	if _, err := os.Stat(cleanPath); err != nil {
+		if os.IsNotExist(err) {
+			return DefaultConfig(), nil
+		}
+		return nil, fmt.Errorf("stat config file %q: %w", cleanPath, err)
 	}
 
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading config file: %w", err)
+		return nil, fmt.Errorf("reading config file %q: %w", cleanPath, err)
 	}
 
-	var cfg AppConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config YAML: %w", err)
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %q: %w", cleanPath, err)
 	}
 
-	applyDefaults(&cfg)
-	return &cfg, nil
+	applyDefaults(cfg)
+	return cfg, nil
 }
 
-// applyDefaults fills in default values for any zero-value fields.
 func applyDefaults(cfg *AppConfig) {
 	defaults := DefaultConfig()
 
 	if cfg.Providers.Default == "" {
 		cfg.Providers.Default = defaults.Providers.Default
 	}
-	if cfg.Providers.Ollama.Host == "" {
-		cfg.Providers.Ollama.Host = defaults.Providers.Ollama.Host
-	}
-	if cfg.Providers.Ollama.Model == "" {
-		cfg.Providers.Ollama.Model = defaults.Providers.Ollama.Model
-	}
-	if cfg.Providers.OpenAI.Model == "" {
-		cfg.Providers.OpenAI.Model = defaults.Providers.OpenAI.Model
-	}
-	if cfg.Providers.Anthropic.Model == "" {
-		cfg.Providers.Anthropic.Model = defaults.Providers.Anthropic.Model
-	}
+	applyProviderDefaults(&cfg.Providers.Ollama, defaults.Providers.Ollama)
+	applyProviderDefaults(&cfg.Providers.OpenAI, defaults.Providers.OpenAI)
+	applyProviderDefaults(&cfg.Providers.Anthropic, defaults.Providers.Anthropic)
+
 	if cfg.AgentDir == "" {
 		cfg.AgentDir = defaults.AgentDir
 	}
@@ -136,5 +110,17 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = defaults.LogLevel
+	}
+}
+
+func applyProviderDefaults(cfg *ProviderConfig, defaults ProviderConfig) {
+	if cfg.Host == "" {
+		cfg.Host = defaults.Host
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = defaults.APIKey
+	}
+	if cfg.Model == "" {
+		cfg.Model = defaults.Model
 	}
 }
