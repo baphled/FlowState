@@ -19,6 +19,15 @@ type StepDefinitions struct {
 	agentRegistry *agent.AgentRegistry
 	tempDir       string
 	configPath    string
+
+	ollamaProvider     *MockProvider
+	providerName       string
+	models             []Model
+	chatRequest        *ChatRequest
+	chatResponse       *ChatResponse
+	streamChunks       []StreamChunk
+	embeddings         []float64
+	embeddingInputText string
 }
 
 type TestApp struct {
@@ -107,6 +116,22 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an agent directory contains valid and invalid agent manifests$`, s.anAgentDirectoryContainsValidAndInvalidAgentManifests)
 	ctx.Step(`^the valid agents should be available in the registry$`, s.theValidAgentsShouldBeAvailableInTheRegistry)
 	ctx.Step(`^the invalid agent manifests should be skipped$`, s.theInvalidAgentManifestsShouldBeSkipped)
+
+	// Ollama provider steps
+	ctx.Step(`^the Ollama provider is configured$`, s.theOllamaProviderIsConfigured)
+	ctx.Step(`^I request the provider name$`, s.iRequestTheProviderName)
+	ctx.Step(`^it should return "([^"]*)"$`, s.itShouldReturn)
+	ctx.Step(`^Ollama has models available$`, s.ollamaHasModelsAvailable)
+	ctx.Step(`^I request the list of models$`, s.iRequestTheListOfModels)
+	ctx.Step(`^I should receive a list of models with context lengths$`, s.iShouldReceiveAListOfModelsWithContextLengths)
+	ctx.Step(`^a valid chat request with messages$`, s.aValidChatRequestWithMessages)
+	ctx.Step(`^I send the chat request to the Ollama provider$`, s.iSendTheChatRequestToTheOllamaProvider)
+	ctx.Step(`^I should receive a chat response with a message$`, s.iShouldReceiveAChatResponseWithAMessage)
+	ctx.Step(`^I stream the chat request to the Ollama provider$`, s.iStreamTheChatRequestToTheOllamaProvider)
+	ctx.Step(`^I should receive stream chunks until done$`, s.iShouldReceiveStreamChunksUntilDone)
+	ctx.Step(`^text to embed$`, s.textToEmbed)
+	ctx.Step(`^I request embeddings from the Ollama provider$`, s.iRequestEmbeddingsFromTheOllamaProvider)
+	ctx.Step(`^I should receive a vector of floats$`, s.iShouldReceiveAVectorOfFloats)
 }
 
 func (s *StepDefinitions) flowstateIsRunning() error {
@@ -475,6 +500,155 @@ func (s *StepDefinitions) theInvalidAgentManifestsShouldBeSkipped() error {
 	}
 	if len(s.agentRegistry.List()) != 1 {
 		return fmt.Errorf("expected only valid manifests to remain, got %d agents", len(s.agentRegistry.List()))
+	}
+	return nil
+}
+
+// Ollama provider step implementations
+
+func (s *StepDefinitions) theOllamaProviderIsConfigured() error {
+	s.ollamaProvider = NewMockProvider()
+	s.ollamaProvider.name = "ollama"
+	s.ollamaProvider.models = []Model{
+		{ID: "llama3.2", Provider: "ollama", ContextLength: 8192},
+		{ID: "mistral", Provider: "ollama", ContextLength: 32768},
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iRequestTheProviderName() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	s.providerName = s.ollamaProvider.Name()
+	return nil
+}
+
+func (s *StepDefinitions) itShouldReturn(expected string) error {
+	if s.providerName != expected {
+		return fmt.Errorf("expected provider name %q, got %q", expected, s.providerName)
+	}
+	return nil
+}
+
+func (s *StepDefinitions) ollamaHasModelsAvailable() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iRequestTheListOfModels() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	models, err := s.ollamaProvider.Models()
+	if err != nil {
+		return err
+	}
+	s.models = models
+	return nil
+}
+
+func (s *StepDefinitions) iShouldReceiveAListOfModelsWithContextLengths() error {
+	if len(s.models) == 0 {
+		return fmt.Errorf("expected models, got none")
+	}
+	for _, m := range s.models {
+		if m.ContextLength == 0 {
+			return fmt.Errorf("expected context length for model %s", m.ID)
+		}
+	}
+	return nil
+}
+
+func (s *StepDefinitions) aValidChatRequestWithMessages() error {
+	s.chatRequest = &ChatRequest{
+		Model: "llama3.2",
+		Messages: []Message{
+			{Role: "user", Content: "Hello, how are you?"},
+		},
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	if s.chatRequest == nil {
+		return fmt.Errorf("no chat request provided")
+	}
+	resp, err := s.ollamaProvider.Chat(s.ctx, *s.chatRequest)
+	if err != nil {
+		return err
+	}
+	s.chatResponse = &resp
+	return nil
+}
+
+func (s *StepDefinitions) iShouldReceiveAChatResponseWithAMessage() error {
+	if s.chatResponse == nil {
+		return fmt.Errorf("expected chat response, got nil")
+	}
+	if s.chatResponse.Message.Content == "" {
+		return fmt.Errorf("expected message content, got empty")
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	if s.chatRequest == nil {
+		return fmt.Errorf("no chat request provided")
+	}
+	ch, err := s.ollamaProvider.Stream(s.ctx, *s.chatRequest)
+	if err != nil {
+		return err
+	}
+	s.streamChunks = nil
+	for chunk := range ch {
+		s.streamChunks = append(s.streamChunks, chunk)
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iShouldReceiveStreamChunksUntilDone() error {
+	if len(s.streamChunks) == 0 {
+		return fmt.Errorf("expected stream chunks, got none")
+	}
+	lastChunk := s.streamChunks[len(s.streamChunks)-1]
+	if !lastChunk.Done {
+		return fmt.Errorf("expected last chunk to be done")
+	}
+	return nil
+}
+
+func (s *StepDefinitions) textToEmbed() error {
+	s.embeddingInputText = "This is sample text for embedding."
+	return nil
+}
+
+func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
+	if s.ollamaProvider == nil {
+		return fmt.Errorf("ollama provider not configured")
+	}
+	embeddings, err := s.ollamaProvider.Embed(s.ctx, EmbedRequest{
+		Input: s.embeddingInputText,
+		Model: "llama3.2",
+	})
+	if err != nil {
+		return err
+	}
+	s.embeddings = embeddings
+	return nil
+}
+
+func (s *StepDefinitions) iShouldReceiveAVectorOfFloats() error {
+	if len(s.embeddings) == 0 {
+		return fmt.Errorf("expected embeddings, got none")
 	}
 	return nil
 }
