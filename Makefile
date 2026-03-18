@@ -95,7 +95,7 @@ check-docblocks: ## Run structured docblock analyser
 	@echo "Checking docblocks..."
 	@go run ./cmd/docblocks/... ./...
 
-check: fmt lint test coverage-check check-docblocks ## Run all checks
+check: build fmt lint test coverage-check check-docblocks ## Run all checks
 
 #
 # Dependencies
