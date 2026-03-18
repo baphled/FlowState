@@ -315,7 +315,7 @@ mcp_servers:
 				Expect(cfg.MCPServers[0].Enabled).To(BeTrue())
 			})
 
-			It("defaults Enabled to false when not set", func() {
+			It("defaults Enabled to true when not set", func() {
 				configContent := `
 mcp_servers:
   - name: test-server
@@ -328,7 +328,7 @@ mcp_servers:
 				cfg, err := config.LoadConfigFromPath(configPath)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.MCPServers[0].Enabled).To(BeFalse())
+				Expect(cfg.MCPServers[0].Enabled).To(BeTrue())
 			})
 		})
 	})

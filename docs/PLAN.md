@@ -170,12 +170,12 @@ flowstate/
 - [x] Status bar with context info (provider, model, tokens)
 - [x] Proper theme system
 
-### Phase 2: Navigation & Input ✅ COMPLETE
-- [x] Vim navigation (j/k, gg/G, Ctrl+u/d)
+### Phase 2: Navigation & Input ✅ COMPLETE (MVP)
 - [x] Mode state machine (Normal/Insert)
-- [x] Search mode with `/`, `n`, `N`
-- [x] $EDITOR integration
 - [x] Message viewport with scrolling
+- [ ] Vim navigation (j/k, gg/G, Ctrl+u/d) — Deferred to v2
+- [ ] Search mode with `/`, `n`, `N` — Deferred to v2
+- [ ] $EDITOR integration — Deferred to v2
 
 ### Phase 3: Sessions ✅ COMPLETE
 - [x] SQLite session store
@@ -183,12 +183,12 @@ flowstate/
 - [x] Session browser intent
 - [x] Auto-generated titles
 
-### Phase 4: Task Panel & UI ✅ COMPLETE
-- [x] Task panel component
+### Phase 4: Task Panel & UI ✅ COMPLETE (MVP)
 - [x] Model selector
-- [x] Command palette
 - [x] Help system
 - [x] Theme system
+- [x] Task panel component
+- [ ] Command palette — Deferred to v2
 
 ### Phase 5: Tool System ✅ COMPLETE
 - [x] Tool interface
@@ -203,13 +203,13 @@ flowstate/
 - [x] Built-in skills (analyze, challenge, research)
 - [x] Custom command support
 
-### Phase 7: MCP Integration ✅ COMPLETE
+### Phase 7: MCP Integration ✅ COMPLETE (MVP)
 - [x] MCP client with stdio transport
-- [x] SSE transport support
 - [x] Server discovery (config file + env var)
 - [x] MCP resource access (documents, memory)
 - [x] MCP tool integration with permission prompts (Allow/Ask/Deny)
 - [x] Optional local memory MCP server (SQLite, `--memory-server` flag)
+- [ ] SSE transport support — Deferred to v2
 
 ### Phase 8: MVP Finalisation ✅ COMPLETE
 - [x] Documentation update (README, Demo)

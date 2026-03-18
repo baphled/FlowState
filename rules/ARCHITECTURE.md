@@ -111,8 +111,6 @@ const (
 
 ## Directory Structure
 
-**Note:** The `screens/` package is legacy. The current pattern uses `views/` directly within intents, with no separate screens layer.
-
 ```
 internal/
 ├── provider/          # LLM provider abstraction
@@ -125,7 +123,7 @@ internal/
 ├── skills/            # Skill system
 ├── mcp/               # MCP integration
 │   ├── client/        # MCP client
-│   │   ├── transport/ # stdio + SSE transport
+│   │   ├── transport/ # stdio transport (SSE deferred)
 │   │   ├── handler.go # Request/response handling
 │   │   └── server.go  # Server connection management
 │   ├── types/         # MCP types (Resource, Tool, etc.)
@@ -136,7 +134,7 @@ internal/
     │   ├── chat/
     │   ├── sessions/
     │   └── settings/
-    ├── views/         # View components (legacy: screens/)
+    ├── views/         # View components
     │   └── base/
     └── uikit/         # Reusable UI components
         ├── containers/
@@ -212,7 +210,7 @@ type Transport interface {
 
 // Implementations:
 // - StdioTransport: Connect via stdin/stdout to subprocess
-// - SSETransport: Connect via HTTP Server-Sent Events
+// - SSETransport: Deferred (HTTP SSE not in MVP)
 ```
 
 ### Permission Integration

@@ -9,7 +9,6 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 - **Ollama-first** - Local models as first-class citizens.
 - **Provider-agnostic** - Plug in any model provider (OpenAI, Anthropic, etc.).
 - **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol.
-- **Vim navigation** - Full vim motions for efficient interaction.
 - **Session management** - Persistent conversations with search.
 - **Tool system** - Bash, file operations, web fetching with granular permissions.
 - **Skills & commands** - `/analyze`, `/research`, `/challenge`, `/decide`, and more.
@@ -93,12 +92,6 @@ Configure MCP servers in your `config.yaml` under the `mcp_servers` section. Eac
 |-----|--------|
 | `i` | Enter insert mode (compose message) |
 | `Esc` | Return to normal mode |
-| `j/k` | Scroll up/down |
-| `gg/G` | Jump to top/bottom |
-| `Ctrl+u/d` | Half page scroll |
-| `/` | Search |
-| `Ctrl+e` | Open $EDITOR |
-| `Ctrl+p` | Command palette |
 | `q` | Quit |
 
 ## Commands

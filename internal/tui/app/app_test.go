@@ -9,12 +9,14 @@ import (
 )
 
 type mockIntent struct {
-	initCalled   bool
-	updateCalled bool
-	viewCalled   bool
-	lastMsg      tea.Msg
-	cmdToReturn  tea.Cmd
-	viewToReturn string
+	initCalled     bool
+	updateCalled   bool
+	viewCalled     bool
+	resultCalled   bool
+	lastMsg        tea.Msg
+	cmdToReturn    tea.Cmd
+	viewToReturn   string
+	resultToReturn *app.IntentResult
 }
 
 func (m *mockIntent) Init() tea.Cmd {
@@ -31,6 +33,11 @@ func (m *mockIntent) Update(msg tea.Msg) tea.Cmd {
 func (m *mockIntent) View() string {
 	m.viewCalled = true
 	return m.viewToReturn
+}
+
+func (m *mockIntent) Result() *app.IntentResult {
+	m.resultCalled = true
+	return m.resultToReturn
 }
 
 var _ = Describe("App", func() {

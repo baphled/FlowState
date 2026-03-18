@@ -76,7 +76,9 @@ func New(cfg Config) *Engine {
 	var failbackChain *provider.FailbackChain
 	if cfg.Registry != nil {
 		prefs := buildModelPreferences(cfg.Manifest)
-		failbackChain = provider.NewFailbackChain(cfg.Registry, prefs, timeout)
+		if len(prefs) > 0 {
+			failbackChain = provider.NewFailbackChain(cfg.Registry, prefs, timeout)
+		}
 	}
 
 	return &Engine{

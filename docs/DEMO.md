@@ -27,11 +27,6 @@ In this scenario, we'll start a conversation and see how FlowState handles rich 
    - The response is rendered with **Glamour**, showing bold headers, tables, and code blocks with proper syntax highlighting.
    - Notice the **StatusBar** at the bottom showing `ollama` as the provider and `llama3.2` as the model.
 
-4. **Navigate**:
-   - Press `Esc` to return to Normal Mode.
-   - Use `j` and `k` to scroll through the response.
-   - Use `gg` to jump to the top and `G` to the bottom.
-
 ## Scenario 2: MCP Tool Discovery
 
 FlowState can use external tools via MCP. Let's see how the AI identifies available tools.

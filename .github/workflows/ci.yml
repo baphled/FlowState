@@ -54,7 +54,6 @@ jobs:
       - name: E2E chat test
         run: flowstate chat --message "hello" --agent general
         timeout-minutes: 2
-        continue-on-error: true
         env:
           FLOWSTATE_PROVIDER: ollama
           FLOWSTATE_MODEL: qwen2:0.5b

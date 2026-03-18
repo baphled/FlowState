@@ -70,10 +70,10 @@ FlowState is built as a layered TUI application using BubbleTea.
 User Input
     │
     ▼
-┌─────────┐     ┌──────────────┐     ┌──────────┐
-│  Input  │ ──► │  ChatIntent  │ ──► │ Provider │
-│ Screen  │     │              │     │ (Ollama) │
-└─────────┘     └──────────────┘     └──────────┘
+┌─────────────┐     ┌──────────────┐     ┌──────────┐
+│ ChatIntent  │ ──► │  ChatIntent  │ ──► │ Provider │
+│(Input View) │     │              │     │ (Ollama) │
+└─────────────┘     └──────────────┘     └──────────┘
                        │                   │
                        │                   │
                        ▼                   ▼
@@ -159,7 +159,7 @@ type Tool interface {
 
 ### ContentProvider
 
-Allows components to render as either screens or modals:
+Allows components to render as either intents with views or modals:
 
 ```go
 type ContentProvider interface {

@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 )
 
@@ -52,6 +53,7 @@ type Intent struct {
 	modelName         string
 	tokenBudget       int
 	pendingPermission *ToolPermissionMsg
+	result            *app.IntentResult
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -92,6 +94,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		providerName: cfg.ProviderName,
 		modelName:    cfg.ModelName,
 		tokenBudget:  cfg.TokenBudget,
+		result:       nil,
 	}
 }
 
@@ -315,6 +318,17 @@ func (i *Intent) View() string {
 	builder.WriteString(i.statusBar.RenderContent(i.width))
 
 	return builder.String()
+}
+
+// Result returns the current outcome state of the chat intent.
+//
+// Returns:
+//   - The current IntentResult, or nil if no result has been set.
+//
+// Side effects:
+//   - None.
+func (i *Intent) Result() *app.IntentResult {
+	return i.result
 }
 
 // handleToolPermission processes a tool permission request by entering permission mode.

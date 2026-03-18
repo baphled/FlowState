@@ -72,3 +72,14 @@ func (a *ChatAdapter) Update(msg tea.Msg) tea.Cmd {
 func (a *ChatAdapter) View() string {
 	return a.model.View()
 }
+
+// Result returns the current outcome state of the adapter.
+//
+// Returns:
+//   - nil (the wrapped ChatModel does not provide result information).
+//
+// Side effects:
+//   - None.
+func (a *ChatAdapter) Result() *IntentResult {
+	return nil
+}

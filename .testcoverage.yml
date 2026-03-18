@@ -40,13 +40,13 @@ override:
     path: ^github\.com/baphled/flowstate/internal/provider/anthropic$
 
   # Packages needing improvement (realistic starting thresholds)
-  - threshold: 30
+  - threshold: 60
     path: ^github\.com/baphled/flowstate/internal/agent$
-  - threshold: 60
+  - threshold: 75
     path: ^github\.com/baphled/flowstate/internal/skill$
-  - threshold: 55
+  - threshold: 75
     path: ^github\.com/baphled/flowstate/internal/tui$
-  - threshold: 60
+  - threshold: 75
     path: ^github\.com/baphled/flowstate/internal/cli$
   - threshold: 70
     path: ^github\.com/baphled/flowstate/internal/api$
