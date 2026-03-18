@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestStore(t *testing.T) {
+func TestWindowBuilder(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Context Store Suite")
+	RunSpecs(t, "Context Suite")
 }
