@@ -16,7 +16,9 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/provider/openai"
 	"github.com/baphled/flowstate/internal/skill"
 )
 
@@ -41,6 +43,20 @@ func New(cfg *config.AppConfig) (*App, error) {
 	ollamaProvider, err := ollama.New(cfg.Providers.Ollama.Host)
 	if err == nil {
 		providerRegistry.Register(ollamaProvider)
+	}
+
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		openaiProvider, err := openai.New(apiKey)
+		if err == nil {
+			providerRegistry.Register(openaiProvider)
+		}
+	}
+
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		anthropicProvider, err := anthropic.New(apiKey)
+		if err == nil {
+			providerRegistry.Register(anthropicProvider)
+		}
 	}
 
 	agentRegistry := agent.NewAgentRegistry()
