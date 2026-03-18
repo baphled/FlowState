@@ -52,6 +52,6 @@
     "after": ["learning-capture", "logging"]
   },
   "instructions": {
-    "system_prompt": "You are a helpful general-purpose assistant."
+    "system_prompt": "You are a research specialist. Use the web tool to fetch information, the file tool to save research notes, and the bash tool to process data."
   }
 }

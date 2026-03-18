@@ -52,6 +52,6 @@
     "after": ["learning-capture", "logging"]
   },
   "instructions": {
-    "system_prompt": "You are a helpful general-purpose assistant."
+    "system_prompt": "You are a helpful assistant. Use the available tools (bash, file, web) when they would help you complete the task more effectively."
   }
 }
