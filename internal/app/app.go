@@ -234,21 +234,41 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 		providerRegistry.Register(ollamaProvider)
 	}
 
-	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-		openaiProvider, openaiErr := openai.New(apiKey)
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey == "" {
+		openaiKey = cfg.Providers.OpenAI.APIKey
+	}
+	if openaiKey != "" {
+		openaiProvider, openaiErr := openai.New(openaiKey)
 		if openaiErr == nil {
 			providerRegistry.Register(openaiProvider)
 		}
 	}
 
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		anthropicProvider, anthropicErr := anthropic.New(apiKey)
+	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+	if anthropicKey == "" {
+		anthropicKey = cfg.Providers.Anthropic.APIKey
+	}
+	if anthropicKey != "" {
+		anthropicProvider, anthropicErr := anthropic.New(anthropicKey)
 		if anthropicErr == nil {
 			providerRegistry.Register(anthropicProvider)
 		}
 	}
 
 	return providerRegistry, ollamaProvider
+}
+
+// RegisterProvidersForTest is a test helper that exposes registerProviders for testing.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider configuration.
+//
+// Returns:
+//   - A provider.Registry containing all successfully initialised providers.
+//   - The Ollama provider instance (may be nil if initialisation failed).
+func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
+	return registerProviders(cfg)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.

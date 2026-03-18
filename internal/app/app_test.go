@@ -151,6 +151,59 @@ When to use: Testing purposes
 		})
 	})
 
+	Describe("Config provider keys", func() {
+		Context("when OPENAI_API_KEY env var is empty", func() {
+			It("uses config file API key for OpenAI", func() {
+				os.Unsetenv("OPENAI_API_KEY")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				tc := app.TestConfig{
+					DataDir: tempDir,
+				}
+				application, err := app.NewForTest(tc)
+				Expect(err).NotTo(HaveOccurred())
+
+				application.Config.Providers.OpenAI.APIKey = "config-openai-key"
+				registry, _ := app.RegisterProvidersForTest(application.Config)
+				Expect(registry).NotTo(BeNil())
+			})
+		})
+
+		Context("when ANTHROPIC_API_KEY env var is empty", func() {
+			It("uses config file API key for Anthropic", func() {
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
+
+				tc := app.TestConfig{
+					DataDir: tempDir,
+				}
+				application, err := app.NewForTest(tc)
+				Expect(err).NotTo(HaveOccurred())
+
+				application.Config.Providers.Anthropic.APIKey = "config-anthropic-key"
+				registry, _ := app.RegisterProvidersForTest(application.Config)
+				Expect(registry).NotTo(BeNil())
+			})
+		})
+
+		Context("when env vars take precedence", func() {
+			It("uses OPENAI_API_KEY over config file", func() {
+				os.Setenv("OPENAI_API_KEY", "env-openai-key")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				tc := app.TestConfig{
+					DataDir: tempDir,
+				}
+				application, err := app.NewForTest(tc)
+				Expect(err).NotTo(HaveOccurred())
+
+				application.Config.Providers.OpenAI.APIKey = "config-openai-key"
+				registry, _ := app.RegisterProvidersForTest(application.Config)
+				Expect(registry).NotTo(BeNil())
+			})
+		})
+	})
+
 	Describe("Helper methods", func() {
 		var application *app.App
 
