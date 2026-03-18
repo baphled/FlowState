@@ -5,7 +5,7 @@ FlowState follows a strict layered architecture inspired by the KaRiya project.
 ## Layer Hierarchy
 
 ```
-App -> Intents -> Screens/Modals -> UIKit -> Behaviors
+App -> Intents -> UIKit + Behaviors
 ```
 
 Each layer can only depend on layers to its right.
@@ -14,36 +14,31 @@ Each layer can only depend on layers to its right.
 
 | Layer | Can Import | CANNOT Import |
 |-------|------------|---------------|
-| `app/` | `intents/`, `screens/`, `uikit/` | - |
-| `intents/` | `screens/`, `uikit/` | `app/` |
-| `screens/` | `uikit/` | `app/`, `intents/` |
-| `uikit/` | Standard lib, external | `app/`, `intents/`, `screens/` |
+| `app/` | `intents/`, `uikit/` | - |
+| `intents/` | `uikit/` | `app/` |
+| `uikit/` | Standard lib, external | `app/`, `intents/` |
 
 ### Critical Rule
 
-**`screens/` NEVER imports `intents/`**
+**`uikit/` NEVER imports `intents/`**
 
-Communication from screens to intents uses `ScreenResult`:
+Communication from views to intents uses `IntentResult`:
 
 ```go
-// In screens/chat/chat_screen.go
-type Result struct {
+// In intents/chat/chat_intent.go
+type IntentResult struct {
     Message string
     Action  Action
 }
 
-func (s *Screen) Result() *Result {
-    return s.result
+func (i *ChatIntent) Result() *IntentResult {
+    return i.result
 }
 
-// In intents/chat/chat_intent.go
+// Intent Update method
 func (i *ChatIntent) Update(msg tea.Msg) tea.Cmd {
-    if result := i.screen.Result(); result != nil {
-        switch result.Action {
-        case screens.ActionSend:
-            return i.sendMessage(result.Message)
-        }
-    }
+    // Handle user input and return commands
+    // State is managed internally by the intent
     return nil
 }
 ```
@@ -55,7 +50,7 @@ Intents are workflow orchestrators with a modified TEA interface:
 ```go
 type Intent interface {
     Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Note: Cmd only, NOT (Model, Cmd)
+    Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
     View() string
     Result() *IntentResult
 }
@@ -66,10 +61,11 @@ type Intent interface {
 - Intents manage their own state internally
 - Reduces boilerplate
 - Cleaner composition
+- Intents communicate results via `IntentResult[T]` — never direct state mutation
 
 ## ContentProvider Pattern
 
-Components can render as screens or modals:
+Components can render as views or modals:
 
 ```go
 type ContentProvider interface {
@@ -79,7 +75,7 @@ type ContentProvider interface {
 }
 
 // Flexible rendering
-asScreen := render.AsScreen(component, layout)
+asView := render.AsView(component, layout)
 asModal := render.AsModal(component, background, w, h, theme)
 ```
 
@@ -115,6 +111,8 @@ const (
 
 ## Directory Structure
 
+**Note:** The `screens/` package is legacy. The current pattern uses `views/` directly within intents, with no separate screens layer.
+
 ```
 internal/
 ├── provider/          # LLM provider abstraction
@@ -138,7 +136,7 @@ internal/
     │   ├── chat/
     │   ├── sessions/
     │   └── settings/
-    ├── screens/       # Screen components
+    ├── views/         # View components (legacy: screens/)
     │   └── base/
     └── uikit/         # Reusable UI components
         ├── containers/

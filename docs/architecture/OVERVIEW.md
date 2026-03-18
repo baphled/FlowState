@@ -23,16 +23,8 @@ FlowState is built as a layered TUI application using BubbleTea.
 │  │  │  Chat   │  │  Sessions │  │ Settings │              │   │
 │  │  └─────────┘  └───────────┘  └──────────┘              │   │
 │  │  - Workflow orchestrators                                │   │
-│  │  - Manage screen lifecycle                               │   │
+│  │  - Manage view lifecycle                                 │   │
 │  │  - Coordinate providers/tools                            │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                       Screens                            │   │
-│  │  - Display UI components                                 │   │
-│  │  - Handle user input                                     │   │
-│  │  - Return ScreenResult to intent                         │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                              │                                  │
 │                              ▼                                  │
@@ -177,12 +169,12 @@ type ContentProvider interface {
 }
 ```
 
-### ScreenResult
+### ViewResult
 
-Type-safe communication from screens to intents:
+Type-safe communication from views to intents:
 
 ```go
-type ScreenResult struct {
+type ViewResult struct {
     Action  Action
     Payload any
 }
