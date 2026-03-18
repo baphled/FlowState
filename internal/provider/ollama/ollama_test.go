@@ -127,6 +127,50 @@ var _ = Describe("Ollama Provider", func() {
 				Expect(err.Error()).To(ContainSubstring("ollama chat failed"))
 			})
 		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
 	})
 
 	Describe("Stream", func() {
@@ -429,6 +473,128 @@ var _ = Describe("Ollama Provider", func() {
 				Expect(lastChunk.Error).To(Or(BeNil(), MatchError(context.DeadlineExceeded)))
 			})
 		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error via channel", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Done).To(BeTrue())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error via channel", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Done).To(BeTrue())
+			})
+		})
+
+		Context("when server times out", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					time.Sleep(2 * time.Second)
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns timeout error via channel", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+			})
+		})
+
+		Context("when streaming completes successfully", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Done"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("closes channel after completion", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for range ch {
+				}
+
+				_, open := <-ch
+				Expect(open).To(BeFalse())
+			})
+		})
 	})
 
 	Describe("Embed", func() {
@@ -520,6 +686,50 @@ var _ = Describe("Ollama Provider", func() {
 				})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("ollama embed failed"))
+			})
+		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error", func() {
+				ctx := context.Background()
+				_, err := provider.Embed(ctx, providerPkg.EmbedRequest{
+					Model: "llama3.2",
+					Input: "test input",
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error", func() {
+				ctx := context.Background()
+				_, err := provider.Embed(ctx, providerPkg.EmbedRequest{
+					Model: "llama3.2",
+					Input: "test input",
+				})
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
@@ -615,6 +825,42 @@ var _ = Describe("Ollama Provider", func() {
 				_, err := provider.Models()
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("ollama list models failed"))
+			})
+		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error", func() {
+				_, err := provider.Models()
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error", func() {
+				_, err := provider.Models()
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})

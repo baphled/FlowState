@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -236,6 +237,62 @@ var _ = Describe("OpenAI Provider", func() {
 				Expect(err.Error()).To(ContainSubstring("openai chat failed"))
 			})
 		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Incorrect API key provided",
+							"type":    "invalid_request_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Rate limit exceeded",
+							"type":    "rate_limit_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
 	})
 
 	Describe("Stream", func() {
@@ -329,6 +386,134 @@ var _ = Describe("OpenAI Provider", func() {
 				}
 				Expect(lastChunk.Error).To(HaveOccurred())
 				Expect(lastChunk.Done).To(BeTrue())
+			})
+		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Incorrect API key provided",
+							"type":    "invalid_request_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error via channel", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Done).To(BeTrue())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Rate limit exceeded",
+							"type":    "rate_limit_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error via channel", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Done).To(BeTrue())
+			})
+		})
+
+		Context("when server times out", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					time.Sleep(2 * time.Second)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns timeout error via channel", func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk providerPkg.StreamChunk
+				for chunk := range ch {
+					lastChunk = chunk
+				}
+				Expect(lastChunk.Error).To(HaveOccurred())
+			})
+		})
+
+		Context("when streaming completes successfully", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-123","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}]}`)
+					fmt.Fprint(w, "data: [DONE]\n\n")
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("closes channel after completion", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for range ch {
+				}
+
+				_, open := <-ch
+				Expect(open).To(BeFalse())
 			})
 		})
 	})
@@ -477,6 +662,62 @@ var _ = Describe("OpenAI Provider", func() {
 				})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("openai embed failed"))
+			})
+		})
+
+		Context("when server returns 401", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Incorrect API key provided",
+							"type":    "invalid_request_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns authentication error", func() {
+				ctx := context.Background()
+				_, err := provider.Embed(ctx, providerPkg.EmbedRequest{
+					Model: "text-embedding-3-small",
+					Input: "test input",
+				})
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when server returns 429", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					resp := map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Rate limit exceeded",
+							"type":    "rate_limit_error",
+						},
+					}
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns rate limit error", func() {
+				ctx := context.Background()
+				_, err := provider.Embed(ctx, providerPkg.EmbedRequest{
+					Model: "text-embedding-3-small",
+					Input: "test input",
+				})
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
