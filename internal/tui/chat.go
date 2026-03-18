@@ -112,6 +112,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleKeyMsg processes keyboard input and returns appropriate commands.
+//
+// Expected:
+//   - msg is a tea.KeyMsg containing key press information.
+//
+// Returns:
+//   - The updated Model and any command to execute.
+//
+// Side effects:
+//   - May change the input mode, modify input text, or trigger message sending.
 func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
@@ -138,6 +148,16 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleRunes processes character input in normal and insert modes.
+//
+// Expected:
+//   - runes is a slice of rune characters to process.
+//
+// Returns:
+//   - The updated Model and any command to execute.
+//
+// Side effects:
+//   - May change the input mode or append characters to the input buffer.
 func (m *Model) handleRunes(runes []rune) (tea.Model, tea.Cmd) {
 	if m.mode == "normal" {
 		if len(runes) == 1 {
@@ -156,6 +176,13 @@ func (m *Model) handleRunes(runes []rune) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// sendMessage initiates a streaming request to the engine with the current input.
+//
+// Returns:
+//   - A tea.Cmd that executes the streaming request and returns a streamStartedMsg.
+//
+// Side effects:
+//   - Appends the message to the chat history, clears the input buffer, and sets streaming flag.
 func (m *Model) sendMessage() tea.Cmd {
 	message := m.input
 	m.messages = append(m.messages, "> "+message)
@@ -172,10 +199,21 @@ func (m *Model) sendMessage() tea.Cmd {
 	}
 }
 
+// streamStartedMsg signals that a streaming response has begun.
 type streamStartedMsg struct {
 	chunks <-chan provider.StreamChunk
 }
 
+// waitForChunk waits for the next chunk from the streaming channel.
+//
+// Expected:
+//   - chunks is a channel of StreamChunk values to read from.
+//
+// Returns:
+//   - A tea.Cmd that blocks until a chunk arrives or the channel closes.
+//
+// Side effects:
+//   - Reads from the chunks channel; returns ChunkMsg, ErrorMsg, or StreamDoneMsg.
 func waitForChunk(chunks <-chan provider.StreamChunk) tea.Cmd {
 	return func() tea.Msg {
 		chunk, ok := <-chunks

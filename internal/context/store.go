@@ -58,6 +58,7 @@ type EmbeddingEntry struct {
 	Dimensions int       `json:"dimensions"`
 }
 
+// persistedStore represents the serialised structure of a context store for JSON persistence.
 type persistedStore struct {
 	Messages   []StoredMessage  `json:"messages"`
 	Embeddings []EmbeddingEntry `json:"embeddings"`
@@ -110,6 +111,15 @@ func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error)
 	return store, nil
 }
 
+// load reads and deserialises the context store from its persisted file.
+//
+// Returns:
+//   - nil on success, or if the file does not exist.
+//   - An error if the file cannot be read or deserialised.
+//
+// Side effects:
+//   - Populates the store's messages and embeddings from the file.
+//   - Discards embeddings if the stored model differs from the current model.
 func (s *FileContextStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -141,6 +151,15 @@ func (s *FileContextStore) load() error {
 	return nil
 }
 
+// persist serialises and writes the context store to its persisted file using atomic write.
+//
+// Returns:
+//   - nil on success.
+//   - An error if serialisation or file operations fail.
+//
+// Side effects:
+//   - Writes the store's messages and embeddings to disk.
+//   - Uses atomic write (write-to-temp, then rename) to prevent corruption.
 func (s *FileContextStore) persist() error {
 	persisted := persistedStore{
 		Messages:   s.messages,

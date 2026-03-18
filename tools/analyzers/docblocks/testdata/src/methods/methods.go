@@ -39,4 +39,34 @@ func (r *Receiver) MethodMissingSideEffects() {} // want `exported method Method
 func (r *Receiver) FullyDocMethod(x int) int { return x }
 
 //lint:ignore U1000 test fixture for analyser - intentionally unused
-func (r *Receiver) unexportedMethod() {}
+func (r *Receiver) unexportedMethod() {} // want `doc comment for unexportedMethod should start with "unexportedMethod"` `unexported method unexportedMethod missing Side effects: section`
+
+// This does something on the receiver.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func (r *Receiver) unexportedBadMethodStart() {} // want `doc comment for unexportedBadMethodStart should start with "unexportedBadMethodStart"`
+
+// unexportedMethodMissingReturns does something on the receiver.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func (r *Receiver) unexportedMethodMissingReturns() int { return 0 } // want `unexported method unexportedMethodMissingReturns missing Returns: section`
+
+// unexportedMethodFullyDocumented validates all sections.
+//
+// Expected:
+//   - x must be positive.
+//
+// Returns:
+//   - The processed value.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func (r *Receiver) unexportedMethodFullyDocumented(x int) int { return x }

@@ -194,6 +194,17 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	}, nil
 }
 
+// buildMessages converts provider messages to Anthropic API message parameters.
+//
+// Expected:
+//   - msgs is a slice of provider messages with role and content fields.
+//
+// Returns:
+//   - A slice of Anthropic MessageParam values.
+//   - Only user and assistant roles are converted; other roles are skipped.
+//
+// Side effects:
+//   - None.
 func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 	messages := make([]anthropicAPI.MessageParam, 0, len(msgs))
 	for _, m := range msgs {
@@ -207,6 +218,17 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 	return messages
 }
 
+// convertStreamEvent transforms an Anthropic stream event into a provider StreamChunk.
+//
+// Expected:
+//   - event is a valid Anthropic MessageStreamEventUnion.
+//
+// Returns:
+//   - A StreamChunk with content, tool call, or done flag set appropriately.
+//   - An empty StreamChunk if the event type is not recognised.
+//
+// Side effects:
+//   - None.
 func convertStreamEvent(event anthropicAPI.MessageStreamEventUnion) provider.StreamChunk {
 	switch event.Type {
 	case "content_block_delta":
@@ -229,6 +251,17 @@ func convertStreamEvent(event anthropicAPI.MessageStreamEventUnion) provider.Str
 	return provider.StreamChunk{}
 }
 
+// extractTextContent retrieves the first text block from a content block slice.
+//
+// Expected:
+//   - blocks is a slice of Anthropic content blocks (may be empty).
+//
+// Returns:
+//   - The text content of the first text block found.
+//   - An empty string if no text block exists.
+//
+// Side effects:
+//   - None.
 func extractTextContent(blocks []anthropicAPI.ContentBlockUnion) string {
 	for i := range blocks {
 		if blocks[i].Type == "text" {

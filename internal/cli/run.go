@@ -19,6 +19,16 @@ type RunOptions struct {
 	Session string
 }
 
+// runResponse represents the JSON response from a non-interactive prompt execution.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - N/A (type definition).
+//
+// Side effects:
+//   - None.
 type runResponse struct {
 	Agent    string `json:"agent"`
 	Prompt   string `json:"prompt"`
@@ -26,6 +36,16 @@ type runResponse struct {
 	Session  string `json:"session,omitempty"`
 }
 
+// newRunCmd creates the run command for non-interactive prompt execution.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command with run options.
+//
+// Side effects:
+//   - Registers run command flags.
 func newRunCmd(getApp func() *app.App) *cobra.Command {
 	opts := &RunOptions{
 		Agent: "worker",
@@ -50,6 +70,18 @@ func newRunCmd(getApp func() *app.App) *cobra.Command {
 	return cmd
 }
 
+// runPrompt executes a prompt non-interactively and outputs the response.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance with a configured engine.
+//   - opts is a non-nil RunOptions with a non-empty prompt.
+//
+// Returns:
+//   - nil on success, or an error if validation or execution fails.
+//
+// Side effects:
+//   - Streams response to stdout, saves session if available.
 func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error {
 	if err := validateRunOptions(opts); err != nil {
 		return err
@@ -72,6 +104,16 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
 }
 
+// validateRunOptions checks that required options are set.
+//
+// Expected:
+//   - opts is a non-nil RunOptions.
+//
+// Returns:
+//   - nil if valid, or an error if the prompt is empty.
+//
+// Side effects:
+//   - None.
 func validateRunOptions(opts *RunOptions) error {
 	if strings.TrimSpace(opts.Prompt) == "" {
 		return errors.New("prompt is required")
@@ -79,6 +121,16 @@ func validateRunOptions(opts *RunOptions) error {
 	return nil
 }
 
+// resolveAgentName returns the agent name, defaulting to "worker" if empty.
+//
+// Expected:
+//   - agent is a string (may be empty or whitespace).
+//
+// Returns:
+//   - The agent name, or "worker" if agent is empty or whitespace.
+//
+// Side effects:
+//   - None.
 func resolveAgentName(agent string) string {
 	name := strings.TrimSpace(agent)
 	if name == "" {
@@ -87,6 +139,16 @@ func resolveAgentName(agent string) string {
 	return name
 }
 
+// resolveSessionID returns the session ID, generating a new one if empty.
+//
+// Expected:
+//   - session is a string (may be empty).
+//
+// Returns:
+//   - The session ID, or a newly generated one if session is empty.
+//
+// Side effects:
+//   - None.
 func resolveSessionID(session string) string {
 	if session == "" {
 		return generateSessionID()
@@ -94,6 +156,17 @@ func resolveSessionID(session string) string {
 	return session
 }
 
+// loadExistingSession loads a session into the engine if a session ID is provided.
+//
+// Expected:
+//   - application is a non-nil App instance.
+//   - session is a string (may be empty).
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Loads session into the engine if session is non-empty and sessions store is available.
 func loadExistingSession(application *app.App, session string) {
 	if session == "" || application.Sessions == nil {
 		return
@@ -104,6 +177,19 @@ func loadExistingSession(application *app.App, session string) {
 	}
 }
 
+// streamResponse streams a response from the engine and returns the complete message.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance with a configured engine.
+//   - agentName is a non-empty string.
+//   - opts is a non-nil RunOptions with a non-empty prompt.
+//
+// Returns:
+//   - The complete response string and nil on success, or empty string and error on failure.
+//
+// Side effects:
+//   - Streams response chunks to stdout if JSON output is not requested.
 func streamResponse(cmd *cobra.Command, application *app.App, agentName string, opts *RunOptions) (string, error) {
 	chunks, err := application.Engine.Stream(context.Background(), agentName, opts.Prompt)
 	if err != nil {
@@ -123,6 +209,18 @@ func streamResponse(cmd *cobra.Command, application *app.App, agentName string, 
 	return response.String(), nil
 }
 
+// saveSession saves the current session if the session store is available.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance.
+//   - sessionID is a non-empty string.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Saves session to the store if available, writes warning to stderr on failure.
 func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	if application.Sessions == nil {
 		return
@@ -136,6 +234,20 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	}
 }
 
+// writeRunOutput writes the response in the requested format (JSON or plain text).
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - opts is a non-nil RunOptions.
+//   - agentName is a non-empty string.
+//   - sessionID is a non-empty string.
+//   - response is a string (may be empty).
+//
+// Returns:
+//   - nil on success, or an error if output fails.
+//
+// Side effects:
+//   - Writes response to stdout in JSON or plain text format.
 func writeRunOutput(cmd *cobra.Command, opts *RunOptions, agentName, sessionID, response string) error {
 	if opts.JSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(runResponse{

@@ -74,6 +74,18 @@ func (ad *AgentDiscovery) Suggest(message string) []AgentSuggestion {
 	return suggestions
 }
 
+// scoreManifest calculates a weighted confidence score for an agent manifest against message tokens.
+//
+// Expected:
+//   - m is a non-nil agent manifest to score.
+//   - msgTokens is a slice of tokenised message words.
+//
+// Returns:
+//   - A confidence score between 0 and 1.
+//   - A reason string describing which fields matched.
+//
+// Side effects:
+//   - None.
 func (ad *AgentDiscovery) scoreManifest(m *agent.Manifest, msgTokens []string) (float64, string) {
 	const (
 		weightWhenToUse = 3.0
@@ -123,6 +135,17 @@ func (ad *AgentDiscovery) scoreManifest(m *agent.Manifest, msgTokens []string) (
 	return normalizedScore, reason
 }
 
+// tokenize converts text to a slice of cleaned, lowercased tokens.
+//
+// Expected:
+//   - text is any string, including empty strings.
+//
+// Returns:
+//   - A slice of tokens with punctuation removed and length > 1.
+//   - An empty slice if no valid tokens are found.
+//
+// Side effects:
+//   - None.
 func tokenize(text string) []string {
 	text = strings.ToLower(text)
 	text = strings.ReplaceAll(text, "-", " ")
@@ -140,6 +163,17 @@ func tokenize(text string) []string {
 	return tokens
 }
 
+// countOverlap counts the number of message tokens that match field tokens.
+//
+// Expected:
+//   - msgTokens is a slice of message tokens to match.
+//   - fieldTokens is a slice of field tokens to match against.
+//
+// Returns:
+//   - The count of matching tokens (each message token counted once).
+//
+// Side effects:
+//   - None.
 func countOverlap(msgTokens, fieldTokens []string) int {
 	count := 0
 	for _, msgToken := range msgTokens {
@@ -153,6 +187,17 @@ func countOverlap(msgTokens, fieldTokens []string) int {
 	return count
 }
 
+// matchTokens checks if two tokens match exactly or by prefix.
+//
+// Expected:
+//   - a and b are non-empty token strings.
+//
+// Returns:
+//   - true if tokens match exactly or share a 3-character prefix.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
 func matchTokens(a, b string) bool {
 	if a == b {
 		return true

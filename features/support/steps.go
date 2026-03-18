@@ -326,6 +326,11 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^subsequent "([^"]*)" commands should auto-approve$`, s.subsequentCommandsShouldAutoApprove)
 }
 
+// flowstateIsRunning initialises the test application with a mock provider.
+//
+// Expected: The test application is ready for use.
+// Returns: nil on success.
+// Side effects: Initialises s.app, s.session, s.tokenCounter, and s.windowBuilder.
 func (s *StepDefinitions) flowstateIsRunning() error {
 	s.app = &TestApp{provider: NewMockProvider()}
 	s.session = &TestSession{embeddings: make(map[string][]float64)}
@@ -334,6 +339,11 @@ func (s *StepDefinitions) flowstateIsRunning() error {
 	return nil
 }
 
+// ollamaIsAvailableWithModel configures the mock provider with the specified model.
+//
+// Expected: The provider is configured with the given model.
+// Returns: nil on success.
+// Side effects: Updates s.app.provider with the model configuration.
 func (s *StepDefinitions) ollamaIsAvailableWithModel(model string) error {
 	s.app.provider = NewMockProvider()
 	s.app.provider.name = "ollama"
@@ -344,17 +354,32 @@ func (s *StepDefinitions) ollamaIsAvailableWithModel(model string) error {
 	return nil
 }
 
+// iAmInInsertMode sets the input buffer to insert mode.
+//
+// Expected: The input buffer is ready for text input.
+// Returns: nil on success.
+// Side effects: Sets s.isInsertMode to true and clears s.inputBuffer.
 func (s *StepDefinitions) iAmInInsertMode() error {
 	s.isInsertMode = true
 	s.inputBuffer = ""
 	return nil
 }
 
+// iType appends text to the input buffer.
+//
+// Expected: The text is stored in the input buffer.
+// Returns: nil on success.
+// Side effects: Updates s.inputBuffer with the provided text.
 func (s *StepDefinitions) iType(text string) error {
 	s.inputBuffer = text
 	return nil
 }
 
+// iPressEnter sends the buffered message to the provider and collects the response.
+//
+// Expected: The message is sent and a response is received.
+// Returns: nil on success, or an error if the provider fails.
+// Side effects: Appends the message to s.app.messages, streams the response, and populates s.responseParts.
 func (s *StepDefinitions) iPressEnter() error {
 	if s.inputBuffer == "" {
 		return nil
@@ -386,6 +411,11 @@ func (s *StepDefinitions) iPressEnter() error {
 	return nil
 }
 
+// iShouldSeeTokensAppearing verifies that response tokens are being streamed.
+//
+// Expected: Response tokens are present in the response parts.
+// Returns: nil if tokens are present, or an error if the response is empty.
+// Side effects: None.
 func (s *StepDefinitions) iShouldSeeTokensAppearing() error {
 	if len(s.responseParts) == 0 {
 		return errors.New("expected streaming tokens, but received none")
@@ -405,6 +435,11 @@ func (s *StepDefinitions) iShouldSeeTokensAppearing() error {
 	return nil
 }
 
+// iShouldSeeACompleteResponse verifies that a complete response has been received.
+//
+// Expected: A complete response is available.
+// Returns: nil if a response is present, or an error if the response is empty.
+// Side effects: None.
 func (s *StepDefinitions) iShouldSeeACompleteResponse() error {
 	if len(s.app.messages) < 2 {
 		return fmt.Errorf("expected at least user message and response, got %d messages", len(s.app.messages))
@@ -419,11 +454,21 @@ func (s *StepDefinitions) iShouldSeeACompleteResponse() error {
 	return nil
 }
 
+// iHaveSentTheMessage adds a message to the conversation history.
+//
+// Expected: The message is added to the conversation.
+// Returns: nil on success.
+// Side effects: Appends the message to s.app.messages.
 func (s *StepDefinitions) iHaveSentTheMessage(message string) error {
 	s.inputBuffer = message
 	return s.iPressEnter()
 }
 
+// iReceivedAResponse verifies that a response was received from the provider.
+//
+// Expected: A response is available.
+// Returns: nil if a response is present, or an error if no response is available.
+// Side effects: None.
 func (s *StepDefinitions) iReceivedAResponse() error {
 	if len(s.app.messages) < 2 {
 		return errors.New("expected at least a user message and response")
@@ -435,6 +480,11 @@ func (s *StepDefinitions) iReceivedAResponse() error {
 	return nil
 }
 
+// iShouldSeeInTheResponse verifies that the response contains the expected text.
+//
+// Expected: The response contains the expected text.
+// Returns: nil if the text is found, or an error if the text is not found.
+// Side effects: None.
 func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
 	if len(s.app.messages) < 1 {
 		return errors.New("no messages found")
@@ -451,6 +501,11 @@ func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
 	return errors.New("no assistant response found")
 }
 
+// theAgentIsAvailable registers an agent with the discovery service.
+//
+// Expected: The agent is registered and available.
+// Returns: nil on success.
+// Side effects: Registers the agent with s.agentDiscovery.
 func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
 	manifests := []agent.Manifest{}
 	if s.agentDiscovery != nil {
@@ -494,6 +549,11 @@ func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
 	return nil
 }
 
+// iAskForAgentSuggestionsFor requests agent suggestions for the given task.
+//
+// Expected: Agent suggestions are requested.
+// Returns: nil on success, or an error if the request fails.
+// Side effects: Populates s.suggestions with the returned suggestions.
 func (s *StepDefinitions) iAskForAgentSuggestionsFor(task string) error {
 	if s.agentDiscovery == nil {
 		s.agentDiscovery = discovery.NewAgentDiscovery([]agent.Manifest{})
@@ -502,6 +562,11 @@ func (s *StepDefinitions) iAskForAgentSuggestionsFor(task string) error {
 	return nil
 }
 
+// iShouldReceiveAgentSuggestions verifies that agent suggestions were returned.
+//
+// Expected: Agent suggestions are present.
+// Returns: nil if suggestions are present, or an error if no suggestions are available.
+// Side effects: None.
 func (s *StepDefinitions) iShouldReceiveAgentSuggestions() error {
 	if len(s.suggestions) == 0 {
 		return errors.New("no suggestions")
@@ -509,6 +574,11 @@ func (s *StepDefinitions) iShouldReceiveAgentSuggestions() error {
 	return nil
 }
 
+// iShouldReceiveNoAgentSuggestions verifies that no agent suggestions were returned.
+//
+// Expected: No agent suggestions are present.
+// Returns: nil if no suggestions are present, or an error if suggestions are available.
+// Side effects: None.
 func (s *StepDefinitions) iShouldReceiveNoAgentSuggestions() error {
 	if len(s.suggestions) > 0 {
 		return fmt.Errorf("expected no suggestions, got %d", len(s.suggestions))
@@ -516,6 +586,11 @@ func (s *StepDefinitions) iShouldReceiveNoAgentSuggestions() error {
 	return nil
 }
 
+// theSuggestionsShouldIncludeAnAgentWithConfidenceAbove verifies that suggestions include an agent with confidence above the threshold.
+//
+// Expected: At least one suggestion has confidence above the threshold.
+// Returns: nil if a matching suggestion is found, or an error if no matching suggestion is found.
+// Side effects: None.
 func (s *StepDefinitions) theSuggestionsShouldIncludeAnAgentWithConfidenceAbove(confidence float64) error {
 	for _, suggestion := range s.suggestions {
 		if suggestion.Confidence > confidence {
@@ -528,12 +603,22 @@ func (s *StepDefinitions) theSuggestionsShouldIncludeAnAgentWithConfidenceAbove(
 	return fmt.Errorf("no agent found with confidence above %f, highest was %f", confidence, s.suggestions[0].Confidence)
 }
 
+// iAmChattingWithTheAgent sets the current agent for the conversation.
+//
+// Expected: The agent is set as the current agent.
+// Returns: nil on success.
+// Side effects: Updates s.currentAgent.
 func (s *StepDefinitions) iAmChattingWithTheAgent(agentID string) error {
 	s.currentAgent = agentID
 	s.app.agent = agentID
 	return nil
 }
 
+// iSwitchToTheAgent changes the active agent.
+//
+// Expected: The active agent is changed.
+// Returns: nil on success.
+// Side effects: Updates s.currentAgent.
 func (s *StepDefinitions) iSwitchToTheAgent(agentID string) error {
 	if agentID == "nonexistent" {
 		return nil
@@ -543,6 +628,11 @@ func (s *StepDefinitions) iSwitchToTheAgent(agentID string) error {
 	return nil
 }
 
+// theActiveAgentShouldBe verifies that the specified agent is active.
+//
+// Expected: The specified agent is the active agent.
+// Returns: nil if the agent is active, or an error if a different agent is active.
+// Side effects: None.
 func (s *StepDefinitions) theActiveAgentShouldBe(agentID string) error {
 	if s.currentAgent != agentID {
 		return fmt.Errorf("expected active agent to be %q, got %q", agentID, s.currentAgent)
@@ -550,6 +640,11 @@ func (s *StepDefinitions) theActiveAgentShouldBe(agentID string) error {
 	return nil
 }
 
+// theHTTPServerIsRunningOnPort starts a test HTTP server on the specified port.
+//
+// Expected: The HTTP server is running.
+// Returns: nil on success.
+// Side effects: Starts s.httpServer.
 func (s *StepDefinitions) theHTTPServerIsRunningOnPort(_ int) error {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -572,6 +667,11 @@ func (s *StepDefinitions) theHTTPServerIsRunningOnPort(_ int) error {
 	return nil
 }
 
+// iPOSTToWithMessage sends a POST request to the endpoint with the message.
+//
+// Expected: The POST request is sent.
+// Returns: nil on success, or an error if the request fails.
+// Side effects: Sends a POST request and stores the response.
 func (s *StepDefinitions) iPOSTToWithMessage(endpoint, message string) error {
 	if s.httpServer == nil {
 		return errors.New("HTTP server not running")
@@ -584,6 +684,11 @@ func (s *StepDefinitions) iPOSTToWithMessage(endpoint, message string) error {
 	return nil
 }
 
+// iShouldReceiveAnSSEStream verifies that an SSE stream was received.
+//
+// Expected: An SSE stream is received.
+// Returns: nil if a stream is received, or an error if no stream is available.
+// Side effects: Stores the SSE response in s.sseResponse.
 func (s *StepDefinitions) iShouldReceiveAnSSEStream() error {
 	if s.sseResponse == nil {
 		return errors.New("no SSE response received")
@@ -598,6 +703,11 @@ func (s *StepDefinitions) iShouldReceiveAnSSEStream() error {
 	return nil
 }
 
+// theStreamShouldContainChunksWithContent verifies that the stream contains chunks with content.
+//
+// Expected: The stream contains chunks with content.
+// Returns: nil if chunks are present, or an error if no chunks are found.
+// Side effects: Populates s.sseChunks with the stream chunks.
 func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 	if len(s.sseChunks) == 0 {
 		return errors.New("no chunks received in SSE stream")
@@ -615,6 +725,11 @@ func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 	return nil
 }
 
+// aGeneralAgentWithTokenContextLimit creates an agent with the specified token context limit.
+//
+// Expected: An agent is created with the specified token limit.
+// Returns: nil on success.
+// Side effects: Registers the agent with s.agentRegistry.
 func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
 	s.tokenBudget = limit
 	s.tokenCounter = ctxstore.NewApproximateCounter()
@@ -634,6 +749,11 @@ func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
 	return nil
 }
 
+// iHaveExchangedMessages simulates exchanging the specified number of messages.
+//
+// Expected: The specified number of messages are exchanged.
+// Returns: nil on success, or an error if the exchange fails.
+// Side effects: Appends messages to s.app.messages and updates s.session.
 func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
 	if s.contextStore == nil {
 		return errors.New("context store not initialised, call 'a general agent with N token context limit' first")
@@ -655,6 +775,11 @@ func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
 	return nil
 }
 
+// theNextMessageIsProcessed processes the next message in the conversation.
+//
+// Expected: The next message is processed.
+// Returns: nil on success, or an error if processing fails.
+// Side effects: Updates the conversation state.
 func (s *StepDefinitions) theNextMessageIsProcessed() error {
 	if s.windowBuilder == nil || s.contextStore == nil {
 		return errors.New("window builder or context store not initialised")
@@ -674,6 +799,11 @@ func (s *StepDefinitions) theNextMessageIsProcessed() error {
 	return nil
 }
 
+// theContextWindowShouldUseLessThanTokens verifies that the context window uses fewer tokens than the limit.
+//
+// Expected: The context window uses fewer tokens than the limit.
+// Returns: nil if the token count is within the limit, or an error if it exceeds the limit.
+// Side effects: None.
 func (s *StepDefinitions) theContextWindowShouldUseLessThanTokens(limit int) error {
 	if s.tokenCounter == nil {
 		return errors.New("token counter not initialised")
@@ -690,6 +820,11 @@ func (s *StepDefinitions) theContextWindowShouldUseLessThanTokens(limit int) err
 	return nil
 }
 
+// iHaveAConversationAbout simulates a conversation about the specified topic.
+//
+// Expected: A conversation about the topic is simulated.
+// Returns: nil on success, or an error if the conversation fails.
+// Side effects: Appends messages to s.app.messages.
 func (s *StepDefinitions) iHaveAConversationAbout(topic string) error {
 	if s.contextStore == nil {
 		tempDir, err := os.MkdirTemp("", "context-store-*")
@@ -716,6 +851,11 @@ func (s *StepDefinitions) iHaveAConversationAbout(topic string) error {
 	return nil
 }
 
+// iLaterDiscussed adds a later discussion about the specified topic.
+//
+// Expected: A later discussion is added.
+// Returns: nil on success.
+// Side effects: Appends messages to s.app.messages.
 func (s *StepDefinitions) iLaterDiscussed(topic string) error {
 	if s.contextStore == nil {
 		return errors.New("context store not initialised")
@@ -732,6 +872,11 @@ func (s *StepDefinitions) iLaterDiscussed(topic string) error {
 	return nil
 }
 
+// iAskAbout asks a question about the specified topic.
+//
+// Expected: A question is asked.
+// Returns: nil on success.
+// Side effects: Appends a message to s.app.messages.
 func (s *StepDefinitions) iAskAbout(_ string) error {
 	if s.contextStore == nil {
 		return errors.New("context store not initialised")
@@ -758,6 +903,11 @@ func (s *StepDefinitions) iAskAbout(_ string) error {
 	return nil
 }
 
+// theContextShouldIncludeMessagesAbout implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theContextShouldIncludeMessagesAbout(topic string) error {
 	for _, msg := range s.lastContextWindow {
 		if strings.Contains(strings.ToLower(msg.Content), strings.ToLower(topic)) {
@@ -767,6 +917,11 @@ func (s *StepDefinitions) theContextShouldIncludeMessagesAbout(topic string) err
 	return fmt.Errorf("no messages about %q found in context window", topic)
 }
 
+// iHaveAnActiveSessionWithMessages implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveAnActiveSessionWithMessages() error {
 	if s.tempDir == "" {
 		s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-session")
@@ -804,6 +959,11 @@ func (s *StepDefinitions) iHaveAnActiveSessionWithMessages() error {
 	return nil
 }
 
+// iSaveTheSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iSaveTheSession() error {
 	if s.sessionStore == nil {
 		return errors.New("no session store available")
@@ -820,6 +980,11 @@ func (s *StepDefinitions) iSaveTheSession() error {
 	return nil
 }
 
+// iReloadTheSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iReloadTheSession() error {
 	if s.sessionStore == nil {
 		return errors.New("no session store available")
@@ -837,6 +1002,11 @@ func (s *StepDefinitions) iReloadTheSession() error {
 	return nil
 }
 
+// allMessagesShouldBeRestored implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) allMessagesShouldBeRestored() error {
 	if s.reloadedContextStore == nil {
 		return errors.New("no reloaded context store available")
@@ -859,6 +1029,11 @@ func (s *StepDefinitions) allMessagesShouldBeRestored() error {
 	return nil
 }
 
+// embeddingVectorsShouldBePreserved implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) embeddingVectorsShouldBePreserved() error {
 	if s.reloadedContextStore == nil {
 		return errors.New("no reloaded context store available")
@@ -878,12 +1053,22 @@ func (s *StepDefinitions) embeddingVectorsShouldBePreserved() error {
 
 // Config step implementations
 
+// noFlowStateConfigurationFileExists implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) noFlowStateConfigurationFileExists() error {
 	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-config")
 	_ = os.RemoveAll(s.tempDir)
 	return nil
 }
 
+// flowstateLoadsItsConfiguration implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) flowstateLoadsItsConfiguration() error {
 	nonExistentPath := filepath.Join(s.tempDir, "config.yaml")
 	cfg, err := config.LoadConfigFromPath(nonExistentPath)
@@ -894,6 +1079,11 @@ func (s *StepDefinitions) flowstateLoadsItsConfiguration() error {
 	return nil
 }
 
+// theDefaultConfigurationShouldBeUsed implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -919,6 +1109,11 @@ func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
 	return nil
 }
 
+// aFlowStateConfigurationFileExistsAt implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) aFlowStateConfigurationFileExistsAt(path string) error {
 	s.tempDir = filepath.Dir(path)
 	s.configPath = path
@@ -938,6 +1133,11 @@ log_level: debug
 	return nil
 }
 
+// flowstateLoadsConfigurationFromThatFilePath implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
 	if s.configPath == "" {
 		return errors.New("expected config path to be set")
@@ -951,6 +1151,11 @@ func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
 	return nil
 }
 
+// theConfigurationFromThatFileShouldBeUsed implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -964,11 +1169,21 @@ func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
 	return nil
 }
 
+// flowstateHasLoadedItsConfiguration implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) flowstateHasLoadedItsConfiguration() error {
 	s.config = config.DefaultConfig()
 	return nil
 }
 
+// theConfigurationShouldIncludeProviderSettings implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -982,6 +1197,11 @@ func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error 
 	return nil
 }
 
+// theConfigurationShouldIncludeAnAgentDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationShouldIncludeAnAgentDirectory() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -992,6 +1212,11 @@ func (s *StepDefinitions) theConfigurationShouldIncludeAnAgentDirectory() error 
 	return nil
 }
 
+// theConfigurationShouldIncludeASkillDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationShouldIncludeASkillDirectory() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -1002,6 +1227,11 @@ func (s *StepDefinitions) theConfigurationShouldIncludeASkillDirectory() error {
 	return nil
 }
 
+// theConfigurationShouldIncludeADataDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationShouldIncludeADataDirectory() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -1012,6 +1242,11 @@ func (s *StepDefinitions) theConfigurationShouldIncludeADataDirectory() error {
 	return nil
 }
 
+// theConfigurationShouldIncludeALogLevel implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theConfigurationShouldIncludeALogLevel() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
@@ -1024,11 +1259,17 @@ func (s *StepDefinitions) theConfigurationShouldIncludeALogLevel() error {
 
 // Agent registry step implementations
 
+// testFileSpec represents a test file specification with name and content.
 type testFileSpec struct {
 	name    string
 	content string
 }
 
+// setupTempDirWithFiles implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) setupTempDirWithFiles(dirName string, files []testFileSpec) error {
 	s.tempDir = filepath.Join(os.TempDir(), dirName)
 	_ = os.RemoveAll(s.tempDir)
@@ -1044,6 +1285,11 @@ func (s *StepDefinitions) setupTempDirWithFiles(dirName string, files []testFile
 	return nil
 }
 
+// anAgentDirectoryContainsValidJSONAndMarkdownManifests implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownManifests() error {
 	return s.setupTempDirWithFiles("flowstate-test-agents", []testFileSpec{
 		{name: "json-agent.json", content: `{"id": "json-agent", "name": "JSON Agent"}`},
@@ -1051,11 +1297,21 @@ func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownManifests(
 	})
 }
 
+// theRegistryDiscoversAgentsFromThatDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theRegistryDiscoversAgentsFromThatDirectory() error {
 	s.agentRegistry = agent.NewRegistry()
 	return s.agentRegistry.Discover(s.tempDir)
 }
 
+// theRegistryShouldIncludeAgentsFromBothManifestFormats implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats() error {
 	if s.agentRegistry == nil {
 		return errors.New("expected agent registry to be created")
@@ -1071,12 +1327,22 @@ func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats(
 	return nil
 }
 
+// anEmptyAgentDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) anEmptyAgentDirectory() error {
 	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-empty")
 	_ = os.RemoveAll(s.tempDir)
 	return os.MkdirAll(s.tempDir, 0o750)
 }
 
+// theRegistryShouldBeEmpty implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 	if s.agentRegistry == nil {
 		return errors.New("expected agent registry to be created")
@@ -1087,6 +1353,11 @@ func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 	return nil
 }
 
+// anAgentDirectoryContainsValidAndInvalidManifests implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidManifests() error {
 	return s.setupTempDirWithFiles("flowstate-test-mixed", []testFileSpec{
 		{name: "valid.json", content: `{"id": "valid-agent", "name": "Valid Agent"}`},
@@ -1094,6 +1365,11 @@ func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidManifests() err
 	})
 }
 
+// theValidAgentsShouldBeAvailableInTheRegistry implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
 	if s.agentRegistry == nil {
 		return errors.New("expected agent registry to be created")
@@ -1105,6 +1381,11 @@ func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
 	return nil
 }
 
+// theInvalidManifestsShouldBeSkipped implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theInvalidManifestsShouldBeSkipped() error {
 	if s.agentRegistry == nil {
 		return errors.New("expected agent registry to be created")
@@ -1117,6 +1398,11 @@ func (s *StepDefinitions) theInvalidManifestsShouldBeSkipped() error {
 
 // Ollama provider step implementations
 
+// newOllamaMockServer creates a mock HTTP server for testing Ollama provider integration.
+//
+// Expected: The server is created and ready to handle requests.
+// Returns: A configured httptest.Server instance.
+// Side effects: None.
 func newOllamaMockServer() *httptest.Server {
 	mux := http.NewServeMux()
 
@@ -1162,6 +1448,11 @@ func newOllamaMockServer() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// theOllamaProviderIsConfigured implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theOllamaProviderIsConfigured() error {
 	s.ollamaServer = newOllamaMockServer()
 	p, err := ollamaprovider.NewWithClient(s.ollamaServer.URL, s.ollamaServer.Client())
@@ -1172,6 +1463,11 @@ func (s *StepDefinitions) theOllamaProviderIsConfigured() error {
 	return nil
 }
 
+// iRequestTheProviderName implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iRequestTheProviderName() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1180,6 +1476,11 @@ func (s *StepDefinitions) iRequestTheProviderName() error {
 	return nil
 }
 
+// itShouldReturn implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldReturn(expected string) error {
 	if s.providerName != expected {
 		return fmt.Errorf("expected provider name %q, got %q", expected, s.providerName)
@@ -1187,6 +1488,11 @@ func (s *StepDefinitions) itShouldReturn(expected string) error {
 	return nil
 }
 
+// ollamaHasModelsAvailable implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) ollamaHasModelsAvailable() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1194,6 +1500,11 @@ func (s *StepDefinitions) ollamaHasModelsAvailable() error {
 	return nil
 }
 
+// iRequestTheListOfModels implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iRequestTheListOfModels() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1206,6 +1517,11 @@ func (s *StepDefinitions) iRequestTheListOfModels() error {
 	return nil
 }
 
+// iShouldReceiveAListOfModelsWithContextLengths implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldReceiveAListOfModelsWithContextLengths() error {
 	if len(s.models) == 0 {
 		return errors.New("expected models, got none")
@@ -1218,6 +1534,11 @@ func (s *StepDefinitions) iShouldReceiveAListOfModelsWithContextLengths() error 
 	return nil
 }
 
+// aValidChatRequestWithMessages implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) aValidChatRequestWithMessages() error {
 	s.chatRequest = &provider.ChatRequest{
 		Model: "llama3.2",
@@ -1228,6 +1549,11 @@ func (s *StepDefinitions) aValidChatRequestWithMessages() error {
 	return nil
 }
 
+// iSendTheChatRequestToTheOllamaProvider implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1243,6 +1569,11 @@ func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
 	return nil
 }
 
+// iShouldReceiveAChatResponseWithAMessage implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldReceiveAChatResponseWithAMessage() error {
 	if s.chatResponse == nil {
 		return errors.New("expected chat response, got nil")
@@ -1253,6 +1584,11 @@ func (s *StepDefinitions) iShouldReceiveAChatResponseWithAMessage() error {
 	return nil
 }
 
+// iStreamTheChatRequestToTheOllamaProvider implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1271,6 +1607,11 @@ func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
 	return nil
 }
 
+// iShouldReceiveStreamChunksUntilDone implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldReceiveStreamChunksUntilDone() error {
 	if len(s.streamChunks) == 0 {
 		return errors.New("expected stream chunks, got none")
@@ -1282,11 +1623,21 @@ func (s *StepDefinitions) iShouldReceiveStreamChunksUntilDone() error {
 	return nil
 }
 
+// textToEmbed implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) textToEmbed() error {
 	s.embeddingInputText = "This is sample text for embedding."
 	return nil
 }
 
+// iRequestEmbeddingsFromTheOllamaProvider implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
@@ -1302,6 +1653,11 @@ func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
 	return nil
 }
 
+// iShouldReceiveAVectorOfFloats implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldReceiveAVectorOfFloats() error {
 	if len(s.embeddings) == 0 {
 		return errors.New("expected embeddings, got none")
@@ -1309,6 +1665,11 @@ func (s *StepDefinitions) iShouldReceiveAVectorOfFloats() error {
 	return nil
 }
 
+// theFlowStateCLIIsAvailable implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theFlowStateCLIIsAvailable() error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1325,6 +1686,11 @@ func (s *StepDefinitions) theFlowStateCLIIsAvailable() error {
 	return nil
 }
 
+// iRun implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iRun(command string) error {
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
@@ -1336,6 +1702,11 @@ func (s *StepDefinitions) iRun(command string) error {
 	return nil
 }
 
+// runTestCLI executes the test CLI binary with the provided arguments.
+//
+// Expected: The CLI binary is executed successfully.
+// Returns: The output string and exit code from the CLI execution.
+// Side effects: Executes the CLI binary and captures its output.
 func runTestCLI(args []string) (output string, exitCode int) {
 	const testBinaryPath = "/tmp/flowstate-test"
 	cmdArgs := append([]string{testBinaryPath}, args...)
@@ -1358,6 +1729,11 @@ func runTestCLI(args []string) (output string, exitCode int) {
 	return output, 0
 }
 
+// iShouldSeeUsageFor implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeUsageFor(command string) error {
 	if !strings.Contains(s.cliOutput, "Usage:") {
 		return fmt.Errorf("expected usage information, got: %s", s.cliOutput)
@@ -1368,6 +1744,11 @@ func (s *StepDefinitions) iShouldSeeUsageFor(command string) error {
 	return nil
 }
 
+// iShouldSeeTheGlobalFlag implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeTheGlobalFlag(flag string) error {
 	if !strings.Contains(s.cliOutput, flag) {
 		return fmt.Errorf("expected global flag %q in output, got: %s", flag, s.cliOutput)
@@ -1375,6 +1756,11 @@ func (s *StepDefinitions) iShouldSeeTheGlobalFlag(flag string) error {
 	return nil
 }
 
+// iShouldSeeTheSubcommand implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeTheSubcommand(subcommand string) error {
 	if !strings.Contains(s.cliOutput, subcommand) {
 		return fmt.Errorf("expected subcommand %q in output, got: %s", subcommand, s.cliOutput)
@@ -1382,6 +1768,11 @@ func (s *StepDefinitions) iShouldSeeTheSubcommand(subcommand string) error {
 	return nil
 }
 
+// iShouldSeeTheLocalFlag implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeTheLocalFlag(flag string) error {
 	if !strings.Contains(s.cliOutput, flag) {
 		return fmt.Errorf("expected local flag %q in output, got: %s", flag, s.cliOutput)
@@ -1389,6 +1780,11 @@ func (s *StepDefinitions) iShouldSeeTheLocalFlag(flag string) error {
 	return nil
 }
 
+// iShouldSeeOutputContaining implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeOutputContaining(text string) error {
 	if !strings.Contains(strings.ToLower(s.cliOutput), strings.ToLower(text)) {
 		return fmt.Errorf("expected output containing %q, got: %s", text, s.cliOutput)
@@ -1396,11 +1792,21 @@ func (s *StepDefinitions) iShouldSeeOutputContaining(text string) error {
 	return nil
 }
 
+// iPressEnterWithoutTyping implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iPressEnterWithoutTyping() error {
 	s.inputBuffer = ""
 	return nil
 }
 
+// noMessageShouldBeSent implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) noMessageShouldBeSent() error {
 	initialMessageCount := len(s.app.messages)
 	if s.inputBuffer != "" {
@@ -1412,6 +1818,11 @@ func (s *StepDefinitions) noMessageShouldBeSent() error {
 	return nil
 }
 
+// iShouldRemainInInsertMode implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldRemainInInsertMode() error {
 	if !s.isInsertMode {
 		return errors.New("expected to remain in insert mode")
@@ -1419,11 +1830,21 @@ func (s *StepDefinitions) iShouldRemainInInsertMode() error {
 	return nil
 }
 
+// iTypeAMessageLongerThanScreenWidth implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iTypeAMessageLongerThanScreenWidth() error {
 	s.inputBuffer = strings.Repeat("x", 200)
 	return nil
 }
 
+// theMessageShouldWrapToMultipleLines implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theMessageShouldWrapToMultipleLines() error {
 	if len(s.inputBuffer) <= 80 {
 		return fmt.Errorf("expected long input to exceed screen-width proxy, got length %d", len(s.inputBuffer))
@@ -1431,6 +1852,11 @@ func (s *StepDefinitions) theMessageShouldWrapToMultipleLines() error {
 	return nil
 }
 
+// theCursorShouldBeVisible implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theCursorShouldBeVisible() error {
 	if !s.isInsertMode {
 		return errors.New("expected cursor visibility proxy to remain in insert mode")
@@ -1438,17 +1864,32 @@ func (s *StepDefinitions) theCursorShouldBeVisible() error {
 	return nil
 }
 
+// iHaveTyped implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveTyped(text string) error {
 	s.inputBuffer = text
 	return nil
 }
 
+// iPressEscape implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iPressEscape() error {
 	s.isInsertMode = false
 	s.inputBuffer = ""
 	return nil
 }
 
+// iShouldBeInNormalMode implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldBeInNormalMode() error {
 	if s.isInsertMode {
 		return errors.New("expected to be in normal mode, but still in insert mode")
@@ -1456,6 +1897,11 @@ func (s *StepDefinitions) iShouldBeInNormalMode() error {
 	return nil
 }
 
+// theInputShouldBeCleared implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theInputShouldBeCleared() error {
 	if s.inputBuffer != "" {
 		return fmt.Errorf("expected input to be cleared, but got: %s", s.inputBuffer)
@@ -1463,12 +1909,22 @@ func (s *StepDefinitions) theInputShouldBeCleared() error {
 	return nil
 }
 
+// iPressCtrlE implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iPressCtrlE() error {
 	s.editorOpened = true
 	s.editorContent = s.inputBuffer
 	return nil
 }
 
+// myEditorShouldOpen implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) myEditorShouldOpen() error {
 	if !s.editorOpened {
 		return errors.New("expected editor to open")
@@ -1476,6 +1932,11 @@ func (s *StepDefinitions) myEditorShouldOpen() error {
 	return nil
 }
 
+// whenISaveAndExit implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) whenISaveAndExit() error {
 	if !s.editorOpened {
 		return errors.New("expected editor to be open before saving")
@@ -1487,6 +1948,11 @@ func (s *StepDefinitions) whenISaveAndExit() error {
 	return nil
 }
 
+// theEditorContentShouldAppearInTheInput implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theEditorContentShouldAppearInTheInput() error {
 	if s.inputBuffer != s.editorContent {
 		return fmt.Errorf("expected editor content %q in input, got %q", s.editorContent, s.inputBuffer)
@@ -1494,6 +1960,11 @@ func (s *StepDefinitions) theEditorContentShouldAppearInTheInput() error {
 	return nil
 }
 
+// flowstateStartsWithNoArguments implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) flowstateStartsWithNoArguments() error {
 	s.sessions = make(map[string]*TestSession)
 	s.currentSessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
@@ -1507,6 +1978,11 @@ func (s *StepDefinitions) flowstateStartsWithNoArguments() error {
 	return nil
 }
 
+// aNewSessionShouldBeCreated implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) aNewSessionShouldBeCreated() error {
 	if s.session == nil {
 		return errors.New("expected a session to be created")
@@ -1517,6 +1993,11 @@ func (s *StepDefinitions) aNewSessionShouldBeCreated() error {
 	return nil
 }
 
+// theSessionShouldHaveNoMessages implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theSessionShouldHaveNoMessages() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1527,10 +2008,20 @@ func (s *StepDefinitions) theSessionShouldHaveNoMessages() error {
 	return nil
 }
 
+// iHaveStartedANewSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveStartedANewSession() error {
 	return s.flowstateStartsWithNoArguments()
 }
 
+// iSendTheMessage implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iSendTheMessage(message string) error {
 	if s.session == nil {
 		s.session = &TestSession{
@@ -1559,6 +2050,11 @@ func (s *StepDefinitions) iSendTheMessage(message string) error {
 	return nil
 }
 
+// iReceiveAResponse implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iReceiveAResponse() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1568,14 +2064,29 @@ func (s *StepDefinitions) iReceiveAResponse() error {
 	return nil
 }
 
+// iQuitFlowState implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iQuitFlowState() error {
 	return nil
 }
 
+// iRestartFlowState implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iRestartFlowState() error {
 	return nil
 }
 
+// iShouldSeeMyPreviousSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeMyPreviousSession() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1583,6 +2094,11 @@ func (s *StepDefinitions) iShouldSeeMyPreviousSession() error {
 	return nil
 }
 
+// itShouldContain implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldContain(text string) error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1595,6 +2111,11 @@ func (s *StepDefinitions) itShouldContain(text string) error {
 	return fmt.Errorf("expected session to contain %q", text)
 }
 
+// iHaveMultipleSessions implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveMultipleSessions() error {
 	now := time.Now()
 	s.sessions = make(map[string]*TestSession)
@@ -1613,6 +2134,11 @@ func (s *StepDefinitions) iHaveMultipleSessions() error {
 	return nil
 }
 
+// iOpenTheSessionBrowser implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iOpenTheSessionBrowser() error {
 	if len(s.sessions) == 0 {
 		return errors.New("no sessions available")
@@ -1629,6 +2155,11 @@ func (s *StepDefinitions) iOpenTheSessionBrowser() error {
 	return nil
 }
 
+// iShouldSeeAListOfSessions implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeAListOfSessions() error {
 	if len(s.sessions) == 0 {
 		return errors.New("expected sessions to be available")
@@ -1636,6 +2167,11 @@ func (s *StepDefinitions) iShouldSeeAListOfSessions() error {
 	return nil
 }
 
+// eachSessionShouldShowItsTitle implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) eachSessionShouldShowItsTitle() error {
 	if len(s.sessions) == 0 {
 		return errors.New("no sessions to verify")
@@ -1651,6 +2187,11 @@ func (s *StepDefinitions) eachSessionShouldShowItsTitle() error {
 	return nil
 }
 
+// sessionsShouldBeSortedByLastUpdated implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) sessionsShouldBeSortedByLastUpdated() error {
 	if len(s.sessions) < 2 {
 		return nil
@@ -1671,6 +2212,11 @@ func (s *StepDefinitions) sessionsShouldBeSortedByLastUpdated() error {
 	return nil
 }
 
+// iAmInSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iAmInSession(sessionName string) error {
 	if s.sessions == nil {
 		s.sessions = make(map[string]*TestSession)
@@ -1687,6 +2233,11 @@ func (s *StepDefinitions) iAmInSession(sessionName string) error {
 	return nil
 }
 
+// iSelect implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iSelect(sessionName string) error {
 	if s.sessions == nil {
 		return errors.New("no sessions available")
@@ -1699,6 +2250,11 @@ func (s *StepDefinitions) iSelect(sessionName string) error {
 	return fmt.Errorf("session %q not found", sessionName)
 }
 
+// iShouldBeInSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldBeInSession(sessionName string) error {
 	if s.currentSessionID != sessionName {
 		return fmt.Errorf("expected to be in session %q, but in %q", sessionName, s.currentSessionID)
@@ -1706,6 +2262,11 @@ func (s *StepDefinitions) iShouldBeInSession(sessionName string) error {
 	return nil
 }
 
+// iShouldSeeTheMessagesFrom implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeTheMessagesFrom(sessionName string) error {
 	if s.sessions == nil {
 		return errors.New("no sessions available")
@@ -1720,10 +2281,20 @@ func (s *StepDefinitions) iShouldSeeTheMessagesFrom(sessionName string) error {
 	return nil
 }
 
+// iAmInAnExistingSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iAmInAnExistingSession() error {
 	return s.flowstateStartsWithNoArguments()
 }
 
+// iCreateANewSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iCreateANewSession() error {
 	newID := fmt.Sprintf("session-%d", time.Now().UnixNano())
 	if s.sessions == nil {
@@ -1740,6 +2311,11 @@ func (s *StepDefinitions) iCreateANewSession() error {
 	return nil
 }
 
+// iShouldBeInAFreshSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldBeInAFreshSession() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1750,6 +2326,11 @@ func (s *StepDefinitions) iShouldBeInAFreshSession() error {
 	return nil
 }
 
+// iHaveStartedANewUntitledSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveStartedANewUntitledSession() error {
 	if err := s.flowstateStartsWithNoArguments(); err != nil {
 		return err
@@ -1763,6 +2344,11 @@ func (s *StepDefinitions) iHaveStartedANewUntitledSession() error {
 	return nil
 }
 
+// theSessionTitleShouldBeAutogenerated implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theSessionTitleShouldBeAutogenerated() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1776,6 +2362,11 @@ func (s *StepDefinitions) theSessionTitleShouldBeAutogenerated() error {
 	return nil
 }
 
+// theTitleShouldBeRelevantToTheConversation implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theTitleShouldBeRelevantToTheConversation() error {
 	if s.session == nil {
 		return errors.New("no session available")
@@ -1796,6 +2387,11 @@ func (s *StepDefinitions) theTitleShouldBeRelevantToTheConversation() error {
 	return fmt.Errorf("expected title %q to be relevant to the conversation", s.session.id)
 }
 
+// iHaveSessionsAboutVariousTopics implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveSessionsAboutVariousTopics() error {
 	now := time.Now()
 	s.sessions = make(map[string]*TestSession)
@@ -1812,6 +2408,11 @@ func (s *StepDefinitions) iHaveSessionsAboutVariousTopics() error {
 	return nil
 }
 
+// iSearchFor implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iSearchFor(query string) error {
 	if strings.TrimSpace(query) == "" {
 		return errors.New("search query cannot be empty")
@@ -1820,6 +2421,11 @@ func (s *StepDefinitions) iSearchFor(query string) error {
 	return nil
 }
 
+// iShouldOnlySeeSessionsMentioning implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldOnlySeeSessionsMentioning(text string) error {
 	if len(s.sessions) == 0 {
 		return errors.New("no sessions available")
@@ -1848,6 +2454,11 @@ func (s *StepDefinitions) iShouldOnlySeeSessionsMentioning(text string) error {
 	return nil
 }
 
+// iAmInASessionWithHistory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iAmInASessionWithHistory() error {
 	s.sessions = make(map[string]*TestSession)
 	s.sessions["history"] = &TestSession{
@@ -1866,6 +2477,11 @@ func (s *StepDefinitions) iAmInASessionWithHistory() error {
 	return nil
 }
 
+// iForkTheSessionAtMessage implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iForkTheSessionAtMessage(messageNum int) error {
 	if s.session == nil {
 		return errors.New("no session to fork")
@@ -1890,6 +2506,11 @@ func (s *StepDefinitions) iForkTheSessionAtMessage(messageNum int) error {
 	return nil
 }
 
+// itShouldContainMessagesThrough implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldContainMessagesThrough(start, end int) error {
 	if s.forkedSession == nil {
 		return errors.New("no forked session available")
@@ -1915,6 +2536,11 @@ func (s *StepDefinitions) itShouldContainMessagesThrough(start, end int) error {
 	return nil
 }
 
+// theOriginalSessionShouldBeUnchanged implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theOriginalSessionShouldBeUnchanged() error {
 	original, exists := s.sessions["history"]
 	if !exists {
@@ -1938,6 +2564,11 @@ func (s *StepDefinitions) theOriginalSessionShouldBeUnchanged() error {
 	return nil
 }
 
+// sessionMentions checks whether the session contains a message mentioning the query string.
+//
+// Expected: The session contains messages.
+// Returns: true if the query is found in any message, false otherwise.
+// Side effects: None.
 func sessionMentions(session *TestSession, query string) bool {
 	if session == nil {
 		return false
@@ -1954,6 +2585,11 @@ func sessionMentions(session *TestSession, query string) bool {
 	return false
 }
 
+// sessionMessagesText returns a concatenated string of all message contents in the session.
+//
+// Expected: The session contains messages.
+// Returns: A string containing all message contents separated by newlines.
+// Side effects: None.
 func sessionMessagesText(session *TestSession) string {
 	if session == nil {
 		return ""
@@ -1965,6 +2601,11 @@ func sessionMessagesText(session *TestSession) string {
 	return strings.Join(parts, " ")
 }
 
+// autoGeneratedSessionTitle generates a session title based on the message content.
+//
+// Expected: The message contains recognisable keywords.
+// Returns: A generated title string based on the message content.
+// Side effects: None.
 func autoGeneratedSessionTitle(message string) string {
 	lower := strings.ToLower(message)
 	if strings.Contains(lower, "japan") {
@@ -1980,6 +2621,11 @@ func autoGeneratedSessionTitle(message string) string {
 	return strings.Join(words, "-")
 }
 
+// iHaveASessionNamed implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iHaveASessionNamed(name string) error {
 	if s.sessions == nil {
 		s.sessions = make(map[string]*TestSession)
@@ -1992,6 +2638,11 @@ func (s *StepDefinitions) iHaveASessionNamed(name string) error {
 	return nil
 }
 
+// iDelete implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iDelete(name string) error {
 	s.lastDeletedSession = name
 	s.confirmationPromptShown = true
@@ -2001,6 +2652,11 @@ func (s *StepDefinitions) iDelete(name string) error {
 	return nil
 }
 
+// itShouldNoLongerAppearInTheSessionList implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldNoLongerAppearInTheSessionList() error {
 	if s.lastDeletedSession == "" {
 		return errors.New("no deleted session tracked")
@@ -2014,6 +2670,11 @@ func (s *StepDefinitions) itShouldNoLongerAppearInTheSessionList() error {
 	return nil
 }
 
+// iShouldBePromptedToConfirmDeletion implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldBePromptedToConfirmDeletion() error {
 	if !s.confirmationPromptShown {
 		return errors.New("expected confirmation prompt to be shown")
@@ -2021,15 +2682,30 @@ func (s *StepDefinitions) iShouldBePromptedToConfirmDeletion() error {
 	return nil
 }
 
+// theBashToolIsEnabled implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theBashToolIsEnabled() error {
 	return nil
 }
 
+// bashToolPermissionIsSetTo implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) bashToolPermissionIsSetTo(permission string) error {
 	s.bashPermission = permission
 	return nil
 }
 
+// theAIRequestsToRun implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIRequestsToRun(command string) error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",
@@ -2041,6 +2717,11 @@ func (s *StepDefinitions) theAIRequestsToRun(command string) error {
 	return nil
 }
 
+// iShouldSeeAPermissionPrompt implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeAPermissionPrompt() error {
 	if !s.permissionPrompt {
 		return errors.New("expected permission prompt to be shown")
@@ -2048,6 +2729,11 @@ func (s *StepDefinitions) iShouldSeeAPermissionPrompt() error {
 	return nil
 }
 
+// thePromptShouldShowTheCommand implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) thePromptShouldShowTheCommand() error {
 	if s.toolRequest == nil {
 		return errors.New("no tool request available")
@@ -2055,6 +2741,11 @@ func (s *StepDefinitions) thePromptShouldShowTheCommand() error {
 	return nil
 }
 
+// iApproveTheCommand implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iApproveTheCommand() error {
 	if s.toolRequest != nil {
 		s.toolRequest.Approved = true
@@ -2064,6 +2755,11 @@ func (s *StepDefinitions) iApproveTheCommand() error {
 	return nil
 }
 
+// theCommandShouldExecute implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theCommandShouldExecute() error {
 	if !s.commandExecuted {
 		return errors.New("expected command to execute")
@@ -2071,6 +2767,11 @@ func (s *StepDefinitions) theCommandShouldExecute() error {
 	return nil
 }
 
+// theAIShouldReceiveTheOutput implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIShouldReceiveTheOutput() error {
 	if s.bashOutput == "" {
 		return errors.New("expected bash output")
@@ -2078,6 +2779,11 @@ func (s *StepDefinitions) theAIShouldReceiveTheOutput() error {
 	return nil
 }
 
+// iDenyTheCommand implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iDenyTheCommand() error {
 	if s.toolRequest != nil {
 		s.toolRequest.Denied = true
@@ -2086,6 +2792,11 @@ func (s *StepDefinitions) iDenyTheCommand() error {
 	return nil
 }
 
+// theCommandShouldNotExecute implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theCommandShouldNotExecute() error {
 	if s.commandExecuted {
 		return errors.New("expected command not to execute")
@@ -2093,6 +2804,11 @@ func (s *StepDefinitions) theCommandShouldNotExecute() error {
 	return nil
 }
 
+// theAIShouldBeInformedOfTheDenial implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIShouldBeInformedOfTheDenial() error {
 	if s.toolRequest == nil || !s.toolRequest.Denied {
 		return errors.New("expected denial to be recorded")
@@ -2100,6 +2816,11 @@ func (s *StepDefinitions) theAIShouldBeInformedOfTheDenial() error {
 	return nil
 }
 
+// theCommandShouldExecuteImmediately implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theCommandShouldExecuteImmediately() error {
 	if s.bashPermission == "allow" {
 		s.commandExecuted = true
@@ -2108,6 +2829,11 @@ func (s *StepDefinitions) theCommandShouldExecuteImmediately() error {
 	return nil
 }
 
+// noPermissionPromptShouldAppear implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) noPermissionPromptShouldAppear() error {
 	if s.permissionPrompt && s.bashPermission != "ask" {
 		return fmt.Errorf("permission prompt should not appear with permission %q", s.bashPermission)
@@ -2115,6 +2841,11 @@ func (s *StepDefinitions) noPermissionPromptShouldAppear() error {
 	return nil
 }
 
+// theAIShouldBeInformedThatBashIsDisabled implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIShouldBeInformedThatBashIsDisabled() error {
 	if s.bashPermission != "deny" {
 		return errors.New("expected bash to be disabled")
@@ -2122,6 +2853,11 @@ func (s *StepDefinitions) theAIShouldBeInformedThatBashIsDisabled() error {
 	return nil
 }
 
+// theAIRuns implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIRuns(command string) error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",
@@ -2143,6 +2879,11 @@ func (s *StepDefinitions) theAIRuns(command string) error {
 	return nil
 }
 
+// extractEchoOutput extracts the output string from an echo command.
+//
+// Expected: The command is a valid echo command.
+// Returns: The extracted output string from the echo command.
+// Side effects: None.
 func extractEchoOutput(command string) string {
 	start := strings.Index(command, "'")
 	end := strings.LastIndex(command, "'")
@@ -2152,6 +2893,11 @@ func extractEchoOutput(command string) string {
 	return strings.TrimPrefix(command, "echo ")
 }
 
+// theOutputShouldAppearInTheChat implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theOutputShouldAppearInTheChat(expected string) error {
 	if !strings.Contains(s.bashOutput, expected) {
 		return fmt.Errorf("expected output %q, got %q", expected, s.bashOutput)
@@ -2159,6 +2905,11 @@ func (s *StepDefinitions) theOutputShouldAppearInTheChat(expected string) error 
 	return nil
 }
 
+// itShouldBeFormattedAsCommandOutput implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldBeFormattedAsCommandOutput() error {
 	if s.bashOutput == "" {
 		return errors.New("no output")
@@ -2166,6 +2917,11 @@ func (s *StepDefinitions) itShouldBeFormattedAsCommandOutput() error {
 	return nil
 }
 
+// theErrorOutputShouldAppearInTheChat implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theErrorOutputShouldAppearInTheChat() error {
 	if s.bashError == "" {
 		return errors.New("expected error output")
@@ -2173,6 +2929,11 @@ func (s *StepDefinitions) theErrorOutputShouldAppearInTheChat() error {
 	return nil
 }
 
+// itShouldBeFormattedAsAnError implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) itShouldBeFormattedAsAnError() error {
 	if s.bashError == "" {
 		return errors.New("no error")
@@ -2180,6 +2941,11 @@ func (s *StepDefinitions) itShouldBeFormattedAsAnError() error {
 	return nil
 }
 
+// theAIRunsACommandThatTakesSeveralSeconds implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIRunsACommandThatTakesSeveralSeconds() error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",
@@ -2189,6 +2955,11 @@ func (s *StepDefinitions) theAIRunsACommandThatTakesSeveralSeconds() error {
 	return nil
 }
 
+// iShouldSeeAnIndicatorThatTheCommandIsRunning implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iShouldSeeAnIndicatorThatTheCommandIsRunning() error {
 	if !s.commandExecuted {
 		return errors.New("expected running command indicator via executed command state")
@@ -2196,11 +2967,21 @@ func (s *StepDefinitions) iShouldSeeAnIndicatorThatTheCommandIsRunning() error {
 	return nil
 }
 
+// whenCompleteIShouldSeeTheOutput implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) whenCompleteIShouldSeeTheOutput() error {
 	s.bashOutput = "command completed"
 	return nil
 }
 
+// theAIIsRunningALongCommand implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIIsRunningALongCommand() error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",
@@ -2210,12 +2991,22 @@ func (s *StepDefinitions) theAIIsRunningALongCommand() error {
 	return nil
 }
 
+// iPressCtrlC implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iPressCtrlC() error {
 	s.commandExecuted = false
 	s.commandCancelled = true
 	return nil
 }
 
+// theCommandShouldBeTerminated implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theCommandShouldBeTerminated() error {
 	if s.commandExecuted {
 		return errors.New("expected command to be terminated")
@@ -2223,6 +3014,11 @@ func (s *StepDefinitions) theCommandShouldBeTerminated() error {
 	return nil
 }
 
+// theAIShouldBeInformedOfTheCancellation implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theAIShouldBeInformedOfTheCancellation() error {
 	if !s.commandCancelled {
 		return errors.New("expected command cancellation to be recorded")
@@ -2230,11 +3026,21 @@ func (s *StepDefinitions) theAIShouldBeInformedOfTheCancellation() error {
 	return nil
 }
 
+// iAmInDirectory implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iAmInDirectory(dir string) error {
 	s.workingDirectory = dir
 	return nil
 }
 
+// theOutputShouldShow implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) theOutputShouldShow(expected string) error {
 	s.bashOutput = s.workingDirectory
 	if !strings.Contains(s.bashOutput, expected) {
@@ -2243,6 +3049,11 @@ func (s *StepDefinitions) theOutputShouldShow(expected string) error {
 	return nil
 }
 
+// iApproveWithRememberForSession implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) iApproveWithRememberForSession() error {
 	if s.toolRequest != nil {
 		s.toolRequest.Approved = true
@@ -2259,6 +3070,11 @@ func (s *StepDefinitions) iApproveWithRememberForSession() error {
 	return nil
 }
 
+// subsequentCommandsShouldAutoApprove implements a BDD step definition.
+//
+// Expected: The step is executed successfully.
+// Returns: nil on success, or an error if the step fails.
+// Side effects: May modify the test state.
 func (s *StepDefinitions) subsequentCommandsShouldAutoApprove(command string) error {
 	if !s.autoApprovedCommands[command] {
 		return fmt.Errorf("expected command pattern %q to be auto-approved", command)

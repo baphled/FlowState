@@ -112,6 +112,17 @@ func (c *ApproximateCounter) ModelLimit(model string) int {
 	return modelLimit(model)
 }
 
+// modelLimit returns the token limit for the given model identifier.
+//
+// Expected:
+//   - model is a provider model identifier string.
+//
+// Returns:
+//   - The maximum token limit for the specified model.
+//   - Defaults to 4096 for unknown models.
+//
+// Side effects:
+//   - None.
 func modelLimit(model string) int {
 	switch model {
 	case "gpt-4o", "gpt-4o-mini", "gpt-4-turbo":

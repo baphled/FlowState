@@ -127,6 +127,16 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 	return ch, nil
 }
 
+// getContextualResponse returns a contextual response based on the chat request.
+//
+// Expected:
+//   - req contains the chat request with messages to analyse.
+//
+// Returns:
+//   - A string response, either contextual (if name found) or from the response list.
+//
+// Side effects:
+//   - None.
 func (m *MockProvider) getContextualResponse(req ChatRequest) string {
 	if name := findNameFromHistory(req.Messages); name != "" {
 		return "Your name is " + name + "."
@@ -134,6 +144,16 @@ func (m *MockProvider) getContextualResponse(req ChatRequest) string {
 	return m.responses[m.responseIndex%len(m.responses)]
 }
 
+// findNameFromHistory extracts a user's name from the message history.
+//
+// Expected:
+//   - messages is a slice of Message values from the chat history.
+//
+// Returns:
+//   - The extracted name if found, or an empty string if not present.
+//
+// Side effects:
+//   - None.
 func findNameFromHistory(messages []Message) string {
 	if !containsNameQuery(messages) {
 		return ""
@@ -150,6 +170,16 @@ func findNameFromHistory(messages []Message) string {
 	return ""
 }
 
+// containsNameQuery checks whether the message history contains a name query.
+//
+// Expected:
+//   - messages is a slice of Message values to search.
+//
+// Returns:
+//   - true if any user message contains "what is my name", false otherwise.
+//
+// Side effects:
+//   - None.
 func containsNameQuery(messages []Message) bool {
 	for _, msg := range messages {
 		if msg.Role == "user" && strings.Contains(strings.ToLower(msg.Content), "what is my name") {
@@ -159,6 +189,16 @@ func containsNameQuery(messages []Message) bool {
 	return false
 }
 
+// extractNameFromContent extracts a name from message content.
+//
+// Expected:
+//   - content is a string that may contain "my name is" followed by a name.
+//
+// Returns:
+//   - The extracted name if found, or an empty string if the pattern is not present.
+//
+// Side effects:
+//   - None.
 func extractNameFromContent(content string) string {
 	lowerContent := strings.ToLower(content)
 	if !strings.Contains(lowerContent, "my name is") {

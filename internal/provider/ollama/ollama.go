@@ -269,10 +269,30 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	return models, nil
 }
 
+// boolPtr returns a pointer to the given boolean value.
+//
+// Expected:
+//   - b is any boolean value.
+//
+// Returns:
+//   - A pointer to a boolean with the same value.
+//
+// Side effects:
+//   - None.
 func boolPtr(b bool) *bool {
 	return &b
 }
 
+// buildOllamaTools converts provider tools to Ollama API tool definitions.
+//
+// Expected:
+//   - tools is a slice of provider Tool values with schema information.
+//
+// Returns:
+//   - An Ollama Tools slice with function definitions and properties.
+//
+// Side effects:
+//   - None.
 func buildOllamaTools(tools []provider.Tool) ollamaAPI.Tools {
 	result := make(ollamaAPI.Tools, len(tools))
 	for i, t := range tools {
@@ -305,6 +325,16 @@ func buildOllamaTools(tools []provider.Tool) ollamaAPI.Tools {
 	return result
 }
 
+// parseToolCalls converts Ollama tool calls to provider tool call format.
+//
+// Expected:
+//   - toolCalls is a slice of Ollama ToolCall values.
+//
+// Returns:
+//   - A slice of provider ToolCall values with ID, name, and arguments.
+//
+// Side effects:
+//   - None.
 func parseToolCalls(toolCalls []ollamaAPI.ToolCall) []provider.ToolCall {
 	result := make([]provider.ToolCall, len(toolCalls))
 	for i, tc := range toolCalls {

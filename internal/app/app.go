@@ -140,6 +140,16 @@ func (a *App) ConfigPath() string {
 	return filepath.Join(homeDir, ".flowstate", "config.yaml")
 }
 
+// extractSkillNames extracts the name field from each skill in the provided slice.
+//
+// Expected:
+//   - skills is a non-nil slice of Skill values.
+//
+// Returns:
+//   - A string slice containing the name of each skill in the same order.
+//
+// Side effects:
+//   - None.
 func extractSkillNames(skills []skill.Skill) []string {
 	names := make([]string, len(skills))
 	for i := range skills {
@@ -148,6 +158,16 @@ func extractSkillNames(skills []skill.Skill) []string {
 	return names
 }
 
+// buildTools constructs and returns the default set of available tools.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A slice containing bash, file, and web tools.
+//
+// Side effects:
+//   - Initialises new tool instances.
 func buildTools() []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
@@ -156,6 +176,18 @@ func buildTools() []tool.Tool {
 	}
 }
 
+// loadSkills loads all available skills and always-active skills from the configured skill directory.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid SkillDir path.
+//
+// Returns:
+//   - A slice of all loaded skills (empty slice if loading fails).
+//   - A slice of always-active skills loaded from the engine.
+//
+// Side effects:
+//   - Reads skill files from the configured skill directory.
+//   - Logs a warning if skill loading fails.
 func loadSkills(cfg *config.AppConfig) ([]skill.Skill, []skill.Skill) {
 	skillLoader := skill.NewFileSkillLoader(cfg.SkillDir)
 	skills, err := skillLoader.LoadAll()
@@ -167,6 +199,17 @@ func loadSkills(cfg *config.AppConfig) ([]skill.Skill, []skill.Skill) {
 	return skills, alwaysActiveSkills
 }
 
+// buildHookChain constructs a hook chain with logging, learning, and context injection hooks.
+//
+// Expected:
+//   - learningStore is a non-nil JSONFileStore for persisting learning data.
+//   - alwaysActiveSkills is a non-nil slice of skills to inject into context.
+//
+// Returns:
+//   - A fully configured hook.Chain ready for use in the engine.
+//
+// Side effects:
+//   - None.
 func buildHookChain(learningStore *learning.JSONFileStore, alwaysActiveSkills []skill.Skill) *hook.Chain {
 	return hook.NewChain(
 		hook.LoggingHook(),
@@ -175,6 +218,18 @@ func buildHookChain(learningStore *learning.JSONFileStore, alwaysActiveSkills []
 	)
 }
 
+// registerProviders initialises and registers all configured LLM providers.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider configuration.
+//
+// Returns:
+//   - A provider.Registry containing all successfully initialised providers.
+//   - The Ollama provider instance (may be nil if initialisation failed).
+//
+// Side effects:
+//   - Reads OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables.
+//   - Registers providers with the registry if initialisation succeeds.
 func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	providerRegistry := provider.NewRegistry()
 
@@ -200,6 +255,19 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 	return providerRegistry, ollamaProvider
 }
 
+// selectDefaultManifest selects the default agent manifest from the registry.
+//
+// Expected:
+//   - registry is a non-nil agent.Registry.
+//   - defaultAgentID may be empty or contain a valid agent ID.
+//
+// Returns:
+//   - The manifest for the specified defaultAgentID if found.
+//   - Otherwise, the first manifest in the registry if available.
+//   - Otherwise, a fallback manifest with ID "default".
+//
+// Side effects:
+//   - None.
 func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agent.Manifest {
 	if defaultAgentID != "" {
 		if m, found := registry.Get(defaultAgentID); found {
@@ -213,6 +281,17 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 	return agent.Manifest{ID: "default", Name: "Default Agent"}
 }
 
+// setupAgentRegistry creates and populates an agent registry by discovering agents in the configured directory.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid AgentDir path.
+//
+// Returns:
+//   - A populated agent.Registry containing discovered agents.
+//
+// Side effects:
+//   - Reads agent manifest files from the configured agent directory.
+//   - Logs a warning if agent discovery fails.
 func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 	agentRegistry := agent.NewRegistry()
 	if err := agentRegistry.Discover(cfg.AgentDir); err != nil {
@@ -221,6 +300,19 @@ func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 	return agentRegistry
 }
 
+// createDataStores initialises the session and learning data stores.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid DataDir path.
+//
+// Returns:
+//   - A FileSessionStore for persisting session data.
+//   - A JSONFileStore for persisting learning data.
+//   - An error if session store creation fails.
+//
+// Side effects:
+//   - Creates the sessions subdirectory if it does not exist.
+//   - Creates the learnings.json file path (file creation deferred to store).
 func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learning.JSONFileStore, error) {
 	sessionStore, err := ctxstore.NewFileSessionStore(filepath.Join(cfg.DataDir, "sessions"))
 	if err != nil {
@@ -230,6 +322,17 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 	return sessionStore, learningStore, nil
 }
 
+// createContextStore initialises the context store for managing conversation context.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid DataDir and Ollama model configuration.
+//
+// Returns:
+//   - A FileContextStore for persisting context data.
+//   - An error if context store creation fails.
+//
+// Side effects:
+//   - Creates the context.json file path (file creation deferred to store).
 func createContextStore(cfg *config.AppConfig) (*ctxstore.FileContextStore, error) {
 	contextStorePath := filepath.Join(cfg.DataDir, "context.json")
 	contextStore, err := ctxstore.NewFileContextStore(contextStorePath, cfg.Providers.Ollama.Model)
@@ -239,6 +342,17 @@ func createContextStore(cfg *config.AppConfig) (*ctxstore.FileContextStore, erro
 	return contextStore, nil
 }
 
+// toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.
+//
+// Expected:
+//   - ollamaProvider may be nil or a valid Ollama provider instance.
+//
+// Returns:
+//   - The Ollama provider cast to provider.Provider if non-nil.
+//   - nil if the Ollama provider is nil.
+//
+// Side effects:
+//   - None.
 func toEmbeddingProvider(ollamaProvider *ollama.Provider) provider.Provider {
 	if ollamaProvider != nil {
 		return ollamaProvider
@@ -246,6 +360,16 @@ func toEmbeddingProvider(ollamaProvider *ollama.Provider) provider.Provider {
 	return nil
 }
 
+// createDiscovery initialises agent discovery with manifests from the provided registry.
+//
+// Expected:
+//   - agentRegistry is a non-nil agent.Registry containing agent manifests.
+//
+// Returns:
+//   - An AgentDiscovery instance populated with all manifests from the registry.
+//
+// Side effects:
+//   - None.
 func createDiscovery(agentRegistry *agent.Registry) *discovery.AgentDiscovery {
 	manifests := agentRegistry.List()
 	manifestValues := make([]agent.Manifest, len(manifests))

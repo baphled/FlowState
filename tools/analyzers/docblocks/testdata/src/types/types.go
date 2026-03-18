@@ -15,4 +15,17 @@ type DocumentedInterface interface {
 	Method()
 }
 
-type unexportedType struct{}
+type unexportedType struct{} // want `unexported type unexportedType missing doc comment`
+
+// This describes something else.
+type unexportedBadNameType struct{} // want `doc comment for unexportedBadNameType should start with "unexportedBadNameType"`
+
+// unexportedDocumentedType is a properly documented unexported type.
+type unexportedDocumentedType struct{}
+
+type unexportedInterface interface{} // want `unexported type unexportedInterface missing doc comment`
+
+// unexportedDocumentedInterface defines an unexported contract.
+type unexportedDocumentedInterface interface {
+	Method()
+}

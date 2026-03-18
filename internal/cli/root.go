@@ -58,6 +58,18 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	return cmd
 }
 
+// initApp reinitialises the application with command-line flag overrides.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - baseCfg is a non-nil AppConfig.
+//   - appPtr is a non-nil pointer to an App pointer.
+//
+// Returns:
+//   - nil if no flags were changed, or an error if reinitialisation fails.
+//
+// Side effects:
+//   - Updates the App instance if directory flags are changed.
 func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) error {
 	flags := cmd.Flags()
 
@@ -101,6 +113,17 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 	return nil
 }
 
+// runRoot displays the root command stub with configuration information.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance.
+//
+// Returns:
+//   - nil on success, or an error if output fails.
+//
+// Side effects:
+//   - Writes configuration information to stdout.
 func runRoot(cmd *cobra.Command, application *app.App) error {
 	_, err := fmt.Fprintf(
 		cmd.OutOrStdout(),

@@ -31,6 +31,17 @@ func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []st
 	return filterSkillsByName(allSkills, merged)
 }
 
+// mergeSkillNames combines application-level and agent-level skill names, removing duplicates.
+//
+// Expected:
+//   - appLevel contains application-level skill names.
+//   - agentLevel contains agent-level skill names.
+//
+// Returns:
+//   - A deduplicated slice of skill names, with app-level names appearing first.
+//
+// Side effects:
+//   - None.
 func mergeSkillNames(appLevel []string, agentLevel []string) []string {
 	seen := make(map[string]bool)
 	var result []string
@@ -52,6 +63,17 @@ func mergeSkillNames(appLevel []string, agentLevel []string) []string {
 	return result
 }
 
+// filterSkillsByName returns only the skills whose names appear in the provided list.
+//
+// Expected:
+//   - skills is a slice of skill.Skill values.
+//   - names is a slice of skill names to match.
+//
+// Returns:
+//   - A slice of skills matching the provided names, in the order they appear in the input slice.
+//
+// Side effects:
+//   - None.
 func filterSkillsByName(skills []skill.Skill, names []string) []skill.Skill {
 	nameSet := make(map[string]bool)
 	for _, name := range names {

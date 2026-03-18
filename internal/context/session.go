@@ -34,6 +34,7 @@ type FileSessionStore struct {
 	baseDir string
 }
 
+// sessionFile represents the persisted structure of a session stored in JSON format.
 type sessionFile struct {
 	SessionID      string           `json:"session_id"`
 	AgentID        string           `json:"agent_id"`

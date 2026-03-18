@@ -9,6 +9,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// newSkillCmd creates the skill command for inspecting available skills.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command with skill subcommands.
+//
+// Side effects:
+//   - Registers the skill list and add subcommands.
 func newSkillCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
@@ -24,6 +34,16 @@ func newSkillCmd(getApp func() *app.App) *cobra.Command {
 	return cmd
 }
 
+// newSkillListCmd creates the skill list subcommand.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for listing skills.
+//
+// Side effects:
+//   - None.
 func newSkillListCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
@@ -36,6 +56,17 @@ func newSkillListCmd(getApp func() *app.App) *cobra.Command {
 	}
 }
 
+// runSkillList lists all available skills.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance with a populated skills list.
+//
+// Returns:
+//   - nil on success, or an error if output fails.
+//
+// Side effects:
+//   - Writes skills list to stdout.
 func runSkillList(cmd *cobra.Command, application *app.App) error {
 	skills := application.Skills
 	if len(skills) == 0 {
@@ -52,6 +83,16 @@ func runSkillList(cmd *cobra.Command, application *app.App) error {
 	return nil
 }
 
+// newSkillAddCmd creates the skill add subcommand.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for adding skills.
+//
+// Side effects:
+//   - None.
 func newSkillAddCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "add OWNER/REPO",
@@ -64,6 +105,18 @@ func newSkillAddCmd(getApp func() *app.App) *cobra.Command {
 	}
 }
 
+// runSkillAdd imports a skill from a GitHub repository.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance with a configured skills directory.
+//   - ownerRepo is a non-empty string in the format "owner/repo".
+//
+// Returns:
+//   - nil on success, or an error if import fails.
+//
+// Side effects:
+//   - Imports skill from GitHub, writes confirmation to stdout.
 func runSkillAdd(cmd *cobra.Command, application *app.App, ownerRepo string) error {
 	importer := skill.NewImporter(application.SkillsDir())
 	imported, err := importer.Add(context.Background(), ownerRepo)

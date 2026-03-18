@@ -99,6 +99,18 @@ func (l *FileSkillLoader) LoadSkill(path string) (*Skill, error) {
 	return &skill, nil
 }
 
+// extractFrontmatter splits YAML frontmatter from markdown content.
+//
+// Expected:
+//   - content is a string that may start with "---" followed by YAML and another "---".
+//
+// Returns:
+//   - The YAML frontmatter string (trimmed).
+//   - The remaining markdown body (trimmed).
+//   - An error if frontmatter format is invalid.
+//
+// Side effects:
+//   - None.
 func extractFrontmatter(content string) (string, string, error) {
 	if !strings.HasPrefix(content, "---") {
 		return "", content, nil

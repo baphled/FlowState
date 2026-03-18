@@ -161,6 +161,16 @@ func ContextInjectionHook(skills []skill.Skill, activeSkillNames []string) Hook 
 	}
 }
 
+// buildActiveSkillSet creates a map of active skill names for fast lookup.
+//
+// Expected:
+//   - names is a slice of skill names to mark as active.
+//
+// Returns:
+//   - A map with skill names as keys and true as values.
+//
+// Side effects:
+//   - None.
 func buildActiveSkillSet(names []string) map[string]bool {
 	set := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -169,6 +179,18 @@ func buildActiveSkillSet(names []string) map[string]bool {
 	return set
 }
 
+// buildSkillContent concatenates content from active skills into a single string.
+//
+// Expected:
+//   - skills is a slice of available Skill values.
+//   - activeSet is a map of active skill names.
+//
+// Returns:
+//   - A concatenated string of skill content separated by double newlines.
+//   - An empty string if no active skills have content.
+//
+// Side effects:
+//   - None.
 func buildSkillContent(skills []skill.Skill, activeSet map[string]bool) string {
 	var builder strings.Builder
 	for i := range skills {
@@ -182,6 +204,17 @@ func buildSkillContent(skills []skill.Skill, activeSet map[string]bool) string {
 	return builder.String()
 }
 
+// injectSkillContent appends skill content to the system message in a chat request.
+//
+// Expected:
+//   - req is a non-nil ChatRequest with at least one message.
+//   - content is the skill content to inject (may be empty).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates the first message's content if it is a system message.
 func injectSkillContent(req *provider.ChatRequest, content string) {
 	if content == "" || len(req.Messages) == 0 {
 		return
@@ -191,6 +224,17 @@ func injectSkillContent(req *provider.ChatRequest, content string) {
 	}
 }
 
+// extractUserMessage retrieves the most recent user message from a message slice.
+//
+// Expected:
+//   - messages is a slice of provider messages (may be empty).
+//
+// Returns:
+//   - The content of the last user message found.
+//   - An empty string if no user message exists.
+//
+// Side effects:
+//   - None.
 func extractUserMessage(messages []provider.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {

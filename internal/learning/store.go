@@ -55,6 +55,17 @@ func NewJSONFileStore(path string) *JSONFileStore {
 	return store
 }
 
+// load reads and unmarshals learning entries from the JSON file.
+//
+// Expected:
+//   - The file at s.path may or may not exist.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Populates s.entries with unmarshalled data.
+//   - Silently initialises an empty slice if the file does not exist or is invalid.
 func (s *JSONFileStore) load() {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -71,6 +82,18 @@ func (s *JSONFileStore) load() {
 	}
 }
 
+// persist writes the current entries to the JSON file atomically.
+//
+// Expected:
+//   - s.entries contains the data to persist.
+//
+// Returns:
+//   - An error if directory creation, marshalling, or file operations fail.
+//   - nil on success.
+//
+// Side effects:
+//   - Creates the directory if it does not exist.
+//   - Writes a temporary file and renames it to the target path.
 func (s *JSONFileStore) persist() error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

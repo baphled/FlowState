@@ -8,6 +8,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// newSessionCmd creates the session command for inspecting and resuming sessions.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command with session subcommands.
+//
+// Side effects:
+//   - Registers the session list and resume subcommands.
 func newSessionCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
@@ -23,6 +33,16 @@ func newSessionCmd(getApp func() *app.App) *cobra.Command {
 	return cmd
 }
 
+// newSessionListCmd creates the session list subcommand.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for listing sessions.
+//
+// Side effects:
+//   - None.
 func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
@@ -50,6 +70,16 @@ func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 
 const defaultAgentID = "default"
 
+// newSessionResumeCmd creates the session resume subcommand.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for resuming sessions.
+//
+// Side effects:
+//   - None.
 func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume ID",
@@ -75,6 +105,17 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 	}
 }
 
+// findSession retrieves session information by ID from the session store.
+//
+// Expected:
+//   - a is a non-nil App instance with a populated sessions store.
+//   - sessionID is a non-empty string.
+//
+// Returns:
+//   - A pointer to sessionInfo and nil on success, or nil and an error if not found.
+//
+// Side effects:
+//   - None.
 func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
 	sessions := a.Sessions.List()
 	for _, s := range sessions {
@@ -88,6 +129,16 @@ func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
 	return nil, fmt.Errorf("session %q not found", sessionID)
 }
 
+// sessionInfo holds metadata about a saved session.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - N/A (type definition).
+//
+// Side effects:
+//   - None.
 type sessionInfo struct {
 	ID      string
 	AgentID string

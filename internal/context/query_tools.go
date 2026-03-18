@@ -112,6 +112,14 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 	return tool.Result{Output: formatMessages(extractMessages(results))}, nil
 }
 
+// fallbackToRecent retrieves the most recent messages when semantic search fails or is unavailable.
+//
+// Returns:
+//   - A Result containing formatted recent messages.
+//   - nil error.
+//
+// Side effects:
+//   - None.
 func (t *SearchContextTool) fallbackToRecent() (tool.Result, error) {
 	messages := t.store.GetRecent(t.topK)
 	if len(messages) == 0 {
@@ -120,6 +128,16 @@ func (t *SearchContextTool) fallbackToRecent() (tool.Result, error) {
 	return tool.Result{Output: formatMessages(messages)}, nil
 }
 
+// extractMessages converts a slice of SearchResult into a slice of provider.Message.
+//
+// Expected:
+//   - results is a slice of SearchResult to extract messages from.
+//
+// Returns:
+//   - A slice of provider.Message extracted from the search results.
+//
+// Side effects:
+//   - None.
 func extractMessages(results []SearchResult) []provider.Message {
 	messages := make([]provider.Message, len(results))
 	for i, r := range results {
@@ -128,6 +146,16 @@ func extractMessages(results []SearchResult) []provider.Message {
 	return messages
 }
 
+// formatMessages converts a slice of provider.Message into a formatted string representation.
+//
+// Expected:
+//   - messages is a slice of provider.Message to format.
+//
+// Returns:
+//   - A string with messages formatted as "role: content" separated by newlines and dashes.
+//
+// Side effects:
+//   - None.
 func formatMessages(messages []provider.Message) string {
 	var parts []string
 	for _, m := range messages {
@@ -225,6 +253,18 @@ func (t *GetMessagesTool) Execute(_ context.Context, input tool.Input) (tool.Res
 	return tool.Result{Output: formatMessages(messages)}, nil
 }
 
+// extractInt retrieves an integer value from a map of arguments, converting from float64 if necessary.
+//
+// Expected:
+//   - args is a map of string keys to interface{} values.
+//   - key is the argument key to retrieve.
+//   - defaultVal is the value to return if the key is missing or cannot be converted.
+//
+// Returns:
+//   - The integer value if found and convertible, otherwise the default value.
+//
+// Side effects:
+//   - None.
 func extractInt(args map[string]interface{}, key string, defaultVal int) int {
 	val, ok := args[key]
 	if !ok {
@@ -359,6 +399,21 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (t
 	return t.summarize(ctx, messages, focus, depth)
 }
 
+// summarize recursively summarises conversation messages using the provider's chat API.
+//
+// Expected:
+//   - ctx is a valid context.Context.
+//   - messages is a non-empty slice of provider.Message to summarise.
+//   - focus is an optional focus area for the summary; may be empty.
+//   - depth is the recursion depth; must be positive.
+//
+// Returns:
+//   - A Result containing the summary text.
+//   - An error if the chat API call fails.
+//
+// Side effects:
+//   - Makes LLM API calls via the provider.
+//   - May recursively call itself if the summary is too long.
 func (t *SummarizeContextTool) summarize(
 	ctx context.Context, messages []provider.Message, focus string, depth int,
 ) (tool.Result, error) {

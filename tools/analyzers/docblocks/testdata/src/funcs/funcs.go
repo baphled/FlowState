@@ -46,4 +46,47 @@ func VoidNoParams() {
 }
 
 //lint:ignore U1000 test fixture for analyser - intentionally unused
-func unexportedNoDoc() {}
+func unexportedNoDoc() {} // want `doc comment for unexportedNoDoc should start with "unexportedNoDoc"` `unexported function unexportedNoDoc missing Side effects: section`
+
+// This does something.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func unexportedBadNameStart() {} // want `doc comment for unexportedBadNameStart should start with "unexportedBadNameStart"`
+
+// unexportedReturnsValue does nothing special.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func unexportedReturnsValue() int { return 0 } // want `unexported function unexportedReturnsValue missing Returns: section`
+
+// unexportedTakesParams does something with input.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func unexportedTakesParams(x int) {} // want `unexported function unexportedTakesParams missing Expected: section`
+
+// unexportedNoSideEffects does something.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func unexportedNoSideEffects() {} // want `unexported function unexportedNoSideEffects missing Side effects: section`
+
+// unexportedFullyDocumented validates all sections are present.
+//
+// Expected:
+//   - x must be positive.
+//
+// Returns:
+//   - The doubled value.
+//
+// Side effects:
+//   - None.
+//
+//lint:ignore U1000 test fixture for analyser - intentionally unused
+func unexportedFullyDocumented(x int) int { return x * 2 }

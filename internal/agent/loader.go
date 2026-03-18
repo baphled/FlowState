@@ -88,6 +88,16 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 	return &m, nil
 }
 
+// markdownManifest is a temporary structure for parsing YAML frontmatter from Markdown agent manifests.
+//
+// Expected:
+//   - YAML frontmatter containing description, mode, default_skills, and permission fields.
+//
+// Returns:
+//   - N/A (type definition).
+//
+// Side effects:
+//   - None (data structure only).
 type markdownManifest struct {
 	Description   string   `yaml:"description"`
 	Mode          string   `yaml:"mode"`
@@ -97,6 +107,17 @@ type markdownManifest struct {
 	} `yaml:"permission"`
 }
 
+// convertMarkdownManifest transforms a parsed markdownManifest into a fully-formed Manifest.
+//
+// Expected:
+//   - md is a valid markdownManifest with description and default_skills fields.
+//   - path is a valid filesystem path from which the manifest ID is derived.
+//
+// Returns:
+//   - A Manifest with schema version "1", derived ID, and capabilities populated from md.
+//
+// Side effects:
+//   - None (pure function).
 func convertMarkdownManifest(md markdownManifest, path string) Manifest {
 	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return Manifest{
@@ -114,6 +135,18 @@ func convertMarkdownManifest(md markdownManifest, path string) Manifest {
 	}
 }
 
+// extractFrontmatter parses YAML frontmatter from Markdown content delimited by "---" markers.
+//
+// Expected:
+//   - content is a string that may begin with "---" followed by YAML and another "---" delimiter.
+//
+// Returns:
+//   - frontmatter: the YAML block between delimiters (trimmed), or empty string if no frontmatter.
+//   - body: the remaining content after frontmatter (trimmed), or the original content if no frontmatter.
+//   - error: non-nil if frontmatter is malformed (missing closing delimiter).
+//
+// Side effects:
+//   - None (pure function).
 func extractFrontmatter(content string) (string, string, error) {
 	if !strings.HasPrefix(content, "---") {
 		return "", content, nil
@@ -125,6 +158,16 @@ func extractFrontmatter(content string) (string, string, error) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
+// applyDefaults populates zero-valued fields in a Manifest with sensible defaults.
+//
+// Expected:
+//   - m is a non-nil pointer to a Manifest.
+//
+// Returns:
+//   - N/A (modifies m in place).
+//
+// Side effects:
+//   - Mutates m.ContextManagement fields: sets MaxRecursionDepth to 2, SummaryTier to "quick", SlidingWindowSize to 10, CompactionThreshold to 0.75, and EmbeddingModel to "nomic-embed-text" if they are zero-valued.
 func applyDefaults(m *Manifest) {
 	if m.ContextManagement.MaxRecursionDepth == 0 {
 		m.ContextManagement.MaxRecursionDepth = 2

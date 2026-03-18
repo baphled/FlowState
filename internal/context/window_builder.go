@@ -136,6 +136,19 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
 }
 
+// buildInternal constructs a context window with the given options, assembling system prompt, summary, semantic results, and recent messages.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest with instructions and context settings.
+//   - store is a non-nil FileContextStore containing conversation messages.
+//   - tokenBudget is the maximum number of tokens allowed in the window.
+//   - opts contains optional summary, semantic results, and logging configuration.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages and budget usage.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) buildInternal(
 	manifest *agent.Manifest,
 	store *FileContextStore,
@@ -169,6 +182,19 @@ func (b *WindowBuilder) buildInternal(
 	}
 }
 
+// prepareSystemPrompt extracts and optionally truncates the system prompt to fit within the token budget.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest with instructions.
+//   - tokenBudget is the maximum number of tokens allowed for the system prompt.
+//   - logWarnings indicates whether to log truncation warnings.
+//
+// Returns:
+//   - The system prompt (possibly truncated).
+//   - A boolean indicating whether truncation occurred.
+//
+// Side effects:
+//   - Logs a warning if truncation occurs and logWarnings is true.
 func (b *WindowBuilder) prepareSystemPrompt(manifest *agent.Manifest, tokenBudget int, logWarnings bool) (string, bool) {
 	systemPrompt := manifest.Instructions.SystemPrompt
 	systemTokens := b.counter.Count(systemPrompt)
@@ -183,6 +209,19 @@ func (b *WindowBuilder) prepareSystemPrompt(manifest *agent.Manifest, tokenBudge
 	return b.truncateToFit(systemPrompt, tokenBudget), true
 }
 
+// appendSummary appends a conversation summary to the message list if it fits within the token budget.
+//
+// Expected:
+//   - messages is a slice of provider.Message to append to.
+//   - budget is a non-nil TokenBudget tracking token allocation.
+//   - summary is the summary text; may be empty.
+//
+// Returns:
+//   - The updated message slice (with summary appended if it fits).
+//   - The updated budget.
+//
+// Side effects:
+//   - Reserves tokens in the budget if the summary is appended.
 func (b *WindowBuilder) appendSummary(messages []provider.Message, budget *TokenBudget, summary string) ([]provider.Message, *TokenBudget) {
 	if summary == "" {
 		return messages, budget
@@ -196,6 +235,22 @@ func (b *WindowBuilder) appendSummary(messages []provider.Message, budget *Token
 	return messages, budget
 }
 
+// appendSemanticResults appends semantic search results to the message list, tracking seen message IDs.
+//
+// Expected:
+//   - messages is a slice of provider.Message to append to.
+//   - seenIDs is a map tracking message IDs already included in the window.
+//   - budget is a non-nil TokenBudget tracking token allocation.
+//   - semanticResults is a slice of SearchResult to append.
+//
+// Returns:
+//   - The updated message slice.
+//   - The updated seenIDs map.
+//   - The updated budget.
+//
+// Side effects:
+//   - Reserves tokens in the budget for each appended message.
+//   - Marks appended message IDs as seen.
 func (b *WindowBuilder) appendSemanticResults(
 	messages []provider.Message,
 	seenIDs map[string]bool,
@@ -221,6 +276,18 @@ type messageState struct {
 	truncated bool
 }
 
+// appendRecentMessages appends recent messages from the store to the context window, respecting the token budget.
+//
+// Expected:
+//   - store is a non-nil FileContextStore containing conversation messages.
+//   - manifest is a non-nil agent manifest with context management settings.
+//   - state is a non-nil messageState tracking the current window assembly.
+//
+// Side effects:
+//   - Appends messages to state.messages.
+//   - Updates state.budget with token reservations.
+//   - Sets state.truncated if any message is truncated.
+//   - Skips messages already seen in the window.
 func (b *WindowBuilder) appendRecentMessages(
 	store *FileContextStore,
 	manifest *agent.Manifest,
@@ -246,6 +313,17 @@ func (b *WindowBuilder) appendRecentMessages(
 	}
 }
 
+// getMessageIDAtIndex retrieves the message ID at the given index from a slice of IDs.
+//
+// Expected:
+//   - recentIDs is a slice of message ID strings.
+//   - i is the index to retrieve.
+//
+// Returns:
+//   - The message ID at index i, or an empty string if the index is out of bounds.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) getMessageIDAtIndex(recentIDs []string, i int) string {
 	if i < len(recentIDs) {
 		return recentIDs[i]
@@ -253,6 +331,19 @@ func (b *WindowBuilder) getMessageIDAtIndex(recentIDs []string, i int) string {
 	return ""
 }
 
+// appendMessageWithBudget appends a message to the list, truncating if necessary to fit the token budget.
+//
+// Expected:
+//   - messages is a slice of provider.Message to append to.
+//   - msg is the provider.Message to append.
+//   - budget is a non-nil TokenBudget tracking token allocation.
+//
+// Returns:
+//   - The updated message slice.
+//   - A boolean indicating whether the message was truncated.
+//
+// Side effects:
+//   - Reserves tokens in the budget for the appended message.
 func (b *WindowBuilder) appendMessageWithBudget(
 	messages []provider.Message,
 	msg provider.Message,
@@ -285,6 +376,17 @@ func (b *WindowBuilder) appendMessageWithBudget(
 	return messages, true
 }
 
+// getMessageIDs retrieves the message IDs for the most recent count messages from the store.
+//
+// Expected:
+//   - store is a non-nil FileContextStore containing messages.
+//   - count is the number of recent message IDs to retrieve.
+//
+// Returns:
+//   - A slice of message ID strings for the most recent count messages.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) getMessageIDs(store *FileContextStore, count int) []string {
 	total := store.Count()
 	start := total - count
@@ -299,6 +401,19 @@ func (b *WindowBuilder) getMessageIDs(store *FileContextStore, count int) []stri
 	return ids
 }
 
+// truncateToFit truncates text to fit within a maximum token count using character-based estimation.
+//
+// Expected:
+//   - text is the string to truncate.
+//   - maxTokens is the maximum number of tokens allowed.
+//
+// Returns:
+//   - The original text if it fits within maxTokens.
+//   - A truncated substring if the text exceeds the token limit.
+//   - An empty string if maxTokens is zero or negative.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) truncateToFit(text string, maxTokens int) string {
 	if maxTokens <= 0 {
 		return ""

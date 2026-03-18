@@ -72,6 +72,18 @@ func (sd *Discovery) Suggest(taskDescription string) []Suggestion {
 	return suggestions
 }
 
+// scoreSkill calculates a relevance score for a skill against task tokens.
+//
+// Expected:
+//   - s is a Skill to evaluate.
+//   - taskTokens is a slice of tokens extracted from the task description.
+//
+// Returns:
+//   - A normalised confidence score between 0 and 1.
+//   - A reason string describing which fields matched.
+//
+// Side effects:
+//   - None.
 func (sd *Discovery) scoreSkill(s Skill, taskTokens []string) (float64, string) {
 	const (
 		weightWhenToUse = 3.0
@@ -121,6 +133,16 @@ func (sd *Discovery) scoreSkill(s Skill, taskTokens []string) (float64, string) 
 	return normalizedScore, reason
 }
 
+// tokenize converts text into a slice of cleaned tokens for matching.
+//
+// Expected:
+//   - text is a string to tokenise.
+//
+// Returns:
+//   - A slice of tokens with punctuation removed and length > 1.
+//
+// Side effects:
+//   - None.
 func tokenize(text string) []string {
 	text = strings.ToLower(text)
 	text = strings.ReplaceAll(text, "-", " ")
@@ -138,6 +160,17 @@ func tokenize(text string) []string {
 	return tokens
 }
 
+// countOverlap counts how many task tokens match field tokens.
+//
+// Expected:
+//   - taskTokens is a slice of tokens from the task description.
+//   - fieldTokens is a slice of tokens from a skill field.
+//
+// Returns:
+//   - The count of matching tokens.
+//
+// Side effects:
+//   - None.
 func countOverlap(taskTokens, fieldTokens []string) int {
 	count := 0
 	for _, taskToken := range taskTokens {
@@ -151,6 +184,16 @@ func countOverlap(taskTokens, fieldTokens []string) int {
 	return count
 }
 
+// matchTokens checks if two tokens match exactly or by prefix.
+//
+// Expected:
+//   - a and b are tokens to compare.
+//
+// Returns:
+//   - True if tokens match exactly or share a 3-character prefix.
+//
+// Side effects:
+//   - None.
 func matchTokens(a, b string) bool {
 	if a == b {
 		return true

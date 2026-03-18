@@ -90,6 +90,16 @@ func New(cfg Config) *Engine {
 	}
 }
 
+// buildModelPreferences constructs model preferences from the agent manifest's complexity tier.
+//
+// Expected:
+//   - manifest contains a Complexity field and ModelPreferences mapping.
+//
+// Returns:
+//   - A slice of ModelPreference values for the manifest's complexity tier, or nil if not found.
+//
+// Side effects:
+//   - None.
 func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 	complexity := manifest.Complexity
 	if complexity == "" {
@@ -151,6 +161,13 @@ func (e *Engine) BuildSystemPrompt() string {
 	return builder.String()
 }
 
+// buildToolSchemas converts the engine's tools into provider-compatible tool schemas.
+//
+// Returns:
+//   - A slice of provider.Tool values with schema information for each tool.
+//
+// Side effects:
+//   - None.
 func (e *Engine) buildToolSchemas() []provider.Tool {
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {
@@ -224,6 +241,18 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	return outChan, nil
 }
 
+// streamFromProvider initiates a streaming chat request with the provider, applying any configured hooks.
+//
+// Expected:
+//   - ctx is a valid context for the streaming operation.
+//   - req contains the chat request with messages and tools.
+//
+// Returns:
+//   - A channel of StreamChunk values from the provider.
+//   - An error if the stream fails to initialise.
+//
+// Side effects:
+//   - Executes hook chain if configured.
 func (e *Engine) streamFromProvider(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {
@@ -232,6 +261,13 @@ func (e *Engine) streamFromProvider(ctx context.Context, req provider.ChatReques
 	return handler(ctx, &req)
 }
 
+// baseStreamHandler returns the base handler function for streaming chat requests.
+//
+// Returns:
+//   - A hook.HandlerFunc that delegates to the failback chain or direct chat provider.
+//
+// Side effects:
+//   - None.
 func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		if e.failbackChain != nil {
@@ -241,6 +277,18 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	}
 }
 
+// streamWithToolLoop processes streaming chunks, handles tool calls, and loops until completion.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - messages contains the conversation history.
+//   - providerChunks is a channel of chunks from the provider.
+//   - outChan is the output channel for processed chunks.
+//
+// Side effects:
+//   - Sends chunks to outChan.
+//   - Executes tool calls and appends results to messages.
+//   - Stores responses in the context store.
 func (e *Engine) streamWithToolLoop(
 	ctx context.Context, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
@@ -279,6 +327,21 @@ func (e *Engine) streamWithToolLoop(
 	}
 }
 
+// processStreamChunks reads chunks from the provider stream until a tool call or completion.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - providerChunks is a channel of chunks from the provider.
+//   - outChan is the output channel for forwarding chunks.
+//
+// Returns:
+//   - A ToolCall if one was encountered, or nil.
+//   - The accumulated response content as a string.
+//   - A boolean indicating whether streaming is complete.
+//
+// Side effects:
+//   - Forwards chunks to outChan.
+//   - Sends error chunks if context is cancelled.
 func (e *Engine) processStreamChunks(
 	ctx context.Context, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) (*provider.ToolCall, string, bool) {
@@ -308,6 +371,18 @@ func (e *Engine) processStreamChunks(
 	}
 }
 
+// executeToolCall finds and executes the specified tool with the given arguments.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - toolCall contains the tool name and arguments.
+//
+// Returns:
+//   - A tool.Result with output or error.
+//   - An error if the tool is not found.
+//
+// Side effects:
+//   - Executes the tool, which may have its own side effects.
 func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.Result, error) {
 	for _, t := range e.tools {
 		if t.Name() == toolCall.Name {
@@ -323,6 +398,14 @@ func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCal
 	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
 }
 
+// storeToolResult appends a tool result message to the context store.
+//
+// Expected:
+//   - toolCallID is the identifier of the tool call.
+//   - result contains the tool's output or error.
+//
+// Side effects:
+//   - Appends a message to the context store if configured.
 func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
 	if e.store == nil {
 		return
@@ -342,6 +425,18 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
 	})
 }
 
+// appendToolResultToMessages adds a tool result message to the message history.
+//
+// Expected:
+//   - messages is the current conversation history.
+//   - toolCall contains the tool call identifier and name.
+//   - result contains the tool's output or error.
+//
+// Returns:
+//   - A new message slice with the tool result appended.
+//
+// Side effects:
+//   - None.
 func (e *Engine) appendToolResultToMessages(
 	messages []provider.Message, toolCall *provider.ToolCall, result tool.Result,
 ) []provider.Message {
@@ -361,6 +456,17 @@ func (e *Engine) appendToolResultToMessages(
 	return append(messages, toolResultMsg)
 }
 
+// buildContextWindow constructs the message window for the provider, including system prompt and history.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - userMessage is the current user input.
+//
+// Returns:
+//   - A slice of messages including system prompt, history, and user message.
+//
+// Side effects:
+//   - None.
 func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []provider.Message {
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPrompt()
@@ -378,6 +484,14 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 	return e.windowBuilder.BuildContext(ctx, &e.manifest, userMessage, e.store, tokenBudget)
 }
 
+// embedMessage sends the message content to the embedding provider if configured.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - content is the message text to embed.
+//
+// Side effects:
+//   - Calls the embedding provider if configured; errors are silently ignored.
 func (e *Engine) embedMessage(ctx context.Context, content string) {
 	if e.embeddingProvider == nil {
 		return
@@ -389,6 +503,15 @@ func (e *Engine) embedMessage(ctx context.Context, content string) {
 	}
 }
 
+// storeResponse appends the assistant's response to the context store and embeds it.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - content is the assistant's response text.
+//
+// Side effects:
+//   - Appends a message to the context store if configured.
+//   - Embeds the response if an embedding provider is configured.
 func (e *Engine) storeResponse(ctx context.Context, content string) {
 	if e.store == nil || content == "" {
 		return

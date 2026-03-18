@@ -113,6 +113,17 @@ func (imp *Importer) AddFromPath(_ context.Context, repoPath string) (Skill, err
 	return skill, nil
 }
 
+// findSkillMD searches for a SKILL.md file within a directory tree.
+//
+// Expected:
+//   - rootPath is a directory to search recursively.
+//
+// Returns:
+//   - The absolute path to the first SKILL.md file found.
+//   - An error if no SKILL.md is found or the directory cannot be read.
+//
+// Side effects:
+//   - Walks the directory tree, skipping hidden directories.
 func findSkillMD(rootPath string) (string, error) {
 	var found string
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
@@ -137,6 +148,18 @@ func findSkillMD(rootPath string) (string, error) {
 	return found, nil
 }
 
+// parseAndValidateSkill parses skill data and validates required fields.
+//
+// Expected:
+//   - data is the raw byte content of a SKILL.md file.
+//   - path is the file path for reference in the returned Skill.
+//
+// Returns:
+//   - A validated Skill with frontmatter parsed and content extracted.
+//   - An error if frontmatter is invalid or required fields are missing.
+//
+// Side effects:
+//   - None.
 func parseAndValidateSkill(data []byte, path string) (Skill, error) {
 	content := string(data)
 	frontmatter, body, err := extractFrontmatter(content)

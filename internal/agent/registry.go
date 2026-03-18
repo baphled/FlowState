@@ -125,6 +125,14 @@ func (r *Registry) List() []*Manifest {
 	return manifests
 }
 
+// discoverManifestPaths discovers manifest file paths in the specified directory.
+//
+// Expected: dir is a valid directory path.
+//
+// Returns: A sorted slice of manifest file paths (*.json and *.md files) found in dir,
+// or an error if globbing fails.
+//
+// Side effects: None. This function performs read-only filesystem operations.
 func discoverManifestPaths(dir string) ([]string, error) {
 	patterns := []string{
 		filepath.Join(dir, "*.json"),

@@ -118,6 +118,17 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	}
 }
 
+// executeRead reads a file from the filesystem and returns its content.
+//
+// Expected:
+//   - path is a validated file path.
+//
+// Returns:
+//   - A tool.Result containing the file content as a string.
+//   - An error wrapped in the Result if the read fails.
+//
+// Side effects:
+//   - Reads from the filesystem.
 func (t *Tool) executeRead(path string) (tool.Result, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -126,6 +137,18 @@ func (t *Tool) executeRead(path string) (tool.Result, error) {
 	return tool.Result{Output: string(data)}, nil
 }
 
+// executeWrite writes content to a file, creating parent directories as needed.
+//
+// Expected:
+//   - path is a validated file path.
+//   - content is the string to write.
+//
+// Returns:
+//   - A tool.Result containing a success message with byte count.
+//   - An error wrapped in the Result if the write fails.
+//
+// Side effects:
+//   - Creates parent directories and writes to the filesystem.
 func (t *Tool) executeWrite(path, content string) (tool.Result, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return tool.Result{Error: fmt.Errorf("mkdir failed: %w", err)}, nil

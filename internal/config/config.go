@@ -120,6 +120,13 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 	return cfg, nil
 }
 
+// applyDefaults populates missing configuration fields with sensible defaults.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Modifies cfg in place, filling empty fields with default values from DefaultConfig.
 func applyDefaults(cfg *AppConfig) {
 	defaults := DefaultConfig()
 
@@ -147,6 +154,14 @@ func applyDefaults(cfg *AppConfig) {
 	}
 }
 
+// applyProviderDefaults populates missing provider configuration fields with defaults.
+//
+// Expected:
+//   - cfg is a non-nil ProviderConfig pointer.
+//   - defaults is a ProviderConfig with fallback values.
+//
+// Side effects:
+//   - Modifies cfg in place, filling empty Host, APIKey, and Model fields from defaults.
 func applyProviderDefaults(cfg *ProviderConfig, defaults ProviderConfig) {
 	if cfg.Host == "" {
 		cfg.Host = defaults.Host

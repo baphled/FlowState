@@ -67,6 +67,11 @@ func (s *Server) Handler() http.Handler {
 	return s.mux
 }
 
+// setupRoutes registers all HTTP route handlers on the server's mux.
+//
+// Side effects:
+//   - Registers GET /api/agents, GET /api/agents/{id}, POST /api/chat,
+//     GET /api/discover, GET /api/skills, GET /api/sessions, and GET / routes.
 func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
@@ -77,6 +82,13 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /", s.handleIndex)
 }
 
+// handleListAgents writes all registered agent manifests as JSON to the response.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Writes HTTP 200 response with JSON-encoded agent manifests.
 func (s *Server) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 	manifests := s.registry.List()
 	if manifests == nil {
@@ -85,6 +97,14 @@ func (s *Server) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, manifests)
 }
 
+// handleGetAgent retrieves and writes a single agent manifest by ID as JSON.
+//
+// Expected:
+//   - Request path parameter "id" contains the agent identifier.
+//
+// Side effects:
+//   - Writes HTTP 200 with JSON-encoded manifest if found.
+//   - Writes HTTP 404 if agent not found.
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	manifest, ok := s.registry.Get(id)
@@ -95,19 +115,33 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, manifest)
 }
 
+// chatRequest represents a chat message request from the client.
 type chatRequest struct {
 	AgentID string `json:"agent_id"`
 	Message string `json:"message"`
 }
 
+// sseChunk represents a single content chunk in a server-sent event stream.
 type sseChunk struct {
 	Content string `json:"content"`
 }
 
+// sseError represents an error message in a server-sent event stream.
 type sseError struct {
 	Error string `json:"error"`
 }
 
+// handleChat processes a chat request and streams the response as server-sent events.
+//
+// Expected:
+//   - Request body contains JSON-encoded chatRequest with agent_id and message.
+//   - ResponseWriter supports HTTP flushing for streaming.
+//
+// Side effects:
+//   - Writes HTTP 200 with Content-Type text/event-stream.
+//   - Streams content chunks, errors, and completion marker as SSE data lines.
+//   - Writes HTTP 400 if request body is invalid JSON.
+//   - Writes HTTP 500 if streaming is not supported.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -149,6 +183,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	writeSSEDone(w, flusher)
 }
 
+// handleDiscover retrieves agent suggestions based on a message query parameter.
+//
+// Expected:
+//   - Query parameter "message" contains the user's input for discovery.
+//
+// Side effects:
+//   - Writes HTTP 200 with JSON-encoded agent suggestions.
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	message := r.URL.Query().Get("message")
 	suggestions := s.discovery.Suggest(message)
@@ -158,10 +199,25 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, suggestions)
 }
 
+// handleListSkills writes all available skills as JSON to the response.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Writes HTTP 200 response with JSON-encoded skills list.
 func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.skills)
 }
 
+// handleListSessions writes all available sessions as JSON to the response.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Writes HTTP 200 response with JSON-encoded sessions list.
+//   - Returns empty list if session store is disabled.
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessions == nil {
 		writeJSON(w, []ctxstore.SessionInfo{})
@@ -174,6 +230,14 @@ func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, sessions)
 }
 
+// handleIndex writes the embedded HTML chat interface to the response.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Writes HTTP 200 with Content-Type text/html; charset=utf-8.
+//   - Writes embedded HTML content to response body.
 func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -182,6 +246,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// writeJSON encodes data as JSON and writes it to the response with HTTP 200.
+//
+// Expected:
+//   - data is a value that can be marshalled to JSON.
+//
+// Side effects:
+//   - Sets Content-Type header to application/json.
+//   - Writes HTTP 200 status code.
+//   - Writes JSON-encoded data to response body.
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -190,6 +263,15 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	}
 }
 
+// writeSSEContent marshals content as a JSON chunk and writes it as a server-sent event.
+//
+// Expected:
+//   - content is the text to send in the SSE chunk.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded chunk to response.
+//   - Flushes response buffer.
 func writeSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseChunk{Content: content}
 	jsonData, err := json.Marshal(data)
@@ -199,6 +281,15 @@ func writeSSEContent(w http.ResponseWriter, flusher http.Flusher, content string
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// writeSSEError marshals an error message as a JSON error and writes it as a server-sent event.
+//
+// Expected:
+//   - errMsg is the error message text to send.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded error to response.
+//   - Flushes response buffer.
 func writeSSEError(w http.ResponseWriter, flusher http.Flusher, errMsg string) {
 	data := sseError{Error: errMsg}
 	jsonData, err := json.Marshal(data)
@@ -208,10 +299,27 @@ func writeSSEError(w http.ResponseWriter, flusher http.Flusher, errMsg string) {
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// writeSSEDone writes the completion marker as a server-sent event.
+//
+// Expected:
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with "[DONE]" marker to response.
+//   - Flushes response buffer.
 func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
 	writeSSE(w, flusher, "[DONE]")
 }
 
+// writeSSE writes a server-sent event data line and flushes the response buffer.
+//
+// Expected:
+//   - data is the content to send in the SSE data line.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes "data: " prefix, data, and two newlines to response.
+//   - Flushes response buffer to send data immediately.
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, data string) {
 	if _, err := w.Write([]byte("data: " + data + "\n\n")); err != nil {
 		return

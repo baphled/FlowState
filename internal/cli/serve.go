@@ -19,6 +19,16 @@ type ServeOptions struct {
 	Host string
 }
 
+// newServeCmd creates the serve command for starting the HTTP API server.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command with serve options.
+//
+// Side effects:
+//   - Registers serve command flags.
 func newServeCmd(getApp func() *app.App) *cobra.Command {
 	opts := &ServeOptions{
 		Port: 8080,
@@ -42,6 +52,18 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 	return cmd
 }
 
+// runServe starts the HTTP API server and handles graceful shutdown.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - application is a non-nil App instance with a configured API handler.
+//   - opts is a non-nil ServeOptions with valid port and host.
+//
+// Returns:
+//   - nil on successful shutdown, or an error if server startup or shutdown fails.
+//
+// Side effects:
+//   - Starts HTTP server, listens for interrupt signals, performs graceful shutdown.
 func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) error {
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 
