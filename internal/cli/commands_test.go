@@ -141,11 +141,11 @@ var _ = Describe("CLI Commands", func() {
 	})
 
 	Describe("session resume", func() {
-		It("prints resuming message with session ID", func() {
+		It("returns error when session not found", func() {
 			testApp := createTestApp("", "")
 			err := cmd(testApp, "session", "resume", "my-session-123")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(Equal("Resuming session: my-session-123\n"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`session "my-session-123" not found`))
 		})
 	})
 
