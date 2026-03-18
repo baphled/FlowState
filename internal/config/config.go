@@ -11,12 +11,14 @@ import (
 
 // AppConfig holds the complete application configuration.
 type AppConfig struct {
-	Providers    ProvidersConfig `json:"providers" yaml:"providers"`
-	AgentDir     string          `json:"agent_dir" yaml:"agent_dir"`
-	SkillDir     string          `json:"skill_dir" yaml:"skill_dir"`
-	DataDir      string          `json:"data_dir" yaml:"data_dir"`
-	LogLevel     string          `json:"log_level" yaml:"log_level"`
-	DefaultAgent string          `json:"default_agent" yaml:"default_agent"`
+	Providers          ProvidersConfig   `json:"providers" yaml:"providers"`
+	AgentDir           string            `json:"agent_dir" yaml:"agent_dir"`
+	SkillDir           string            `json:"skill_dir" yaml:"skill_dir"`
+	DataDir            string            `json:"data_dir" yaml:"data_dir"`
+	LogLevel           string            `json:"log_level" yaml:"log_level"`
+	DefaultAgent       string            `json:"default_agent" yaml:"default_agent"`
+	MCPServers         []MCPServerConfig `yaml:"mcp_servers,omitempty"`
+	AlwaysActiveSkills []string          `yaml:"always_active_skills,omitempty"`
 }
 
 // ProvidersConfig configures all available LLM providers.
@@ -34,6 +36,54 @@ type ProviderConfig struct {
 	Model  string `json:"model" yaml:"model"`
 }
 
+// MCPServerConfig holds configuration for a single MCP server connection.
+// Name and Command are required fields.
+type MCPServerConfig struct {
+	Name    string            `yaml:"name"`
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Enabled bool              `yaml:"enabled"`
+}
+
+// ConfigDir returns the configuration directory path.
+//
+// Checks XDG_CONFIG_HOME environment variable first, then falls back to
+// ~/.config/flowstate. Returns the directory path (not the config file).
+//
+// Returns:
+//   - The path to the FlowState configuration directory.
+func ConfigDir() string {
+	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
+		return filepath.Join(xdgConfigHome, "flowstate")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".config", "flowstate")
+	}
+	return filepath.Join(homeDir, ".config", "flowstate")
+}
+
+// DataDir returns the data directory path.
+//
+// Checks XDG_DATA_HOME environment variable first, then falls back to
+// ~/.local/share/flowstate.
+//
+// Returns:
+//   - The path to the FlowState data directory.
+func DataDir() string {
+	if xdgDataHome := os.Getenv("XDG_DATA_HOME"); xdgDataHome != "" {
+		return filepath.Join(xdgDataHome, "flowstate")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "share", "flowstate")
+	}
+	return filepath.Join(homeDir, ".local", "share", "flowstate")
+}
+
 // DefaultConfig returns sensible default configuration values.
 //
 // Returns:
@@ -42,10 +92,7 @@ type ProviderConfig struct {
 // Side effects:
 //   - Resolves the user home directory to set the data path.
 func DefaultConfig() *AppConfig {
-	dataDir := ".flowstate"
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		dataDir = filepath.Join(homeDir, ".flowstate")
-	}
+	dataDir := DataDir()
 
 	return &AppConfig{
 		Providers: ProvidersConfig{
@@ -66,24 +113,52 @@ func DefaultConfig() *AppConfig {
 		DataDir:      dataDir,
 		LogLevel:     "info",
 		DefaultAgent: "worker",
+		AlwaysActiveSkills: []string{
+			"pre-action",
+			"memory-keeper",
+			"token-cost-estimation",
+			"retrospective",
+			"note-taking",
+			"knowledge-base",
+		},
 	}
 }
 
 // LoadConfig loads configuration from the default location.
 //
+// Checks paths in order:
+//  1. $XDG_CONFIG_HOME/flowstate/config.yaml
+//  2. ~/.config/flowstate/config.yaml
+//  3. ~/.flowstate/config.yaml (backwards compatibility)
+//
 // Returns:
-//   - An AppConfig loaded from ~/.flowstate/config.yaml.
-//   - An error if the home directory cannot be resolved or the file is invalid.
+//   - An AppConfig loaded from the first found file, or defaults if none exist.
+//   - An error only if a file exists but cannot be parsed.
 //
 // Side effects:
-//   - Reads the configuration file from disk.
+//   - Reads the configuration file from disk if it exists.
 func LoadConfig() (*AppConfig, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("locating user home directory: %w", err)
+	paths := []string{
+		filepath.Join(ConfigDir(), "config.yaml"),
+		filepath.Join(homeDir(), ".config", "flowstate", "config.yaml"),
+		filepath.Join(homeDir(), ".flowstate", "config.yaml"),
 	}
 
-	return LoadConfigFromPath(filepath.Join(homeDir, ".flowstate", "config.yaml"))
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return LoadConfigFromPath(path)
+		}
+	}
+
+	return DefaultConfig(), nil
+}
+
+// homeDir returns the user's home directory, or "." if it cannot be resolved.
+func homeDir() string {
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return "."
 }
 
 // LoadConfigFromPath loads configuration from the specified file path.
@@ -118,6 +193,25 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 
 	applyDefaults(cfg)
 	return cfg, nil
+}
+
+// ValidateMCPServers validates that all MCP servers have required fields.
+//
+// Expected:
+//   - servers is a slice of MCPServerConfig.
+//
+// Returns:
+//   - An error if any server is missing Name or Command, nil otherwise.
+func ValidateMCPServers(servers []MCPServerConfig) error {
+	for i, server := range servers {
+		if server.Name == "" {
+			return fmt.Errorf("MCP server at index %d: missing required field 'name'", i)
+		}
+		if server.Command == "" {
+			return fmt.Errorf("MCP server at index %d: missing required field 'command'", i)
+		}
+	}
+	return nil
 }
 
 // applyDefaults populates missing configuration fields with sensible defaults.

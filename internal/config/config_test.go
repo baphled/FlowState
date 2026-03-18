@@ -23,6 +23,58 @@ var _ = Describe("Config", func() {
 		os.RemoveAll(tempDir)
 	})
 
+	Describe("ConfigDir", func() {
+		Context("when XDG_CONFIG_HOME is set", func() {
+			It("returns XDG_CONFIG_HOME/flowstate", func() {
+				xdgPath := filepath.Join(tempDir, "xdg-config")
+				os.Setenv("XDG_CONFIG_HOME", xdgPath)
+				DeferCleanup(func() { os.Unsetenv("XDG_CONFIG_HOME") })
+
+				result := config.ConfigDir()
+
+				Expect(result).To(Equal(filepath.Join(xdgPath, "flowstate")))
+			})
+		})
+
+		Context("when XDG_CONFIG_HOME is not set", func() {
+			It("returns ~/.config/flowstate", func() {
+				os.Unsetenv("XDG_CONFIG_HOME")
+				DeferCleanup(func() {})
+
+				result := config.ConfigDir()
+				homeDir, _ := os.UserHomeDir()
+
+				Expect(result).To(Equal(filepath.Join(homeDir, ".config", "flowstate")))
+			})
+		})
+	})
+
+	Describe("DataDir", func() {
+		Context("when XDG_DATA_HOME is set", func() {
+			It("returns XDG_DATA_HOME/flowstate", func() {
+				xdgPath := filepath.Join(tempDir, "xdg-data")
+				os.Setenv("XDG_DATA_HOME", xdgPath)
+				DeferCleanup(func() { os.Unsetenv("XDG_DATA_HOME") })
+
+				result := config.DataDir()
+
+				Expect(result).To(Equal(filepath.Join(xdgPath, "flowstate")))
+			})
+		})
+
+		Context("when XDG_DATA_HOME is not set", func() {
+			It("returns ~/.local/share/flowstate", func() {
+				os.Unsetenv("XDG_DATA_HOME")
+				DeferCleanup(func() {})
+
+				result := config.DataDir()
+				homeDir, _ := os.UserHomeDir()
+
+				Expect(result).To(Equal(filepath.Join(homeDir, ".local", "share", "flowstate")))
+			})
+		})
+	})
+
 	Describe("DefaultConfig", func() {
 		It("returns config with sensible defaults", func() {
 			cfg := config.DefaultConfig()
@@ -52,14 +104,54 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Providers.Anthropic.Model).To(Equal("claude-sonnet-4-20250514"))
 		})
 
-		It("sets data directories relative to home", func() {
+		It("sets data directories using DataDir()", func() {
 			cfg := config.DefaultConfig()
-			homeDir, _ := os.UserHomeDir()
-			expectedDataDir := filepath.Join(homeDir, ".flowstate")
+			expectedDataDir := config.DataDir()
 
 			Expect(cfg.DataDir).To(Equal(expectedDataDir))
 			Expect(cfg.AgentDir).To(Equal(filepath.Join(expectedDataDir, "agents")))
 			Expect(cfg.SkillDir).To(Equal(filepath.Join(expectedDataDir, "skills")))
+		})
+	})
+
+	Describe("LoadConfig", func() {
+		Context("when XDG_CONFIG_HOME is set and config exists there", func() {
+			It("loads from XDG_CONFIG_HOME/flowstate/config.yaml", func() {
+				xdgPath := filepath.Join(tempDir, "xdg-config")
+				flowstatePath := filepath.Join(xdgPath, "flowstate")
+				os.MkdirAll(flowstatePath, 0o755)
+
+				configContent := `
+providers:
+  default: openai
+log_level: debug
+`
+				configPath := filepath.Join(flowstatePath, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				os.Setenv("XDG_CONFIG_HOME", xdgPath)
+				DeferCleanup(func() { os.Unsetenv("XDG_CONFIG_HOME") })
+
+				cfg, err := config.LoadConfig()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Providers.Default).To(Equal("openai"))
+				Expect(cfg.LogLevel).To(Equal("debug"))
+			})
+		})
+
+		Context("when no config file exists", func() {
+			It("returns default config", func() {
+				os.Unsetenv("XDG_CONFIG_HOME")
+				DeferCleanup(func() {})
+
+				cfg, err := config.LoadConfig()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg).NotTo(BeNil())
+				Expect(cfg.Providers.Default).To(Equal("ollama"))
+			})
 		})
 	})
 
@@ -194,6 +286,137 @@ data_dir: /custom/data
 				Expect(cfg.SkillDir).To(Equal("/custom/skills"))
 				Expect(cfg.DataDir).To(Equal("/custom/data"))
 			})
+		})
+
+		Context("with MCP servers", func() {
+			It("parses mcp_servers section correctly", func() {
+				configContent := `
+mcp_servers:
+  - name: test-server
+    command: /usr/bin/test
+    args:
+      - --flag
+    env:
+      TEST_VAR: value
+    enabled: true
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.MCPServers).To(HaveLen(1))
+				Expect(cfg.MCPServers[0].Name).To(Equal("test-server"))
+				Expect(cfg.MCPServers[0].Command).To(Equal("/usr/bin/test"))
+				Expect(cfg.MCPServers[0].Args).To(Equal([]string{"--flag"}))
+				Expect(cfg.MCPServers[0].Env).To(HaveKeyWithValue("TEST_VAR", "value"))
+				Expect(cfg.MCPServers[0].Enabled).To(BeTrue())
+			})
+
+			It("defaults Enabled to false when not set", func() {
+				configContent := `
+mcp_servers:
+  - name: test-server
+    command: /usr/bin/test
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.MCPServers[0].Enabled).To(BeFalse())
+			})
+		})
+	})
+
+	Describe("ValidateMCPServers", func() {
+		Context("validation", func() {
+			It("rejects server with missing Name", func() {
+				servers := []config.MCPServerConfig{
+					{
+						Command: "/usr/bin/test",
+					},
+				}
+
+				err := config.ValidateMCPServers(servers)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("missing required field 'name'"))
+			})
+
+			It("rejects server with missing Command", func() {
+				servers := []config.MCPServerConfig{
+					{
+						Name: "test-server",
+					},
+				}
+
+				err := config.ValidateMCPServers(servers)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("missing required field 'command'"))
+			})
+
+			It("accepts valid server config", func() {
+				servers := []config.MCPServerConfig{
+					{
+						Name:    "test-server",
+						Command: "/usr/bin/test",
+					},
+				}
+
+				err := config.ValidateMCPServers(servers)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("accepts empty server list", func() {
+				servers := []config.MCPServerConfig{}
+
+				err := config.ValidateMCPServers(servers)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("AlwaysActiveSkills", func() {
+		It("defaults to 6 mandatory skills", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.AlwaysActiveSkills).To(HaveLen(6))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("pre-action"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("memory-keeper"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("token-cost-estimation"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("retrospective"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("note-taking"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("knowledge-base"))
+		})
+
+		It("loads from YAML config", func() {
+			tempDir, err := os.MkdirTemp("", "config-test")
+			Expect(err).NotTo(HaveOccurred())
+			defer os.RemoveAll(tempDir)
+
+			configContent := `
+always_active_skills:
+  - custom-skill-1
+  - custom-skill-2
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err = os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.AlwaysActiveSkills).To(HaveLen(2))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("custom-skill-1"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("custom-skill-2"))
 		})
 	})
 })
