@@ -324,6 +324,28 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the output should show "([^"]*)"$`, s.theOutputShouldShow)
 	ctx.Step(`^I approve with "remember for session"$`, s.iApproveWithRememberForSession)
 	ctx.Step(`^subsequent "([^"]*)" commands should auto-approve$`, s.subsequentCommandsShouldAutoApprove)
+
+	// MCP tool integration steps
+	ctx.Step(`^FlowState is configured with an MCP server$`, s.flowstateIsConfiguredWithAnMCPServer)
+	ctx.Step(`^I connect to the MCP server$`, s.iConnectToTheMCPServer)
+	ctx.Step(`^I should see available tools from the server$`, s.iShouldSeeAvailableToolsFromTheServer)
+	ctx.Step(`^I am connected to the MCP server$`, s.iAmConnectedToTheMCPServer)
+	ctx.Step(`^I ask the agent to use an MCP tool$`, s.iAskTheAgentToUseAnMCPTool)
+	ctx.Step(`^the tool should execute and return a result$`, s.theToolShouldExecuteAndReturnAResult)
+	ctx.Step(`^I disconnect from the MCP server$`, s.iDisconnectFromTheMCPServer)
+	ctx.Step(`^the server connection should be cleaned up$`, s.theServerConnectionShouldBeCleanedUp)
+
+	// TUI markdown and token display steps
+	ctx.Step(`^FlowState TUI is running$`, s.flowstateTUIIsRunning)
+	ctx.Step(`^the AI sends a response with a code block$`, s.theAISendsAResponseWithACodeBlock)
+	ctx.Step(`^the response should be rendered with syntax highlighting$`, s.theResponseShouldBeRenderedWithSyntaxHighlighting)
+	ctx.Step(`^the AI is streaming a response$`, s.theAIIsStreamingAResponse)
+	ctx.Step(`^the StatusBar should show the current token count$`, s.theStatusBarShouldShowTheCurrentTokenCount)
+
+	// XDG config steps
+	ctx.Step(`^XDG_CONFIG_HOME is set to a custom path$`, s.xdgConfigHomeIsSetToACustomPath)
+	ctx.Step(`^a config file exists at that path$`, s.aConfigFileExistsAtThatPath)
+	ctx.Step(`^the config should be loaded from the XDG path$`, s.theConfigShouldBeLoadedFromTheXDGPath)
 }
 
 // flowstateIsRunning initialises the test application with a mock provider.
@@ -3080,4 +3102,74 @@ func (s *StepDefinitions) subsequentCommandsShouldAutoApprove(command string) er
 		return fmt.Errorf("expected command pattern %q to be auto-approved", command)
 	}
 	return nil
+}
+
+// MCP tool integration step stubs — pending implementation.
+
+func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) iConnectToTheMCPServer() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
+	return godog.ErrPending
+}
+
+// TUI markdown rendering and token display step stubs — pending implementation.
+
+func (s *StepDefinitions) flowstateTUIIsRunning() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theAISendsAResponseWithACodeBlock() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theResponseShouldBeRenderedWithSyntaxHighlighting() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theAIIsStreamingAResponse() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theStatusBarShouldShowTheCurrentTokenCount() error {
+	return godog.ErrPending
+}
+
+// XDG config step stubs — pending implementation.
+
+func (s *StepDefinitions) xdgConfigHomeIsSetToACustomPath() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) aConfigFileExistsAtThatPath() error {
+	return godog.ErrPending
+}
+
+func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
+	return godog.ErrPending
 }
