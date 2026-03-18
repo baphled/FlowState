@@ -54,6 +54,8 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 		})
 	}
 
+	ollamaTools := buildOllamaTools(req.Tools)
+
 	go func() {
 		defer close(ch)
 
@@ -61,9 +63,29 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 			Model:    req.Model,
 			Messages: messages,
 			Stream:   boolPtr(true),
+			Tools:    ollamaTools,
 		}
 
 		err := p.client.Chat(ctx, chatReq, func(resp ollamaAPI.ChatResponse) error {
+			if len(resp.Message.ToolCalls) > 0 {
+				for _, tc := range resp.Message.ToolCalls {
+					chunk := provider.StreamChunk{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        tc.Function.Name,
+							Name:      tc.Function.Name,
+							Arguments: tc.Function.Arguments.ToMap(),
+						},
+					}
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case ch <- chunk:
+					}
+				}
+				ch <- provider.StreamChunk{Done: true}
+				return nil
+			}
 			chunk := provider.StreamChunk{
 				Content: resp.Message.Content,
 				Done:    resp.Done,
@@ -92,10 +114,13 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		})
 	}
 
+	ollamaTools := buildOllamaTools(req.Tools)
+
 	chatReq := &ollamaAPI.ChatRequest{
 		Model:    req.Model,
 		Messages: messages,
 		Stream:   boolPtr(false),
+		Tools:    ollamaTools,
 	}
 
 	var finalResp ollamaAPI.ChatResponse
@@ -107,7 +132,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return provider.ChatResponse{}, fmt.Errorf("ollama chat failed: %w", err)
 	}
 
-	return provider.ChatResponse{
+	response := provider.ChatResponse{
 		Message: provider.Message{
 			Role:    finalResp.Message.Role,
 			Content: finalResp.Message.Content,
@@ -117,7 +142,13 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 			CompletionTokens: finalResp.EvalCount,
 			TotalTokens:      finalResp.PromptEvalCount + finalResp.EvalCount,
 		},
-	}, nil
+	}
+
+	if len(finalResp.Message.ToolCalls) > 0 {
+		response.Message.ToolCalls = parseToolCalls(finalResp.Message.ToolCalls)
+	}
+
+	return response, nil
 }
 
 func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
@@ -164,4 +195,48 @@ func (p *Provider) Models() ([]provider.Model, error) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func buildOllamaTools(tools []provider.Tool) ollamaAPI.Tools {
+	result := make(ollamaAPI.Tools, len(tools))
+	for i, t := range tools {
+		props := ollamaAPI.NewToolPropertiesMap()
+		for key, val := range t.Schema.Properties {
+			if propMap, ok := val.(map[string]interface{}); ok {
+				prop := ollamaAPI.ToolProperty{}
+				if propType, ok := propMap["type"].(string); ok {
+					prop.Type = ollamaAPI.PropertyType{propType}
+				}
+				if desc, ok := propMap["description"].(string); ok {
+					prop.Description = desc
+				}
+				props.Set(key, prop)
+			}
+		}
+		result[i] = ollamaAPI.Tool{
+			Type: "function",
+			Function: ollamaAPI.ToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters: ollamaAPI.ToolFunctionParameters{
+					Type:       t.Schema.Type,
+					Properties: props,
+					Required:   t.Schema.Required,
+				},
+			},
+		}
+	}
+	return result
+}
+
+func parseToolCalls(toolCalls []ollamaAPI.ToolCall) []provider.ToolCall {
+	result := make([]provider.ToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		result[i] = provider.ToolCall{
+			ID:        tc.Function.Name,
+			Name:      tc.Function.Name,
+			Arguments: tc.Function.Arguments.ToMap(),
+		}
+	}
+	return result
 }

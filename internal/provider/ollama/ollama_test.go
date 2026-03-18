@@ -141,6 +141,178 @@ var _ = Describe("Ollama Provider", func() {
 			}
 		})
 
+		Context("when tools are provided", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					tools, ok := req["tools"].([]interface{})
+					Expect(ok).To(BeTrue(), "tools should be present in request")
+					Expect(tools).To(HaveLen(1))
+
+					tool := tools[0].(map[string]interface{})
+					Expect(tool["type"]).To(Equal("function"))
+					fn := tool["function"].(map[string]interface{})
+					Expect(fn["name"]).To(Equal("get_weather"))
+					Expect(fn["description"]).To(Equal("Get current weather"))
+
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Done"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("sends tool schemas to Ollama", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "What is the weather?"}},
+					Tools: []providerPkg.Tool{
+						{
+							Name:        "get_weather",
+							Description: "Get current weather",
+							Schema: providerPkg.ToolSchema{
+								Type: "object",
+								Properties: map[string]interface{}{
+									"location": map[string]interface{}{
+										"type":        "string",
+										"description": "City name",
+									},
+								},
+								Required: []string{"location"},
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for range ch {
+				}
+			})
+		})
+
+		Context("when server returns tool call response", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/x-ndjson")
+
+					resp := map[string]interface{}{
+						"model": "llama3.2",
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"function": map[string]interface{}{
+										"name": "get_weather",
+										"arguments": map[string]interface{}{
+											"location": "London",
+										},
+									},
+								},
+							},
+						},
+						"done": true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns tool_call chunk when Ollama returns tool call", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "What is the weather in London?"}},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolCallChunks []providerPkg.StreamChunk
+				for chunk := range ch {
+					if chunk.EventType == "tool_call" {
+						toolCallChunks = append(toolCallChunks, chunk)
+					}
+				}
+
+				Expect(toolCallChunks).To(HaveLen(1))
+				Expect(toolCallChunks[0].ToolCall).NotTo(BeNil())
+				Expect(toolCallChunks[0].ToolCall.Name).To(Equal("get_weather"))
+				Expect(toolCallChunks[0].ToolCall.Arguments["location"]).To(Equal("London"))
+			})
+		})
+
+		Context("when message has system role", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					messages := req["messages"].([]interface{})
+					Expect(messages).To(HaveLen(2))
+
+					sysMsg := messages[0].(map[string]interface{})
+					Expect(sysMsg["role"]).To(Equal("system"))
+					Expect(sysMsg["content"]).To(Equal("You are a helpful assistant"))
+
+					userMsg := messages[1].(map[string]interface{})
+					Expect(userMsg["role"]).To(Equal("user"))
+
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Hello!"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("handles system message role", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model: "llama3.2",
+					Messages: []providerPkg.Message{
+						{Role: "system", Content: "You are a helpful assistant"},
+						{Role: "user", Content: "Hello"},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for range ch {
+				}
+			})
+		})
+
 		Context("when server returns valid streaming response", func() {
 			BeforeEach(func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
