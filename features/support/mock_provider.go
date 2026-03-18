@@ -2,6 +2,7 @@ package support
 
 import (
 	"context"
+	"strings"
 )
 
 type ChatRequest struct {
@@ -82,7 +83,7 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 	ch := make(chan StreamChunk, 16)
 	go func() {
 		defer close(ch)
-		response := m.responses[m.responseIndex%len(m.responses)]
+		response := m.getContextualResponse(req)
 		for i, r := range response {
 			select {
 			case <-ctx.Done():
@@ -92,6 +93,29 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 		}
 	}()
 	return ch, nil
+}
+
+func (m *MockProvider) getContextualResponse(req ChatRequest) string {
+	for _, msg := range req.Messages {
+		if msg.Role == "user" {
+			if strings.Contains(strings.ToLower(msg.Content), "what is my name") {
+				for _, prevMsg := range req.Messages {
+					if prevMsg.Role == "user" {
+						lowerContent := strings.ToLower(prevMsg.Content)
+						if strings.Contains(lowerContent, "my name is") {
+							idx := strings.Index(lowerContent, "my name is")
+							nameStart := idx + len("my name is")
+							if nameStart < len(prevMsg.Content) {
+								name := strings.TrimSpace(prevMsg.Content[nameStart:])
+								return "Your name is " + name + "."
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return m.responses[m.responseIndex%len(m.responses)]
 }
 
 func (m *MockProvider) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {

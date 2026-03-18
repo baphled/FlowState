@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
+	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/cucumber/godog"
 )
 
@@ -28,6 +32,18 @@ type StepDefinitions struct {
 	streamChunks       []StreamChunk
 	embeddings         []float64
 	embeddingInputText string
+
+	agentDiscovery    *discovery.AgentDiscovery
+	suggestions       []discovery.AgentSuggestion
+	contextStore      *ctxstore.FileContextStore
+	tokenCounter      ctxstore.TokenCounter
+	windowBuilder     *ctxstore.ContextWindowBuilder
+	tokenBudget       int
+	lastContextWindow []provider.Message
+	inputBuffer       string
+	isInsertMode      bool
+	responseParts     []string
+	currentAgent      string
 }
 
 type TestApp struct {
@@ -68,6 +84,8 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I should see tokens appearing$`, s.iShouldSeeTokensAppearing)
 	ctx.Step(`^I should see a complete response$`, s.iShouldSeeACompleteResponse)
 	ctx.Step(`^I have sent the message "([^"]*)"$`, s.iHaveSentTheMessage)
+	ctx.Step(`^I received a response$`, s.iReceivedAResponse)
+	ctx.Step(`^I should see "([^"]*)" in the response$`, s.iShouldSeeInTheResponse)
 	ctx.Step(`^the agent "([^"]*)" is available$`, s.theAgentIsAvailable)
 	ctx.Step(`^I ask for agent suggestions for "([^"]*)"$`, s.iAskForAgentSuggestionsFor)
 	ctx.Step(`^I should receive agent suggestions$`, s.iShouldReceiveAgentSuggestions)
@@ -135,51 +153,183 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 }
 
 func (s *StepDefinitions) flowstateIsRunning() error {
-	return godog.ErrPending
+	s.app = &TestApp{provider: NewMockProvider()}
+	s.session = &TestSession{embeddings: make(map[string][]float64)}
+	s.tokenCounter = ctxstore.NewApproximateCounter()
+	s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+	return nil
 }
 
 func (s *StepDefinitions) ollamaIsAvailableWithModel(model string) error {
-	return godog.ErrPending
+	s.app.provider = NewMockProvider()
+	s.app.provider.name = "ollama"
+	s.app.provider.models = []Model{
+		{ID: model, Provider: "ollama", ContextLength: 4096},
+	}
+	s.app.provider.responses = []string{"Hello! I'm ready to help you."}
+	return nil
 }
 
 func (s *StepDefinitions) iAmInInsertMode() error {
-	return godog.ErrPending
+	s.isInsertMode = true
+	s.inputBuffer = ""
+	return nil
 }
 
 func (s *StepDefinitions) iType(text string) error {
-	return godog.ErrPending
+	s.inputBuffer = text
+	return nil
 }
 
 func (s *StepDefinitions) iPressEnter() error {
-	return godog.ErrPending
+	if s.inputBuffer == "" {
+		return nil
+	}
+
+	msg := Message{Role: "user", Content: s.inputBuffer}
+	s.app.messages = append(s.app.messages, msg)
+
+	ch, err := s.app.provider.Stream(s.ctx, ChatRequest{
+		Model:    "mock",
+		Messages: s.app.messages,
+	})
+	if err != nil {
+		return err
+	}
+
+	s.responseParts = nil
+	for chunk := range ch {
+		s.responseParts = append(s.responseParts, chunk.Content)
+	}
+
+	var responseContent strings.Builder
+	for _, part := range s.responseParts {
+		responseContent.WriteString(part)
+	}
+	s.app.messages = append(s.app.messages, Message{Role: "assistant", Content: responseContent.String()})
+
+	s.inputBuffer = ""
+	return nil
 }
 
 func (s *StepDefinitions) iShouldSeeTokensAppearing() error {
-	return godog.ErrPending
+	if len(s.responseParts) == 0 {
+		return fmt.Errorf("expected streaming tokens, but received none")
+	}
+	return nil
 }
 
 func (s *StepDefinitions) iShouldSeeACompleteResponse() error {
-	return godog.ErrPending
+	if len(s.app.messages) < 2 {
+		return fmt.Errorf("expected at least user message and response, got %d messages", len(s.app.messages))
+	}
+	lastMsg := s.app.messages[len(s.app.messages)-1]
+	if lastMsg.Role != "assistant" {
+		return fmt.Errorf("expected assistant response, got %s", lastMsg.Role)
+	}
+	if lastMsg.Content == "" {
+		return fmt.Errorf("expected non-empty response")
+	}
+	return nil
 }
 
 func (s *StepDefinitions) iHaveSentTheMessage(message string) error {
-	return godog.ErrPending
+	s.inputBuffer = message
+	return s.iPressEnter()
+}
+
+func (s *StepDefinitions) iReceivedAResponse() error {
+	if len(s.app.messages) < 2 {
+		return fmt.Errorf("expected at least a user message and response")
+	}
+	lastMsg := s.app.messages[len(s.app.messages)-1]
+	if lastMsg.Role != "assistant" {
+		return fmt.Errorf("expected assistant response, got %s", lastMsg.Role)
+	}
+	return nil
+}
+
+func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
+	if len(s.app.messages) < 1 {
+		return fmt.Errorf("no messages found")
+	}
+
+	for i := len(s.app.messages) - 1; i >= 0; i-- {
+		if s.app.messages[i].Role == "assistant" {
+			if strings.Contains(s.app.messages[i].Content, expected) {
+				return nil
+			}
+			return fmt.Errorf("expected %q in response, got: %s", expected, s.app.messages[i].Content)
+		}
+	}
+	return fmt.Errorf("no assistant response found")
 }
 
 func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
-	return godog.ErrPending
+	manifests := []agent.AgentManifest{}
+	if s.agentDiscovery != nil {
+		return nil
+	}
+
+	switch agentID {
+	case "coder":
+		manifests = append(manifests, agent.AgentManifest{
+			ID:   "coder",
+			Name: "Coder Agent",
+			Metadata: agent.Metadata{
+				Role:      "Software development and coding tasks",
+				Goal:      "Write clean, maintainable code",
+				WhenToUse: "write code function parse JSON programming development",
+			},
+		})
+	case "researcher":
+		manifests = append(manifests, agent.AgentManifest{
+			ID:   "researcher",
+			Name: "Researcher Agent",
+			Metadata: agent.Metadata{
+				Role:      "Research and information gathering",
+				Goal:      "Find and synthesise information",
+				WhenToUse: "find information research investigate quantum computing learning",
+			},
+		})
+	default:
+		manifests = append(manifests, agent.AgentManifest{
+			ID:   agentID,
+			Name: agentID + " Agent",
+			Metadata: agent.Metadata{
+				Role:      "General purpose agent",
+				Goal:      "Help with various tasks",
+				WhenToUse: "general tasks",
+			},
+		})
+	}
+
+	s.agentDiscovery = discovery.NewAgentDiscovery(manifests)
+	return nil
 }
 
 func (s *StepDefinitions) iAskForAgentSuggestionsFor(task string) error {
-	return godog.ErrPending
+	if s.agentDiscovery == nil {
+		s.agentDiscovery = discovery.NewAgentDiscovery([]agent.AgentManifest{})
+	}
+	s.suggestions = s.agentDiscovery.Suggest(task)
+	return nil
 }
 
 func (s *StepDefinitions) iShouldReceiveAgentSuggestions() error {
-	return godog.ErrPending
+	return nil
 }
 
 func (s *StepDefinitions) theSuggestionsShouldIncludeAnAgentWithConfidenceAbove(confidence float64) error {
-	return godog.ErrPending
+	for _, suggestion := range s.suggestions {
+		if suggestion.Confidence > confidence {
+			return nil
+		}
+	}
+	if len(s.suggestions) == 0 {
+		return fmt.Errorf("no suggestions returned")
+	}
+	return fmt.Errorf("no agent found with confidence above %f, highest was %f", confidence, s.suggestions[0].Confidence)
 }
 
 func (s *StepDefinitions) iAmChattingWithTheAgent(agentID string) error {
@@ -211,35 +361,155 @@ func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 }
 
 func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
-	return godog.ErrPending
+	s.tokenBudget = limit
+	s.tokenCounter = ctxstore.NewApproximateCounter()
+	s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+
+	tempDir, err := os.MkdirTemp("", "context-store-*")
+	if err != nil {
+		return err
+	}
+	storePath := filepath.Join(tempDir, "context.json")
+
+	store, err := ctxstore.NewFileContextStore(storePath, "nomic-embed-text")
+	if err != nil {
+		return err
+	}
+	s.contextStore = store
+	return nil
 }
 
 func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
-	return godog.ErrPending
+	if s.contextStore == nil {
+		return fmt.Errorf("context store not initialised, call 'a general agent with N token context limit' first")
+	}
+	for i := 0; i < count; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		content := fmt.Sprintf("Message %d content for testing context window", i+1)
+		if i >= count-5 {
+			content = fmt.Sprintf("This is a recent message %d about current topics", i+1)
+		}
+		s.contextStore.Append(provider.Message{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return nil
 }
 
 func (s *StepDefinitions) theNextMessageIsProcessed() error {
-	return godog.ErrPending
+	if s.windowBuilder == nil || s.contextStore == nil {
+		return fmt.Errorf("window builder or context store not initialised")
+	}
+
+	manifest := &agent.AgentManifest{
+		ID:   "general",
+		Name: "General Agent",
+		Instructions: agent.Instructions{
+			SystemPrompt: "You are a helpful assistant.",
+		},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	result := s.windowBuilder.Build(manifest, s.contextStore, s.tokenBudget)
+	s.lastContextWindow = result.Messages
+	return nil
 }
 
 func (s *StepDefinitions) theContextWindowShouldUseLessThanTokens(limit int) error {
-	return godog.ErrPending
+	if s.tokenCounter == nil {
+		return fmt.Errorf("token counter not initialised")
+	}
+
+	totalTokens := 0
+	for _, msg := range s.lastContextWindow {
+		totalTokens += s.tokenCounter.Count(msg.Content)
+	}
+
+	if totalTokens >= limit {
+		return fmt.Errorf("context window uses %d tokens, expected less than %d", totalTokens, limit)
+	}
+	return nil
 }
 
 func (s *StepDefinitions) iHaveAConversationAbout(topic string) error {
-	return godog.ErrPending
+	if s.contextStore == nil {
+		tempDir, err := os.MkdirTemp("", "context-store-*")
+		if err != nil {
+			return err
+		}
+		storePath := filepath.Join(tempDir, "context.json")
+
+		store, err := ctxstore.NewFileContextStore(storePath, "nomic-embed-text")
+		if err != nil {
+			return err
+		}
+		s.contextStore = store
+	}
+
+	s.contextStore.Append(provider.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("Let's talk about %s. I love making %s.", topic, topic),
+	})
+	s.contextStore.Append(provider.Message{
+		Role:    "assistant",
+		Content: fmt.Sprintf("Great! %s is a wonderful topic. Tell me more about your interest in %s.", topic, topic),
+	})
+	return nil
 }
 
 func (s *StepDefinitions) iLaterDiscussed(topic string) error {
-	return godog.ErrPending
+	if s.contextStore == nil {
+		return fmt.Errorf("context store not initialised")
+	}
+
+	s.contextStore.Append(provider.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("Now let's discuss %s instead.", topic),
+	})
+	s.contextStore.Append(provider.Message{
+		Role:    "assistant",
+		Content: fmt.Sprintf("Sure, let's talk about %s.", topic),
+	})
+	return nil
 }
 
 func (s *StepDefinitions) iAskAbout(topic string) error {
-	return godog.ErrPending
+	if s.contextStore == nil {
+		return fmt.Errorf("context store not initialised")
+	}
+	if s.windowBuilder == nil {
+		s.tokenCounter = ctxstore.NewApproximateCounter()
+		s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+	}
+	if s.tokenBudget == 0 {
+		s.tokenBudget = 4096
+	}
+
+	manifest := &agent.AgentManifest{
+		ID:   "general",
+		Name: "General Agent",
+		Instructions: agent.Instructions{
+			SystemPrompt: "You are a helpful assistant.",
+		},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	result := s.windowBuilder.Build(manifest, s.contextStore, s.tokenBudget)
+	s.lastContextWindow = result.Messages
+	return nil
 }
 
 func (s *StepDefinitions) theContextShouldIncludeMessagesAbout(topic string) error {
-	return godog.ErrPending
+	for _, msg := range s.lastContextWindow {
+		if strings.Contains(strings.ToLower(msg.Content), strings.ToLower(topic)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no messages about %q found in context window", topic)
 }
 
 func (s *StepDefinitions) iHaveAnActiveSessionWithMessages() error {
