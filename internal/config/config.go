@@ -10,11 +10,12 @@ import (
 )
 
 type AppConfig struct {
-	Providers ProvidersConfig `json:"providers" yaml:"providers"`
-	AgentDir  string          `json:"agent_dir" yaml:"agent_dir"`
-	SkillDir  string          `json:"skill_dir" yaml:"skill_dir"`
-	DataDir   string          `json:"data_dir" yaml:"data_dir"`
-	LogLevel  string          `json:"log_level" yaml:"log_level"`
+	Providers    ProvidersConfig `json:"providers" yaml:"providers"`
+	AgentDir     string          `json:"agent_dir" yaml:"agent_dir"`
+	SkillDir     string          `json:"skill_dir" yaml:"skill_dir"`
+	DataDir      string          `json:"data_dir" yaml:"data_dir"`
+	LogLevel     string          `json:"log_level" yaml:"log_level"`
+	DefaultAgent string          `json:"default_agent" yaml:"default_agent"`
 }
 
 type ProvidersConfig struct {
@@ -50,10 +51,11 @@ func DefaultConfig() *AppConfig {
 				Model: "claude-sonnet-4-20250514",
 			},
 		},
-		AgentDir: filepath.Join(dataDir, "agents"),
-		SkillDir: filepath.Join(dataDir, "skills"),
-		DataDir:  dataDir,
-		LogLevel: "info",
+		AgentDir:     filepath.Join(dataDir, "agents"),
+		SkillDir:     filepath.Join(dataDir, "skills"),
+		DataDir:      dataDir,
+		LogLevel:     "info",
+		DefaultAgent: "worker",
 	}
 }
 
@@ -110,6 +112,9 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = defaults.LogLevel
+	}
+	if cfg.DefaultAgent == "" {
+		cfg.DefaultAgent = defaults.DefaultAgent
 	}
 }
 

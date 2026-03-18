@@ -107,13 +107,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		return nil, fmt.Errorf("creating context store: %w", err)
 	}
 
-	defaultManifest := agent.AgentManifest{
-		ID:   "default",
-		Name: "Default Agent",
-	}
-	if manifests := agentRegistry.List(); len(manifests) > 0 {
-		defaultManifest = *manifests[0]
-	}
+	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 
 	tools := buildTools()
 
@@ -187,6 +181,19 @@ func buildTools() []tool.Tool {
 		file.New(),
 		web.New(),
 	}
+}
+
+func selectDefaultManifest(registry *agent.AgentRegistry, defaultAgentID string) agent.AgentManifest {
+	if defaultAgentID != "" {
+		if m, found := registry.Get(defaultAgentID); found {
+			return *m
+		}
+	}
+	manifests := registry.List()
+	if len(manifests) > 0 {
+		return *manifests[0]
+	}
+	return agent.AgentManifest{ID: "default", Name: "Default Agent"}
 }
 
 // TestConfig holds configuration for creating test App instances.

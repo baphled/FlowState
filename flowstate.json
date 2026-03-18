@@ -3,6 +3,7 @@
   "skills_dir": "./skills",
   "sessions_dir": "~/.flowstate/sessions",
   "default_provider": "ollama",
+  "default_agent": "worker",
   "providers": {
     "ollama": {"base_url": "http://localhost:11434"},
     "openai": {"api_key": "${OPENAI_API_KEY}"},
