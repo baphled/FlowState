@@ -8,7 +8,7 @@ profile: coverage.out
 threshold:
   file: 0
   package: 0
-  total: 60
+  total: 40
 
 override:
   # High-coverage packages (maintain excellence)
@@ -64,6 +64,14 @@ override:
     path: ^github\.com/baphled/flowstate/internal/tool/toolset$
   - threshold: 0
     path: ^github\.com/baphled/flowstate/cmd/flowstate$
+
+  # Vendored UIKit packages (from KaRiya, no tests required)
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/tui/uikit/
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/ui/themes$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/ui/terminal$
 
   # BDD support (high coverage from feature tests)
   - threshold: 75

@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/engine"
-	"github.com/baphled/flowstate/internal/tui/components"
+	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 )
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
@@ -38,7 +38,7 @@ type Intent struct {
 	response     strings.Builder
 	width        int
 	height       int
-	statusBar    *components.StatusBar
+	statusBar    *layout.StatusBar
 	tokenCount   int
 	providerName string
 	modelName    string
@@ -59,8 +59,8 @@ type Intent struct {
 // Side effects:
 //   - None.
 func NewIntent(cfg IntentConfig) *Intent {
-	sb := components.New()
-	sb.Update(components.StatusBarMsg{
+	sb := layout.NewStatusBar(80)
+	sb.Update(layout.StatusBarMsg{
 		Provider:    cfg.ProviderName,
 		Model:       cfg.ModelName,
 		Mode:        "NORMAL",
@@ -212,7 +212,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 // Side effects:
 //   - Updates the StatusBar with provider, model, mode, and token information.
 func (i *Intent) syncStatusBar() {
-	i.statusBar.Update(components.StatusBarMsg{
+	i.statusBar.Update(layout.StatusBarMsg{
 		Provider:    i.providerName,
 		Model:       i.modelName,
 		Mode:        i.statusBarMode(),
@@ -226,7 +226,7 @@ func (i *Intent) syncStatusBar() {
 // Side effects:
 //   - Updates the StatusBar mode indicator.
 func (i *Intent) syncStatusBarMode() {
-	i.statusBar.Update(components.StatusBarMsg{
+	i.statusBar.Update(layout.StatusBarMsg{
 		Mode:        i.statusBarMode(),
 		TokensUsed:  i.tokenCount,
 		TokenBudget: i.tokenBudget,

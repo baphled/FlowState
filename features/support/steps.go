@@ -22,7 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
-	"github.com/baphled/flowstate/internal/tui/components"
+	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/cucumber/godog"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -100,7 +100,7 @@ type StepDefinitions struct {
 	mcpServerTransport mcpsdk.Transport
 
 	chatView  *chat.View
-	statusBar *components.StatusBar
+	statusBar *layout.StatusBar
 }
 
 // TestApp represents a test application instance.
@@ -3292,7 +3292,7 @@ func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
 //   - Initialises s.chatView and s.statusBar.
 func (s *StepDefinitions) flowstateTUIIsRunning() error {
 	s.chatView = chat.NewView()
-	s.statusBar = components.New()
+	s.statusBar = layout.NewStatusBar(80)
 	return nil
 }
 
