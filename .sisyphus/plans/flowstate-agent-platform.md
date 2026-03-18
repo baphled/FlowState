@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-03-18**: Superseded by flowstate-mvp.md. PoC validated — all core systems verified.
+
 # FlowState Agent Platform — PoC Work Plan (v4 — RLM Edition)
 
 ## TL;DR
