@@ -588,7 +588,8 @@ var _ = Describe("Ollama Provider", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				for range ch {
+				for v := range ch {
+					_ = v
 				}
 
 				_, open := <-ch

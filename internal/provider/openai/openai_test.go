@@ -509,7 +509,8 @@ var _ = Describe("OpenAI Provider", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				for range ch {
+				for v := range ch {
+					_ = v
 				}
 
 				_, open := <-ch
