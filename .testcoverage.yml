@@ -1,0 +1,79 @@
+# FlowState Test Coverage Configuration
+# See: https://github.com/vladopajic/go-test-coverage
+#
+# Run: make coverage-check
+
+profile: coverage.out
+
+threshold:
+  file: 0
+  package: 0
+  total: 60
+
+override:
+  # High-coverage packages (maintain excellence)
+  - threshold: 85
+    path: ^github\.com/baphled/flowstate/internal/context$
+  - threshold: 85
+    path: ^github\.com/baphled/flowstate/internal/engine$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/discovery$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/hook$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/tool/bash$
+  - threshold: 85
+    path: ^github\.com/baphled/flowstate/internal/tool/file$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/tool/web$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/tool$
+  - threshold: 100
+    path: ^github\.com/baphled/flowstate/internal/mcp$
+
+  # Provider packages (high coverage achieved)
+  - threshold: 85
+    path: ^github\.com/baphled/flowstate/internal/provider/ollama$
+  - threshold: 90
+    path: ^github\.com/baphled/flowstate/internal/provider/openai$
+  - threshold: 85
+    path: ^github\.com/baphled/flowstate/internal/provider/anthropic$
+
+  # Packages needing improvement (realistic starting thresholds)
+  - threshold: 30
+    path: ^github\.com/baphled/flowstate/internal/agent$
+  - threshold: 60
+    path: ^github\.com/baphled/flowstate/internal/skill$
+  - threshold: 55
+    path: ^github\.com/baphled/flowstate/internal/tui$
+  - threshold: 60
+    path: ^github\.com/baphled/flowstate/internal/cli$
+  - threshold: 70
+    path: ^github\.com/baphled/flowstate/internal/api$
+  - threshold: 70
+    path: ^github\.com/baphled/flowstate/internal/learning$
+
+  # 0% coverage packages (bootstrap thresholds)
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/app$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/config$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/provider$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/internal/tool/toolset$
+  - threshold: 0
+    path: ^github\.com/baphled/flowstate/cmd/flowstate$
+
+  # BDD support (high coverage from feature tests)
+  - threshold: 75
+    path: ^github\.com/baphled/flowstate/features/support$
+
+exclude:
+  paths:
+    # Generated files
+    - _mock\.go$
+    - _gen\.go$
+    - \.pb\.go$
+    # Test files themselves
+    - _test\.go$

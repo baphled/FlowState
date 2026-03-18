@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -46,6 +46,17 @@ test-coverage: ## Run tests with coverage
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out
 
+GOBIN ?= $$(go env GOPATH)/bin
+
+install-coverage-tools: ## Install go-test-coverage tool
+	@echo "Installing go-test-coverage..."
+	go install github.com/vladopajic/go-test-coverage/v2@latest
+
+coverage-check: ## Check test coverage against thresholds
+	@echo "Running coverage check..."
+	@$(GOTEST) ./... -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
+	@$(GOBIN)/go-test-coverage --config=./.testcoverage.yml
+
 #
 # BDD Testing (Godog/Cucumber)
 #
@@ -80,7 +91,7 @@ lint: ## Run linters
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
 	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
 
-check: fmt lint test ## Run all checks
+check: fmt lint test coverage-check ## Run all checks
 
 #
 # Dependencies
