@@ -3,6 +3,7 @@ package context
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -154,7 +155,9 @@ func (s *FileContextStore) Append(msg provider.Message) {
 		s.messages = s.messages[1:]
 	}
 
-	_ = s.persist()
+	if err := s.persist(); err != nil {
+		log.Printf("warning: %v", err)
+	}
 }
 
 func (s *FileContextStore) GetRange(start, end int) []provider.Message {
@@ -241,7 +244,9 @@ func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model 
 	}
 	s.embeddings = append(s.embeddings, entry)
 
-	_ = s.persist()
+	if err := s.persist(); err != nil {
+		log.Printf("warning: %v", err)
+	}
 }
 
 func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {

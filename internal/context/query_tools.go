@@ -147,14 +147,16 @@ type SummarizeContextTool struct {
 	provider provider.Provider
 	maxDepth int
 	counter  TokenCounter
+	model    string
 }
 
-func NewSummarizeContextTool(store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter) *SummarizeContextTool {
+func NewSummarizeContextTool(store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter, model string) *SummarizeContextTool {
 	return &SummarizeContextTool{
 		store:    store,
 		provider: p,
 		maxDepth: maxDepth,
 		counter:  counter,
+		model:    model,
 	}
 }
 
@@ -219,7 +221,7 @@ func (t *SummarizeContextTool) summarize(ctx context.Context, messages []provide
 	}
 
 	resp, err := t.provider.Chat(ctx, provider.ChatRequest{
-		Model: "llama3.2",
+		Model: t.model,
 		Messages: []provider.Message{
 			{Role: "system", Content: "You are a helpful assistant that summarizes conversations concisely."},
 			{Role: "user", Content: prompt},
@@ -249,10 +251,10 @@ type ContextQueryTools struct {
 	Summarize *SummarizeContextTool
 }
 
-func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter) *ContextQueryTools {
+func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *ContextQueryTools {
 	return &ContextQueryTools{
 		Search:    NewSearchContextTool(store, p, 5),
 		GetMsgs:   NewGetMessagesTool(store),
-		Summarize: NewSummarizeContextTool(store, p, 2, counter),
+		Summarize: NewSummarizeContextTool(store, p, 2, counter, summaryModel),
 	}
 }

@@ -88,7 +88,9 @@ func LearningHook(store learning.Store) Hook {
 					UserMessage: userMessage,
 					Response:    responseBuilder.String(),
 				}
-				_ = store.Capture(entry)
+				if err := store.Capture(entry); err != nil {
+					log.Printf("warning: %v", err)
+				}
 			}()
 
 			return outChan, nil

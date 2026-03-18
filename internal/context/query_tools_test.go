@@ -205,7 +205,7 @@ var _ = Describe("ContextTools", func() {
 				},
 			}
 			mockCounter = &mockTokenCounter{countResult: 10}
-			summarizeTool = fscontext.NewSummarizeContextTool(store, mockProv, 2, mockCounter)
+			summarizeTool = fscontext.NewSummarizeContextTool(store, mockProv, 2, mockCounter, "test-model")
 		})
 
 		It("returns correct name", func() {
@@ -246,7 +246,7 @@ var _ = Describe("ContextTools", func() {
 		It("creates all three tools", func() {
 			mockProv := &mockProvider{}
 			mockCounter := &mockTokenCounter{}
-			tools := fscontext.NewContextQueryTools(store, mockProv, mockCounter)
+			tools := fscontext.NewContextQueryTools(store, mockProv, mockCounter, "test-model")
 
 			Expect(tools.Search).NotTo(BeNil())
 			Expect(tools.GetMsgs).NotTo(BeNil())

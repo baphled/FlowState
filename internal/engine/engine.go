@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
@@ -29,6 +30,7 @@ type Engine struct {
 	windowBuilder     *ctxstore.ContextWindowBuilder
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
+	hookChain         *hook.Chain
 }
 
 type Config struct {
@@ -41,6 +43,7 @@ type Config struct {
 	Store             *ctxstore.FileContextStore
 	TokenCounter      ctxstore.TokenCounter
 	StreamTimeout     time.Duration
+	HookChain         *hook.Chain
 }
 
 func New(cfg Config) *Engine {
@@ -71,6 +74,7 @@ func New(cfg Config) *Engine {
 		windowBuilder:     windowBuilder,
 		tokenCounter:      cfg.TokenCounter,
 		streamTimeout:     timeout,
+		hookChain:         cfg.HookChain,
 	}
 }
 
@@ -150,10 +154,20 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 }
 
 func (e *Engine) streamFromProvider(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	if e.failbackChain != nil {
-		return e.failbackChain.Stream(ctx, req)
+	handler := e.baseStreamHandler()
+	if e.hookChain != nil {
+		handler = e.hookChain.Execute(handler)
 	}
-	return e.chatProvider.Stream(ctx, req)
+	return handler(ctx, &req)
+}
+
+func (e *Engine) baseStreamHandler() hook.HandlerFunc {
+	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		if e.failbackChain != nil {
+			return e.failbackChain.Stream(ctx, *req)
+		}
+		return e.chatProvider.Stream(ctx, *req)
+	}
 }
 
 func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Message, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) {
