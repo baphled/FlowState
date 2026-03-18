@@ -1,14 +1,22 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+	"net/http"
 
-// ServeOptions stores serve flag values.
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/api"
+	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/skill"
+	"github.com/spf13/cobra"
+)
+
 type ServeOptions struct {
 	Port int
 	Host string
 }
 
-func newServeCmd() *cobra.Command {
+func newServeCmd(rootOpts *RootOptions) *cobra.Command {
 	opts := &ServeOptions{
 		Port: 8080,
 		Host: "localhost",
@@ -17,10 +25,10 @@ func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the FlowState HTTP API server",
-		Long:  "Start the FlowState HTTP API server. This stub reports the selected host and port.",
+		Long:  "Start the FlowState HTTP API server.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd, opts)
+			return runServe(cmd, rootOpts, opts)
 		},
 	}
 
@@ -31,6 +39,24 @@ func newServeCmd() *cobra.Command {
 	return cmd
 }
 
-func runServe(cmd *cobra.Command, opts *ServeOptions) error {
-	return writePlaceholder(cmd, "serve stub: host=%q port=%d\n", opts.Host, opts.Port)
+func runServe(cmd *cobra.Command, rootOpts *RootOptions, opts *ServeOptions) error {
+	registry := agent.NewAgentRegistry()
+	_ = registry.Discover(rootOpts.AgentsDir)
+
+	manifests := registry.List()
+	manifestValues := make([]agent.AgentManifest, len(manifests))
+	for i, m := range manifests {
+		manifestValues[i] = *m
+	}
+
+	disc := discovery.NewAgentDiscovery(manifestValues)
+
+	loader := skill.NewFileSkillLoader(rootOpts.SkillsDir)
+	skills, _ := loader.LoadAll()
+
+	server := api.NewServer(nil, registry, disc, skills)
+	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Starting server on %s\n", addr)
+	return http.ListenAndServe(addr, server.Handler())
 }

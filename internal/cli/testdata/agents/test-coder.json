@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "id": "test-coder",
+  "name": "Test Coder",
+  "complexity": "standard",
+  "metadata": {
+    "role": "Software developer",
+    "goal": "Write clean code",
+    "when_to_use": "Use for coding tasks and writing code"
+  }
+}

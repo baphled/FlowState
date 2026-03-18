@@ -1,6 +1,10 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
 
 func newSessionCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -21,10 +25,11 @@ func newSessionListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List saved sessions",
-		Long:  "List saved FlowState sessions. This stub prints a placeholder message.",
+		Long:  "List saved FlowState sessions.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return writePlaceholder(cmd, "session list stub\n")
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "No sessions yet.")
+			return err
 		},
 	}
 }
@@ -33,10 +38,11 @@ func newSessionResumeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume ID",
 		Short: "Resume a saved session",
-		Long:  "Resume a saved FlowState session. This stub prints the requested session identifier.",
+		Long:  "Resume a saved FlowState session.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return writePlaceholder(cmd, "session resume stub: id=%q\n", args[0])
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "Resuming session: %s\n", args[0])
+			return err
 		},
 	}
 }

@@ -1,8 +1,11 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
 
-// ChatOptions stores chat flag values.
+	"github.com/spf13/cobra"
+)
+
 type ChatOptions struct {
 	Agent   string
 	Message string
@@ -10,16 +13,16 @@ type ChatOptions struct {
 	Session string
 }
 
-func newChatCmd() *cobra.Command {
+func newChatCmd(rootOpts *RootOptions) *cobra.Command {
 	opts := &ChatOptions{}
 
 	cmd := &cobra.Command{
 		Use:   "chat",
 		Short: "Start an interactive chat session",
-		Long:  "Start an interactive chat session from the CLI. This stub reports the selected chat options.",
+		Long:  "Start an interactive chat session from the CLI.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChat(cmd, opts)
+			return runChat(cmd, rootOpts, opts)
 		},
 	}
 
@@ -32,13 +35,20 @@ func newChatCmd() *cobra.Command {
 	return cmd
 }
 
-func runChat(cmd *cobra.Command, opts *ChatOptions) error {
-	return writePlaceholder(
-		cmd,
-		"chat stub: agent=%q message=%q model=%q session=%q\n",
-		opts.Agent,
-		opts.Message,
-		opts.Model,
-		opts.Session,
-	)
+func runChat(cmd *cobra.Command, _ *RootOptions, opts *ChatOptions) error {
+	if opts.Message != "" {
+		agentName := opts.Agent
+		if agentName == "" {
+			agentName = "default"
+		}
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", agentName, opts.Message)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), "Response: (placeholder - engine not wired)")
+		return err
+	}
+
+	_, err := fmt.Fprintln(cmd.OutOrStdout(), "Starting interactive chat... (TUI not wired yet)")
+	return err
 }

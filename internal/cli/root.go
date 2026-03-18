@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// RootOptions stores the global CLI flag values.
 type RootOptions struct {
 	ConfigPath  string
 	AgentsDir   string
@@ -16,14 +15,19 @@ type RootOptions struct {
 	SessionsDir string
 }
 
-// NewRootCmd builds the FlowState Cobra command tree.
 func NewRootCmd() *cobra.Command {
-	defaults := config.DefaultConfig()
-	opts := &RootOptions{
-		ConfigPath:  filepath.Join(defaults.DataDir, "config.yaml"),
-		AgentsDir:   defaults.AgentDir,
-		SkillsDir:   defaults.SkillDir,
-		SessionsDir: filepath.Join(defaults.DataDir, "sessions"),
+	return NewRootCmdWithOptions(nil)
+}
+
+func NewRootCmdWithOptions(opts *RootOptions) *cobra.Command {
+	if opts == nil {
+		defaults := config.DefaultConfig()
+		opts = &RootOptions{
+			ConfigPath:  filepath.Join(defaults.DataDir, "config.yaml"),
+			AgentsDir:   defaults.AgentDir,
+			SkillsDir:   defaults.SkillDir,
+			SessionsDir: filepath.Join(defaults.DataDir, "sessions"),
+		}
 	}
 
 	cmd := &cobra.Command{
@@ -43,11 +47,11 @@ func NewRootCmd() *cobra.Command {
 	flags.StringVar(&opts.SessionsDir, "sessions-dir", opts.SessionsDir, "Path to the sessions directory")
 
 	cmd.AddCommand(
-		newChatCmd(),
-		newServeCmd(),
-		newAgentCmd(),
-		newSkillCmd(),
-		newDiscoverCmd(),
+		newChatCmd(opts),
+		newServeCmd(opts),
+		newAgentCmd(opts),
+		newSkillCmd(opts),
+		newDiscoverCmd(opts),
 		newSessionCmd(),
 	)
 
@@ -55,17 +59,13 @@ func NewRootCmd() *cobra.Command {
 }
 
 func runRoot(cmd *cobra.Command, opts *RootOptions) error {
-	return writePlaceholder(
-		cmd,
+	_, err := fmt.Fprintf(
+		cmd.OutOrStdout(),
 		"root stub: launch TUI with config=%q agents-dir=%q skills-dir=%q sessions-dir=%q\n",
 		opts.ConfigPath,
 		opts.AgentsDir,
 		opts.SkillsDir,
 		opts.SessionsDir,
 	)
-}
-
-func writePlaceholder(cmd *cobra.Command, format string, args ...any) error {
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), format, args...)
 	return err
 }

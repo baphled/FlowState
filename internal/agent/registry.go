@@ -51,6 +51,10 @@ func (r *AgentRegistry) Discover(dir string) error {
 	return nil
 }
 
+func (r *AgentRegistry) Register(manifest *AgentManifest) {
+	r.manifests[manifest.ID] = manifest
+}
+
 func (r *AgentRegistry) Get(id string) (*AgentManifest, bool) {
 	manifest, ok := r.manifests[id]
 	return manifest, ok
