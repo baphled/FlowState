@@ -1,0 +1,13 @@
+{
+  "agents_dir": "./agents",
+  "skills_dir": "./skills",
+  "sessions_dir": "~/.flowstate/sessions",
+  "default_provider": "ollama",
+  "providers": {
+    "ollama": {"base_url": "http://localhost:11434"},
+    "openai": {"api_key": "${OPENAI_API_KEY}"},
+    "anthropic": {"api_key": "${ANTHROPIC_API_KEY}"}
+  },
+  "always_active_skills": ["pre-action", "memory-keeper"],
+  "server": {"port": 8080, "host": "localhost"}
+}
