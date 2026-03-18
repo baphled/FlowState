@@ -3,10 +3,11 @@ package cli
 import (
 	"fmt"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
-func newSessionCmd() *cobra.Command {
+func newSessionCmd(application *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
 		Short: "Inspect and resume sessions",
@@ -17,24 +18,37 @@ func newSessionCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newSessionListCmd(), newSessionResumeCmd())
+	cmd.AddCommand(newSessionListCmd(application), newSessionResumeCmd(application))
 	return cmd
 }
 
-func newSessionListCmd() *cobra.Command {
+func newSessionListCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List saved sessions",
 		Long:  "List saved FlowState sessions.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), "No sessions yet.")
-			return err
+			sessions := application.Sessions.List()
+			if len(sessions) == 0 {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), "No sessions yet.")
+				return err
+			}
+
+			for _, s := range sessions {
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %d messages (last active: %s)\n",
+					s.ID, s.MessageCount, s.LastActive.Format("2006-01-02 15:04"))
+				if err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 }
 
-func newSessionResumeCmd() *cobra.Command {
+func newSessionResumeCmd(application *app.App) *cobra.Command {
+	_ = application
 	return &cobra.Command{
 		Use:   "resume ID",
 		Short: "Resume a saved session",

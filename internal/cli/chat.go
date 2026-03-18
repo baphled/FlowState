@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -13,7 +16,7 @@ type ChatOptions struct {
 	Session string
 }
 
-func newChatCmd(rootOpts *RootOptions) *cobra.Command {
+func newChatCmd(application *app.App) *cobra.Command {
 	opts := &ChatOptions{}
 
 	cmd := &cobra.Command{
@@ -22,7 +25,7 @@ func newChatCmd(rootOpts *RootOptions) *cobra.Command {
 		Long:  "Start an interactive chat session from the CLI.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChat(cmd, rootOpts, opts)
+			return runChat(cmd, application, opts)
 		},
 	}
 
@@ -35,7 +38,7 @@ func newChatCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-func runChat(cmd *cobra.Command, _ *RootOptions, opts *ChatOptions) error {
+func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
 	if opts.Message != "" {
 		agentName := opts.Agent
 		if agentName == "" {
@@ -45,7 +48,26 @@ func runChat(cmd *cobra.Command, _ *RootOptions, opts *ChatOptions) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), "Response: (placeholder - engine not wired)")
+
+		if application.Engine == nil {
+			return fmt.Errorf("engine not configured")
+		}
+
+		ctx := context.Background()
+		chunks, err := application.Engine.Stream(ctx, agentName, opts.Message)
+		if err != nil {
+			return fmt.Errorf("streaming response: %w", err)
+		}
+
+		var response strings.Builder
+		for chunk := range chunks {
+			if chunk.Error != nil {
+				return fmt.Errorf("stream error: %w", chunk.Error)
+			}
+			response.WriteString(chunk.Content)
+		}
+
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response.String())
 		return err
 	}
 

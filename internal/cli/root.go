@@ -2,70 +2,48 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
-	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
-type RootOptions struct {
-	ConfigPath  string
-	AgentsDir   string
-	SkillsDir   string
-	SessionsDir string
-}
-
-func NewRootCmd() *cobra.Command {
-	return NewRootCmdWithOptions(nil)
-}
-
-func NewRootCmdWithOptions(opts *RootOptions) *cobra.Command {
-	if opts == nil {
-		defaults := config.DefaultConfig()
-		opts = &RootOptions{
-			ConfigPath:  filepath.Join(defaults.DataDir, "config.yaml"),
-			AgentsDir:   defaults.AgentDir,
-			SkillsDir:   defaults.SkillDir,
-			SessionsDir: filepath.Join(defaults.DataDir, "sessions"),
-		}
-	}
-
+func NewRootCmd(application *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flowstate",
 		Short: "FlowState AI assistant CLI",
 		Long:  "FlowState provides an AI assistant TUI plus CLI entry points for chat, serving, discovery, and session management.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRoot(cmd, opts)
+			return runRoot(cmd, application)
 		},
 	}
 
 	flags := cmd.PersistentFlags()
-	flags.StringVar(&opts.ConfigPath, "config", opts.ConfigPath, "Path to the FlowState config file")
-	flags.StringVar(&opts.AgentsDir, "agents-dir", opts.AgentsDir, "Path to the agents directory")
-	flags.StringVar(&opts.SkillsDir, "skills-dir", opts.SkillsDir, "Path to the skills directory")
-	flags.StringVar(&opts.SessionsDir, "sessions-dir", opts.SessionsDir, "Path to the sessions directory")
+	flags.String("config", application.ConfigPath(), "Path to the FlowState config file")
+	flags.String("agents-dir", application.AgentsDir(), "Path to the agents directory")
+	flags.String("skills-dir", application.SkillsDir(), "Path to the skills directory")
+	flags.String("sessions-dir", application.SessionsDir(), "Path to the sessions directory")
 
 	cmd.AddCommand(
-		newChatCmd(opts),
-		newServeCmd(opts),
-		newAgentCmd(opts),
-		newSkillCmd(opts),
-		newDiscoverCmd(opts),
-		newSessionCmd(),
+		newChatCmd(application),
+		newServeCmd(application),
+		newAgentCmd(application),
+		newSkillCmd(application),
+		newDiscoverCmd(application),
+		newSessionCmd(application),
 	)
 
 	return cmd
 }
 
-func runRoot(cmd *cobra.Command, opts *RootOptions) error {
+func runRoot(cmd *cobra.Command, application *app.App) error {
 	_, err := fmt.Fprintf(
 		cmd.OutOrStdout(),
 		"root stub: launch TUI with config=%q agents-dir=%q skills-dir=%q sessions-dir=%q\n",
-		opts.ConfigPath,
-		opts.AgentsDir,
-		opts.SkillsDir,
-		opts.SessionsDir,
+		application.ConfigPath(),
+		application.AgentsDir(),
+		application.SkillsDir(),
+		application.SessionsDir(),
 	)
 	return err
 }

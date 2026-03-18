@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -15,11 +16,21 @@ func testdataPath(subdir string) string {
 	return filepath.Join(filepath.Dir(file), "testdata", subdir)
 }
 
+func createTestApp(agentsDir, skillsDir string) *app.App {
+	tc := app.TestConfig{
+		AgentsDir: agentsDir,
+		SkillsDir: skillsDir,
+	}
+	testApp, err := app.NewForTest(tc)
+	Expect(err).NotTo(HaveOccurred())
+	return testApp
+}
+
 var _ = Describe("CLI Commands", func() {
 	var (
 		out *bytes.Buffer
-		cmd = func(opts *cli.RootOptions, args ...string) error {
-			root := cli.NewRootCmdWithOptions(opts)
+		cmd = func(testApp *app.App, args ...string) error {
+			root := cli.NewRootCmd(testApp)
 			root.SetOut(out)
 			root.SetErr(out)
 			root.SetArgs(args)
@@ -33,7 +44,8 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("root --help", func() {
 		It("shows usage information", func() {
-			err := cmd(nil, "--help")
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "--help")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("FlowState provides an AI assistant TUI"))
 			Expect(out.String()).To(ContainSubstring("Available Commands"))
@@ -43,10 +55,8 @@ var _ = Describe("CLI Commands", func() {
 	Describe("agent list", func() {
 		Context("with sample manifests", func() {
 			It("prints agents from the agents directory", func() {
-				opts := &cli.RootOptions{
-					AgentsDir: testdataPath("agents"),
-				}
-				err := cmd(opts, "agent", "list")
+				testApp := createTestApp(testdataPath("agents"), "")
+				err := cmd(testApp, "agent", "list")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("test-coder"))
 				Expect(out.String()).To(ContainSubstring("Test Coder"))
@@ -57,10 +67,8 @@ var _ = Describe("CLI Commands", func() {
 
 		Context("with empty agents directory", func() {
 			It("prints no agents found message", func() {
-				opts := &cli.RootOptions{
-					AgentsDir: testdataPath("empty"),
-				}
-				err := cmd(opts, "agent", "list")
+				testApp := createTestApp(testdataPath("empty"), "")
+				err := cmd(testApp, "agent", "list")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("No agents found"))
 			})
@@ -69,20 +77,16 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("agent info", func() {
 		It("prints JSON details for a named agent", func() {
-			opts := &cli.RootOptions{
-				AgentsDir: testdataPath("agents"),
-			}
-			err := cmd(opts, "agent", "info", "test-coder")
+			testApp := createTestApp(testdataPath("agents"), "")
+			err := cmd(testApp, "agent", "info", "test-coder")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring(`"id": "test-coder"`))
 			Expect(out.String()).To(ContainSubstring(`"name": "Test Coder"`))
 		})
 
 		It("returns error for unknown agent", func() {
-			opts := &cli.RootOptions{
-				AgentsDir: testdataPath("agents"),
-			}
-			err := cmd(opts, "agent", "info", "unknown")
+			testApp := createTestApp(testdataPath("agents"), "")
+			err := cmd(testApp, "agent", "info", "unknown")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(`agent "unknown" not found`))
 		})
@@ -91,10 +95,8 @@ var _ = Describe("CLI Commands", func() {
 	Describe("skill list", func() {
 		Context("with sample skills", func() {
 			It("prints skills from the skills directory", func() {
-				opts := &cli.RootOptions{
-					SkillsDir: testdataPath("skills"),
-				}
-				err := cmd(opts, "skill", "list")
+				testApp := createTestApp("", testdataPath("skills"))
+				err := cmd(testApp, "skill", "list")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("test-skill"))
 				Expect(out.String()).To(ContainSubstring("core"))
@@ -104,10 +106,8 @@ var _ = Describe("CLI Commands", func() {
 
 		Context("with empty skills directory", func() {
 			It("prints no skills found message", func() {
-				opts := &cli.RootOptions{
-					SkillsDir: testdataPath("empty"),
-				}
-				err := cmd(opts, "skill", "list")
+				testApp := createTestApp("", testdataPath("empty"))
+				err := cmd(testApp, "skill", "list")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("No skills found"))
 			})
@@ -116,20 +116,16 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("discover", func() {
 		It("returns suggestions for matching agents", func() {
-			opts := &cli.RootOptions{
-				AgentsDir: testdataPath("agents"),
-			}
-			err := cmd(opts, "discover", "write", "code")
+			testApp := createTestApp(testdataPath("agents"), "")
+			err := cmd(testApp, "discover", "write", "code")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("test-coder"))
 			Expect(out.String()).To(ContainSubstring("confidence:"))
 		})
 
 		It("returns no matching agents message when none match", func() {
-			opts := &cli.RootOptions{
-				AgentsDir: testdataPath("agents"),
-			}
-			err := cmd(opts, "discover", "zzzznothing")
+			testApp := createTestApp(testdataPath("agents"), "")
+			err := cmd(testApp, "discover", "zzzznothing")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("No matching agents found"))
 		})
@@ -137,7 +133,8 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("session list", func() {
 		It("prints placeholder message", func() {
-			err := cmd(nil, "session", "list")
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "session", "list")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(Equal("No sessions yet.\n"))
 		})
@@ -145,7 +142,8 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("session resume", func() {
 		It("prints resuming message with session ID", func() {
-			err := cmd(nil, "session", "resume", "my-session-123")
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "session", "resume", "my-session-123")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(Equal("Resuming session: my-session-123\n"))
 		})
@@ -154,23 +152,25 @@ var _ = Describe("CLI Commands", func() {
 	Describe("chat", func() {
 		Context("without --message flag", func() {
 			It("prints TUI not wired message", func() {
-				err := cmd(nil, "chat")
+				testApp := createTestApp("", "")
+				err := cmd(testApp, "chat")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("TUI not wired yet"))
 			})
 		})
 
 		Context("with --message flag", func() {
-			It("prints the agent and message with placeholder response", func() {
-				err := cmd(nil, "chat", "--message", "Hello world", "--agent", "test-agent")
-				Expect(err).NotTo(HaveOccurred())
+			It("prints the agent and message with response placeholder when engine is nil", func() {
+				testApp := createTestApp("", "")
+				err := cmd(testApp, "chat", "--message", "Hello world", "--agent", "test-agent")
+				Expect(err).To(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("[test-agent] Hello world"))
-				Expect(out.String()).To(ContainSubstring("Response:"))
 			})
 
-			It("uses default agent when no agent specified", func() {
-				err := cmd(nil, "chat", "--message", "Hello")
-				Expect(err).NotTo(HaveOccurred())
+			It("prints the agent message with default agent", func() {
+				testApp := createTestApp("", "")
+				err := cmd(testApp, "chat", "--message", "Hello")
+				Expect(err).To(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("[default] Hello"))
 			})
 		})

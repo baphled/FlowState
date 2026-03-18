@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/baphled/flowstate/internal/agent"
-	"github.com/baphled/flowstate/internal/api"
-	"github.com/baphled/flowstate/internal/discovery"
-	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +17,7 @@ type ServeOptions struct {
 	Host string
 }
 
-func newServeCmd(rootOpts *RootOptions) *cobra.Command {
+func newServeCmd(application *app.App) *cobra.Command {
 	opts := &ServeOptions{
 		Port: 8080,
 		Host: "localhost",
@@ -28,7 +29,7 @@ func newServeCmd(rootOpts *RootOptions) *cobra.Command {
 		Long:  "Start the FlowState HTTP API server.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd, rootOpts, opts)
+			return runServe(cmd, application, opts)
 		},
 	}
 
@@ -39,24 +40,28 @@ func newServeCmd(rootOpts *RootOptions) *cobra.Command {
 	return cmd
 }
 
-func runServe(cmd *cobra.Command, rootOpts *RootOptions, opts *ServeOptions) error {
-	registry := agent.NewAgentRegistry()
-	_ = registry.Discover(rootOpts.AgentsDir)
-
-	manifests := registry.List()
-	manifestValues := make([]agent.AgentManifest, len(manifests))
-	for i, m := range manifests {
-		manifestValues[i] = *m
-	}
-
-	disc := discovery.NewAgentDiscovery(manifestValues)
-
-	loader := skill.NewFileSkillLoader(rootOpts.SkillsDir)
-	skills, _ := loader.LoadAll()
-
-	server := api.NewServer(nil, registry, disc, skills)
+func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) error {
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Starting server on %s\n", addr)
-	return http.ListenAndServe(addr, server.Handler())
+	server := &http.Server{
+		Addr:    addr,
+		Handler: application.API.Handler(),
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Starting server on %s\n", addr)
+		errChan <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Shutting down server...")
+		return server.Shutdown(context.Background())
+	case err := <-errChan:
+		return err
+	}
 }

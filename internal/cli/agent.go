@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
-func newAgentCmd(opts *RootOptions) *cobra.Command {
+func newAgentCmd(application *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Inspect available agents",
@@ -19,29 +19,24 @@ func newAgentCmd(opts *RootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newAgentListCmd(opts), newAgentInfoCmd(opts))
+	cmd.AddCommand(newAgentListCmd(application), newAgentInfoCmd(application))
 	return cmd
 }
 
-func newAgentListCmd(opts *RootOptions) *cobra.Command {
+func newAgentListCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List available agents",
 		Long:  "List the agents available to FlowState.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAgentList(cmd, opts)
+			return runAgentList(cmd, application)
 		},
 	}
 }
 
-func runAgentList(cmd *cobra.Command, opts *RootOptions) error {
-	registry := agent.NewAgentRegistry()
-	if err := registry.Discover(opts.AgentsDir); err != nil {
-		return fmt.Errorf("discovering agents: %w", err)
-	}
-
-	manifests := registry.List()
+func runAgentList(cmd *cobra.Command, application *app.App) error {
+	manifests := application.Registry.List()
 	if len(manifests) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No agents found.")
 		return err
@@ -56,25 +51,20 @@ func runAgentList(cmd *cobra.Command, opts *RootOptions) error {
 	return nil
 }
 
-func newAgentInfoCmd(opts *RootOptions) *cobra.Command {
+func newAgentInfoCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "info NAME",
 		Short: "Show agent details",
 		Long:  "Show details for a named agent.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAgentInfo(cmd, opts, args[0])
+			return runAgentInfo(cmd, application, args[0])
 		},
 	}
 }
 
-func runAgentInfo(cmd *cobra.Command, opts *RootOptions, agentID string) error {
-	registry := agent.NewAgentRegistry()
-	if err := registry.Discover(opts.AgentsDir); err != nil {
-		return fmt.Errorf("discovering agents: %w", err)
-	}
-
-	manifest, ok := registry.Get(agentID)
+func runAgentInfo(cmd *cobra.Command, application *app.App, agentID string) error {
+	manifest, ok := application.Registry.Get(agentID)
 	if !ok {
 		return fmt.Errorf("agent %q not found", agentID)
 	}

@@ -4,43 +4,31 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/baphled/flowstate/internal/agent"
-	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
 
-func newDiscoverCmd(opts *RootOptions) *cobra.Command {
+func newDiscoverCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "discover MESSAGE",
 		Short: "Suggest an agent for a task",
 		Long:  "Suggest an agent for a task description.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDiscover(cmd, opts, args)
+			return runDiscover(cmd, application, args)
 		},
 	}
 }
 
-func runDiscover(cmd *cobra.Command, opts *RootOptions, args []string) error {
-	registry := agent.NewAgentRegistry()
-	if err := registry.Discover(opts.AgentsDir); err != nil {
-		return fmt.Errorf("discovering agents: %w", err)
-	}
-
-	manifests := registry.List()
+func runDiscover(cmd *cobra.Command, application *app.App, args []string) error {
+	manifests := application.Registry.List()
 	if len(manifests) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No agents available for discovery.")
 		return err
 	}
 
-	manifestValues := make([]agent.AgentManifest, len(manifests))
-	for i, m := range manifests {
-		manifestValues[i] = *m
-	}
-
-	disc := discovery.NewAgentDiscovery(manifestValues)
 	message := strings.Join(args, " ")
-	suggestions := disc.Suggest(message)
+	suggestions := application.Discovery.Suggest(message)
 
 	if len(suggestions) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No matching agents found.")

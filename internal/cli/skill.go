@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/spf13/cobra"
 )
 
-func newSkillCmd(opts *RootOptions) *cobra.Command {
+func newSkillCmd(application *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
 		Short: "Inspect available skills",
@@ -19,29 +20,24 @@ func newSkillCmd(opts *RootOptions) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newSkillListCmd(opts), newSkillAddCmd(opts))
+	cmd.AddCommand(newSkillListCmd(application), newSkillAddCmd(application))
 	return cmd
 }
 
-func newSkillListCmd(opts *RootOptions) *cobra.Command {
+func newSkillListCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List available skills",
 		Long:  "List the skills available to FlowState.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSkillList(cmd, opts)
+			return runSkillList(cmd, application)
 		},
 	}
 }
 
-func runSkillList(cmd *cobra.Command, opts *RootOptions) error {
-	loader := skill.NewFileSkillLoader(opts.SkillsDir)
-	skills, err := loader.LoadAll()
-	if err != nil {
-		return fmt.Errorf("loading skills: %w", err)
-	}
-
+func runSkillList(cmd *cobra.Command, application *app.App) error {
+	skills := application.Skills
 	if len(skills) == 0 {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "No skills found.")
 		return err
@@ -56,20 +52,20 @@ func runSkillList(cmd *cobra.Command, opts *RootOptions) error {
 	return nil
 }
 
-func newSkillAddCmd(opts *RootOptions) *cobra.Command {
+func newSkillAddCmd(application *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "add OWNER/REPO",
 		Short: "Import a skill from GitHub",
 		Long:  "Import a skill from a GitHub repository.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSkillAdd(cmd, opts, args[0])
+			return runSkillAdd(cmd, application, args[0])
 		},
 	}
 }
 
-func runSkillAdd(cmd *cobra.Command, opts *RootOptions, ownerRepo string) error {
-	importer := skill.NewImporter(opts.SkillsDir)
+func runSkillAdd(cmd *cobra.Command, application *app.App, ownerRepo string) error {
+	importer := skill.NewImporter(application.SkillsDir())
 	imported, err := importer.Add(context.Background(), ownerRepo)
 	if err != nil {
 		return fmt.Errorf("importing skill: %w", err)
