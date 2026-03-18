@@ -275,8 +275,14 @@ linters:
             - github.com/sashabaranov/go-openai
             - github.com/pkoukk/tiktoken-go
             - github.com/anthropics/anthropic-sdk-go
+            - github.com/anthropics/anthropic-sdk-go/option
             - github.com/ollama/ollama
+            - github.com/ollama/ollama/api
             - github.com/openai/openai-go
+            - github.com/openai/openai-go/option
+            - golang.org/x/tools
+            - golang.org/x/tools/go/analysis
+            - golang.org/x/tools/go/analysis/singlechecker
 
   exclusions:
     rules:
