@@ -188,12 +188,17 @@ var _ = Describe("Chat TUI", func() {
 	})
 
 	Describe("streaming messages", func() {
-		It("appends content on ChunkMsg", func() {
-			model.Update(tui.ChunkMsg{Content: "Hello"})
+		It("appends content on ChunkMsg and returns cmd to fetch next", func() {
+			chunks := make(chan provider.StreamChunk, 1)
+			model.SetChunks(chunks)
+			_, cmd := model.Update(tui.ChunkMsg{Content: "Hello"})
 			Expect(model.ResponseContent()).To(Equal("Hello"))
+			Expect(cmd).NotTo(BeNil())
 		})
 
 		It("accumulates multiple chunks", func() {
+			chunks := make(chan provider.StreamChunk, 2)
+			model.SetChunks(chunks)
 			model.Update(tui.ChunkMsg{Content: "Hello"})
 			model.Update(tui.ChunkMsg{Content: " World"})
 			Expect(model.ResponseContent()).To(Equal("Hello World"))
@@ -209,6 +214,12 @@ var _ = Describe("Chat TUI", func() {
 			model.Update(tui.ChunkMsg{Content: "AI response"})
 			model.Update(tui.StreamDoneMsg{})
 			Expect(model.Messages()).To(ContainElement(ContainSubstring("AI response")))
+		})
+
+		It("returns nil cmd on StreamDoneMsg", func() {
+			model.Update(tui.ChunkMsg{Content: "test"})
+			_, cmd := model.Update(tui.StreamDoneMsg{})
+			Expect(cmd).To(BeNil())
 		})
 	})
 

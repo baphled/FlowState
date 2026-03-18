@@ -327,3 +327,13 @@ func (e *Engine) storeResponse(ctx context.Context, content string) {
 	e.store.Append(provider.Message{Role: "assistant", Content: content})
 	e.embedMessage(ctx, content)
 }
+
+// SetContextStore sets the context store for session persistence.
+func (e *Engine) SetContextStore(store *ctxstore.FileContextStore) {
+	e.store = store
+}
+
+// ContextStore returns the current context store.
+func (e *Engine) ContextStore() *ctxstore.FileContextStore {
+	return e.store
+}

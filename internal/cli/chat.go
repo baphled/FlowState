@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
@@ -55,6 +56,18 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 			return errors.New("engine not configured")
 		}
 
+		sessionID := opts.Session
+		if sessionID == "" {
+			sessionID = generateSessionID()
+		}
+
+		if opts.Session != "" && application.Sessions != nil {
+			store, loadErr := application.Sessions.Load(opts.Session)
+			if loadErr == nil {
+				application.Engine.SetContextStore(store)
+			}
+		}
+
 		ctx := context.Background()
 		chunks, err := application.Engine.Stream(ctx, agentName, opts.Message)
 		if err != nil {
@@ -69,10 +82,23 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 			response.WriteString(chunk.Content)
 		}
 
+		if application.Sessions != nil {
+			store := application.Engine.ContextStore()
+			if store != nil {
+				if saveErr := application.Sessions.Save(sessionID, store); saveErr != nil {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
+				}
+			}
+		}
+
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response.String())
 		return err
 	}
 
 	_, err := fmt.Fprintln(cmd.OutOrStdout(), "Starting interactive chat... (TUI not wired yet)")
 	return err
+}
+
+func generateSessionID() string {
+	return fmt.Sprintf("session-%d", time.Now().UnixNano())
 }

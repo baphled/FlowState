@@ -33,6 +33,7 @@ type Model struct {
 	width     int
 	height    int
 	err       error
+	chunks    <-chan provider.StreamChunk
 }
 
 // NewModel creates a new chat model with the given engine and agent.
@@ -64,10 +65,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case streamStartedMsg:
+		m.chunks = msg.chunks
+		return m, waitForChunk(m.chunks)
 	case ChunkMsg:
 		m.streaming = true
 		m.response.WriteString(msg.Content)
-		return m, nil
+		return m, waitForChunk(m.chunks)
 	case StreamDoneMsg:
 		m.streaming = false
 		if m.response.Len() > 0 {
@@ -138,16 +142,24 @@ func (m *Model) sendMessage() tea.Cmd {
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
+		return streamStartedMsg{chunks: chunks}
+	}
+}
 
-		go func() {
-			for chunk := range chunks {
-				if chunk.Error != nil {
-					return
-				}
-			}
-		}()
+type streamStartedMsg struct {
+	chunks <-chan provider.StreamChunk
+}
 
-		return nil
+func waitForChunk(chunks <-chan provider.StreamChunk) tea.Cmd {
+	return func() tea.Msg {
+		chunk, ok := <-chunks
+		if !ok {
+			return StreamDoneMsg{}
+		}
+		if chunk.Error != nil {
+			return ErrorMsg{Err: chunk.Error}
+		}
+		return ChunkMsg(chunk)
 	}
 }
 
@@ -216,4 +228,9 @@ func (m *Model) Messages() []string {
 
 func (m *Model) Error() error {
 	return m.err
+}
+
+// SetChunks sets the chunks channel for testing purposes.
+func (m *Model) SetChunks(chunks <-chan provider.StreamChunk) {
+	m.chunks = chunks
 }
