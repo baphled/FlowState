@@ -20,6 +20,10 @@ import (
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/bash"
+	"github.com/baphled/flowstate/internal/tool/file"
+	"github.com/baphled/flowstate/internal/tool/web"
 )
 
 // App is the main application container holding all initialized components.
@@ -111,6 +115,8 @@ func New(cfg *config.AppConfig) (*App, error) {
 		defaultManifest = *manifests[0]
 	}
 
+	tools := buildTools()
+
 	eng := engine.New(engine.Config{
 		ChatProvider:      defaultProvider,
 		EmbeddingProvider: embeddingProvider,
@@ -119,6 +125,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,
 		HookChain:         hooks,
+		Tools:             tools,
 	})
 
 	manifests := agentRegistry.List()
@@ -172,6 +179,14 @@ func extractSkillNames(skills []skill.Skill) []string {
 		names[i] = skills[i].Name
 	}
 	return names
+}
+
+func buildTools() []tool.Tool {
+	return []tool.Tool{
+		bash.New(),
+		file.New(),
+		web.New(),
+	}
 }
 
 // TestConfig holds configuration for creating test App instances.
