@@ -57,6 +57,13 @@ type App struct {
 //   - Creates session and context store directories if they do not exist.
 //   - Connects to configured MCP servers.
 func New(cfg *config.AppConfig) (*App, error) {
+	bundledFS, err := BundledAgentsDir()
+	if err == nil {
+		if err := SeedAgentsDir(bundledFS, cfg.AgentDir); err != nil {
+			log.Printf("warning: seeding agents: %v", err)
+		}
+	}
+
 	providerRegistry, ollamaProvider := registerProviders(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	skills, alwaysActiveSkills := loadSkills(cfg)
