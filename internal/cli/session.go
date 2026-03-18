@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newSessionCmd(application *app.App) *cobra.Command {
+func newSessionCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
 		Short: "Inspect and resume sessions",
@@ -18,18 +18,18 @@ func newSessionCmd(application *app.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newSessionListCmd(application), newSessionResumeCmd(application))
+	cmd.AddCommand(newSessionListCmd(getApp), newSessionResumeCmd())
 	return cmd
 }
 
-func newSessionListCmd(application *app.App) *cobra.Command {
+func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List saved sessions",
 		Long:  "List saved FlowState sessions.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sessions := application.Sessions.List()
+			sessions := getApp().Sessions.List()
 			if len(sessions) == 0 {
 				_, err := fmt.Fprintln(cmd.OutOrStdout(), "No sessions yet.")
 				return err
@@ -47,8 +47,7 @@ func newSessionListCmd(application *app.App) *cobra.Command {
 	}
 }
 
-func newSessionResumeCmd(application *app.App) *cobra.Command {
-	_ = application
+func newSessionResumeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume ID",
 		Short: "Resume a saved session",

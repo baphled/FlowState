@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newAgentCmd(application *app.App) *cobra.Command {
+func newAgentCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Inspect available agents",
@@ -19,18 +19,18 @@ func newAgentCmd(application *app.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newAgentListCmd(application), newAgentInfoCmd(application))
+	cmd.AddCommand(newAgentListCmd(getApp), newAgentInfoCmd(getApp))
 	return cmd
 }
 
-func newAgentListCmd(application *app.App) *cobra.Command {
+func newAgentListCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List available agents",
 		Long:  "List the agents available to FlowState.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAgentList(cmd, application)
+			return runAgentList(cmd, getApp())
 		},
 	}
 }
@@ -51,14 +51,14 @@ func runAgentList(cmd *cobra.Command, application *app.App) error {
 	return nil
 }
 
-func newAgentInfoCmd(application *app.App) *cobra.Command {
+func newAgentInfoCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "info NAME",
 		Short: "Show agent details",
 		Long:  "Show details for a named agent.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAgentInfo(cmd, application, args[0])
+			return runAgentInfo(cmd, getApp(), args[0])
 		},
 	}
 }

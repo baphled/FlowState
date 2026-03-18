@@ -18,7 +18,7 @@ type ServeOptions struct {
 	Host string
 }
 
-func newServeCmd(application *app.App) *cobra.Command {
+func newServeCmd(getApp func() *app.App) *cobra.Command {
 	opts := &ServeOptions{
 		Port: 8080,
 		Host: "localhost",
@@ -30,7 +30,7 @@ func newServeCmd(application *app.App) *cobra.Command {
 		Long:  "Start the FlowState HTTP API server.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd, application, opts)
+			return runServe(cmd, getApp(), opts)
 		},
 	}
 

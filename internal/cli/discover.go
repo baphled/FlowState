@@ -8,14 +8,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newDiscoverCmd(application *app.App) *cobra.Command {
+func newDiscoverCmd(getApp func() *app.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "discover MESSAGE",
 		Short: "Suggest an agent for a task",
 		Long:  "Suggest an agent for a task description.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDiscover(cmd, application, args)
+			return runDiscover(cmd, getApp(), args)
 		},
 	}
 }

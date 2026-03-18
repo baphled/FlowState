@@ -17,7 +17,7 @@ type ChatOptions struct {
 	Session string
 }
 
-func newChatCmd(application *app.App) *cobra.Command {
+func newChatCmd(getApp func() *app.App) *cobra.Command {
 	opts := &ChatOptions{}
 
 	cmd := &cobra.Command{
@@ -26,7 +26,7 @@ func newChatCmd(application *app.App) *cobra.Command {
 		Long:  "Start an interactive chat session from the CLI.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runChat(cmd, application, opts)
+			return runChat(cmd, getApp(), opts)
 		},
 	}
 
