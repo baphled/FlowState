@@ -3164,6 +3164,9 @@ func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 		s.mcpServerErr <- s.mcpServer.Run(context.Background(), s.mcpServerTransport)
 	}()
 
+	// Give the server a moment to start before accepting connections
+	time.Sleep(10 * time.Millisecond)
+
 	return nil
 }
 
