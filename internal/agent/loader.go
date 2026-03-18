@@ -167,7 +167,8 @@ func extractFrontmatter(content string) (string, string, error) {
 //   - N/A (modifies m in place).
 //
 // Side effects:
-//   - Mutates m.ContextManagement fields: sets MaxRecursionDepth to 2, SummaryTier to "quick", SlidingWindowSize to 10, CompactionThreshold to 0.75, and EmbeddingModel to "nomic-embed-text" if they are zero-valued.
+//   - Mutates m.ContextManagement fields: sets MaxRecursionDepth to 2, SummaryTier to "quick",
+//   - SlidingWindowSize to 10, CompactionThreshold to 0.75, and EmbeddingModel to "nomic-embed-text".
 func applyDefaults(m *Manifest) {
 	if m.ContextManagement.MaxRecursionDepth == 0 {
 		m.ContextManagement.MaxRecursionDepth = 2

@@ -10,11 +10,15 @@ import (
 )
 
 func getOptions() *godog.Options {
-	return &godog.Options{
+	opts := &godog.Options{
 		Output: colors.Colored(os.Stdout),
 		Format: "progress",
 		Strict: true,
 	}
+	if tags := os.Getenv("GODOG_TAGS"); tags != "" {
+		opts.Tags = tags
+	}
+	return opts
 }
 
 func TestFeatures(t *testing.T) {

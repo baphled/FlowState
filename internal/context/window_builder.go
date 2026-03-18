@@ -136,7 +136,8 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
 }
 
-// buildInternal constructs a context window with the given options, assembling system prompt, summary, semantic results, and recent messages.
+// buildInternal constructs a context window with the given options, assembling system prompt,
+// summary, semantic results, and recent messages.
 //
 // Expected:
 //   - manifest is a non-nil agent manifest with instructions and context settings.

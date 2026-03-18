@@ -101,7 +101,14 @@ func checkFuncDecl(pass *analysis.Pass, fn *ast.FuncDecl) {
 	checkNamePrefix(pass, fn.Pos(), text, fn.Name.Name)
 	checkReturnSection(pass, fn, visibility, kind, text)
 	checkExpectedSection(pass, fn, visibility, kind, text)
-	checkSideEffectsSection(pass, fn.Pos(), visibility, kind, fn.Name.Name, text)
+	checkSideEffectsSection(checkSideEffectsInput{
+		pass:       pass,
+		pos:        fn.Pos(),
+		visibility: visibility,
+		kind:       kind,
+		name:       fn.Name.Name,
+		text:       text,
+	})
 }
 
 // checkGenDecl routes general declarations to appropriate type or value checkers.
@@ -241,21 +248,31 @@ func checkExpectedSection(pass *analysis.Pass, fn *ast.FuncDecl, visibility stri
 	}
 }
 
+// checkSideEffectsInput holds parameters for checkSideEffectsSection.
+type checkSideEffectsInput struct {
+	pass       *analysis.Pass
+	pos        token.Pos
+	visibility string
+	kind       string
+	name       string
+	text       string
+}
+
 // checkSideEffectsSection validates that all functions have a Side effects section.
 //
 // Expected:
-//   - pass must be a valid analysis pass.
-//   - pos must be a valid source position.
-//   - visibility must be "exported" or "unexported".
-//   - kind must be "function" or "method".
-//   - name must be the function name.
-//   - text must be the doc comment text.
+//   - input.pass must be a valid analysis pass.
+//   - input.pos must be a valid source position.
+//   - input.visibility must be "exported" or "unexported".
+//   - input.kind must be "function" or "method".
+//   - input.name must be the function name.
+//   - input.text must be the doc comment text.
 //
 // Side effects:
 //   - Reports diagnostic if Side effects section is missing.
-func checkSideEffectsSection(pass *analysis.Pass, pos token.Pos, visibility string, kind string, name string, text string) {
-	if !hasSection(text, "Side effects:") {
-		pass.Reportf(pos, "%s %s %s missing Side effects: section", visibility, kind, name)
+func checkSideEffectsSection(input checkSideEffectsInput) {
+	if !hasSection(input.text, "Side effects:") {
+		input.pass.Reportf(input.pos, "%s %s %s missing Side effects: section", input.visibility, input.kind, input.name)
 	}
 }
 
