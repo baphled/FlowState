@@ -135,9 +135,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
+				for range chunks {
 				}
 
 				Expect(testTool.execCalled).To(BeTrue())
@@ -246,9 +244,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
+				for range chunks {
 				}
 
 				Expect(chatProvider.callIndex).To(Equal(2))
@@ -304,9 +300,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
+				for range chunks {
 				}
 
 				Expect(testTool.execCalled).To(BeTrue())
@@ -363,9 +357,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
+				for range chunks {
 				}
 
 				Expect(searchTool.execCalled).To(BeTrue())
