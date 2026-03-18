@@ -95,9 +95,13 @@ linters:
         - name: var-naming
           severity: warning
         - name: package-comments
-          severity: warning
+          severity: error
         - name: exported
-          severity: warning
+          severity: error
+          arguments:
+            - checkPrivateReceivers
+            - sayRepetitiveInsteadOfStutters
+            - checkPublicInterface
         - name: error-return
           severity: error
         - name: error-strings
@@ -181,6 +185,10 @@ linters:
         - singleCaseSwitch
         - unnamedResult
         - paramTypeCombine
+
+    godot:
+      scope: declarations
+      capital: true
 
     godox:
       keywords:
