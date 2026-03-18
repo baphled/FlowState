@@ -7,44 +7,82 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/tui/components"
 )
+
+// StreamChunkMsg carries a streaming response chunk to the chat intent.
+type StreamChunkMsg struct {
+	Content string
+	Done    bool
+}
+
+// IntentConfig holds the configuration for creating a new chat Intent.
+type IntentConfig struct {
+	Engine       *engine.Engine
+	AgentID      string
+	SessionID    string
+	ProviderName string
+	ModelName    string
+	TokenBudget  int
+}
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
-	engine    *engine.Engine
-	agentID   string
-	sessionID string
-	messages  []string
-	input     string
-	mode      string
-	streaming bool
-	response  strings.Builder
-	width     int
-	height    int
+	engine       *engine.Engine
+	agentID      string
+	sessionID    string
+	messages     []string
+	input        string
+	mode         string
+	streaming    bool
+	response     strings.Builder
+	width        int
+	height       int
+	statusBar    *components.StatusBar
+	tokenCount   int
+	providerName string
+	modelName    string
+	tokenBudget  int
 }
 
-// NewIntent creates a new chat intent with the given engine and agent.
+// NewIntent creates a new chat intent from the given configuration.
 //
 // Expected:
-//   - eng is a non-nil Engine instance.
-//   - agentID and sessionID are non-empty strings.
+//   - cfg.Engine is a non-nil Engine instance.
+//   - cfg.AgentID and cfg.SessionID are non-empty strings.
+//   - cfg.ProviderName and cfg.ModelName identify the active provider and model.
+//   - cfg.TokenBudget is the maximum token allocation for the session.
 //
 // Returns:
-//   - An initialised Intent with default dimensions (80x24) and normal mode.
+//   - An initialised Intent with default dimensions (80x24), normal mode, and a configured StatusBar.
 //
 // Side effects:
 //   - None.
-func NewIntent(eng *engine.Engine, agentID string, sessionID string) *Intent {
+func NewIntent(cfg IntentConfig) *Intent {
+	sb := components.New()
+	sb.Update(components.StatusBarMsg{
+		Provider:    cfg.ProviderName,
+		Model:       cfg.ModelName,
+		Mode:        "NORMAL",
+		TokensUsed:  0,
+		TokenBudget: cfg.TokenBudget,
+	})
+
 	return &Intent{
-		engine:    eng,
-		agentID:   agentID,
-		sessionID: sessionID,
-		messages:  []string{},
-		input:     "",
-		mode:      "normal",
-		streaming: false,
-		width:     80,
-		height:    24,
+		engine:       cfg.Engine,
+		agentID:      cfg.AgentID,
+		sessionID:    cfg.SessionID,
+		messages:     []string{},
+		input:        "",
+		mode:         "normal",
+		streaming:    false,
+		width:        80,
+		height:       24,
+		statusBar:    sb,
+		tokenCount:   0,
+		providerName: cfg.ProviderName,
+		modelName:    cfg.ModelName,
+		tokenBudget:  cfg.TokenBudget,
 	}
 }
 
@@ -69,6 +107,7 @@ func (i *Intent) Init() tea.Cmd {
 //
 // Side effects:
 //   - Updates terminal dimensions on WindowSizeMsg.
+//   - Accumulates token count on StreamChunkMsg.
 //   - Delegates to handleKeyMsg for key events.
 func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
@@ -77,6 +116,9 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		i.width = msg.Width
 		i.height = msg.Height
+		return nil
+	case StreamChunkMsg:
+		i.handleStreamChunk(msg)
 		return nil
 	}
 	return nil
@@ -99,6 +141,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyEscape:
 		if i.mode == "insert" {
 			i.mode = "normal"
+			i.syncStatusBarMode()
 		}
 		return nil
 	case tea.KeyBackspace:
@@ -127,12 +170,14 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //
 // Side effects:
 //   - Switches to insert mode on 'i' in normal mode, or appends runes to input in insert mode.
+//   - Updates StatusBar mode indicator on mode switch.
 func (i *Intent) handleRunes(runes []rune) tea.Cmd {
 	if i.mode == "normal" {
 		if len(runes) == 1 {
 			switch runes[0] {
 			case 'i':
 				i.mode = "insert"
+				i.syncStatusBarMode()
 				return nil
 			case 'q':
 				return tea.Quit
@@ -143,6 +188,63 @@ func (i *Intent) handleRunes(runes []rune) tea.Cmd {
 
 	i.input += string(runes)
 	return nil
+}
+
+// handleStreamChunk processes a streaming response chunk by accumulating token count.
+//
+// Expected:
+//   - msg is a StreamChunkMsg with content from the provider stream.
+//
+// Side effects:
+//   - Increments the token count using approximate character-based estimation.
+//   - Updates the StatusBar with the new token count.
+func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
+	approxTokens := len(msg.Content) / 4
+	if approxTokens == 0 && msg.Content != "" {
+		approxTokens = 1
+	}
+	i.tokenCount += approxTokens
+	i.syncStatusBar()
+}
+
+// syncStatusBar updates the StatusBar with the current intent state.
+//
+// Side effects:
+//   - Updates the StatusBar with provider, model, mode, and token information.
+func (i *Intent) syncStatusBar() {
+	i.statusBar.Update(components.StatusBarMsg{
+		Provider:    i.providerName,
+		Model:       i.modelName,
+		Mode:        i.statusBarMode(),
+		TokensUsed:  i.tokenCount,
+		TokenBudget: i.tokenBudget,
+	})
+}
+
+// syncStatusBarMode updates only the mode in the StatusBar.
+//
+// Side effects:
+//   - Updates the StatusBar mode indicator.
+func (i *Intent) syncStatusBarMode() {
+	i.statusBar.Update(components.StatusBarMsg{
+		Mode:        i.statusBarMode(),
+		TokensUsed:  i.tokenCount,
+		TokenBudget: i.tokenBudget,
+	})
+}
+
+// statusBarMode returns the mode string for the StatusBar display.
+//
+// Returns:
+//   - "NORMAL" or "INSERT" based on the current input mode.
+//
+// Side effects:
+//   - None.
+func (i *Intent) statusBarMode() string {
+	if i.mode == "insert" {
+		return "INSERT"
+	}
+	return "NORMAL"
 }
 
 // sendMessage appends the current input to messages and starts streaming.
@@ -162,7 +264,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 // View renders the chat interface as a string.
 //
 // Returns:
-//   - A rendered chat view with messages, input, and mode indicator.
+//   - A rendered chat view with messages, input, mode indicator, and StatusBar.
 //
 // Side effects:
 //   - None.
@@ -189,6 +291,9 @@ func (i *Intent) View() string {
 	} else {
 		builder.WriteString("[INSERT] Esc: normal mode | Enter: send")
 	}
+
+	builder.WriteString("\n")
+	builder.WriteString(i.statusBar.RenderContent(i.width))
 
 	return builder.String()
 }
@@ -257,4 +362,15 @@ func (i *Intent) Width() int {
 //   - None.
 func (i *Intent) Height() int {
 	return i.height
+}
+
+// TokenCount returns the approximate token count accumulated during streaming.
+//
+// Returns:
+//   - The current token count.
+//
+// Side effects:
+//   - None.
+func (i *Intent) TokenCount() int {
+	return i.tokenCount
 }

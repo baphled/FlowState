@@ -1,6 +1,8 @@
 package chat_test
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,7 +14,13 @@ var _ = Describe("ChatIntent", func() {
 	var intent *chat.Intent
 
 	BeforeEach(func() {
-		intent = chat.NewIntent(nil, "test-agent", "test-session")
+		intent = chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "openai",
+			ModelName:    "gpt-4o",
+			TokenBudget:  4096,
+		})
 	})
 
 	Describe("NewIntent", func() {
@@ -131,6 +139,59 @@ var _ = Describe("ChatIntent", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t', 'e', 's', 't'}})
 			view := intent.View()
 			Expect(view).To(ContainSubstring("test"))
+		})
+	})
+
+	Describe("token counting during streaming", func() {
+		It("starts with zero token count", func() {
+			Expect(intent.TokenCount()).To(Equal(0))
+		})
+
+		It("updates token count after stream chunks", func() {
+			for range 5 {
+				intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+			}
+			Expect(intent.TokenCount()).To(BeNumerically(">", 0))
+		})
+
+		It("accumulates tokens across multiple chunks", func() {
+			intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+			first := intent.TokenCount()
+			intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+			second := intent.TokenCount()
+			Expect(second).To(BeNumerically(">", first))
+		})
+
+		It("renders token count in View after streaming", func() {
+			for range 5 {
+				intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+			}
+			view := intent.View()
+			Expect(view).To(ContainSubstring(fmt.Sprintf("%d", intent.TokenCount())))
+		})
+	})
+
+	Describe("StatusBar in View", func() {
+		It("renders StatusBar at the bottom of View", func() {
+			view := intent.View()
+			Expect(view).To(ContainSubstring("openai"))
+			Expect(view).To(ContainSubstring("gpt-4o"))
+		})
+
+		It("shows NORMAL mode in StatusBar", func() {
+			view := intent.View()
+			Expect(view).To(ContainSubstring("NORMAL"))
+		})
+
+		It("shows INSERT mode after switching", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+			view := intent.View()
+			Expect(view).To(ContainSubstring("INSERT"))
+		})
+
+		It("shows token budget in StatusBar", func() {
+			view := intent.View()
+			Expect(view).To(ContainSubstring("4096"))
 		})
 	})
 
