@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/skill"
@@ -18,6 +19,7 @@ type Server struct {
 	registry  *agent.AgentRegistry
 	discovery *discovery.AgentDiscovery
 	skills    []skill.Skill
+	sessions  *ctxstore.FileSessionStore
 	mux       *http.ServeMux
 }
 
@@ -27,12 +29,14 @@ func NewServer(
 	registry *agent.AgentRegistry,
 	disc *discovery.AgentDiscovery,
 	skills []skill.Skill,
+	sessions *ctxstore.FileSessionStore,
 ) *Server {
 	s := &Server{
 		engine:    eng,
 		registry:  registry,
 		discovery: disc,
 		skills:    skills,
+		sessions:  sessions,
 		mux:       http.NewServeMux(),
 	}
 	s.setupRoutes()
@@ -140,7 +144,15 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, []interface{}{})
+	if s.sessions == nil {
+		writeJSON(w, []ctxstore.SessionInfo{})
+		return
+	}
+	sessions := s.sessions.List()
+	if sessions == nil {
+		sessions = []ctxstore.SessionInfo{}
+	}
+	writeJSON(w, sessions)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {

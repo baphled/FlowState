@@ -135,7 +135,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 	disc := discovery.NewAgentDiscovery(manifestValues)
 
-	apiServer := api.NewServer(eng, agentRegistry, disc, skills)
+	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
 
 	return &App{
 		Config:    cfg,
