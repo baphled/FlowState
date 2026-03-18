@@ -1,7 +1,7 @@
 Feature: CLI Commands
   As a user
-  I want FlowState CLI commands to expose consistent help and stub behaviour
-  So that I can discover available entry points before the full implementations land
+  I want FlowState CLI commands to expose consistent help and behaviour
+  So that I can discover and use available entry points
 
   Background:
     Given the FlowState CLI is available
@@ -36,29 +36,26 @@ Feature: CLI Commands
     And I should see the local flag "--port"
     And I should see the local flag "--host"
 
-  Scenario: Agent list subcommand prints a placeholder message
+  Scenario: Agent list subcommand shows agents or empty message
     When I run "flowstate agent list"
-    Then I should see placeholder output containing "agent list stub"
+    Then I should see output containing "agent"
 
   Scenario: Agent info subcommand accepts an agent name
     When I run "flowstate agent info coder"
-    Then I should see placeholder output containing "agent info stub"
-    And I should see placeholder output containing "coder"
+    Then I should see output containing "coder"
 
-  Scenario: Skill list subcommand prints a placeholder message
+  Scenario: Skill list subcommand shows skills or empty message
     When I run "flowstate skill list"
-    Then I should see placeholder output containing "skill list stub"
+    Then I should see output containing "skill"
 
   Scenario: Discover command accepts a positional message argument
     When I run "flowstate discover write tests for the CLI"
-    Then I should see placeholder output containing "discover stub"
-    And I should see placeholder output containing "write tests for the CLI"
+    Then I should see output containing "agent"
 
-  Scenario: Session list subcommand prints a placeholder message
+  Scenario: Session list subcommand shows sessions or empty message
     When I run "flowstate session list"
-    Then I should see placeholder output containing "session list stub"
+    Then I should see output containing "session"
 
   Scenario: Session resume subcommand accepts a session identifier
     When I run "flowstate session resume session-123"
-    Then I should see placeholder output containing "session resume stub"
-    And I should see placeholder output containing "session-123"
+    Then I should see output containing "session-123"
