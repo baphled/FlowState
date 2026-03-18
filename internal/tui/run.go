@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/tui/app"
 )
 
 // Run starts the chat TUI with the given engine and agent.
@@ -19,8 +20,10 @@ import (
 // Side effects:
 //   - Takes over the terminal with an alternate screen for the TUI.
 func Run(eng *engine.Engine, agentID string, sessionID string) error {
-	m := NewModel(eng, agentID, sessionID)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	chatModel := NewModel(eng, agentID, sessionID)
+	chatIntent := app.NewChatAdapter(chatModel)
+	appModel := app.New(chatIntent)
+	p := tea.NewProgram(appModel, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
