@@ -267,6 +267,9 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 // Returns:
 //   - A provider.Registry containing all successfully initialised providers.
 //   - The Ollama provider instance (may be nil if initialisation failed).
+//
+// Side effects:
+//   - Initialises provider instances and registers them in the registry.
 func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	return registerProviders(cfg)
 }

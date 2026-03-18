@@ -50,6 +50,15 @@ type Manager struct {
 type ManagerOption func(*Manager)
 
 // WithTransportFactory sets a custom transport factory for testing.
+//
+// Expected:
+//   - factory is a non-nil TransportFactory function.
+//
+// Returns:
+//   - A ManagerOption that configures the transport factory.
+//
+// Side effects:
+//   - None (configuration only).
 func WithTransportFactory(factory TransportFactory) ManagerOption {
 	return func(m *Manager) {
 		m.transportFactory = factory
@@ -57,6 +66,9 @@ func WithTransportFactory(factory TransportFactory) ManagerOption {
 }
 
 // NewManager creates a new MCP server connection manager.
+//
+// Expected:
+//   - opts are optional ManagerOption functions to configure the manager.
 //
 // Returns:
 //   - An initialised Manager with no connected servers.
@@ -75,6 +87,15 @@ func NewManager(opts ...ManagerOption) *Manager {
 }
 
 // defaultTransportFactory creates a CommandTransport for production use.
+//
+// Expected:
+//   - config is a non-nil ServerConfig with Command and optional Args/Env.
+//
+// Returns:
+//   - A CommandTransport ready for use, or an error if creation fails.
+//
+// Side effects:
+//   - None (transport is not started).
 func defaultTransportFactory(_ context.Context, config ServerConfig) (mcp.Transport, error) {
 	cmd := exec.Command(config.Command, config.Args...) //nolint:gosec // intentional subprocess execution
 	if len(config.Env) > 0 {

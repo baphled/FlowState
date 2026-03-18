@@ -53,6 +53,9 @@ type MCPServerConfig struct {
 //
 // Returns:
 //   - The path to the FlowState configuration directory.
+//
+// Side effects:
+//   - None.
 func Dir() string {
 	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
 		return filepath.Join(xdgConfigHome, "flowstate")
@@ -72,6 +75,9 @@ func Dir() string {
 //
 // Returns:
 //   - The path to the FlowState data directory.
+//
+// Side effects:
+//   - None.
 func DataDir() string {
 	if xdgDataHome := os.Getenv("XDG_DATA_HOME"); xdgDataHome != "" {
 		return filepath.Join(xdgDataHome, "flowstate")
@@ -154,6 +160,12 @@ func LoadConfig() (*AppConfig, error) {
 }
 
 // homeDir returns the user's home directory, or "." if it cannot be resolved.
+//
+// Returns:
+//   - The user's home directory path, or "." as fallback.
+//
+// Side effects:
+//   - None.
 func homeDir() string {
 	if h, err := os.UserHomeDir(); err == nil {
 		return h
@@ -202,6 +214,9 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 //
 // Returns:
 //   - An error if any server is missing Name or Command, nil otherwise.
+//
+// Side effects:
+//   - None.
 func ValidateMCPServers(servers []MCPServerConfig) error {
 	for i, server := range servers {
 		if server.Name == "" {

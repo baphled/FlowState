@@ -19,16 +19,41 @@ type ChatAdapter struct {
 }
 
 // NewChatAdapter creates a ChatAdapter wrapping the given chat model.
+//
+// Expected:
+//   - model is a non-nil ChatModel implementation.
+//
+// Returns:
+//   - An initialised ChatAdapter wrapping the given model.
+//
+// Side effects:
+//   - None.
 func NewChatAdapter(model ChatModel) *ChatAdapter {
 	return &ChatAdapter{model: model}
 }
 
 // Init delegates to the wrapped model.
+//
+// Returns:
+//   - A tea.Cmd from the wrapped model's Init method.
+//
+// Side effects:
+//   - Delegates to the wrapped model's Init method.
 func (a *ChatAdapter) Init() tea.Cmd {
 	return a.model.Init()
 }
 
 // Update delegates to the wrapped model, discarding the returned model.
+//
+// Expected:
+//   - msg is a tea.Msg from the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd from the wrapped model's Update method.
+//
+// Side effects:
+//   - Updates the wrapped model if the returned model implements ChatModel.
+//   - Delegates to the wrapped model's Update method.
 func (a *ChatAdapter) Update(msg tea.Msg) tea.Cmd {
 	newModel, cmd := a.model.Update(msg)
 	if m, ok := newModel.(ChatModel); ok {
@@ -38,6 +63,12 @@ func (a *ChatAdapter) Update(msg tea.Msg) tea.Cmd {
 }
 
 // View delegates to the wrapped model.
+//
+// Returns:
+//   - The rendered view string from the wrapped model.
+//
+// Side effects:
+//   - None.
 func (a *ChatAdapter) View() string {
 	return a.model.View()
 }

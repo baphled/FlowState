@@ -3121,6 +3121,13 @@ func (s *StepDefinitions) subsequentCommandsShouldAutoApprove(command string) er
 
 // MCP tool integration step stubs — pending implementation.
 
+// flowstateIsConfiguredWithAnMCPServer sets up an in-memory MCP server for testing.
+//
+// Returns:
+//   - An error if setup fails, nil otherwise.
+//
+// Side effects:
+//   - Initialises s.mcpManager, s.mcpClientTransport, s.mcpServerTransport, and s.mcpServer.
 func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 	s.mcpManager = mcp.NewManager()
 
@@ -3159,11 +3166,25 @@ func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 	return nil
 }
 
+// iConnectToTheMCPServer connects the MCP manager to the test server.
+//
+// Returns:
+//   - An error if connection fails, nil otherwise.
+//
+// Side effects:
+//   - Establishes a connection to the MCP server.
 func (s *StepDefinitions) iConnectToTheMCPServer() error {
 	ctx := context.Background()
 	return s.mcpManager.ConnectWithTransport(ctx, "test-server", s.mcpClientTransport)
 }
 
+// iShouldSeeAvailableToolsFromTheServer verifies that tools are available from the MCP server.
+//
+// Returns:
+//   - An error if no tools are found or listing fails, nil otherwise.
+//
+// Side effects:
+//   - Populates s.mcpTools with the list of available tools.
 func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
 	ctx := context.Background()
 	tools, err := s.mcpManager.ListTools(ctx, "test-server")
@@ -3177,6 +3198,13 @@ func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
 	return nil
 }
 
+// iAmConnectedToTheMCPServer sets up and connects to the MCP server.
+//
+// Returns:
+//   - An error if setup or connection fails, nil otherwise.
+//
+// Side effects:
+//   - Calls flowstateIsConfiguredWithAnMCPServer and iConnectToTheMCPServer.
 func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
 	if err := s.flowstateIsConfiguredWithAnMCPServer(); err != nil {
 		return err
@@ -3184,6 +3212,13 @@ func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
 	return s.iConnectToTheMCPServer()
 }
 
+// iAskTheAgentToUseAnMCPTool calls an MCP tool and stores the result.
+//
+// Returns:
+//   - An error if the tool call fails, nil otherwise.
+//
+// Side effects:
+//   - Populates s.mcpToolResult with the tool execution result.
 func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
 	ctx := context.Background()
 	result, err := s.mcpManager.CallTool(ctx, "test-server", "echo", map[string]any{"message": "hello"})
@@ -3194,6 +3229,13 @@ func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
 	return nil
 }
 
+// theToolShouldExecuteAndReturnAResult verifies that the MCP tool executed successfully.
+//
+// Returns:
+//   - An error if the tool result is invalid or indicates an error, nil otherwise.
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
 	if s.mcpToolResult == nil {
 		return errors.New("expected tool result, got nil")
@@ -3207,6 +3249,13 @@ func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
 	return nil
 }
 
+// iDisconnectFromTheMCPServer disconnects from the MCP server.
+//
+// Returns:
+//   - An error if the manager is not initialised or disconnection fails, nil otherwise.
+//
+// Side effects:
+//   - Closes the connection to the MCP server.
 func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
 	if s.mcpManager == nil {
 		return errors.New("MCP manager not initialised")
@@ -3214,6 +3263,13 @@ func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
 	return s.mcpManager.Disconnect("test-server")
 }
 
+// theServerConnectionShouldBeCleanedUp verifies that the MCP server connection is cleaned up.
+//
+// Returns:
+//   - An error if servers remain after disconnect, nil otherwise.
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
 	if s.mcpManager == nil {
 		return errors.New("MCP manager not initialised")
@@ -3227,12 +3283,26 @@ func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
 
 // TUI markdown rendering and token display step stubs — pending implementation.
 
+// flowstateTUIIsRunning initialises the chat view and status bar for testing.
+//
+// Returns:
+//   - nil (always succeeds).
+//
+// Side effects:
+//   - Initialises s.chatView and s.statusBar.
 func (s *StepDefinitions) flowstateTUIIsRunning() error {
 	s.chatView = chat.NewView()
 	s.statusBar = components.New()
 	return nil
 }
 
+// theAISendsAResponseWithACodeBlock adds a code block response to the chat view.
+//
+// Returns:
+//   - An error if chatView is not initialised, nil otherwise.
+//
+// Side effects:
+//   - Adds a message to the chat view.
 func (s *StepDefinitions) theAISendsAResponseWithACodeBlock() error {
 	if s.chatView == nil {
 		return errors.New("chatView not initialised - call flowstateTUIIsRunning first")
@@ -3242,28 +3312,70 @@ func (s *StepDefinitions) theAISendsAResponseWithACodeBlock() error {
 	return nil
 }
 
+// theResponseShouldBeRenderedWithSyntaxHighlighting verifies syntax highlighting in responses.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theResponseShouldBeRenderedWithSyntaxHighlighting() error {
 	return godog.ErrPending
 }
 
+// theAIIsStreamingAResponse verifies that the AI is streaming a response.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theAIIsStreamingAResponse() error {
 	return godog.ErrPending
 }
 
+// theStatusBarShouldShowTheCurrentTokenCount verifies token count display in the status bar.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theStatusBarShouldShowTheCurrentTokenCount() error {
 	return godog.ErrPending
 }
 
 // XDG config step stubs — pending implementation.
 
+// xdgConfigHomeIsSetToACustomPath sets up a custom XDG_CONFIG_HOME for testing.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) xdgConfigHomeIsSetToACustomPath() error {
 	return godog.ErrPending
 }
 
+// aConfigFileExistsAtThatPath creates a config file at the custom XDG path.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) aConfigFileExistsAtThatPath() error {
 	return godog.ErrPending
 }
 
+// theConfigShouldBeLoadedFromTheXDGPath verifies that config is loaded from the XDG path.
+//
+// Returns:
+//   - godog.ErrPending (step not yet implemented).
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
 	return godog.ErrPending
 }

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Running make check before commit..."
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if make -C "$REPO_ROOT" check; then
+    echo "make check passed — proceeding with commit"
+else
+    echo "make check FAILED — commit blocked. Fix issues above and retry."
+    exit 1
+fi

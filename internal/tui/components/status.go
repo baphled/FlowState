@@ -27,6 +27,12 @@ type StatusBar struct {
 }
 
 // New creates a new StatusBar with defaults.
+//
+// Returns:
+//   - An initialised StatusBar with mode set to "NORMAL".
+//
+// Side effects:
+//   - None.
 func New() *StatusBar {
 	return &StatusBar{
 		mode: "NORMAL",
@@ -34,6 +40,12 @@ func New() *StatusBar {
 }
 
 // Update applies a StatusBarMsg to the StatusBar state.
+//
+// Expected:
+//   - msg is a StatusBarMsg with status updates.
+//
+// Side effects:
+//   - Updates provider, model, tokens, and mode fields from the message.
 func (s *StatusBar) Update(msg StatusBarMsg) {
 	if msg.Provider != "" {
 		s.provider = msg.Provider
@@ -51,6 +63,16 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 }
 
 // tokenColor is a helper to determine color based on usage.
+//
+// Expected:
+//   - used is the number of tokens used (≥0).
+//   - budget is the token budget (≥0).
+//
+// Returns:
+//   - A lipgloss.Color: grey if budget is 0, green if <70%, yellow if 70-90%, red if >90%.
+//
+// Side effects:
+//   - None.
 func tokenColor(used, budget int) lipgloss.Color {
 	if budget == 0 {
 		return lipgloss.Color("#888888") // grey when no budget set
@@ -67,11 +89,15 @@ func tokenColor(used, budget int) lipgloss.Color {
 }
 
 // RenderContent renders the status bar for the given width.
-// Uses lipgloss for styling:
-// - subtle background.
-// - provider name in bold.
-// - token count colour-coded: green <70%, yellow 70-90%, red >90%.
-// - mode indicator (NORMAL/INSERT).
+//
+// Expected:
+//   - width is the terminal width in columns (>0).
+//
+// Returns:
+//   - A rendered status bar string with mode, provider, model, and token usage.
+//
+// Side effects:
+//   - None.
 func (s *StatusBar) RenderContent(width int) string {
 	var (
 		providerStyle  = lipgloss.NewStyle().Bold(true).Padding(0, 1)

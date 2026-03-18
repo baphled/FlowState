@@ -26,6 +26,12 @@ type View struct {
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
+//
+// Returns:
+//   - An initialised View with default width (80), height (24), and markdown renderer.
+//
+// Side effects:
+//   - None.
 func NewView() *View {
 	return &View{
 		width:      80,
@@ -35,47 +41,107 @@ func NewView() *View {
 }
 
 // Width returns the current width of the view.
+//
+// Returns:
+//   - The current view width in columns.
+//
+// Side effects:
+//   - None.
 func (v *View) Width() int {
 	return v.width
 }
 
 // Height returns the current height of the view.
+//
+// Returns:
+//   - The current view height in rows.
+//
+// Side effects:
+//   - None.
 func (v *View) Height() int {
 	return v.height
 }
 
 // SetDimensions sets the width and height of the view.
+//
+// Expected:
+//   - width and height are positive integers.
+//
+// Side effects:
+//   - Updates the view's width and height fields.
 func (v *View) SetDimensions(width, height int) {
 	v.width = width
 	v.height = height
 }
 
 // AddMessage appends a message to the view's message list.
+//
+// Expected:
+//   - msg is a Message with Role and Content.
+//
+// Side effects:
+//   - Appends the message to the messages slice.
 func (v *View) AddMessage(msg Message) {
 	v.messages = append(v.messages, msg)
 }
 
 // SetInput sets the current input text.
+//
+// Expected:
+//   - input is the user's input text (may be empty).
+//
+// Side effects:
+//   - Updates the input field.
 func (v *View) SetInput(input string) {
 	v.input = input
 }
 
 // SetMode sets the current input mode (normal or insert).
+//
+// Expected:
+//   - mode is "normal" or "insert".
+//
+// Side effects:
+//   - Updates the mode field.
 func (v *View) SetMode(mode string) {
 	v.mode = mode
 }
 
 // SetStreaming sets the streaming state and partial response content.
+//
+// Expected:
+//   - streaming is a boolean indicating if streaming is active.
+//   - response is the partial response content (may be empty).
+//
+// Side effects:
+//   - Updates the streaming and response fields.
 func (v *View) SetStreaming(streaming bool, response string) {
 	v.streaming = streaming
 	v.response = response
 }
 
 // SetMarkdownRenderer sets a custom function for rendering markdown content.
+//
+// Expected:
+//   - fn is a function that takes content and width, returns rendered string.
+//
+// Side effects:
+//   - Updates the renderFunc field.
 func (v *View) SetMarkdownRenderer(fn func(string, int) string) {
 	v.renderFunc = fn
 }
 
+// renderMarkdown renders markdown content using glamour with dark theme and word wrapping.
+//
+// Expected:
+//   - content is markdown text.
+//   - width is the terminal width for word wrapping.
+//
+// Returns:
+//   - Rendered markdown as a string, or original content if rendering fails.
+//
+// Side effects:
+//   - None.
 func renderMarkdown(content string, width int) string {
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStylePath("dark"),
@@ -92,6 +158,15 @@ func renderMarkdown(content string, width int) string {
 }
 
 // RenderContent renders the chat view content including messages, streaming response, and input.
+//
+// Expected:
+//   - width is the terminal width in columns.
+//
+// Returns:
+//   - A rendered chat view string with messages, streaming response, and input prompt.
+//
+// Side effects:
+//   - None.
 func (v *View) RenderContent(width int) string {
 	var sb strings.Builder
 
