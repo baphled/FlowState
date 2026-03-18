@@ -12,6 +12,7 @@ func getOptions() *godog.Options {
 	return &godog.Options{
 		Output: colors.Colored(os.Stdout),
 		Format: "progress",
+		Strict: true,
 	}
 }
 
