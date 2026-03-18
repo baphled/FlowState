@@ -1,26 +1,60 @@
 name: CI
 on:
   push:
-    branches: ['**']
+    branches: [main, agent-platform]
   pull_request:
-    branches: ['**']
+
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+
       - name: Download dependencies
         run: go mod download
+
+      - name: Install CI tools
+        run: make install-coverage-tools
+
       - name: Build
         run: make build
-      - name: Test
-        run: make test
+
       - name: Lint
         run: make lint
-      - name: BDD smoke
+
+      - name: Unit tests
+        run: make test
+
+      - name: BDD smoke tests
         run: make bdd-smoke
+
+      - name: Coverage check
+        run: make coverage-check
+
       - name: Verify go install
         run: go install ./cmd/flowstate && flowstate --version
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.ai/install.sh | sh
+          ollama serve &
+          for i in $(seq 1 30); do
+            curl -s http://localhost:11434/api/version > /dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: Pull Ollama model
+        run: ollama pull qwen2:0.5b
+        timeout-minutes: 5
+
+      - name: E2E chat test
+        run: flowstate chat --message "hello" --agent general
+        timeout-minutes: 2
+        continue-on-error: true
+        env:
+          FLOWSTATE_PROVIDER: ollama
+          FLOWSTATE_MODEL: qwen2:0.5b
