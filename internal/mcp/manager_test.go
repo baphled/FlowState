@@ -29,19 +29,34 @@ var _ = Describe("Manager", func() {
 
 	Describe("Connect", func() {
 		It("adds server to the manager", func() {
-			err := manager.Connect(ctx, "test-server", "echo", []string{"hello"})
+			config := mcp.ServerConfig{
+				Name:    "test-server",
+				Command: "echo",
+				Args:    []string{"hello"},
+			}
+			err := manager.Connect(ctx, config)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(manager.ListServers()).To(ContainElement("test-server"))
 		})
 
 		Context("when connecting with same name twice", func() {
 			BeforeEach(func() {
-				err := manager.Connect(ctx, "test-server", "echo", []string{"hello"})
+				config := mcp.ServerConfig{
+					Name:    "test-server",
+					Command: "echo",
+					Args:    []string{"hello"},
+				}
+				err := manager.Connect(ctx, config)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns an error", func() {
-				err := manager.Connect(ctx, "test-server", "echo", []string{"world"})
+				config := mcp.ServerConfig{
+					Name:    "test-server",
+					Command: "echo",
+					Args:    []string{"world"},
+				}
+				err := manager.Connect(ctx, config)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("already connected"))
 			})
@@ -50,7 +65,12 @@ var _ = Describe("Manager", func() {
 
 	Describe("Disconnect", func() {
 		BeforeEach(func() {
-			err := manager.Connect(ctx, "test-server", "echo", []string{"hello"})
+			config := mcp.ServerConfig{
+				Name:    "test-server",
+				Command: "echo",
+				Args:    []string{"hello"},
+			}
+			err := manager.Connect(ctx, config)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -69,10 +89,10 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
-	Describe("DiscoverTools", func() {
+	Describe("ListTools", func() {
 		Context("when server is not connected", func() {
 			It("returns an error", func() {
-				_, err := manager.DiscoverTools(ctx, "unknown-server")
+				_, err := manager.ListTools(ctx, "unknown-server")
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("not found"))
 			})
@@ -80,12 +100,17 @@ var _ = Describe("Manager", func() {
 
 		Context("when server is connected", func() {
 			BeforeEach(func() {
-				err := manager.Connect(ctx, "test-server", "echo", []string{"hello"})
+				config := mcp.ServerConfig{
+					Name:    "test-server",
+					Command: "echo",
+					Args:    []string{"hello"},
+				}
+				err := manager.Connect(ctx, config)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns tools from the server", func() {
-				tools, err := manager.DiscoverTools(ctx, "test-server")
+				tools, err := manager.ListTools(ctx, "test-server")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(tools).NotTo(BeNil())
 			})
@@ -103,12 +128,17 @@ var _ = Describe("Manager", func() {
 
 		Context("when server is connected", func() {
 			BeforeEach(func() {
-				err := manager.Connect(ctx, "test-server", "echo", []string{"hello"})
+				config := mcp.ServerConfig{
+					Name:    "test-server",
+					Command: "echo",
+					Args:    []string{"hello"},
+				}
+				err := manager.Connect(ctx, config)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
 			It("returns a result", func() {
-				result, err := manager.CallTool(ctx, "test-server", "tool", map[string]interface{}{"key": "value"})
+				result, err := manager.CallTool(ctx, "test-server", "tool", map[string]any{"key": "value"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
 			})
@@ -117,11 +147,11 @@ var _ = Describe("Manager", func() {
 
 	Describe("ListServers", func() {
 		It("returns sorted names", func() {
-			err := manager.Connect(ctx, "zebra", "echo", nil)
+			err := manager.Connect(ctx, mcp.ServerConfig{Name: "zebra", Command: "echo"})
 			Expect(err).NotTo(HaveOccurred())
-			err = manager.Connect(ctx, "alpha", "echo", nil)
+			err = manager.Connect(ctx, mcp.ServerConfig{Name: "alpha", Command: "echo"})
 			Expect(err).NotTo(HaveOccurred())
-			err = manager.Connect(ctx, "beta", "echo", nil)
+			err = manager.Connect(ctx, mcp.ServerConfig{Name: "beta", Command: "echo"})
 			Expect(err).NotTo(HaveOccurred())
 
 			servers := manager.ListServers()

@@ -26,7 +26,14 @@
   "capabilities": {
     "tools": ["bash", "file", "web"],
     "skills": [],
-    "always_active_skills": ["pre-action", "memory-keeper"],
+    "always_active_skills": [
+      "pre-action",
+      "memory-keeper",
+      "token-cost-estimation",
+      "retrospective",
+      "note-taking",
+      "knowledge-base"
+    ],
     "mcp_servers": []
   },
   "context_management": {

@@ -51,36 +51,36 @@ func NewManager() *Manager {
 // Connect establishes a connection to an MCP server.
 //
 // Expected:
-//   - name is a unique identifier for the server.
-//   - command is the executable to run the MCP server.
-//   - args is the list of arguments for the command.
+//   - config.Name is a unique identifier for the server.
+//   - config.Command is the executable to run the MCP server.
+//   - config.Args is the list of arguments for the command.
 //
 // Returns:
 //   - An error if a server with the same name is already connected.
 //
 // Side effects:
 //   - Registers the server connection in the manager.
-func (m *Manager) Connect(_ context.Context, name string, command string, args []string) error {
+func (m *Manager) Connect(_ context.Context, config ServerConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.servers[name]; exists {
-		return fmt.Errorf("server %q already connected", name)
+	if _, exists := m.servers[config.Name]; exists {
+		return fmt.Errorf("server %q already connected", config.Name)
 	}
 
-	m.servers[name] = &ServerConnection{
-		Name:    name,
-		Command: command,
-		Args:    args,
+	m.servers[config.Name] = &ServerConnection{
+		Name:    config.Name,
+		Command: config.Command,
+		Args:    config.Args,
 	}
 
 	return nil
 }
 
-// DiscoverTools returns the tools available on a connected MCP server.
+// ListTools returns the tools available on a connected MCP server.
 //
 // Expected:
-//   - name is the identifier of a connected MCP server.
+//   - serverName is the identifier of a connected MCP server.
 //
 // Returns:
 //   - A slice of ToolInfo describing available tools.
@@ -88,11 +88,11 @@ func (m *Manager) Connect(_ context.Context, name string, command string, args [
 //
 // Side effects:
 //   - None.
-func (m *Manager) DiscoverTools(_ context.Context, name string) ([]ToolInfo, error) {
+func (m *Manager) ListTools(_ context.Context, serverName string) ([]ToolInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if _, exists := m.servers[name]; !exists {
+	if _, exists := m.servers[serverName]; !exists {
 		return nil, errors.New("server not found")
 	}
 
@@ -103,6 +103,8 @@ func (m *Manager) DiscoverTools(_ context.Context, name string) ([]ToolInfo, err
 //
 // Expected:
 //   - serverName is the identifier of a connected MCP server.
+//   - toolName is the name of the tool to invoke.
+//   - args is a map of tool arguments.
 //
 // Returns:
 //   - A ToolResult containing the tool's output.
@@ -110,7 +112,7 @@ func (m *Manager) DiscoverTools(_ context.Context, name string) ([]ToolInfo, err
 //
 // Side effects:
 //   - None (stub implementation).
-func (m *Manager) CallTool(_ context.Context, serverName, _ string, _ map[string]interface{}) (*ToolResult, error) {
+func (m *Manager) CallTool(_ context.Context, serverName, toolName string, args map[string]any) (*ToolResult, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -160,4 +162,19 @@ func (m *Manager) ListServers() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// DisconnectAll closes all server connections.
+//
+// Returns:
+//   - An error if any disconnection fails (currently always nil).
+//
+// Side effects:
+//   - Removes all servers from the manager's connection map.
+func (m *Manager) DisconnectAll() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.servers = make(map[string]*ServerConnection)
+	return nil
 }

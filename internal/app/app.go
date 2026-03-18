@@ -133,11 +133,7 @@ func (a *App) SessionsDir() string {
 // Side effects:
 //   - None.
 func (a *App) ConfigPath() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(a.Config.DataDir, "config.yaml")
-	}
-	return filepath.Join(homeDir, ".flowstate", "config.yaml")
+	return filepath.Join(config.ConfigDir(), "config.yaml")
 }
 
 // extractSkillNames extracts the name field from each skill in the provided slice.

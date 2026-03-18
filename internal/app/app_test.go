@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/config"
 )
 
 var _ = Describe("App", func() {
@@ -195,11 +196,22 @@ When to use: Testing purposes
 		})
 
 		Describe("ConfigPath", func() {
-			It("returns config path in home directory", func() {
-				homeDir, _ := os.UserHomeDir()
-				expectedPath := filepath.Join(homeDir, ".flowstate", "config.yaml")
+			It("returns config path using ConfigDir()", func() {
+				expectedPath := filepath.Join(config.ConfigDir(), "config.yaml")
 
 				Expect(application.ConfigPath()).To(Equal(expectedPath))
+			})
+
+			Context("when XDG_CONFIG_HOME is set", func() {
+				It("returns config path in XDG_CONFIG_HOME", func() {
+					xdgPath := filepath.Join(tempDir, "xdg-config")
+					os.Setenv("XDG_CONFIG_HOME", xdgPath)
+					DeferCleanup(func() { os.Unsetenv("XDG_CONFIG_HOME") })
+
+					expectedPath := filepath.Join(xdgPath, "flowstate", "config.yaml")
+
+					Expect(application.ConfigPath()).To(Equal(expectedPath))
+				})
 			})
 		})
 	})

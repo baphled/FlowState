@@ -69,10 +69,14 @@ func NewRootCmd(application *app.App) *cobra.Command {
 //   - nil if no flags were changed, or an error if reinitialisation fails.
 //
 // Side effects:
-//   - Updates the App instance if directory flags are changed.
+//   - Updates the App instance if directory flags or config path are changed.
 func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) error {
 	flags := cmd.Flags()
 
+	configPath, err := flags.GetString("config")
+	if err != nil {
+		return fmt.Errorf("reading config flag: %w", err)
+	}
 	agentsDir, err := flags.GetString("agents-dir")
 	if err != nil {
 		return fmt.Errorf("reading agents-dir flag: %w", err)
@@ -86,15 +90,24 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 		return fmt.Errorf("reading sessions-dir flag: %w", err)
 	}
 
+	configChanged := flags.Changed("config")
 	agentsDirChanged := flags.Changed("agents-dir")
 	skillsDirChanged := flags.Changed("skills-dir")
 	sessionsDirChanged := flags.Changed("sessions-dir")
 
-	if !agentsDirChanged && !skillsDirChanged && !sessionsDirChanged {
+	if !configChanged && !agentsDirChanged && !skillsDirChanged && !sessionsDirChanged {
 		return nil
 	}
 
-	cfg := *baseCfg
+	cfg := baseCfg
+	if configChanged {
+		loadedCfg, err := config.LoadConfigFromPath(configPath)
+		if err != nil {
+			return fmt.Errorf("loading config from %q: %w", configPath, err)
+		}
+		cfg = loadedCfg
+	}
+
 	if agentsDirChanged {
 		cfg.AgentDir = agentsDir
 	}
@@ -105,7 +118,7 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 		cfg.DataDir = filepath.Dir(sessionsDir)
 	}
 
-	newApp, err := app.New(&cfg)
+	newApp, err := app.New(cfg)
 	if err != nil {
 		return fmt.Errorf("reinitialising app with flags: %w", err)
 	}
