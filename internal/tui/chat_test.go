@@ -231,4 +231,126 @@ var _ = Describe("Chat TUI", func() {
 			_ = testErr
 		})
 	})
+
+	Describe("sendMessage via Enter in insert mode", func() {
+		BeforeEach(func() {
+			model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+			model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello")})
+		})
+
+		It("clears input after sending", func() {
+			model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(model.Input()).To(BeEmpty())
+		})
+
+		It("adds the message to chat history", func() {
+			model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(model.Messages()).To(ContainElement(ContainSubstring("hello")))
+		})
+
+		It("returns a non-nil command", func() {
+			_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+		})
+
+		It("sets streaming to true", func() {
+			model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(model.IsStreaming()).To(BeTrue())
+		})
+
+		It("handles the stream started msg from the command", func() {
+			_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+
+			msg := cmd()
+			_, nextCmd := model.Update(msg)
+			Expect(nextCmd).NotTo(BeNil())
+		})
+	})
+
+	Describe("edge cases", func() {
+		Context("when pressing Enter in insert mode with empty input", func() {
+			BeforeEach(func() {
+				model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+			})
+
+			It("does not send a message", func() {
+				_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).To(BeNil())
+				Expect(model.Messages()).To(BeEmpty())
+			})
+		})
+
+		Context("when pressing Backspace in insert mode with empty input", func() {
+			BeforeEach(func() {
+				model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+			})
+
+			It("does nothing", func() {
+				model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+				Expect(model.Input()).To(BeEmpty())
+			})
+		})
+
+		Context("when pressing Escape in normal mode", func() {
+			It("stays in normal mode", func() {
+				model.Update(tea.KeyMsg{Type: tea.KeyEscape})
+				Expect(model.Mode()).To(Equal("normal"))
+			})
+		})
+
+		Context("when pressing Enter in normal mode", func() {
+			It("does nothing", func() {
+				_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).To(BeNil())
+			})
+		})
+
+		Context("when pressing Backspace in normal mode", func() {
+			It("does nothing", func() {
+				model.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+				Expect(model.Input()).To(BeEmpty())
+			})
+		})
+
+		Context("when StreamDoneMsg arrives with empty response", func() {
+			It("does not add empty message to history", func() {
+				model.Update(tui.StreamDoneMsg{})
+				Expect(model.Messages()).To(BeEmpty())
+			})
+		})
+
+		Context("when handling unknown message types", func() {
+			It("returns model unchanged", func() {
+				_, cmd := model.Update("unknown-msg-type")
+				Expect(cmd).To(BeNil())
+			})
+		})
+	})
+
+	Describe("View with messages and streaming", func() {
+		It("shows chat history in view", func() {
+			chunks := make(chan provider.StreamChunk, 1)
+			model.SetChunks(chunks)
+			model.Update(tui.ChunkMsg{Content: "response text"})
+			model.Update(tui.StreamDoneMsg{})
+
+			view := model.View()
+			Expect(view).To(ContainSubstring("response text"))
+		})
+
+		It("shows streaming response in progress", func() {
+			chunks := make(chan provider.StreamChunk, 1)
+			model.SetChunks(chunks)
+			model.Update(tui.ChunkMsg{Content: "partial"})
+
+			view := model.View()
+			Expect(view).To(ContainSubstring("partial"))
+		})
+
+		It("shows input prompt", func() {
+			view := model.View()
+			Expect(view).To(ContainSubstring("> "))
+		})
+	})
 })

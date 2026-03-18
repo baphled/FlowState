@@ -1,0 +1,14 @@
+ok  	github.com/baphled/flowstate/internal/skill	0.010s	coverage: 86.0% of statements
+ok  	github.com/baphled/flowstate/internal/tui	0.010s	coverage: 83.3% of statements
+ok  	github.com/baphled/flowstate/internal/tui/app	0.009s	coverage: 100.0% of statements
+ok  	github.com/baphled/flowstate/internal/tui/intents/chat	0.049s	coverage: 85.1% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/containers	0.064s	coverage: 81.7% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/display	0.051s	coverage: 96.7% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/feedback	0.140s	coverage: 95.7% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/layout	0.070s	coverage: 80.7% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/navigation	0.060s	coverage: 98.4% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/primitives	0.081s	coverage: 89.7% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/theme	0.055s	coverage: 93.3% of statements
+ok  	github.com/baphled/flowstate/internal/tui/uikit/widgets	0.061s	coverage: 99.4% of statements
+ok  	github.com/baphled/flowstate/internal/tui/views/chat	0.040s	coverage: 94.1% of statements
+ok  	github.com/baphled/flowstate/internal/cli	0.012s	coverage: 75.3% of statements

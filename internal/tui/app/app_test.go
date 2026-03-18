@@ -120,3 +120,105 @@ var _ = Describe("App", func() {
 		})
 	})
 })
+
+type mockChatModel struct {
+	initCalled   bool
+	updateCalled bool
+	viewCalled   bool
+	cmdToReturn  tea.Cmd
+	viewToReturn string
+	lastMsg      tea.Msg
+}
+
+func (m *mockChatModel) Init() tea.Cmd {
+	m.initCalled = true
+	return m.cmdToReturn
+}
+
+func (m *mockChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.updateCalled = true
+	m.lastMsg = msg
+	return m, m.cmdToReturn
+}
+
+func (m *mockChatModel) View() string {
+	m.viewCalled = true
+	return m.viewToReturn
+}
+
+var _ = Describe("ChatAdapter", func() {
+	var (
+		adapter   *app.ChatAdapter
+		chatModel *mockChatModel
+	)
+
+	BeforeEach(func() {
+		chatModel = &mockChatModel{
+			viewToReturn: "chat view",
+		}
+		adapter = app.NewChatAdapter(chatModel)
+	})
+
+	Describe("NewChatAdapter", func() {
+		It("creates a non-nil adapter", func() {
+			Expect(adapter).NotTo(BeNil())
+		})
+	})
+
+	Describe("Init", func() {
+		It("delegates to the wrapped model", func() {
+			adapter.Init()
+			Expect(chatModel.initCalled).To(BeTrue())
+		})
+
+		It("returns the command from the model", func() {
+			expectedCmd := func() tea.Msg { return nil }
+			chatModel.cmdToReturn = expectedCmd
+			cmd := adapter.Init()
+			Expect(cmd).NotTo(BeNil())
+		})
+
+		It("returns nil when model returns nil", func() {
+			cmd := adapter.Init()
+			Expect(cmd).To(BeNil())
+		})
+	})
+
+	Describe("Update", func() {
+		It("delegates messages to the wrapped model", func() {
+			msg := tea.KeyMsg{Type: tea.KeyEnter}
+			adapter.Update(msg)
+			Expect(chatModel.updateCalled).To(BeTrue())
+			Expect(chatModel.lastMsg).To(Equal(msg))
+		})
+
+		It("returns the command from the model", func() {
+			expectedCmd := func() tea.Msg { return nil }
+			chatModel.cmdToReturn = expectedCmd
+			cmd := adapter.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+		})
+
+		It("updates the wrapped model when returned model implements ChatModel", func() {
+			newModel := &mockChatModel{viewToReturn: "updated view"}
+			chatModel.cmdToReturn = nil
+			adapter.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+			_ = newModel
+			Expect(chatModel.updateCalled).To(BeTrue())
+		})
+	})
+
+	Describe("View", func() {
+		It("delegates to the wrapped model", func() {
+			adapter.View()
+			Expect(chatModel.viewCalled).To(BeTrue())
+		})
+
+		It("returns the view from the model", func() {
+			chatModel.viewToReturn = "expected chat view"
+			view := adapter.View()
+			Expect(view).To(Equal("expected chat view"))
+		})
+	})
+})

@@ -2,11 +2,13 @@ package cli_test
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"runtime"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -163,6 +165,54 @@ var _ = Describe("CLI Commands", func() {
 		})
 	})
 
+	Describe("root (no args)", func() {
+		It("prints root stub with config info", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("root stub"))
+			Expect(out.String()).To(ContainSubstring("config="))
+		})
+	})
+
+	Describe("serve --help", func() {
+		It("shows serve usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "serve", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Start the FlowState HTTP API server"))
+			Expect(out.String()).To(ContainSubstring("--port"))
+			Expect(out.String()).To(ContainSubstring("--host"))
+		})
+	})
+
+	Describe("agent --help", func() {
+		It("shows agent usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "agent", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Inspect available agents"))
+		})
+	})
+
+	Describe("skill --help", func() {
+		It("shows skill usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "skill", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("skills available to FlowState"))
+		})
+	})
+
+	Describe("session --help", func() {
+		It("shows session usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "session", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Inspect saved sessions"))
+		})
+	})
+
 	Describe("chat", func() {
 		Context("without --message flag", func() {
 			It("returns error when engine is not configured", func() {
@@ -187,6 +237,81 @@ var _ = Describe("CLI Commands", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(out.String()).To(ContainSubstring("[default] Hello"))
 			})
+
+			It("streams and returns response when engine is configured", func() {
+				testApp := createRunTestApp([]provider.StreamChunk{
+					{Content: "Hi there"},
+					{Content: "!", Done: true},
+				}, nil)
+				err := cmd(testApp, "chat", "--message", "Hello", "--agent", "tester")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("[tester] Hello"))
+				Expect(out.String()).To(ContainSubstring("Hi there!"))
+			})
+
+			It("generates a session ID when none provided", func() {
+				testApp := createRunTestApp([]provider.StreamChunk{
+					{Content: "ok", Done: true},
+				}, nil)
+				err := cmd(testApp, "chat", "--message", "test")
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("uses provided session ID", func() {
+				testApp := createRunTestApp([]provider.StreamChunk{
+					{Content: "ok", Done: true},
+				}, nil)
+				err := cmd(testApp, "chat", "--message", "test", "--session", "my-sess")
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns stream error from engine", func() {
+				testApp := createRunTestApp([]provider.StreamChunk{
+					{Content: "partial"},
+					{Error: errors.New("stream broke"), Done: true},
+				}, nil)
+				err := cmd(testApp, "chat", "--message", "test")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("stream error"))
+			})
+
+			It("returns error when provider fails to start stream", func() {
+				testApp := createRunTestApp(nil, errors.New("provider down"))
+				err := cmd(testApp, "chat", "--message", "test")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("streaming response"))
+			})
+		})
+
+		Context("with --help flag", func() {
+			It("shows chat usage", func() {
+				testApp := createTestApp("", "")
+				err := cmd(testApp, "chat", "--help")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("Start an interactive chat session"))
+				Expect(out.String()).To(ContainSubstring("--message"))
+				Expect(out.String()).To(ContainSubstring("--agent"))
+				Expect(out.String()).To(ContainSubstring("--session"))
+			})
+		})
+	})
+
+	Describe("discover with no agents", func() {
+		It("returns no agents available message", func() {
+			testApp := createTestApp(testdataPath("empty"), "")
+			err := cmd(testApp, "discover", "anything")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("No agents available"))
+		})
+	})
+
+	Describe("skill add", func() {
+		It("shows help with correct usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "skill", "add", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Import a skill from a GitHub"))
+			Expect(out.String()).To(ContainSubstring("OWNER/REPO"))
 		})
 	})
 })
