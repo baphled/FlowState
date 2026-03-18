@@ -37,6 +37,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 
 	cmd.AddCommand(
 		newChatCmd(getApp),
+		newRunCmd(getApp),
 		newServeCmd(getApp),
 		newAgentCmd(getApp),
 		newSkillCmd(getApp),
