@@ -35,7 +35,7 @@ func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repoURL, tempDir)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repoURL, tempDir) //nolint:gosec // Input validated
 	if err := cmd.Run(); err != nil {
 		return Skill{}, fmt.Errorf("cloning repository %s: %w", ownerRepo, err)
 	}
@@ -69,7 +69,7 @@ func (imp *Importer) AddFromPath(ctx context.Context, repoPath string) (Skill, e
 	}
 
 	targetPath := filepath.Join(targetDir, "SKILL.md")
-	if err := os.WriteFile(targetPath, data, 0644); err != nil {
+	if err := os.WriteFile(targetPath, data, 0o644); err != nil { //nolint:gosec // Skill files should be readable
 		return Skill{}, fmt.Errorf("writing SKILL.md: %w", err)
 	}
 

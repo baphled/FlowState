@@ -92,6 +92,7 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 	return ch, nil
 }
 
+//nolint:nestif // Test mock with intentional nested logic for context simulation
 func (m *MockProvider) getContextualResponse(req ChatRequest) string {
 	for _, msg := range req.Messages {
 		if msg.Role == "user" {

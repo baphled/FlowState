@@ -128,7 +128,7 @@ func (s *FileContextStore) persist() error {
 	}
 
 	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // Context store files need to be readable
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 

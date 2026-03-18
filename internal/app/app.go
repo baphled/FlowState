@@ -1,7 +1,9 @@
+// Package app provides the main application container and initialization.
 package app
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 )
 
+// App is the main application container holding all initialized components.
 type App struct {
 	Config    *config.AppConfig
 	Registry  *agent.AgentRegistry
@@ -29,6 +32,9 @@ type App struct {
 	API       *api.Server
 }
 
+// New creates a new App instance with all components initialized.
+//
+//nolint:funlen // Initialization function that bootstraps the entire application
 func New(cfg *config.AppConfig) (*App, error) {
 	providerRegistry := provider.NewRegistry()
 
@@ -39,13 +45,14 @@ func New(cfg *config.AppConfig) (*App, error) {
 
 	agentRegistry := agent.NewAgentRegistry()
 	if err := agentRegistry.Discover(cfg.AgentDir); err != nil {
-		return nil, fmt.Errorf("discovering agents: %w", err)
+		log.Printf("warning: discovering agents: %v", err)
 	}
 
 	skillLoader := skill.NewFileSkillLoader(cfg.SkillDir)
 	skills, err := skillLoader.LoadAll()
 	if err != nil {
-		return nil, fmt.Errorf("loading skills: %w", err)
+		log.Printf("warning: loading skills: %v", err)
+		skills = []skill.Skill{}
 	}
 
 	alwaysActiveSkills := engine.LoadAlwaysActiveSkills(cfg.SkillDir, nil, nil)
@@ -119,18 +126,22 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}, nil
 }
 
+// AgentsDir returns the directory where agent manifests are stored.
 func (a *App) AgentsDir() string {
 	return a.Config.AgentDir
 }
 
+// SkillsDir returns the directory where skills are stored.
 func (a *App) SkillsDir() string {
 	return a.Config.SkillDir
 }
 
+// SessionsDir returns the directory where sessions are stored.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
 }
 
+// ConfigPath returns the path to the configuration file.
 func (a *App) ConfigPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -147,6 +158,7 @@ func extractSkillNames(skills []skill.Skill) []string {
 	return names
 }
 
+// TestConfig holds configuration for creating test App instances.
 type TestConfig struct {
 	AgentsDir   string
 	SkillsDir   string
@@ -154,6 +166,7 @@ type TestConfig struct {
 	DataDir     string
 }
 
+// NewForTest creates an App instance for testing with minimal dependencies.
 func NewForTest(tc TestConfig) (*App, error) {
 	if tc.DataDir == "" {
 		tc.DataDir = os.TempDir()

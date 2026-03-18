@@ -214,7 +214,9 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.ToolInput
 	return t.summarize(ctx, messages, focus, depth)
 }
 
-func (t *SummarizeContextTool) summarize(ctx context.Context, messages []provider.Message, focus string, depth int) (tool.ToolResult, error) {
+func (t *SummarizeContextTool) summarize(
+	ctx context.Context, messages []provider.Message, focus string, depth int,
+) (tool.ToolResult, error) {
 	content := formatMessages(messages)
 	inputTokens := t.counter.Count(content)
 
@@ -231,7 +233,7 @@ func (t *SummarizeContextTool) summarize(ctx context.Context, messages []provide
 		},
 	})
 	if err != nil {
-		return tool.ToolResult{Output: content}, nil
+		return tool.ToolResult{Output: content, Error: err}, nil //nolint:nilerr // Fallback to original content on error
 	}
 
 	summary := resp.Message.Content

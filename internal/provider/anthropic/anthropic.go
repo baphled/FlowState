@@ -1,3 +1,4 @@
+// Package anthropic provides an Anthropic Claude API provider implementation.
 package anthropic
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// ErrNotSupported is returned when an unsupported operation is attempted.
 var ErrNotSupported = errors.New("anthropic does not support embeddings")
 
 var errAPIKeyRequired = errors.New("anthropic API key is required")
@@ -21,10 +23,12 @@ const (
 	defaultMaxTokens      = 4096
 )
 
+// Provider implements the provider.Provider interface for Anthropic Claude.
 type Provider struct {
 	client anthropicAPI.Client
 }
 
+// New creates a new Anthropic provider with the given API key.
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -33,10 +37,12 @@ func New(apiKey string) (*Provider, error) {
 	return &Provider{client: client}, nil
 }
 
+// Name returns the provider name.
 func (p *Provider) Name() string {
 	return providerName
 }
 
+// Stream implements provider.Provider.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
@@ -72,6 +78,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
+// Chat implements provider.Provider.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := buildMessages(req.Messages)
 

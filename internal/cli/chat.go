@@ -39,6 +39,7 @@ func newChatCmd(application *app.App) *cobra.Command {
 	return cmd
 }
 
+//nolint:nestif // CLI command flow with necessary error handling
 func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
 	if opts.Message != "" {
 		agentName := opts.Agent

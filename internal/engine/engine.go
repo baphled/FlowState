@@ -170,7 +170,10 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	}
 }
 
-func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Message, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) {
+func (e *Engine) streamWithToolLoop(
+	ctx context.Context, messages []provider.Message,
+	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
+) {
 	for {
 		toolCall, responseContent, done := e.processStreamChunks(ctx, providerChunks, outChan)
 		if done {
@@ -204,7 +207,9 @@ func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Mes
 	}
 }
 
-func (e *Engine) processStreamChunks(ctx context.Context, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) (*provider.ToolCall, string, bool) {
+func (e *Engine) processStreamChunks(
+	ctx context.Context, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
+) (*provider.ToolCall, string, bool) {
 	var responseContent strings.Builder
 
 	for {
@@ -240,7 +245,7 @@ func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCal
 			}
 			result, err := t.Execute(ctx, input)
 			if err != nil {
-				return tool.ToolResult{Output: "", Error: err}, nil
+				return tool.ToolResult{Output: "", Error: err}, nil //nolint:nilerr // Error captured in ToolResult.Error
 			}
 			return result, nil
 		}
@@ -267,7 +272,9 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.ToolResult) {
 	})
 }
 
-func (e *Engine) appendToolResultToMessages(messages []provider.Message, toolCall *provider.ToolCall, result tool.ToolResult) []provider.Message {
+func (e *Engine) appendToolResultToMessages(
+	messages []provider.Message, toolCall *provider.ToolCall, result tool.ToolResult,
+) []provider.Message {
 	content := result.Output
 	if result.Error != nil {
 		content = "Error: " + result.Error.Error()

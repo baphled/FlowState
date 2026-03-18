@@ -49,7 +49,7 @@ func (t *Tool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResu
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	cmd := exec.CommandContext(ctx, "bash", "-c", command) //nolint:gosec // Tool execution by design
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return tool.ToolResult{

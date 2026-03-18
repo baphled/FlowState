@@ -49,7 +49,7 @@ func (b *ContextWindowBuilder) BuildWithSemanticResults(manifest *agent.AgentMan
 	return b.buildInternal(manifest, store, tokenBudget, "", semanticResults, false)
 }
 
-//nolint:gocognit // Context window building requires coordinating multiple concerns
+//nolint:gocognit,gocyclo // Context window building requires coordinating multiple concerns
 func (b *ContextWindowBuilder) buildInternal(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int, summary string, semanticResults []SearchResult, logWarnings bool) BuildResult {
 	budget := NewTokenBudget(tokenBudget)
 	var messages []provider.Message
@@ -107,6 +107,7 @@ func (b *ContextWindowBuilder) buildInternal(manifest *agent.AgentManifest, stor
 		}
 
 		msgTokens := b.counter.Count(msg.Content)
+		//nolint:nestif // Token budget fitting logic requires these checks
 		if budget.CanFit(msgTokens) {
 			messages = append(messages, msg)
 			budget.Reserve("sliding", msgTokens)

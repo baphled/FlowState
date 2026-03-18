@@ -117,7 +117,8 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the agent "([^"]*)" is available$`, s.theAgentIsAvailable)
 	ctx.Step(`^I ask for agent suggestions for "([^"]*)"$`, s.iAskForAgentSuggestionsFor)
 	ctx.Step(`^I should receive agent suggestions$`, s.iShouldReceiveAgentSuggestions)
-	ctx.Step(`^the suggestions should include an agent with confidence above (\d+\.?\d*)$`, s.theSuggestionsShouldIncludeAnAgentWithConfidenceAbove)
+	ctx.Step(`^the suggestions should include an agent with confidence above (\d+\.?\d*)$`,
+		s.theSuggestionsShouldIncludeAnAgentWithConfidenceAbove)
 	ctx.Step(`^I am chatting with the "([^"]*)" agent$`, s.iAmChattingWithTheAgent)
 	ctx.Step(`^I switch to the "([^"]*)" agent$`, s.iSwitchToTheAgent)
 	ctx.Step(`^the active agent should be "([^"]*)"$`, s.theActiveAgentShouldBe)
@@ -154,7 +155,8 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the configuration should include a log level$`, s.theConfigurationShouldIncludeALogLevel)
 
 	// Agent registry steps
-	ctx.Step(`^an agent directory contains valid JSON and Markdown agent manifests$`, s.anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests)
+	ctx.Step(`^an agent directory contains valid JSON and Markdown agent manifests$`,
+		s.anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests)
 	ctx.Step(`^the agent registry discovers agents from that directory$`, s.theAgentRegistryDiscoversAgentsFromThatDirectory)
 	ctx.Step(`^the registry should include agents from both manifest formats$`, s.theRegistryShouldIncludeAgentsFromBothManifestFormats)
 	ctx.Step(`^an empty agent directory$`, s.anEmptyAgentDirectory)
@@ -562,7 +564,7 @@ func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
 	if s.contextStore == nil {
 		return errors.New("context store not initialised, call 'a general agent with N token context limit' first")
 	}
-	for i := 0; i < count; i++ {
+	for i := range count {
 		role := "user"
 		if i%2 == 1 {
 			role = "assistant"
@@ -1153,7 +1155,7 @@ func (s *StepDefinitions) iRun(command string) error {
 		return errors.New("empty command")
 	}
 	parts[0] = "/tmp/flowstate-test"
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command(parts[0], parts[1:]...) //nolint:gosec // Test harness with controlled input
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1677,6 +1679,7 @@ func (s *StepDefinitions) theAIShouldBeInformedThatBashIsDisabled() error {
 	return nil
 }
 
+//nolint:nestif // Test mock simulating bash command execution
 func (s *StepDefinitions) theAIRuns(command string) error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",

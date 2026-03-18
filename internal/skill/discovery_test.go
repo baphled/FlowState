@@ -101,7 +101,7 @@ var _ = Describe("SkillDiscovery", func() {
 				suggestions := discovery.Suggest("testing Go code")
 
 				Expect(len(suggestions)).To(BeNumerically(">=", 2))
-				for i := 0; i < len(suggestions)-1; i++ {
+				for i := range len(suggestions) - 1 {
 					Expect(suggestions[i].Confidence).To(BeNumerically(">=", suggestions[i+1].Confidence))
 				}
 			})

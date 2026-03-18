@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
@@ -44,8 +45,9 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 
 	server := &http.Server{
-		Addr:    addr,
-		Handler: application.API.Handler(),
+		Addr:              addr,
+		Handler:           application.API.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

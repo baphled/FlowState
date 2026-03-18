@@ -1,3 +1,4 @@
+// Package tui provides terminal user interface components.
 package tui
 
 import (
@@ -10,12 +11,16 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// ChunkMsg wraps a stream chunk for Bubble Tea message handling.
 type ChunkMsg provider.StreamChunk
 
+// StreamDoneMsg signals that streaming has completed.
 type StreamDoneMsg struct{}
 
+// ErrorMsg wraps an error for Bubble Tea message handling.
 type ErrorMsg struct{ Err error }
 
+// Model is the Bubble Tea model for the chat interface.
 type Model struct {
 	engine    *engine.Engine
 	agentID   string
@@ -30,6 +35,7 @@ type Model struct {
 	err       error
 }
 
+// NewModel creates a new chat model with the given engine and agent.
 func NewModel(eng *engine.Engine, agentID string, sessionID string) *Model {
 	return &Model{
 		engine:    eng,
@@ -44,10 +50,12 @@ func NewModel(eng *engine.Engine, agentID string, sessionID string) *Model {
 	}
 }
 
+// Init implements tea.Model.
 func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
+// Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -143,6 +151,7 @@ func (m *Model) sendMessage() tea.Cmd {
 	}
 }
 
+// View implements tea.Model.
 func (m *Model) View() string {
 	var builder strings.Builder
 
@@ -170,30 +179,37 @@ func (m *Model) View() string {
 	return builder.String()
 }
 
+// Mode returns the current input mode.
 func (m *Model) Mode() string {
 	return m.mode
 }
 
+// Input returns the current input text.
 func (m *Model) Input() string {
 	return m.input
 }
 
+// IsStreaming returns whether the model is currently streaming a response.
 func (m *Model) IsStreaming() bool {
 	return m.streaming
 }
 
+// Width returns the current terminal width.
 func (m *Model) Width() int {
 	return m.width
 }
 
+// Height returns the current terminal height.
 func (m *Model) Height() int {
 	return m.height
 }
 
+// ResponseContent returns the current streaming response content.
 func (m *Model) ResponseContent() string {
 	return m.response.String()
 }
 
+// Messages returns all messages in the chat history.
 func (m *Model) Messages() []string {
 	return m.messages
 }

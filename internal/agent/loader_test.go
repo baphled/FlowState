@@ -19,7 +19,7 @@ func TestDualLoad(t *testing.T) {
 			"role": "Test role"
 		}
 	}`
-	if err := os.WriteFile(jsonPath, []byte(jsonContent), 0644); err != nil {
+	if err := os.WriteFile(jsonPath, []byte(jsonContent), 0o644); err != nil { //nolint:gosec // Test file
 		t.Fatalf("failed to write JSON file: %v", err)
 	}
 
@@ -33,7 +33,7 @@ default_skills:
 ---
 # Agent Instructions
 `
-	if err := os.WriteFile(mdPath, []byte(mdContent), 0644); err != nil {
+	if err := os.WriteFile(mdPath, []byte(mdContent), 0o644); err != nil { //nolint:gosec // Test file
 		t.Fatalf("failed to write MD file: %v", err)
 	}
 

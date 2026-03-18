@@ -149,7 +149,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			})
 
 			It("limits messages when budget is constrained", func() {
-				for i := 0; i < 20; i++ {
+				for range 20 {
 					store.Append(provider.Message{Role: "user", Content: "This is message content that takes tokens"})
 					store.Append(provider.Message{Role: "assistant", Content: "This is response content that also takes tokens"})
 				}

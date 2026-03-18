@@ -24,7 +24,9 @@ type mockProvider struct {
 func (m *mockProvider) Name() string { return "mock" }
 
 func (m *mockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	return nil, nil
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
 }
 
 func (m *mockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
