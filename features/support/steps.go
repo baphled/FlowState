@@ -168,6 +168,7 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 			s.ollamaServer = nil
 		}
 		s.realOllamaProvider = nil
+		os.Unsetenv("XDG_CONFIG_HOME")
 		return ctx, nil
 	})
 
@@ -3314,68 +3315,112 @@ func (s *StepDefinitions) theAISendsAResponseWithACodeBlock() error {
 
 // theResponseShouldBeRenderedWithSyntaxHighlighting verifies syntax highlighting in responses.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: The chatView contains at least one assistant message with a code block.
+// Returns: nil if ANSI escape sequences are present, or an error if rendering is plain text.
+// Side effects: None.
 func (s *StepDefinitions) theResponseShouldBeRenderedWithSyntaxHighlighting() error {
-	return godog.ErrPending
+	if s.chatView == nil {
+		return errors.New("chatView not initialised")
+	}
+	rendered := s.chatView.RenderContent(s.chatView.Width())
+	if !strings.Contains(rendered, "\x1b[") {
+		return fmt.Errorf("expected ANSI escape sequences in rendered output, got plain text: %q", rendered)
+	}
+	return nil
 }
 
-// theAIIsStreamingAResponse verifies that the AI is streaming a response.
+// theAIIsStreamingAResponse simulates a streaming response with token usage.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: s.chatView and s.statusBar are initialised.
+// Returns: nil on success, or an error if components are not initialised.
+// Side effects: Sets chatView to streaming mode and updates statusBar with token usage.
 func (s *StepDefinitions) theAIIsStreamingAResponse() error {
-	return godog.ErrPending
+	if s.chatView == nil {
+		return errors.New("chatView not initialised")
+	}
+	if s.statusBar == nil {
+		return errors.New("statusBar not initialised")
+	}
+	s.chatView.SetStreaming(true, "Streaming response content...")
+	s.statusBar.Update(layout.StatusBarMsg{
+		Provider:    "ollama",
+		Model:       "llama3.2",
+		TokensUsed:  42,
+		TokenBudget: 4096,
+		Mode:        "INSERT",
+	})
+	return nil
 }
 
 // theStatusBarShouldShowTheCurrentTokenCount verifies token count display in the status bar.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: s.statusBar has been updated with a non-zero token count.
+// Returns: nil if the rendered status bar contains the token count, or an error otherwise.
+// Side effects: None.
 func (s *StepDefinitions) theStatusBarShouldShowTheCurrentTokenCount() error {
-	return godog.ErrPending
+	if s.statusBar == nil {
+		return errors.New("statusBar not initialised")
+	}
+	rendered := s.statusBar.RenderContent(80)
+	if !strings.Contains(rendered, "42") {
+		return fmt.Errorf("expected token count '42' in status bar, got: %q", rendered)
+	}
+	return nil
 }
 
 // XDG config step stubs — pending implementation.
 
 // xdgConfigHomeIsSetToACustomPath sets up a custom XDG_CONFIG_HOME for testing.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: No prior XDG_CONFIG_HOME dependency in the test.
+// Returns: nil on success, or an error if temp dir creation or env var setting fails.
+// Side effects: Creates a temp directory, sets XDG_CONFIG_HOME env var, updates s.tempDir.
 func (s *StepDefinitions) xdgConfigHomeIsSetToACustomPath() error {
-	return godog.ErrPending
+	xdgBase, err := os.MkdirTemp("", "flowstate-xdg-*")
+	if err != nil {
+		return fmt.Errorf("creating XDG temp dir: %w", err)
+	}
+	if err := os.Setenv("XDG_CONFIG_HOME", xdgBase); err != nil {
+		return fmt.Errorf("setting XDG_CONFIG_HOME: %w", err)
+	}
+	s.tempDir = filepath.Join(xdgBase, "flowstate")
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return fmt.Errorf("creating flowstate config dir: %w", err)
+	}
+	return nil
 }
 
 // aConfigFileExistsAtThatPath creates a config file at the custom XDG path.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: s.tempDir is set to the flowstate config directory.
+// Returns: nil on success, or an error if writing the config file fails.
+// Side effects: Writes a config.yaml file with distinctive values at s.tempDir.
 func (s *StepDefinitions) aConfigFileExistsAtThatPath() error {
-	return godog.ErrPending
+	if s.tempDir == "" {
+		return errors.New("tempDir not set - call xdgConfigHomeIsSetToACustomPath first")
+	}
+	content := []byte("providers:\n  default: anthropic\nlog_level: trace\n")
+	configPath := filepath.Join(s.tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		return fmt.Errorf("writing XDG config file: %w", err)
+	}
+	return nil
 }
 
 // theConfigShouldBeLoadedFromTheXDGPath verifies that config is loaded from the XDG path.
 //
-// Returns:
-//   - godog.ErrPending (step not yet implemented).
-//
-// Side effects:
-//   - None.
+// Expected: s.config is loaded and contains values from the XDG config file.
+// Returns: nil if config matches the XDG file values, or an error otherwise.
+// Side effects: None.
 func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
-	return godog.ErrPending
+	if s.config == nil {
+		return errors.New("expected configuration to be loaded")
+	}
+	if s.config.Providers.Default != "anthropic" {
+		return fmt.Errorf("expected provider default %q, got %q", "anthropic", s.config.Providers.Default)
+	}
+	if s.config.LogLevel != "trace" {
+		return fmt.Errorf("expected log level %q, got %q", "trace", s.config.LogLevel)
+	}
+	return nil
 }
