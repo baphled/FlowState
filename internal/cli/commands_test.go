@@ -151,11 +151,11 @@ var _ = Describe("CLI Commands", func() {
 
 	Describe("chat", func() {
 		Context("without --message flag", func() {
-			It("prints TUI not wired message", func() {
+			It("returns error when engine is not configured", func() {
 				testApp := createTestApp("", "")
 				err := cmd(testApp, "chat")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("TUI not wired yet"))
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("engine not configured"))
 			})
 		})
 

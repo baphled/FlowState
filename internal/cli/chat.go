@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -95,8 +96,21 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 		return err
 	}
 
-	_, err := fmt.Fprintln(cmd.OutOrStdout(), "Starting interactive chat... (TUI not wired yet)")
-	return err
+	if application.Engine == nil {
+		return errors.New("engine not configured")
+	}
+
+	agentName := opts.Agent
+	if agentName == "" {
+		agentName = "default"
+	}
+
+	sessionID := opts.Session
+	if sessionID == "" {
+		sessionID = generateSessionID()
+	}
+
+	return tui.Run(application.Engine, agentName, sessionID)
 }
 
 func generateSessionID() string {
