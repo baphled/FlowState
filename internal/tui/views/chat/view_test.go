@@ -31,35 +31,76 @@ var _ = Describe("ChatView", func() {
 
 	Describe("RenderContent", func() {
 		It("renders messages", func() {
-			messages := []string{"Hello", "World"}
-			content := view.RenderContent(messages, "", "normal", false, "")
+			view.AddMessage(chat.Message{Role: "user", Content: "Hello"})
+			view.AddMessage(chat.Message{Role: "user", Content: "World"})
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("Hello"))
 			Expect(content).To(ContainSubstring("World"))
 		})
 
 		It("renders input prompt", func() {
-			content := view.RenderContent(nil, "", "normal", false, "")
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("> "))
 		})
 
 		It("renders current input", func() {
-			content := view.RenderContent(nil, "test input", "normal", false, "")
+			view.SetInput("test input")
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("test input"))
 		})
 
 		It("shows normal mode indicator", func() {
-			content := view.RenderContent(nil, "", "normal", false, "")
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("[NORMAL]"))
 		})
 
 		It("shows insert mode indicator", func() {
-			content := view.RenderContent(nil, "", "insert", false, "")
+			view.SetMode("insert")
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("[INSERT]"))
 		})
 
 		It("shows streaming response", func() {
-			content := view.RenderContent(nil, "", "normal", true, "streaming...")
+			view.SetStreaming(true, "streaming...")
+			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("streaming..."))
+		})
+
+		Describe("Markdown", func() {
+			Context("with an assistant message containing a code block", func() {
+				It("renders with ANSI escape sequences", func() {
+					view.AddMessage(chat.Message{
+						Role:    "assistant",
+						Content: "```go\nfmt.Println(\"hello\")\n```",
+					})
+					output := view.RenderContent(80)
+					Expect(output).To(ContainSubstring("\x1b["))
+				})
+			})
+
+			Context("with a user message", func() {
+				It("keeps plain text without ANSI", func() {
+					view.AddMessage(chat.Message{Role: "user", Content: "hello"})
+					output := view.RenderContent(80)
+					Expect(output).NotTo(ContainSubstring("\x1b["))
+					Expect(output).To(ContainSubstring("hello"))
+				})
+			})
+
+			Context("when glamour rendering fails", func() {
+				It("falls back to raw text", func() {
+					view.SetMarkdownRenderer(func(content string, _ int) string {
+						return content
+					})
+					view.AddMessage(chat.Message{
+						Role:    "assistant",
+						Content: "raw fallback text",
+					})
+					output := view.RenderContent(80)
+					Expect(output).To(ContainSubstring("raw fallback text"))
+					Expect(output).NotTo(ContainSubstring("\x1b["))
+				})
+			})
 		})
 	})
 
