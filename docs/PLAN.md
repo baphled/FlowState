@@ -157,59 +157,64 @@ flowstate/
 - [x] Project scaffolding with git worktrees
 - [x] Basic TUI shell with BubbleTea
 - [x] Provider interface definition
-- [x] Ollama provider with streaming (mock implementation)
+- [x] Ollama provider with streaming
 - [x] Basic chat with mode switching (Normal/Insert)
 - [x] Message viewport with scrolling
 - [x] BDD test harness with godog
 - [x] First smoke test passing
 
-### Phase 1.5: UI Polish (IN PROGRESS)
-- [ ] OpenCode-inspired layout and styling
-- [ ] Improved header/footer design
-- [ ] Better message formatting and colors
-- [ ] Status bar with context info
-- [ ] Proper theme system
+### Phase 1.5: UI Polish ✅ COMPLETE
+- [x] OpenCode-inspired layout and styling
+- [x] Improved header/footer design
+- [x] Better message formatting and colours (Glamour)
+- [x] Status bar with context info (provider, model, tokens)
+- [x] Proper theme system
 
-### Phase 2: Navigation & Input
-- [ ] Vim navigation (j/k, gg/G, Ctrl+u/d)
-- [x] Mode state machine (Normal/Insert) - Basic implementation
-- [ ] Search mode with `/`, `n`, `N`
-- [ ] $EDITOR integration
-- [x] Message viewport with scrolling - Basic implementation
+### Phase 2: Navigation & Input ✅ COMPLETE
+- [x] Vim navigation (j/k, gg/G, Ctrl+u/d)
+- [x] Mode state machine (Normal/Insert)
+- [x] Search mode with `/`, `n`, `N`
+- [x] $EDITOR integration
+- [x] Message viewport with scrolling
 
-### Phase 3: Sessions
-- [ ] SQLite session store
-- [ ] Session CRUD operations
-- [ ] Session browser intent
-- [ ] Auto-generated titles
+### Phase 3: Sessions ✅ COMPLETE
+- [x] SQLite session store
+- [x] Session CRUD operations
+- [x] Session browser intent
+- [x] Auto-generated titles
 
-### Phase 4: Task Panel & UI
-- [ ] Task panel component
-- [ ] Model selector
-- [ ] Command palette
-- [ ] Help system
-- [ ] Theme system
+### Phase 4: Task Panel & UI ✅ COMPLETE
+- [x] Task panel component
+- [x] Model selector
+- [x] Command palette
+- [x] Help system
+- [x] Theme system
 
-### Phase 5: Tool System
-- [ ] Tool interface
-- [ ] Permission system
-- [ ] Bash tool
-- [ ] File read/write tools
-- [ ] Web fetch tool
+### Phase 5: Tool System ✅ COMPLETE
+- [x] Tool interface
+- [x] Permission system
+- [x] Bash tool
+- [x] File read/write tools
+- [x] Web fetch tool
 
-### Phase 6: Skills & Commands
-- [ ] Skill loader
-- [ ] Command loader
-- [ ] Built-in skills (analyze, challenge, research)
-- [ ] Custom command support
+### Phase 6: Skills & Commands ✅ COMPLETE
+- [x] Skill loader
+- [x] Command loader
+- [x] Built-in skills (analyze, challenge, research)
+- [x] Custom command support
 
-### Phase 7: MCP Integration
-- [ ] MCP client with stdio transport
-- [ ] SSE transport support
-- [ ] Server discovery (config file + env var)
-- [ ] MCP resource access (documents, memory)
-- [ ] MCP tool integration with permission prompts (Allow/Ask/Deny)
-- [ ] Optional local memory MCP server (SQLite, `--memory-server` flag)
+### Phase 7: MCP Integration ✅ COMPLETE
+- [x] MCP client with stdio transport
+- [x] SSE transport support
+- [x] Server discovery (config file + env var)
+- [x] MCP resource access (documents, memory)
+- [x] MCP tool integration with permission prompts (Allow/Ask/Deny)
+- [x] Optional local memory MCP server (SQLite, `--memory-server` flag)
+
+### Phase 8: MVP Finalisation ✅ COMPLETE
+- [x] Documentation update (README, Demo)
+- [x] `go install` support
+- [x] Final smoke tests and performance check
 
 ---
 
