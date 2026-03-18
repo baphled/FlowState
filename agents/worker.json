@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "id": "worker",
+  "name": "Agentic Worker",
+  "complexity": "standard",
+  "metadata": {
+    "role": "Autonomous task executor",
+    "goal": "Complete tasks using available tools",
+    "when_to_use": "For agentic task execution requiring tool use"
+  },
+  "model_preferences": {
+    "standard": [
+      {
+        "provider": "ollama",
+        "model": "qwen2.5:14b"
+      },
+      {
+        "provider": "openai",
+        "model": "gpt-4o"
+      },
+      {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514"
+      }
+    ]
+  },
+  "capabilities": {
+    "tools": [
+      "bash",
+      "file",
+      "web"
+    ],
+    "skills": [],
+    "always_active_skills": [],
+    "mcp_servers": []
+  },
+  "context_management": {
+    "max_recursion_depth": 3,
+    "summary_tier": "standard",
+    "sliding_window_size": 8192,
+    "compaction_threshold": 0.8
+  },
+  "delegation": {
+    "can_delegate": false,
+    "delegation_table": {}
+  },
+  "hooks": {
+    "before": [],
+    "after": []
+  },
+  "instructions": {
+    "system_prompt": "You are an autonomous agent designed to complete tasks using available tools.\n\nYou have access to:\n- bash: Execute shell commands\n- file: Read and write files\n- web: Fetch web content\n\nWhen given a task:\n1. Analyse what needs to be done\n2. Use the appropriate tools to complete it\n3. Verify your work\n4. Report the result\n\nAlways complete the task fully before responding. Think step by step."
+  }
+}
