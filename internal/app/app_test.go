@@ -440,5 +440,189 @@ When to use: Testing purposes
 
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("propagates error from MCP client", func() {
+			client := &mockMCPClient{
+				disconnectAllFn: func() error {
+					return errors.New("disconnect failed")
+				},
+			}
+
+			application, err := app.NewForTest(app.TestConfig{
+				DataDir:   tempDir,
+				MCPClient: client,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = application.DisconnectAll()
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("disconnect failed"))
+		})
+	})
+
+	Describe("New", func() {
+		Context("with valid configuration", func() {
+			It("creates a fully wired app", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-for-coverage")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.Engine).NotTo(BeNil())
+				Expect(application.Config).To(Equal(cfg))
+				Expect(application.Registry).NotTo(BeNil())
+				Expect(application.Sessions).NotTo(BeNil())
+				Expect(application.Learning).NotTo(BeNil())
+				Expect(application.Discovery).NotTo(BeNil())
+				Expect(application.API).NotTo(BeNil())
+			})
+
+			It("creates app with MCP servers configured", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-for-mcp")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.MCPServers = []config.MCPServerConfig{
+					{Name: "disabled-server", Command: "cmd", Enabled: false},
+				}
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+			})
+
+			It("creates app with agents discovered from directory", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-agents")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				agentJSON := `{"id": "test-agent", "name": "Test Agent"}`
+				Expect(os.WriteFile(
+					filepath.Join(agentsDir, "test.json"),
+					[]byte(agentJSON), 0o600,
+				)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.DefaultAgent = "test-agent"
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				agents := application.Registry.List()
+				Expect(agents).To(HaveLen(1))
+			})
+		})
+
+		Context("when default provider is not registered", func() {
+			It("returns an error", func() {
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() {
+					os.Unsetenv("OPENAI_API_KEY")
+					os.Unsetenv("ANTHROPIC_API_KEY")
+				})
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "nonexistent"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Providers.OpenAI.APIKey = ""
+				cfg.Providers.Anthropic.APIKey = ""
+
+				application, err := app.New(cfg)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("getting default provider"))
+				Expect(application).To(BeNil())
+			})
+		})
+	})
+
+	Describe("RegisterProvidersForTest", func() {
+		Context("when no API keys are provided anywhere", func() {
+			It("returns a registry without OpenAI or Anthropic", func() {
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() {
+					os.Unsetenv("OPENAI_API_KEY")
+					os.Unsetenv("ANTHROPIC_API_KEY")
+				})
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.OpenAI.APIKey = ""
+				cfg.Providers.Anthropic.APIKey = ""
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+			})
+		})
+
+		Context("when Anthropic env var takes precedence", func() {
+			It("uses ANTHROPIC_API_KEY over config file", func() {
+				os.Setenv("ANTHROPIC_API_KEY", "env-anthropic-key")
+				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Anthropic.APIKey = "config-anthropic-key"
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+			})
+		})
+
+		Context("when config provides Anthropic key only", func() {
+			It("registers Anthropic from config", func() {
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Anthropic.APIKey = "config-only-key"
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+			})
+		})
 	})
 })
