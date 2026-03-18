@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -308,6 +309,199 @@ var _ = Describe("Engine", func() {
 			}
 
 			Expect(received).To(HaveLen(2))
+		})
+	})
+
+	Describe("failback chain", func() {
+		var (
+			primaryProvider   *mockProvider
+			secondaryProvider *mockProvider
+			registry          *provider.Registry
+		)
+
+		BeforeEach(func() {
+			primaryProvider = &mockProvider{
+				name: "primary",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Primary response", Done: true},
+				},
+			}
+
+			secondaryProvider = &mockProvider{
+				name: "secondary",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Secondary response", Done: true},
+				},
+			}
+
+			registry = provider.NewRegistry()
+			registry.Register(primaryProvider)
+			registry.Register(secondaryProvider)
+
+			manifest = agent.AgentManifest{
+				ID:         "test-agent",
+				Name:       "Test Agent",
+				Complexity: "standard",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {
+						{Provider: "primary", Model: "primary-model"},
+						{Provider: "secondary", Model: "secondary-model"},
+					},
+				},
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are a helpful assistant.",
+				},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+		})
+
+		Context("when primary provider works", func() {
+			It("uses the primary provider", func() {
+				eng := engine.New(engine.Config{
+					Registry: registry,
+					Manifest: manifest,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].Content).To(Equal("Primary response"))
+				Expect(eng.LastProvider()).To(Equal("primary"))
+			})
+		})
+
+		Context("when primary fails and secondary works", func() {
+			BeforeEach(func() {
+				primaryProvider.streamErr = errors.New("primary unavailable")
+			})
+
+			It("uses the secondary provider", func() {
+				eng := engine.New(engine.Config{
+					Registry: registry,
+					Manifest: manifest,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].Content).To(Equal("Secondary response"))
+				Expect(eng.LastProvider()).To(Equal("secondary"))
+			})
+		})
+
+		Context("when all providers fail", func() {
+			BeforeEach(func() {
+				primaryProvider.streamErr = errors.New("primary unavailable")
+				secondaryProvider.streamErr = errors.New("secondary unavailable")
+			})
+
+			It("returns error listing all attempts", func() {
+				eng := engine.New(engine.Config{
+					Registry: registry,
+					Manifest: manifest,
+				})
+
+				ctx := context.Background()
+				_, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("all providers failed"))
+			})
+		})
+
+		Context("when per-provider timeout is enforced", func() {
+			It("times out slow provider and tries next", func() {
+				slowProvider := &mockProvider{
+					name:         "slow",
+					streamChunks: []provider.StreamChunk{},
+				}
+
+				slowRegistry := provider.NewRegistry()
+				slowRegistry.Register(slowProvider)
+				slowRegistry.Register(secondaryProvider)
+
+				slowManifest := agent.AgentManifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
+					Complexity: "standard",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"standard": {
+							{Provider: "slow", Model: "slow-model"},
+							{Provider: "secondary", Model: "secondary-model"},
+						},
+					},
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				eng := engine.New(engine.Config{
+					Registry:      slowRegistry,
+					Manifest:      slowManifest,
+					StreamTimeout: 50 * time.Millisecond,
+				})
+
+				slowProvider.streamErr = context.DeadlineExceeded
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].Content).To(Equal("Secondary response"))
+			})
+		})
+
+		Context("when logging which provider served request", func() {
+			It("tracks the last provider that served the request", func() {
+				eng := engine.New(engine.Config{
+					Registry: registry,
+					Manifest: manifest,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				for range chunks {
+				}
+
+				Expect(eng.LastProvider()).To(Equal("primary"))
+
+				primaryProvider.streamErr = errors.New("primary now down")
+
+				chunks, err = eng.Stream(ctx, "test-agent", "Hello again")
+				Expect(err).NotTo(HaveOccurred())
+
+				for range chunks {
+				}
+
+				Expect(eng.LastProvider()).To(Equal("secondary"))
+			})
 		})
 	})
 })

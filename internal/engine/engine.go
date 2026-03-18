@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -12,27 +13,34 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
-const streamBufferSize = 16
+const (
+	streamBufferSize     = 16
+	defaultStreamTimeout = 60 * time.Second
+)
 
 type Engine struct {
 	chatProvider      provider.Provider
 	embeddingProvider provider.Provider
+	failbackChain     *provider.FailbackChain
 	manifest          agent.AgentManifest
 	tools             []tool.Tool
 	skills            []skill.Skill
 	store             *ctxstore.FileContextStore
 	windowBuilder     *ctxstore.ContextWindowBuilder
 	tokenCounter      ctxstore.TokenCounter
+	streamTimeout     time.Duration
 }
 
 type Config struct {
 	ChatProvider      provider.Provider
 	EmbeddingProvider provider.Provider
+	Registry          *provider.Registry
 	Manifest          agent.AgentManifest
 	Tools             []tool.Tool
 	Skills            []skill.Skill
 	Store             *ctxstore.FileContextStore
 	TokenCounter      ctxstore.TokenCounter
+	StreamTimeout     time.Duration
 }
 
 func New(cfg Config) *Engine {
@@ -41,16 +49,60 @@ func New(cfg Config) *Engine {
 		windowBuilder = ctxstore.NewContextWindowBuilder(cfg.TokenCounter)
 	}
 
+	timeout := cfg.StreamTimeout
+	if timeout == 0 {
+		timeout = defaultStreamTimeout
+	}
+
+	var failbackChain *provider.FailbackChain
+	if cfg.Registry != nil {
+		prefs := buildModelPreferences(cfg.Manifest)
+		failbackChain = provider.NewFailbackChain(cfg.Registry, prefs, timeout)
+	}
+
 	return &Engine{
 		chatProvider:      cfg.ChatProvider,
 		embeddingProvider: cfg.EmbeddingProvider,
+		failbackChain:     failbackChain,
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
 		skills:            cfg.Skills,
 		store:             cfg.Store,
 		windowBuilder:     windowBuilder,
 		tokenCounter:      cfg.TokenCounter,
+		streamTimeout:     timeout,
 	}
+}
+
+func buildModelPreferences(manifest agent.AgentManifest) []provider.ModelPreference {
+	complexity := manifest.Complexity
+	if complexity == "" {
+		complexity = "standard"
+	}
+
+	prefs, ok := manifest.ModelPreferences[complexity]
+	if !ok || len(prefs) == 0 {
+		return nil
+	}
+
+	result := make([]provider.ModelPreference, len(prefs))
+	for i, p := range prefs {
+		result[i] = provider.ModelPreference{
+			Provider: p.Provider,
+			Model:    p.Model,
+		}
+	}
+	return result
+}
+
+func (e *Engine) LastProvider() string {
+	if e.failbackChain != nil {
+		return e.failbackChain.LastProvider()
+	}
+	if e.chatProvider != nil {
+		return e.chatProvider.Name()
+	}
+	return ""
 }
 
 func (e *Engine) BuildSystemPrompt() string {
@@ -80,7 +132,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	messages := e.buildContextWindow(ctx, message)
 
-	providerChunks, err := e.chatProvider.Stream(ctx, provider.ChatRequest{
+	providerChunks, err := e.streamFromProvider(ctx, provider.ChatRequest{
 		Messages: messages,
 	})
 	if err != nil {
@@ -95,6 +147,13 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}()
 
 	return outChan, nil
+}
+
+func (e *Engine) streamFromProvider(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	if e.failbackChain != nil {
+		return e.failbackChain.Stream(ctx, req)
+	}
+	return e.chatProvider.Stream(ctx, req)
 }
 
 func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Message, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) {
@@ -121,7 +180,7 @@ func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Mes
 		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
 
 		var streamErr error
-		providerChunks, streamErr = e.chatProvider.Stream(ctx, provider.ChatRequest{
+		providerChunks, streamErr = e.streamFromProvider(ctx, provider.ChatRequest{
 			Messages: messages,
 		})
 		if streamErr != nil {
