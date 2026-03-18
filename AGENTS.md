@@ -46,6 +46,34 @@ git branch -d feature/my-feature
 | **Lint** | `make lint` |
 | **Full check** | `make check` |
 
+## Commit Rules (MANDATORY — NO EXCEPTIONS)
+
+**CRITICAL: ALL commits MUST use `make ai-commit`. NEVER use `git commit` directly.**
+
+```bash
+# CORRECT — always use this:
+printf 'feat(scope): description\n' > /tmp/commit.txt
+AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.txt
+
+# FORBIDDEN — never do this:
+git commit -m "..."          # ❌ NO
+git commit --amend           # ❌ NO (unless orchestrator explicitly authorises)
+git commit --no-verify       # ❌ NO
+```
+
+**Required trailer format** (enforced by `scripts/ai-commit.sh`):
+```
+AI-Generated-By: Opencode (claude-opus-4.5)
+Reviewed-By: Yomi Colledge <baphled@boodah.net>
+```
+
+**Why this is non-negotiable:**
+- Ensures proper AI attribution on every commit
+- Maintains audit trail of AI-assisted code
+- Violations will be caught by `make check-ai-attribution`
+
+
+
 ## Development Workflow
 
 ### BDD-Driven Development (MANDATORY)
