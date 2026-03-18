@@ -52,6 +52,20 @@ var _ = Describe("CLI Commands", func() {
 		})
 	})
 
+	Describe("root --version", func() {
+		It("prints version information", func() {
+			testApp := createTestApp("", "")
+			root := cli.NewRootCmd(testApp)
+			cli.SetVersion(root, "1.0.0", "abc123", "2026-03-18")
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs([]string{"--version"})
+			err := root.Execute()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("flowstate version"))
+		})
+	})
+
 	Describe("agent list", func() {
 		Context("with sample manifests", func() {
 			It("prints agents from the agents directory", func() {

@@ -22,3 +22,5 @@ jobs:
         run: make lint
       - name: BDD smoke
         run: make bdd-smoke
+      - name: Verify go install
+        run: go install ./cmd/flowstate && flowstate --version

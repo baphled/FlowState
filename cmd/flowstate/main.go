@@ -11,6 +11,12 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	os.Exit(run())
 }
@@ -42,6 +48,7 @@ func run() int {
 	}()
 
 	rootCmd := cli.NewRootCmd(application)
+	cli.SetVersion(rootCmd, version, commit, date)
 
 	if err := rootCmd.Execute(); err != nil {
 		return 1

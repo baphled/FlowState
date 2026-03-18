@@ -9,6 +9,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var versionInfo struct {
+	version string
+	commit  string
+	date    string
+}
+
+// SetVersion sets the version information for the root command.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - version, commit, and date are strings (may be empty).
+//
+// Side effects:
+//   - Stores version info in package-level versionInfo struct.
+//   - Sets cmd.Version to a formatted version string.
+func SetVersion(cmd *cobra.Command, version, commit, date string) {
+	versionInfo.version = version
+	versionInfo.commit = commit
+	versionInfo.date = date
+	cmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", version, commit, date)
+}
+
 // NewRootCmd creates the root command for the FlowState CLI.
 //
 // Expected:
