@@ -11,13 +11,13 @@ import (
 var _ = Describe("AgentDiscovery", func() {
 	var (
 		ad        *discovery.AgentDiscovery
-		manifests []agent.AgentManifest
+		manifests []agent.Manifest
 	)
 
 	Describe("Suggest", func() {
 		Context("when manifests include a coder agent", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "coder-agent",
 						Name: "Coder",
@@ -69,7 +69,7 @@ var _ = Describe("AgentDiscovery", func() {
 
 		Context("when message does not match any agent", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "coder-agent",
 						Name: "Coder",
@@ -92,7 +92,7 @@ var _ = Describe("AgentDiscovery", func() {
 
 		Context("when multiple agents match", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "general-coder",
 						Name: "General Coder",
@@ -139,7 +139,7 @@ var _ = Describe("AgentDiscovery", func() {
 
 		Context("when message is empty", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "coder-agent",
 						Name: "Coder",
@@ -160,7 +160,7 @@ var _ = Describe("AgentDiscovery", func() {
 
 		Context("when matching by Role field", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "qa-agent",
 						Name: "QA Engineer",
@@ -185,7 +185,7 @@ var _ = Describe("AgentDiscovery", func() {
 
 		Context("when matching by Goal field", func() {
 			BeforeEach(func() {
-				manifests = []agent.AgentManifest{
+				manifests = []agent.Manifest{
 					{
 						ID:   "security-agent",
 						Name: "Security Engineer",

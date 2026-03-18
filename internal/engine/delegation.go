@@ -1,3 +1,4 @@
+// Package engine provides the AI agent execution engine.
 package engine
 
 import (
@@ -17,11 +18,13 @@ var (
 	errMessageMustBeString  = errors.New("message must be a string")
 )
 
+// DelegateTool enables an engine to delegate tasks to other agents.
 type DelegateTool struct {
 	engines    map[string]*Engine
 	delegation agent.Delegation
 }
 
+// NewDelegateTool creates a new delegation tool for the given engines and delegation config.
 func NewDelegateTool(engines map[string]*Engine, delegation agent.Delegation) *DelegateTool {
 	return &DelegateTool{
 		engines:    engines,
@@ -29,16 +32,19 @@ func NewDelegateTool(engines map[string]*Engine, delegation agent.Delegation) *D
 	}
 }
 
+// Name returns the tool name.
 func (d *DelegateTool) Name() string {
 	return "delegate"
 }
 
+// Description returns a human-readable description of the tool.
 func (d *DelegateTool) Description() string {
 	return "Delegate a task to another agent based on task type"
 }
 
-func (d *DelegateTool) Schema() tool.ToolSchema {
-	return tool.ToolSchema{
+// Schema returns the JSON schema for the tool input.
+func (d *DelegateTool) Schema() tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"task_type": {
@@ -54,47 +60,49 @@ func (d *DelegateTool) Schema() tool.ToolSchema {
 	}
 }
 
-func (d *DelegateTool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
+// Execute runs the delegation tool with the given input.
+func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	if !d.delegation.CanDelegate {
-		return tool.ToolResult{}, errDelegationNotAllowed
+		return tool.Result{}, errDelegationNotAllowed
 	}
 
 	taskType, ok := input.Arguments["task_type"].(string)
 	if !ok {
-		return tool.ToolResult{}, errTaskTypeMustBeString
+		return tool.Result{}, errTaskTypeMustBeString
 	}
 
 	message, ok := input.Arguments["message"].(string)
 	if !ok {
-		return tool.ToolResult{}, errMessageMustBeString
+		return tool.Result{}, errMessageMustBeString
 	}
 
 	targetAgentID, ok := d.delegation.DelegationTable[taskType]
 	if !ok {
-		return tool.ToolResult{}, fmt.Errorf("no agent configured for task type: %s", taskType)
+		return tool.Result{}, fmt.Errorf("no agent configured for task type: %s", taskType)
 	}
 
 	targetEngine, ok := d.engines[targetAgentID]
 	if !ok {
-		return tool.ToolResult{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
+		return tool.Result{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
 	}
 
 	chunks, err := targetEngine.Stream(ctx, targetAgentID, message)
 	if err != nil {
-		return tool.ToolResult{}, fmt.Errorf("delegation failed: %w", err)
+		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
 	}
 
 	var response strings.Builder
 	for chunk := range chunks {
 		if chunk.Error != nil {
-			return tool.ToolResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
+			return tool.Result{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
 		}
 		response.WriteString(chunk.Content)
 	}
 
-	return tool.ToolResult{Output: response.String()}, nil
+	return tool.Result{Output: response.String()}, nil
 }
 
+// DelegateToAgent sends a message to a sub-agent and streams the response.
 func (e *Engine) DelegateToAgent(
 	ctx context.Context,
 	engines map[string]*Engine,

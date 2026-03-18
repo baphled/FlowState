@@ -15,20 +15,20 @@ const (
 	Deny
 )
 
-// ToolInput represents input to a tool execution.
-type ToolInput struct {
+// Input represents input to a tool execution.
+type Input struct {
 	Name      string
 	Arguments map[string]interface{}
 }
 
-// ToolResult represents the result of a tool execution.
-type ToolResult struct {
+// Result represents the result of a tool execution.
+type Result struct {
 	Output string
 	Error  error
 }
 
-// ToolSchema describes the schema of a tool's input parameters.
-type ToolSchema struct {
+// Schema describes the schema of a tool's input parameters.
+type Schema struct {
 	Type       string
 	Properties map[string]Property
 	Required   []string
@@ -48,7 +48,7 @@ type Tool interface {
 	// Description returns a human-readable description of the tool.
 	Description() string
 	// Execute runs the tool with the given input.
-	Execute(ctx context.Context, input ToolInput) (ToolResult, error)
+	Execute(ctx context.Context, input Input) (Result, error)
 	// Schema returns the input schema for the tool.
-	Schema() ToolSchema
+	Schema() Schema
 }

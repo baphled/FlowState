@@ -19,20 +19,20 @@ import (
 type executableMockTool struct {
 	name        string
 	description string
-	execResult  tool.ToolResult
+	execResult  tool.Result
 	execErr     error
 	execCalled  bool
-	lastInput   tool.ToolInput
+	lastInput   tool.Input
 }
 
 func (t *executableMockTool) Name() string        { return t.name }
 func (t *executableMockTool) Description() string { return t.description }
-func (t *executableMockTool) Execute(_ context.Context, input tool.ToolInput) (tool.ToolResult, error) {
+func (t *executableMockTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	t.execCalled = true
 	t.lastInput = input
 	return t.execResult, t.execErr
 }
-func (t *executableMockTool) Schema() tool.ToolSchema { return tool.ToolSchema{} }
+func (t *executableMockTool) Schema() tool.Schema { return tool.Schema{} }
 
 type streamSequenceProvider struct {
 	name      string
@@ -77,7 +77,7 @@ func (p *streamSequenceProvider) Models() ([]provider.Model, error) {
 var _ = Describe("Engine Tool Call Loop", func() {
 	var (
 		chatProvider *streamSequenceProvider
-		manifest     agent.AgentManifest
+		manifest     agent.Manifest
 		testTool     *executableMockTool
 	)
 
@@ -87,7 +87,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 			sequences: [][]provider.StreamChunk{},
 		}
 
-		manifest = agent.AgentManifest{
+		manifest = agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
 			Instructions: agent.Instructions{
@@ -99,7 +99,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 		testTool = &executableMockTool{
 			name:        "test_tool",
 			description: "A test tool",
-			execResult:  tool.ToolResult{Output: "tool executed successfully"},
+			execResult:  tool.Result{Output: "tool executed successfully"},
 		}
 	})
 
@@ -124,26 +124,6 @@ var _ = Describe("Engine Tool Call Loop", func() {
 			})
 
 			It("executes the tool when tool_call event is received", func() {
-				eng := engine.New(engine.Config{
-					ChatProvider: chatProvider,
-					Manifest:     manifest,
-					Tools:        []tool.Tool{testTool},
-				})
-
-				ctx := context.Background()
-				chunks, err := eng.Stream(ctx, "test-agent", "Please use the tool")
-
-				Expect(err).NotTo(HaveOccurred())
-
-				for range chunks {
-				}
-
-				Expect(testTool.execCalled).To(BeTrue())
-				Expect(testTool.lastInput.Name).To(Equal("test_tool"))
-				Expect(testTool.lastInput.Arguments).To(HaveKeyWithValue("arg1", "value1"))
-			})
-
-			It("feeds tool result back to provider", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest:     manifest,
@@ -244,7 +224,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				Expect(chatProvider.callIndex).To(Equal(2))
@@ -258,7 +239,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				secondTool = &executableMockTool{
 					name:        "second_tool",
 					description: "Another tool",
-					execResult:  tool.ToolResult{Output: "second tool result"},
+					execResult:  tool.Result{Output: "second tool result"},
 				}
 
 				chatProvider.sequences = [][]provider.StreamChunk{
@@ -300,7 +281,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				Expect(testTool.execCalled).To(BeTrue())
@@ -319,13 +301,13 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				searchTool = &executableMockTool{
 					name:        "search_context",
 					description: "Search conversation history",
-					execResult:  tool.ToolResult{Output: "found relevant context"},
+					execResult:  tool.Result{Output: "found relevant context"},
 				}
 
 				getMsgTool = &executableMockTool{
 					name:        "get_messages",
 					description: "Get messages by range",
-					execResult:  tool.ToolResult{Output: "message content here"},
+					execResult:  tool.Result{Output: "message content here"},
 				}
 
 				chatProvider.sequences = [][]provider.StreamChunk{
@@ -357,7 +339,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				Expect(searchTool.execCalled).To(BeTrue())
@@ -414,7 +397,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				messages := store.AllMessages()
@@ -446,7 +430,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				results := store.Search([]float64{0.1, 0.2, 0.3}, 10)

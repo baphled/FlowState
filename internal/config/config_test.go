@@ -84,7 +84,7 @@ providers:
 log_level: debug
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
-				err := os.WriteFile(configPath, []byte(configContent), 0o644)
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)
@@ -101,7 +101,7 @@ log_level: debug
 log_level: warn
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
-				err := os.WriteFile(configPath, []byte(configContent), 0o644)
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)
@@ -126,7 +126,7 @@ providers:
     model: claude-3
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
-				err := os.WriteFile(configPath, []byte(configContent), 0o644)
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)
@@ -149,7 +149,7 @@ providers:
   default: [broken
 `
 				configPath := filepath.Join(tempDir, "invalid.yaml")
-				err := os.WriteFile(configPath, []byte(invalidYAML), 0o644)
+				err := os.WriteFile(configPath, []byte(invalidYAML), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)
@@ -166,7 +166,7 @@ providers:
 log_level: info
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
-				err := os.WriteFile(configPath, []byte(configContent), 0o644)
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)
@@ -184,7 +184,7 @@ skill_dir: /custom/skills
 data_dir: /custom/data
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
-				err := os.WriteFile(configPath, []byte(configContent), 0o644)
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				cfg, err := config.LoadConfigFromPath(configPath)

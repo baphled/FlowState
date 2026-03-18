@@ -15,7 +15,7 @@ import (
 var _ = Describe("Delegation", func() {
 	var (
 		chatProvider *mockProvider
-		manifest     agent.AgentManifest
+		manifest     agent.Manifest
 	)
 
 	BeforeEach(func() {
@@ -26,7 +26,7 @@ var _ = Describe("Delegation", func() {
 			},
 		}
 
-		manifest = agent.AgentManifest{
+		manifest = agent.Manifest{
 			ID:   "orchestrator-agent",
 			Name: "Orchestrator Agent",
 			Instructions: agent.Instructions{
@@ -53,7 +53,7 @@ var _ = Describe("Delegation", func() {
 					},
 				}
 
-				qaManifest := agent.AgentManifest{
+				qaManifest := agent.Manifest{
 					ID:                "qa-agent",
 					Name:              "QA Agent",
 					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
@@ -169,7 +169,7 @@ var _ = Describe("Delegation", func() {
 					},
 				}
 
-				qaManifest := agent.AgentManifest{
+				qaManifest := agent.Manifest{
 					ID:                "qa-agent",
 					Name:              "QA Agent",
 					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
@@ -195,7 +195,7 @@ var _ = Describe("Delegation", func() {
 				delegateTool := engine.NewDelegateTool(engines, delegation)
 
 				ctx := context.Background()
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
 						"task_type": "testing",
@@ -218,7 +218,7 @@ var _ = Describe("Delegation", func() {
 				delegateTool := engine.NewDelegateTool(nil, delegation)
 
 				ctx := context.Background()
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
 						"task_type": "testing",
@@ -241,7 +241,7 @@ var _ = Describe("Delegation", func() {
 				delegateTool := engine.NewDelegateTool(nil, delegation)
 
 				ctx := context.Background()
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
 						"task_type": "unknown",
@@ -268,7 +268,7 @@ var _ = Describe("Delegation", func() {
 				delegateTool := engine.NewDelegateTool(engines, delegation)
 
 				ctx := context.Background()
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
 						"task_type": "testing",

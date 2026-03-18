@@ -39,7 +39,7 @@ var _ = Describe("Bash Tool", func() {
 	Describe("Execute", func() {
 		Context("with a valid command", func() {
 			It("returns the command output", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "bash",
 					Arguments: map[string]interface{}{"command": "echo hello"},
 				}
@@ -52,7 +52,7 @@ var _ = Describe("Bash Tool", func() {
 
 		Context("with an invalid command", func() {
 			It("returns non-nil Error in result", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "bash",
 					Arguments: map[string]interface{}{"command": "nonexistent_command_xyz_123"},
 				}
@@ -64,7 +64,7 @@ var _ = Describe("Bash Tool", func() {
 
 		Context("with missing command argument", func() {
 			It("returns a Go error", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "bash",
 					Arguments: map[string]interface{}{},
 				}
@@ -78,7 +78,7 @@ var _ = Describe("Bash Tool", func() {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "bash",
 					Arguments: map[string]interface{}{"command": "sleep 10"},
 				}

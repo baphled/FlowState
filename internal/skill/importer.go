@@ -14,18 +14,23 @@ import (
 )
 
 var (
+	// ErrInvalidSkill indicates that a skill file lacks required frontmatter fields.
 	ErrInvalidSkill = errors.New("skill frontmatter must have name and description")
-	ErrSkillExists  = errors.New("skill already exists")
+	// ErrSkillExists indicates that a skill with the same name already exists.
+	ErrSkillExists = errors.New("skill already exists")
 )
 
+// Importer handles importing skills from external sources.
 type Importer struct {
 	SkillsDir string
 }
 
+// NewImporter creates a new skill importer for the given directory.
 func NewImporter(skillsDir string) *Importer {
 	return &Importer{SkillsDir: skillsDir}
 }
 
+// Add imports a skill from a GitHub repository.
 func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	repoURL := fmt.Sprintf("https://github.com/%s.git", ownerRepo)
 
@@ -35,7 +40,7 @@ func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repoURL, tempDir) //nolint:gosec // Input validated
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repoURL, tempDir)
 	if err := cmd.Run(); err != nil {
 		return Skill{}, fmt.Errorf("cloning repository %s: %w", ownerRepo, err)
 	}
@@ -43,7 +48,8 @@ func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	return imp.AddFromPath(ctx, tempDir)
 }
 
-func (imp *Importer) AddFromPath(ctx context.Context, repoPath string) (Skill, error) {
+// AddFromPath imports a skill from a local directory path.
+func (imp *Importer) AddFromPath(_ context.Context, repoPath string) (Skill, error) {
 	skillMDPath, err := findSkillMD(repoPath)
 	if err != nil {
 		return Skill{}, fmt.Errorf("finding SKILL.md: %w", err)
@@ -69,7 +75,7 @@ func (imp *Importer) AddFromPath(ctx context.Context, repoPath string) (Skill, e
 	}
 
 	targetPath := filepath.Join(targetDir, "SKILL.md")
-	if err := os.WriteFile(targetPath, data, 0o644); err != nil { //nolint:gosec // Skill files should be readable
+	if err := os.WriteFile(targetPath, data, 0o600); err != nil {
 		return Skill{}, fmt.Errorf("writing SKILL.md: %w", err)
 	}
 

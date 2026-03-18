@@ -55,7 +55,7 @@ func createRunTestApp(streamChunks []provider.StreamChunk, streamErr error) *app
 	}
 	testApp.Engine = engine.New(engine.Config{
 		ChatProvider: chatProvider,
-		Manifest: agent.AgentManifest{
+		Manifest: agent.Manifest{
 			ID:                "worker",
 			Name:              "Worker",
 			Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},

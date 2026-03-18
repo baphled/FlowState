@@ -4,6 +4,7 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 )
 
+// LoadAlwaysActiveSkills loads skills that should always be active for the given agent.
 func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []string) []skill.Skill {
 	merged := mergeSkillNames(appLevel, agentLevel)
 	if len(merged) == 0 {

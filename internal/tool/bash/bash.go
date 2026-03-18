@@ -1,3 +1,4 @@
+// Package bash provides a tool for executing bash commands with timeout.
 package bash
 
 import (
@@ -13,22 +14,27 @@ import (
 
 const timeout = 30 * time.Second
 
+// Tool executes bash commands with a configurable timeout.
 type Tool struct{}
 
+// New creates a new bash execution tool.
 func New() *Tool {
 	return &Tool{}
 }
 
+// Name returns the tool identifier.
 func (t *Tool) Name() string {
 	return "bash"
 }
 
+// Description returns a human-readable description of the tool.
 func (t *Tool) Description() string {
 	return "Execute bash commands with a 30-second timeout"
 }
 
-func (t *Tool) Schema() tool.ToolSchema {
-	return tool.ToolSchema{
+// Schema returns the JSON schema for tool arguments.
+func (t *Tool) Schema() tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"command": {
@@ -40,25 +46,26 @@ func (t *Tool) Schema() tool.ToolSchema {
 	}
 }
 
-func (t *Tool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
+// Execute runs the specified bash command and returns its output.
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	command, ok := input.Arguments["command"].(string)
 	if !ok || command == "" {
-		return tool.ToolResult{}, errors.New("command argument is required")
+		return tool.Result{}, errors.New("command argument is required")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command) //nolint:gosec // Tool execution by design
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return tool.ToolResult{
+		return tool.Result{
 			Output: strings.TrimSpace(string(out)),
 			Error:  fmt.Errorf("command failed: %w", err),
 		}, nil
 	}
 
-	return tool.ToolResult{
+	return tool.Result{
 		Output: strings.TrimSpace(string(out)),
 	}, nil
 }

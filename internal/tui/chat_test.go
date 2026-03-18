@@ -65,7 +65,7 @@ var _ = Describe("Chat TUI", func() {
 			},
 		}
 
-		manifest := agent.AgentManifest{
+		manifest := agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
 			Instructions: agent.Instructions{

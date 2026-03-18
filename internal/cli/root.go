@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// NewRootCmd creates the root command for the FlowState CLI.
 func NewRootCmd(application *app.App) *cobra.Command {
 	var appPtr = application
 
@@ -19,10 +20,10 @@ func NewRootCmd(application *app.App) *cobra.Command {
 		Short: "FlowState AI assistant CLI",
 		Long:  "FlowState provides an AI assistant TUI plus CLI entry points for chat, serving, discovery, and session management.",
 		Args:  cobra.NoArgs,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			return initApp(cmd, cfg, &appPtr)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRoot(cmd, appPtr)
 		},
 	}
@@ -51,9 +52,18 @@ func NewRootCmd(application *app.App) *cobra.Command {
 func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) error {
 	flags := cmd.Flags()
 
-	agentsDir, _ := flags.GetString("agents-dir")
-	skillsDir, _ := flags.GetString("skills-dir")
-	sessionsDir, _ := flags.GetString("sessions-dir")
+	agentsDir, err := flags.GetString("agents-dir")
+	if err != nil {
+		return fmt.Errorf("reading agents-dir flag: %w", err)
+	}
+	skillsDir, err := flags.GetString("skills-dir")
+	if err != nil {
+		return fmt.Errorf("reading skills-dir flag: %w", err)
+	}
+	sessionsDir, err := flags.GetString("sessions-dir")
+	if err != nil {
+		return fmt.Errorf("reading sessions-dir flag: %w", err)
+	}
 
 	agentsDirChanged := flags.Changed("agents-dir")
 	skillsDirChanged := flags.Changed("skills-dir")

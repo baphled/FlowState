@@ -273,6 +273,10 @@ linters:
             - gopkg.in/yaml.v3
             - github.com/cucumber/godog
             - github.com/sashabaranov/go-openai
+            - github.com/pkoukk/tiktoken-go
+            - github.com/anthropics/anthropic-sdk-go
+            - github.com/ollama/ollama
+            - github.com/openai/openai-go
 
   exclusions:
     rules:
@@ -300,6 +304,17 @@ linters:
       - linters:
           - gosec
         text: '(G301|G302|G307|G304)'
+
+      # G204: Command execution tools - by design execute user commands
+      - path: 'internal/tool/bash/bash\.go'
+        linters:
+          - gosec
+        text: 'G204'
+
+      - path: 'internal/skill/importer\.go'
+        linters:
+          - gosec
+        text: '(G204|G703)'
 
       # Test files - relaxed requirements
       - path: '(.+)_test\.go'

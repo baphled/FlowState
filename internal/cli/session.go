@@ -14,7 +14,7 @@ func newSessionCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Inspect and resume sessions",
 		Long:  "Inspect saved sessions and resume a previous conversation.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
@@ -29,7 +29,7 @@ func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 		Short: "List saved sessions",
 		Long:  "List saved FlowState sessions.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			sessions := getApp().Sessions.List()
 			if len(sessions) == 0 {
 				_, err := fmt.Fprintln(cmd.OutOrStdout(), "No sessions yet.")
@@ -56,7 +56,7 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Resume a saved session",
 		Long:  "Resume a saved FlowState session.",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			sessionID := args[0]
 			a := getApp()
 

@@ -1,3 +1,4 @@
+// Package ollama provides an Ollama LLM provider implementation.
 package ollama
 
 import (
@@ -11,11 +12,13 @@ import (
 	ollamaAPI "github.com/ollama/ollama/api"
 )
 
+// Provider implements the provider.Provider interface for Ollama.
 type Provider struct {
 	client *ollamaAPI.Client
 	host   string
 }
 
+// New creates a new Ollama provider with the given host.
 func New(host string) (*Provider, error) {
 	client, err := ollamaAPI.ClientFromEnvironment()
 	if err != nil {
@@ -27,6 +30,7 @@ func New(host string) (*Provider, error) {
 	}, nil
 }
 
+// NewWithClient creates a new Ollama provider with a custom HTTP client.
 func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
@@ -39,10 +43,12 @@ func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 	}, nil
 }
 
+// Name returns the provider name.
 func (p *Provider) Name() string {
 	return "ollama"
 }
 
+// Stream sends a chat request and returns a channel of streaming response chunks.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 16)
 
@@ -105,6 +111,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
+// Chat sends a chat request and returns the complete response.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := make([]ollamaAPI.Message, 0, len(req.Messages))
 	for _, m := range req.Messages {
@@ -151,6 +158,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	return response, nil
 }
 
+// Embed generates embeddings for the given input text.
 func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
 	embedReq := &ollamaAPI.EmbedRequest{
 		Model: req.Model,
@@ -174,6 +182,7 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	return result, nil
 }
 
+// Models returns the list of available models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	resp, err := p.client.List(context.Background())
 	if err != nil {

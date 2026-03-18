@@ -7,8 +7,8 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 )
 
-var _ = Describe("SkillDiscovery", func() {
-	var discovery *skill.SkillDiscovery
+var _ = Describe("Discovery", func() {
+	var discovery *skill.Discovery
 
 	Describe("Suggest", func() {
 		Context("when skills are available", func() {
@@ -33,7 +33,7 @@ var _ = Describe("SkillDiscovery", func() {
 						WhenToUse:   "Security audits, vulnerability assessment",
 					},
 				}
-				discovery = skill.NewSkillDiscovery(skills)
+				discovery = skill.NewDiscovery(skills)
 			})
 
 			It("suggests matching skill for relevant task description", func() {
@@ -66,7 +66,7 @@ var _ = Describe("SkillDiscovery", func() {
 						WhenToUse:   "Writing BDD tests with Ginkgo, test-first development",
 					},
 				}
-				discovery = skill.NewSkillDiscovery(skillsWithOverlap)
+				discovery = skill.NewDiscovery(skillsWithOverlap)
 
 				suggestions := discovery.Suggest("BDD tests Ginkgo")
 
@@ -89,7 +89,7 @@ var _ = Describe("SkillDiscovery", func() {
 						WhenToUse:   "Reviewing code for quality",
 					},
 				}
-				discovery = skill.NewSkillDiscovery(skillsWithOverlap)
+				discovery = skill.NewDiscovery(skillsWithOverlap)
 
 				suggestions := discovery.Suggest("security audit")
 
@@ -109,7 +109,7 @@ var _ = Describe("SkillDiscovery", func() {
 
 		Context("when skill set is empty", func() {
 			BeforeEach(func() {
-				discovery = skill.NewSkillDiscovery([]skill.Skill{})
+				discovery = skill.NewDiscovery([]skill.Skill{})
 			})
 
 			It("handles empty skill set gracefully", func() {
@@ -127,7 +127,7 @@ var _ = Describe("SkillDiscovery", func() {
 						WhenToUse: "Writing Go code",
 					},
 				}
-				discovery = skill.NewSkillDiscovery(skills)
+				discovery = skill.NewDiscovery(skills)
 			})
 
 			It("returns empty for empty task description", func() {

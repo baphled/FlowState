@@ -1,3 +1,4 @@
+// Package skill provides skill loading, discovery, and import functionality.
 package skill
 
 import (
@@ -5,21 +6,25 @@ import (
 	"strings"
 )
 
-type SkillSuggestion struct {
+// Suggestion represents a skill recommendation with confidence score.
+type Suggestion struct {
 	Name       string
 	Confidence float64
 	Reason     string
 }
 
-type SkillDiscovery struct {
+// Discovery finds relevant skills based on task descriptions.
+type Discovery struct {
 	skills []Skill
 }
 
-func NewSkillDiscovery(skills []Skill) *SkillDiscovery {
-	return &SkillDiscovery{skills: skills}
+// NewDiscovery creates a new skill discovery instance.
+func NewDiscovery(skills []Skill) *Discovery {
+	return &Discovery{skills: skills}
 }
 
-func (sd *SkillDiscovery) Suggest(taskDescription string) []SkillSuggestion {
+// Suggest returns skills relevant to the given task description.
+func (sd *Discovery) Suggest(taskDescription string) []Suggestion {
 	if taskDescription == "" || len(sd.skills) == 0 {
 		return nil
 	}
@@ -29,12 +34,12 @@ func (sd *SkillDiscovery) Suggest(taskDescription string) []SkillSuggestion {
 		return nil
 	}
 
-	var suggestions []SkillSuggestion
+	var suggestions []Suggestion
 
 	for i := range sd.skills {
 		score, reason := sd.scoreSkill(sd.skills[i], taskTokens)
 		if score >= 0.3 {
-			suggestions = append(suggestions, SkillSuggestion{
+			suggestions = append(suggestions, Suggestion{
 				Name:       sd.skills[i].Name,
 				Confidence: score,
 				Reason:     reason,
@@ -49,7 +54,7 @@ func (sd *SkillDiscovery) Suggest(taskDescription string) []SkillSuggestion {
 	return suggestions
 }
 
-func (sd *SkillDiscovery) scoreSkill(s Skill, taskTokens []string) (float64, string) {
+func (sd *Discovery) scoreSkill(s Skill, taskTokens []string) (float64, string) {
 	const (
 		weightWhenToUse = 3.0
 		weightCategory  = 2.0

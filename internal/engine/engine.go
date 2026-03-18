@@ -19,25 +19,29 @@ const (
 	defaultStreamTimeout = 60 * time.Second
 )
 
+// Engine orchestrates chat interactions with providers, tools, and context management.
+// Engine orchestrates AI agent interactions with providers and tools.
 type Engine struct {
 	chatProvider      provider.Provider
 	embeddingProvider provider.Provider
 	failbackChain     *provider.FailbackChain
-	manifest          agent.AgentManifest
+	manifest          agent.Manifest
 	tools             []tool.Tool
 	skills            []skill.Skill
 	store             *ctxstore.FileContextStore
-	windowBuilder     *ctxstore.ContextWindowBuilder
+	windowBuilder     *ctxstore.WindowBuilder
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
 	hookChain         *hook.Chain
 }
 
+// Config holds the configuration for creating a new Engine.
+// Config holds configuration for creating a new Engine.
 type Config struct {
 	ChatProvider      provider.Provider
 	EmbeddingProvider provider.Provider
 	Registry          *provider.Registry
-	Manifest          agent.AgentManifest
+	Manifest          agent.Manifest
 	Tools             []tool.Tool
 	Skills            []skill.Skill
 	Store             *ctxstore.FileContextStore
@@ -46,10 +50,12 @@ type Config struct {
 	HookChain         *hook.Chain
 }
 
+// New creates a new Engine with the given configuration.
+// New creates a new Engine from the given configuration.
 func New(cfg Config) *Engine {
-	var windowBuilder *ctxstore.ContextWindowBuilder
+	var windowBuilder *ctxstore.WindowBuilder
 	if cfg.TokenCounter != nil {
-		windowBuilder = ctxstore.NewContextWindowBuilder(cfg.TokenCounter)
+		windowBuilder = ctxstore.NewWindowBuilder(cfg.TokenCounter)
 	}
 
 	timeout := cfg.StreamTimeout
@@ -78,7 +84,7 @@ func New(cfg Config) *Engine {
 	}
 }
 
-func buildModelPreferences(manifest agent.AgentManifest) []provider.ModelPreference {
+func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 	complexity := manifest.Complexity
 	if complexity == "" {
 		complexity = "standard"
@@ -99,6 +105,8 @@ func buildModelPreferences(manifest agent.AgentManifest) []provider.ModelPrefere
 	return result
 }
 
+// LastProvider returns the name of the last provider used.
+// LastProvider returns the name of the most recently used provider.
 func (e *Engine) LastProvider() string {
 	if e.failbackChain != nil {
 		return e.failbackChain.LastProvider()
@@ -109,6 +117,8 @@ func (e *Engine) LastProvider() string {
 	return ""
 }
 
+// BuildSystemPrompt constructs the system prompt from the manifest and active skills.
+// BuildSystemPrompt constructs the system prompt from the agent manifest.
 func (e *Engine) BuildSystemPrompt() string {
 	var builder strings.Builder
 	builder.WriteString(e.manifest.Instructions.SystemPrompt)
@@ -136,7 +146,9 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 				"description": v.Description,
 			}
 			if len(v.Enum) > 0 {
-				props[k].(map[string]interface{})["enum"] = v.Enum
+				if propMap, ok := props[k].(map[string]interface{}); ok {
+					propMap["enum"] = v.Enum
+				}
 			}
 		}
 		tools = append(tools, provider.Tool{
@@ -152,6 +164,8 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 	return tools
 }
 
+// Stream sends a message and returns a channel of streaming response chunks.
+// Stream sends a message and returns a channel of streamed response chunks.
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	_ = agentID
 
@@ -265,24 +279,22 @@ func (e *Engine) processStreamChunks(
 	}
 }
 
-func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.ToolResult, error) {
+func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.Result, error) {
 	for _, t := range e.tools {
 		if t.Name() == toolCall.Name {
-			input := tool.ToolInput{
+			input := tool.Input{
 				Name:      toolCall.Name,
 				Arguments: toolCall.Arguments,
 			}
 			result, err := t.Execute(ctx, input)
-			if err != nil {
-				return tool.ToolResult{Output: "", Error: err}, nil //nolint:nilerr // Error captured in ToolResult.Error
-			}
+			result.Error = err
 			return result, nil
 		}
 	}
-	return tool.ToolResult{}, fmt.Errorf("tool not found: %s", toolCall.Name)
+	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
 }
 
-func (e *Engine) storeToolResult(toolCallID string, result tool.ToolResult) {
+func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
 	if e.store == nil {
 		return
 	}
@@ -302,7 +314,7 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.ToolResult) {
 }
 
 func (e *Engine) appendToolResultToMessages(
-	messages []provider.Message, toolCall *provider.ToolCall, result tool.ToolResult,
+	messages []provider.Message, toolCall *provider.ToolCall, result tool.Result,
 ) []provider.Message {
 	content := result.Output
 	if result.Error != nil {

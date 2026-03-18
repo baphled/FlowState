@@ -1,3 +1,4 @@
+// Package main provides the CLI entry point for the FlowState AI assistant application.
 package main
 
 import (

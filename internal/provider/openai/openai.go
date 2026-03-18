@@ -1,3 +1,4 @@
+// Package openai provides an OpenAI provider implementation.
 package openai
 
 import (
@@ -12,10 +13,12 @@ import (
 
 var errAPIKeyRequired = errors.New("OpenAI API key is required")
 
+// Provider implements the provider.Provider interface for OpenAI.
 type Provider struct {
 	client openaiAPI.Client
 }
 
+// New creates a new OpenAI provider with the given API key.
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -26,6 +29,7 @@ func New(apiKey string) (*Provider, error) {
 	}, nil
 }
 
+// NewWithOptions creates a new OpenAI provider with custom request options.
 func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -37,10 +41,12 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 	}, nil
 }
 
+// Name returns the provider name.
 func (p *Provider) Name() string {
 	return "openai"
 }
 
+// Stream sends a streaming chat request and returns a channel of response chunks.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 16)
 
@@ -83,6 +89,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
+// Chat sends a chat completion request and returns the response.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := make([]openaiAPI.ChatCompletionMessageParamUnion, 0, len(req.Messages))
 	for _, m := range req.Messages {
@@ -121,6 +128,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	}, nil
 }
 
+// Embed generates embeddings for the given input text.
 func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
 	model := req.Model
 	if model == "" {
@@ -144,6 +152,7 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	return resp.Data[0].Embedding, nil
 }
 
+// Models returns the list of available OpenAI models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	return []provider.Model{
 		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000},

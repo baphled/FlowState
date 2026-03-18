@@ -10,14 +10,14 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 )
 
-var _ = Describe("AgentRegistry", func() {
+var _ = Describe("Registry", func() {
 	var (
-		registry *agent.AgentRegistry
+		registry *agent.Registry
 		tempDir  string
 	)
 
 	BeforeEach(func() {
-		registry = agent.NewAgentRegistry()
+		registry = agent.NewRegistry()
 		var err error
 		tempDir, err = os.MkdirTemp("", "agent-registry-test")
 		Expect(err).NotTo(HaveOccurred())
@@ -27,7 +27,7 @@ var _ = Describe("AgentRegistry", func() {
 		os.RemoveAll(tempDir)
 	})
 
-	Describe("NewAgentRegistry", func() {
+	Describe("NewRegistry", func() {
 		It("creates an empty registry", func() {
 			Expect(registry).NotTo(BeNil())
 			Expect(registry.List()).To(BeEmpty())
@@ -36,7 +36,7 @@ var _ = Describe("AgentRegistry", func() {
 
 	Describe("Register", func() {
 		It("adds a manifest to the registry", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "test-agent",
 				Name: "Test Agent",
 			}
@@ -50,11 +50,11 @@ var _ = Describe("AgentRegistry", func() {
 		})
 
 		It("overwrites existing manifest with same ID", func() {
-			manifest1 := &agent.AgentManifest{
+			manifest1 := &agent.Manifest{
 				ID:   "test-agent",
 				Name: "Original Name",
 			}
-			manifest2 := &agent.AgentManifest{
+			manifest2 := &agent.Manifest{
 				ID:   "test-agent",
 				Name: "Updated Name",
 			}
@@ -70,7 +70,7 @@ var _ = Describe("AgentRegistry", func() {
 
 	Describe("Get", func() {
 		It("returns manifest and true when found", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "existing-agent",
 				Name: "Existing Agent",
 			}
@@ -96,7 +96,7 @@ var _ = Describe("AgentRegistry", func() {
 		})
 
 		It("returns all manifests sorted by ID", func() {
-			manifests := []*agent.AgentManifest{
+			manifests := []*agent.Manifest{
 				{ID: "charlie-agent", Name: "Charlie"},
 				{ID: "alpha-agent", Name: "Alpha"},
 				{ID: "bravo-agent", Name: "Bravo"},
@@ -122,7 +122,7 @@ var _ = Describe("AgentRegistry", func() {
 					"id": "json-agent",
 					"name": "JSON Agent"
 				}`
-				err := os.WriteFile(filepath.Join(tempDir, "json-agent.json"), []byte(jsonContent), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "json-agent.json"), []byte(jsonContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -140,7 +140,7 @@ mode: subagent
 ---
 # Agent Instructions
 `
-				err := os.WriteFile(filepath.Join(tempDir, "md-agent.md"), []byte(mdContent), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "md-agent.md"), []byte(mdContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -157,9 +157,9 @@ mode: subagent
 description: MD Agent
 ---
 `
-				err := os.WriteFile(filepath.Join(tempDir, "json-agent.json"), []byte(jsonContent), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "json-agent.json"), []byte(jsonContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
-				err = os.WriteFile(filepath.Join(tempDir, "md-agent.md"), []byte(mdContent), 0o644)
+				err = os.WriteFile(filepath.Join(tempDir, "md-agent.md"), []byte(mdContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -172,9 +172,9 @@ description: MD Agent
 			It("skips invalid manifests and continues loading", func() {
 				validContent := `{"id": "valid-agent", "name": "Valid Agent"}`
 				invalidContent := `{invalid json`
-				err := os.WriteFile(filepath.Join(tempDir, "valid.json"), []byte(validContent), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "valid.json"), []byte(validContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
-				err = os.WriteFile(filepath.Join(tempDir, "invalid.json"), []byte(invalidContent), 0o644)
+				err = os.WriteFile(filepath.Join(tempDir, "invalid.json"), []byte(invalidContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -188,9 +188,9 @@ description: MD Agent
 			It("skips manifests failing validation", func() {
 				noIDContent := `{"name": "No ID Agent"}`
 				validContent := `{"id": "valid-agent", "name": "Valid Agent"}`
-				err := os.WriteFile(filepath.Join(tempDir, "no-id.json"), []byte(noIDContent), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "no-id.json"), []byte(noIDContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
-				err = os.WriteFile(filepath.Join(tempDir, "valid.json"), []byte(validContent), 0o644)
+				err = os.WriteFile(filepath.Join(tempDir, "valid.json"), []byte(validContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -202,9 +202,9 @@ description: MD Agent
 			})
 
 			It("clears existing manifests on rediscovery", func() {
-				registry.Register(&agent.AgentManifest{ID: "existing", Name: "Existing"})
+				registry.Register(&agent.Manifest{ID: "existing", Name: "Existing"})
 				content := `{"id": "new-agent", "name": "New Agent"}`
-				err := os.WriteFile(filepath.Join(tempDir, "new.json"), []byte(content), 0o644)
+				err := os.WriteFile(filepath.Join(tempDir, "new.json"), []byte(content), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(tempDir)
@@ -227,7 +227,7 @@ description: MD Agent
 
 			It("returns error for file path instead of directory", func() {
 				filePath := filepath.Join(tempDir, "file.txt")
-				err := os.WriteFile(filePath, []byte("content"), 0o644)
+				err := os.WriteFile(filePath, []byte("content"), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				err = registry.Discover(filePath)

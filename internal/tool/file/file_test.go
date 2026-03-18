@@ -60,7 +60,7 @@ var _ = Describe("File Tool", func() {
 				testPath := filepath.Join(tempDir, "test.txt")
 				testContent := "hello world"
 
-				writeInput := tool.ToolInput{
+				writeInput := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"operation": "write",
@@ -74,7 +74,7 @@ var _ = Describe("File Tool", func() {
 				Expect(writeResult.Error).ToNot(HaveOccurred())
 				Expect(writeResult.Output).To(ContainSubstring("wrote"))
 
-				readInput := tool.ToolInput{
+				readInput := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"operation": "read",
@@ -91,7 +91,7 @@ var _ = Describe("File Tool", func() {
 
 		Context("read non-existent file", func() {
 			It("returns non-nil Error in result", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"operation": "read",
@@ -107,7 +107,7 @@ var _ = Describe("File Tool", func() {
 
 		Context("path traversal attempt", func() {
 			It("returns non-nil Error in result for ../etc/passwd", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"operation": "read",
@@ -123,7 +123,7 @@ var _ = Describe("File Tool", func() {
 
 		Context("missing operation", func() {
 			It("returns Go error", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"path": "/tmp/test.txt",
@@ -137,7 +137,7 @@ var _ = Describe("File Tool", func() {
 
 		Context("unknown operation", func() {
 			It("returns Go error", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name: "file",
 					Arguments: map[string]interface{}{
 						"operation": "delete",

@@ -29,8 +29,7 @@ var _ = Describe("LoadAlwaysActiveSkills", func() {
 		skillDir := filepath.Join(tempDir, name)
 		Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
 		skillFile := filepath.Join(skillDir, "SKILL.md")
-		//nolint:gosec // Test file permissions
-		Expect(os.WriteFile(skillFile, []byte(content), 0o644)).To(Succeed())
+		Expect(os.WriteFile(skillFile, []byte(content), 0o600)).To(Succeed())
 	}
 
 	Describe("loading matching skills from directory", func() {

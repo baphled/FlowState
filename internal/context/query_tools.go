@@ -1,3 +1,4 @@
+// Package context provides conversation context management including storage, retrieval, and semantic search.
 package context
 
 import (
@@ -10,12 +11,16 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+// SearchContextTool searches conversation history semantically using embeddings.
+// SearchContextTool provides semantic search over the context store.
 type SearchContextTool struct {
 	store    *FileContextStore
 	embedder provider.Provider
 	topK     int
 }
 
+// NewSearchContextTool creates a new SearchContextTool with the given store and embedder.
+// NewSearchContextTool creates a new search context tool with the given store and embedder.
 func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, topK int) *SearchContextTool {
 	return &SearchContextTool{
 		store:    store,
@@ -24,16 +29,19 @@ func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, t
 	}
 }
 
+// Name returns the tool name.
 func (t *SearchContextTool) Name() string {
 	return "search_context"
 }
 
+// Description returns a description of what the tool does.
 func (t *SearchContextTool) Description() string {
 	return "Search conversation history semantically"
 }
 
-func (t *SearchContextTool) Schema() tool.ToolSchema {
-	return tool.ToolSchema{
+// Schema returns the tool's input schema.
+func (t *SearchContextTool) Schema() tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"query": {Type: "string", Description: "Search query"},
@@ -42,7 +50,8 @@ func (t *SearchContextTool) Schema() tool.ToolSchema {
 	}
 }
 
-func (t *SearchContextTool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
+// Execute runs the semantic search against conversation history.
+func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	query, ok := input.Arguments["query"].(string)
 	if !ok || query == "" {
 		return t.fallbackToRecent()
@@ -58,18 +67,18 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.ToolInput) (
 
 	results := t.store.Search(vector, t.topK)
 	if len(results) == 0 {
-		return tool.ToolResult{Output: ""}, nil
+		return tool.Result{Output: ""}, nil
 	}
 
-	return tool.ToolResult{Output: formatMessages(extractMessages(results))}, nil
+	return tool.Result{Output: formatMessages(extractMessages(results))}, nil
 }
 
-func (t *SearchContextTool) fallbackToRecent() (tool.ToolResult, error) {
+func (t *SearchContextTool) fallbackToRecent() (tool.Result, error) {
 	messages := t.store.GetRecent(t.topK)
 	if len(messages) == 0 {
-		return tool.ToolResult{Output: ""}, nil
+		return tool.Result{Output: ""}, nil
 	}
-	return tool.ToolResult{Output: formatMessages(messages)}, nil
+	return tool.Result{Output: formatMessages(messages)}, nil
 }
 
 func extractMessages(results []SearchResult) []provider.Message {
@@ -88,24 +97,29 @@ func formatMessages(messages []provider.Message) string {
 	return strings.Join(parts, "\n---\n")
 }
 
+// GetMessagesTool retrieves messages by range or recent count.
 type GetMessagesTool struct {
 	store *FileContextStore
 }
 
+// NewGetMessagesTool creates a new GetMessagesTool with the given store.
 func NewGetMessagesTool(store *FileContextStore) *GetMessagesTool {
 	return &GetMessagesTool{store: store}
 }
 
+// Name returns the tool name.
 func (t *GetMessagesTool) Name() string {
 	return "get_messages"
 }
 
+// Description returns a description of what the tool does.
 func (t *GetMessagesTool) Description() string {
 	return "Retrieve messages by range or recent count"
 }
 
-func (t *GetMessagesTool) Schema() tool.ToolSchema {
-	return tool.ToolSchema{
+// Schema returns the tool's input schema.
+func (t *GetMessagesTool) Schema() tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"count": {Type: "integer", Description: "Number of recent messages to retrieve"},
@@ -116,7 +130,8 @@ func (t *GetMessagesTool) Schema() tool.ToolSchema {
 	}
 }
 
-func (t *GetMessagesTool) Execute(_ context.Context, input tool.ToolInput) (tool.ToolResult, error) {
+// Execute retrieves messages based on the input parameters.
+func (t *GetMessagesTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	count := extractInt(input.Arguments, "count", 0)
 	start := extractInt(input.Arguments, "start", -1)
 	end := extractInt(input.Arguments, "end", -1)
@@ -130,7 +145,7 @@ func (t *GetMessagesTool) Execute(_ context.Context, input tool.ToolInput) (tool
 		messages = t.store.GetRecent(10)
 	}
 
-	return tool.ToolResult{Output: formatMessages(messages)}, nil
+	return tool.Result{Output: formatMessages(messages)}, nil
 }
 
 func extractInt(args map[string]interface{}, key string, defaultVal int) int {
@@ -145,6 +160,7 @@ func extractInt(args map[string]interface{}, key string, defaultVal int) int {
 	return int(floatVal)
 }
 
+// SummarizeContextTool recursively summarizes conversation history.
 type SummarizeContextTool struct {
 	store    *FileContextStore
 	provider provider.Provider
@@ -153,7 +169,10 @@ type SummarizeContextTool struct {
 	model    string
 }
 
-func NewSummarizeContextTool(store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter, model string) *SummarizeContextTool {
+// NewSummarizeContextTool creates a new SummarizeContextTool with the given configuration.
+func NewSummarizeContextTool(
+	store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter, model string,
+) *SummarizeContextTool {
 	return &SummarizeContextTool{
 		store:    store,
 		provider: p,
@@ -163,16 +182,19 @@ func NewSummarizeContextTool(store *FileContextStore, p provider.Provider, maxDe
 	}
 }
 
+// Name returns the tool name.
 func (t *SummarizeContextTool) Name() string {
 	return "summarize_context"
 }
 
+// Description returns a description of what the tool does.
 func (t *SummarizeContextTool) Description() string {
 	return "Recursively summarize conversation history"
 }
 
-func (t *SummarizeContextTool) Schema() tool.ToolSchema {
-	return tool.ToolSchema{
+// Schema returns the tool's input schema.
+func (t *SummarizeContextTool) Schema() tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"focus": {Type: "string", Description: "Optional focus area for summarization"},
@@ -184,8 +206,12 @@ func (t *SummarizeContextTool) Schema() tool.ToolSchema {
 	}
 }
 
-func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
-	focus, _ := input.Arguments["focus"].(string) //nolint:errcheck // type assertion without error is intentional
+// Execute runs the summarize context tool.
+func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	focus, ok := input.Arguments["focus"].(string)
+	if !ok {
+		focus = ""
+	}
 	depth := extractInt(input.Arguments, "depth", 1)
 	start := extractInt(input.Arguments, "start", -1)
 	end := extractInt(input.Arguments, "end", -1)
@@ -205,7 +231,7 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.ToolInput
 	}
 
 	if len(messages) == 0 {
-		return tool.ToolResult{Output: "No conversation history"}, nil
+		return tool.Result{Output: "No conversation history"}, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -216,7 +242,7 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.ToolInput
 
 func (t *SummarizeContextTool) summarize(
 	ctx context.Context, messages []provider.Message, focus string, depth int,
-) (tool.ToolResult, error) {
+) (tool.Result, error) {
 	content := formatMessages(messages)
 	inputTokens := t.counter.Count(content)
 
@@ -233,31 +259,33 @@ func (t *SummarizeContextTool) summarize(
 		},
 	})
 	if err != nil {
-		return tool.ToolResult{Output: content, Error: err}, nil //nolint:nilerr // Fallback to original content on error
+		return tool.Result{}, fmt.Errorf("summarizing context: %w", err)
 	}
 
 	summary := resp.Message.Content
 	summaryTokens := t.counter.Count(summary)
 
 	if float64(summaryTokens) >= float64(inputTokens)*0.9 {
-		return tool.ToolResult{Output: summary}, nil
+		return tool.Result{Output: summary}, nil
 	}
 
 	if depth > 1 {
 		return t.summarize(ctx, []provider.Message{{Role: "assistant", Content: summary}}, focus, depth-1)
 	}
 
-	return tool.ToolResult{Output: summary}, nil
+	return tool.Result{Output: summary}, nil
 }
 
-type ContextQueryTools struct {
+// QueryTools provides combined context query operations.
+type QueryTools struct {
 	Search    *SearchContextTool
 	GetMsgs   *GetMessagesTool
 	Summarize *SummarizeContextTool
 }
 
-func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *ContextQueryTools {
-	return &ContextQueryTools{
+// NewContextQueryTools creates a new context query tools instance.
+func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *QueryTools {
+	return &QueryTools{
 		Search:    NewSearchContextTool(store, p, 5),
 		GetMsgs:   NewGetMessagesTool(store),
 		Summarize: NewSummarizeContextTool(store, p, 2, counter, summaryModel),

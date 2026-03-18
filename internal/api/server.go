@@ -16,7 +16,7 @@ import (
 // Server provides HTTP endpoints for the FlowState platform.
 type Server struct {
 	engine    *engine.Engine
-	registry  *agent.AgentRegistry
+	registry  *agent.Registry
 	discovery *discovery.AgentDiscovery
 	skills    []skill.Skill
 	sessions  *ctxstore.FileSessionStore
@@ -26,7 +26,7 @@ type Server struct {
 // NewServer creates a new API server with the given dependencies.
 func NewServer(
 	eng *engine.Engine,
-	registry *agent.AgentRegistry,
+	registry *agent.Registry,
 	disc *discovery.AgentDiscovery,
 	skills []skill.Skill,
 	sessions *ctxstore.FileSessionStore,
@@ -61,7 +61,7 @@ func (s *Server) setupRoutes() {
 func (s *Server) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 	manifests := s.registry.List()
 	if manifests == nil {
-		manifests = []*agent.AgentManifest{}
+		manifests = []*agent.Manifest{}
 	}
 	writeJSON(w, manifests)
 }

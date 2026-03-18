@@ -1,3 +1,4 @@
+// Package support provides BDD test step definitions and helpers.
 package support
 
 import (

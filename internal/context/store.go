@@ -14,32 +14,48 @@ import (
 	"github.com/google/uuid"
 )
 
+// MessageStore provides operations for storing and retrieving messages.
+// MessageStore defines operations for managing conversation messages.
 type MessageStore interface {
+	// Append adds a message to the store.
+	// Append adds a message to the store.
 	Append(msg provider.Message)
+	// GetRange returns messages from start to end indices.
+	// GetRange returns messages between the given indices.
 	GetRange(start, end int) []provider.Message
+	// GetRecent returns the n most recent messages.
+	// GetRecent returns the n most recent messages.
 	GetRecent(n int) []provider.Message
+	// Count returns the total number of messages.
 	Count() int
+	// AllMessages returns all messages in the store.
 	AllMessages() []provider.Message
 }
 
+// SearchResult represents a search result with relevance score.
 type SearchResult struct {
 	MessageID string
 	Score     float64
 	Message   provider.Message
 }
 
+// EmbeddingStore provides operations for storing and searching embeddings.
 type EmbeddingStore interface {
+	// StoreEmbedding stores an embedding vector for a message.
 	StoreEmbedding(msgID string, vector []float64, model string, dimensions int)
+	// Search finds the most similar messages to the query vector.
 	Search(query []float64, topK int) []SearchResult
 }
 
-type storedMessage struct {
+// StoredMessage represents a message with its metadata for persistence.
+type StoredMessage struct {
 	ID       string           `json:"id"`
 	Message  provider.Message `json:"message"`
 	Embedded bool             `json:"embedded"`
 }
 
-type embeddingEntry struct {
+// EmbeddingEntry represents an embedding vector with its metadata.
+type EmbeddingEntry struct {
 	MsgID      string    `json:"msg_id"`
 	Vector     []float64 `json:"vector"`
 	Model      string    `json:"model"`
@@ -47,15 +63,16 @@ type embeddingEntry struct {
 }
 
 type persistedStore struct {
-	Messages   []storedMessage  `json:"messages"`
-	Embeddings []embeddingEntry `json:"embeddings"`
+	Messages   []StoredMessage  `json:"messages"`
+	Embeddings []EmbeddingEntry `json:"embeddings"`
 	Model      string           `json:"model"`
 }
 
+// FileContextStore implements MessageStore and EmbeddingStore with file persistence.
 type FileContextStore struct {
 	path       string
-	messages   []storedMessage
-	embeddings []embeddingEntry
+	messages   []StoredMessage
+	embeddings []EmbeddingEntry
 	mu         sync.RWMutex
 	maxSize    int
 	model      string
@@ -63,6 +80,7 @@ type FileContextStore struct {
 
 const defaultMaxSize = 1000
 
+// NewFileContextStore creates a new FileContextStore at the given path.
 func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -71,8 +89,8 @@ func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error)
 
 	store := &FileContextStore{
 		path:       path,
-		messages:   make([]storedMessage, 0),
-		embeddings: make([]embeddingEntry, 0),
+		messages:   make([]StoredMessage, 0),
+		embeddings: make([]EmbeddingEntry, 0),
 		maxSize:    defaultMaxSize,
 		model:      embeddingModel,
 	}
@@ -100,16 +118,16 @@ func (s *FileContextStore) load() error {
 
 	s.messages = persisted.Messages
 	if s.messages == nil {
-		s.messages = make([]storedMessage, 0)
+		s.messages = make([]StoredMessage, 0)
 	}
 
 	if persisted.Model == s.model {
 		s.embeddings = persisted.Embeddings
 		if s.embeddings == nil {
-			s.embeddings = make([]embeddingEntry, 0)
+			s.embeddings = make([]EmbeddingEntry, 0)
 		}
 	} else {
-		s.embeddings = make([]embeddingEntry, 0)
+		s.embeddings = make([]EmbeddingEntry, 0)
 	}
 
 	return nil
@@ -128,7 +146,7 @@ func (s *FileContextStore) persist() error {
 	}
 
 	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // Context store files need to be readable
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 
@@ -139,11 +157,12 @@ func (s *FileContextStore) persist() error {
 	return nil
 }
 
+// Append adds a message to the store.
 func (s *FileContextStore) Append(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sm := storedMessage{
+	sm := StoredMessage{
 		ID:       uuid.New().String(),
 		Message:  msg,
 		Embedded: false,
@@ -160,6 +179,7 @@ func (s *FileContextStore) Append(msg provider.Message) {
 	}
 }
 
+// GetRange returns messages from start to end indices.
 func (s *FileContextStore) GetRange(start, end int) []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -181,6 +201,7 @@ func (s *FileContextStore) GetRange(start, end int) []provider.Message {
 	return result
 }
 
+// GetRecent returns the n most recent messages.
 func (s *FileContextStore) GetRecent(n int) []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -198,12 +219,14 @@ func (s *FileContextStore) GetRecent(n int) []provider.Message {
 	return result
 }
 
+// Count returns the total number of messages.
 func (s *FileContextStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.messages)
 }
 
+// AllMessages returns all messages in the store.
 func (s *FileContextStore) AllMessages() []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -215,6 +238,7 @@ func (s *FileContextStore) AllMessages() []provider.Message {
 	return result
 }
 
+// GetMessageID returns the ID of the message at the given index.
 func (s *FileContextStore) GetMessageID(index int) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -225,6 +249,7 @@ func (s *FileContextStore) GetMessageID(index int) string {
 	return s.messages[index].ID
 }
 
+// StoreEmbedding stores an embedding vector for a message.
 func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model string, dimensions int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,7 +261,7 @@ func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model 
 		}
 	}
 
-	entry := embeddingEntry{
+	entry := EmbeddingEntry{
 		MsgID:      msgID,
 		Vector:     vector,
 		Model:      model,
@@ -249,6 +274,7 @@ func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model 
 	}
 }
 
+// Search finds the most similar messages to the query vector.
 func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -257,7 +283,7 @@ func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {
 		return []SearchResult{}
 	}
 
-	msgByID := make(map[string]storedMessage)
+	msgByID := make(map[string]StoredMessage)
 	for _, sm := range s.messages {
 		msgByID[sm.ID] = sm
 	}
@@ -292,6 +318,7 @@ func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {
 	return results
 }
 
+// CosineSimilarity computes the cosine similarity between two vectors.
 func CosineSimilarity(a, b []float64) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0

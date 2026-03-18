@@ -118,7 +118,9 @@ var _ = Describe("Hook", func() {
 				resultChan, err := wrappedHandler(ctx, request)
 				Expect(err).NotTo(HaveOccurred())
 
-				for range resultChan {
+				for v := range resultChan {
+					_ = v
+					_ = 0
 				}
 
 				Eventually(func() bool { return afterRan }).Should(BeTrue())
@@ -208,7 +210,9 @@ var _ = Describe("Hook", func() {
 			resultChan, err := wrappedHandler(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
 
-			for range resultChan {
+			for v := range resultChan {
+				_ = v
+				_ = 0
 			}
 
 			Eventually(func() int { return len(store.entries) }).Should(Equal(1))

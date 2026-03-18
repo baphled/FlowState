@@ -11,7 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func LoadManifest(path string) (*AgentManifest, error) {
+// LoadManifest loads an agent manifest from the given path, supporting JSON and Markdown formats.
+func LoadManifest(path string) (*Manifest, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json":
@@ -23,12 +24,13 @@ func LoadManifest(path string) (*AgentManifest, error) {
 	}
 }
 
-func LoadManifestJSON(path string) (*AgentManifest, error) {
+// LoadManifestJSON loads an agent manifest from a JSON file.
+func LoadManifestJSON(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
-	var m AgentManifest
+	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing JSON: %w", err)
 	}
@@ -36,7 +38,8 @@ func LoadManifestJSON(path string) (*AgentManifest, error) {
 	return &m, nil
 }
 
-func LoadManifestMarkdown(path string) (*AgentManifest, error) {
+// LoadManifestMarkdown loads an agent manifest from a Markdown file with YAML frontmatter.
+func LoadManifestMarkdown(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading file: %w", err)
@@ -64,9 +67,9 @@ type markdownManifest struct {
 	} `yaml:"permission"`
 }
 
-func convertMarkdownManifest(md markdownManifest, path string) AgentManifest {
+func convertMarkdownManifest(md markdownManifest, path string) Manifest {
 	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return AgentManifest{
+	return Manifest{
 		SchemaVersion: "1",
 		ID:            id,
 		Name:          id,
@@ -92,7 +95,7 @@ func extractFrontmatter(content string) (string, string, error) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
-func applyDefaults(m *AgentManifest) {
+func applyDefaults(m *Manifest) {
 	if m.ContextManagement.MaxRecursionDepth == 0 {
 		m.ContextManagement.MaxRecursionDepth = 2
 	}

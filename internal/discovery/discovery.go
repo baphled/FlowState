@@ -17,11 +17,11 @@ type AgentSuggestion struct {
 
 // AgentDiscovery matches user messages to appropriate agents.
 type AgentDiscovery struct {
-	manifests []agent.AgentManifest
+	manifests []agent.Manifest
 }
 
 // NewAgentDiscovery creates a new AgentDiscovery with the given manifests.
-func NewAgentDiscovery(manifests []agent.AgentManifest) *AgentDiscovery {
+func NewAgentDiscovery(manifests []agent.Manifest) *AgentDiscovery {
 	return &AgentDiscovery{manifests: manifests}
 }
 
@@ -56,7 +56,7 @@ func (ad *AgentDiscovery) Suggest(message string) []AgentSuggestion {
 	return suggestions
 }
 
-func (ad *AgentDiscovery) scoreManifest(m *agent.AgentManifest, msgTokens []string) (float64, string) {
+func (ad *AgentDiscovery) scoreManifest(m *agent.Manifest, msgTokens []string) (float64, string) {
 	const (
 		weightWhenToUse = 3.0
 		weightRole      = 2.0

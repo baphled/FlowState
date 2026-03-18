@@ -60,19 +60,19 @@ var _ = Describe("Server", func() {
 	var (
 		server          *api.Server
 		recorder        *httptest.ResponseRecorder
-		registry        *agent.AgentRegistry
+		registry        *agent.Registry
 		eng             *engine.Engine
 		disc            *discovery.AgentDiscovery
 		skills          []skill.Skill
 		mockChatProv    *mockProvider
-		testManifest    agent.AgentManifest
-		anotherManifest agent.AgentManifest
+		testManifest    agent.Manifest
+		anotherManifest agent.Manifest
 	)
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
 
-		testManifest = agent.AgentManifest{
+		testManifest = agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
 			Metadata: agent.Metadata{
@@ -86,7 +86,7 @@ var _ = Describe("Server", func() {
 			ContextManagement: agent.DefaultContextManagement(),
 		}
 
-		anotherManifest = agent.AgentManifest{
+		anotherManifest = agent.Manifest{
 			ID:   "another-agent",
 			Name: "Another Agent",
 			Metadata: agent.Metadata{
@@ -100,7 +100,7 @@ var _ = Describe("Server", func() {
 			ContextManagement: agent.DefaultContextManagement(),
 		}
 
-		registry = agent.NewAgentRegistry()
+		registry = agent.NewRegistry()
 
 		mockChatProv = &mockProvider{
 			name: "test-provider",
@@ -116,7 +116,7 @@ var _ = Describe("Server", func() {
 			Manifest:     testManifest,
 		})
 
-		disc = discovery.NewAgentDiscovery([]agent.AgentManifest{testManifest, anotherManifest})
+		disc = discovery.NewAgentDiscovery([]agent.Manifest{testManifest, anotherManifest})
 
 		skills = []skill.Skill{
 			{Name: "skill-one", Description: "First skill"},
@@ -135,7 +135,7 @@ var _ = Describe("Server", func() {
 				Expect(recorder.Code).To(Equal(http.StatusOK))
 				Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
 
-				var agents []agent.AgentManifest
+				var agents []agent.Manifest
 				err := json.Unmarshal(recorder.Body.Bytes(), &agents)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(agents).To(BeEmpty())
@@ -155,7 +155,7 @@ var _ = Describe("Server", func() {
 				Expect(recorder.Code).To(Equal(http.StatusOK))
 				Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
 
-				var agents []agent.AgentManifest
+				var agents []agent.Manifest
 				err := json.Unmarshal(recorder.Body.Bytes(), &agents)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(agents).To(HaveLen(2))
@@ -176,7 +176,7 @@ var _ = Describe("Server", func() {
 				Expect(recorder.Code).To(Equal(http.StatusOK))
 				Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
 
-				var manifest agent.AgentManifest
+				var manifest agent.Manifest
 				err := json.Unmarshal(recorder.Body.Bytes(), &manifest)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(manifest.ID).To(Equal("test-agent"))

@@ -97,7 +97,7 @@ var _ = Describe("ContextTools", func() {
 
 		Context("when store is empty", func() {
 			It("returns empty output without error", func() {
-				result, err := searchTool.Execute(context.Background(), tool.ToolInput{
+				result, err := searchTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{"query": "test"},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -114,7 +114,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("returns formatted results", func() {
-				result, err := searchTool.Execute(context.Background(), tool.ToolInput{
+				result, err := searchTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{"query": "hello"},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -130,7 +130,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("falls back to recent messages", func() {
-				result, err := searchTool.Execute(context.Background(), tool.ToolInput{
+				result, err := searchTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{"query": "test"},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -163,7 +163,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("returns last N messages when count provided", func() {
-				result, err := getMsgsTool.Execute(context.Background(), tool.ToolInput{
+				result, err := getMsgsTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{"count": float64(2)},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -173,7 +173,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("returns range when start and end provided", func() {
-				result, err := getMsgsTool.Execute(context.Background(), tool.ToolInput{
+				result, err := getMsgsTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{"start": float64(0), "end": float64(1)},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -182,7 +182,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("returns default 10 recent when no arguments", func() {
-				result, err := getMsgsTool.Execute(context.Background(), tool.ToolInput{
+				result, err := getMsgsTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -220,7 +220,7 @@ var _ = Describe("ContextTools", func() {
 
 		Context("when store is empty", func() {
 			It("returns no conversation history message", func() {
-				result, err := summarizeTool.Execute(context.Background(), tool.ToolInput{
+				result, err := summarizeTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -235,7 +235,7 @@ var _ = Describe("ContextTools", func() {
 			})
 
 			It("calls provider.Chat and returns summary", func() {
-				result, err := summarizeTool.Execute(context.Background(), tool.ToolInput{
+				result, err := summarizeTool.Execute(context.Background(), tool.Input{
 					Arguments: map[string]interface{}{},
 				})
 				Expect(err).NotTo(HaveOccurred())

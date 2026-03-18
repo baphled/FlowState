@@ -7,7 +7,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 )
 
-var _ = Describe("AgentManifest", func() {
+var _ = Describe("Manifest", func() {
 	Describe("DefaultContextManagement", func() {
 		It("returns sensible defaults", func() {
 			defaults := agent.DefaultContextManagement()
@@ -22,7 +22,7 @@ var _ = Describe("AgentManifest", func() {
 
 	Describe("Validate", func() {
 		It("returns nil for valid manifest", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "valid-agent",
 				Name: "Valid Agent",
 			}
@@ -33,7 +33,7 @@ var _ = Describe("AgentManifest", func() {
 		})
 
 		It("returns error when ID is empty", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "",
 				Name: "Agent Without ID",
 			}
@@ -48,7 +48,7 @@ var _ = Describe("AgentManifest", func() {
 		})
 
 		It("returns error when Name is empty", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "agent-without-name",
 				Name: "",
 			}
@@ -63,7 +63,7 @@ var _ = Describe("AgentManifest", func() {
 		})
 
 		It("returns ID error first when both ID and Name are empty", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				ID:   "",
 				Name: "",
 			}

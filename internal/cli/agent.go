@@ -14,7 +14,7 @@ func newAgentCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Inspect available agents",
 		Long:  "Inspect available agents and agent metadata from the FlowState registry.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
@@ -29,7 +29,7 @@ func newAgentListCmd(getApp func() *app.App) *cobra.Command {
 		Short: "List available agents",
 		Long:  "List the agents available to FlowState.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runAgentList(cmd, getApp())
 		},
 	}

@@ -68,7 +68,7 @@ var _ = Describe("App", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				agentContent := `{"id": "test-agent", "name": "Test Agent"}`
-				err = os.WriteFile(filepath.Join(agentsDir, "test.json"), []byte(agentContent), 0o644)
+				err = os.WriteFile(filepath.Join(agentsDir, "test.json"), []byte(agentContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				tc := app.TestConfig{
@@ -112,7 +112,7 @@ var _ = Describe("App", func() {
 Description: A test skill
 When to use: Testing purposes
 `
-				err = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o644)
+				err = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				tc := app.TestConfig{

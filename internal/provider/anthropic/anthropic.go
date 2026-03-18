@@ -116,10 +116,12 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	}, nil
 }
 
+// Embed returns an error as Anthropic does not support embeddings.
 func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
 	return nil, ErrNotSupported
 }
 
+// Models returns the list of available Anthropic models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	return []provider.Model{
 		{ID: "claude-sonnet-4-20250514", Provider: providerName, ContextLength: defaultContextLength},

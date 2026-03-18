@@ -10,14 +10,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// FileSkillLoader loads skills from the filesystem.
 type FileSkillLoader struct {
 	basePath string
 }
 
+// NewFileSkillLoader creates a new FileSkillLoader with the given base path.
 func NewFileSkillLoader(basePath string) *FileSkillLoader {
 	return &FileSkillLoader{basePath: basePath}
 }
 
+// LoadAll loads all skills from the base path directory.
 func (l *FileSkillLoader) LoadAll() ([]Skill, error) {
 	var skills []Skill
 	entries, err := os.ReadDir(l.basePath)
@@ -42,6 +45,7 @@ func (l *FileSkillLoader) LoadAll() ([]Skill, error) {
 	return skills, nil
 }
 
+// LoadSkill loads a single skill from the given file path.
 func (l *FileSkillLoader) LoadSkill(path string) (*Skill, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

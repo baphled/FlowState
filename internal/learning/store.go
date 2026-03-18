@@ -23,7 +23,9 @@ type Entry struct {
 
 // Store defines the interface for capturing and querying learning entries.
 type Store interface {
+	// Capture stores a learning entry.
 	Capture(entry Entry) error
+	// Query searches entries matching the given query string.
 	Query(query string) []Entry
 }
 

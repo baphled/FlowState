@@ -1,3 +1,4 @@
+// Package hook provides middleware hooks for request processing.
 package hook
 
 import (
@@ -13,18 +14,23 @@ import (
 
 const streamBufferSize = 16
 
+// HandlerFunc is the signature for chat request handlers.
 type HandlerFunc func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error)
 
+// Hook wraps a handler to add middleware functionality.
 type Hook func(next HandlerFunc) HandlerFunc
 
+// Chain manages a sequence of hooks to execute.
 type Chain struct {
 	hooks []Hook
 }
 
+// NewChain creates a new hook chain from the given hooks.
 func NewChain(hooks ...Hook) *Chain {
 	return &Chain{hooks: hooks}
 }
 
+// Execute applies all hooks in the chain to the given handler.
 func (c *Chain) Execute(handler HandlerFunc) HandlerFunc {
 	if len(c.hooks) == 0 {
 		return handler
@@ -37,6 +43,7 @@ func (c *Chain) Execute(handler HandlerFunc) HandlerFunc {
 	return wrapped
 }
 
+// LoggingHook returns a hook that logs request timing.
 func LoggingHook() Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -63,6 +70,7 @@ func LoggingHook() Hook {
 	}
 }
 
+// LearningHook creates a hook that records learning entries from conversations.
 func LearningHook(store learning.Store) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -98,30 +106,46 @@ func LearningHook(store learning.Store) Hook {
 	}
 }
 
+// ContextInjectionHook returns a hook that injects skill content into the system prompt.
+// ContextInjectionHook creates a hook that injects active skill context.
 func ContextInjectionHook(skills []skill.Skill, activeSkillNames []string) Hook {
+	activeSet := buildActiveSkillSet(activeSkillNames)
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-			activeSet := make(map[string]bool)
-			for _, name := range activeSkillNames {
-				activeSet[name] = true
-			}
-
-			var contentBuilder strings.Builder
-			for i := range skills {
-				if activeSet[skills[i].Name] && skills[i].Content != "" {
-					if contentBuilder.Len() > 0 {
-						contentBuilder.WriteString("\n\n")
-					}
-					contentBuilder.WriteString(skills[i].Content)
-				}
-			}
-
-			if contentBuilder.Len() > 0 && len(req.Messages) > 0 && req.Messages[0].Role == "system" {
-				req.Messages[0].Content = req.Messages[0].Content + "\n\n" + contentBuilder.String()
-			}
-
+			skillContent := buildSkillContent(skills, activeSet)
+			injectSkillContent(req, skillContent)
 			return next(ctx, req)
 		}
+	}
+}
+
+func buildActiveSkillSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}
+
+func buildSkillContent(skills []skill.Skill, activeSet map[string]bool) string {
+	var builder strings.Builder
+	for i := range skills {
+		if activeSet[skills[i].Name] && skills[i].Content != "" {
+			if builder.Len() > 0 {
+				builder.WriteString("\n\n")
+			}
+			builder.WriteString(skills[i].Content)
+		}
+	}
+	return builder.String()
+}
+
+func injectSkillContent(req *provider.ChatRequest, content string) {
+	if content == "" || len(req.Messages) == 0 {
+		return
+	}
+	if req.Messages[0].Role == "system" {
+		req.Messages[0].Content = req.Messages[0].Content + "\n\n" + content
 	}
 }
 

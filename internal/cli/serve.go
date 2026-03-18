@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// ServeOptions configures the HTTP API server.
 type ServeOptions struct {
 	Port int
 	Host string
@@ -29,7 +30,7 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Start the FlowState HTTP API server",
 		Long:  "Start the FlowState HTTP API server.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServe(cmd, getApp(), opts)
 		},
 	}

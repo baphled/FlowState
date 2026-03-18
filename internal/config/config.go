@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AppConfig holds the complete application configuration.
 type AppConfig struct {
 	Providers    ProvidersConfig `json:"providers" yaml:"providers"`
 	AgentDir     string          `json:"agent_dir" yaml:"agent_dir"`
@@ -18,6 +19,7 @@ type AppConfig struct {
 	DefaultAgent string          `json:"default_agent" yaml:"default_agent"`
 }
 
+// ProvidersConfig configures all available LLM providers.
 type ProvidersConfig struct {
 	Default   string         `json:"default" yaml:"default"`
 	Ollama    ProviderConfig `json:"ollama" yaml:"ollama"`
@@ -25,12 +27,14 @@ type ProvidersConfig struct {
 	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
 }
 
+// ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
 	Host   string `json:"host" yaml:"host"`
 	APIKey string `json:"api_key" yaml:"api_key"`
 	Model  string `json:"model" yaml:"model"`
 }
 
+// DefaultConfig returns sensible default configuration values.
 func DefaultConfig() *AppConfig {
 	dataDir := ".flowstate"
 	if homeDir, err := os.UserHomeDir(); err == nil {
@@ -59,6 +63,7 @@ func DefaultConfig() *AppConfig {
 	}
 }
 
+// LoadConfig loads configuration from the default location.
 func LoadConfig() (*AppConfig, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -68,6 +73,7 @@ func LoadConfig() (*AppConfig, error) {
 	return LoadConfigFromPath(filepath.Join(homeDir, ".flowstate", "config.yaml"))
 }
 
+// LoadConfigFromPath loads configuration from the specified file path.
 func LoadConfigFromPath(path string) (*AppConfig, error) {
 	cleanPath := filepath.Clean(path)
 	if _, err := os.Stat(cleanPath); err != nil {

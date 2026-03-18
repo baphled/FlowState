@@ -62,26 +62,26 @@ func (m *mockProvider) Models() ([]provider.Model, error) {
 type mockTool struct {
 	name        string
 	description string
-	schema      tool.ToolSchema
+	schema      tool.Schema
 }
 
 func (t *mockTool) Name() string        { return t.name }
 func (t *mockTool) Description() string { return t.description }
-func (t *mockTool) Execute(_ context.Context, _ tool.ToolInput) (tool.ToolResult, error) {
-	return tool.ToolResult{}, nil
+func (t *mockTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{}, nil
 }
-func (t *mockTool) Schema() tool.ToolSchema {
+func (t *mockTool) Schema() tool.Schema {
 	if t.schema.Type != "" {
 		return t.schema
 	}
-	return tool.ToolSchema{}
+	return tool.Schema{}
 }
 
 var _ = Describe("Engine", func() {
 	var (
 		chatProvider      *mockProvider
 		embeddingProvider *mockProvider
-		manifest          agent.AgentManifest
+		manifest          agent.Manifest
 		tools             []tool.Tool
 		skills            []skill.Skill
 	)
@@ -100,7 +100,7 @@ var _ = Describe("Engine", func() {
 			embedResult: []float64{0.1, 0.2, 0.3},
 		}
 
-		manifest = agent.AgentManifest{
+		manifest = agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
 			Instructions: agent.Instructions{
@@ -233,7 +233,7 @@ var _ = Describe("Engine", func() {
 			toolWithSchema := &mockTool{
 				name:        "search",
 				description: "Search for information",
-				schema: tool.ToolSchema{
+				schema: tool.Schema{
 					Type: "object",
 					Properties: map[string]tool.Property{
 						"query": {Type: "string", Description: "Search query"},
@@ -252,7 +252,8 @@ var _ = Describe("Engine", func() {
 			chunks, err := eng.Stream(ctx, "test-agent", "Hello")
 			Expect(err).NotTo(HaveOccurred())
 
-			for range chunks {
+			for v := range chunks {
+				_ = v
 			}
 
 			Expect(chatProvider.capturedRequest).NotTo(BeNil())
@@ -381,7 +382,7 @@ var _ = Describe("Engine", func() {
 			registry.Register(primaryProvider)
 			registry.Register(secondaryProvider)
 
-			manifest = agent.AgentManifest{
+			manifest = agent.Manifest{
 				ID:         "test-agent",
 				Name:       "Test Agent",
 				Complexity: "standard",
@@ -479,7 +480,7 @@ var _ = Describe("Engine", func() {
 				slowRegistry.Register(slowProvider)
 				slowRegistry.Register(secondaryProvider)
 
-				slowManifest := agent.AgentManifest{
+				slowManifest := agent.Manifest{
 					ID:         "test-agent",
 					Name:       "Test Agent",
 					Complexity: "standard",
@@ -530,7 +531,8 @@ var _ = Describe("Engine", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				Expect(eng.LastProvider()).To(Equal("primary"))
@@ -540,7 +542,8 @@ var _ = Describe("Engine", func() {
 				chunks, err = eng.Stream(ctx, "test-agent", "Hello again")
 				Expect(err).NotTo(HaveOccurred())
 
-				for range chunks {
+				for v := range chunks {
+					_ = v
 				}
 
 				Expect(eng.LastProvider()).To(Equal("secondary"))

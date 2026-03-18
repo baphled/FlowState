@@ -1,3 +1,4 @@
+// Package provider implements LLM provider integrations with failback support.
 package provider
 
 import (
@@ -6,11 +7,13 @@ import (
 	"time"
 )
 
+// ModelPreference specifies a preferred model and provider combination.
 type ModelPreference struct {
 	Provider string
 	Model    string
 }
 
+// FailbackChain tries providers in order until one succeeds.
 type FailbackChain struct {
 	registry     *Registry
 	preferences  []ModelPreference
@@ -18,6 +21,7 @@ type FailbackChain struct {
 	lastProvider string
 }
 
+// NewFailbackChain creates a new failback chain with the given preferences and timeout.
 func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout time.Duration) *FailbackChain {
 	return &FailbackChain{
 		registry:    registry,
@@ -26,6 +30,7 @@ func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout
 	}
 }
 
+// Stream attempts to stream from providers in preference order.
 func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	var lastErr error
 	for _, pref := range f.preferences {
@@ -56,6 +61,7 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 	return nil, fmt.Errorf("all providers failed: %w", lastErr)
 }
 
+// Chat attempts to chat with providers in preference order.
 func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	var lastErr error
 	for _, pref := range f.preferences {
@@ -78,6 +84,7 @@ func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 	return ChatResponse{}, fmt.Errorf("all providers failed: %w", lastErr)
 }
 
+// LastProvider returns the name of the last successfully used provider.
 func (f *FailbackChain) LastProvider() string {
 	return f.lastProvider
 }

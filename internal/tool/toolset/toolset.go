@@ -1,3 +1,4 @@
+// Package toolset provides default tool registrations.
 package toolset
 
 import (
@@ -7,6 +8,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/web"
 )
 
+// NewDefaultRegistry creates a new tool registry with the default tools registered.
 func NewDefaultRegistry() *tool.Registry {
 	r := tool.NewRegistry()
 	r.Register(bash.New())

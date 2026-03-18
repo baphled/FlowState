@@ -15,7 +15,7 @@ func newSkillCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Inspect available skills",
 		Long:  "Inspect skills available to FlowState and its agents.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
@@ -30,7 +30,7 @@ func newSkillListCmd(getApp func() *app.App) *cobra.Command {
 		Short: "List available skills",
 		Long:  "List the skills available to FlowState.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSkillList(cmd, getApp())
 		},
 	}

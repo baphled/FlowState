@@ -22,12 +22,13 @@ import (
 	"github.com/cucumber/godog"
 )
 
+// StepDefinitions holds state and step implementations for BDD scenarios.
 type StepDefinitions struct {
 	ctx           context.Context
 	app           *TestApp
 	session       *TestSession
 	config        *config.AppConfig
-	agentRegistry *agent.AgentRegistry
+	agentRegistry *agent.Registry
 	tempDir       string
 	configPath    string
 
@@ -52,7 +53,7 @@ type StepDefinitions struct {
 	originalEmbeddingCount int
 	reloadedContextStore   *ctxstore.FileContextStore
 	tokenCounter           ctxstore.TokenCounter
-	windowBuilder          *ctxstore.ContextWindowBuilder
+	windowBuilder          *ctxstore.WindowBuilder
 	tokenBudget            int
 	lastContextWindow      []provider.Message
 	inputBuffer            string
@@ -84,12 +85,14 @@ type StepDefinitions struct {
 	currentSessionID     string
 }
 
+// TestApp represents a test application instance.
 type TestApp struct {
 	provider *MockProvider
 	agent    string
 	messages []Message
 }
 
+// TestSession represents a test chat session.
 type TestSession struct {
 	id          string
 	messages    []Message
@@ -97,12 +100,14 @@ type TestSession struct {
 	lastUpdated time.Time
 }
 
+// Message represents a chat message in tests.
 type Message struct {
 	Role    string
 	Content string
 	ID      string
 }
 
+// ToolRequest represents a tool invocation request in tests.
 type ToolRequest struct {
 	Name     string
 	Command  string
@@ -110,8 +115,9 @@ type ToolRequest struct {
 	Denied   bool
 }
 
+// RegisterSteps registers all BDD step definitions with the godog context.
 func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
-	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
+	ctx.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		s.ctx = ctx
 		s.app = &TestApp{provider: NewMockProvider()}
 		s.session = &TestSession{embeddings: make(map[string][]float64)}
@@ -185,14 +191,14 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 
 	// Agent registry steps
 	ctx.Step(`^an agent directory contains valid JSON and Markdown agent manifests$`,
-		s.anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests)
-	ctx.Step(`^the agent registry discovers agents from that directory$`, s.theAgentRegistryDiscoversAgentsFromThatDirectory)
+		s.anAgentDirectoryContainsValidJSONAndMarkdownManifests)
+	ctx.Step(`^the agent registry discovers agents from that directory$`, s.theRegistryDiscoversAgentsFromThatDirectory)
 	ctx.Step(`^the registry should include agents from both manifest formats$`, s.theRegistryShouldIncludeAgentsFromBothManifestFormats)
 	ctx.Step(`^an empty agent directory$`, s.anEmptyAgentDirectory)
 	ctx.Step(`^the registry should be empty$`, s.theRegistryShouldBeEmpty)
-	ctx.Step(`^an agent directory contains valid and invalid agent manifests$`, s.anAgentDirectoryContainsValidAndInvalidAgentManifests)
+	ctx.Step(`^an agent directory contains valid and invalid agent manifests$`, s.anAgentDirectoryContainsValidAndInvalidManifests)
 	ctx.Step(`^the valid agents should be available in the registry$`, s.theValidAgentsShouldBeAvailableInTheRegistry)
-	ctx.Step(`^the invalid agent manifests should be skipped$`, s.theInvalidAgentManifestsShouldBeSkipped)
+	ctx.Step(`^the invalid agent manifests should be skipped$`, s.theInvalidManifestsShouldBeSkipped)
 
 	// Ollama provider steps
 	ctx.Step(`^the Ollama provider is configured$`, s.theOllamaProviderIsConfigured)
@@ -307,7 +313,7 @@ func (s *StepDefinitions) flowstateIsRunning() error {
 	s.app = &TestApp{provider: NewMockProvider()}
 	s.session = &TestSession{embeddings: make(map[string][]float64)}
 	s.tokenCounter = ctxstore.NewApproximateCounter()
-	s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+	s.windowBuilder = ctxstore.NewWindowBuilder(s.tokenCounter)
 	return nil
 }
 
@@ -429,14 +435,14 @@ func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
 }
 
 func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
-	manifests := []agent.AgentManifest{}
+	manifests := []agent.Manifest{}
 	if s.agentDiscovery != nil {
 		return nil
 	}
 
 	switch agentID {
 	case "coder":
-		manifests = append(manifests, agent.AgentManifest{
+		manifests = append(manifests, agent.Manifest{
 			ID:   "coder",
 			Name: "Coder Agent",
 			Metadata: agent.Metadata{
@@ -446,7 +452,7 @@ func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
 			},
 		})
 	case "researcher":
-		manifests = append(manifests, agent.AgentManifest{
+		manifests = append(manifests, agent.Manifest{
 			ID:   "researcher",
 			Name: "Researcher Agent",
 			Metadata: agent.Metadata{
@@ -456,7 +462,7 @@ func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
 			},
 		})
 	default:
-		manifests = append(manifests, agent.AgentManifest{
+		manifests = append(manifests, agent.Manifest{
 			ID:   agentID,
 			Name: agentID + " Agent",
 			Metadata: agent.Metadata{
@@ -473,7 +479,7 @@ func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
 
 func (s *StepDefinitions) iAskForAgentSuggestionsFor(task string) error {
 	if s.agentDiscovery == nil {
-		s.agentDiscovery = discovery.NewAgentDiscovery([]agent.AgentManifest{})
+		s.agentDiscovery = discovery.NewAgentDiscovery([]agent.Manifest{})
 	}
 	s.suggestions = s.agentDiscovery.Suggest(task)
 	return nil
@@ -527,8 +533,8 @@ func (s *StepDefinitions) theActiveAgentShouldBe(agentID string) error {
 	return nil
 }
 
-func (s *StepDefinitions) theHTTPServerIsRunningOnPort(port int) error {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (s *StepDefinitions) theHTTPServerIsRunningOnPort(_ int) error {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -595,7 +601,7 @@ func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
 	s.tokenBudget = limit
 	s.tokenCounter = ctxstore.NewApproximateCounter()
-	s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+	s.windowBuilder = ctxstore.NewWindowBuilder(s.tokenCounter)
 
 	tempDir, err := os.MkdirTemp("", "context-store-*")
 	if err != nil {
@@ -637,7 +643,7 @@ func (s *StepDefinitions) theNextMessageIsProcessed() error {
 		return errors.New("window builder or context store not initialised")
 	}
 
-	manifest := &agent.AgentManifest{
+	manifest := &agent.Manifest{
 		ID:   "general",
 		Name: "General Agent",
 		Instructions: agent.Instructions{
@@ -709,19 +715,19 @@ func (s *StepDefinitions) iLaterDiscussed(topic string) error {
 	return nil
 }
 
-func (s *StepDefinitions) iAskAbout(topic string) error {
+func (s *StepDefinitions) iAskAbout(_ string) error {
 	if s.contextStore == nil {
 		return errors.New("context store not initialised")
 	}
 	if s.windowBuilder == nil {
 		s.tokenCounter = ctxstore.NewApproximateCounter()
-		s.windowBuilder = ctxstore.NewContextWindowBuilder(s.tokenCounter)
+		s.windowBuilder = ctxstore.NewWindowBuilder(s.tokenCounter)
 	}
 	if s.tokenBudget == 0 {
 		s.tokenBudget = 4096
 	}
 
-	manifest := &agent.AgentManifest{
+	manifest := &agent.Manifest{
 		ID:   "general",
 		Name: "General Agent",
 		Instructions: agent.Instructions{
@@ -1021,15 +1027,15 @@ func (s *StepDefinitions) setupTempDirWithFiles(dirName string, files []testFile
 	return nil
 }
 
-func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests() error {
+func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownManifests() error {
 	return s.setupTempDirWithFiles("flowstate-test-agents", []testFileSpec{
 		{name: "json-agent.json", content: `{"id": "json-agent", "name": "JSON Agent"}`},
 		{name: "md-agent.md", content: "---\ndescription: Markdown Agent\nmode: subagent\n---\n# Markdown Agent\n"},
 	})
 }
 
-func (s *StepDefinitions) theAgentRegistryDiscoversAgentsFromThatDirectory() error {
-	s.agentRegistry = agent.NewAgentRegistry()
+func (s *StepDefinitions) theRegistryDiscoversAgentsFromThatDirectory() error {
+	s.agentRegistry = agent.NewRegistry()
 	return s.agentRegistry.Discover(s.tempDir)
 }
 
@@ -1064,7 +1070,7 @@ func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 	return nil
 }
 
-func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidAgentManifests() error {
+func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidManifests() error {
 	return s.setupTempDirWithFiles("flowstate-test-mixed", []testFileSpec{
 		{name: "valid.json", content: `{"id": "valid-agent", "name": "Valid Agent"}`},
 		{name: "invalid.json", content: `{not valid json`},
@@ -1082,7 +1088,7 @@ func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
 	return nil
 }
 
-func (s *StepDefinitions) theInvalidAgentManifestsShouldBeSkipped() error {
+func (s *StepDefinitions) theInvalidManifestsShouldBeSkipped() error {
 	if s.agentRegistry == nil {
 		return errors.New("expected agent registry to be created")
 	}
@@ -1262,24 +1268,32 @@ func (s *StepDefinitions) iRun(command string) error {
 	if len(parts) == 0 {
 		return errors.New("empty command")
 	}
-	parts[0] = "/tmp/flowstate-test"
-	cmd := exec.Command(parts[0], parts[1:]...) //nolint:gosec // Test harness with controlled input
+	output, exitCode := runTestCLI(parts[1:])
+	s.cliOutput = output
+	s.cliExitCode = exitCode
+	return nil
+}
+
+func runTestCLI(args []string) (output string, exitCode int) {
+	const testBinaryPath = "/tmp/flowstate-test"
+	cmdArgs := append([]string{testBinaryPath}, args...)
+	cmd := &exec.Cmd{
+		Path: testBinaryPath,
+		Args: cmdArgs,
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	s.cliOutput = stdout.String() + stderr.String()
+	output = stdout.String() + stderr.String()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			s.cliExitCode = exitErr.ExitCode()
-		} else {
-			s.cliExitCode = 1
+			return output, exitErr.ExitCode()
 		}
-	} else {
-		s.cliExitCode = 0
+		return output, 1
 	}
-	return nil
+	return output, 0
 }
 
 func (s *StepDefinitions) iShouldSeeUsageFor(command string) error {
@@ -1593,7 +1607,10 @@ func (s *StepDefinitions) sessionsShouldBeSortedByLastUpdated() error {
 		previous := s.sessions[s.sessionBrowserOrder[i-1]]
 		current := s.sessions[s.sessionBrowserOrder[i]]
 		if current.lastUpdated.After(previous.lastUpdated) {
-			return fmt.Errorf("expected sessions sorted by last updated descending, but %q came before %q", s.sessionBrowserOrder[i], s.sessionBrowserOrder[i-1])
+			return fmt.Errorf(
+				"expected sessions sorted by last updated descending, but %q came before %q",
+				s.sessionBrowserOrder[i], s.sessionBrowserOrder[i-1],
+			)
 		}
 	}
 	return nil
@@ -2050,29 +2067,34 @@ func (s *StepDefinitions) theAIShouldBeInformedThatBashIsDisabled() error {
 	return nil
 }
 
-//nolint:nestif // Test mock simulating bash command execution
 func (s *StepDefinitions) theAIRuns(command string) error {
 	s.toolRequest = &ToolRequest{
 		Name:    "bash",
 		Command: command,
 	}
-	if s.bashPermission == "allow" {
-		s.commandExecuted = true
-		if strings.Contains(command, "nonexistent") {
-			s.bashError = "No such file or directory"
-		} else if strings.Contains(command, "echo") {
-			start := strings.Index(command, "'")
-			end := strings.LastIndex(command, "'")
-			if start != -1 && end > start {
-				s.bashOutput = command[start+1 : end]
-			} else {
-				s.bashOutput = strings.TrimPrefix(command, "echo ")
-			}
-		} else {
-			s.bashOutput = "command executed"
-		}
+	if s.bashPermission != "allow" {
+		return nil
 	}
+	s.commandExecuted = true
+	if strings.Contains(command, "nonexistent") {
+		s.bashError = "No such file or directory"
+		return nil
+	}
+	if strings.Contains(command, "echo") {
+		s.bashOutput = extractEchoOutput(command)
+		return nil
+	}
+	s.bashOutput = "command executed"
 	return nil
+}
+
+func extractEchoOutput(command string) string {
+	start := strings.Index(command, "'")
+	end := strings.LastIndex(command, "'")
+	if start != -1 && end > start {
+		return command[start+1 : end]
+	}
+	return strings.TrimPrefix(command, "echo ")
 }
 
 func (s *StepDefinitions) theOutputShouldAppearInTheChat(expected string) error {

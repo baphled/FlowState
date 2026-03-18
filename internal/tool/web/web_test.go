@@ -65,7 +65,7 @@ var _ = Describe("Web Tool", func() {
 				testClient = server.Client()
 				webTool = web.NewWithClient(testClient)
 
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "web",
 					Arguments: map[string]interface{}{"url": server.URL},
 				}
@@ -87,7 +87,7 @@ var _ = Describe("Web Tool", func() {
 				testClient = server.Client()
 				webTool = web.NewWithClient(testClient)
 
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "web",
 					Arguments: map[string]interface{}{"url": server.URL},
 				}
@@ -101,7 +101,7 @@ var _ = Describe("Web Tool", func() {
 
 		Context("with missing url argument", func() {
 			It("returns a Go error", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "web",
 					Arguments: map[string]interface{}{},
 				}
@@ -114,7 +114,7 @@ var _ = Describe("Web Tool", func() {
 
 		Context("with invalid URL", func() {
 			It("returns non-nil Error in result", func() {
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "web",
 					Arguments: map[string]interface{}{"url": "://invalid"},
 				}
@@ -138,7 +138,7 @@ var _ = Describe("Web Tool", func() {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 
-				input := tool.ToolInput{
+				input := tool.Input{
 					Name:      "web",
 					Arguments: map[string]interface{}{"url": server.URL},
 				}

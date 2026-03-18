@@ -9,17 +9,20 @@ import (
 	"sort"
 )
 
-type AgentRegistry struct {
-	manifests map[string]*AgentManifest
+// Registry manages a collection of agent manifests.
+type Registry struct {
+	manifests map[string]*Manifest
 }
 
-func NewAgentRegistry() *AgentRegistry {
-	return &AgentRegistry{
-		manifests: make(map[string]*AgentManifest),
+// NewRegistry creates a new empty agent registry.
+func NewRegistry() *Registry {
+	return &Registry{
+		manifests: make(map[string]*Manifest),
 	}
 }
 
-func (r *AgentRegistry) Discover(dir string) error {
+// Discover scans a directory for agent manifests and loads them into the registry.
+func (r *Registry) Discover(dir string) error {
 	cleanDir := filepath.Clean(dir)
 	info, err := os.Stat(cleanDir)
 	if err != nil {
@@ -34,7 +37,7 @@ func (r *AgentRegistry) Discover(dir string) error {
 		return err
 	}
 
-	r.manifests = make(map[string]*AgentManifest)
+	r.manifests = make(map[string]*Manifest)
 	for _, path := range manifestPaths {
 		manifest, err := LoadManifest(path)
 		if err != nil {
@@ -51,16 +54,19 @@ func (r *AgentRegistry) Discover(dir string) error {
 	return nil
 }
 
-func (r *AgentRegistry) Register(manifest *AgentManifest) {
+// Register adds a manifest to the registry.
+func (r *Registry) Register(manifest *Manifest) {
 	r.manifests[manifest.ID] = manifest
 }
 
-func (r *AgentRegistry) Get(id string) (*AgentManifest, bool) {
+// Get retrieves a manifest by ID.
+func (r *Registry) Get(id string) (*Manifest, bool) {
 	manifest, ok := r.manifests[id]
 	return manifest, ok
 }
 
-func (r *AgentRegistry) List() []*AgentManifest {
+// List returns all manifests in the registry sorted by ID.
+func (r *Registry) List() []*Manifest {
 	if len(r.manifests) == 0 {
 		return nil
 	}
@@ -71,7 +77,7 @@ func (r *AgentRegistry) List() []*AgentManifest {
 	}
 	sort.Strings(ids)
 
-	manifests := make([]*AgentManifest, 0, len(ids))
+	manifests := make([]*Manifest, 0, len(ids))
 	for _, id := range ids {
 		manifests = append(manifests, r.manifests[id])
 	}

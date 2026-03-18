@@ -8,6 +8,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// BuildResult contains the outcome of building a context window.
 type BuildResult struct {
 	Messages        []provider.Message
 	TokensUsed      int
@@ -15,21 +16,38 @@ type BuildResult struct {
 	Truncated       bool
 }
 
-type ContextWindowBuilder struct {
+// buildOptions configures the internal context window build.
+type buildOptions struct {
+	summary         string
+	semanticResults []SearchResult
+	logWarnings     bool
+}
+
+// WindowBuilder constructs context windows for agent conversations.
+type WindowBuilder struct {
 	counter TokenCounter
 }
 
-func NewContextWindowBuilder(counter TokenCounter) *ContextWindowBuilder {
-	return &ContextWindowBuilder{counter: counter}
+// NewWindowBuilder creates a new context window builder with the given token counter.
+func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
+	return &WindowBuilder{counter: counter}
 }
 
-func (b *ContextWindowBuilder) Build(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, "", nil, false)
+// Build constructs a context window from the manifest and store within the token budget.
+func (b *WindowBuilder) Build(manifest *agent.Manifest, store *FileContextStore, tokenBudget int) BuildResult {
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{})
 }
 
-func (b *ContextWindowBuilder) BuildContext(ctx context.Context, manifest *agent.AgentManifest, userMessage string, store *FileContextStore, tokenBudget int) []provider.Message {
+// BuildContext constructs a context window and appends the user message.
+func (b *WindowBuilder) BuildContext(
+	ctx context.Context,
+	manifest *agent.Manifest,
+	userMessage string,
+	store *FileContextStore,
+	tokenBudget int,
+) []provider.Message {
 	_ = ctx
-	result := b.buildInternal(manifest, store, tokenBudget, "", nil, true)
+	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true})
 
 	if userMessage != "" {
 		result.Messages = append(result.Messages, provider.Message{
@@ -41,88 +59,50 @@ func (b *ContextWindowBuilder) BuildContext(ctx context.Context, manifest *agent
 	return result.Messages
 }
 
-func (b *ContextWindowBuilder) BuildWithSummary(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int, summary string) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, summary, nil, false)
+// BuildWithSummary constructs a context window including a conversation summary.
+func (b *WindowBuilder) BuildWithSummary(
+	manifest *agent.Manifest,
+	store *FileContextStore,
+	tokenBudget int,
+	summary string,
+) BuildResult {
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{summary: summary})
 }
 
-func (b *ContextWindowBuilder) BuildWithSemanticResults(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int, semanticResults []SearchResult) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, "", semanticResults, false)
+// BuildWithSemanticResults constructs a context window including semantic search results.
+func (b *WindowBuilder) BuildWithSemanticResults(
+	manifest *agent.Manifest,
+	store *FileContextStore,
+	tokenBudget int,
+	semanticResults []SearchResult,
+) BuildResult {
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
 }
 
-//nolint:gocognit,gocyclo // Context window building requires coordinating multiple concerns
-func (b *ContextWindowBuilder) buildInternal(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int, summary string, semanticResults []SearchResult, logWarnings bool) BuildResult {
+func (b *WindowBuilder) buildInternal(
+	manifest *agent.Manifest,
+	store *FileContextStore,
+	tokenBudget int,
+	opts buildOptions,
+) BuildResult {
 	budget := NewTokenBudget(tokenBudget)
 	var messages []provider.Message
 	truncated := false
 
-	systemPrompt := manifest.Instructions.SystemPrompt
-	systemTokens := b.counter.Count(systemPrompt)
-
-	if systemTokens > tokenBudget {
-		if logWarnings {
-			log.Printf("warning: system prompt truncated from %d to %d tokens (budget: %d)", systemTokens, tokenBudget, tokenBudget)
-		}
-		systemPrompt = b.truncateToFit(systemPrompt, tokenBudget)
-		truncated = true
-		systemTokens = b.counter.Count(systemPrompt)
-	}
-
+	systemPrompt, systemTruncated := b.prepareSystemPrompt(manifest, tokenBudget, opts.logWarnings)
+	truncated = truncated || systemTruncated
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-	budget.Reserve("system", systemTokens)
+	budget.Reserve("system", b.counter.Count(systemPrompt))
 
-	if summary != "" && budget.CanFit(b.counter.Count(summary)) {
-		summaryTokens := b.counter.Count(summary)
-		messages = append(messages, provider.Message{Role: "assistant", Content: summary})
-		budget.Reserve("summary", summaryTokens)
-	}
+	messages, budget = b.appendSummary(messages, budget, opts.summary)
 
 	seenIDs := make(map[string]bool)
-	if len(semanticResults) > 0 {
-		for _, sr := range semanticResults {
-			msgTokens := b.counter.Count(sr.Message.Content)
-			if budget.CanFit(msgTokens) {
-				messages = append(messages, sr.Message)
-				budget.Reserve("semantic", msgTokens)
-				seenIDs[sr.MessageID] = true
-			}
-		}
-	}
+	messages, seenIDs, budget = b.appendSemanticResults(messages, seenIDs, budget, opts.semanticResults)
 
-	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
-	if slidingWindowSize <= 0 {
-		slidingWindowSize = 10
-	}
-
-	recentMessages := store.GetRecent(slidingWindowSize)
-	recentIDs := b.getMessageIDs(store, len(recentMessages))
-
-	for i, msg := range recentMessages {
-		msgID := ""
-		if i < len(recentIDs) {
-			msgID = recentIDs[i]
-		}
-
-		if seenIDs[msgID] {
-			continue
-		}
-
-		msgTokens := b.counter.Count(msg.Content)
-		//nolint:nestif // Token budget fitting logic requires these checks
-		if budget.CanFit(msgTokens) {
-			messages = append(messages, msg)
-			budget.Reserve("sliding", msgTokens)
-		} else if msgTokens > 0 {
-			availableTokens := budget.Remaining()
-			if availableTokens > 0 {
-				truncatedContent := b.truncateToFit(msg.Content, availableTokens)
-				if truncatedContent != "" {
-					messages = append(messages, provider.Message{Role: msg.Role, Content: truncatedContent})
-					budget.Reserve("sliding", b.counter.Count(truncatedContent))
-					truncated = true
-				}
-			}
-		}
-	}
+	state := &messageState{messages: messages, seenIDs: seenIDs, budget: budget, truncated: truncated}
+	b.appendRecentMessages(store, manifest, state)
+	messages = state.messages
+	truncated = state.truncated
 
 	return BuildResult{
 		Messages:        messages,
@@ -132,7 +112,123 @@ func (b *ContextWindowBuilder) buildInternal(manifest *agent.AgentManifest, stor
 	}
 }
 
-func (b *ContextWindowBuilder) getMessageIDs(store *FileContextStore, count int) []string {
+func (b *WindowBuilder) prepareSystemPrompt(manifest *agent.Manifest, tokenBudget int, logWarnings bool) (string, bool) {
+	systemPrompt := manifest.Instructions.SystemPrompt
+	systemTokens := b.counter.Count(systemPrompt)
+
+	if systemTokens <= tokenBudget {
+		return systemPrompt, false
+	}
+
+	if logWarnings {
+		log.Printf("warning: system prompt truncated from %d to %d tokens (budget: %d)", systemTokens, tokenBudget, tokenBudget)
+	}
+	return b.truncateToFit(systemPrompt, tokenBudget), true
+}
+
+func (b *WindowBuilder) appendSummary(messages []provider.Message, budget *TokenBudget, summary string) ([]provider.Message, *TokenBudget) {
+	if summary == "" {
+		return messages, budget
+	}
+	summaryTokens := b.counter.Count(summary)
+	if !budget.CanFit(summaryTokens) {
+		return messages, budget
+	}
+	messages = append(messages, provider.Message{Role: "assistant", Content: summary})
+	budget.Reserve("summary", summaryTokens)
+	return messages, budget
+}
+
+func (b *WindowBuilder) appendSemanticResults(
+	messages []provider.Message,
+	seenIDs map[string]bool,
+	budget *TokenBudget,
+	semanticResults []SearchResult,
+) ([]provider.Message, map[string]bool, *TokenBudget) {
+	for _, sr := range semanticResults {
+		msgTokens := b.counter.Count(sr.Message.Content)
+		if budget.CanFit(msgTokens) {
+			messages = append(messages, sr.Message)
+			budget.Reserve("semantic", msgTokens)
+			seenIDs[sr.MessageID] = true
+		}
+	}
+	return messages, seenIDs, budget
+}
+
+// messageState tracks the state of message assembly during context window building.
+type messageState struct {
+	messages  []provider.Message
+	seenIDs   map[string]bool
+	budget    *TokenBudget
+	truncated bool
+}
+
+func (b *WindowBuilder) appendRecentMessages(
+	store *FileContextStore,
+	manifest *agent.Manifest,
+	state *messageState,
+) {
+	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
+	if slidingWindowSize <= 0 {
+		slidingWindowSize = 10
+	}
+
+	recentMessages := store.GetRecent(slidingWindowSize)
+	recentIDs := b.getMessageIDs(store, len(recentMessages))
+
+	for i, msg := range recentMessages {
+		msgID := b.getMessageIDAtIndex(recentIDs, i)
+		if state.seenIDs[msgID] {
+			continue
+		}
+
+		var msgTruncated bool
+		state.messages, msgTruncated = b.appendMessageWithBudget(state.messages, msg, state.budget)
+		state.truncated = state.truncated || msgTruncated
+	}
+}
+
+func (b *WindowBuilder) getMessageIDAtIndex(recentIDs []string, i int) string {
+	if i < len(recentIDs) {
+		return recentIDs[i]
+	}
+	return ""
+}
+
+func (b *WindowBuilder) appendMessageWithBudget(
+	messages []provider.Message,
+	msg provider.Message,
+	budget *TokenBudget,
+) ([]provider.Message, bool) {
+	msgTokens := b.counter.Count(msg.Content)
+
+	if budget.CanFit(msgTokens) {
+		messages = append(messages, msg)
+		budget.Reserve("sliding", msgTokens)
+		return messages, false
+	}
+
+	if msgTokens == 0 {
+		return messages, false
+	}
+
+	availableTokens := budget.Remaining()
+	if availableTokens <= 0 {
+		return messages, false
+	}
+
+	truncatedContent := b.truncateToFit(msg.Content, availableTokens)
+	if truncatedContent == "" {
+		return messages, false
+	}
+
+	messages = append(messages, provider.Message{Role: msg.Role, Content: truncatedContent})
+	budget.Reserve("sliding", b.counter.Count(truncatedContent))
+	return messages, true
+}
+
+func (b *WindowBuilder) getMessageIDs(store *FileContextStore, count int) []string {
 	total := store.Count()
 	start := total - count
 	if start < 0 {
@@ -146,7 +242,7 @@ func (b *ContextWindowBuilder) getMessageIDs(store *FileContextStore, count int)
 	return ids
 }
 
-func (b *ContextWindowBuilder) truncateToFit(text string, maxTokens int) string {
+func (b *WindowBuilder) truncateToFit(text string, maxTokens int) string {
 	if maxTokens <= 0 {
 		return ""
 	}

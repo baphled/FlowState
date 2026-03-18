@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// RunOptions configures non-interactive prompt execution.
 type RunOptions struct {
 	Prompt  string
 	Agent   string
@@ -35,7 +36,7 @@ func newRunCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Run a prompt non-interactively",
 		Long:  "Run a prompt to completion for scripting and pipeline use.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runPrompt(cmd, getApp(), opts)
 		},
 	}

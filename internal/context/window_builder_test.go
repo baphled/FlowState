@@ -14,9 +14,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("ContextWindowBuilder", func() {
+var _ = Describe("WindowBuilder", func() {
 	var (
-		builder *context.ContextWindowBuilder
+		builder *context.WindowBuilder
 		store   *context.FileContextStore
 		counter context.TokenCounter
 		tempDir string
@@ -32,7 +32,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		counter = context.NewApproximateCounter()
-		builder = context.NewContextWindowBuilder(counter)
+		builder = context.NewWindowBuilder(counter)
 	})
 
 	AfterEach(func() {
@@ -42,7 +42,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 	Describe("Build", func() {
 		Context("cold start with no messages", func() {
 			It("returns only the system prompt", func() {
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "You are a helpful assistant.",
 					},
@@ -68,7 +68,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			})
 
 			It("includes last K messages from sliding window", func() {
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt",
 					},
@@ -87,7 +87,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			})
 
 			It("respects sliding window size from manifest", func() {
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt",
 					},
@@ -113,7 +113,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 					"### memory-keeper\nCapture discoveries and patterns. " +
 					"### token-efficiency\nOptimise token usage."
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: longSystemPrompt,
 					},
@@ -133,7 +133,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			})
 
 			It("truncates system prompt when budget is smaller", func() {
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "This is a very long system prompt that should be truncated when the token budget is too small.",
 					},
@@ -154,7 +154,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 					store.Append(provider.Message{Role: "assistant", Content: "This is response content that also takes tokens"})
 				}
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "Short prompt",
 					},
@@ -181,7 +181,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 				}
 				store.Append(provider.Message{Role: "user", Content: string(longMessage)})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "Short",
 					},
@@ -203,7 +203,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 				store.Append(provider.Message{Role: "assistant", Content: "unique response one"})
 				store.Append(provider.Message{Role: "user", Content: "unique message two"})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System",
 					},
@@ -231,7 +231,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 				store.Append(provider.Message{Role: "assistant", Content: "response one"})
 				store.Append(provider.Message{Role: "user", Content: "message two"})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt here",
 					},
@@ -249,7 +249,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			It("places all components in correct sequence when all are present", func() {
 				store.Append(provider.Message{Role: "user", Content: "sliding window message"})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt",
 					},
@@ -276,7 +276,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			It("includes state summary when provided", func() {
 				store.Append(provider.Message{Role: "user", Content: "hello"})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System",
 					},
@@ -299,7 +299,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 			It("includes semantic results when provided", func() {
 				store.Append(provider.Message{Role: "user", Content: "current"})
 
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System",
 					},
@@ -328,7 +328,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 
 	Describe("BuildResult", func() {
 		It("reports tokens used", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				Instructions: agent.Instructions{
 					SystemPrompt: "Hello world system prompt",
 				},
@@ -341,7 +341,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 		})
 
 		It("reports budget remaining", func() {
-			manifest := &agent.AgentManifest{
+			manifest := &agent.Manifest{
 				Instructions: agent.Instructions{
 					SystemPrompt: "Short",
 				},
@@ -359,7 +359,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 		Context("T15a-compatible entrypoint", func() {
 			It("accepts context and userMessage parameters", func() {
 				ctx := gocontext.Background()
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt",
 					},
@@ -374,7 +374,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 
 			It("appends userMessage to context window", func() {
 				ctx := gocontext.Background()
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System",
 					},
@@ -397,7 +397,7 @@ var _ = Describe("ContextWindowBuilder", func() {
 				DeferCleanup(func() { log.SetOutput(origOutput) })
 
 				ctx := gocontext.Background()
-				manifest := &agent.AgentManifest{
+				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "This is a very long system prompt that exceeds the tiny token budget and must be truncated.",
 					},

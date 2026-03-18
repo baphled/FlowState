@@ -122,8 +122,7 @@ description: This skill already exists
 `)
 				existingSkillDir := filepath.Join(skillsDir, "existing-skill")
 				Expect(os.MkdirAll(existingSkillDir, 0o755)).To(Succeed())
-				//nolint:gosec // Test file permissions
-				Expect(os.WriteFile(filepath.Join(existingSkillDir, "SKILL.md"), []byte("existing"), 0o644)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(existingSkillDir, "SKILL.md"), []byte("existing"), 0o600)).To(Succeed())
 			})
 
 			AfterEach(func() {
@@ -172,7 +171,7 @@ func createTestGitRepo(_ GinkgoTInterface, skillContent string) string {
 	Expect(err).NotTo(HaveOccurred())
 
 	skillPath := filepath.Join(dir, "SKILL.md")
-	err = os.WriteFile(skillPath, []byte(skillContent), 0o644) //nolint:gosec // Test file permissions
+	err = os.WriteFile(skillPath, []byte(skillContent), 0o600)
 	Expect(err).NotTo(HaveOccurred())
 
 	return dir
@@ -187,7 +186,7 @@ func createTestGitRepoWithSubdir(_ GinkgoTInterface, subdir, skillContent string
 	Expect(err).NotTo(HaveOccurred())
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	err = os.WriteFile(skillPath, []byte(skillContent), 0o644) //nolint:gosec // Test file permissions
+	err = os.WriteFile(skillPath, []byte(skillContent), 0o600)
 	Expect(err).NotTo(HaveOccurred())
 
 	return dir

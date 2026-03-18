@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// ChatOptions holds configuration for the chat command.
 type ChatOptions struct {
 	Agent   string
 	Message string
@@ -27,7 +28,7 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 		Short: "Start an interactive chat session",
 		Long:  "Start an interactive chat session from the CLI.",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runChat(cmd, getApp(), opts)
 		},
 	}
@@ -41,58 +42,18 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 	return cmd
 }
 
-//nolint:nestif // CLI command flow with necessary error handling
 func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
 	if opts.Message != "" {
-		agentName := opts.Agent
-		if agentName == "" {
-			agentName = "default"
-		}
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", agentName, opts.Message)
-		if err != nil {
-			return err
-		}
+		return runSingleMessageChat(cmd, application, opts)
+	}
+	return runInteractiveChat(application, opts)
+}
 
-		if application.Engine == nil {
-			return errors.New("engine not configured")
-		}
+func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
+	agentName := resolveChatAgentName(opts.Agent)
 
-		sessionID := opts.Session
-		if sessionID == "" {
-			sessionID = generateSessionID()
-		}
-
-		if opts.Session != "" && application.Sessions != nil {
-			store, loadErr := application.Sessions.Load(opts.Session)
-			if loadErr == nil {
-				application.Engine.SetContextStore(store)
-			}
-		}
-
-		ctx := context.Background()
-		chunks, err := application.Engine.Stream(ctx, agentName, opts.Message)
-		if err != nil {
-			return fmt.Errorf("streaming response: %w", err)
-		}
-
-		var response strings.Builder
-		for chunk := range chunks {
-			if chunk.Error != nil {
-				return fmt.Errorf("stream error: %w", chunk.Error)
-			}
-			response.WriteString(chunk.Content)
-		}
-
-		if application.Sessions != nil {
-			store := application.Engine.ContextStore()
-			if store != nil {
-				if saveErr := application.Sessions.Save(sessionID, store); saveErr != nil {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
-				}
-			}
-		}
-
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response.String())
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", agentName, opts.Message)
+	if err != nil {
 		return err
 	}
 
@@ -100,17 +61,80 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 		return errors.New("engine not configured")
 	}
 
-	agentName := opts.Agent
-	if agentName == "" {
-		agentName = "default"
+	sessionID := resolveChatSessionID(opts.Session)
+	loadSessionIfRequested(application, opts.Session)
+
+	response, err := streamChatResponse(application, agentName, opts.Message)
+	if err != nil {
+		return err
 	}
 
-	sessionID := opts.Session
-	if sessionID == "" {
-		sessionID = generateSessionID()
+	saveSessionIfAvailable(cmd, application, sessionID)
+
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response)
+	return err
+}
+
+func runInteractiveChat(application *app.App, opts *ChatOptions) error {
+	if application.Engine == nil {
+		return errors.New("engine not configured")
 	}
+
+	agentName := resolveChatAgentName(opts.Agent)
+	sessionID := resolveChatSessionID(opts.Session)
 
 	return tui.Run(application.Engine, agentName, sessionID)
+}
+
+func resolveChatAgentName(agent string) string {
+	if agent == "" {
+		return "default"
+	}
+	return agent
+}
+
+func resolveChatSessionID(session string) string {
+	if session == "" {
+		return generateSessionID()
+	}
+	return session
+}
+
+func loadSessionIfRequested(application *app.App, session string) {
+	if session != "" && application.Sessions != nil {
+		store, loadErr := application.Sessions.Load(session)
+		if loadErr == nil {
+			application.Engine.SetContextStore(store)
+		}
+	}
+}
+
+func streamChatResponse(application *app.App, agentName string, message string) (string, error) {
+	ctx := context.Background()
+	chunks, err := application.Engine.Stream(ctx, agentName, message)
+	if err != nil {
+		return "", fmt.Errorf("streaming response: %w", err)
+	}
+
+	var response strings.Builder
+	for chunk := range chunks {
+		if chunk.Error != nil {
+			return "", fmt.Errorf("stream error: %w", chunk.Error)
+		}
+		response.WriteString(chunk.Content)
+	}
+	return response.String(), nil
+}
+
+func saveSessionIfAvailable(cmd *cobra.Command, application *app.App, sessionID string) {
+	if application.Sessions != nil {
+		store := application.Engine.ContextStore()
+		if store != nil {
+			if saveErr := application.Sessions.Save(sessionID, store); saveErr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
+			}
+		}
+	}
 }
 
 func generateSessionID() string {

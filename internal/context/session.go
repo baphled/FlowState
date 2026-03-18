@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// SessionInfo describes a saved session's metadata.
 type SessionInfo struct {
 	ID             string    `json:"id"`
 	AgentID        string    `json:"agent_id"`
@@ -18,12 +19,17 @@ type SessionInfo struct {
 	EmbeddingModel string    `json:"embedding_model"`
 }
 
+// SessionStore defines the interface for persisting and loading sessions.
 type SessionStore interface {
+	// Save persists a context store to a session.
 	Save(sessionID string, store *FileContextStore) error
+	// Load retrieves a context store from a saved session.
 	Load(sessionID string) (*FileContextStore, error)
+	// List returns metadata for all saved sessions.
 	List() []SessionInfo
 }
 
+// FileSessionStore implements SessionStore with JSON file persistence.
 type FileSessionStore struct {
 	baseDir string
 }
@@ -33,10 +39,11 @@ type sessionFile struct {
 	AgentID        string           `json:"agent_id"`
 	EmbeddingModel string           `json:"embedding_model"`
 	LastActive     time.Time        `json:"last_active"`
-	Messages       []storedMessage  `json:"messages"`
-	Embeddings     []embeddingEntry `json:"embeddings"`
+	Messages       []StoredMessage  `json:"messages"`
+	Embeddings     []EmbeddingEntry `json:"embeddings"`
 }
 
+// NewFileSessionStore creates a new FileSessionStore at the given directory.
 func NewFileSessionStore(baseDir string) (*FileSessionStore, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating session directory: %w", err)
@@ -44,6 +51,7 @@ func NewFileSessionStore(baseDir string) (*FileSessionStore, error) {
 	return &FileSessionStore{baseDir: baseDir}, nil
 }
 
+// DefaultSessionStore returns a FileSessionStore in the default location.
 func DefaultSessionStore() (*FileSessionStore, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -53,6 +61,7 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 	return NewFileSessionStore(baseDir)
 }
 
+// Save persists a context store to a session file.
 func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error {
 	sf := sessionFile{
 		SessionID:      sessionID,
@@ -71,7 +80,7 @@ func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error
 	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
 	tmpPath := sessionPath + ".tmp"
 
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // Session files need to be readable
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 
@@ -82,10 +91,12 @@ func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error
 	return nil
 }
 
+// Load retrieves a context store from a saved session.
 func (s *FileSessionStore) Load(sessionID string) (*FileContextStore, error) {
 	return s.LoadWithModel(sessionID, "")
 }
 
+// LoadWithModel retrieves a context store using the specified embedding model.
 func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileContextStore, error) {
 	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
 
@@ -106,8 +117,8 @@ func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileC
 
 	store := &FileContextStore{
 		path:       "",
-		messages:   make([]storedMessage, 0),
-		embeddings: make([]embeddingEntry, 0),
+		messages:   make([]StoredMessage, 0),
+		embeddings: make([]EmbeddingEntry, 0),
 		maxSize:    defaultMaxSize,
 		model:      effectiveModel,
 	}
@@ -117,6 +128,7 @@ func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileC
 	return store, nil
 }
 
+// List returns metadata for all saved sessions sorted by last active time.
 func (s *FileSessionStore) List() []SessionInfo {
 	pattern := filepath.Join(s.baseDir, "*.json")
 	matches, err := filepath.Glob(pattern)
