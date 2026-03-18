@@ -240,7 +240,6 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I should see the global flag "([^"]*)"$`, s.iShouldSeeTheGlobalFlag)
 	ctx.Step(`^I should see the subcommand "([^"]*)"$`, s.iShouldSeeTheSubcommand)
 	ctx.Step(`^I should see the local flag "([^"]*)"$`, s.iShouldSeeTheLocalFlag)
-	ctx.Step(`^I should see placeholder output containing "([^"]*)"$`, s.iShouldSeePlaceholderOutputContaining)
 	ctx.Step(`^I should see output containing "([^"]*)"$`, s.iShouldSeeOutputContaining)
 
 	ctx.Step(`^I press Enter without typing$`, s.iPressEnterWithoutTyping)
@@ -1386,13 +1385,6 @@ func (s *StepDefinitions) iShouldSeeTheSubcommand(subcommand string) error {
 func (s *StepDefinitions) iShouldSeeTheLocalFlag(flag string) error {
 	if !strings.Contains(s.cliOutput, flag) {
 		return fmt.Errorf("expected local flag %q in output, got: %s", flag, s.cliOutput)
-	}
-	return nil
-}
-
-func (s *StepDefinitions) iShouldSeePlaceholderOutputContaining(text string) error {
-	if !strings.Contains(strings.ToLower(s.cliOutput), strings.ToLower(text)) {
-		return fmt.Errorf("expected output containing %q, got: %s", text, s.cliOutput)
 	}
 	return nil
 }
