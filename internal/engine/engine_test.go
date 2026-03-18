@@ -16,20 +16,23 @@ import (
 )
 
 type mockProvider struct {
-	name         string
-	streamChunks []provider.StreamChunk
-	streamErr    error
-	chatResp     provider.ChatResponse
-	chatErr      error
-	embedResult  []float64
-	embedErr     error
-	models       []provider.Model
-	modelsErr    error
+	name            string
+	streamChunks    []provider.StreamChunk
+	streamErr       error
+	chatResp        provider.ChatResponse
+	chatErr         error
+	embedResult     []float64
+	embedErr        error
+	models          []provider.Model
+	modelsErr       error
+	capturedRequest *provider.ChatRequest
 }
 
 func (m *mockProvider) Name() string { return m.name }
 
-func (m *mockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+func (m *mockProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	m.capturedRequest = &req
+
 	if m.streamErr != nil {
 		return nil, m.streamErr
 	}
@@ -59,6 +62,7 @@ func (m *mockProvider) Models() ([]provider.Model, error) {
 type mockTool struct {
 	name        string
 	description string
+	schema      tool.ToolSchema
 }
 
 func (t *mockTool) Name() string        { return t.name }
@@ -66,7 +70,12 @@ func (t *mockTool) Description() string { return t.description }
 func (t *mockTool) Execute(_ context.Context, _ tool.ToolInput) (tool.ToolResult, error) {
 	return tool.ToolResult{}, nil
 }
-func (t *mockTool) Schema() tool.ToolSchema { return tool.ToolSchema{} }
+func (t *mockTool) Schema() tool.ToolSchema {
+	if t.schema.Type != "" {
+		return t.schema
+	}
+	return tool.ToolSchema{}
+}
 
 var _ = Describe("Engine", func() {
 	var (
@@ -218,6 +227,40 @@ var _ = Describe("Engine", func() {
 			Expect(received[0].Content).To(Equal("Hello"))
 			Expect(received[1].Content).To(Equal(" World"))
 			Expect(received[1].Done).To(BeTrue())
+		})
+
+		It("sends tool schemas to provider in chat request", func() {
+			toolWithSchema := &mockTool{
+				name:        "search",
+				description: "Search for information",
+				schema: tool.ToolSchema{
+					Type: "object",
+					Properties: map[string]tool.Property{
+						"query": {Type: "string", Description: "Search query"},
+					},
+					Required: []string{"query"},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{toolWithSchema},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			for range chunks {
+			}
+
+			Expect(chatProvider.capturedRequest).NotTo(BeNil())
+			Expect(chatProvider.capturedRequest.Tools).To(HaveLen(1))
+			Expect(chatProvider.capturedRequest.Tools[0].Name).To(Equal("search"))
+			Expect(chatProvider.capturedRequest.Tools[0].Description).To(Equal("Search for information"))
+			Expect(chatProvider.capturedRequest.Tools[0].Schema.Type).To(Equal("object"))
+			Expect(chatProvider.capturedRequest.Tools[0].Schema.Required).To(ContainElement("query"))
 		})
 
 		It("respects context cancellation", func() {
