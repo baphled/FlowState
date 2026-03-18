@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -90,30 +91,124 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
-
-		var responseContent strings.Builder
-
-		for {
-			select {
-			case <-ctx.Done():
-				outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-				return
-			case chunk, ok := <-providerChunks:
-				if !ok {
-					e.storeResponse(ctx, responseContent.String())
-					return
-				}
-				responseContent.WriteString(chunk.Content)
-				outChan <- chunk
-				if chunk.Done {
-					e.storeResponse(ctx, responseContent.String())
-					return
-				}
-			}
-		}
+		e.streamWithToolLoop(ctx, messages, providerChunks, outChan)
 	}()
 
 	return outChan, nil
+}
+
+func (e *Engine) streamWithToolLoop(ctx context.Context, messages []provider.Message, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) {
+	for {
+		toolCall, responseContent, done := e.processStreamChunks(ctx, providerChunks, outChan)
+		if done {
+			e.storeResponse(ctx, responseContent)
+			return
+		}
+
+		if toolCall == nil {
+			e.storeResponse(ctx, responseContent)
+			return
+		}
+
+		toolResult, err := e.executeToolCall(ctx, toolCall)
+		if err != nil {
+			outChan <- provider.StreamChunk{Error: err, Done: true}
+			return
+		}
+
+		e.storeToolResult(toolCall.ID, toolResult)
+
+		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
+
+		var streamErr error
+		providerChunks, streamErr = e.chatProvider.Stream(ctx, provider.ChatRequest{
+			Messages: messages,
+		})
+		if streamErr != nil {
+			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
+			return
+		}
+	}
+}
+
+func (e *Engine) processStreamChunks(ctx context.Context, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk) (*provider.ToolCall, string, bool) {
+	var responseContent strings.Builder
+
+	for {
+		select {
+		case <-ctx.Done():
+			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true}
+			return nil, responseContent.String(), true
+		case chunk, ok := <-providerChunks:
+			if !ok {
+				return nil, responseContent.String(), false
+			}
+
+			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+				return chunk.ToolCall, responseContent.String(), false
+			}
+
+			responseContent.WriteString(chunk.Content)
+			outChan <- chunk
+
+			if chunk.Done {
+				return nil, responseContent.String(), true
+			}
+		}
+	}
+}
+
+func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.ToolResult, error) {
+	for _, t := range e.tools {
+		if t.Name() == toolCall.Name {
+			input := tool.ToolInput{
+				Name:      toolCall.Name,
+				Arguments: toolCall.Arguments,
+			}
+			result, err := t.Execute(ctx, input)
+			if err != nil {
+				return tool.ToolResult{Output: "", Error: err}, nil
+			}
+			return result, nil
+		}
+	}
+	return tool.ToolResult{}, fmt.Errorf("tool not found: %s", toolCall.Name)
+}
+
+func (e *Engine) storeToolResult(toolCallID string, result tool.ToolResult) {
+	if e.store == nil {
+		return
+	}
+
+	content := result.Output
+	if result.Error != nil {
+		content = result.Error.Error()
+	}
+
+	e.store.Append(provider.Message{
+		Role:    "tool",
+		Content: content,
+		ToolCalls: []provider.ToolCall{
+			{ID: toolCallID},
+		},
+	})
+}
+
+func (e *Engine) appendToolResultToMessages(messages []provider.Message, toolCall *provider.ToolCall, result tool.ToolResult) []provider.Message {
+	content := result.Output
+	if result.Error != nil {
+		content = fmt.Sprintf("Error: %s", result.Error.Error())
+	}
+
+	toolResultMsg := provider.Message{
+		Role:    "tool",
+		Content: content,
+		ToolCalls: []provider.ToolCall{
+			{ID: toolCall.ID, Name: toolCall.Name},
+		},
+	}
+
+	return append(messages, toolResultMsg)
 }
 
 func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []provider.Message {
