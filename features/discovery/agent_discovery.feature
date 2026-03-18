@@ -20,6 +20,7 @@ Feature: Agent Discovery
     Then I should receive agent suggestions
     And the suggestions should include an agent with confidence above 0.5
 
+  @smoke
   Scenario: No suitable agent found
     When I ask for agent suggestions for "something very obscure"
-    Then I should receive agent suggestions
+    Then I should receive no agent suggestions

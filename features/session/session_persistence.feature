@@ -17,7 +17,7 @@ Feature: Session Persistence
   @smoke
   Scenario: New session starts empty
     Given FlowState is running
-    Then all messages should be restored
+    Then the session should have no messages
 
   @smoke
   Scenario: Session persists message history
@@ -26,9 +26,11 @@ Feature: Session Persistence
     And I reload the session
     Then all messages should be restored
 
+  @smoke
   Scenario: Multiple sessions can coexist
     Given I have an active session with messages
     When I save the session
+    And I reload the session
     Then all messages should be restored
 
   Scenario: Session handles corrupted file gracefully
