@@ -58,10 +58,7 @@ type MockProvider struct {
 	responses     []string
 	embeddings    []float64
 	models        []Model
-	streamDelay   int
 	responseIndex int
-	shouldError   bool
-	errorMessage  string
 }
 
 func NewMockProvider() *MockProvider {
