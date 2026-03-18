@@ -58,9 +58,13 @@ type App struct {
 //   - Connects to configured MCP servers.
 func New(cfg *config.AppConfig) (*App, error) {
 	bundledFS, err := BundledAgentsDir()
-	if err == nil {
+	if err != nil {
+		log.Printf("warning: bundled agents not found: %v", err)
+	} else {
 		if err := SeedAgentsDir(bundledFS, cfg.AgentDir); err != nil {
-			log.Printf("warning: seeding agents: %v", err)
+			log.Printf("warning: seeding agents to %q: %v", cfg.AgentDir, err)
+		} else {
+			log.Printf("info: agents seeded to %q", cfg.AgentDir)
 		}
 	}
 
@@ -388,7 +392,14 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 	agentRegistry := agent.NewRegistry()
 	if err := agentRegistry.Discover(cfg.AgentDir); err != nil {
-		log.Printf("warning: discovering agents: %v", err)
+		log.Printf("warning: discovering agents in %q: %v", cfg.AgentDir, err)
+	} else {
+		manifests := agentRegistry.List()
+		if len(manifests) == 0 {
+			log.Printf("warning: no agents discovered in %q", cfg.AgentDir)
+		} else {
+			log.Printf("info: discovered %d agent(s) in %q", len(manifests), cfg.AgentDir)
+		}
 	}
 	return agentRegistry
 }

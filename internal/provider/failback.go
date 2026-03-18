@@ -3,9 +3,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
+
+var errNoPreferences = errors.New("no model preferences configured: cannot failback to any provider")
 
 // ModelPreference specifies a preferred model and provider combination.
 type ModelPreference struct {
@@ -55,6 +58,9 @@ func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout
 //   - Makes network calls to LLM providers.
 //   - Updates lastProvider on success.
 func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
+	if len(f.preferences) == 0 {
+		return nil, errNoPreferences
+	}
 	var lastErr error
 	for _, pref := range f.preferences {
 		p, err := f.registry.Get(pref.Provider)
@@ -98,6 +104,9 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 //   - Makes network calls to LLM providers.
 //   - Updates lastProvider on success.
 func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if len(f.preferences) == 0 {
+		return ChatResponse{}, errNoPreferences
+	}
 	var lastErr error
 	for _, pref := range f.preferences {
 		p, err := f.registry.Get(pref.Provider)
