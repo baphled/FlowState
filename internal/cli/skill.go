@@ -43,8 +43,8 @@ func runSkillList(cmd *cobra.Command, application *app.App) error {
 		return err
 	}
 
-	for _, s := range skills {
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s [%s]: %s\n", s.Name, s.Tier, s.Description)
+	for i := range skills {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s [%s]: %s\n", skills[i].Name, skills[i].Tier, skills[i].Description)
 		if err != nil {
 			return err
 		}

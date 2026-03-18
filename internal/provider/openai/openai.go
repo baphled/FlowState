@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -15,7 +16,7 @@ type Provider struct {
 
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
-		return nil, fmt.Errorf("OpenAI API key is required")
+		return nil, errors.New("OpenAI API key is required")
 	}
 	client := openaiAPI.NewClient(option.WithAPIKey(apiKey))
 	return &Provider{
@@ -46,7 +47,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 		defer close(ch)
 
 		stream := p.client.Chat.Completions.NewStreaming(ctx, openaiAPI.ChatCompletionNewParams{
-			Model:    openaiAPI.ChatModel(req.Model),
+			Model:    req.Model,
 			Messages: messages,
 		})
 
@@ -83,7 +84,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	}
 
 	resp, err := p.client.Chat.Completions.New(ctx, openaiAPI.ChatCompletionNewParams{
-		Model:    openaiAPI.ChatModel(req.Model),
+		Model:    req.Model,
 		Messages: messages,
 	})
 	if err != nil {
@@ -91,7 +92,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	}
 
 	if len(resp.Choices) == 0 {
-		return provider.ChatResponse{}, fmt.Errorf("no choices in response")
+		return provider.ChatResponse{}, errors.New("no choices in response")
 	}
 
 	return provider.ChatResponse{
@@ -114,7 +115,7 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	}
 
 	resp, err := p.client.Embeddings.New(ctx, openaiAPI.EmbeddingNewParams{
-		Model: openaiAPI.EmbeddingModel(model),
+		Model: model,
 		Input: openaiAPI.EmbeddingNewParamsInputUnion{
 			OfString: openaiAPI.String(req.Input),
 		},
@@ -124,7 +125,7 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	}
 
 	if len(resp.Data) == 0 {
-		return nil, fmt.Errorf("no embeddings returned")
+		return nil, errors.New("no embeddings returned")
 	}
 
 	return resp.Data[0].Embedding, nil

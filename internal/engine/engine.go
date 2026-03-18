@@ -114,10 +114,10 @@ func (e *Engine) BuildSystemPrompt() string {
 	builder.WriteString(e.manifest.Instructions.SystemPrompt)
 
 	for _, skillName := range e.manifest.Capabilities.AlwaysActiveSkills {
-		for _, s := range e.skills {
-			if s.Name == skillName && s.Content != "" {
+		for i := range e.skills {
+			if e.skills[i].Name == skillName && e.skills[i].Content != "" {
 				builder.WriteString("\n\n")
-				builder.WriteString(s.Content)
+				builder.WriteString(e.skills[i].Content)
 			}
 		}
 	}
@@ -270,7 +270,7 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.ToolResult) {
 func (e *Engine) appendToolResultToMessages(messages []provider.Message, toolCall *provider.ToolCall, result tool.ToolResult) []provider.Message {
 	content := result.Output
 	if result.Error != nil {
-		content = fmt.Sprintf("Error: %s", result.Error.Error())
+		content = "Error: " + result.Error.Error()
 	}
 
 	toolResultMsg := provider.Message{

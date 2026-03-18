@@ -72,7 +72,7 @@ var _ = Describe("Web Tool", func() {
 				result, err := webTool.Execute(context.Background(), input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).To(BeNil())
+				Expect(result.Error).ToNot(HaveOccurred())
 				Expect(result.Output).To(Equal("Hello, World!"))
 			})
 		})
@@ -94,8 +94,8 @@ var _ = Describe("Web Tool", func() {
 				result, err := webTool.Execute(context.Background(), input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).To(BeNil())
-				Expect(len(result.Output)).To(Equal(10 * 1024))
+				Expect(result.Error).ToNot(HaveOccurred())
+				Expect(result.Output).To(HaveLen(10 * 1024))
 			})
 		})
 
@@ -121,7 +121,7 @@ var _ = Describe("Web Tool", func() {
 				result, err := webTool.Execute(context.Background(), input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).NotTo(BeNil())
+				Expect(result.Error).To(HaveOccurred())
 				Expect(result.Error.Error()).To(ContainSubstring("invalid"))
 			})
 		})
@@ -145,7 +145,7 @@ var _ = Describe("Web Tool", func() {
 				result, err := webTool.Execute(ctx, input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).NotTo(BeNil())
+				Expect(result.Error).To(HaveOccurred())
 			})
 		})
 	})

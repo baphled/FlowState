@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -32,11 +31,11 @@ func (sd *SkillDiscovery) Suggest(taskDescription string) []SkillSuggestion {
 
 	var suggestions []SkillSuggestion
 
-	for _, s := range sd.skills {
-		score, reason := sd.scoreSkill(s, taskTokens)
+	for i := range sd.skills {
+		score, reason := sd.scoreSkill(sd.skills[i], taskTokens)
 		if score >= 0.3 {
 			suggestions = append(suggestions, SkillSuggestion{
-				Name:       s.Name,
+				Name:       sd.skills[i].Name,
 				Confidence: score,
 				Reason:     reason,
 			})
@@ -93,7 +92,7 @@ func (sd *SkillDiscovery) scoreSkill(s Skill, taskTokens []string) (float64, str
 
 	reason := ""
 	if len(matchedFields) > 0 {
-		reason = fmt.Sprintf("matched in %s", strings.Join(matchedFields, ", "))
+		reason = "matched in " + strings.Join(matchedFields, ", ")
 	}
 
 	return normalizedScore, reason

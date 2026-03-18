@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -50,7 +51,7 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 		}
 
 		if application.Engine == nil {
-			return fmt.Errorf("engine not configured")
+			return errors.New("engine not configured")
 		}
 
 		ctx := context.Background()

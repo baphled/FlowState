@@ -47,9 +47,9 @@ func filterSkillsByName(skills []skill.Skill, names []string) []skill.Skill {
 	}
 
 	var filtered []skill.Skill
-	for _, s := range skills {
-		if nameSet[s.Name] {
-			filtered = append(filtered, s)
+	for i := range skills {
+		if nameSet[skills[i].Name] {
+			filtered = append(filtered, skills[i])
 		}
 	}
 	return filtered

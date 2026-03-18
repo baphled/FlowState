@@ -84,13 +84,14 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
-		if m.mode == "insert" && len(m.input) > 0 {
+		if m.mode == "insert" && m.input != "" {
 			m.input = m.input[:len(m.input)-1]
 		}
 		return m, nil
 	case tea.KeyEnter:
 		if m.mode == "insert" && m.input != "" {
-			return m, m.sendMessage()
+			cmd := m.sendMessage()
+			return m, cmd
 		}
 		return m, nil
 	case tea.KeyRunes:

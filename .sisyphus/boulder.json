@@ -1,7 +1,11 @@
 {
   "active_plan": "/home/baphled/Projects/FlowState.git/agent-platform/.sisyphus/plans/flowstate-agent-platform.md",
   "started_at": "2026-03-17T20:05:40.745Z",
-  "session_ids": ["ses_302a3f473ffei4QswQo2BTlywI"],
+  "session_ids": [
+    "ses_302a3f473ffei4QswQo2BTlywI",
+    "ses_3020bd634ffedsA24vnyxDTQdp",
+    "ses_3017e0bfcffe74RpNYtZeZ9wrp"
+  ],
   "plan_name": "flowstate-agent-platform",
   "worktree_path": "/home/baphled/Projects/FlowState.git/agent-platform"
 }

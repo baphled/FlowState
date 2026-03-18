@@ -64,7 +64,7 @@ func (imp *Importer) AddFromPath(ctx context.Context, repoPath string) (Skill, e
 		return Skill{}, ErrSkillExists
 	}
 
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return Skill{}, fmt.Errorf("creating skill directory: %w", err)
 	}
 

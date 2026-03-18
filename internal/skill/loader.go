@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,7 +75,7 @@ func extractFrontmatter(content string) (string, string, error) {
 	}
 	parts := strings.SplitN(content[3:], "---", 2)
 	if len(parts) < 2 {
-		return "", content, fmt.Errorf("invalid frontmatter format")
+		return "", content, errors.New("invalid frontmatter format")
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }

@@ -38,7 +38,7 @@ type sessionFile struct {
 }
 
 func NewFileSessionStore(baseDir string) (*FileSessionStore, error) {
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating session directory: %w", err)
 	}
 	return &FileSessionStore{baseDir: baseDir}, nil

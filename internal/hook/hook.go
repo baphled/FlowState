@@ -107,12 +107,12 @@ func ContextInjectionHook(skills []skill.Skill, activeSkillNames []string) Hook 
 			}
 
 			var contentBuilder strings.Builder
-			for _, s := range skills {
-				if activeSet[s.Name] && s.Content != "" {
+			for i := range skills {
+				if activeSet[skills[i].Name] && skills[i].Content != "" {
 					if contentBuilder.Len() > 0 {
 						contentBuilder.WriteString("\n\n")
 					}
-					contentBuilder.WriteString(s.Content)
+					contentBuilder.WriteString(skills[i].Content)
 				}
 			}
 

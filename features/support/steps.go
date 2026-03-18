@@ -3,6 +3,7 @@ package support
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -333,7 +334,7 @@ func (s *StepDefinitions) iPressEnter() error {
 
 func (s *StepDefinitions) iShouldSeeTokensAppearing() error {
 	if len(s.responseParts) == 0 {
-		return fmt.Errorf("expected streaming tokens, but received none")
+		return errors.New("expected streaming tokens, but received none")
 	}
 	return nil
 }
@@ -347,7 +348,7 @@ func (s *StepDefinitions) iShouldSeeACompleteResponse() error {
 		return fmt.Errorf("expected assistant response, got %s", lastMsg.Role)
 	}
 	if lastMsg.Content == "" {
-		return fmt.Errorf("expected non-empty response")
+		return errors.New("expected non-empty response")
 	}
 	return nil
 }
@@ -359,7 +360,7 @@ func (s *StepDefinitions) iHaveSentTheMessage(message string) error {
 
 func (s *StepDefinitions) iReceivedAResponse() error {
 	if len(s.app.messages) < 2 {
-		return fmt.Errorf("expected at least a user message and response")
+		return errors.New("expected at least a user message and response")
 	}
 	lastMsg := s.app.messages[len(s.app.messages)-1]
 	if lastMsg.Role != "assistant" {
@@ -370,7 +371,7 @@ func (s *StepDefinitions) iReceivedAResponse() error {
 
 func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
 	if len(s.app.messages) < 1 {
-		return fmt.Errorf("no messages found")
+		return errors.New("no messages found")
 	}
 
 	for i := len(s.app.messages) - 1; i >= 0; i-- {
@@ -381,7 +382,7 @@ func (s *StepDefinitions) iShouldSeeInTheResponse(expected string) error {
 			return fmt.Errorf("expected %q in response, got: %s", expected, s.app.messages[i].Content)
 		}
 	}
-	return fmt.Errorf("no assistant response found")
+	return errors.New("no assistant response found")
 }
 
 func (s *StepDefinitions) theAgentIsAvailable(agentID string) error {
@@ -446,7 +447,7 @@ func (s *StepDefinitions) theSuggestionsShouldIncludeAnAgentWithConfidenceAbove(
 		}
 	}
 	if len(s.suggestions) == 0 {
-		return fmt.Errorf("no suggestions returned")
+		return errors.New("no suggestions returned")
 	}
 	return fmt.Errorf("no agent found with confidence above %f, highest was %f", confidence, s.suggestions[0].Confidence)
 }
@@ -497,9 +498,9 @@ func (s *StepDefinitions) theHTTPServerIsRunningOnPort(port int) error {
 
 func (s *StepDefinitions) iPOSTToWithMessage(endpoint, message string) error {
 	if s.httpServer == nil {
-		return fmt.Errorf("HTTP server not running")
+		return errors.New("HTTP server not running")
 	}
-	resp, err := http.Post(s.httpServer.URL+endpoint, "application/json", strings.NewReader(fmt.Sprintf(`{"message":"%s"}`, message)))
+	resp, err := http.Post(s.httpServer.URL+endpoint, "application/json", strings.NewReader(fmt.Sprintf(`{"message":%q}`, message)))
 	if err != nil {
 		return err
 	}
@@ -509,7 +510,7 @@ func (s *StepDefinitions) iPOSTToWithMessage(endpoint, message string) error {
 
 func (s *StepDefinitions) iShouldReceiveAnSSEStream() error {
 	if s.sseResponse == nil {
-		return fmt.Errorf("no SSE response received")
+		return errors.New("no SSE response received")
 	}
 	contentType := s.sseResponse.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "text/event-stream") {
@@ -523,7 +524,7 @@ func (s *StepDefinitions) iShouldReceiveAnSSEStream() error {
 
 func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 	if len(s.sseChunks) == 0 {
-		return fmt.Errorf("no chunks received in SSE stream")
+		return errors.New("no chunks received in SSE stream")
 	}
 	hasContent := false
 	for _, chunk := range s.sseChunks {
@@ -533,7 +534,7 @@ func (s *StepDefinitions) theStreamShouldContainChunksWithContent() error {
 		}
 	}
 	if !hasContent {
-		return fmt.Errorf("no content chunks found in SSE stream")
+		return errors.New("no content chunks found in SSE stream")
 	}
 	return nil
 }
@@ -559,7 +560,7 @@ func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
 
 func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
 	if s.contextStore == nil {
-		return fmt.Errorf("context store not initialised, call 'a general agent with N token context limit' first")
+		return errors.New("context store not initialised, call 'a general agent with N token context limit' first")
 	}
 	for i := 0; i < count; i++ {
 		role := "user"
@@ -580,7 +581,7 @@ func (s *StepDefinitions) iHaveExchangedMessages(count int) error {
 
 func (s *StepDefinitions) theNextMessageIsProcessed() error {
 	if s.windowBuilder == nil || s.contextStore == nil {
-		return fmt.Errorf("window builder or context store not initialised")
+		return errors.New("window builder or context store not initialised")
 	}
 
 	manifest := &agent.AgentManifest{
@@ -599,7 +600,7 @@ func (s *StepDefinitions) theNextMessageIsProcessed() error {
 
 func (s *StepDefinitions) theContextWindowShouldUseLessThanTokens(limit int) error {
 	if s.tokenCounter == nil {
-		return fmt.Errorf("token counter not initialised")
+		return errors.New("token counter not initialised")
 	}
 
 	totalTokens := 0
@@ -641,7 +642,7 @@ func (s *StepDefinitions) iHaveAConversationAbout(topic string) error {
 
 func (s *StepDefinitions) iLaterDiscussed(topic string) error {
 	if s.contextStore == nil {
-		return fmt.Errorf("context store not initialised")
+		return errors.New("context store not initialised")
 	}
 
 	s.contextStore.Append(provider.Message{
@@ -657,7 +658,7 @@ func (s *StepDefinitions) iLaterDiscussed(topic string) error {
 
 func (s *StepDefinitions) iAskAbout(topic string) error {
 	if s.contextStore == nil {
-		return fmt.Errorf("context store not initialised")
+		return errors.New("context store not initialised")
 	}
 	if s.windowBuilder == nil {
 		s.tokenCounter = ctxstore.NewApproximateCounter()
@@ -709,14 +710,14 @@ func (s *StepDefinitions) iHaveAnActiveSessionWithMessages() error {
 
 func (s *StepDefinitions) iSaveTheSession() error {
 	if s.session == nil {
-		return fmt.Errorf("no session to save")
+		return errors.New("no session to save")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) iReloadTheSession() error {
 	if s.session == nil {
-		return fmt.Errorf("no session to reload")
+		return errors.New("no session to reload")
 	}
 	return nil
 }
@@ -734,10 +735,10 @@ func (s *StepDefinitions) allMessagesShouldBeRestored() error {
 
 func (s *StepDefinitions) embeddingVectorsShouldBePreserved() error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	if len(s.session.embeddings) == 0 {
-		return fmt.Errorf("no embeddings preserved")
+		return errors.New("no embeddings preserved")
 	}
 	return nil
 }
@@ -762,7 +763,7 @@ func (s *StepDefinitions) flowstateLoadsItsConfiguration() error {
 
 func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 
 	defaults := config.DefaultConfig()
@@ -806,7 +807,7 @@ log_level: debug
 
 func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
 	if s.configPath == "" {
-		return fmt.Errorf("expected config path to be set")
+		return errors.New("expected config path to be set")
 	}
 
 	cfg, err := config.LoadConfigFromPath(s.configPath)
@@ -819,7 +820,7 @@ func (s *StepDefinitions) flowstateLoadsConfigurationFromThatFilePath() error {
 
 func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.Providers.Default != "openai" {
 		return fmt.Errorf("expected provider default \"openai\", got %q", s.config.Providers.Default)
@@ -837,78 +838,84 @@ func (s *StepDefinitions) flowstateHasLoadedItsConfiguration() error {
 
 func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.Providers.Default == "" {
-		return fmt.Errorf("expected default provider to be set")
+		return errors.New("expected default provider to be set")
 	}
 	if s.config.Providers.Ollama.Model == "" {
-		return fmt.Errorf("expected ollama provider settings to be present")
+		return errors.New("expected ollama provider settings to be present")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeAnAgentDirectory() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.AgentDir == "" {
-		return fmt.Errorf("expected agent directory to be set")
+		return errors.New("expected agent directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeASkillDirectory() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.SkillDir == "" {
-		return fmt.Errorf("expected skill directory to be set")
+		return errors.New("expected skill directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeADataDirectory() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.DataDir == "" {
-		return fmt.Errorf("expected data directory to be set")
+		return errors.New("expected data directory to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theConfigurationShouldIncludeALogLevel() error {
 	if s.config == nil {
-		return fmt.Errorf("expected configuration to be loaded")
+		return errors.New("expected configuration to be loaded")
 	}
 	if s.config.LogLevel == "" {
-		return fmt.Errorf("expected log level to be set")
+		return errors.New("expected log level to be set")
 	}
 	return nil
 }
 
 // Agent registry step implementations
 
-func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests() error {
-	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-agents")
+type testFileSpec struct {
+	name    string
+	content string
+}
+
+func (s *StepDefinitions) setupTempDirWithFiles(dirName string, files []testFileSpec) error {
+	s.tempDir = filepath.Join(os.TempDir(), dirName)
 	_ = os.RemoveAll(s.tempDir)
 	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
 		return err
 	}
 
-	jsonContent := `{"id": "json-agent", "name": "JSON Agent"}`
-	if err := os.WriteFile(filepath.Join(s.tempDir, "json-agent.json"), []byte(jsonContent), 0o600); err != nil {
-		return err
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(s.tempDir, f.name), []byte(f.content), 0o600); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	mdContent := `---
-description: Markdown Agent
-mode: subagent
----
-# Markdown Agent
-`
-	return os.WriteFile(filepath.Join(s.tempDir, "md-agent.md"), []byte(mdContent), 0o600)
+func (s *StepDefinitions) anAgentDirectoryContainsValidJSONAndMarkdownAgentManifests() error {
+	return s.setupTempDirWithFiles("flowstate-test-agents", []testFileSpec{
+		{name: "json-agent.json", content: `{"id": "json-agent", "name": "JSON Agent"}`},
+		{name: "md-agent.md", content: "---\ndescription: Markdown Agent\nmode: subagent\n---\n# Markdown Agent\n"},
+	})
 }
 
 func (s *StepDefinitions) theAgentRegistryDiscoversAgentsFromThatDirectory() error {
@@ -918,7 +925,7 @@ func (s *StepDefinitions) theAgentRegistryDiscoversAgentsFromThatDirectory() err
 
 func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats() error {
 	if s.agentRegistry == nil {
-		return fmt.Errorf("expected agent registry to be created")
+		return errors.New("expected agent registry to be created")
 	}
 	if len(s.agentRegistry.List()) < 2 {
 		return fmt.Errorf("expected at least 2 agents, got %d", len(s.agentRegistry.List()))
@@ -926,7 +933,7 @@ func (s *StepDefinitions) theRegistryShouldIncludeAgentsFromBothManifestFormats(
 	_, hasJSON := s.agentRegistry.Get("json-agent")
 	_, hasMD := s.agentRegistry.Get("md-agent")
 	if !hasJSON || !hasMD {
-		return fmt.Errorf("expected both json-agent and md-agent to be discovered")
+		return errors.New("expected both json-agent and md-agent to be discovered")
 	}
 	return nil
 }
@@ -939,7 +946,7 @@ func (s *StepDefinitions) anEmptyAgentDirectory() error {
 
 func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 	if s.agentRegistry == nil {
-		return fmt.Errorf("expected agent registry to be created")
+		return errors.New("expected agent registry to be created")
 	}
 	if len(s.agentRegistry.List()) != 0 {
 		return fmt.Errorf("expected empty registry, got %d agents", len(s.agentRegistry.List()))
@@ -948,35 +955,26 @@ func (s *StepDefinitions) theRegistryShouldBeEmpty() error {
 }
 
 func (s *StepDefinitions) anAgentDirectoryContainsValidAndInvalidAgentManifests() error {
-	s.tempDir = filepath.Join(os.TempDir(), "flowstate-test-mixed")
-	_ = os.RemoveAll(s.tempDir)
-	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
-		return err
-	}
-
-	validContent := `{"id": "valid-agent", "name": "Valid Agent"}`
-	if err := os.WriteFile(filepath.Join(s.tempDir, "valid.json"), []byte(validContent), 0o600); err != nil {
-		return err
-	}
-
-	invalidContent := `{not valid json`
-	return os.WriteFile(filepath.Join(s.tempDir, "invalid.json"), []byte(invalidContent), 0o600)
+	return s.setupTempDirWithFiles("flowstate-test-mixed", []testFileSpec{
+		{name: "valid.json", content: `{"id": "valid-agent", "name": "Valid Agent"}`},
+		{name: "invalid.json", content: `{not valid json`},
+	})
 }
 
 func (s *StepDefinitions) theValidAgentsShouldBeAvailableInTheRegistry() error {
 	if s.agentRegistry == nil {
-		return fmt.Errorf("expected agent registry to be created")
+		return errors.New("expected agent registry to be created")
 	}
 	_, hasValid := s.agentRegistry.Get("valid-agent")
 	if !hasValid {
-		return fmt.Errorf("expected valid-agent to be discovered")
+		return errors.New("expected valid-agent to be discovered")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theInvalidAgentManifestsShouldBeSkipped() error {
 	if s.agentRegistry == nil {
-		return fmt.Errorf("expected agent registry to be created")
+		return errors.New("expected agent registry to be created")
 	}
 	if len(s.agentRegistry.List()) != 1 {
 		return fmt.Errorf("expected only valid manifests to remain, got %d agents", len(s.agentRegistry.List()))
@@ -998,7 +996,7 @@ func (s *StepDefinitions) theOllamaProviderIsConfigured() error {
 
 func (s *StepDefinitions) iRequestTheProviderName() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	s.providerName = s.ollamaProvider.Name()
 	return nil
@@ -1013,14 +1011,14 @@ func (s *StepDefinitions) itShouldReturn(expected string) error {
 
 func (s *StepDefinitions) ollamaHasModelsAvailable() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) iRequestTheListOfModels() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	models, err := s.ollamaProvider.Models()
 	if err != nil {
@@ -1032,7 +1030,7 @@ func (s *StepDefinitions) iRequestTheListOfModels() error {
 
 func (s *StepDefinitions) iShouldReceiveAListOfModelsWithContextLengths() error {
 	if len(s.models) == 0 {
-		return fmt.Errorf("expected models, got none")
+		return errors.New("expected models, got none")
 	}
 	for _, m := range s.models {
 		if m.ContextLength == 0 {
@@ -1054,10 +1052,10 @@ func (s *StepDefinitions) aValidChatRequestWithMessages() error {
 
 func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	if s.chatRequest == nil {
-		return fmt.Errorf("no chat request provided")
+		return errors.New("no chat request provided")
 	}
 	resp, err := s.ollamaProvider.Chat(s.ctx, *s.chatRequest)
 	if err != nil {
@@ -1069,20 +1067,20 @@ func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
 
 func (s *StepDefinitions) iShouldReceiveAChatResponseWithAMessage() error {
 	if s.chatResponse == nil {
-		return fmt.Errorf("expected chat response, got nil")
+		return errors.New("expected chat response, got nil")
 	}
 	if s.chatResponse.Message.Content == "" {
-		return fmt.Errorf("expected message content, got empty")
+		return errors.New("expected message content, got empty")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	if s.chatRequest == nil {
-		return fmt.Errorf("no chat request provided")
+		return errors.New("no chat request provided")
 	}
 	ch, err := s.ollamaProvider.Stream(s.ctx, *s.chatRequest)
 	if err != nil {
@@ -1097,11 +1095,11 @@ func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
 
 func (s *StepDefinitions) iShouldReceiveStreamChunksUntilDone() error {
 	if len(s.streamChunks) == 0 {
-		return fmt.Errorf("expected stream chunks, got none")
+		return errors.New("expected stream chunks, got none")
 	}
 	lastChunk := s.streamChunks[len(s.streamChunks)-1]
 	if !lastChunk.Done {
-		return fmt.Errorf("expected last chunk to be done")
+		return errors.New("expected last chunk to be done")
 	}
 	return nil
 }
@@ -1113,7 +1111,7 @@ func (s *StepDefinitions) textToEmbed() error {
 
 func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
 	if s.ollamaProvider == nil {
-		return fmt.Errorf("ollama provider not configured")
+		return errors.New("ollama provider not configured")
 	}
 	embeddings, err := s.ollamaProvider.Embed(s.ctx, EmbedRequest{
 		Input: s.embeddingInputText,
@@ -1128,7 +1126,7 @@ func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
 
 func (s *StepDefinitions) iShouldReceiveAVectorOfFloats() error {
 	if len(s.embeddings) == 0 {
-		return fmt.Errorf("expected embeddings, got none")
+		return errors.New("expected embeddings, got none")
 	}
 	return nil
 }
@@ -1152,7 +1150,7 @@ func (s *StepDefinitions) theFlowStateCLIIsAvailable() error {
 func (s *StepDefinitions) iRun(command string) error {
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
-		return fmt.Errorf("empty command")
+		return errors.New("empty command")
 	}
 	parts[0] = "/tmp/flowstate-test"
 	cmd := exec.Command(parts[0], parts[1:]...)
@@ -1162,7 +1160,8 @@ func (s *StepDefinitions) iRun(command string) error {
 	err := cmd.Run()
 	s.cliOutput = stdout.String() + stderr.String()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			s.cliExitCode = exitErr.ExitCode()
 		} else {
 			s.cliExitCode = 1
@@ -1226,17 +1225,17 @@ func (s *StepDefinitions) iPressEnterWithoutTyping() error {
 func (s *StepDefinitions) noMessageShouldBeSent() error {
 	initialMessageCount := len(s.app.messages)
 	if s.inputBuffer != "" {
-		return fmt.Errorf("expected empty input buffer")
+		return errors.New("expected empty input buffer")
 	}
 	if len(s.app.messages) > initialMessageCount {
-		return fmt.Errorf("expected no new messages to be sent")
+		return errors.New("expected no new messages to be sent")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) iShouldRemainInInsertMode() error {
 	if !s.isInsertMode {
-		return fmt.Errorf("expected to remain in insert mode")
+		return errors.New("expected to remain in insert mode")
 	}
 	return nil
 }
@@ -1267,7 +1266,7 @@ func (s *StepDefinitions) iPressEscape() error {
 
 func (s *StepDefinitions) iShouldBeInNormalMode() error {
 	if s.isInsertMode {
-		return fmt.Errorf("expected to be in normal mode, but still in insert mode")
+		return errors.New("expected to be in normal mode, but still in insert mode")
 	}
 	return nil
 }
@@ -1309,17 +1308,17 @@ func (s *StepDefinitions) flowstateStartsWithNoArguments() error {
 
 func (s *StepDefinitions) aNewSessionShouldBeCreated() error {
 	if s.session == nil {
-		return fmt.Errorf("expected a session to be created")
+		return errors.New("expected a session to be created")
 	}
 	if s.currentSessionID == "" {
-		return fmt.Errorf("expected session ID to be set")
+		return errors.New("expected session ID to be set")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theSessionShouldHaveNoMessages() error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	if len(s.session.messages) != 0 {
 		return fmt.Errorf("expected no messages, got %d", len(s.session.messages))
@@ -1345,7 +1344,7 @@ func (s *StepDefinitions) iSendTheMessage(message string) error {
 
 func (s *StepDefinitions) iReceiveAResponse() error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	s.session.messages = append(s.session.messages, Message{Role: "assistant", Content: "Response to your message"})
 	return nil
@@ -1361,14 +1360,14 @@ func (s *StepDefinitions) iRestartFlowState() error {
 
 func (s *StepDefinitions) iShouldSeeMyPreviousSession() error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) itShouldContain(text string) error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	for _, msg := range s.session.messages {
 		if strings.Contains(msg.Content, text) {
@@ -1399,7 +1398,7 @@ func (s *StepDefinitions) iOpenTheSessionBrowser() error {
 
 func (s *StepDefinitions) iShouldSeeAListOfSessions() error {
 	if len(s.sessions) == 0 {
-		return fmt.Errorf("expected sessions to be available")
+		return errors.New("expected sessions to be available")
 	}
 	return nil
 }
@@ -1429,7 +1428,7 @@ func (s *StepDefinitions) iAmInSession(sessionName string) error {
 
 func (s *StepDefinitions) iSelect(sessionName string) error {
 	if s.sessions == nil {
-		return fmt.Errorf("no sessions available")
+		return errors.New("no sessions available")
 	}
 	if sess, exists := s.sessions[sessionName]; exists {
 		s.currentSessionID = sessionName
@@ -1448,7 +1447,7 @@ func (s *StepDefinitions) iShouldBeInSession(sessionName string) error {
 
 func (s *StepDefinitions) iShouldSeeTheMessagesFrom(sessionName string) error {
 	if s.sessions == nil {
-		return fmt.Errorf("no sessions available")
+		return errors.New("no sessions available")
 	}
 	sess, exists := s.sessions[sessionName]
 	if !exists {
@@ -1481,7 +1480,7 @@ func (s *StepDefinitions) iCreateANewSession() error {
 
 func (s *StepDefinitions) iShouldBeInAFreshSession() error {
 	if s.session == nil {
-		return fmt.Errorf("no session available")
+		return errors.New("no session available")
 	}
 	if len(s.session.messages) != 0 {
 		return fmt.Errorf("expected fresh session with no messages, got %d", len(s.session.messages))
@@ -1599,14 +1598,14 @@ func (s *StepDefinitions) theAIRequestsToRun(command string) error {
 
 func (s *StepDefinitions) iShouldSeeAPermissionPrompt() error {
 	if !s.permissionPrompt {
-		return fmt.Errorf("expected permission prompt to be shown")
+		return errors.New("expected permission prompt to be shown")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) thePromptShouldShowTheCommand() error {
 	if s.toolRequest == nil {
-		return fmt.Errorf("no tool request available")
+		return errors.New("no tool request available")
 	}
 	return nil
 }
@@ -1622,14 +1621,14 @@ func (s *StepDefinitions) iApproveTheCommand() error {
 
 func (s *StepDefinitions) theCommandShouldExecute() error {
 	if !s.commandExecuted {
-		return fmt.Errorf("expected command to execute")
+		return errors.New("expected command to execute")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theAIShouldReceiveTheOutput() error {
 	if s.bashOutput == "" {
-		return fmt.Errorf("expected bash output")
+		return errors.New("expected bash output")
 	}
 	return nil
 }
@@ -1644,14 +1643,14 @@ func (s *StepDefinitions) iDenyTheCommand() error {
 
 func (s *StepDefinitions) theCommandShouldNotExecute() error {
 	if s.commandExecuted {
-		return fmt.Errorf("expected command not to execute")
+		return errors.New("expected command not to execute")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) theAIShouldBeInformedOfTheDenial() error {
 	if s.toolRequest == nil || !s.toolRequest.Denied {
-		return fmt.Errorf("expected denial to be recorded")
+		return errors.New("expected denial to be recorded")
 	}
 	return nil
 }
@@ -1673,7 +1672,7 @@ func (s *StepDefinitions) noPermissionPromptShouldAppear() error {
 
 func (s *StepDefinitions) theAIShouldBeInformedThatBashIsDisabled() error {
 	if s.bashPermission != "deny" {
-		return fmt.Errorf("expected bash to be disabled")
+		return errors.New("expected bash to be disabled")
 	}
 	return nil
 }
@@ -1715,7 +1714,7 @@ func (s *StepDefinitions) itShouldBeFormattedAsCommandOutput() error {
 
 func (s *StepDefinitions) theErrorOutputShouldAppearInTheChat() error {
 	if s.bashError == "" {
-		return fmt.Errorf("expected error output")
+		return errors.New("expected error output")
 	}
 	return nil
 }
@@ -1758,7 +1757,7 @@ func (s *StepDefinitions) iPressCtrlC() error {
 
 func (s *StepDefinitions) theCommandShouldBeTerminated() error {
 	if s.commandExecuted {
-		return fmt.Errorf("expected command to be terminated")
+		return errors.New("expected command to be terminated")
 	}
 	return nil
 }

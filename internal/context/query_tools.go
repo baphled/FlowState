@@ -43,7 +43,10 @@ func (t *SearchContextTool) Schema() tool.ToolSchema {
 }
 
 func (t *SearchContextTool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
-	query, _ := input.Arguments["query"].(string)
+	query, ok := input.Arguments["query"].(string)
+	if !ok || query == "" {
+		return t.fallbackToRecent()
+	}
 
 	vector, err := t.embedder.Embed(ctx, provider.EmbedRequest{
 		Input: query,
@@ -182,7 +185,7 @@ func (t *SummarizeContextTool) Schema() tool.ToolSchema {
 }
 
 func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
-	focus, _ := input.Arguments["focus"].(string)
+	focus, _ := input.Arguments["focus"].(string) //nolint:errcheck // type assertion without error is intentional
 	depth := extractInt(input.Arguments, "depth", 1)
 	start := extractInt(input.Arguments, "start", -1)
 	end := extractInt(input.Arguments, "end", -1)

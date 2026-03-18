@@ -46,7 +46,7 @@ var _ = Describe("Bash Tool", func() {
 				result, err := bashTool.Execute(context.Background(), input)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Output).To(Equal("hello"))
-				Expect(result.Error).To(BeNil())
+				Expect(result.Error).ToNot(HaveOccurred())
 			})
 		})
 
@@ -58,7 +58,7 @@ var _ = Describe("Bash Tool", func() {
 				}
 				result, err := bashTool.Execute(context.Background(), input)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).NotTo(BeNil())
+				Expect(result.Error).To(HaveOccurred())
 			})
 		})
 
@@ -84,7 +84,7 @@ var _ = Describe("Bash Tool", func() {
 				}
 				result, err := bashTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Error).NotTo(BeNil())
+				Expect(result.Error).To(HaveOccurred())
 			})
 		})
 	})

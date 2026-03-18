@@ -65,7 +65,7 @@ const defaultMaxSize = 1000
 
 func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating directory: %w", err)
 	}
 

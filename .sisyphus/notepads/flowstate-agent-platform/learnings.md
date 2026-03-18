@@ -94,3 +94,139 @@ AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.t
 - New: internal/tool/registry.go, types.go (partial Wave 1b)
 - Modified: .gitignore (.sisyphus/ added)
 - All of the above need to be committed as Step 1 + partial Wave 1b
+
+## 2026-03-18 Commit Convention Fix
+
+### Problem
+Previous commits used inconsistent trailer formats:
+- `Co-authored-by:`, `AI-Agent:`, `AI-Model:`, `AI-assisted-by:` — all WRONG
+
+### Canonical format (ENFORCED)
+```
+AI-Generated-By: Opencode (claude-opus-4.5)
+Reviewed-By: Yomi Colledge <baphled@boodah.net>
+```
+
+### How to commit (NO EXCEPTIONS)
+```bash
+printf 'feat(scope): description\n' > /tmp/commit.txt
+AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.txt
+```
+
+### NEVER use
+- `git commit -m "..."` — FORBIDDEN
+- `git commit --amend` — FORBIDDEN unless orchestrator explicitly authorises
+- Any other trailer format
+
+### Git config
+- `commit.gpgsign=false` set in worktree local config (no signing required)
+- All 18 previous commits rewritten via `git filter-branch --msg-filter` to use canonical trailers
+
+## 2026-03-18 T34: ContextWindowBuilder
+
+### Implementation Approach
+- T34 builds minimal context per turn using token budget
+- Always-active skills are NOT loaded by ContextWindowBuilder — they're composed into the system prompt by Engine (T15a)
+- Builder receives pre-composed system prompt via `manifest.Instructions.SystemPrompt`
+- Clean separation: Engine composes, Builder assembles within budget
+
+### Assembly Order
+1. System prompt (includes always-active skill content from T15a)
+2. State summary (if provided)
+3. Semantic search results (deduplicated)
+4. Sliding window messages (deduplicated against semantic results)
+
+### Key Patterns
+- `TokenBudget` struct tracks used tokens by category (system, summary, semantic, sliding)
+- Deduplication via `seenIDs` map keyed by message ID
+- Truncation via character-ratio approximation (0.9x safety margin)
+- Default sliding window size: 10 messages
+
+### Test Structure
+- Single `TestWindowBuilder` entry point in `suite_test.go`
+- Ginkgo Describe/Context/It blocks for BDD-style specs
+- 67 specs covering all behaviors + edge cases
+
+## 2026-03-18 T34 Alignment Update
+
+### API Additions for T15a Compatibility
+- Added `BuildContext(ctx, manifest, userMessage, store, tokenBudget) []provider.Message`
+- This is the T15a-compatible entrypoint that:
+  - Accepts `context.Context` for cancellation propagation
+  - Accepts `userMessage` string to append to context window
+  - Returns `[]provider.Message` directly (not BuildResult)
+  - Enables warning logging for truncation
+
+### Warning Behavior
+- When system prompt exceeds token budget, logs: `warning: system prompt truncated from X to Y tokens (budget: Z)`
+- Warning only logged via `BuildContext` (logWarnings=true), not via internal `Build` calls
+- Uses standard `log.Printf` matching project convention (see `internal/agent/registry.go`)
+
+### Test Coverage
+- 70 specs total covering:
+  - Cold start (system prompt only)
+  - Sliding window messages
+  - Token budget enforcement with skill content
+  - System prompt truncation
+  - Oversized message truncation
+  - Deduplication
+  - Assembly order
+  - State summary inclusion
+  - Semantic search results
+  - BuildContext T15a entrypoint
+  - Warning on truncation path
+
+## T20: TUI Chat — Bubble Tea wrapping Engine
+
+### Patterns Applied
+
+- **BDD-first**: Wrote 19 Ginkgo tests before implementation
+- **Bubble Tea Model-View-Update**: Followed Elm architecture with Model struct containing all state, Update returning (Model, Cmd), View pure render
+- **Custom tea.Msg types**: ChunkMsg, StreamDoneMsg, ErrorMsg for streaming flow
+- **Modal editing**: normal/insert mode pattern similar to vim — clean separation of navigation vs typing
+- **Accessor methods**: Mode(), Input(), IsStreaming() etc. for testability without exposing struct fields
+
+### Key Implementation Details
+
+1. **Message types** must be exported so tests can send them directly to Update()
+2. **Engine.Stream() signature**: `Stream(ctx, agentID, message) (<-chan StreamChunk, error)`
+3. **Test pattern**: BeforeEach creates mockProvider → engine.New() → tui.NewModel() → direct Update() calls
+4. **No blocking in tests**: Never call Program.Run(), only test Model directly
+
+### Files Created
+
+- `internal/tui/chat.go` - Model, NewModel, Init, Update, View + accessor methods
+- `internal/tui/run.go` - Run() wrapper starting tea.Program with AltScreen
+- `internal/tui/suite_test.go` - Ginkgo bootstrap
+- `internal/tui/chat_test.go` - 19 specs covering all behaviours
+
+## 2026-03-18 T31: Skill Importer
+
+### Implementation
+
+- Created `internal/skill/importer.go` with `Importer` struct
+- Key methods:
+  - `NewImporter(skillsDir string) *Importer`
+  - `Add(ctx, ownerRepo string) (Skill, error)` - clones from GitHub
+  - `AddFromPath(ctx, repoPath string) (Skill, error)` - for testing without git
+- Error types: `ErrInvalidSkill`, `ErrSkillExists`
+
+### Validation Rules
+
+- Name MUST be present in frontmatter
+- Description MUST be present in frontmatter
+- Target directory must not already exist (collision detection)
+- SKILL.md can be in root or any subdirectory (walks tree to find first one)
+
+### Testing Pattern
+
+- Tests use `AddFromPath()` with temp directories simulating cloned repos
+- No actual git clone in tests — creates temp dir with SKILL.md directly
+- 5 test cases: valid install, missing name, missing description, collision, nested subdirectory
+- All use Ginkgo v2 with dot imports
+
+### Git Clone Details
+
+- Uses `git clone --depth 1` for shallow clone
+- Clones to temp dir, processes, then removes temp dir (defer cleanup)
+- Reuses existing `extractFrontmatter()` and YAML parsing from loader.go

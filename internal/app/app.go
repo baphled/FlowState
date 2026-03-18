@@ -38,7 +38,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 
 	agentRegistry := agent.NewAgentRegistry()
-	_ = agentRegistry.Discover(cfg.AgentDir)
+	if err := agentRegistry.Discover(cfg.AgentDir); err != nil {
+		return nil, fmt.Errorf("discovering agents: %w", err)
+	}
 
 	skillLoader := skill.NewFileSkillLoader(cfg.SkillDir)
 	skills, err := skillLoader.LoadAll()
@@ -63,7 +65,10 @@ func New(cfg *config.AppConfig) (*App, error) {
 		hook.ContextInjectionHook(alwaysActiveSkills, extractSkillNames(alwaysActiveSkills)),
 	)
 
-	defaultProvider, _ := providerRegistry.Get(cfg.Providers.Default)
+	defaultProvider, err := providerRegistry.Get(cfg.Providers.Default)
+	if err != nil {
+		return nil, fmt.Errorf("getting default provider %q: %w", cfg.Providers.Default, err)
+	}
 	var embeddingProvider provider.Provider
 	if ollamaProvider != nil {
 		embeddingProvider = ollamaProvider
@@ -136,8 +141,8 @@ func (a *App) ConfigPath() string {
 
 func extractSkillNames(skills []skill.Skill) []string {
 	names := make([]string, len(skills))
-	for i, s := range skills {
-		names[i] = s.Name
+	for i := range skills {
+		names[i] = skills[i].Name
 	}
 	return names
 }
@@ -164,13 +169,19 @@ func NewForTest(tc TestConfig) (*App, error) {
 
 	agentRegistry := agent.NewAgentRegistry()
 	if tc.AgentsDir != "" {
-		_ = agentRegistry.Discover(tc.AgentsDir)
+		if err := agentRegistry.Discover(tc.AgentsDir); err != nil {
+			return nil, fmt.Errorf("discovering agents: %w", err)
+		}
 	}
 
 	var skills []skill.Skill
 	if tc.SkillsDir != "" {
 		skillLoader := skill.NewFileSkillLoader(tc.SkillsDir)
-		skills, _ = skillLoader.LoadAll()
+		var err error
+		skills, err = skillLoader.LoadAll()
+		if err != nil {
+			return nil, fmt.Errorf("loading skills: %w", err)
+		}
 	}
 
 	sessionStore, err := ctxstore.NewFileSessionStore(tc.SessionsDir)

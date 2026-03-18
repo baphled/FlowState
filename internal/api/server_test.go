@@ -295,7 +295,7 @@ var _ = Describe("Server", func() {
 
 	Describe("GET /", func() {
 		It("returns HTML response", func() {
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 			server.Handler().ServeHTTP(recorder, req)
 
 			Expect(recorder.Code).To(Equal(http.StatusOK))

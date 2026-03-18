@@ -121,8 +121,8 @@ description: This skill already exists
 # Existing Skill
 `)
 				existingSkillDir := filepath.Join(skillsDir, "existing-skill")
-				Expect(os.MkdirAll(existingSkillDir, 0755)).To(Succeed())
-				Expect(os.WriteFile(filepath.Join(existingSkillDir, "SKILL.md"), []byte("existing"), 0644)).To(Succeed())
+				Expect(os.MkdirAll(existingSkillDir, 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(existingSkillDir, "SKILL.md"), []byte("existing"), 0o644)).To(Succeed())
 			})
 
 			AfterEach(func() {
@@ -166,23 +166,23 @@ description: A skill in a subdirectory
 	})
 })
 
-func createTestGitRepo(t GinkgoTInterface, skillContent string) string {
+func createTestGitRepo(_ GinkgoTInterface, skillContent string) string {
 	dir, err := os.MkdirTemp("", "test-repo-*")
 	Expect(err).NotTo(HaveOccurred())
 
 	skillPath := filepath.Join(dir, "SKILL.md")
-	err = os.WriteFile(skillPath, []byte(skillContent), 0644)
+	err = os.WriteFile(skillPath, []byte(skillContent), 0o644)
 	Expect(err).NotTo(HaveOccurred())
 
 	return dir
 }
 
-func createTestGitRepoWithSubdir(t GinkgoTInterface, subdir, skillContent string) string {
+func createTestGitRepoWithSubdir(_ GinkgoTInterface, subdir, skillContent string) string {
 	dir, err := os.MkdirTemp("", "test-repo-*")
 	Expect(err).NotTo(HaveOccurred())
 
 	skillDir := filepath.Join(dir, subdir)
-	err = os.MkdirAll(skillDir, 0755)
+	err = os.MkdirAll(skillDir, 0o755)
 	Expect(err).NotTo(HaveOccurred())
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")

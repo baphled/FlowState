@@ -146,13 +146,17 @@ func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(embeddedHTML))
+	if _, err := w.Write([]byte(embeddedHTML)); err != nil {
+		return
+	}
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		return
+	}
 }
 
 func writeSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) {
@@ -178,7 +182,9 @@ func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, data string) {
-	_, _ = w.Write([]byte("data: " + data + "\n\n"))
+	if _, err := w.Write([]byte("data: " + data + "\n\n")); err != nil {
+		return
+	}
 	flusher.Flush()
 }
 

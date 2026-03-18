@@ -2,6 +2,7 @@ package ollama
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -98,9 +99,9 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 			Content: finalResp.Message.Content,
 		},
 		Usage: provider.Usage{
-			PromptTokens:     int(finalResp.PromptEvalCount),
-			CompletionTokens: int(finalResp.EvalCount),
-			TotalTokens:      int(finalResp.PromptEvalCount + finalResp.EvalCount),
+			PromptTokens:     finalResp.PromptEvalCount,
+			CompletionTokens: finalResp.EvalCount,
+			TotalTokens:      finalResp.PromptEvalCount + finalResp.EvalCount,
 		},
 	}, nil
 }
@@ -117,7 +118,7 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	}
 
 	if len(resp.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embeddings returned")
+		return nil, errors.New("no embeddings returned")
 	}
 
 	result := make([]float64, len(resp.Embeddings[0]))
@@ -135,10 +136,10 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	}
 
 	models := make([]provider.Model, 0, len(resp.Models))
-	for _, m := range resp.Models {
+	for i := range resp.Models {
 		contextLen := 4096
 		models = append(models, provider.Model{
-			ID:            m.Name,
+			ID:            resp.Models[i].Name,
 			Provider:      "ollama",
 			ContextLength: contextLen,
 		})

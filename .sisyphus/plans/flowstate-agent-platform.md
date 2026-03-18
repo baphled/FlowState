@@ -345,171 +345,171 @@ FINAL (Verification):
 
 ## TODOs
 
-- [ ] 1. **Worktree + scaffolding**
+- [x] 1. **Worktree + scaffolding**
   Create worktree from main. Remove or retag existing out-of-scope features (vim_motions.feature, command_palette.feature) from @smoke to @legacy. Init go.mod, Makefile, .gitignore. Dirs: cmd/flowstate/, internal/{agent,provider,tool,skill,config,tui,api,cli,mcp,hook,discovery,learning,context}/, agents/, skills/, features/. Add deps (cobra, bubbletea, lipgloss, chi, godog, ollama/api, openai/openai-go, anthropic-sdk-go, modelcontextprotocol/go-sdk, gopkg.in/yaml.v3, pkoukk/tiktoken-go).
   **Must NOT do**: No code beyond scaffolding. No SQLite deps.
   **QA**: `go mod tidy && ls internal/ | wc -l` (expect 13 directories)
   **Profile**: quick [`golang`] | Wave 1a | Blocks: 18 | Commit: `feat(core): init project`
 
-- [ ] 18. **BDD harness + smoke features RED**
+- [x] 18. **BDD harness + smoke features RED**
   Godog runner, mock provider (implements Stream+Chat+Embed+Models), 7+ @smoke features: basic_chat, streaming, agent_discovery, agent_switching, http_streaming, context_management, session_persistence. Step stubs. All RED. Context management scenarios: "context window stays within token budget after 20 messages", "semantic search returns relevant earlier messages", "session save/load round-trips with embeddings".
   **Must NOT do**: No GREEN steps. Stubs only.
     **QA**: `make bdd-smoke` (expect agent_discovery + basic_chat + context_management scenarios pass)
   **Profile**: unspecified-high [`golang`,`godog`] | Wave 1a | Blocks: 2-7,32-36 | Commit: `feat(test): BDD RED`
 
-- [ ] 2. **Provider interface + types + failback + Chat + Embed + Models**
+- [x] 2. **Provider interface + types + failback + Chat + Embed + Models**
   Provider interface: Name(), Stream(ctx,ChatRequest)(<-chan StreamChunk,error), Chat(ctx,ChatRequest)(ChatResponse,error), Embed(ctx,EmbedRequest)([]float64,error), Models()([]Model,error). Types: Message, StreamChunk{Content,Done,Error,EventType}, ChatRequest, ChatResponse, Usage, Model{ID,Provider,ContextLength int}, EmbedRequest{Input string, Model string}. ProviderHealth. ProviderRegistry. FailbackChain. All channels buffered size 16. **float64 for embeddings** (native Ollama return type).
   **Must NOT do**: No implementations. Interfaces and types only.
   **QA**: `go build ./internal/provider/...` (expect clean build)
   **Profile**: quick [`golang`,`api-design`] | Wave 1b | Blocks: 8-10,15a,32,35 | Commit: `feat(provider): interface + failback`
 
-- [ ] 3. **Tool interface + permissions**
+- [x] 3. **Tool interface + permissions**
   Tool interface: Name(), Description(), Execute(ctx,ToolInput)(ToolResult,error), Schema() ToolSchema. ToolResult, ToolSchema, Permission(Allow/Ask/Deny), ToolCall, ToolInput{Name string, Arguments map[string]interface{}}. ToolRegistry. All Allow for PoC.
   **Must NOT do**: No tool implementations.
   **QA**: `go build ./internal/tool/...` (expect clean build)
   **Profile**: quick [`golang`] | Wave 1b | Blocks: 11-14,16,33 | Commit: `feat(tool): interface`
 
-- [ ] 4. **Agent manifest + complexity + dual loader + context_management**
+- [x] 4. **Agent manifest + complexity + dual loader + context_management**
   AgentManifest with all fields: SchemaVersion, ID, Name, Complexity, ModelPreferences, Metadata{Role,Goal,WhenToUse}, Capabilities{Tools,Skills,AlwaysActiveSkills,MCPServers}, ContextManagement{MaxRecursionDepth int, SummaryTier string, SlidingWindowSize int, CompactionThreshold float64, EmbeddingModel string}, Delegation{CanDelegate,DelegationTable map}, Hooks{Before,After []string}, Instructions{SystemPrompt}. Dual loader: LoadManifestJSON(path) for *.json, LoadManifestMarkdown(path) for *.md (parses YAML frontmatter). LoadManifest(path) auto-detects. Validate(). Defaults: MaxRecursionDepth=2, SummaryTier="quick", SlidingWindowSize=10, CompactionThreshold=0.75, EmbeddingModel="nomic-embed-text".
   **QA**: `go test ./internal/agent/... -run TestDualLoad -v` (expect PASS)
   **Profile**: quick [`golang`,`domain-modeling`] | Wave 1b | Blocks: 19,29,15a | Commit: `feat(agent): manifest + dual loader`
 
-- [ ] 5. **Skill types + YAML frontmatter loader**
+- [x] 5. **Skill types + YAML frontmatter loader**
   Skill struct: Name, Description, Category, Tier(core/domain), WhenToUse, RelatedSkills, Content, FilePath. FileSkillLoader walks `skills/*/SKILL.md`, parses YAML frontmatter (gopkg.in/yaml.v3), extracts fields, stores body as Content.
   **QA**: `go test ./internal/skill/... -run TestLoadSkills -v` (expect PASS)
   **Profile**: quick [`golang`] | Wave 1b | Blocks: 15a,19,27 | Commit: `feat(skill): YAML frontmatter loader`
 
-- [ ] 6. **Config + agent registry**
+- [x] 6. **Config + agent registry**
   AppConfig{AgentsDir,SkillsDir,DefaultProvider,Providers map[string]ProviderConfig{APIKey,BaseURL,StreamTimeout},Server{Port,Host},AlwaysActiveSkills[]string,SessionsDir string}. LoadConfig. AgentRegistry.Discover(dir) scans *.json AND *.md files.
   **QA**: `go build ./internal/config/...` (expect clean build)
   **Profile**: quick [`golang`] | Wave 1b | Blocks: 15a | Commit: `feat(config): loading + registry`
 
-- [ ] 7. **Cobra CLI stubs**
+- [x] 7. **Cobra CLI stubs**
   Root (--config,--agents-dir,--skills-dir,--sessions-dir). Chat (--agent,--message,--model,--session). Serve (--port,--host). Agent list/info. Skill list. Discover (positional arg: message). Session list/resume. All stubs.
   **QA**: `go build -o ./build/flowstate ./cmd/flowstate && ./build/flowstate --help` (expect usage output)
   **Profile**: quick [`golang`,`cobra-cli`] | Wave 1b | Blocks: 20-23,25 | Commit: `feat(cli): Cobra stubs`
 
-- [ ] 8. **Ollama provider + Chat + Embed**
+- [x] 8. **Ollama provider + Chat + Embed**
   Implements Provider using ollama/api. Stream: callback→channel adapter. Chat: synchronous completion. Embed: calls /api/embed endpoint, returns []float64. Models: lists pulled models with context lengths. Normalises tool_call format to StreamChunk{EventType:"tool_call"}.
   **Must NOT do**: No context management logic. Provider only.
   **QA**: `go build ./internal/provider/ollama/... && go test ./internal/provider/ollama/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(provider): Ollama`
 
-- [ ] 9. **OpenAI provider + Embed**
+- [x] 9. **OpenAI provider + Embed**
   Implements Provider using openai/openai-go (v1.x). Stream: iterator→channel. Chat: synchronous. Embed: uses text-embedding-3-small, returns []float64. Models: lists available models. Normalises function_call/tool_calls delta to StreamChunk.
   **QA**: `go build ./internal/provider/openai/... && go test ./internal/provider/openai/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(provider): OpenAI`
 
-- [ ] 10. **Anthropic provider (no Embed)**
+- [x] 10. **Anthropic provider (no Embed)**
   Implements Provider using anthropic-sdk-go. Stream: iterator→channel. Chat: synchronous. Embed: returns ErrNotSupported (Anthropic has no embedding API). Models: lists Claude models. Normalises tool_use content blocks to StreamChunk.
   **QA**: `go build ./internal/provider/anthropic/... && go test ./internal/provider/anthropic/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(provider): Anthropic`
 
-- [ ] 11. **Bash tool**
+- [x] 11. **Bash tool**
   exec.CommandContext, 30s timeout. Schema: command(string,required).
   **QA**: `go test ./internal/tool/bash/... -v` (expect PASS)
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(tool): bash`
 
-- [ ] 12. **File tool**
+- [x] 12. **File tool**
   Read/write, path validation. Schema: operation, path, content.
   **QA**: `go test ./internal/tool/file/... -v` (expect PASS)
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(tool): file`
 
-- [ ] 13. **Web fetch tool**
+- [x] 13. **Web fetch tool**
   HTTP GET, 10s timeout, truncate 10KB. Schema: url(string).
   **QA**: `go test ./internal/tool/web/... -v` (expect PASS)
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(tool): web`
 
-- [ ] 14. **Tool registry**
+- [x] 14. **Tool registry**
   Wire 3 tools. All Allow. CheckPermission returns Allow.
   **QA**: `go test ./internal/tool/... -run TestRegistry -v` (expect 3 tools)
   **Profile**: unspecified-high [`golang`] | Wave 2 | Commit: `feat(tool): registry`
 
-- [ ] 32. **ExternalContextStore — file-backed message store + embeddings**
+- [x] 32. **ExternalContextStore — file-backed message store + embeddings**
   `internal/context/` package. MessageStore interface: Append(msg Message), GetRange(start,end int) []Message, GetRecent(n int) []Message, Count() int, AllMessages() []Message. EmbeddingStore interface: StoreEmbedding(msgID string, vector []float64, model string, dimensions int), Search(query []float64, topK int) []SearchResult{MessageID,Score float64,Message}. FileContextStore implements both: JSON file per session, in-memory embedding index, cosine similarity search. Store embedding model name + dimensions with each vector. Handle model mismatch on load (re-embed or fall back to recency). ~200 lines.
   **Must NOT do**: No vector database. No SQLite. File-backed only.
   **Guardrails**: File locking (flock), write-ahead pattern (write temp → rename), validate on load. Configurable max store size. Tool output messages stored as messages but NOT embedded (too noisy for semantic search).
   **QA**: `go test ./internal/context/... -run TestStore -v`
   **Profile**: deep [`golang`,`architecture`] | Wave 3 | Blocks: 33,34,36 | Commit: `feat(context): external store`
 
-- [ ] 35. **Token Budget Manager**
+- [x] 35. **Token Budget Manager**
   TokenCounter interface: Count(text string) int, ModelLimit(model string) int. TiktokenCounter: uses pkoukk/tiktoken-go with cl100k_base as default encoding. ApproximateCounter: chars/4 fallback for non-OpenAI models. TokenBudget struct: Total int, Used int, Remaining() int, Reserve(category string, tokens int), CanFit(tokens int) bool. Per-provider context limits from Provider.Models(). Threshold triggers at configurable % (default 75%). ~120 lines.
   **Must NOT do**: No Ollama /api/tokenize (may not exist as standard endpoint — use approximate counting for Ollama models).
   **QA**: `go test ./internal/context/... -run TestTokenBudget -v`
   **Profile**: unspecified-high [`golang`] | Wave 3 | Blocks: 34 | Commit: `feat(context): token budget`
 
-- [ ] 33. **Context Query Tools — search_context, get_messages, summarize_context**
+- [x] 33. **Context Query Tools — search_context, get_messages, summarize_context**
   3 tools implementing the Tool interface from T3. `search_context`: Takes query string, embeds it via Provider.Embed(), runs cosine similarity on ExternalContextStore, returns top-K messages with scores. `get_messages`: Takes range (start,end) or count, returns messages verbatim. `summarize_context`: Takes message range + focus query, calls Provider.Chat() to summarise those messages, recursive with depth tracking. Recursion safeguards: maxDepth param (from agent manifest), convergence detection (if summary tokens >= 90% of input tokens, stop), context.WithTimeout 30s on entire recursive chain, token budget deduction for summarisation cost, partial failure returns last successful summary. ~250 lines.
   **Must NOT do**: No external document search. Context tools operate ONLY on ExternalContextStore conversation data.
   **Edge cases**: Empty conversation returns empty results (not error). Embedding provider down falls back to recency-based get_messages. Single message that exceeds half token budget gets truncated with "[truncated — original N tokens]" suffix.
   **QA**: `go test ./internal/context/... -run TestContextTools -v`
   **Profile**: deep [`golang`,`architecture`] | Wave 3 | Blocks: 15b,34 | Commit: `feat(context): query tools`
 
-- [ ] 34. **ContextWindow Builder**
+- [x] 34. **ContextWindow Builder**
   ContextWindowBuilder struct: Assembles minimal context per turn. Algorithm: (1) Reserve tokens for system prompt + always-active skills, (2) Reserve tokens for sliding window (last K messages from manifest), (3) Remaining budget available for semantic search results + summary, (4) Deduplicate by message ID (sliding window message also in semantic results → include once), (5) Assemble final message list: [system_prompt, state_summary, semantic_results, sliding_window_messages]. Build(ctx, agentManifest, userMessage, store, tokenCounter, provider) → []Message. ~180 lines.
   **Must NOT do**: No direct provider calls for chat. Builder assembles context, engine sends it.
   **Edge cases**: Cold start (0 messages) returns system prompt only. Token budget smaller than system prompt logs warning and returns system prompt truncated. Oversized single message truncated.
   **QA**: `go test ./internal/context/... -run TestWindowBuilder -v`
   **Profile**: deep [`golang`,`architecture`] | Wave 3 | Blocks: 15a | Commit: `feat(context): window builder`
 
-- [ ] 36. **Session Persistence**
+- [x] 36. **Session Persistence**
   SessionStore interface: Save(sessionID string, store *FileContextStore) error, Load(sessionID string) (*FileContextStore, error), List() []SessionInfo{ID,AgentID,MessageCount,LastActive,EmbeddingModel}. FileSessionStore: saves to ~/.flowstate/sessions/{id}.json, includes messages + embedding vectors + metadata (model, dimensions, creation time). Save atomically (write temp → rename). Load validates embedding model compatibility. ~120 lines.
   **Must NOT do**: No SQLite. No multi-session search.
   **QA**: `go test ./internal/context/... -run TestSessionPersistence -v`
   **Profile**: unspecified-high [`golang`] | Wave 3 | Blocks: 25 | Commit: `feat(context): session persistence`
 
-- [ ] 15a. **Engine core + streaming + RLM ContextWindow**
+- [x] 15a. **Engine core + streaming + RLM ContextWindow**
   Engine wires provider+tools+skills per manifest. Maintains separate embeddingProvider reference for Embed() calls, independent of chat provider (see Embedding Provider Rule). Uses ContextWindowBuilder (T34) to assemble minimal context per turn instead of sending all messages. BuildSystemPrompt: instructions + always-active skill content. Stream(ctx,agentID,msg) → <-chan StreamChunk. Stores each message+response in ExternalContextStore + embeds via Provider.Embed(). Context cancellation. ~200 lines.
   **Must NOT do**: No direct conversation history in provider calls. ALL context goes through ContextWindowBuilder.
   **QA**: `go test ./internal/agent/... -run TestEngineStream -v`
   **Profile**: deep [`golang`,`architecture`] | Wave 4 | Blocks: 15b,15c | Commit: `feat(engine): core + RLM`
 
-- [ ] 15b. **Tool-call loop (incl. context query tools)**
+- [x] 15b. **Tool-call loop (incl. context query tools)**
   StreamChunk.EventType==tool_call → parse → dispatch → feed result back → re-stream. Context query tools (search_context, get_messages, summarize_context) handled same as regular tools. Tool results stored in ExternalContextStore but NOT embedded. Provider-agnostic.
   **QA**: `go test ./internal/agent/... -run TestToolCall -v`
   **Profile**: deep [`golang`] | Wave 4 | Blocks: 17 | Commit: `feat(engine): tool-call loop`
 
-- [ ] 15c. **Failback chain**
+- [x] 15c. **Failback chain**
   Try model_preferences[complexity] in order. On error → next model. Log which served. Per-provider StreamTimeout (default 60s).
   **QA**: `go test ./internal/agent/... -run TestFailback -v`
   **Profile**: deep [`golang`] | Wave 4 | Blocks: 20-23,25,28,30 | Commit: `feat(engine): failback`
 
-- [ ] 16. **MCP client**
+- [x] 16. **MCP client**
   Wraps modelcontextprotocol/go-sdk. MCPManager: Connect, DiscoverTools, CallTool, Disconnect. Test fixture: npx filesystem server.
   **QA**: `go test ./internal/mcp/... -v`
   **Profile**: deep [`golang`] | Wave 4 | Blocks: 25 | Commit: `feat(mcp): client`
 
-- [ ] 17. **Agent delegation**
+- [x] 17. **Agent delegation**
   Engine.DelegateToAgent reads manifest.Delegation.DelegationTable. Matches task keywords → routes. Built-in "delegate" tool.
   **QA**: `go test ./internal/agent/... -run TestDelegation -v`
   **Profile**: deep [`golang`] | Wave 4 | Blocks: 25 | Commit: `feat(engine): delegation`
 
-- [ ] 26. **Learning store**
+- [x] 26. **Learning store**
   LearningStore interface: Capture(entry LearningEntry), Query(query string) []LearningEntry. LearningEntry{Timestamp, AgentID, UserMessage, Response, ToolsUsed, Outcome}. JSONFileLearningStore: appends to ~/.flowstate/learnings.json. ~80 lines.
   **QA**: `go test ./internal/learning/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 4 | Blocks: 28 | Commit: `feat(learning): JSON store`
 
-- [ ] 27. **Skill classification + discovery**
+- [x] 27. **Skill classification + discovery**
   SkillDiscovery: indexes all skills by tier/category/when_to_use keywords. Suggest(taskDescription) returns []SkillSuggestion{Name,Confidence,Reason}. Weighted matching: when_to_use(3x), category(2x), name(1x). Threshold 0.5.
   **QA**: `go test ./internal/skill/... -run TestDiscovery -v`
   **Profile**: unspecified-high [`golang`] | Wave 4 | Blocks: 30 | Commit: `feat(skill): classification + discovery`
 
-- [ ] 28. **Hook system**
+- [x] 28. **Hook system**
   RequestHook func(ctx,*ChatRequest,NextFunc)(<-chan StreamChunk,error). HookChain.Execute wraps handler in middleware chain. 3 built-in hooks: LoggingHook, LearningHook (writes to LearningStore), ContextInjectionHook (loads always-active skills). Hooks configured per agent manifest. ~120 lines.
   **QA**: `go test ./internal/hook/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 4 | Blocks: 30,25 | Commit: `feat(hook): middleware chains`
 
-- [ ] 29. **Agent discovery**
+- [x] 29. **Agent discovery**
   AgentDiscovery: indexes manifests by metadata{role,goal,when_to_use}+tools+skills. Suggest(message) returns []AgentSuggestion{AgentID,Confidence,Reason}. Weighted: when_to_use(3x), role(2x), goal(1x). Threshold 0.5. ~100 lines.
   **QA**: `go test ./internal/discovery/... -v`
   **Profile**: unspecified-high [`golang`] | Wave 4 | Blocks: 23 | Commit: `feat(discovery): agent matching`
 
-- [ ] 19. **Sample configs + skills**
+- [x] 19. **Sample configs + skills**
   3 agent JSON manifests (general, researcher, coder) with complexity tiers, model preferences, delegation tables, hooks, context_management section (varying recursion depths and summary tiers). Each manifest MUST include always_active_skills with the 6 mandatory skills: `pre-action`, `memory-keeper`, `token-cost-estimation`, `retrospective`, `note-taking`, `knowledge-base`. 2 skills as skills/{name}/SKILL.md with proper frontmatter. 1 opencode-format agent.md for import testing. flowstate.json config.
   **QA**: `cat agents/general.json | python3 -m json.tool && head -5 skills/research/SKILL.md && cat agents/general.json | jq .context_management`
   **Profile**: quick | Wave 4 | Blocks: 24a | Commit: `feat(config): samples`
 
-- [ ] 24a. **BDD checkpoint GREEN**
+- [x] 24a. **BDD checkpoint GREEN**
   agent_discovery + basic_chat + context_management scenarios GREEN. Partial step definitions. Context management: verify token budget respected, semantic search returns results, session save/load works.
     **QA**: `make bdd-smoke` (expect agent_discovery + basic_chat + context_management scenarios pass)
   **Profile**: unspecified-high [`golang`,`godog`] | Wave 4 | Commit: `feat(test): BDD checkpoint`

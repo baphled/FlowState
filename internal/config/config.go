@@ -31,7 +31,7 @@ type ProviderConfig struct {
 }
 
 func DefaultConfig() *AppConfig {
-	dataDir := filepath.Join(".flowstate")
+	dataDir := ".flowstate"
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		dataDir = filepath.Join(homeDir, ".flowstate")
 	}

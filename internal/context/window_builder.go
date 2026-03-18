@@ -49,6 +49,7 @@ func (b *ContextWindowBuilder) BuildWithSemanticResults(manifest *agent.AgentMan
 	return b.buildInternal(manifest, store, tokenBudget, "", semanticResults, false)
 }
 
+//nolint:gocognit // Context window building requires coordinating multiple concerns
 func (b *ContextWindowBuilder) buildInternal(manifest *agent.AgentManifest, store *FileContextStore, tokenBudget int, summary string, semanticResults []SearchResult, logWarnings bool) BuildResult {
 	budget := NewTokenBudget(tokenBudget)
 	var messages []provider.Message

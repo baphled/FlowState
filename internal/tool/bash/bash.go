@@ -2,6 +2,7 @@ package bash
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -42,7 +43,7 @@ func (t *Tool) Schema() tool.ToolSchema {
 func (t *Tool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
 	command, ok := input.Arguments["command"].(string)
 	if !ok || command == "" {
-		return tool.ToolResult{}, fmt.Errorf("command argument is required")
+		return tool.ToolResult{}, errors.New("command argument is required")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)

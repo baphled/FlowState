@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,10 +54,10 @@ func (t *Tool) Schema() tool.ToolSchema {
 func (t *Tool) Execute(ctx context.Context, input tool.ToolInput) (tool.ToolResult, error) {
 	url, ok := input.Arguments["url"].(string)
 	if !ok || url == "" {
-		return tool.ToolResult{}, fmt.Errorf("url argument is required")
+		return tool.ToolResult{}, errors.New("url argument is required")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return tool.ToolResult{Error: fmt.Errorf("invalid URL: %w", err)}, nil
 	}
