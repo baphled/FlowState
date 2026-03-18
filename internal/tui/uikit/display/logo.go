@@ -11,14 +11,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Logo represents the KaRiya ASCII logo with optional animation.
+// Logo represents the FlowState ASCII logo with optional animation.
 // It supports fade-in animation and theme-aware styling.
 //
 // Usage:
 //
 //	logo := display.NewLogo(true, 80).
 //	    WithTheme(theme).
-//	    WithTagline("Career Event Management System").
+//	    WithTagline("AI Agent Platform").
 //	    WithVersion("v1.0.0")
 //	rendered := logo.View()
 type Logo struct {
@@ -33,13 +33,13 @@ type Logo struct {
 }
 
 const (
-	// Bold ASCII art logo for KaRiya.
-	logoArt = `██╗  ██╗ █████╗ ██████╗ ██╗██╗   ██╗ █████╗ 
-██║ ██╔╝██╔══██╗██╔══██╗██║╚██╗ ██╔╝██╔══██╗
-█████╔╝ ███████║██████╔╝██║ ╚████╔╝ ███████║
-██╔═██╗ ██╔══██║██╔══██╗██║  ╚██╔╝  ██╔══██║
-██║  ██╗██║  ██║██║  ██║██║   ██║   ██║  ██║
-╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝`
+	// Bold ASCII art logo for FlowState.
+	logoArt = `███████╗██╗      ██████╗ ██╗    ██╗███████╗████████╗ █████╗ ████████╗███████╗
+██╔════╝██║     ██╔═══██╗██║    ██║██╔════╝╚══██╔══╝██╔══██╗╚══██╔══╝██╔════╝
+█████╗  ██║     ██║   ██║██║ █╗ ██║███████╗   ██║   ███████║   ██║   █████╗  
+██╔══╝  ██║     ██║   ██║██║███╗██║╚════██║   ██║   ██╔══██║   ██║   ██╔══╝  
+██║     ███████╗╚██████╔╝╚███╔███╔╝███████║   ██║   ██║  ██║   ██║   ███████╗
+╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚══════╝`
 
 	// Animation settings.
 	frameInterval = 30 * time.Millisecond
@@ -74,7 +74,7 @@ func NewLogo(animated bool, width int) *Logo {
 		animated:     animated,
 		fadeProgress: 0.0,
 		width:        width,
-		tagline:      "Career Event Management System",
+		tagline:      "AI Agent Platform",
 		showTagline:  true,
 		version:      "dev",
 		showVersion:  true,
@@ -355,6 +355,6 @@ func (l *Logo) GetHeight() int {
 // Side effects:
 //   - None.
 func (l *Logo) GetWidth() int {
-	// The logo art is 51 characters wide
-	return 51
+	// The logo art is 88 characters wide
+	return 88
 }

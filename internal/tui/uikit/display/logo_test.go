@@ -64,7 +64,7 @@ var _ = Describe("Logo", func() {
 		It("hides tagline when false", func() {
 			logo.ShowTagline(false)
 			view := stripAnsi(logo.ViewStatic())
-			Expect(view).NotTo(ContainSubstring("Career Event"))
+			Expect(view).NotTo(ContainSubstring("AI Agent"))
 		})
 	})
 
@@ -132,7 +132,7 @@ var _ = Describe("Logo", func() {
 
 		It("includes default tagline", func() {
 			view := logo.ViewStatic()
-			Expect(stripAnsi(view)).To(ContainSubstring("Career Event Management"))
+			Expect(stripAnsi(view)).To(ContainSubstring("AI Agent Platform"))
 		})
 
 		It("includes default version", func() {
@@ -199,7 +199,7 @@ var _ = Describe("Logo", func() {
 
 	Describe("GetWidth", func() {
 		It("returns the fixed logo width", func() {
-			Expect(logo.GetWidth()).To(Equal(51))
+			Expect(logo.GetWidth()).To(Equal(88))
 		})
 	})
 })
