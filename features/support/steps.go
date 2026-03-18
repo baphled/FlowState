@@ -3,6 +3,7 @@ package support
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/cucumber/godog"
 )
 
@@ -35,12 +37,13 @@ type StepDefinitions struct {
 	lastDeletedSession      string
 	confirmationPromptShown bool
 
-	ollamaProvider     *MockProvider
+	ollamaServer       *httptest.Server
+	realOllamaProvider *ollamaprovider.Provider
 	providerName       string
-	models             []Model
-	chatRequest        *ChatRequest
-	chatResponse       *ChatResponse
-	streamChunks       []StreamChunk
+	models             []provider.Model
+	chatRequest        *provider.ChatRequest
+	chatResponse       *provider.ChatResponse
+	streamChunks       []provider.StreamChunk
 	embeddings         []float64
 	embeddingInputText string
 
@@ -141,6 +144,15 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 		s.searchQuery = ""
 		s.forkedSession = nil
 		s.sessionBrowserOrder = nil
+		return ctx, nil
+	})
+
+	ctx.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+		if s.ollamaServer != nil {
+			s.ollamaServer.Close()
+			s.ollamaServer = nil
+		}
+		s.realOllamaProvider = nil
 		return ctx, nil
 	})
 
@@ -1106,21 +1118,66 @@ func (s *StepDefinitions) theInvalidManifestsShouldBeSkipped() error {
 
 // Ollama provider step implementations
 
+func newOllamaMockServer() *httptest.Server {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"models": []map[string]interface{}{
+				{
+					"name":        "llama3.2",
+					"model":       "llama3.2",
+					"size":        0,
+					"digest":      "",
+					"modified_at": "2024-01-01T00:00:00Z",
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("POST /api/chat", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"model":      "llama3.2",
+			"created_at": "2024-01-01T00:00:00Z",
+			"message": map[string]interface{}{
+				"role":    "assistant",
+				"content": "Hello!",
+			},
+			"done": true,
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	mux.HandleFunc("POST /api/embed", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"model":      "llama3.2",
+			"embeddings": [][]float64{{0.1, 0.2, 0.3, 0.4, 0.5}},
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	return httptest.NewServer(mux)
+}
+
 func (s *StepDefinitions) theOllamaProviderIsConfigured() error {
-	s.ollamaProvider = NewMockProvider()
-	s.ollamaProvider.name = "ollama"
-	s.ollamaProvider.models = []Model{
-		{ID: "llama3.2", Provider: "ollama", ContextLength: 8192},
-		{ID: "mistral", Provider: "ollama", ContextLength: 32768},
+	s.ollamaServer = newOllamaMockServer()
+	p, err := ollamaprovider.NewWithClient(s.ollamaServer.URL, s.ollamaServer.Client())
+	if err != nil {
+		return fmt.Errorf("creating ollama provider: %w", err)
 	}
+	s.realOllamaProvider = p
 	return nil
 }
 
 func (s *StepDefinitions) iRequestTheProviderName() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
-	s.providerName = s.ollamaProvider.Name()
+	s.providerName = s.realOllamaProvider.Name()
 	return nil
 }
 
@@ -1132,17 +1189,17 @@ func (s *StepDefinitions) itShouldReturn(expected string) error {
 }
 
 func (s *StepDefinitions) ollamaHasModelsAvailable() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
 	return nil
 }
 
 func (s *StepDefinitions) iRequestTheListOfModels() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
-	models, err := s.ollamaProvider.Models()
+	models, err := s.realOllamaProvider.Models()
 	if err != nil {
 		return err
 	}
@@ -1163,9 +1220,9 @@ func (s *StepDefinitions) iShouldReceiveAListOfModelsWithContextLengths() error 
 }
 
 func (s *StepDefinitions) aValidChatRequestWithMessages() error {
-	s.chatRequest = &ChatRequest{
+	s.chatRequest = &provider.ChatRequest{
 		Model: "llama3.2",
-		Messages: []Message{
+		Messages: []provider.Message{
 			{Role: "user", Content: "Hello, how are you?"},
 		},
 	}
@@ -1173,13 +1230,13 @@ func (s *StepDefinitions) aValidChatRequestWithMessages() error {
 }
 
 func (s *StepDefinitions) iSendTheChatRequestToTheOllamaProvider() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
 	if s.chatRequest == nil {
 		return errors.New("no chat request provided")
 	}
-	resp, err := s.ollamaProvider.Chat(s.ctx, *s.chatRequest)
+	resp, err := s.realOllamaProvider.Chat(s.ctx, *s.chatRequest)
 	if err != nil {
 		return err
 	}
@@ -1198,13 +1255,13 @@ func (s *StepDefinitions) iShouldReceiveAChatResponseWithAMessage() error {
 }
 
 func (s *StepDefinitions) iStreamTheChatRequestToTheOllamaProvider() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
 	if s.chatRequest == nil {
 		return errors.New("no chat request provided")
 	}
-	ch, err := s.ollamaProvider.Stream(s.ctx, *s.chatRequest)
+	ch, err := s.realOllamaProvider.Stream(s.ctx, *s.chatRequest)
 	if err != nil {
 		return err
 	}
@@ -1232,10 +1289,10 @@ func (s *StepDefinitions) textToEmbed() error {
 }
 
 func (s *StepDefinitions) iRequestEmbeddingsFromTheOllamaProvider() error {
-	if s.ollamaProvider == nil {
+	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
-	embeddings, err := s.ollamaProvider.Embed(s.ctx, EmbedRequest{
+	embeddings, err := s.realOllamaProvider.Embed(s.ctx, provider.EmbedRequest{
 		Input: s.embeddingInputText,
 		Model: "llama3.2",
 	})
