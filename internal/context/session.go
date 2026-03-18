@@ -43,7 +43,17 @@ type sessionFile struct {
 	Embeddings     []EmbeddingEntry `json:"embeddings"`
 }
 
-// NewFileSessionStore creates a new FileSessionStore at the given directory.
+// NewFileSessionStore creates a new file-based session store at the given directory.
+//
+// Expected:
+//   - baseDir is a valid directory path.
+//
+// Returns:
+//   - A configured FileSessionStore on success.
+//   - An error if the directory cannot be created.
+//
+// Side effects:
+//   - Creates the baseDir directory if it does not exist.
 func NewFileSessionStore(baseDir string) (*FileSessionStore, error) {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating session directory: %w", err)
@@ -51,7 +61,14 @@ func NewFileSessionStore(baseDir string) (*FileSessionStore, error) {
 	return &FileSessionStore{baseDir: baseDir}, nil
 }
 
-// DefaultSessionStore returns a FileSessionStore in the default location.
+// DefaultSessionStore returns a FileSessionStore in the default home directory location.
+//
+// Returns:
+//   - A FileSessionStore configured at ~/.flowstate/sessions.
+//   - An error if the home directory cannot be resolved or created.
+//
+// Side effects:
+//   - Creates the ~/.flowstate/sessions directory if it does not exist.
 func DefaultSessionStore() (*FileSessionStore, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -61,7 +78,17 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 	return NewFileSessionStore(baseDir)
 }
 
-// Save persists a context store to a session file.
+// Save persists a context store to a session file using atomic write.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying the session.
+//   - store is a non-nil FileContextStore with messages to persist.
+//
+// Returns:
+//   - An error if marshalling or writing the session file fails.
+//
+// Side effects:
+//   - Writes the session data to a JSON file in the base directory.
 func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error {
 	sf := sessionFile{
 		SessionID:      sessionID,
@@ -91,12 +118,33 @@ func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error
 	return nil
 }
 
-// Load retrieves a context store from a saved session.
+// Load retrieves a context store from a saved session using the stored embedding model.
+//
+// Expected:
+//   - sessionID is a non-empty string matching an existing session file.
+//
+// Returns:
+//   - A FileContextStore populated with the session's messages and embeddings.
+//   - An error if the session file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads a JSON file from the base directory.
 func (s *FileSessionStore) Load(sessionID string) (*FileContextStore, error) {
 	return s.LoadWithModel(sessionID, "")
 }
 
 // LoadWithModel retrieves a context store using the specified embedding model.
+//
+// Expected:
+//   - sessionID is a non-empty string matching an existing session file.
+//   - model is the embedding model to use; if empty, the stored model is used.
+//
+// Returns:
+//   - A FileContextStore populated with the session's data.
+//   - An error if the session file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads a JSON file from the base directory.
 func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileContextStore, error) {
 	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
 
@@ -129,6 +177,12 @@ func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileC
 }
 
 // List returns metadata for all saved sessions sorted by last active time.
+//
+// Returns:
+//   - A slice of SessionInfo sorted by most recently active first.
+//
+// Side effects:
+//   - Reads all JSON session files from the base directory.
 func (s *FileSessionStore) List() []SessionInfo {
 	pattern := filepath.Join(s.baseDir, "*.json")
 	matches, err := filepath.Glob(pattern)

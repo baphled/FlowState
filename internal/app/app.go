@@ -38,7 +38,19 @@ type App struct {
 	API       *api.Server
 }
 
-// New creates a new App instance with all components initialized.
+// New creates a new App instance with all components initialised.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider and directory settings.
+//
+// Returns:
+//   - A fully initialised App with all components wired together.
+//   - An error if any component fails to initialise.
+//
+// Side effects:
+//   - Reads agent manifests from the configured agent directory.
+//   - Reads skill files from the configured skill directory.
+//   - Creates session and context store directories if they do not exist.
 func New(cfg *config.AppConfig) (*App, error) {
 	providerRegistry, ollamaProvider := registerProviders(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
@@ -81,21 +93,45 @@ func New(cfg *config.AppConfig) (*App, error) {
 }
 
 // AgentsDir returns the directory where agent manifests are stored.
+//
+// Returns:
+//   - The configured agent directory path.
+//
+// Side effects:
+//   - None.
 func (a *App) AgentsDir() string {
 	return a.Config.AgentDir
 }
 
 // SkillsDir returns the directory where skills are stored.
+//
+// Returns:
+//   - The configured skill directory path.
+//
+// Side effects:
+//   - None.
 func (a *App) SkillsDir() string {
 	return a.Config.SkillDir
 }
 
 // SessionsDir returns the directory where sessions are stored.
+//
+// Returns:
+//   - The sessions subdirectory path under the data directory.
+//
+// Side effects:
+//   - None.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
 }
 
 // ConfigPath returns the path to the configuration file.
+//
+// Returns:
+//   - The resolved path to the config.yaml file.
+//
+// Side effects:
+//   - None.
 func (a *App) ConfigPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -228,6 +264,17 @@ type TestConfig struct {
 }
 
 // NewForTest creates an App instance for testing with minimal dependencies.
+//
+// Expected:
+//   - tc contains the directory paths for test setup; empty fields use defaults.
+//
+// Returns:
+//   - A minimally initialised App suitable for testing.
+//   - An error if any component fails to initialise.
+//
+// Side effects:
+//   - Reads agent and skill files from the configured directories.
+//   - Creates session store directories if they do not exist.
 func NewForTest(tc TestConfig) (*App, error) {
 	if tc.DataDir == "" {
 		tc.DataDir = os.TempDir()

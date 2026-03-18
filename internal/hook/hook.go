@@ -26,11 +26,29 @@ type Chain struct {
 }
 
 // NewChain creates a new hook chain from the given hooks.
+//
+// Expected:
+//   - hooks is a variadic list of Hook middleware functions.
+//
+// Returns:
+//   - A configured Chain containing the provided hooks.
+//
+// Side effects:
+//   - None.
 func NewChain(hooks ...Hook) *Chain {
 	return &Chain{hooks: hooks}
 }
 
 // Execute applies all hooks in the chain to the given handler.
+//
+// Expected:
+//   - handler is the base HandlerFunc to wrap with middleware.
+//
+// Returns:
+//   - A HandlerFunc with all hooks applied in order.
+//
+// Side effects:
+//   - None.
 func (c *Chain) Execute(handler HandlerFunc) HandlerFunc {
 	if len(c.hooks) == 0 {
 		return handler
@@ -43,7 +61,13 @@ func (c *Chain) Execute(handler HandlerFunc) HandlerFunc {
 	return wrapped
 }
 
-// LoggingHook returns a hook that logs request timing.
+// LoggingHook returns a hook that logs request timing and message counts.
+//
+// Returns:
+//   - A Hook that wraps handlers with timing and message count logging.
+//
+// Side effects:
+//   - Logs request start, completion, and failures to the standard logger.
 func LoggingHook() Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -71,6 +95,15 @@ func LoggingHook() Hook {
 }
 
 // LearningHook creates a hook that records learning entries from conversations.
+//
+// Expected:
+//   - store is a non-nil learning.Store for persisting entries.
+//
+// Returns:
+//   - A Hook that captures conversation exchanges as learning entries.
+//
+// Side effects:
+//   - Writes learning entries to the provided store after each response completes.
 func LearningHook(store learning.Store) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -106,8 +139,17 @@ func LearningHook(store learning.Store) Hook {
 	}
 }
 
-// ContextInjectionHook returns a hook that injects skill content into the system prompt.
-// ContextInjectionHook creates a hook that injects active skill context.
+// ContextInjectionHook creates a hook that injects active skill content into the system prompt.
+//
+// Expected:
+//   - skills is a slice of available Skill values.
+//   - activeSkillNames is the list of skill names to inject.
+//
+// Returns:
+//   - A Hook that prepends matching skill content to the system prompt.
+//
+// Side effects:
+//   - Mutates the ChatRequest's system message to include skill content.
 func ContextInjectionHook(skills []skill.Skill, activeSkillNames []string) Hook {
 	activeSet := buildActiveSkillSet(activeSkillNames)
 	return func(next HandlerFunc) HandlerFunc {

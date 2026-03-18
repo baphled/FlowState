@@ -20,7 +20,17 @@ type SearchContextTool struct {
 }
 
 // NewSearchContextTool creates a new SearchContextTool with the given store and embedder.
-// NewSearchContextTool creates a new search context tool with the given store and embedder.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - embedder is a valid Provider supporting embeddings.
+//   - topK is a positive integer.
+//
+// Returns:
+//   - A pointer to an initialised SearchContextTool.
+//
+// Side effects:
+//   - None.
 func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, topK int) *SearchContextTool {
 	return &SearchContextTool{
 		store:    store,
@@ -30,16 +40,34 @@ func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, t
 }
 
 // Name returns the tool name.
+//
+// Returns:
+//   - The string "search_context".
+//
+// Side effects:
+//   - None.
 func (t *SearchContextTool) Name() string {
 	return "search_context"
 }
 
 // Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
 func (t *SearchContextTool) Description() string {
 	return "Search conversation history semantically"
 }
 
 // Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
 func (t *SearchContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -51,6 +79,17 @@ func (t *SearchContextTool) Schema() tool.Schema {
 }
 
 // Execute runs the semantic search against conversation history.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains a "query" string argument.
+//
+// Returns:
+//   - A Result containing formatted matching messages.
+//   - An error if the search fails.
+//
+// Side effects:
+//   - Makes embedding API calls.
 func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	query, ok := input.Arguments["query"].(string)
 	if !ok || query == "" {
@@ -103,21 +142,48 @@ type GetMessagesTool struct {
 }
 
 // NewGetMessagesTool creates a new GetMessagesTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised GetMessagesTool.
+//
+// Side effects:
+//   - None.
 func NewGetMessagesTool(store *FileContextStore) *GetMessagesTool {
 	return &GetMessagesTool{store: store}
 }
 
 // Name returns the tool name.
+//
+// Returns:
+//   - The string "get_messages".
+//
+// Side effects:
+//   - None.
 func (t *GetMessagesTool) Name() string {
 	return "get_messages"
 }
 
 // Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
 func (t *GetMessagesTool) Description() string {
 	return "Retrieve messages by range or recent count"
 }
 
 // Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
 func (t *GetMessagesTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -131,6 +197,17 @@ func (t *GetMessagesTool) Schema() tool.Schema {
 }
 
 // Execute retrieves messages based on the input parameters.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input may contain "count", "start", and "end" integer arguments.
+//
+// Returns:
+//   - A Result containing formatted messages.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - None.
 func (t *GetMessagesTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	count := extractInt(input.Arguments, "count", 0)
 	start := extractInt(input.Arguments, "start", -1)
@@ -170,6 +247,19 @@ type SummarizeContextTool struct {
 }
 
 // NewSummarizeContextTool creates a new SummarizeContextTool with the given configuration.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - p is a valid Provider supporting chat completions.
+//   - maxDepth is a positive integer.
+//   - counter is a valid TokenCounter.
+//   - model is a non-empty model identifier.
+//
+// Returns:
+//   - A pointer to an initialised SummarizeContextTool.
+//
+// Side effects:
+//   - None.
 func NewSummarizeContextTool(
 	store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter, model string,
 ) *SummarizeContextTool {
@@ -183,16 +273,34 @@ func NewSummarizeContextTool(
 }
 
 // Name returns the tool name.
+//
+// Returns:
+//   - The string "summarize_context".
+//
+// Side effects:
+//   - None.
 func (t *SummarizeContextTool) Name() string {
 	return "summarize_context"
 }
 
 // Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
 func (t *SummarizeContextTool) Description() string {
 	return "Recursively summarize conversation history"
 }
 
 // Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
 func (t *SummarizeContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -207,6 +315,17 @@ func (t *SummarizeContextTool) Schema() tool.Schema {
 }
 
 // Execute runs the summarize context tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input may contain "focus", "depth", "start", and "end" arguments.
+//
+// Returns:
+//   - A Result containing the summary.
+//   - An error if summarisation fails.
+//
+// Side effects:
+//   - Makes LLM API calls.
 func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	focus, ok := input.Arguments["focus"].(string)
 	if !ok {
@@ -284,6 +403,18 @@ type QueryTools struct {
 }
 
 // NewContextQueryTools creates a new context query tools instance.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//   - p is a valid Provider.
+//   - counter is a valid TokenCounter.
+//   - summaryModel is a non-empty model identifier.
+//
+// Returns:
+//   - A pointer to an initialised QueryTools.
+//
+// Side effects:
+//   - None.
 func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *QueryTools {
 	return &QueryTools{
 		Search:    NewSearchContextTool(store, p, 5),

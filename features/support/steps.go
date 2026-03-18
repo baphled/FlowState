@@ -116,6 +116,12 @@ type ToolRequest struct {
 }
 
 // RegisterSteps registers all BDD step definitions with the godog context.
+//
+// Expected:
+//   - ctx is a non-nil godog ScenarioContext for step registration.
+//
+// Side effects:
+//   - Registers before hooks and all step patterns on the scenario context.
 func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		s.ctx = ctx

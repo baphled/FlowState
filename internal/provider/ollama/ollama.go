@@ -19,6 +19,16 @@ type Provider struct {
 }
 
 // New creates a new Ollama provider with the given host.
+//
+// Expected:
+//   - host is the Ollama server address.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the client cannot be created.
+//
+// Side effects:
+//   - Reads Ollama client configuration from environment variables.
 func New(host string) (*Provider, error) {
 	client, err := ollamaAPI.ClientFromEnvironment()
 	if err != nil {
@@ -31,6 +41,17 @@ func New(host string) (*Provider, error) {
 }
 
 // NewWithClient creates a new Ollama provider with a custom HTTP client.
+//
+// Expected:
+//   - baseURL is a valid Ollama server URL.
+//   - httpClient is a non-nil HTTP client to use for requests.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the URL cannot be parsed.
+//
+// Side effects:
+//   - None.
 func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
@@ -44,11 +65,28 @@ func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 }
 
 // Name returns the provider name.
+//
+// Returns:
+//   - The string "ollama".
+//
+// Side effects:
+//   - None.
 func (p *Provider) Name() string {
 	return "ollama"
 }
 
-// Stream sends a chat request and returns a channel of streaming response chunks.
+// Stream sends a streaming chat request to the Ollama API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages, model, and optional tools to use.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the streamed response.
+//   - An error if the request cannot be initiated.
+//
+// Side effects:
+//   - Spawns a goroutine to read from the Ollama streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 16)
 
@@ -111,7 +149,18 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
-// Chat sends a chat request and returns the complete response.
+// Chat sends a non-streaming chat request to the Ollama API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A ChatResponse with the assistant's reply and token usage.
+//   - An error if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := make([]ollamaAPI.Message, 0, len(req.Messages))
 	for _, m := range req.Messages {
@@ -158,7 +207,18 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	return response, nil
 }
 
-// Embed generates embeddings for the given input text.
+// Embed generates embeddings for the given input text via the Ollama API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the input text and model to use.
+//
+// Returns:
+//   - A float64 slice containing the embedding vector.
+//   - An error if the API call fails or no embeddings are returned.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama embedding API.
 func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
 	embedReq := &ollamaAPI.EmbedRequest{
 		Model: req.Model,
@@ -182,7 +242,14 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 	return result, nil
 }
 
-// Models returns the list of available models.
+// Models returns the list of available Ollama models.
+//
+// Returns:
+//   - A slice of Model values listing locally available models.
+//   - An error if the model list cannot be fetched.
+//
+// Side effects:
+//   - Makes an HTTP request to the Ollama API.
 func (p *Provider) Models() ([]provider.Model, error) {
 	resp, err := p.client.List(context.Background())
 	if err != nil {

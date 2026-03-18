@@ -16,21 +16,45 @@ import (
 type Tool struct{}
 
 // New creates a new file tool instance.
+//
+// Returns:
+//   - A configured file Tool instance.
+//
+// Side effects:
+//   - None.
 func New() *Tool {
 	return &Tool{}
 }
 
 // Name returns the tool identifier.
+//
+// Returns:
+//   - The string "file".
+//
+// Side effects:
+//   - None.
 func (t *Tool) Name() string {
 	return "file"
 }
 
-// Description returns a human-readable description.
+// Description returns a human-readable description of the file tool.
+//
+// Returns:
+//   - A string describing the tool's purpose.
+//
+// Side effects:
+//   - None.
 func (t *Tool) Description() string {
 	return "Read or write files with path validation"
 }
 
-// Schema returns the JSON schema for tool inputs.
+// Schema returns the JSON schema for the file tool inputs.
+//
+// Returns:
+//   - A tool.Schema describing the operation, path, and content properties.
+//
+// Side effects:
+//   - None.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -54,6 +78,16 @@ func (t *Tool) Schema() tool.Schema {
 }
 
 // Execute performs the file operation specified in input.
+//
+// Expected:
+//   - input contains "operation" (read or write) and "path" string arguments.
+//
+// Returns:
+//   - A tool.Result containing the read content or write confirmation.
+//   - An error if required arguments are missing or the operation is unknown.
+//
+// Side effects:
+//   - Reads from or writes to the filesystem depending on the operation.
 func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	operation, ok := input.Arguments["operation"].(string)
 	if !ok || operation == "" {

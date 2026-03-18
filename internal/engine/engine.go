@@ -19,8 +19,7 @@ const (
 	defaultStreamTimeout = 60 * time.Second
 )
 
-// Engine orchestrates chat interactions with providers, tools, and context management.
-// Engine orchestrates AI agent interactions with providers and tools.
+// Engine orchestrates AI agent interactions with providers, tools, and context management.
 type Engine struct {
 	chatProvider      provider.Provider
 	embeddingProvider provider.Provider
@@ -36,7 +35,6 @@ type Engine struct {
 }
 
 // Config holds the configuration for creating a new Engine.
-// Config holds configuration for creating a new Engine.
 type Config struct {
 	ChatProvider      provider.Provider
 	EmbeddingProvider provider.Provider
@@ -50,8 +48,16 @@ type Config struct {
 	HookChain         *hook.Chain
 }
 
-// New creates a new Engine with the given configuration.
 // New creates a new Engine from the given configuration.
+//
+// Expected:
+//   - cfg contains at least a ChatProvider or a Registry for failback.
+//
+// Returns:
+//   - A fully initialised Engine ready for streaming conversations.
+//
+// Side effects:
+//   - None.
 func New(cfg Config) *Engine {
 	var windowBuilder *ctxstore.WindowBuilder
 	if cfg.TokenCounter != nil {
@@ -105,8 +111,13 @@ func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 	return result
 }
 
-// LastProvider returns the name of the last provider used.
 // LastProvider returns the name of the most recently used provider.
+//
+// Returns:
+//   - The provider name string, or empty if no provider has been used.
+//
+// Side effects:
+//   - None.
 func (e *Engine) LastProvider() string {
 	if e.failbackChain != nil {
 		return e.failbackChain.LastProvider()
@@ -117,8 +128,13 @@ func (e *Engine) LastProvider() string {
 	return ""
 }
 
-// BuildSystemPrompt constructs the system prompt from the manifest and active skills.
-// BuildSystemPrompt constructs the system prompt from the agent manifest.
+// BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
+//
+// Returns:
+//   - The concatenated system prompt string including always-active skill content.
+//
+// Side effects:
+//   - None.
 func (e *Engine) BuildSystemPrompt() string {
 	var builder strings.Builder
 	builder.WriteString(e.manifest.Instructions.SystemPrompt)
@@ -164,8 +180,21 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 	return tools
 }
 
-// Stream sends a message and returns a channel of streaming response chunks.
 // Stream sends a message and returns a channel of streamed response chunks.
+//
+// Expected:
+//   - ctx is a valid context for the streaming operation.
+//   - agentID identifies the agent (currently unused, reserved for future routing).
+//   - message is the user's input text.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the response.
+//   - An error if the initial provider stream fails.
+//
+// Side effects:
+//   - Appends the user message to the context store.
+//   - Embeds the user message if an embedding provider is configured.
+//   - Spawns a goroutine to process the stream and handle tool calls.
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	_ = agentID
 
@@ -370,11 +399,23 @@ func (e *Engine) storeResponse(ctx context.Context, content string) {
 }
 
 // SetContextStore sets the context store for session persistence.
+//
+// Expected:
+//   - store is a FileContextStore instance, or nil to clear the store.
+//
+// Side effects:
+//   - Replaces the engine's current context store reference.
 func (e *Engine) SetContextStore(store *ctxstore.FileContextStore) {
 	e.store = store
 }
 
 // ContextStore returns the current context store.
+//
+// Returns:
+//   - The FileContextStore currently attached to this engine, or nil.
+//
+// Side effects:
+//   - None.
 func (e *Engine) ContextStore() *ctxstore.FileContextStore {
 	return e.store
 }

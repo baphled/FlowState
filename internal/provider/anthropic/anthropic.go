@@ -29,6 +29,16 @@ type Provider struct {
 }
 
 // New creates a new Anthropic provider with the given API key.
+//
+// Expected:
+//   - apiKey is a non-empty Anthropic API key string.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -38,6 +48,17 @@ func New(apiKey string) (*Provider, error) {
 }
 
 // NewWithOptions creates a new Anthropic provider with the given API key and options.
+//
+// Expected:
+//   - apiKey is a non-empty Anthropic API key string.
+//   - opts is a variadic list of request options for the client.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
 func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -48,11 +69,28 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 }
 
 // Name returns the provider name.
+//
+// Returns:
+//   - The string "anthropic".
+//
+// Side effects:
+//   - None.
 func (p *Provider) Name() string {
 	return providerName
 }
 
-// Stream implements provider.Provider.
+// Stream sends a streaming chat request to the Anthropic API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the streamed response.
+//   - An error if the request cannot be initiated.
+//
+// Side effects:
+//   - Spawns a goroutine to read from the Anthropic streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
@@ -88,7 +126,18 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
-// Chat implements provider.Provider.
+// Chat sends a non-streaming chat request to the Anthropic API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A ChatResponse with the assistant's reply and token usage.
+//   - An error if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the Anthropic API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := buildMessages(req.Messages)
 
@@ -117,11 +166,26 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 }
 
 // Embed returns an error as Anthropic does not support embeddings.
+//
+// Expected:
+//   - This method always fails as Anthropic does not offer embedding support.
+//
+// Returns:
+//   - nil and ErrNotSupported unconditionally.
+//
+// Side effects:
+//   - None.
 func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
 	return nil, ErrNotSupported
 }
 
 // Models returns the list of available Anthropic models.
+//
+// Returns:
+//   - A slice of supported Anthropic model definitions.
+//
+// Side effects:
+//   - None.
 func (p *Provider) Models() ([]provider.Model, error) {
 	return []provider.Model{
 		{ID: "claude-sonnet-4-20250514", Provider: providerName, ContextLength: defaultContextLength},

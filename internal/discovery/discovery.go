@@ -21,11 +21,29 @@ type AgentDiscovery struct {
 }
 
 // NewAgentDiscovery creates a new AgentDiscovery with the given manifests.
+//
+// Expected:
+//   - manifests is a slice of agent manifests to match against.
+//
+// Returns:
+//   - A configured AgentDiscovery instance.
+//
+// Side effects:
+//   - None.
 func NewAgentDiscovery(manifests []agent.Manifest) *AgentDiscovery {
 	return &AgentDiscovery{manifests: manifests}
 }
 
 // Suggest returns agent suggestions for the given message, sorted by confidence.
+//
+// Expected:
+//   - message is the user input to match against agent manifests.
+//
+// Returns:
+//   - A slice of AgentSuggestion sorted by descending confidence, or nil if none match.
+//
+// Side effects:
+//   - None.
 func (ad *AgentDiscovery) Suggest(message string) []AgentSuggestion {
 	if message == "" || len(ad.manifests) == 0 {
 		return nil

@@ -19,11 +19,29 @@ type Discovery struct {
 }
 
 // NewDiscovery creates a new skill discovery instance.
+//
+// Expected:
+//   - skills is a slice of available Skill values to match against.
+//
+// Returns:
+//   - A configured Discovery instance.
+//
+// Side effects:
+//   - None.
 func NewDiscovery(skills []Skill) *Discovery {
 	return &Discovery{skills: skills}
 }
 
 // Suggest returns skills relevant to the given task description.
+//
+// Expected:
+//   - taskDescription is the text describing the task to find skills for.
+//
+// Returns:
+//   - A slice of Suggestion sorted by descending confidence, or nil if none match.
+//
+// Side effects:
+//   - None.
 func (sd *Discovery) Suggest(taskDescription string) []Suggestion {
 	if taskDescription == "" || len(sd.skills) == 0 {
 		return nil

@@ -19,6 +19,16 @@ type Provider struct {
 }
 
 // New creates a new OpenAI provider with the given API key.
+//
+// Expected:
+//   - apiKey is a non-empty OpenAI API key string.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -30,6 +40,17 @@ func New(apiKey string) (*Provider, error) {
 }
 
 // NewWithOptions creates a new OpenAI provider with custom request options.
+//
+// Expected:
+//   - apiKey is a non-empty OpenAI API key string.
+//   - opts is a variadic list of request options for the client.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the API key is empty.
+//
+// Side effects:
+//   - None.
 func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
@@ -42,11 +63,28 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 }
 
 // Name returns the provider name.
+//
+// Returns:
+//   - The string "openai".
+//
+// Side effects:
+//   - None.
 func (p *Provider) Name() string {
 	return "openai"
 }
 
-// Stream sends a streaming chat request and returns a channel of response chunks.
+// Stream sends a streaming chat request to the OpenAI API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the streamed response.
+//   - An error if the request cannot be initiated.
+//
+// Side effects:
+//   - Spawns a goroutine to read from the OpenAI streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 16)
 
@@ -89,7 +127,18 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	return ch, nil
 }
 
-// Chat sends a chat completion request and returns the response.
+// Chat sends a non-streaming chat request to the OpenAI API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the messages and model to use.
+//
+// Returns:
+//   - A ChatResponse with the assistant's reply and token usage.
+//   - An error if the API call fails or no choices are returned.
+//
+// Side effects:
+//   - Makes an HTTP request to the OpenAI API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	messages := make([]openaiAPI.ChatCompletionMessageParamUnion, 0, len(req.Messages))
 	for _, m := range req.Messages {
@@ -128,7 +177,18 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	}, nil
 }
 
-// Embed generates embeddings for the given input text.
+// Embed generates embeddings for the given input text via the OpenAI API.
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - req contains the input text and optional model override.
+//
+// Returns:
+//   - A float64 slice containing the embedding vector.
+//   - An error if the API call fails or no embeddings are returned.
+//
+// Side effects:
+//   - Makes an HTTP request to the OpenAI embeddings API.
 func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]float64, error) {
 	model := req.Model
 	if model == "" {
@@ -153,6 +213,12 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 }
 
 // Models returns the list of available OpenAI models.
+//
+// Returns:
+//   - A slice of supported OpenAI model definitions.
+//
+// Side effects:
+//   - None.
 func (p *Provider) Models() ([]provider.Model, error) {
 	return []provider.Model{
 		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000},

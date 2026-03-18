@@ -63,6 +63,12 @@ type Instructions struct {
 }
 
 // DefaultContextManagement returns sensible default context management settings.
+//
+// Returns:
+//   - A ContextManagement struct with default values for all fields.
+//
+// Side effects:
+//   - None.
 func DefaultContextManagement() ContextManagement {
 	return ContextManagement{
 		MaxRecursionDepth:   2,
@@ -74,6 +80,13 @@ func DefaultContextManagement() ContextManagement {
 }
 
 // Validate checks that the manifest has required fields.
+//
+// Returns:
+//   - nil if the manifest is valid.
+//   - A ValidationError if required fields are missing.
+//
+// Side effects:
+//   - None.
 func (m *Manifest) Validate() error {
 	if m.ID == "" {
 		return &ValidationError{Field: "id", Message: "required"}
@@ -91,6 +104,12 @@ type ValidationError struct {
 }
 
 // Error returns the validation error message.
+//
+// Returns:
+//   - A string describing the validation failure.
+//
+// Side effects:
+//   - None.
 func (e *ValidationError) Error() string {
 	return e.Field + ": " + e.Message
 }

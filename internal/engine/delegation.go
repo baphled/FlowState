@@ -24,7 +24,17 @@ type DelegateTool struct {
 	delegation agent.Delegation
 }
 
-// NewDelegateTool creates a new delegation tool for the given engines and delegation config.
+// NewDelegateTool creates a new delegation tool for the given engines and delegation configuration.
+//
+// Expected:
+//   - engines is a map of agent IDs to their Engine instances.
+//   - delegation is the delegation configuration for the current agent.
+//
+// Returns:
+//   - A configured DelegateTool instance.
+//
+// Side effects:
+//   - None.
 func NewDelegateTool(engines map[string]*Engine, delegation agent.Delegation) *DelegateTool {
 	return &DelegateTool{
 		engines:    engines,
@@ -33,16 +43,34 @@ func NewDelegateTool(engines map[string]*Engine, delegation agent.Delegation) *D
 }
 
 // Name returns the tool name.
+//
+// Returns:
+//   - The string "delegate".
+//
+// Side effects:
+//   - None.
 func (d *DelegateTool) Name() string {
 	return "delegate"
 }
 
-// Description returns a human-readable description of the tool.
+// Description returns a human-readable description of the delegation tool.
+//
+// Returns:
+//   - A string describing what the tool does.
+//
+// Side effects:
+//   - None.
 func (d *DelegateTool) Description() string {
 	return "Delegate a task to another agent based on task type"
 }
 
-// Schema returns the JSON schema for the tool input.
+// Schema returns the JSON schema for the delegation tool input.
+//
+// Returns:
+//   - A tool.Schema describing the required task_type and message properties.
+//
+// Side effects:
+//   - None.
 func (d *DelegateTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -60,7 +88,18 @@ func (d *DelegateTool) Schema() tool.Schema {
 	}
 }
 
-// Execute runs the delegation tool with the given input.
+// Execute runs the delegation tool by routing the task to the appropriate sub-agent.
+//
+// Expected:
+//   - ctx is a valid context for the delegation operation.
+//   - input contains "task_type" and "message" string arguments.
+//
+// Returns:
+//   - A tool.Result containing the sub-agent's aggregated response.
+//   - An error if delegation is not allowed, arguments are invalid, or streaming fails.
+//
+// Side effects:
+//   - Streams a request to the target agent's engine.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	if !d.delegation.CanDelegate {
 		return tool.Result{}, errDelegationNotAllowed
@@ -103,6 +142,19 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 }
 
 // DelegateToAgent sends a message to a sub-agent and streams the response.
+//
+// Expected:
+//   - ctx is a valid context for the delegation operation.
+//   - engines is a map of agent IDs to their Engine instances.
+//   - taskType identifies the delegation target via the delegation table.
+//   - message is the instruction to send to the target agent.
+//
+// Returns:
+//   - A channel of StreamChunk values from the target agent.
+//   - An error if delegation is not allowed or the target agent is unavailable.
+//
+// Side effects:
+//   - Initiates a streaming request on the target agent's engine.
 func (e *Engine) DelegateToAgent(
 	ctx context.Context,
 	engines map[string]*Engine,

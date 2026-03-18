@@ -5,6 +5,17 @@ import (
 )
 
 // LoadAlwaysActiveSkills loads skills that should always be active for the given agent.
+//
+// Expected:
+//   - skillsDir is the directory path containing skill definitions.
+//   - appLevel is the list of application-level always-active skill names.
+//   - agentLevel is the list of agent-level always-active skill names.
+//
+// Returns:
+//   - A slice of Skill values matching the merged skill names, or nil on error.
+//
+// Side effects:
+//   - Reads skill files from the skillsDir directory.
 func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []string) []skill.Skill {
 	merged := mergeSkillNames(appLevel, agentLevel)
 	if len(merged) == 0 {

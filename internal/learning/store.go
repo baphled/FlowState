@@ -37,6 +37,15 @@ type JSONFileStore struct {
 }
 
 // NewJSONFileStore creates a new JSONFileStore at the given path.
+//
+// Expected:
+//   - path is a valid file path for persisting learning entries.
+//
+// Returns:
+//   - A JSONFileStore loaded with any existing entries from the file.
+//
+// Side effects:
+//   - Reads the existing JSON file at path if present.
 func NewJSONFileStore(path string) *JSONFileStore {
 	store := &JSONFileStore{
 		path:    path,
@@ -86,6 +95,15 @@ func (s *JSONFileStore) persist() error {
 }
 
 // Capture stores a learning entry to the JSON file.
+//
+// Expected:
+//   - entry is a populated Entry to persist.
+//
+// Returns:
+//   - An error if the entry cannot be written to disk.
+//
+// Side effects:
+//   - Appends the entry and persists the updated list to the JSON file.
 func (s *JSONFileStore) Capture(entry Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,6 +113,15 @@ func (s *JSONFileStore) Capture(entry Entry) error {
 }
 
 // Query returns all entries that contain the query string in UserMessage, Response, or Outcome.
+//
+// Expected:
+//   - query is the substring to search for within entry fields.
+//
+// Returns:
+//   - A slice of matching Entry values, or an empty slice if none match.
+//
+// Side effects:
+//   - None.
 func (s *JSONFileStore) Query(query string) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

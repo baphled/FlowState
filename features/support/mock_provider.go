@@ -71,6 +71,12 @@ type MockProvider struct {
 }
 
 // NewMockProvider creates a new MockProvider with default responses.
+//
+// Returns:
+//   - A configured MockProvider with sensible defaults for testing.
+//
+// Side effects:
+//   - None.
 func NewMockProvider() *MockProvider {
 	return &MockProvider{
 		name:       "mock",
@@ -83,11 +89,28 @@ func NewMockProvider() *MockProvider {
 }
 
 // Name returns the provider name.
+//
+// Returns:
+//   - The string "mock".
+//
+// Side effects:
+//   - None.
 func (m *MockProvider) Name() string {
 	return m.name
 }
 
-// Stream streams a response for the given chat request.
+// Stream streams a mock response character by character for the given chat request.
+//
+// Expected:
+//   - ctx is a valid context for the streaming operation.
+//   - req contains the chat request with messages to respond to.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the mock response.
+//   - nil error (mock never fails to start).
+//
+// Side effects:
+//   - Spawns a goroutine to send chunks on the returned channel.
 func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	ch := make(chan StreamChunk, 16)
 	go func() {
@@ -149,7 +172,17 @@ func extractNameFromContent(content string) string {
 	return strings.TrimSpace(content[nameStart:])
 }
 
-// Chat performs a synchronous chat completion request.
+// Chat performs a synchronous mock chat completion request.
+//
+// Expected:
+//   - The mock provider has at least one configured response.
+//
+// Returns:
+//   - A ChatResponse containing the next mock response.
+//   - nil error (mock never fails).
+//
+// Side effects:
+//   - Advances the response index for subsequent calls.
 func (m *MockProvider) Chat(_ context.Context, _ ChatRequest) (ChatResponse, error) {
 	response := m.responses[m.responseIndex%len(m.responses)]
 	m.responseIndex++
@@ -159,27 +192,61 @@ func (m *MockProvider) Chat(_ context.Context, _ ChatRequest) (ChatResponse, err
 	}, nil
 }
 
-// Embed generates embeddings for the given input.
+// Embed returns mock embeddings for the given input.
+//
+// Expected:
+//   - The mock provider has configured embeddings.
+//
+// Returns:
+//   - A float64 slice of mock embedding values.
+//   - nil error (mock never fails).
+//
+// Side effects:
+//   - None.
 func (m *MockProvider) Embed(_ context.Context, _ EmbedRequest) ([]float64, error) {
 	return m.embeddings, nil
 }
 
-// Models returns the available models.
+// Models returns the available mock models.
+//
+// Returns:
+//   - A slice of mock Model definitions.
+//
+// Side effects:
+//   - None.
 func (m *MockProvider) Models() ([]Model, error) {
 	return m.models, nil
 }
 
 // SetResponses configures the mock responses.
+//
+// Expected:
+//   - responses is a non-empty slice of response strings.
+//
+// Side effects:
+//   - Replaces the provider's internal response list.
 func (m *MockProvider) SetResponses(responses []string) {
 	m.responses = responses
 }
 
 // SetEmbeddings configures the mock embeddings.
+//
+// Expected:
+//   - embeddings is a float64 slice to return from Embed calls.
+//
+// Side effects:
+//   - Replaces the provider's internal embeddings.
 func (m *MockProvider) SetEmbeddings(embeddings []float64) {
 	m.embeddings = embeddings
 }
 
 // SetModels configures the mock models.
+//
+// Expected:
+//   - models is a slice of Model definitions to return from Models calls.
+//
+// Side effects:
+//   - Replaces the provider's internal model list.
 func (m *MockProvider) SetModels(models []Model) {
 	m.models = models
 }

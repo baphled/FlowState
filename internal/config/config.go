@@ -35,6 +35,12 @@ type ProviderConfig struct {
 }
 
 // DefaultConfig returns sensible default configuration values.
+//
+// Returns:
+//   - An AppConfig populated with default provider and directory settings.
+//
+// Side effects:
+//   - Resolves the user home directory to set the data path.
 func DefaultConfig() *AppConfig {
 	dataDir := ".flowstate"
 	if homeDir, err := os.UserHomeDir(); err == nil {
@@ -64,6 +70,13 @@ func DefaultConfig() *AppConfig {
 }
 
 // LoadConfig loads configuration from the default location.
+//
+// Returns:
+//   - An AppConfig loaded from ~/.flowstate/config.yaml.
+//   - An error if the home directory cannot be resolved or the file is invalid.
+//
+// Side effects:
+//   - Reads the configuration file from disk.
 func LoadConfig() (*AppConfig, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -74,6 +87,16 @@ func LoadConfig() (*AppConfig, error) {
 }
 
 // LoadConfigFromPath loads configuration from the specified file path.
+//
+// Expected:
+//   - path is a file path to a YAML configuration file.
+//
+// Returns:
+//   - An AppConfig loaded from the file, with defaults applied for missing fields.
+//   - An error if the file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads the configuration file from disk.
 func LoadConfigFromPath(path string) (*AppConfig, error) {
 	cleanPath := filepath.Clean(path)
 	if _, err := os.Stat(cleanPath); err != nil {

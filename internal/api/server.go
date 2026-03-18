@@ -24,6 +24,19 @@ type Server struct {
 }
 
 // NewServer creates a new API server with the given dependencies.
+//
+// Expected:
+//   - eng is a non-nil Engine for handling chat requests.
+//   - registry is the agent registry for listing and retrieving manifests.
+//   - disc is the discovery service for agent suggestions.
+//   - skills is the list of available skills.
+//   - sessions is the session store, or nil if sessions are disabled.
+//
+// Returns:
+//   - A configured Server with all routes registered.
+//
+// Side effects:
+//   - Registers HTTP route handlers on the internal mux.
 func NewServer(
 	eng *engine.Engine,
 	registry *agent.Registry,
@@ -44,6 +57,12 @@ func NewServer(
 }
 
 // Handler returns the HTTP handler for this server.
+//
+// Returns:
+//   - The http.Handler that serves all API routes.
+//
+// Side effects:
+//   - None.
 func (s *Server) Handler() http.Handler {
 	return s.mux
 }

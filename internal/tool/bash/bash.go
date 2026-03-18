@@ -18,21 +18,45 @@ const timeout = 30 * time.Second
 type Tool struct{}
 
 // New creates a new bash execution tool.
+//
+// Returns:
+//   - A configured bash Tool instance.
+//
+// Side effects:
+//   - None.
 func New() *Tool {
 	return &Tool{}
 }
 
 // Name returns the tool identifier.
+//
+// Returns:
+//   - The string "bash".
+//
+// Side effects:
+//   - None.
 func (t *Tool) Name() string {
 	return "bash"
 }
 
-// Description returns a human-readable description of the tool.
+// Description returns a human-readable description of the bash tool.
+//
+// Returns:
+//   - A string describing the tool's purpose.
+//
+// Side effects:
+//   - None.
 func (t *Tool) Description() string {
 	return "Execute bash commands with a 30-second timeout"
 }
 
-// Schema returns the JSON schema for tool arguments.
+// Schema returns the JSON schema for the bash tool arguments.
+//
+// Returns:
+//   - A tool.Schema describing the required command property.
+//
+// Side effects:
+//   - None.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -47,6 +71,17 @@ func (t *Tool) Schema() tool.Schema {
 }
 
 // Execute runs the specified bash command and returns its output.
+//
+// Expected:
+//   - ctx is a valid context for the command execution.
+//   - input contains a "command" string argument.
+//
+// Returns:
+//   - A tool.Result containing the combined stdout and stderr output.
+//   - An error if the command argument is missing.
+//
+// Side effects:
+//   - Executes a bash subprocess with a 30-second timeout.
 func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	command, ok := input.Arguments["command"].(string)
 	if !ok || command == "" {

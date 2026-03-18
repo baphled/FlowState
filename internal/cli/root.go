@@ -10,6 +10,15 @@ import (
 )
 
 // NewRootCmd creates the root command for the FlowState CLI.
+//
+// Expected:
+//   - application is a non-nil initialised App instance.
+//
+// Returns:
+//   - A configured cobra.Command with all subcommands registered.
+//
+// Side effects:
+//   - Registers persistent flags for config, agents-dir, skills-dir, and sessions-dir.
 func NewRootCmd(application *app.App) *cobra.Command {
 	var appPtr = application
 

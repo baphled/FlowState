@@ -22,6 +22,17 @@ type FailbackChain struct {
 }
 
 // NewFailbackChain creates a new failback chain with the given preferences and timeout.
+//
+// Expected:
+//   - registry is a valid, non-nil Registry.
+//   - preferences contains at least one ModelPreference.
+//   - timeout is a positive duration.
+//
+// Returns:
+//   - A pointer to an initialised FailbackChain.
+//
+// Side effects:
+//   - None.
 func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout time.Duration) *FailbackChain {
 	return &FailbackChain{
 		registry:    registry,
@@ -31,6 +42,18 @@ func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout
 }
 
 // Stream attempts to stream from providers in preference order.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req contains a valid chat request.
+//
+// Returns:
+//   - A channel of StreamChunk on success.
+//   - An error if all providers fail.
+//
+// Side effects:
+//   - Makes network calls to LLM providers.
+//   - Updates lastProvider on success.
 func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	var lastErr error
 	for _, pref := range f.preferences {
@@ -62,6 +85,18 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 }
 
 // Chat attempts to chat with providers in preference order.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req contains a valid chat request.
+//
+// Returns:
+//   - A ChatResponse on success.
+//   - An error if all providers fail.
+//
+// Side effects:
+//   - Makes network calls to LLM providers.
+//   - Updates lastProvider on success.
 func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	var lastErr error
 	for _, pref := range f.preferences {
@@ -85,6 +120,12 @@ func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 }
 
 // LastProvider returns the name of the last successfully used provider.
+//
+// Returns:
+//   - The provider name, or empty string if no provider has been used.
+//
+// Side effects:
+//   - None.
 func (f *FailbackChain) LastProvider() string {
 	return f.lastProvider
 }

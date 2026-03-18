@@ -14,16 +14,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// MessageStore provides operations for storing and retrieving messages.
 // MessageStore defines operations for managing conversation messages.
 type MessageStore interface {
 	// Append adds a message to the store.
-	// Append adds a message to the store.
 	Append(msg provider.Message)
-	// GetRange returns messages from start to end indices.
 	// GetRange returns messages between the given indices.
 	GetRange(start, end int) []provider.Message
-	// GetRecent returns the n most recent messages.
 	// GetRecent returns the n most recent messages.
 	GetRecent(n int) []provider.Message
 	// Count returns the total number of messages.
@@ -80,7 +76,19 @@ type FileContextStore struct {
 
 const defaultMaxSize = 1000
 
-// NewFileContextStore creates a new FileContextStore at the given path.
+// NewFileContextStore creates a new file-backed context store at the given path.
+//
+// Expected:
+//   - path is a valid file path for persisting messages.
+//   - embeddingModel is the name of the embedding model to use.
+//
+// Returns:
+//   - A configured FileContextStore on success.
+//   - An error if the directory cannot be created or existing data cannot be loaded.
+//
+// Side effects:
+//   - Creates the parent directory if it does not exist.
+//   - Reads existing data from the file if present.
 func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -157,7 +165,14 @@ func (s *FileContextStore) persist() error {
 	return nil
 }
 
-// Append adds a message to the store.
+// Append adds a message to the store and persists the updated state.
+//
+// Expected:
+//   - msg is a valid provider.Message to store.
+//
+// Side effects:
+//   - Persists the updated message list to disk.
+//   - Evicts the oldest message if the store exceeds its maximum size.
 func (s *FileContextStore) Append(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -179,7 +194,17 @@ func (s *FileContextStore) Append(msg provider.Message) {
 	}
 }
 
-// GetRange returns messages from start to end indices.
+// GetRange returns messages between the given start and end indices.
+//
+// Expected:
+//   - start is the inclusive lower bound index.
+//   - end is the exclusive upper bound index.
+//
+// Returns:
+//   - A slice of messages within the specified range.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) GetRange(start, end int) []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -201,7 +226,16 @@ func (s *FileContextStore) GetRange(start, end int) []provider.Message {
 	return result
 }
 
-// GetRecent returns the n most recent messages.
+// GetRecent returns the n most recent messages from the store.
+//
+// Expected:
+//   - n is the number of recent messages to retrieve.
+//
+// Returns:
+//   - A slice containing up to n most recent messages.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) GetRecent(n int) []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -219,14 +253,26 @@ func (s *FileContextStore) GetRecent(n int) []provider.Message {
 	return result
 }
 
-// Count returns the total number of messages.
+// Count returns the total number of stored messages.
+//
+// Returns:
+//   - The number of messages currently in the store.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.messages)
 }
 
-// AllMessages returns all messages in the store.
+// AllMessages returns a copy of all messages in the store.
+//
+// Returns:
+//   - A slice containing all stored messages.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) AllMessages() []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -239,6 +285,15 @@ func (s *FileContextStore) AllMessages() []provider.Message {
 }
 
 // GetMessageID returns the ID of the message at the given index.
+//
+// Expected:
+//   - index is a zero-based position within the stored messages.
+//
+// Returns:
+//   - The message ID, or an empty string if the index is out of bounds.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) GetMessageID(index int) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -249,7 +304,17 @@ func (s *FileContextStore) GetMessageID(index int) string {
 	return s.messages[index].ID
 }
 
-// StoreEmbedding stores an embedding vector for a message.
+// StoreEmbedding stores an embedding vector for the specified message.
+//
+// Expected:
+//   - msgID is the ID of an existing stored message.
+//   - vector is a non-empty embedding vector.
+//   - model is the name of the embedding model used.
+//   - dimensions is the dimensionality of the vector.
+//
+// Side effects:
+//   - Marks the message as embedded in the store.
+//   - Persists the updated embeddings to disk.
 func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model string, dimensions int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,7 +339,17 @@ func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model 
 	}
 }
 
-// Search finds the most similar messages to the query vector.
+// Search finds the most similar messages to the query vector using cosine similarity.
+//
+// Expected:
+//   - query is a non-empty embedding vector to compare against.
+//   - topK is the maximum number of results to return.
+//
+// Returns:
+//   - A slice of SearchResult sorted by descending similarity score.
+//
+// Side effects:
+//   - None.
 func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -319,6 +394,15 @@ func (s *FileContextStore) Search(query []float64, topK int) []SearchResult {
 }
 
 // CosineSimilarity computes the cosine similarity between two vectors.
+//
+// Expected:
+//   - a and b are equal-length, non-empty float64 slices.
+//
+// Returns:
+//   - A value between -1 and 1 representing the cosine similarity, or 0 if inputs are invalid.
+//
+// Side effects:
+//   - None.
 func CosineSimilarity(a, b []float64) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0

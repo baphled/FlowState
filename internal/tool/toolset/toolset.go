@@ -9,6 +9,12 @@ import (
 )
 
 // NewDefaultRegistry creates a new tool registry with the default tools registered.
+//
+// Returns:
+//   - A Registry containing bash, file, and web tools.
+//
+// Side effects:
+//   - None.
 func NewDefaultRegistry() *tool.Registry {
 	r := tool.NewRegistry()
 	r.Register(bash.New())

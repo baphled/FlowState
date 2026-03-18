@@ -29,16 +29,49 @@ type WindowBuilder struct {
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
+//
+// Expected:
+//   - counter is a non-nil TokenCounter implementation.
+//
+// Returns:
+//   - A configured WindowBuilder instance.
+//
+// Side effects:
+//   - None.
 func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 	return &WindowBuilder{counter: counter}
 }
 
 // Build constructs a context window from the manifest and store within the token budget.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest with instructions and context settings.
+//   - store is a non-nil FileContextStore containing conversation messages.
+//   - tokenBudget is the maximum number of tokens allowed in the window.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages and budget usage.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) Build(manifest *agent.Manifest, store *FileContextStore, tokenBudget int) BuildResult {
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{})
 }
 
 // BuildContext constructs a context window and appends the user message.
+//
+// Expected:
+//   - ctx is a valid context.Context.
+//   - manifest is a non-nil agent manifest.
+//   - userMessage is the user's input text; may be empty.
+//   - store is a non-nil FileContextStore.
+//   - tokenBudget is the maximum number of tokens allowed.
+//
+// Returns:
+//   - A slice of messages forming the complete context window.
+//
+// Side effects:
+//   - Logs a warning if the system prompt exceeds the token budget.
 func (b *WindowBuilder) BuildContext(
 	ctx context.Context,
 	manifest *agent.Manifest,
@@ -60,6 +93,18 @@ func (b *WindowBuilder) BuildContext(
 }
 
 // BuildWithSummary constructs a context window including a conversation summary.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest.
+//   - store is a non-nil FileContextStore.
+//   - tokenBudget is the maximum number of tokens allowed.
+//   - summary is the conversation summary text to include.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages with the summary.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) BuildWithSummary(
 	manifest *agent.Manifest,
 	store *FileContextStore,
@@ -70,6 +115,18 @@ func (b *WindowBuilder) BuildWithSummary(
 }
 
 // BuildWithSemanticResults constructs a context window including semantic search results.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest.
+//   - store is a non-nil FileContextStore.
+//   - tokenBudget is the maximum number of tokens allowed.
+//   - semanticResults is a slice of SearchResult to include in the window.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages with semantic results.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) BuildWithSemanticResults(
 	manifest *agent.Manifest,
 	store *FileContextStore,

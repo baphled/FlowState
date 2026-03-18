@@ -12,6 +12,12 @@ type Registry struct {
 }
 
 // NewRegistry creates a new empty provider registry.
+//
+// Returns:
+//   - A pointer to an initialised Registry.
+//
+// Side effects:
+//   - None.
 func NewRegistry() *Registry {
 	return &Registry{
 		providers: make(map[string]Provider),
@@ -19,6 +25,12 @@ func NewRegistry() *Registry {
 }
 
 // Register adds a provider to the registry.
+//
+// Expected:
+//   - p is a valid, non-nil Provider.
+//
+// Side effects:
+//   - Modifies the registry's internal state (thread-safe).
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -26,6 +38,16 @@ func (r *Registry) Register(p Provider) {
 }
 
 // Get retrieves a provider by name.
+//
+// Expected:
+//   - name is a non-empty string matching a registered provider.
+//
+// Returns:
+//   - The provider if found.
+//   - An error if the provider is not registered.
+//
+// Side effects:
+//   - None.
 func (r *Registry) Get(name string) (Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -37,6 +59,12 @@ func (r *Registry) Get(name string) (Provider, error) {
 }
 
 // List returns the names of all registered providers.
+//
+// Returns:
+//   - A slice of provider names.
+//
+// Side effects:
+//   - None.
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

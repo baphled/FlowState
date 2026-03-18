@@ -26,11 +26,31 @@ type Importer struct {
 }
 
 // NewImporter creates a new skill importer for the given directory.
+//
+// Expected:
+//   - skillsDir is the directory path where imported skills are stored.
+//
+// Returns:
+//   - A configured Importer instance.
+//
+// Side effects:
+//   - None.
 func NewImporter(skillsDir string) *Importer {
 	return &Importer{SkillsDir: skillsDir}
 }
 
 // Add imports a skill from a GitHub repository.
+//
+// Expected:
+//   - ctx is a valid context for the git clone operation.
+//   - ownerRepo is a GitHub owner/repo string (e.g. "user/skill-name").
+//
+// Returns:
+//   - The imported Skill on success.
+//   - An error if cloning or importing fails.
+//
+// Side effects:
+//   - Clones the repository to a temporary directory and copies the skill file.
 func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	repoURL := fmt.Sprintf("https://github.com/%s.git", ownerRepo)
 
@@ -49,6 +69,16 @@ func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 }
 
 // AddFromPath imports a skill from a local directory path.
+//
+// Expected:
+//   - repoPath is a local directory containing a SKILL.md file.
+//
+// Returns:
+//   - The imported Skill on success.
+//   - An error if the SKILL.md is missing, invalid, or the skill already exists.
+//
+// Side effects:
+//   - Creates a new directory under SkillsDir and writes the skill file.
 func (imp *Importer) AddFromPath(_ context.Context, repoPath string) (Skill, error) {
 	skillMDPath, err := findSkillMD(repoPath)
 	if err != nil {

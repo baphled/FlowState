@@ -16,11 +16,27 @@ type FileSkillLoader struct {
 }
 
 // NewFileSkillLoader creates a new FileSkillLoader with the given base path.
+//
+// Expected:
+//   - basePath is the directory containing skill subdirectories.
+//
+// Returns:
+//   - A configured FileSkillLoader instance.
+//
+// Side effects:
+//   - None.
 func NewFileSkillLoader(basePath string) *FileSkillLoader {
 	return &FileSkillLoader{basePath: basePath}
 }
 
 // LoadAll loads all skills from the base path directory.
+//
+// Returns:
+//   - A slice of Skill values found in subdirectories, or empty on missing directory.
+//   - An error if the directory cannot be read.
+//
+// Side effects:
+//   - Reads SKILL.md files from each subdirectory under the base path.
 func (l *FileSkillLoader) LoadAll() ([]Skill, error) {
 	var skills []Skill
 	entries, err := os.ReadDir(l.basePath)
@@ -46,6 +62,16 @@ func (l *FileSkillLoader) LoadAll() ([]Skill, error) {
 }
 
 // LoadSkill loads a single skill from the given file path.
+//
+// Expected:
+//   - path is a valid file path to a SKILL.md file.
+//
+// Returns:
+//   - A pointer to the loaded Skill on success.
+//   - An error if the file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads the skill file from disk.
 func (l *FileSkillLoader) LoadSkill(path string) (*Skill, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

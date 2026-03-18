@@ -15,6 +15,12 @@ type Registry struct {
 }
 
 // NewRegistry creates a new empty agent registry.
+//
+// Returns:
+//   - A pointer to an initialised Registry.
+//
+// Side effects:
+//   - None.
 func NewRegistry() *Registry {
 	return &Registry{
 		manifests: make(map[string]*Manifest),
@@ -22,6 +28,17 @@ func NewRegistry() *Registry {
 }
 
 // Discover scans a directory for agent manifests and loads them into the registry.
+//
+// Expected:
+//   - dir is a valid path to an existing directory.
+//
+// Returns:
+//   - nil on success.
+//   - An error if the directory cannot be read or no valid manifests are found.
+//
+// Side effects:
+//   - Reads from the filesystem.
+//   - Replaces any existing manifests in the registry.
 func (r *Registry) Discover(dir string) error {
 	cleanDir := filepath.Clean(dir)
 	info, err := os.Stat(cleanDir)
@@ -55,17 +72,40 @@ func (r *Registry) Discover(dir string) error {
 }
 
 // Register adds a manifest to the registry.
+//
+// Expected:
+//   - manifest is a valid, non-nil Manifest pointer.
+//
+// Side effects:
+//   - Modifies the registry's internal state.
 func (r *Registry) Register(manifest *Manifest) {
 	r.manifests[manifest.ID] = manifest
 }
 
 // Get retrieves a manifest by ID.
+//
+// Expected:
+//   - id is a non-empty string.
+//
+// Returns:
+//   - The manifest and true if found.
+//   - nil and false if not found.
+//
+// Side effects:
+//   - None.
 func (r *Registry) Get(id string) (*Manifest, bool) {
 	manifest, ok := r.manifests[id]
 	return manifest, ok
 }
 
 // List returns all manifests in the registry sorted by ID.
+//
+// Returns:
+//   - A slice of manifests sorted alphabetically by ID.
+//   - nil if the registry is empty.
+//
+// Side effects:
+//   - None.
 func (r *Registry) List() []*Manifest {
 	if len(r.manifests) == 0 {
 		return nil

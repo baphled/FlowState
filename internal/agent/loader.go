@@ -12,6 +12,16 @@ import (
 )
 
 // LoadManifest loads an agent manifest from the given path, supporting JSON and Markdown formats.
+//
+// Expected:
+//   - path is a valid filesystem path to a .json or .md file.
+//
+// Returns:
+//   - The parsed Manifest on success.
+//   - An error if the file cannot be read or parsed.
+//
+// Side effects:
+//   - Reads from the filesystem.
 func LoadManifest(path string) (*Manifest, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
@@ -25,6 +35,16 @@ func LoadManifest(path string) (*Manifest, error) {
 }
 
 // LoadManifestJSON loads an agent manifest from a JSON file.
+//
+// Expected:
+//   - path is a valid filesystem path to a JSON file.
+//
+// Returns:
+//   - The parsed Manifest on success.
+//   - An error if the file cannot be read or contains invalid JSON.
+//
+// Side effects:
+//   - Reads from the filesystem.
 func LoadManifestJSON(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -39,6 +59,16 @@ func LoadManifestJSON(path string) (*Manifest, error) {
 }
 
 // LoadManifestMarkdown loads an agent manifest from a Markdown file with YAML frontmatter.
+//
+// Expected:
+//   - path is a valid filesystem path to a Markdown file with YAML frontmatter.
+//
+// Returns:
+//   - The parsed Manifest on success.
+//   - An error if the file cannot be read or frontmatter is invalid.
+//
+// Side effects:
+//   - Reads from the filesystem.
 func LoadManifestMarkdown(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

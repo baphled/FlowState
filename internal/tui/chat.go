@@ -37,6 +37,17 @@ type Model struct {
 }
 
 // NewModel creates a new chat model with the given engine and agent.
+//
+// Expected:
+//   - eng is a non-nil Engine for handling chat requests.
+//   - agentID identifies the agent to converse with.
+//   - sessionID is the session identifier for context persistence.
+//
+// Returns:
+//   - A configured Model ready for Bubble Tea initialisation.
+//
+// Side effects:
+//   - None.
 func NewModel(eng *engine.Engine, agentID string, sessionID string) *Model {
 	return &Model{
 		engine:    eng,
@@ -51,12 +62,27 @@ func NewModel(eng *engine.Engine, agentID string, sessionID string) *Model {
 	}
 }
 
-// Init implements tea.Model.
+// Init returns the initial command for the Bubble Tea model.
+//
+// Returns:
+//   - nil, as no initial command is needed.
+//
+// Side effects:
+//   - None.
 func (m *Model) Init() tea.Cmd {
 	return nil
 }
 
-// Update implements tea.Model.
+// Update processes a Bubble Tea message and returns the updated model.
+//
+// Expected:
+//   - msg is a tea.Msg to handle (key press, window resize, chunk, etc.).
+//
+// Returns:
+//   - The updated Model and any command to execute next.
+//
+// Side effects:
+//   - May initiate streaming requests or update internal state.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -163,7 +189,13 @@ func waitForChunk(chunks <-chan provider.StreamChunk) tea.Cmd {
 	}
 }
 
-// View implements tea.Model.
+// View renders the chat interface as a string.
+//
+// Returns:
+//   - The rendered string representation of the chat UI.
+//
+// Side effects:
+//   - None.
 func (m *Model) View() string {
 	var builder strings.Builder
 
@@ -192,45 +224,100 @@ func (m *Model) View() string {
 }
 
 // Mode returns the current input mode.
+//
+// Returns:
+//   - The mode string, either "normal" or "insert".
+//
+// Side effects:
+//   - None.
 func (m *Model) Mode() string {
 	return m.mode
 }
 
 // Input returns the current input text.
+//
+// Returns:
+//   - The current user input string.
+//
+// Side effects:
+//   - None.
 func (m *Model) Input() string {
 	return m.input
 }
 
 // IsStreaming returns whether the model is currently streaming a response.
+//
+// Returns:
+//   - True if a streaming response is in progress.
+//
+// Side effects:
+//   - None.
 func (m *Model) IsStreaming() bool {
 	return m.streaming
 }
 
 // Width returns the current terminal width.
+//
+// Returns:
+//   - The terminal width in columns.
+//
+// Side effects:
+//   - None.
 func (m *Model) Width() int {
 	return m.width
 }
 
 // Height returns the current terminal height.
+//
+// Returns:
+//   - The terminal height in rows.
+//
+// Side effects:
+//   - None.
 func (m *Model) Height() int {
 	return m.height
 }
 
 // ResponseContent returns the current streaming response content.
+//
+// Returns:
+//   - The accumulated response text from the current stream.
+//
+// Side effects:
+//   - None.
 func (m *Model) ResponseContent() string {
 	return m.response.String()
 }
 
 // Messages returns all messages in the chat history.
+//
+// Returns:
+//   - A slice of message strings in chronological order.
+//
+// Side effects:
+//   - None.
 func (m *Model) Messages() []string {
 	return m.messages
 }
 
+// Error returns the last error encountered during streaming.
+//
+// Returns:
+//   - The most recent error, or nil if no error occurred.
+//
+// Side effects:
+//   - None.
 func (m *Model) Error() error {
 	return m.err
 }
 
 // SetChunks sets the chunks channel for testing purposes.
+//
+// Expected:
+//   - chunks is a channel of StreamChunk values to read from.
+//
+// Side effects:
+//   - Replaces the model's internal chunks channel.
 func (m *Model) SetChunks(chunks <-chan provider.StreamChunk) {
 	m.chunks = chunks
 }
