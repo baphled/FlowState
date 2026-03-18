@@ -10,15 +10,28 @@ import (
 	"github.com/openai/openai-go/option"
 )
 
+var errAPIKeyRequired = errors.New("OpenAI API key is required")
+
 type Provider struct {
 	client openaiAPI.Client
 }
 
 func New(apiKey string) (*Provider, error) {
 	if apiKey == "" {
-		return nil, errors.New("OpenAI API key is required")
+		return nil, errAPIKeyRequired
 	}
 	client := openaiAPI.NewClient(option.WithAPIKey(apiKey))
+	return &Provider{
+		client: client,
+	}, nil
+}
+
+func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
+	if apiKey == "" {
+		return nil, errAPIKeyRequired
+	}
+	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	client := openaiAPI.NewClient(allOpts...)
 	return &Provider{
 		client: client,
 	}, nil

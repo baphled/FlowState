@@ -37,6 +37,16 @@ func New(apiKey string) (*Provider, error) {
 	return &Provider{client: client}, nil
 }
 
+// NewWithOptions creates a new Anthropic provider with the given API key and options.
+func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
+	if apiKey == "" {
+		return nil, errAPIKeyRequired
+	}
+	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	client := anthropicAPI.NewClient(allOpts...)
+	return &Provider{client: client}, nil
+}
+
 // Name returns the provider name.
 func (p *Provider) Name() string {
 	return providerName

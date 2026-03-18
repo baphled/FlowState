@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaAPI "github.com/ollama/ollama/api"
@@ -22,6 +24,18 @@ func New(host string) (*Provider, error) {
 	return &Provider{
 		client: client,
 		host:   host,
+	}, nil
+}
+
+func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ollama base URL: %w", err)
+	}
+	client := ollamaAPI.NewClient(parsedURL, httpClient)
+	return &Provider{
+		client: client,
+		host:   baseURL,
 	}, nil
 }
 
