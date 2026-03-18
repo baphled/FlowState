@@ -1,6 +1,8 @@
 package app_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -9,7 +11,57 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/mcp"
 )
+
+type mockMCPClient struct {
+	connectFn        func(ctx context.Context, cfg mcp.ServerConfig) error
+	listToolsFn      func(ctx context.Context, serverName string) ([]mcp.ToolInfo, error)
+	callToolFn       func(ctx context.Context, serverName, toolName string, args map[string]any) (*mcp.ToolResult, error)
+	disconnectFn     func(serverName string) error
+	disconnectAllFn  func() error
+	connectCalls     []mcp.ServerConfig
+	listToolCalls    []string
+	disconnectCalled bool
+}
+
+func (m *mockMCPClient) Connect(ctx context.Context, cfg mcp.ServerConfig) error {
+	m.connectCalls = append(m.connectCalls, cfg)
+	if m.connectFn != nil {
+		return m.connectFn(ctx, cfg)
+	}
+	return nil
+}
+
+func (m *mockMCPClient) Disconnect(serverName string) error {
+	if m.disconnectFn != nil {
+		return m.disconnectFn(serverName)
+	}
+	return nil
+}
+
+func (m *mockMCPClient) ListTools(ctx context.Context, serverName string) ([]mcp.ToolInfo, error) {
+	m.listToolCalls = append(m.listToolCalls, serverName)
+	if m.listToolsFn != nil {
+		return m.listToolsFn(ctx, serverName)
+	}
+	return nil, nil
+}
+
+func (m *mockMCPClient) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (*mcp.ToolResult, error) {
+	if m.callToolFn != nil {
+		return m.callToolFn(ctx, serverName, toolName, args)
+	}
+	return &mcp.ToolResult{}, nil
+}
+
+func (m *mockMCPClient) DisconnectAll() error {
+	m.disconnectCalled = true
+	if m.disconnectAllFn != nil {
+		return m.disconnectAllFn()
+	}
+	return nil
+}
 
 var _ = Describe("App", func() {
 	var tempDir string
@@ -266,6 +318,127 @@ When to use: Testing purposes
 					Expect(application.ConfigPath()).To(Equal(expectedPath))
 				})
 			})
+		})
+	})
+
+	Describe("MCP wiring", func() {
+		var client *mockMCPClient
+
+		BeforeEach(func() {
+			client = &mockMCPClient{}
+		})
+
+		Context("with enabled MCP servers in config", func() {
+			It("registers MCP proxy tools in the tool slice", func() {
+				client.listToolsFn = func(_ context.Context, _ string) ([]mcp.ToolInfo, error) {
+					return []mcp.ToolInfo{
+						{Name: "echo", Description: "Echoes input"},
+						{Name: "fetch", Description: "Fetches URL"},
+					}, nil
+				}
+
+				servers := []config.MCPServerConfig{
+					{Name: "test-server", Command: "test-cmd", Enabled: true},
+				}
+
+				tools := app.ConnectMCPServers(context.Background(), client, servers)
+
+				Expect(tools).To(HaveLen(2))
+				Expect(tools[0].Name()).To(Equal("echo"))
+				Expect(tools[1].Name()).To(Equal("fetch"))
+				Expect(client.connectCalls).To(HaveLen(1))
+				Expect(client.connectCalls[0].Name).To(Equal("test-server"))
+			})
+		})
+
+		Context("with disabled MCP servers", func() {
+			It("skips disabled servers", func() {
+				servers := []config.MCPServerConfig{
+					{Name: "disabled-server", Command: "test-cmd", Enabled: false},
+				}
+
+				tools := app.ConnectMCPServers(context.Background(), client, servers)
+
+				Expect(tools).To(BeEmpty())
+				Expect(client.connectCalls).To(BeEmpty())
+			})
+		})
+
+		Context("when connection fails", func() {
+			It("logs warning and continues without crashing", func() {
+				client.connectFn = func(_ context.Context, cfg mcp.ServerConfig) error {
+					if cfg.Name == "bad-server" {
+						return errors.New("connection refused")
+					}
+					return nil
+				}
+				client.listToolsFn = func(_ context.Context, _ string) ([]mcp.ToolInfo, error) {
+					return []mcp.ToolInfo{
+						{Name: "good-tool", Description: "Works"},
+					}, nil
+				}
+
+				servers := []config.MCPServerConfig{
+					{Name: "bad-server", Command: "bad-cmd", Enabled: true},
+					{Name: "good-server", Command: "good-cmd", Enabled: true},
+				}
+
+				tools := app.ConnectMCPServers(context.Background(), client, servers)
+
+				Expect(tools).To(HaveLen(1))
+				Expect(tools[0].Name()).To(Equal("good-tool"))
+			})
+		})
+
+		Context("when ListTools fails", func() {
+			It("logs warning and continues without crashing", func() {
+				client.listToolsFn = func(_ context.Context, serverName string) ([]mcp.ToolInfo, error) {
+					if serverName == "broken-server" {
+						return nil, errors.New("list tools failed")
+					}
+					return []mcp.ToolInfo{
+						{Name: "working-tool", Description: "Works"},
+					}, nil
+				}
+
+				servers := []config.MCPServerConfig{
+					{Name: "broken-server", Command: "cmd1", Enabled: true},
+					{Name: "ok-server", Command: "cmd2", Enabled: true},
+				}
+
+				tools := app.ConnectMCPServers(context.Background(), client, servers)
+
+				Expect(tools).To(HaveLen(1))
+				Expect(tools[0].Name()).To(Equal("working-tool"))
+			})
+		})
+	})
+
+	Describe("DisconnectAll", func() {
+		It("delegates to the MCP client", func() {
+			client := &mockMCPClient{}
+
+			application, err := app.NewForTest(app.TestConfig{
+				DataDir:   tempDir,
+				MCPClient: client,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = application.DisconnectAll()
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.disconnectCalled).To(BeTrue())
+		})
+
+		It("returns nil when no MCP client is set", func() {
+			application, err := app.NewForTest(app.TestConfig{
+				DataDir: tempDir,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = application.DisconnectAll()
+
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

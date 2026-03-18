@@ -12,6 +12,18 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run initialises and executes the FlowState application, returning an exit code.
+//
+// Returns:
+//   - 0 on success, 1 on failure.
+//
+// Side effects:
+//   - Loads configuration, initialises the application, and runs the CLI.
+//   - Defers MCP server disconnection for graceful shutdown.
+func run() int {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Printf("using default config: %v", err)
@@ -21,12 +33,18 @@ func main() {
 	application, err := app.New(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	defer func() {
+		if disconnectErr := application.DisconnectAll(); disconnectErr != nil {
+			log.Printf("warning: MCP disconnect: %v", disconnectErr)
+		}
+	}()
 
 	rootCmd := cli.NewRootCmd(application)
 
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

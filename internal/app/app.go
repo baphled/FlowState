@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
+	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/ollama"
@@ -23,6 +25,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
 	"github.com/baphled/flowstate/internal/tool/file"
+	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	"github.com/baphled/flowstate/internal/tool/web"
 )
 
@@ -36,6 +39,7 @@ type App struct {
 	Sessions  *ctxstore.FileSessionStore
 	Learning  *learning.JSONFileStore
 	API       *api.Server
+	mcpClient mcpclient.Client
 }
 
 // New creates a new App instance with all components initialised.
@@ -51,6 +55,7 @@ type App struct {
 //   - Reads agent manifests from the configured agent directory.
 //   - Reads skill files from the configured skill directory.
 //   - Creates session and context store directories if they do not exist.
+//   - Connects to configured MCP servers.
 func New(cfg *config.AppConfig) (*App, error) {
 	providerRegistry, ollamaProvider := registerProviders(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
@@ -67,6 +72,10 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	mcpMgr := mcpclient.NewManager()
+	appTools := buildTools()
+	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, cfg.MCPServers)
+	appTools = append(appTools, mcpTools...)
 	eng := engine.New(engine.Config{
 		ChatProvider:      defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(ollamaProvider),
@@ -75,7 +84,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,
 		HookChain:         buildHookChain(learningStore, alwaysActiveSkills),
-		Tools:             buildTools(),
+		Tools:             appTools,
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
@@ -89,6 +98,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Sessions:  sessionStore,
 		Learning:  learningStore,
 		API:       apiServer,
+		mcpClient: mcpMgr,
 	}, nil
 }
 
@@ -136,6 +146,21 @@ func (a *App) ConfigPath() string {
 	return filepath.Join(config.Dir(), "config.yaml")
 }
 
+// DisconnectAll closes all connected MCP server connections.
+//
+// Returns:
+//   - An error if disconnection fails, nil otherwise.
+//   - nil if no MCP client is configured.
+//
+// Side effects:
+//   - Closes all MCP sessions managed by the client.
+func (a *App) DisconnectAll() error {
+	if a.mcpClient == nil {
+		return nil
+	}
+	return a.mcpClient.DisconnectAll()
+}
+
 // extractSkillNames extracts the name field from each skill in the provided slice.
 //
 // Expected:
@@ -170,6 +195,48 @@ func buildTools() []tool.Tool {
 		file.New(),
 		web.New(),
 	}
+}
+
+// ConnectMCPServers connects to configured MCP servers and returns proxy tools.
+// Connection failures are logged as warnings and do not stop processing.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - client is a connected MCP Client.
+//   - servers is a slice of MCP server configurations.
+//
+// Returns:
+//   - A slice of tool.Tool implementations backed by connected MCP servers.
+//
+// Side effects:
+//   - Connects to MCP servers via the client.
+//   - Logs warnings for connection or tool listing failures.
+func ConnectMCPServers(ctx context.Context, client mcpclient.Client, servers []config.MCPServerConfig) []tool.Tool {
+	var tools []tool.Tool
+	for _, serverCfg := range servers {
+		if !serverCfg.Enabled {
+			continue
+		}
+		mcpServerConfig := mcpclient.ServerConfig{
+			Name:    serverCfg.Name,
+			Command: serverCfg.Command,
+			Args:    serverCfg.Args,
+			Env:     serverCfg.Env,
+		}
+		if err := client.Connect(ctx, mcpServerConfig); err != nil {
+			log.Printf("warning: MCP server %q failed to connect: %v", serverCfg.Name, err)
+			continue
+		}
+		serverTools, err := client.ListTools(ctx, serverCfg.Name)
+		if err != nil {
+			log.Printf("warning: MCP server %q ListTools failed: %v", serverCfg.Name, err)
+			continue
+		}
+		for _, t := range serverTools {
+			tools = append(tools, mcpproxy.NewProxy(client, serverCfg.Name, t))
+		}
+	}
+	return tools
 }
 
 // loadSkills loads all available skills and always-active skills from the configured skill directory.
@@ -404,6 +471,7 @@ type TestConfig struct {
 	SkillsDir   string
 	SessionsDir string
 	DataDir     string
+	MCPClient   mcpclient.Client
 }
 
 // NewForTest creates an App instance for testing with minimal dependencies.
@@ -472,5 +540,6 @@ func NewForTest(tc TestConfig) (*App, error) {
 		Sessions:  sessionStore,
 		Learning:  learningStore,
 		API:       nil,
+		mcpClient: tc.MCPClient,
 	}, nil
 }
