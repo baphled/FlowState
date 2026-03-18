@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -90,6 +90,10 @@ lint: ## Run linters
 	$(GOVET) ./...
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
 	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
+
+check-docblocks: ## Run structured docblock analyser
+	@echo "Checking docblocks..."
+	@go run ./cmd/docblocks/... ./...
 
 check: fmt lint test coverage-check ## Run all checks
 
