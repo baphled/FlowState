@@ -45,3 +45,65 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(registry.CheckPermission("bash")).To(Equal(tool.Allow))
 	})
 })
+
+var _ = Describe("CheckPermission", func() {
+	var registry *tool.Registry
+
+	BeforeEach(func() {
+		registry = tool.NewRegistry()
+	})
+
+	Context("when no permission is configured for a tool", func() {
+		It("defaults to Allow", func() {
+			Expect(registry.CheckPermission("unknown-tool")).To(Equal(tool.Allow))
+		})
+	})
+
+	Context("when a tool permission is set to Ask", func() {
+		BeforeEach(func() {
+			registry.SetPermission("mcp-tool", tool.Ask)
+		})
+
+		It("returns Ask for the configured tool", func() {
+			Expect(registry.CheckPermission("mcp-tool")).To(Equal(tool.Ask))
+		})
+
+		It("returns Allow for unconfigured tools", func() {
+			Expect(registry.CheckPermission("other-tool")).To(Equal(tool.Allow))
+		})
+	})
+
+	Context("when a tool permission is set to Deny", func() {
+		BeforeEach(func() {
+			registry.SetPermission("dangerous-tool", tool.Deny)
+		})
+
+		It("returns Deny for the configured tool", func() {
+			Expect(registry.CheckPermission("dangerous-tool")).To(Equal(tool.Deny))
+		})
+	})
+
+	Context("when a tool permission is set to Allow explicitly", func() {
+		BeforeEach(func() {
+			registry.SetPermission("safe-tool", tool.Allow)
+		})
+
+		It("returns Allow for the configured tool", func() {
+			Expect(registry.CheckPermission("safe-tool")).To(Equal(tool.Allow))
+		})
+	})
+
+	Context("when multiple permissions are configured", func() {
+		BeforeEach(func() {
+			registry.SetPermission("tool-a", tool.Ask)
+			registry.SetPermission("tool-b", tool.Deny)
+			registry.SetPermission("tool-c", tool.Allow)
+		})
+
+		It("returns the correct permission for each tool", func() {
+			Expect(registry.CheckPermission("tool-a")).To(Equal(tool.Ask))
+			Expect(registry.CheckPermission("tool-b")).To(Equal(tool.Deny))
+			Expect(registry.CheckPermission("tool-c")).To(Equal(tool.Allow))
+		})
+	})
+})

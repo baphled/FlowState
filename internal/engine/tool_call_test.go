@@ -74,6 +74,260 @@ func (p *streamSequenceProvider) Models() ([]provider.Model, error) {
 	return nil, nil
 }
 
+var _ = Describe("Engine Permission Check", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+		registry     *tool.Registry
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{
+			name:      "test-chat-provider",
+			sequences: [][]provider.StreamChunk{},
+		}
+
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool executed successfully"},
+		}
+
+		registry = tool.NewRegistry()
+		registry.Register(testTool)
+	})
+
+	Context("when tool permission is Allow", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Allow)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_allow",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("executes the tool immediately", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(testTool.execCalled).To(BeTrue())
+		})
+	})
+
+	Context("when tool permission is Deny", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Deny)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_deny",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+			}
+		})
+
+		It("does not execute the tool", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			var lastChunk provider.StreamChunk
+			for chunk := range chunks {
+				lastChunk = chunk
+			}
+
+			Expect(testTool.execCalled).To(BeFalse())
+			Expect(lastChunk.Error).To(HaveOccurred())
+			Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+		})
+	})
+
+	Context("when tool permission is Ask", func() {
+		BeforeEach(func() {
+			registry.SetPermission("test_tool", tool.Ask)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_ask",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		Context("when user approves", func() {
+			It("executes the tool", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+					PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+						return true, nil
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(testTool.execCalled).To(BeTrue())
+			})
+		})
+
+		Context("when user denies", func() {
+			It("does not execute the tool", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+					PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+						return false, nil
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk provider.StreamChunk
+				for chunk := range chunks {
+					lastChunk = chunk
+				}
+
+				Expect(testTool.execCalled).To(BeFalse())
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+			})
+		})
+
+		Context("when no permission handler is configured", func() {
+			It("defaults to deny", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					ToolRegistry: registry,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk provider.StreamChunk
+				for chunk := range chunks {
+					lastChunk = chunk
+				}
+
+				Expect(testTool.execCalled).To(BeFalse())
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(lastChunk.Error.Error()).To(ContainSubstring("denied"))
+			})
+		})
+	})
+
+	Context("when permission handler receives correct request info", func() {
+		It("passes tool name and arguments to the handler", func() {
+			registry.SetPermission("test_tool", tool.Ask)
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_info",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			}
+
+			var capturedReq tool.PermissionRequest
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+				ToolRegistry: registry,
+				PermissionHandler: func(req tool.PermissionRequest) (bool, error) {
+					capturedReq = req
+					return true, nil
+				},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(capturedReq.ToolName).To(Equal("test_tool"))
+			Expect(capturedReq.Arguments).To(HaveKeyWithValue("key", "value"))
+		})
+	})
+})
+
 var _ = Describe("Engine Tool Call Loop", func() {
 	var (
 		chatProvider *streamSequenceProvider

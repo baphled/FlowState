@@ -32,6 +32,8 @@ type Engine struct {
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
 	hookChain         *hook.Chain
+	toolRegistry      *tool.Registry
+	permissionHandler tool.PermissionHandler
 }
 
 // Config holds the configuration for creating a new Engine.
@@ -46,6 +48,8 @@ type Config struct {
 	TokenCounter      ctxstore.TokenCounter
 	StreamTimeout     time.Duration
 	HookChain         *hook.Chain
+	ToolRegistry      *tool.Registry
+	PermissionHandler tool.PermissionHandler
 }
 
 // New creates a new Engine from the given configuration.
@@ -87,6 +91,8 @@ func New(cfg Config) *Engine {
 		tokenCounter:      cfg.TokenCounter,
 		streamTimeout:     timeout,
 		hookChain:         cfg.HookChain,
+		toolRegistry:      cfg.ToolRegistry,
+		permissionHandler: cfg.PermissionHandler,
 	}
 }
 
@@ -305,6 +311,10 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
+		if denied := e.checkToolPermission(toolCall, outChan); denied {
+			return
+		}
+
 		toolResult, err := e.executeToolCall(ctx, toolCall)
 		if err != nil {
 			outChan <- provider.StreamChunk{Error: err, Done: true}
@@ -396,6 +406,79 @@ func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCal
 		}
 	}
 	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
+}
+
+// checkToolPermission verifies the tool has permission to execute.
+//
+// Expected:
+//   - toolCall is the pending tool invocation.
+//   - outChan is the output channel for error reporting.
+//
+// Returns:
+//   - true if the tool was denied (caller should return), false to proceed.
+//
+// Side effects:
+//   - Sends an error chunk to outChan if the tool is denied.
+//   - Invokes the permission handler for Ask permission.
+func (e *Engine) checkToolPermission(toolCall *provider.ToolCall, outChan chan<- provider.StreamChunk) bool {
+	if e.toolRegistry == nil {
+		return false
+	}
+
+	perm := e.toolRegistry.CheckPermission(toolCall.Name)
+
+	switch perm {
+	case tool.Allow:
+		return false
+	case tool.Deny:
+		outChan <- provider.StreamChunk{
+			Error: fmt.Errorf("tool %q denied by permission policy", toolCall.Name),
+			Done:  true,
+		}
+		return true
+	case tool.Ask:
+		return e.handleAskPermission(toolCall, outChan)
+	}
+
+	return false
+}
+
+// handleAskPermission prompts the user for tool execution approval.
+//
+// Expected:
+//   - toolCall is the pending tool invocation.
+//   - outChan is the output channel for error reporting.
+//
+// Returns:
+//   - true if denied (caller should return), false if approved.
+//
+// Side effects:
+//   - Invokes the permission handler callback.
+//   - Sends an error chunk to outChan if denied or handler is absent.
+func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<- provider.StreamChunk) bool {
+	if e.permissionHandler == nil {
+		outChan <- provider.StreamChunk{
+			Error: fmt.Errorf("tool %q denied: no permission handler configured", toolCall.Name),
+			Done:  true,
+		}
+		return true
+	}
+
+	req := tool.PermissionRequest{
+		ToolName:  toolCall.Name,
+		Arguments: toolCall.Arguments,
+	}
+
+	approved, err := e.permissionHandler(req)
+	if err != nil || !approved {
+		outChan <- provider.StreamChunk{
+			Error: fmt.Errorf("tool %q denied by user", toolCall.Name),
+			Done:  true,
+		}
+		return true
+	}
+
+	return false
 }
 
 // storeToolResult appends a tool result message to the context store.

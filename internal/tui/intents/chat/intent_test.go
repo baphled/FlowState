@@ -195,6 +195,64 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("ToolPermissionMsg handling", func() {
+		Context("when a ToolPermissionMsg is received", func() {
+			It("switches to permission mode", func() {
+				responseChan := make(chan bool, 1)
+				intent.Update(chat.ToolPermissionMsg{
+					ToolName:  "dangerous_tool",
+					Arguments: map[string]interface{}{"file": "/etc/passwd"},
+					Response:  responseChan,
+				})
+				Expect(intent.Mode()).To(Equal("permission"))
+			})
+
+			It("shows tool details in the view", func() {
+				responseChan := make(chan bool, 1)
+				intent.Update(chat.ToolPermissionMsg{
+					ToolName:  "dangerous_tool",
+					Arguments: map[string]interface{}{"file": "/etc/passwd"},
+					Response:  responseChan,
+				})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("dangerous_tool"))
+				Expect(view).To(ContainSubstring("y/n"))
+			})
+		})
+
+		Context("when user approves with 'y'", func() {
+			It("sends true on response channel and returns to normal mode", func() {
+				responseChan := make(chan bool, 1)
+				intent.Update(chat.ToolPermissionMsg{
+					ToolName:  "test_tool",
+					Arguments: map[string]interface{}{},
+					Response:  responseChan,
+				})
+
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+
+				Expect(intent.Mode()).To(Equal("normal"))
+				Eventually(responseChan).Should(Receive(BeTrue()))
+			})
+		})
+
+		Context("when user denies with 'n'", func() {
+			It("sends false on response channel and returns to normal mode", func() {
+				responseChan := make(chan bool, 1)
+				intent.Update(chat.ToolPermissionMsg{
+					ToolName:  "test_tool",
+					Arguments: map[string]interface{}{},
+					Response:  responseChan,
+				})
+
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+
+				Expect(intent.Mode()).To(Equal("normal"))
+				Eventually(responseChan).Should(Receive(BeFalse()))
+			})
+		})
+	})
+
 	Describe("Intent interface compliance", func() {
 		It("satisfies app.Intent interface", func() {
 			var _ interface {

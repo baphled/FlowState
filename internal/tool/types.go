@@ -41,6 +41,16 @@ type Property struct {
 	Enum        []string
 }
 
+// PermissionRequest describes a tool invocation awaiting user approval.
+type PermissionRequest struct {
+	ToolName  string
+	Arguments map[string]interface{}
+}
+
+// PermissionHandler is a callback invoked when a tool requires Ask permission.
+// It returns true if the user approves the tool call, false to deny.
+type PermissionHandler func(req PermissionRequest) (bool, error)
+
 // Tool is the interface that all tools must implement.
 type Tool interface {
 	// Name returns the unique name of the tool.

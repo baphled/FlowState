@@ -7,8 +7,9 @@ import (
 
 // Registry holds registered tools and provides lookup functionality.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool
+	mu          sync.RWMutex
+	tools       map[string]Tool
+	permissions map[string]Permission
 }
 
 // NewRegistry creates a new empty tool registry.
@@ -20,7 +21,8 @@ type Registry struct {
 //   - None.
 func NewRegistry() *Registry {
 	return &Registry{
-		tools: make(map[string]Tool),
+		tools:       make(map[string]Tool),
+		permissions: make(map[string]Permission),
 	}
 }
 
@@ -75,16 +77,38 @@ func (r *Registry) List() []Tool {
 	return tools
 }
 
-// CheckPermission returns the permission level for a tool (currently always Allow).
+// SetPermission sets the permission level for a specific tool.
 //
 // Expected:
-//   - toolName is a tool identifier (currently ignored).
+//   - toolName is a tool identifier.
+//   - perm is the desired Permission level.
 //
 // Returns:
-//   - The permission level for the tool.
+//   - Nothing.
+//
+// Side effects:
+//   - Modifies the registry's internal permission state (thread-safe).
+func (r *Registry) SetPermission(toolName string, perm Permission) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.permissions[toolName] = perm
+}
+
+// CheckPermission returns the permission level for a tool.
+//
+// Expected:
+//   - toolName is a tool identifier.
+//
+// Returns:
+//   - The configured Permission for the tool, or Allow if not configured.
 //
 // Side effects:
 //   - None.
-func (r *Registry) CheckPermission(_ string) Permission {
+func (r *Registry) CheckPermission(toolName string) Permission {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if perm, ok := r.permissions[toolName]; ok {
+		return perm
+	}
 	return Allow
 }

@@ -2,6 +2,7 @@
 package chat
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +17,13 @@ type StreamChunkMsg struct {
 	Done    bool
 }
 
+// ToolPermissionMsg requests user approval for a tool invocation.
+type ToolPermissionMsg struct {
+	ToolName  string
+	Arguments map[string]interface{}
+	Response  chan<- bool
+}
+
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
 	Engine       *engine.Engine
@@ -28,21 +36,22 @@ type IntentConfig struct {
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
-	engine       *engine.Engine
-	agentID      string
-	sessionID    string
-	messages     []string
-	input        string
-	mode         string
-	streaming    bool
-	response     strings.Builder
-	width        int
-	height       int
-	statusBar    *layout.StatusBar
-	tokenCount   int
-	providerName string
-	modelName    string
-	tokenBudget  int
+	engine            *engine.Engine
+	agentID           string
+	sessionID         string
+	messages          []string
+	input             string
+	mode              string
+	streaming         bool
+	response          strings.Builder
+	width             int
+	height            int
+	statusBar         *layout.StatusBar
+	tokenCount        int
+	providerName      string
+	modelName         string
+	tokenBudget       int
+	pendingPermission *ToolPermissionMsg
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -120,6 +129,9 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case StreamChunkMsg:
 		i.handleStreamChunk(msg)
 		return nil
+	case ToolPermissionMsg:
+		i.handleToolPermission(msg)
+		return nil
 	}
 	return nil
 }
@@ -135,6 +147,10 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 // Side effects:
 //   - Updates mode, input, or returns a quit command based on key input.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	if i.mode == "permission" {
+		return i.handlePermissionKey(msg)
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
@@ -286,10 +302,13 @@ func (i *Intent) View() string {
 	builder.WriteString(i.input)
 	builder.WriteString("\n\n")
 
-	if i.mode == "normal" {
-		builder.WriteString("[NORMAL] q: quit | i: insert mode")
-	} else {
+	switch i.mode {
+	case "permission":
+		builder.WriteString(i.renderPermissionPrompt())
+	case "insert":
 		builder.WriteString("[INSERT] Esc: normal mode | Enter: send")
+	default:
+		builder.WriteString("[NORMAL] q: quit | i: insert mode")
 	}
 
 	builder.WriteString("\n")
@@ -298,10 +317,76 @@ func (i *Intent) View() string {
 	return builder.String()
 }
 
+// handleToolPermission processes a tool permission request by entering permission mode.
+//
+// Expected:
+//   - msg contains tool details and a response channel.
+//
+// Side effects:
+//   - Switches the intent to "permission" mode and stores the pending request.
+func (i *Intent) handleToolPermission(msg ToolPermissionMsg) {
+	i.mode = "permission"
+	i.pendingPermission = &msg
+}
+
+// handlePermissionKey processes key input during permission mode.
+//
+// Expected:
+//   - msg is a tea.KeyMsg while in permission mode.
+//
+// Returns:
+//   - A tea.Cmd to execute, or nil.
+//
+// Side effects:
+//   - Sends approval/denial on the response channel and returns to normal mode.
+func (i *Intent) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
+		return nil
+	}
+
+	switch msg.Runes[0] {
+	case 'y':
+		i.resolvePermission(true)
+	case 'n':
+		i.resolvePermission(false)
+	}
+	return nil
+}
+
+// resolvePermission sends the user's decision and exits permission mode.
+//
+// Expected:
+//   - approved indicates whether the user accepted the tool call.
+//
+// Side effects:
+//   - Sends the decision on the pending permission's response channel.
+//   - Clears the pending permission and returns to normal mode.
+func (i *Intent) resolvePermission(approved bool) {
+	if i.pendingPermission != nil && i.pendingPermission.Response != nil {
+		i.pendingPermission.Response <- approved
+	}
+	i.pendingPermission = nil
+	i.mode = "normal"
+}
+
+// renderPermissionPrompt builds the permission confirmation prompt.
+//
+// Returns:
+//   - A string showing tool name and y/n options.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderPermissionPrompt() string {
+	if i.pendingPermission == nil {
+		return "[PERMISSION] No pending request"
+	}
+	return fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
+}
+
 // Mode returns the current input mode.
 //
 // Returns:
-//   - The current mode: "normal" or "insert".
+//   - The current mode: "normal", "insert", or "permission".
 //
 // Side effects:
 //   - None.
