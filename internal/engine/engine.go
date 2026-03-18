@@ -125,6 +125,33 @@ func (e *Engine) BuildSystemPrompt() string {
 	return builder.String()
 }
 
+func (e *Engine) buildToolSchemas() []provider.Tool {
+	tools := make([]provider.Tool, 0, len(e.tools))
+	for _, t := range e.tools {
+		schema := t.Schema()
+		props := make(map[string]interface{})
+		for k, v := range schema.Properties {
+			props[k] = map[string]interface{}{
+				"type":        v.Type,
+				"description": v.Description,
+			}
+			if len(v.Enum) > 0 {
+				props[k].(map[string]interface{})["enum"] = v.Enum
+			}
+		}
+		tools = append(tools, provider.Tool{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Schema: provider.ToolSchema{
+				Type:       schema.Type,
+				Properties: props,
+				Required:   schema.Required,
+			},
+		})
+	}
+	return tools
+}
+
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	_ = agentID
 
@@ -138,6 +165,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	providerChunks, err := e.streamFromProvider(ctx, provider.ChatRequest{
 		Messages: messages,
+		Tools:    e.buildToolSchemas(),
 	})
 	if err != nil {
 		return nil, err
@@ -199,6 +227,7 @@ func (e *Engine) streamWithToolLoop(
 		var streamErr error
 		providerChunks, streamErr = e.streamFromProvider(ctx, provider.ChatRequest{
 			Messages: messages,
+			Tools:    e.buildToolSchemas(),
 		})
 		if streamErr != nil {
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
