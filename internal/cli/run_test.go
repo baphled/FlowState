@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
@@ -85,7 +86,7 @@ var _ = Describe("run command", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out.String()).To(Equal("hello world\n"))
 	})
-	It("prints JSON output with success response and agent", func() {
+	It("prints JSON output with agent, prompt, response and session", func() {
 		testApp := createRunTestApp([]provider.StreamChunk{
 			{Content: "hello"},
 			{Done: true},
@@ -93,14 +94,16 @@ var _ = Describe("run command", func() {
 		err := runCmd(testApp, "run", "--prompt", "say hello", "--agent", "builder", "--json")
 		Expect(err).NotTo(HaveOccurred())
 		var payload struct {
-			Success  bool   `json:"success"`
-			Response string `json:"response"`
 			Agent    string `json:"agent"`
+			Prompt   string `json:"prompt"`
+			Response string `json:"response"`
+			Session  string `json:"session"`
 		}
 		Expect(json.Unmarshal(out.Bytes(), &payload)).To(Succeed())
-		Expect(payload.Success).To(BeTrue())
 		Expect(payload.Response).To(Equal("hello"))
 		Expect(payload.Agent).To(Equal("builder"))
+		Expect(payload.Prompt).To(Equal("say hello"))
+		Expect(payload.Session).To(HavePrefix("session-"))
 	})
 	It("defaults the agent to worker", func() {
 		testApp := createRunTestApp([]provider.StreamChunk{
@@ -138,5 +141,45 @@ var _ = Describe("run command", func() {
 		err := runCmd(testApp, "run", "--prompt", "hello")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("streaming response: provider unavailable"))
+	})
+
+	It("includes session and prompt in JSON output", func() {
+		testApp := createRunTestApp([]provider.StreamChunk{
+			{Content: "response", Done: true},
+		}, nil)
+		err := runCmd(testApp, "run", "--prompt", "my prompt", "--session", "test-session", "--json")
+		Expect(err).NotTo(HaveOccurred())
+		var payload struct {
+			Session  string `json:"session"`
+			Prompt   string `json:"prompt"`
+			Response string `json:"response"`
+		}
+		Expect(json.Unmarshal(out.Bytes(), &payload)).To(Succeed())
+		Expect(payload.Session).To(Equal("test-session"))
+		Expect(payload.Prompt).To(Equal("my prompt"))
+		Expect(payload.Response).To(Equal("response"))
+	})
+
+	It("generates a session ID when none provided", func() {
+		testApp := createRunTestApp([]provider.StreamChunk{
+			{Content: "ok", Done: true},
+		}, nil)
+		err := runCmd(testApp, "run", "--prompt", "hello", "--json")
+		Expect(err).NotTo(HaveOccurred())
+		var payload struct {
+			Session string `json:"session"`
+		}
+		Expect(json.Unmarshal(out.Bytes(), &payload)).To(Succeed())
+		Expect(payload.Session).To(HavePrefix("session-"))
+	})
+
+	It("shows session flag in help", func() {
+		testApp := createTestApp("", "")
+		err := runCmd(testApp, "run", "--help")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.String()).To(ContainSubstring("--session"))
+		Expect(out.String()).To(ContainSubstring("--prompt"))
+		Expect(out.String()).To(ContainSubstring("--agent"))
+		Expect(out.String()).To(ContainSubstring("--json"))
 	})
 })
