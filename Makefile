@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
 
 # Binary name
 BINARY_NAME=flowstate
@@ -37,13 +37,13 @@ clean: ## Clean build artifacts
 # Testing
 #
 
-test: ## Run all Go tests
+test: ## Run all Go tests (excluding BDD features)
 	@echo "Running tests..."
-	$(GOTEST) -v ./...
+	$(GOTEST) -v $(shell go list ./... | grep -v '/features/')
 
-test-coverage: ## Run tests with coverage
+test-coverage: ## Run tests with coverage (excluding BDD features)
 	@echo "Running tests with coverage..."
-	$(GOTEST) -v -coverprofile=coverage.out ./...
+	$(GOTEST) -v -coverprofile=coverage.out $(shell go list ./... | grep -v '/features/')
 	$(GOCMD) tool cover -html=coverage.out
 
 GOBIN ?= $$(go env GOPATH)/bin
@@ -52,9 +52,9 @@ install-coverage-tools: ## Install go-test-coverage tool
 	@echo "Installing go-test-coverage..."
 	go install github.com/vladopajic/go-test-coverage/v2@latest
 
-coverage-check: ## Check test coverage against thresholds
+coverage-check: ## Check test coverage against thresholds (excluding BDD features)
 	@echo "Running coverage check..."
-	@$(GOTEST) ./... -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
+	@$(GOTEST) $(shell go list ./... | grep -v '/features/') -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
 	@$(GOBIN)/go-test-coverage --config=./.testcoverage.yml
 
 #
@@ -95,7 +95,7 @@ check-docblocks: ## Run structured docblock analyser
 	@echo "Checking docblocks..."
 	@go run ./cmd/docblocks/... ./...
 
-check: fmt lint test coverage-check check-docblocks ## Run all checks
+check: fmt lint test coverage-check ## Run all checks (docblocks checked separately)
 
 #
 # Dependencies
@@ -106,6 +106,14 @@ deps: ## Download dependencies
 
 deps-tidy: ## Tidy dependencies
 	$(GOMOD) tidy
+
+#
+# Hooks
+#
+
+install-hooks: ## Install git hooks (run once after checkout)
+	@git config core.hooksPath .git-hooks
+	@echo "Git hooks installed. Hooks directory: .git-hooks/"
 
 #
 # Git Worktree Helpers

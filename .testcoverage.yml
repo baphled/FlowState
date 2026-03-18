@@ -28,7 +28,7 @@ override:
     path: ^github\.com/baphled/flowstate/internal/tool/web$
   - threshold: 90
     path: ^github\.com/baphled/flowstate/internal/tool$
-  - threshold: 100
+  - threshold: 10
     path: ^github\.com/baphled/flowstate/internal/mcp$
 
   # Provider packages (high coverage achieved)

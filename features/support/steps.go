@@ -19,9 +19,13 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/tui/components"
+	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/cucumber/godog"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // StepDefinitions holds state and step implementations for BDD scenarios.
@@ -86,6 +90,17 @@ type StepDefinitions struct {
 	workingDirectory     string
 	sessions             map[string]*TestSession
 	currentSessionID     string
+
+	mcpManager         *mcp.Manager
+	mcpTools           []mcp.ToolInfo
+	mcpToolResult      *mcp.ToolResult
+	mcpServer          *mcpsdk.Server
+	mcpServerErr       chan error
+	mcpClientTransport mcpsdk.Transport
+	mcpServerTransport mcpsdk.Transport
+
+	chatView  *chat.View
+	statusBar *components.StatusBar
 }
 
 // TestApp represents a test application instance.
@@ -3107,45 +3122,124 @@ func (s *StepDefinitions) subsequentCommandsShouldAutoApprove(command string) er
 // MCP tool integration step stubs — pending implementation.
 
 func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
-	return godog.ErrPending
+	s.mcpManager = mcp.NewManager()
+
+	clientTransport, serverTransport := mcpsdk.NewInMemoryTransports()
+	s.mcpClientTransport = clientTransport
+	s.mcpServerTransport = serverTransport
+
+	s.mcpServer = mcpsdk.NewServer(&mcpsdk.Implementation{
+		Name:    "test-server",
+		Version: "1.0.0",
+	}, nil)
+
+	type EchoInput struct {
+		Message string `json:"message"`
+	}
+	type EchoOutput struct {
+		Result string `json:"result"`
+	}
+
+	mcpsdk.AddTool(s.mcpServer, &mcpsdk.Tool{
+		Name:        "echo",
+		Description: "Echo the input message",
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest, args EchoInput) (*mcpsdk.CallToolResult, EchoOutput, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{
+				&mcpsdk.TextContent{Text: "Echo: " + args.Message},
+			},
+		}, EchoOutput{Result: args.Message}, nil
+	})
+
+	s.mcpServerErr = make(chan error, 1)
+	go func() {
+		s.mcpServerErr <- s.mcpServer.Run(context.Background(), s.mcpServerTransport)
+	}()
+
+	return nil
 }
 
 func (s *StepDefinitions) iConnectToTheMCPServer() error {
-	return godog.ErrPending
+	ctx := context.Background()
+	return s.mcpManager.ConnectWithTransport(ctx, "test-server", s.mcpClientTransport)
 }
 
 func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
-	return godog.ErrPending
+	ctx := context.Background()
+	tools, err := s.mcpManager.ListTools(ctx, "test-server")
+	if err != nil {
+		return fmt.Errorf("failed to list tools: %w", err)
+	}
+	if len(tools) == 0 {
+		return errors.New("expected at least one tool, got none")
+	}
+	s.mcpTools = tools
+	return nil
 }
 
 func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
-	return godog.ErrPending
+	if err := s.flowstateIsConfiguredWithAnMCPServer(); err != nil {
+		return err
+	}
+	return s.iConnectToTheMCPServer()
 }
 
 func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
-	return godog.ErrPending
+	ctx := context.Background()
+	result, err := s.mcpManager.CallTool(ctx, "test-server", "echo", map[string]any{"message": "hello"})
+	if err != nil {
+		return fmt.Errorf("failed to call tool: %w", err)
+	}
+	s.mcpToolResult = result
+	return nil
 }
 
 func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
-	return godog.ErrPending
+	if s.mcpToolResult == nil {
+		return errors.New("expected tool result, got nil")
+	}
+	if s.mcpToolResult.Content == "" {
+		return errors.New("expected tool result content, got empty string")
+	}
+	if s.mcpToolResult.IsError {
+		return fmt.Errorf("tool returned an error: %s", s.mcpToolResult.Content)
+	}
+	return nil
 }
 
 func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
-	return godog.ErrPending
+	if s.mcpManager == nil {
+		return errors.New("MCP manager not initialised")
+	}
+	return s.mcpManager.Disconnect("test-server")
 }
 
 func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
-	return godog.ErrPending
+	if s.mcpManager == nil {
+		return errors.New("MCP manager not initialised")
+	}
+	servers := s.mcpManager.ListServers()
+	if len(servers) != 0 {
+		return fmt.Errorf("expected 0 servers after disconnect, got %d: %v", len(servers), servers)
+	}
+	return nil
 }
 
 // TUI markdown rendering and token display step stubs — pending implementation.
 
 func (s *StepDefinitions) flowstateTUIIsRunning() error {
-	return godog.ErrPending
+	s.chatView = chat.NewView()
+	s.statusBar = components.New()
+	return nil
 }
 
 func (s *StepDefinitions) theAISendsAResponseWithACodeBlock() error {
-	return godog.ErrPending
+	if s.chatView == nil {
+		return errors.New("chatView not initialised - call flowstateTUIIsRunning first")
+	}
+	codeBlockResponse := "Here's an example:\n```go\nfunc hello() {\n    fmt.Println(\"Hello, World!\")\n}\n```"
+	s.chatView.AddMessage(chat.Message{Role: "assistant", Content: codeBlockResponse})
+	return nil
 }
 
 func (s *StepDefinitions) theResponseShouldBeRenderedWithSyntaxHighlighting() error {

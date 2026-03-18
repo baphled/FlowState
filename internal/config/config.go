@@ -46,14 +46,14 @@ type MCPServerConfig struct {
 	Enabled bool              `yaml:"enabled"`
 }
 
-// ConfigDir returns the configuration directory path.
+// Dir returns the configuration directory path.
 //
 // Checks XDG_CONFIG_HOME environment variable first, then falls back to
 // ~/.config/flowstate. Returns the directory path (not the config file).
 //
 // Returns:
 //   - The path to the FlowState configuration directory.
-func ConfigDir() string {
+func Dir() string {
 	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
 		return filepath.Join(xdgConfigHome, "flowstate")
 	}
@@ -139,7 +139,7 @@ func DefaultConfig() *AppConfig {
 //   - Reads the configuration file from disk if it exists.
 func LoadConfig() (*AppConfig, error) {
 	paths := []string{
-		filepath.Join(ConfigDir(), "config.yaml"),
+		filepath.Join(Dir(), "config.yaml"),
 		filepath.Join(homeDir(), ".config", "flowstate", "config.yaml"),
 		filepath.Join(homeDir(), ".flowstate", "config.yaml"),
 	}

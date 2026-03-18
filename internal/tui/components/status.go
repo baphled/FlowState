@@ -68,10 +68,10 @@ func tokenColor(used, budget int) lipgloss.Color {
 
 // RenderContent renders the status bar for the given width.
 // Uses lipgloss for styling:
-// - subtle background
-// - provider name in bold
-// - token count colour-coded: green <70%, yellow 70-90%, red >90%
-// - mode indicator (NORMAL/INSERT)
+// - subtle background.
+// - provider name in bold.
+// - token count colour-coded: green <70%, yellow 70-90%, red >90%.
+// - mode indicator (NORMAL/INSERT).
 func (s *StatusBar) RenderContent(width int) string {
 	var (
 		providerStyle  = lipgloss.NewStyle().Bold(true).Padding(0, 1)

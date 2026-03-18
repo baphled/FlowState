@@ -255,6 +255,67 @@ var _ = Describe("Manager", func() {
 				Expect(err.Error()).To(ContainSubstring("not found"))
 			})
 		})
+
+		Context("when server is connected", func() {
+			var (
+				server          *mcpsdk.Server
+				serverErr       chan error
+				clientTransport mcpsdk.Transport
+				serverTransport mcpsdk.Transport
+			)
+
+			BeforeEach(func() {
+				clientTransport, serverTransport = mcpsdk.NewInMemoryTransports()
+
+				server = mcpsdk.NewServer(&mcpsdk.Implementation{
+					Name:    "test-server",
+					Version: "1.0.0",
+				}, nil)
+
+				type EchoInput struct {
+					Message string `json:"message"`
+				}
+				type EchoOutput struct {
+					Result string `json:"result"`
+				}
+
+				mcpsdk.AddTool(server, &mcpsdk.Tool{
+					Name:        "echo",
+					Description: "Echo the input message",
+				}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args EchoInput) (*mcpsdk.CallToolResult, EchoOutput, error) {
+					return &mcpsdk.CallToolResult{
+						Content: []mcpsdk.Content{
+							&mcpsdk.TextContent{Text: "Echo: " + args.Message},
+						},
+					}, EchoOutput{Result: args.Message}, nil
+				})
+
+				serverErr = make(chan error, 1)
+				go func() {
+					serverErr <- server.Run(ctx, serverTransport)
+				}()
+
+				factory := func(_ context.Context, _ mcp.ServerConfig) (mcpsdk.Transport, error) {
+					return clientTransport, nil
+				}
+				manager = mcp.NewManager(mcp.WithTransportFactory(factory))
+
+				err := manager.Connect(ctx, mcp.ServerConfig{Name: "test-server", Command: "unused"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			AfterEach(func() {
+				manager.DisconnectAll()
+				Eventually(serverErr).Should(Receive())
+			})
+
+			It("returns the tools from the server", func() {
+				tools, err := manager.ListTools(ctx, "test-server")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tools).To(HaveLen(1))
+				Expect(tools[0].Name).To(Equal("echo"))
+			})
+		})
 	})
 
 	Describe("CallTool", func() {
@@ -263,6 +324,78 @@ var _ = Describe("Manager", func() {
 				_, err := manager.CallTool(ctx, "unknown-server", "tool", nil)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("not found"))
+			})
+		})
+
+		Context("when server is connected", func() {
+			var (
+				server          *mcpsdk.Server
+				serverErr       chan error
+				clientTransport mcpsdk.Transport
+				serverTransport mcpsdk.Transport
+			)
+
+			BeforeEach(func() {
+				clientTransport, serverTransport = mcpsdk.NewInMemoryTransports()
+
+				server = mcpsdk.NewServer(&mcpsdk.Implementation{
+					Name:    "test-server",
+					Version: "1.0.0",
+				}, nil)
+
+				type EchoInput struct {
+					Message string `json:"message"`
+				}
+				type EchoOutput struct {
+					Result string `json:"result"`
+				}
+
+				mcpsdk.AddTool(server, &mcpsdk.Tool{
+					Name:        "echo",
+					Description: "Echo the input message",
+				}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args EchoInput) (*mcpsdk.CallToolResult, EchoOutput, error) {
+					return &mcpsdk.CallToolResult{
+						Content: []mcpsdk.Content{
+							&mcpsdk.TextContent{Text: "Echo: " + args.Message},
+						},
+					}, EchoOutput{Result: args.Message}, nil
+				})
+
+				serverErr = make(chan error, 1)
+				go func() {
+					serverErr <- server.Run(ctx, serverTransport)
+				}()
+
+				factory := func(_ context.Context, _ mcp.ServerConfig) (mcpsdk.Transport, error) {
+					return clientTransport, nil
+				}
+				manager = mcp.NewManager(mcp.WithTransportFactory(factory))
+
+				err := manager.Connect(ctx, mcp.ServerConfig{Name: "test-server", Command: "unused"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			AfterEach(func() {
+				manager.DisconnectAll()
+				Eventually(serverErr).Should(Receive())
+			})
+
+			Context("when tool exists", func() {
+				It("calls the tool and returns the result", func() {
+					result, err := manager.CallTool(ctx, "test-server", "echo", map[string]any{
+						"message": "hello",
+					})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result).NotTo(BeNil())
+					Expect(result.Content).To(ContainSubstring("Echo: hello"))
+				})
+			})
+
+			Context("when tool does not exist", func() {
+				It("returns an error", func() {
+					_, err := manager.CallTool(ctx, "test-server", "nonexistent", nil)
+					Expect(err).To(HaveOccurred())
+				})
 			})
 		})
 	})
@@ -281,7 +414,7 @@ var _ = Describe("Manager", func() {
 			servers = make([]*mcpsdk.Server, 0, 3)
 			serverErrs = make([]chan error, 0, 3)
 
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				ct, st := mcpsdk.NewInMemoryTransports()
 				transports = append(transports, ct)
 

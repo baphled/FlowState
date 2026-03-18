@@ -5,8 +5,11 @@ import tea "github.com/charmbracelet/bubbletea"
 // ChatModel defines the interface for the chat model that ChatAdapter wraps.
 // This allows the adapter to work with any model that implements these methods.
 type ChatModel interface {
+	// Init initialises the chat model.
 	Init() tea.Cmd
+	// Update handles messages and returns the updated model and command.
 	Update(msg tea.Msg) (tea.Model, tea.Cmd)
+	// View renders the chat model as a string.
 	View() string
 }
 

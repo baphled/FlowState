@@ -76,7 +76,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 
 // defaultTransportFactory creates a CommandTransport for production use.
 func defaultTransportFactory(_ context.Context, config ServerConfig) (mcp.Transport, error) {
-	cmd := exec.Command(config.Command, config.Args...)
+	cmd := exec.Command(config.Command, config.Args...) //nolint:gosec // intentional subprocess execution
 	if len(config.Env) > 0 {
 		env := make([]string, 0, len(config.Env))
 		for k, v := range config.Env {

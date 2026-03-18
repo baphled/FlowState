@@ -45,6 +45,7 @@ git branch -d feature/my-feature
 | **Format** | `make fmt` |
 | **Lint** | `make lint` |
 | **Full check** | `make check` |
+| **Install hooks** | `make install-hooks` |
 
 ## Commit Rules (MANDATORY — NO EXCEPTIONS)
 
@@ -71,6 +72,12 @@ Reviewed-By: Yomi Colledge <baphled@boodah.net>
 - Ensures proper AI attribution on every commit
 - Maintains audit trail of AI-assisted code
 - Violations will be caught by `make check-ai-attribution`
+
+**Pre-commit hook setup (run once after checkout or worktree creation):**
+```bash
+make install-hooks
+```
+This configures the version-controlled pre-commit hook in `.git-hooks/` which enforces `make check` before every commit. Commits will be blocked if checks fail.
 
 
 

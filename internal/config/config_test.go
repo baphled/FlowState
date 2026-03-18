@@ -30,7 +30,7 @@ var _ = Describe("Config", func() {
 				os.Setenv("XDG_CONFIG_HOME", xdgPath)
 				DeferCleanup(func() { os.Unsetenv("XDG_CONFIG_HOME") })
 
-				result := config.ConfigDir()
+				result := config.Dir()
 
 				Expect(result).To(Equal(filepath.Join(xdgPath, "flowstate")))
 			})
@@ -41,7 +41,7 @@ var _ = Describe("Config", func() {
 				os.Unsetenv("XDG_CONFIG_HOME")
 				DeferCleanup(func() {})
 
-				result := config.ConfigDir()
+				result := config.Dir()
 				homeDir, _ := os.UserHomeDir()
 
 				Expect(result).To(Equal(filepath.Join(homeDir, ".config", "flowstate")))

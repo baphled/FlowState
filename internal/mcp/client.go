@@ -4,8 +4,8 @@ package mcp
 
 import "context"
 
-// MCPClient defines the interface for connecting to and interacting with MCP servers.
-type MCPClient interface {
+// Client defines the interface for connecting to and interacting with MCP servers.
+type Client interface {
 	// Connect establishes a connection to an MCP server.
 	Connect(ctx context.Context, config ServerConfig) error
 

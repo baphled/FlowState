@@ -280,6 +280,7 @@ linters:
             - github.com/ollama/ollama/api
             - github.com/openai/openai-go
             - github.com/openai/openai-go/option
+            - github.com/modelcontextprotocol/go-sdk
             - golang.org/x/tools
             - golang.org/x/tools/go/analysis
             - golang.org/x/tools/go/analysis/singlechecker

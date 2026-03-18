@@ -250,7 +250,7 @@ When to use: Testing purposes
 
 		Describe("ConfigPath", func() {
 			It("returns config path using ConfigDir()", func() {
-				expectedPath := filepath.Join(config.ConfigDir(), "config.yaml")
+				expectedPath := filepath.Join(config.Dir(), "config.yaml")
 
 				Expect(application.ConfigPath()).To(Equal(expectedPath))
 			})

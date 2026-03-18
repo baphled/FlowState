@@ -1,6 +1,6 @@
 package components
 
-// Expose tokenColor for testing
+// Expose tokenColor for testing.
 var TokenColor = tokenColor
 
 // We need to implement tokenColor here or in status.go, but for export it must exist.
