@@ -10,18 +10,18 @@ Enter
 Sleep 300ms
 Show
 
-Type "# Discover the best agent for writing tests"
+Type "# Discover the best agent for implementing a feature"
 Enter
 Sleep 500ms
 Type "export HOME=$(pwd)/demos/temp_demo_env"
 Enter
-Type "./build/flowstate discover 'write unit tests for my module'"
+Type "./build/flowstate discover 'implement a feature'"
 Enter
 Sleep 2s
 
 Type "# Discover the best agent for research"
 Enter
 Sleep 500ms
-Type "./build/flowstate discover 'research and investigate this topic'"
+Type "./build/flowstate discover 'research and investigate'"
 Enter
 Sleep 2s
