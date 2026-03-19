@@ -5,6 +5,10 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/baphled/flowstate/internal/tui/uikit/primitives"
+	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 )
 
 // Message represents a chat message with a role and content.
@@ -15,6 +19,8 @@ type Message struct {
 
 // View represents the chat view component with messages and input state.
 type View struct {
+	theme.Aware
+
 	width      int
 	height     int
 	messages   []Message
@@ -131,6 +137,17 @@ func (v *View) SetMarkdownRenderer(fn func(string, int) string) {
 	v.renderFunc = fn
 }
 
+// SetTheme sets the theme for the chat view.
+//
+// Expected:
+//   - th is a valid theme instance (can be nil).
+//
+// Side effects:
+//   - Updates the embedded theme.Aware with the provided theme.
+func (v *View) SetTheme(th theme.Theme) {
+	v.Aware.SetTheme(th)
+}
+
 // renderMarkdown renders markdown content using glamour with dark theme and word wrapping.
 //
 // Expected:
@@ -170,6 +187,8 @@ func renderMarkdown(content string, width int) string {
 func (v *View) RenderContent(width int) string {
 	var sb strings.Builder
 
+	th := v.Theme()
+
 	for _, msg := range v.messages {
 		if msg.Role == "assistant" {
 			sb.WriteString(v.renderFunc(msg.Content, width))
@@ -188,10 +207,14 @@ func (v *View) RenderContent(width int) string {
 	if v.mode == "insert" {
 		modeIndicator = "[INSERT]"
 	}
-	sb.WriteString(modeIndicator)
+
+	modeBadge := primitives.NewBadge(modeIndicator, th).Variant(primitives.BadgeStatus).Render()
+	sb.WriteString(modeBadge)
 	sb.WriteString("\n")
 
-	sb.WriteString("> " + v.input)
+	promptStyle := lipgloss.NewStyle().Foreground(th.SecondaryColor())
+	promptText := promptStyle.Render("> ")
+	sb.WriteString(promptText + v.input)
 
 	return sb.String()
 }

@@ -5,7 +5,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 )
 
 var _ = Describe("StatusBar", func() {
@@ -55,14 +55,27 @@ var _ = Describe("StatusBar", func() {
 	})
 
 	Context("token colour thresholds", func() {
-		It("shows green style when under 70%", func() {
-			Expect(layout.TokenColor(60, 100)).To(Equal(lipgloss.Color("#00FF00")))
+		var th theme.Theme
+
+		BeforeEach(func() {
+			th = theme.Default()
 		})
-		It("shows yellow style between 70-90%", func() {
-			Expect(layout.TokenColor(80, 100)).To(Equal(lipgloss.Color("#FFAA00")))
+
+		It("shows success style when under 70%", func() {
+			color := layout.TokenColor(60, 100, th)
+			Expect(color).To(Equal(th.SuccessColor()))
 		})
-		It("shows red style over 90%", func() {
-			Expect(layout.TokenColor(95, 100)).To(Equal(lipgloss.Color("#FF0000")))
+		It("shows warning style between 70-90%", func() {
+			color := layout.TokenColor(80, 100, th)
+			Expect(color).To(Equal(th.WarningColor()))
+		})
+		It("shows error style over 90%", func() {
+			color := layout.TokenColor(95, 100, th)
+			Expect(color).To(Equal(th.ErrorColor()))
+		})
+		It("shows muted style when budget is zero", func() {
+			color := layout.TokenColor(10, 0, th)
+			Expect(color).To(Equal(th.MutedColor()))
 		})
 	})
 

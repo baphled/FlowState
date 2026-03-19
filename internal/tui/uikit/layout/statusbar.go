@@ -91,24 +91,25 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 // Expected:
 //   - used is the number of tokens used (>=0).
 //   - budget is the token budget (>=0).
+//   - th is the theme (must be non-nil).
 //
 // Returns:
-//   - A lipgloss.Color: grey if budget is 0, green if <70%, yellow if 70-90%, red if >90%.
+//   - A lipgloss.Color: muted if budget is 0, success if <70%, warning if 70-90%, error if >90%.
 //
 // Side effects:
 //   - None.
-func tokenColor(used, budget int) lipgloss.Color {
+func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 	if budget == 0 {
-		return lipgloss.Color("#888888")
+		return th.MutedColor()
 	}
 	pct := float64(used) / float64(budget)
 	switch {
 	case pct < 0.70:
-		return lipgloss.Color("#00FF00")
+		return th.SuccessColor()
 	case pct < 0.90:
-		return lipgloss.Color("#FFAA00")
+		return th.WarningColor()
 	default:
-		return lipgloss.Color("#FF0000")
+		return th.ErrorColor()
 	}
 }
 
@@ -141,7 +142,7 @@ func (s *StatusBar) RenderContent(width int) string {
 	}
 	tokenBar := primitives.NewProgressBar(tokenValue, th).Width(12).ShowPercentage(false).Render()
 
-	usageColor := tokenColor(s.tokensUsed, s.tokenBudget)
+	usageColor := tokenColor(s.tokensUsed, s.tokenBudget, th)
 	tokenLabel := fmt.Sprintf("%d / %d", s.tokensUsed, s.tokenBudget)
 	tokenLabelStyled := lipgloss.NewStyle().Foreground(usageColor).Render(tokenLabel)
 
@@ -150,8 +151,8 @@ func (s *StatusBar) RenderContent(width int) string {
 
 	containerStyle := lipgloss.NewStyle().
 		Width(width).
-		Background(lipgloss.Color("#222222")).
-		Foreground(lipgloss.Color("#DDDDDD"))
+		Background(th.MutedColor()).
+		Foreground(th.PrimaryColor())
 
 	availableWidth := width - lipgloss.Width(leftSide) - lipgloss.Width(rightSide)
 	if availableWidth < 0 {
