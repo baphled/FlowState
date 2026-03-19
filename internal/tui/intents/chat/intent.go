@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
@@ -51,6 +52,7 @@ type Intent struct {
 	height            int
 	statusBar         *layout.StatusBar
 	tokenCount        int
+	tokenCounter      contextpkg.TokenCounter
 	providerName      string
 	modelName         string
 	tokenBudget       int
@@ -94,6 +96,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		height:       24,
 		statusBar:    sb,
 		tokenCount:   0,
+		tokenCounter: contextpkg.NewTiktokenCounter(),
 		providerName: cfg.ProviderName,
 		modelName:    cfg.ModelName,
 		tokenBudget:  cfg.TokenBudget,
@@ -218,14 +221,11 @@ func (i *Intent) handleRunes(runes []rune) tea.Cmd {
 //   - msg is a StreamChunkMsg with content from the provider stream.
 //
 // Side effects:
-//   - Increments the token count using approximate character-based estimation.
+//   - Increments the token count using the configured TokenCounter (TiktokenCounter with fallback to approximate).
 //   - Updates the StatusBar with the new token count.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
-	approxTokens := len(msg.Content) / 4
-	if approxTokens == 0 && msg.Content != "" {
-		approxTokens = 1
-	}
-	i.tokenCount += approxTokens
+	tokens := i.tokenCounter.Count(msg.Content)
+	i.tokenCount += tokens
 	i.syncStatusBar()
 }
 
