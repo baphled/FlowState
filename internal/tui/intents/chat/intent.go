@@ -179,6 +179,11 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			return i.sendMessage()
 		}
 		return nil
+	case tea.KeySpace:
+		if i.mode == "insert" {
+			i.input += " "
+		}
+		return nil
 	case tea.KeyRunes:
 		return i.handleRunes(msg.Runes)
 	}

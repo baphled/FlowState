@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/tui/uikit/primitives"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
+	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
 
 // Message represents a chat message with a role and content.
@@ -190,16 +191,22 @@ func (v *View) RenderContent(width int) string {
 	th := v.Theme()
 
 	for _, msg := range v.messages {
-		if msg.Role == "assistant" {
-			sb.WriteString(v.renderFunc(msg.Content, width))
-		} else {
-			sb.WriteString(msg.Content)
+		mw := widgets.NewMessageWidget(msg.Role, msg.Content, th)
+		if v.renderFunc != nil {
+			mw.SetMarkdownRenderer(v.renderFunc)
 		}
-		sb.WriteString("\n")
+		sb.WriteString(mw.Render(width))
+		sb.WriteString("\n\n")
 	}
 
-	if v.streaming && v.response != "" {
-		sb.WriteString(v.response)
+	if v.streaming {
+		if v.response != "" {
+			sb.WriteString(v.response)
+			sb.WriteString("\n")
+		}
+		si := widgets.NewStatusIndicator(th)
+		si.SetActive(true)
+		sb.WriteString(si.Render())
 		sb.WriteString("\n")
 	}
 

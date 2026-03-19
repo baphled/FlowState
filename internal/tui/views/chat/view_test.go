@@ -38,6 +38,35 @@ var _ = Describe("ChatView", func() {
 			Expect(content).To(ContainSubstring("World"))
 		})
 
+		Context("styled message labels", func() {
+			It("shows You label for user messages", func() {
+				view.AddMessage(chat.Message{Role: "user", Content: "hi"})
+				content := view.RenderContent(80)
+				Expect(content).To(ContainSubstring("You"))
+			})
+
+			It("shows Assistant label for assistant messages", func() {
+				view.SetMarkdownRenderer(func(c string, _ int) string { return c })
+				view.AddMessage(chat.Message{Role: "assistant", Content: "reply"})
+				content := view.RenderContent(80)
+				Expect(content).To(ContainSubstring("Assistant"))
+			})
+		})
+
+		Context("streaming status indicator", func() {
+			It("shows thinking indicator when streaming", func() {
+				view.SetStreaming(true, "")
+				content := view.RenderContent(80)
+				Expect(content).To(ContainSubstring("Thinking"))
+			})
+
+			It("hides thinking indicator when not streaming", func() {
+				view.SetStreaming(false, "")
+				content := view.RenderContent(80)
+				Expect(content).NotTo(ContainSubstring("Thinking"))
+			})
+		})
+
 		It("renders input prompt", func() {
 			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("> "))
