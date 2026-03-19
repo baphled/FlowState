@@ -20,8 +20,11 @@ const (
 
 // GitHub implements the OAuth 2.0 Device Flow for GitHub.
 type GitHub struct {
-	clientID string
-	client   *http.Client
+	clientID      string
+	client        *http.Client
+	deviceCodeURL string
+	tokenURL      string
+	baseURL       string
 }
 
 // NewGitHub creates a new GitHub OAuth provider with the given client ID.
@@ -36,8 +39,11 @@ type GitHub struct {
 //   - None.
 func NewGitHub(clientID string) *GitHub {
 	return &GitHub{
-		clientID: clientID,
-		client:   &http.Client{},
+		clientID:      clientID,
+		client:        &http.Client{},
+		deviceCodeURL: githubDeviceCodeURL,
+		tokenURL:      githubTokenURL,
+		baseURL:       "",
 	}
 }
 
@@ -60,7 +66,7 @@ func (g *GitHub) InitiateFlow(ctx context.Context) (*DeviceCodeResponse, error) 
 		return nil, fmt.Errorf("marshalling device code request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubDeviceCodeURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.deviceCodeURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating device code request: %w", err)
 	}
@@ -160,7 +166,7 @@ func (g *GitHub) checkTokenStatus(ctx context.Context, deviceCode string) *FlowR
 		return &FlowResult{State: StateError, ErrorMessage: "marshalling token request: " + err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubTokenURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return &FlowResult{State: StateError, ErrorMessage: "creating token request: " + err.Error()}
 	}
