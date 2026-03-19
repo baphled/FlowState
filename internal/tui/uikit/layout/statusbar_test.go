@@ -89,5 +89,9 @@ var _ = Describe("StatusBar", func() {
 			sb.Update(layout.StatusBarMsg{TokensUsed: 50, TokenBudget: 100})
 			Expect(sb.RenderContent(80)).To(ContainSubstring("50 / 100"))
 		})
+		It("updates agentID", func() {
+			sb.Update(layout.StatusBarMsg{AgentID: "test-agent"})
+			Expect(sb.RenderContent(80)).To(ContainSubstring("test-agent"))
+		})
 	})
 })

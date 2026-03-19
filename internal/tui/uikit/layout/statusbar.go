@@ -13,17 +13,20 @@ import (
 type StatusBarMsg struct {
 	Provider    string
 	Model       string
+	AgentID     string
 	TokensUsed  int
 	TokenBudget int
-	Mode        string // "NORMAL" or "INSERT"
+	Mode        string
 }
 
-// StatusBar renders provider, model, token usage, and input mode using UIKit primitives.
+// StatusBar renders a two-line status bar with token usage on line 1
+// and provider/model/agent details on line 2.
 // It is theme-aware and uses Badge for mode, Text for provider/model, and ProgressBar for tokens.
 type StatusBar struct {
 	theme.Aware
 	provider     string
 	model        string
+	agentID      string
 	tokensUsed   int
 	tokenBudget  int
 	mode         string
@@ -72,13 +75,16 @@ func (s *StatusBar) WithTheme(th theme.Theme) *StatusBar {
 //   - msg is a StatusBarMsg with status updates.
 //
 // Side effects:
-//   - Updates provider, model, tokens, and mode fields from the message.
+//   - Updates provider, model, agentID, tokens, and mode fields from the message.
 func (s *StatusBar) Update(msg StatusBarMsg) {
 	if msg.Provider != "" {
 		s.provider = msg.Provider
 	}
 	if msg.Model != "" {
 		s.model = msg.Model
+	}
+	if msg.AgentID != "" {
+		s.agentID = msg.AgentID
 	}
 	s.tokensUsed = msg.TokensUsed
 	s.tokenBudget = msg.TokenBudget
@@ -131,13 +137,15 @@ func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 	}
 }
 
-// RenderContent renders the status bar for the given width using UIKit primitives.
+// RenderContent renders the two-line status bar for the given width using UIKit primitives.
+// Line 1: mode badge (left) + token bar + count (right) with full-width background.
+// Line 2: provider + model + agentID (left-aligned, muted colour, no background).
 //
 // Expected:
 //   - width is the terminal width in columns (>0).
 //
 // Returns:
-//   - A rendered status bar string with mode badge, provider, model, and token usage.
+//   - A rendered two-line status bar string.
 //
 // Side effects:
 //   - None.
@@ -151,14 +159,6 @@ func (s *StatusBar) RenderContent(width int) string {
 	}
 	modeBadge := primitives.NewBadge(modeText, th).Variant(primitives.BadgeStatus).Render()
 
-	providerText := primitives.NewText(s.provider, th).Bold().Render()
-
-	modelStr := s.model
-	if width < 60 && len(modelStr) > 10 {
-		modelStr = modelStr[:10] + "..."
-	}
-	modelText := primitives.NewText(modelStr, th).Render()
-
 	var tokenValue float64
 	if s.tokenBudget > 0 {
 		tokenValue = float64(s.tokensUsed) / float64(s.tokenBudget)
@@ -169,7 +169,6 @@ func (s *StatusBar) RenderContent(width int) string {
 	tokenLabel := fmt.Sprintf("%d / %d", s.tokensUsed, s.tokenBudget)
 	tokenLabelStyled := lipgloss.NewStyle().Foreground(usageColor).Render(tokenLabel)
 
-	leftSide := lipgloss.JoinHorizontal(lipgloss.Left, modeBadge, " ", providerText, " ", modelText)
 	rightSide := lipgloss.JoinHorizontal(lipgloss.Left, tokenBar, " ", tokenLabelStyled)
 
 	containerStyle := lipgloss.NewStyle().
@@ -177,11 +176,31 @@ func (s *StatusBar) RenderContent(width int) string {
 		Background(th.MutedColor()).
 		Foreground(th.PrimaryColor())
 
-	availableWidth := width - lipgloss.Width(leftSide) - lipgloss.Width(rightSide)
-	if availableWidth < 0 {
-		availableWidth = 0
+	spacerWidth := width - lipgloss.Width(modeBadge) - lipgloss.Width(rightSide)
+	if spacerWidth < 0 {
+		spacerWidth = 0
 	}
-	spacer := strings.Repeat(" ", availableWidth)
+	spacer := strings.Repeat(" ", spacerWidth)
+	line1 := containerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, modeBadge, spacer, rightSide))
 
-	return containerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, leftSide, spacer, rightSide))
+	mutedStyle := lipgloss.NewStyle().Foreground(th.MutedColor())
+
+	var parts []string
+	if s.provider != "" {
+		parts = append(parts, primitives.NewText(s.provider, th).Bold().Render())
+	}
+	if s.model != "" {
+		modelStr := s.model
+		if width < 60 && len(modelStr) > 10 {
+			modelStr = modelStr[:10] + "..."
+		}
+		parts = append(parts, primitives.NewText(modelStr, th).Render())
+	}
+	if s.agentID != "" {
+		parts = append(parts, mutedStyle.Render(s.agentID))
+	}
+
+	line2 := strings.Join(parts, "  ")
+
+	return lipgloss.JoinVertical(lipgloss.Left, line1, line2)
 }
