@@ -28,6 +28,8 @@ type StatusBar struct {
 	tokenBudget int
 	mode        string
 	width       int
+	streaming    bool
+	spinnerFrame int
 }
 
 // NewStatusBar creates a new StatusBar with the given width.
@@ -86,6 +88,22 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 	}
 }
 
+// SetStreaming sets the streaming state and current spinner frame for animated display.
+//
+// Expected:
+//   - streaming indicates whether a response is currently being generated.
+//   - frame is the current spinner frame index from the Intent tick loop.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the streaming and spinnerFrame fields.
+func (s *StatusBar) SetStreaming(streaming bool, frame int) {
+	s.streaming = streaming
+	s.spinnerFrame = frame
+}
+
 // tokenColor determines the colour based on token usage ratio.
 //
 // Expected:
@@ -126,7 +144,12 @@ func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 func (s *StatusBar) RenderContent(width int) string {
 	th := s.Theme()
 
-	modeBadge := primitives.NewBadge(s.mode, th).Variant(primitives.BadgeStatus).Render()
+	modeText := s.mode
+	if s.streaming {
+		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+		modeText = frames[s.spinnerFrame%len(frames)]
+	}
+	modeBadge := primitives.NewBadge(modeText, th).Variant(primitives.BadgeStatus).Render()
 
 	providerText := primitives.NewText(s.provider, th).Bold().Render()
 

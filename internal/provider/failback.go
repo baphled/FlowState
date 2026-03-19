@@ -22,6 +22,7 @@ type FailbackChain struct {
 	preferences  []ModelPreference
 	timeout      time.Duration
 	lastProvider string
+	lastModel    string
 }
 
 // NewFailbackChain creates a new failback chain with the given preferences and timeout.
@@ -77,6 +78,7 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 			continue
 		}
 		f.lastProvider = pref.Provider
+		f.lastModel = pref.Model
 		wrappedCh := make(chan StreamChunk, 16)
 		go func() {
 			defer close(wrappedCh)
@@ -123,6 +125,7 @@ func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 			continue
 		}
 		f.lastProvider = pref.Provider
+		f.lastModel = pref.Model
 		return resp, nil
 	}
 	return ChatResponse{}, fmt.Errorf("all providers failed: %w", lastErr)
@@ -137,4 +140,15 @@ func (f *FailbackChain) Chat(ctx context.Context, req ChatRequest) (ChatResponse
 //   - None.
 func (f *FailbackChain) LastProvider() string {
 	return f.lastProvider
+}
+
+// LastModel returns the model name of the last successfully used provider.
+//
+// Returns:
+//   - The model name, or empty string if no model has been used.
+//
+// Side effects:
+//   - None.
+func (f *FailbackChain) LastModel() string {
+	return f.lastModel
 }

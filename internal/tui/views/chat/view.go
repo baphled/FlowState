@@ -20,13 +20,12 @@ type Message struct {
 type View struct {
 	theme.Aware
 
-	width        int
-	height       int
-	messages     []Message
-	streaming    bool
-	response     string
-	spinnerFrame int
-	renderFunc   func(string, int) string
+	width      int
+	height     int
+	messages   []Message
+	streaming  bool
+	response   string
+	renderFunc func(string, int) string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -102,17 +101,6 @@ func (v *View) SetStreaming(streaming bool, response string) {
 	v.response = response
 }
 
-// SetSpinnerFrame sets the animation frame index for the streaming spinner.
-//
-// Expected:
-//   - frame is the current tick frame from the Intent.
-//
-// Side effects:
-//   - Updates the spinnerFrame field.
-func (v *View) SetSpinnerFrame(frame int) {
-	v.spinnerFrame = frame
-}
-
 // SetMarkdownRenderer sets a custom function for rendering markdown content.
 //
 // Expected:
@@ -167,7 +155,7 @@ func renderMarkdown(content string, width int) string {
 //   - width is the terminal width in columns.
 //
 // Returns:
-//   - A rendered chat view string with messages and streaming indicator.
+//   - A rendered chat view string with messages and partial streaming response.
 //
 // Side effects:
 //   - None.
@@ -185,15 +173,8 @@ func (v *View) RenderContent(width int) string {
 		sb.WriteString("\n\n")
 	}
 
-	if v.streaming {
-		if v.response != "" {
-			sb.WriteString(v.response)
-			sb.WriteString("\n")
-		}
-		si := widgets.NewStatusIndicator(th)
-		si.SetActive(true)
-		si.SetFrame(v.spinnerFrame)
-		sb.WriteString(si.Render())
+	if v.streaming && v.response != "" {
+		sb.WriteString(v.response)
 		sb.WriteString("\n")
 	}
 

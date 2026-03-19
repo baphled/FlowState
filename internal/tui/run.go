@@ -25,8 +25,8 @@ func Run(eng *engine.Engine, agentID string, sessionID string) error {
 		Engine:       eng,
 		AgentID:      agentID,
 		SessionID:    sessionID,
-		ModelName:    "default",
-		ProviderName: "default",
+		ModelName:    eng.LastModel(),
+		ProviderName: eng.LastProvider(),
 		TokenBudget:  4096,
 	})
 	appShell := app.New(chatIntent)

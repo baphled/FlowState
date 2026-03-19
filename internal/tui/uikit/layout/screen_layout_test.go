@@ -319,23 +319,21 @@ var _ = Describe("ScreenLayout Pinned Layout", func() {
 		})
 	})
 
-	Describe("Horizontal Centering Preserved", func() {
-		It("should still center content horizontally", func() {
+	Describe("Left Alignment", func() {
+		It("should left-align content horizontally", func() {
 			view := layout.NewScreenLayout(termInfo).
 				WithTheme(theme).
-				WithContent("X"). // Single character
+				WithContent("X").
 				WithHelp("Help")
 
 			rendered := view.Render()
 			lines := strings.Split(stripAnsi(rendered), "\n")
 
-			// Find the content line
 			for _, line := range lines {
 				if strings.Contains(line, "X") {
-					// Content should not be at the very start of the line
 					trimmed := strings.TrimLeft(line, " ")
 					leadingSpaces := len(line) - len(trimmed)
-					Expect(leadingSpaces).To(BeNumerically(">", 0), "Content should have leading spaces (centered)")
+					Expect(leadingSpaces).To(Equal(0), "Content should be left-aligned (no leading spaces)")
 					break
 				}
 			}

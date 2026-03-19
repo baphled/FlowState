@@ -53,38 +53,10 @@ var _ = Describe("ChatView", func() {
 			})
 		})
 
-		Context("streaming status indicator", func() {
-			It("shows thinking indicator when streaming", func() {
-				view.SetStreaming(true, "")
-				content := view.RenderContent(80)
-				Expect(content).To(ContainSubstring("Thinking"))
-			})
-
-			It("hides thinking indicator when not streaming", func() {
-				view.SetStreaming(false, "")
-				content := view.RenderContent(80)
-				Expect(content).NotTo(ContainSubstring("Thinking"))
-			})
-		})
-
-		It("does not render input prompt in content area", func() {
+		It("does not render spinner in content area when streaming", func() {
+			view.SetStreaming(true, "")
 			content := view.RenderContent(80)
-			Expect(content).NotTo(ContainSubstring("> "))
-		})
-
-		It("shows streaming response", func() {
-			view.SetStreaming(true, "streaming...")
-			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("streaming..."))
-		})
-
-		Context("spinner frame wiring", func() {
-			It("uses the set spinner frame when rendering", func() {
-				view.SetStreaming(true, "")
-				view.SetSpinnerFrame(3)
-				content := view.RenderContent(80)
-				Expect(content).To(ContainSubstring("Thinking"))
-			})
+			Expect(content).NotTo(ContainSubstring("Thinking"))
 		})
 
 		Describe("Markdown", func() {

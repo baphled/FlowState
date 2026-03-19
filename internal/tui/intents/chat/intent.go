@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/viewport"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
@@ -76,6 +77,8 @@ type Intent struct {
 	tickFrame         int
 	pendingPermission *ToolPermissionMsg
 	result            *app.IntentResult
+	msgViewport      viewport.Model
+	vpReady           bool
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -152,22 +155,32 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		i.width = msg.Width
 		i.height = msg.Height
+		footerHeight := 8
+		vpHeight := msg.Height - footerHeight
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
+		if !i.vpReady {
+			i.msgViewport = viewport.New(msg.Width, vpHeight)
+			i.msgViewport.SetContent("")
+			i.vpReady = true
+		} else {
+			i.msgViewport.Width = msg.Width
+			i.msgViewport.Height = vpHeight
+		}
 		return nil
 	case StreamChunkMsg:
 		i.handleStreamChunk(msg)
-		if i.streaming {
-			return tickSpinner()
-		}
-		return nil
+		i.refreshViewport()
+		return tickSpinner()
 	case ToolPermissionMsg:
 		i.handleToolPermission(msg)
 		return nil
 	case SpinnerTickMsg:
 		if i.streaming {
 			i.tickFrame++
-			return tickSpinner()
 		}
-		return nil
+		return tickSpinner()
 	}
 	return nil
 }
@@ -250,6 +263,25 @@ func (i *Intent) syncStatusBar() {
 	})
 }
 
+
+// refreshViewport rebuilds the message viewport content and scrolls to the bottom.
+//
+// Side effects:
+//   - Updates msgViewport content and scrolls to latest message.
+func (i *Intent) refreshViewport() {
+	if !i.vpReady {
+		return
+	}
+	cv := chat.NewView()
+	cv.SetDimensions(i.width, i.msgViewport.Height)
+	cv.SetStreaming(i.streaming, i.response)
+	for _, msg := range i.messages {
+		cv.AddMessage(msg)
+	}
+	content := cv.RenderContent(i.width)
+	i.msgViewport.SetContent(content)
+	i.msgViewport.GotoBottom()
+}
 // sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
@@ -264,6 +296,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.input = ""
 	i.streaming = true
 	i.response = ""
+	i.refreshViewport()
 
 	return func() tea.Msg {
 		ctx := context.Background()
@@ -283,32 +316,29 @@ func (i *Intent) sendMessage() tea.Cmd {
 // View renders the chat interface as a string.
 //
 // Returns:
-//   - A rendered chat view with messages in the content area and input in the footer.
+//   - A rendered chat view with messages in a persistent viewport and input in the footer.
 //
 // Side effects:
-//   - Recreates the ChatView state from the current intent state before rendering.
+//   - Syncs streaming state into the StatusBar.
 func (i *Intent) View() string {
-	cv := chat.NewView()
-	cv.SetDimensions(i.width, i.height)
-	cv.SetStreaming(i.streaming, i.response)
-	cv.SetSpinnerFrame(i.tickFrame)
-	for _, msg := range i.messages {
-		cv.AddMessage(msg)
+	i.statusBar.SetStreaming(i.streaming, i.tickFrame)
+
+	var content string
+	if i.vpReady {
+		content = i.msgViewport.View()
 	}
 
 	var inputLine string
 	switch {
 	case i.pendingPermission != nil:
 		inputLine = fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
-	case i.streaming:
-		inputLine = i.SpinnerFrame() + " Thinking..."
 	default:
 		inputLine = "> " + i.input
 	}
 
 	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
 		WithBreadcrumbs("Chat").
-		WithContent(cv.RenderContent(i.width)).
+		WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
 		WithHelp("Enter: send  ·  Ctrl+C: quit").
@@ -377,7 +407,6 @@ func (i *Intent) resolvePermission(approved bool) {
 	}
 	i.pendingPermission = nil
 }
-
 
 // Input returns the current input text.
 //

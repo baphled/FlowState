@@ -3,7 +3,6 @@ package layout
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
@@ -414,8 +413,8 @@ func (sl *ScreenLayout) GetAvailableContentHeight() int {
 	footerParts := sl.buildFooterParts(theme)
 
 	// Calculate heights
-	header := lipgloss.JoinVertical(lipgloss.Center, headerParts...)
-	footer := lipgloss.JoinVertical(lipgloss.Center, footerParts...)
+	header := lipgloss.JoinVertical(lipgloss.Left, headerParts...)
+	footer := lipgloss.JoinVertical(lipgloss.Left, footerParts...)
 
 	headerHeight := lipgloss.Height(header)
 	footerHeight := lipgloss.Height(footer)
@@ -450,8 +449,8 @@ func (sl *ScreenLayout) Render() string {
 	footerParts := sl.buildFooterParts(theme)
 
 	// === ASSEMBLE WITH VIEWPORT ===
-	header := lipgloss.JoinVertical(lipgloss.Center, headerParts...)
-	footer := lipgloss.JoinVertical(lipgloss.Center, footerParts...)
+	header := lipgloss.JoinVertical(lipgloss.Left, headerParts...)
+	footer := lipgloss.JoinVertical(lipgloss.Left, footerParts...)
 
 	headerHeight := lipgloss.Height(header)
 	footerHeight := lipgloss.Height(footer)
@@ -471,18 +470,12 @@ func (sl *ScreenLayout) Render() string {
 		}
 	}
 
-	// Center the content within the available area, then constrain it
-	// via a viewport. The viewport is created fresh each render (no
-	// persistent scroll state) so content always starts at the top on
-	// each screen transition.
-	centeredContent := lipgloss.Place(
-		sl.TerminalInfo.Width, contentAreaHeight,
-		lipgloss.Center, lipgloss.Center,
-		contentToRender,
-	)
-	vp := viewport.New(sl.TerminalInfo.Width, contentAreaHeight)
-	vp.SetContent(centeredContent)
-	contentView := vp.View()
+	// Left-align content within the available area.
+	contentStyle := lipgloss.NewStyle().
+		Width(sl.TerminalInfo.Width).
+		Height(contentAreaHeight).
+		MaxHeight(contentAreaHeight)
+	contentView := contentStyle.Render(contentToRender)
 
 	// Combine all sections
 	var allParts []string
@@ -494,11 +487,11 @@ func (sl *ScreenLayout) Render() string {
 		allParts = append(allParts, footer)
 	}
 
-	combined := lipgloss.JoinVertical(lipgloss.Center, allParts...)
+	combined := lipgloss.JoinVertical(lipgloss.Left, allParts...)
 
 	// Place with Top vertical alignment (pins to top)
 	rendered := lipgloss.Place(sl.TerminalInfo.Width, sl.TerminalInfo.Height,
-		lipgloss.Center, lipgloss.Top, combined)
+		lipgloss.Left, lipgloss.Top, combined)
 
 	// Add modal overlay if needed
 	if sl.ShowModal && sl.Modal != nil {

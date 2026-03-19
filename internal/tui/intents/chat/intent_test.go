@@ -122,10 +122,10 @@ var _ = Describe("ChatIntent", func() {
 			Expect(view).To(ContainSubstring("test"))
 		})
 
-		It("shows Thinking indicator when streaming", func() {
+		It("shows spinner in StatusBar when streaming", func() {
 			intent.SetStreamingForTest(true)
 			view := intent.View()
-			Expect(view).To(ContainSubstring("Thinking"))
+			Expect(view).To(ContainSubstring("⠋"))
 		})
 	})
 

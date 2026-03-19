@@ -146,6 +146,20 @@ func (e *Engine) LastProvider() string {
 	return ""
 }
 
+// LastModel returns the model name used by the most recently active provider.
+//
+// Returns:
+//   - The model name string, or empty string if no provider has been used.
+//
+// Side effects:
+//   - None.
+func (e *Engine) LastModel() string {
+	if e.failbackChain != nil {
+		return e.failbackChain.LastModel()
+	}
+	return ""
+}
+
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // Returns:
