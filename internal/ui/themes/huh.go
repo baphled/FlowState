@@ -19,14 +19,12 @@ import (
 //
 //nolint:funlen // Vendored from KaRiya; complexity acceptable for theme generation
 func GenerateHuhTheme(theme Theme) *huh.Theme {
-	// Return Catppuccin theme if no theme provided
 	if theme == nil {
 		return huh.ThemeCatppuccin()
 	}
 
 	palette := theme.Palette()
 
-	// Text input styles
 	textInputStyles := huh.TextInputStyles{
 		Cursor:      lipgloss.NewStyle().Foreground(palette.Primary),
 		Placeholder: lipgloss.NewStyle().Foreground(palette.ForegroundMuted),

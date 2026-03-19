@@ -44,7 +44,7 @@ func (p *streamSequenceProvider) Name() string { return p.name }
 
 func (p *streamSequenceProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	if p.callIndex >= len(p.sequences) {
-		ch := make(chan provider.StreamChunk)
+		ch := make(chan provider.StreamChunk, 16)
 		close(ch)
 		return ch, nil
 	}

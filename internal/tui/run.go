@@ -5,6 +5,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/tui/app"
+	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
 // Run starts the chat TUI with the given engine and agent.
@@ -20,10 +21,16 @@ import (
 // Side effects:
 //   - Takes over the terminal with an alternate screen for the TUI.
 func Run(eng *engine.Engine, agentID string, sessionID string) error {
-	chatModel := NewModel(eng, agentID, sessionID)
-	chatIntent := app.NewChatAdapter(chatModel)
-	appModel := app.New(chatIntent)
-	p := tea.NewProgram(appModel, tea.WithAltScreen())
+	chatIntent := chat.NewIntent(chat.IntentConfig{
+		Engine:       eng,
+		AgentID:      agentID,
+		SessionID:    sessionID,
+		ModelName:    "default",
+		ProviderName: "default",
+		TokenBudget:  4096,
+	})
+	appShell := app.New(chatIntent)
+	p := tea.NewProgram(appShell, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

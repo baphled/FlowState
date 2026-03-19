@@ -165,7 +165,6 @@ func (i *Info) ContentArea(margins Margins) (width, height int) {
 	width = safeWidth - margins.Left - margins.Right
 	height = safeHeight - margins.Top - margins.Bottom
 
-	// Ensure minimum content area
 	width = maxInt(width, 20)
 	height = maxInt(height, 5)
 

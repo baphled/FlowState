@@ -89,7 +89,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 	}
 
 	return &StyleSet{
-		// Buttons
 		ButtonBase: lipgloss.NewStyle().
 			Padding(0, 3).
 			MarginRight(2).
