@@ -5,9 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
 
-	"github.com/baphled/flowstate/internal/tui/uikit/primitives"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
@@ -18,18 +16,17 @@ type Message struct {
 	Content string
 }
 
-// View represents the chat view component with messages and input state.
+// View represents the chat view component with messages and streaming state.
 type View struct {
 	theme.Aware
 
-	width      int
-	height     int
-	messages   []Message
-	input      string
-	mode       string
-	streaming  bool
-	response   string
-	renderFunc func(string, int) string
+	width        int
+	height       int
+	messages     []Message
+	streaming    bool
+	response     string
+	spinnerFrame int
+	renderFunc   func(string, int) string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -92,28 +89,6 @@ func (v *View) AddMessage(msg Message) {
 	v.messages = append(v.messages, msg)
 }
 
-// SetInput sets the current input text.
-//
-// Expected:
-//   - input is the user's input text (may be empty).
-//
-// Side effects:
-//   - Updates the input field.
-func (v *View) SetInput(input string) {
-	v.input = input
-}
-
-// SetMode sets the current input mode (normal or insert).
-//
-// Expected:
-//   - mode is "normal" or "insert".
-//
-// Side effects:
-//   - Updates the mode field.
-func (v *View) SetMode(mode string) {
-	v.mode = mode
-}
-
 // SetStreaming sets the streaming state and partial response content.
 //
 // Expected:
@@ -125,6 +100,17 @@ func (v *View) SetMode(mode string) {
 func (v *View) SetStreaming(streaming bool, response string) {
 	v.streaming = streaming
 	v.response = response
+}
+
+// SetSpinnerFrame sets the animation frame index for the streaming spinner.
+//
+// Expected:
+//   - frame is the current tick frame from the Intent.
+//
+// Side effects:
+//   - Updates the spinnerFrame field.
+func (v *View) SetSpinnerFrame(frame int) {
+	v.spinnerFrame = frame
 }
 
 // SetMarkdownRenderer sets a custom function for rendering markdown content.
@@ -175,13 +161,13 @@ func renderMarkdown(content string, width int) string {
 	return strings.TrimRight(out, "\n")
 }
 
-// RenderContent renders the chat view content including messages, streaming response, and input.
+// RenderContent renders the chat view content including messages and streaming response.
 //
 // Expected:
 //   - width is the terminal width in columns.
 //
 // Returns:
-//   - A rendered chat view string with messages, streaming response, and input prompt.
+//   - A rendered chat view string with messages and streaming indicator.
 //
 // Side effects:
 //   - None.
@@ -206,22 +192,10 @@ func (v *View) RenderContent(width int) string {
 		}
 		si := widgets.NewStatusIndicator(th)
 		si.SetActive(true)
+		si.SetFrame(v.spinnerFrame)
 		sb.WriteString(si.Render())
 		sb.WriteString("\n")
 	}
-
-	modeIndicator := "[NORMAL]"
-	if v.mode == "insert" {
-		modeIndicator = "[INSERT]"
-	}
-
-	modeBadge := primitives.NewBadge(modeIndicator, th).Variant(primitives.BadgeStatus).Render()
-	sb.WriteString(modeBadge)
-	sb.WriteString("\n")
-
-	promptStyle := lipgloss.NewStyle().Foreground(th.SecondaryColor())
-	promptText := promptStyle.Render("> ")
-	sb.WriteString(promptText + v.input)
 
 	return sb.String()
 }

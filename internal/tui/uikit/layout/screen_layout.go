@@ -56,6 +56,8 @@ type ScreenLayout struct {
 	ShowModal           bool
 	Modal               ModalRenderer
 	HelpText            string
+	InputLine           string
+	StatusBarContent    string
 	ShowFooter          bool
 	ShowFooterSeparator bool
 	TerminalInfo        *terminal.Info
@@ -202,6 +204,37 @@ func (sl *ScreenLayout) WithHelp(helpText string) *ScreenLayout {
 	return sl
 }
 
+// WithInput sets the input prompt line rendered in the footer above the separator.
+//
+// Expected:
+//   - input is the current user input line (e.g., "> hello world").
+//
+// Returns:
+//   - The updated ScreenLayout for method chaining.
+//
+// Side effects:
+//   - Sets InputLine on the ScreenLayout.
+func (sl *ScreenLayout) WithInput(input string) *ScreenLayout {
+	sl.InputLine = input
+	return sl
+}
+
+// WithStatusBar sets the status bar content rendered in the footer between
+// the input line and the help text.
+//
+// Expected:
+//   - content is a pre-rendered status bar string.
+//
+// Returns:
+//   - The updated ScreenLayout for method chaining.
+//
+// Side effects:
+//   - Sets StatusBarContent on the ScreenLayout.
+func (sl *ScreenLayout) WithStatusBar(content string) *ScreenLayout {
+	sl.StatusBarContent = content
+	return sl
+}
+
 // WithFooterSeparator enables/disables the footer separator line
 //
 // Expected:
@@ -328,7 +361,7 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 	return parts
 }
 
-// buildFooterParts constructs the footer section parts (separator and help text).
+// buildFooterParts constructs the footer section parts (separator, input, status bar, help).
 // This is shared by both GetAvailableContentHeight and Render to ensure consistent layout calculations.
 //
 // Expected:
@@ -342,20 +375,25 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 func (sl *ScreenLayout) buildFooterParts(theme themes.Theme) []string {
 	var parts []string
 
-	if sl.ShowFooter && sl.HelpText != "" {
-		if sl.ShowFooterSeparator {
-			separator := strings.Repeat("─", 100)
-			separatorStyle := lipgloss.NewStyle().
-				Foreground(theme.BorderColor())
-			parts = append(parts, "", separatorStyle.Render(separator))
-		} else {
-			parts = append(parts, "") // Just blank line
-		}
+	hasFooterContent := sl.HelpText != "" || sl.InputLine != "" || sl.StatusBarContent != ""
+	if sl.ShowFooter && sl.ShowFooterSeparator && hasFooterContent {
+		separator := strings.Repeat("─", 100)
+		separatorStyle := lipgloss.NewStyle().Foreground(theme.BorderColor())
+		parts = append(parts, "", separatorStyle.Render(separator))
+	}
 
-		helpStyle := lipgloss.NewStyle().
-			Foreground(theme.MutedColor())
-		styledHelp := helpStyle.Render(sl.HelpText)
-		parts = append(parts, styledHelp)
+	if sl.InputLine != "" {
+		inputStyle := lipgloss.NewStyle().Foreground(theme.PrimaryColor())
+		parts = append(parts, inputStyle.Render(sl.InputLine))
+	}
+
+	if sl.StatusBarContent != "" {
+		parts = append(parts, sl.StatusBarContent)
+	}
+
+	if sl.ShowFooter && sl.HelpText != "" {
+		helpStyle := lipgloss.NewStyle().Foreground(theme.MutedColor())
+		parts = append(parts, helpStyle.Render(sl.HelpText))
 	}
 
 	return parts

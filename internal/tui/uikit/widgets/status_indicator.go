@@ -92,3 +92,14 @@ func (si *StatusIndicator) Render() string {
 
 	return spinner + label
 }
+
+// SetFrame sets the spinner to a specific animation frame.
+//
+// Expected:
+//   - frame is a non-negative integer; it is wrapped modulo the frame count.
+//
+// Side effects:
+//   - Updates the frame field.
+func (si *StatusIndicator) SetFrame(frame int) {
+	si.frame = frame % len(spinnerFrames)
+}

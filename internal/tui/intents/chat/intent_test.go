@@ -24,10 +24,6 @@ var _ = Describe("ChatIntent", func() {
 	})
 
 	Describe("NewIntent", func() {
-		It("creates an intent in normal mode", func() {
-			Expect(intent.Mode()).To(Equal("normal"))
-		})
-
 		It("creates an intent with empty input", func() {
 			Expect(intent.Input()).To(BeEmpty())
 		})
@@ -47,65 +43,47 @@ var _ = Describe("ChatIntent", func() {
 	})
 
 	Describe("Init", func() {
-		It("returns nil command", func() {
+		It("returns a spinner tick command", func() {
 			cmd := intent.Init()
-			Expect(cmd).To(BeNil())
+			Expect(cmd).NotTo(BeNil())
 		})
 	})
 
 	Describe("Update", func() {
-		Context("in normal mode", func() {
-			It("switches to insert mode on 'i' key", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-				Expect(intent.Mode()).To(Equal("insert"))
-			})
-
-			It("returns quit command on 'q' key", func() {
-				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-				Expect(cmd).NotTo(BeNil())
-			})
-
-			It("returns quit command on Ctrl+C", func() {
-				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-				Expect(cmd).NotTo(BeNil())
-			})
-
-			It("ignores other keys", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-				Expect(intent.Mode()).To(Equal("normal"))
-			})
+		It("appends 'i' character to input", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+			Expect(intent.Input()).To(Equal("i"))
 		})
 
-		Context("in insert mode", func() {
-			BeforeEach(func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-			})
+		It("returns quit command on Ctrl+C", func() {
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			Expect(cmd).NotTo(BeNil())
+		})
 
-			It("appends characters to input", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
-				Expect(intent.Input()).To(Equal("hi"))
-			})
+		It("appends characters to input", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+			Expect(intent.Input()).To(Equal("hi"))
+		})
 
-			It("handles backspace", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
-				intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-				Expect(intent.Input()).To(Equal("h"))
-			})
+		It("handles backspace", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+			intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			Expect(intent.Input()).To(Equal("h"))
+		})
 
-			It("does nothing on backspace with empty input", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-				Expect(intent.Input()).To(BeEmpty())
-			})
+		It("does nothing on backspace with empty input", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			Expect(intent.Input()).To(BeEmpty())
+		})
 
-			It("switches to normal mode on Escape", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyEscape})
-				Expect(intent.Mode()).To(Equal("normal"))
-			})
+		It("does nothing on Enter with empty input", func() {
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).To(BeNil())
+		})
 
-			It("does nothing on Enter with empty input", func() {
-				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-				Expect(cmd).To(BeNil())
-			})
+		It("appends space character to input", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeySpace})
+			Expect(intent.Input()).To(Equal(" "))
 		})
 
 		Context("window resize", func() {
@@ -115,30 +93,39 @@ var _ = Describe("ChatIntent", func() {
 				Expect(intent.Height()).To(Equal(40))
 			})
 		})
+
+		Context("spinner tick", func() {
+			It("advances tickFrame on SpinnerTickMsg while streaming", func() {
+				intent.SetStreamingForTest(true)
+				before := intent.TickFrame()
+				intent.Update(chat.SpinnerTickMsg{})
+				Expect(intent.TickFrame()).To(Equal(before + 1))
+			})
+
+			It("does not advance tickFrame when not streaming", func() {
+				before := intent.TickFrame()
+				intent.Update(chat.SpinnerTickMsg{})
+				Expect(intent.TickFrame()).To(Equal(before))
+			})
+		})
 	})
 
 	Describe("View", func() {
-		It("shows normal mode indicator", func() {
-			view := intent.View()
-			Expect(view).To(ContainSubstring("[NORMAL]"))
-		})
-
-		It("shows insert mode indicator when in insert mode", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-			view := intent.View()
-			Expect(view).To(ContainSubstring("[INSERT]"))
-		})
-
-		It("shows input prompt", func() {
+		It("shows input prompt in footer", func() {
 			view := intent.View()
 			Expect(view).To(ContainSubstring("> "))
 		})
 
-		It("shows current input", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+		It("shows current input in footer", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t', 'e', 's', 't'}})
 			view := intent.View()
 			Expect(view).To(ContainSubstring("test"))
+		})
+
+		It("shows Thinking indicator when streaming", func() {
+			intent.SetStreamingForTest(true)
+			view := intent.View()
+			Expect(view).To(ContainSubstring("Thinking"))
 		})
 	})
 
@@ -178,17 +165,6 @@ var _ = Describe("ChatIntent", func() {
 			Expect(view).To(ContainSubstring("gpt-4o"))
 		})
 
-		It("shows NORMAL mode in StatusBar", func() {
-			view := intent.View()
-			Expect(view).To(ContainSubstring("NORMAL"))
-		})
-
-		It("shows INSERT mode after switching", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
-			view := intent.View()
-			Expect(view).To(ContainSubstring("INSERT"))
-		})
-
 		It("shows token budget in StatusBar", func() {
 			view := intent.View()
 			Expect(view).To(ContainSubstring("4096"))
@@ -197,17 +173,7 @@ var _ = Describe("ChatIntent", func() {
 
 	Describe("ToolPermissionMsg handling", func() {
 		Context("when a ToolPermissionMsg is received", func() {
-			It("switches to permission mode", func() {
-				responseChan := make(chan bool, 1)
-				intent.Update(chat.ToolPermissionMsg{
-					ToolName:  "dangerous_tool",
-					Arguments: map[string]interface{}{"file": "/etc/passwd"},
-					Response:  responseChan,
-				})
-				Expect(intent.Mode()).To(Equal("permission"))
-			})
-
-			It("shows tool details in the view", func() {
+			It("shows permission prompt in the view", func() {
 				responseChan := make(chan bool, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "dangerous_tool",
@@ -215,13 +181,14 @@ var _ = Describe("ChatIntent", func() {
 					Response:  responseChan,
 				})
 				view := intent.View()
+				Expect(view).To(ContainSubstring("PERMISSION"))
 				Expect(view).To(ContainSubstring("dangerous_tool"))
 				Expect(view).To(ContainSubstring("y/n"))
 			})
 		})
 
 		Context("when user approves with 'y'", func() {
-			It("sends true on response channel and returns to normal mode", func() {
+			It("sends true on response channel", func() {
 				responseChan := make(chan bool, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "test_tool",
@@ -231,13 +198,12 @@ var _ = Describe("ChatIntent", func() {
 
 				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 
-				Expect(intent.Mode()).To(Equal("normal"))
 				Eventually(responseChan).Should(Receive(BeTrue()))
 			})
 		})
 
 		Context("when user denies with 'n'", func() {
-			It("sends false on response channel and returns to normal mode", func() {
+			It("sends false on response channel", func() {
 				responseChan := make(chan bool, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "test_tool",
@@ -247,7 +213,6 @@ var _ = Describe("ChatIntent", func() {
 
 				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 
-				Expect(intent.Mode()).To(Equal("normal"))
 				Eventually(responseChan).Should(Receive(BeFalse()))
 			})
 		})

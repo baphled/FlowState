@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -13,12 +14,29 @@ import (
 	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
+	"github.com/baphled/flowstate/internal/ui/terminal"
 )
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
 type StreamChunkMsg struct {
 	Content string
 	Done    bool
+}
+
+// SpinnerTickMsg is sent periodically to advance the chat spinner animation.
+type SpinnerTickMsg struct{}
+
+// tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
+//
+// Returns:
+//   - A tea.Cmd that sends SpinnerTickMsg after 100ms.
+//
+// Side effects:
+//   - None.
+func tickSpinner() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		return SpinnerTickMsg{}
+	})
 }
 
 // ToolPermissionMsg requests user approval for a tool invocation.
@@ -45,7 +63,6 @@ type Intent struct {
 	sessionID         string
 	messages          []chat.Message
 	input             string
-	mode              string
 	streaming         bool
 	response          string
 	width             int
@@ -56,6 +73,7 @@ type Intent struct {
 	providerName      string
 	modelName         string
 	tokenBudget       int
+	tickFrame         int
 	pendingPermission *ToolPermissionMsg
 	result            *app.IntentResult
 }
@@ -69,7 +87,7 @@ type Intent struct {
 //   - cfg.TokenBudget is the maximum token allocation for the session.
 //
 // Returns:
-//   - An initialised Intent with default dimensions (80x24), normal mode, and a configured StatusBar.
+//   - An initialised Intent with default dimensions (80x24) and a configured StatusBar.
 //
 // Side effects:
 //   - None.
@@ -78,7 +96,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 	sb.Update(layout.StatusBarMsg{
 		Provider:    cfg.ProviderName,
 		Model:       cfg.ModelName,
-		Mode:        "NORMAL",
+		Mode:        "CHAT",
 		TokensUsed:  0,
 		TokenBudget: cfg.TokenBudget,
 	})
@@ -89,7 +107,6 @@ func NewIntent(cfg IntentConfig) *Intent {
 		sessionID:    cfg.SessionID,
 		messages:     []chat.Message{},
 		input:        "",
-		mode:         "normal",
 		streaming:    false,
 		response:     "",
 		width:        80,
@@ -100,6 +117,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		providerName: cfg.ProviderName,
 		modelName:    cfg.ModelName,
 		tokenBudget:  cfg.TokenBudget,
+		tickFrame:    0,
 		result:       nil,
 	}
 }
@@ -107,12 +125,12 @@ func NewIntent(cfg IntentConfig) *Intent {
 // Init returns the initial command for the intent.
 //
 // Returns:
-//   - nil (no initial command).
+//   - A tea.Cmd that starts the spinner tick loop.
 //
 // Side effects:
-//   - None.
+//   - Schedules the first SpinnerTickMsg.
 func (i *Intent) Init() tea.Cmd {
-	return nil
+	return tickSpinner()
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -137,15 +155,24 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case StreamChunkMsg:
 		i.handleStreamChunk(msg)
+		if i.streaming {
+			return tickSpinner()
+		}
 		return nil
 	case ToolPermissionMsg:
 		i.handleToolPermission(msg)
+		return nil
+	case SpinnerTickMsg:
+		if i.streaming {
+			i.tickFrame++
+			return tickSpinner()
+		}
 		return nil
 	}
 	return nil
 }
 
-// handleKeyMsg processes keyboard input and returns any command to execute.
+// handleKeyMsg processes keyboard input directly without mode switching.
 //
 // Expected:
 //   - msg is a tea.KeyMsg from the Bubble Tea event loop.
@@ -154,81 +181,56 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 //   - A tea.Cmd to execute, or nil if no command is needed.
 //
 // Side effects:
-//   - Updates mode, input, or returns a quit command based on key input.
+//   - Updates input or returns a quit command based on key input.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
-	if i.mode == "permission" {
+	if i.pendingPermission != nil {
 		return i.handlePermissionKey(msg)
 	}
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
-	case tea.KeyEscape:
-		if i.mode == "insert" {
-			i.mode = "normal"
-			i.syncStatusBarMode()
-		}
-		return nil
 	case tea.KeyBackspace:
-		if i.mode == "insert" && i.input != "" {
+		if i.input != "" {
 			i.input = i.input[:len(i.input)-1]
 		}
 		return nil
 	case tea.KeyEnter:
-		if i.mode == "insert" && i.input != "" {
+		if i.input != "" {
 			return i.sendMessage()
 		}
 		return nil
 	case tea.KeySpace:
-		if i.mode == "insert" {
-			i.input += " "
-		}
+		i.input += " "
 		return nil
 	case tea.KeyRunes:
-		return i.handleRunes(msg.Runes)
-	}
-	return nil
-}
-
-// handleRunes processes rune input in the current mode.
-//
-// Expected:
-//   - runes is a slice of runes from keyboard input.
-//
-// Returns:
-//   - A tea.Cmd to execute, or nil if no command is needed.
-//
-// Side effects:
-//   - Switches to insert mode on 'i' in normal mode, or appends runes to input in insert mode.
-//   - Updates StatusBar mode indicator on mode switch.
-func (i *Intent) handleRunes(runes []rune) tea.Cmd {
-	if i.mode == "normal" {
-		if len(runes) == 1 {
-			switch runes[0] {
-			case 'i':
-				i.mode = "insert"
-				i.syncStatusBarMode()
-				return nil
-			case 'q':
-				return tea.Quit
-			}
-		}
+		i.input += string(msg.Runes)
 		return nil
 	}
-
-	i.input += string(runes)
 	return nil
 }
 
-// handleStreamChunk processes a streaming response chunk by accumulating token count.
+// handleStreamChunk processes a streaming response chunk.
 //
 // Expected:
 //   - msg is a StreamChunkMsg with content from the provider stream.
 //
 // Side effects:
-//   - Increments the token count using the configured TokenCounter (TiktokenCounter with fallback to approximate).
-//   - Updates the StatusBar with the new token count.
+//   - When Done is true, appends the accumulated response to messages, clears streaming state.
+//   - When Done is false, accumulates content in i.response.
+//   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
+	if msg.Done {
+		i.messages = append(i.messages, chat.Message{
+			Role:    "assistant",
+			Content: msg.Content,
+		})
+		i.streaming = false
+		i.response = ""
+	} else {
+		i.response += msg.Content
+	}
+
 	tokens := i.tokenCounter.Count(msg.Content)
 	i.tokenCount += tokens
 	i.syncStatusBar()
@@ -237,41 +239,15 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 // syncStatusBar updates the StatusBar with the current intent state.
 //
 // Side effects:
-//   - Updates the StatusBar with provider, model, mode, and token information.
+//   - Updates the StatusBar with provider, model, and token information.
 func (i *Intent) syncStatusBar() {
 	i.statusBar.Update(layout.StatusBarMsg{
 		Provider:    i.providerName,
 		Model:       i.modelName,
-		Mode:        i.statusBarMode(),
+		Mode:        "CHAT",
 		TokensUsed:  i.tokenCount,
 		TokenBudget: i.tokenBudget,
 	})
-}
-
-// syncStatusBarMode updates only the mode in the StatusBar.
-//
-// Side effects:
-//   - Updates the StatusBar mode indicator.
-func (i *Intent) syncStatusBarMode() {
-	i.statusBar.Update(layout.StatusBarMsg{
-		Mode:        i.statusBarMode(),
-		TokensUsed:  i.tokenCount,
-		TokenBudget: i.tokenBudget,
-	})
-}
-
-// statusBarMode returns the mode string for the StatusBar display.
-//
-// Returns:
-//   - "NORMAL" or "INSERT" based on the current input mode.
-//
-// Side effects:
-//   - None.
-func (i *Intent) statusBarMode() string {
-	if i.mode == "insert" {
-		return "INSERT"
-	}
-	return "NORMAL"
 }
 
 // sendMessage appends the current input to messages and streams a response from the engine.
@@ -281,13 +257,10 @@ func (i *Intent) statusBarMode() string {
 //
 // Side effects:
 //   - Appends the input to messages as a user message, clears input, and sets streaming to true.
-//   - Initiates engine.Stream() to fetch the AI response.
+//   - The returned Cmd streams the response and returns a StreamChunkMsg{Done: true}.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
-	i.messages = append(i.messages, chat.Message{
-		Role:    "user",
-		Content: userMessage,
-	})
+	i.messages = append(i.messages, chat.Message{Role: "user", Content: userMessage})
 	i.input = ""
 	i.streaming = true
 	i.response = ""
@@ -296,60 +269,52 @@ func (i *Intent) sendMessage() tea.Cmd {
 		ctx := context.Background()
 		stream, err := i.engine.Stream(ctx, i.agentID, userMessage)
 		if err != nil {
-			return nil
+			return StreamChunkMsg{Content: "", Done: true}
 		}
 
 		var accumulated strings.Builder
 		for chunk := range stream {
 			accumulated.WriteString(chunk.Content)
 		}
-
-		i.messages = append(i.messages, chat.Message{
-			Role:    "assistant",
-			Content: accumulated.String(),
-		})
-		i.streaming = false
-		i.response = ""
-
-		return nil
+		return StreamChunkMsg{Content: accumulated.String(), Done: true}
 	}
 }
 
 // View renders the chat interface as a string.
 //
 // Returns:
-//   - A rendered chat view with messages, input, mode indicator, and StatusBar.
+//   - A rendered chat view with messages in the content area and input in the footer.
 //
 // Side effects:
 //   - Recreates the ChatView state from the current intent state before rendering.
 func (i *Intent) View() string {
 	cv := chat.NewView()
 	cv.SetDimensions(i.width, i.height)
-	cv.SetInput(i.input)
-	cv.SetMode(i.mode)
 	cv.SetStreaming(i.streaming, i.response)
-
+	cv.SetSpinnerFrame(i.tickFrame)
 	for _, msg := range i.messages {
 		cv.AddMessage(msg)
 	}
 
-	var builder strings.Builder
-	builder.WriteString(cv.RenderContent(i.width))
-	builder.WriteString("\n\n")
-
-	switch i.mode {
-	case "permission":
-		builder.WriteString(i.renderPermissionPrompt())
-	case "insert":
-		builder.WriteString("[INSERT] Esc: normal mode | Enter: send")
+	var inputLine string
+	switch {
+	case i.pendingPermission != nil:
+		inputLine = fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
+	case i.streaming:
+		inputLine = i.SpinnerFrame() + " Thinking..."
 	default:
-		builder.WriteString("[NORMAL] q: quit | i: insert mode")
+		inputLine = "> " + i.input
 	}
 
-	builder.WriteString("\n")
-	builder.WriteString(i.statusBar.RenderContent(i.width))
+	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
+		WithBreadcrumbs("Chat").
+		WithContent(cv.RenderContent(i.width)).
+		WithInput(inputLine).
+		WithStatusBar(i.statusBar.RenderContent(i.width)).
+		WithHelp("Enter: send  ·  Ctrl+C: quit").
+		WithFooterSeparator(true)
 
-	return builder.String()
+	return sl.Render()
 }
 
 // Result returns the current outcome state of the chat intent.
@@ -371,7 +336,6 @@ func (i *Intent) Result() *app.IntentResult {
 // Side effects:
 //   - Switches the intent to "permission" mode and stores the pending request.
 func (i *Intent) handleToolPermission(msg ToolPermissionMsg) {
-	i.mode = "permission"
 	i.pendingPermission = &msg
 }
 
@@ -412,33 +376,8 @@ func (i *Intent) resolvePermission(approved bool) {
 		i.pendingPermission.Response <- approved
 	}
 	i.pendingPermission = nil
-	i.mode = "normal"
 }
 
-// renderPermissionPrompt builds the permission confirmation prompt.
-//
-// Returns:
-//   - A string showing tool name and y/n options.
-//
-// Side effects:
-//   - None.
-func (i *Intent) renderPermissionPrompt() string {
-	if i.pendingPermission == nil {
-		return "[PERMISSION] No pending request"
-	}
-	return fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
-}
-
-// Mode returns the current input mode.
-//
-// Returns:
-//   - The current mode: "normal", "insert", or "permission".
-//
-// Side effects:
-//   - None.
-func (i *Intent) Mode() string {
-	return i.mode
-}
 
 // Input returns the current input text.
 //
@@ -459,7 +398,47 @@ func (i *Intent) Input() string {
 // Side effects:
 //   - None.
 func (i *Intent) Messages() []chat.Message {
-	return i.messages
+	var result []chat.Message
+	for _, msg := range i.messages {
+		if msg.Role == "assistant" {
+			result = append(result, msg)
+		}
+	}
+	return result
+}
+
+// Response returns the current streaming response content.
+//
+// Returns:
+//   - The partial response string accumulated during streaming.
+//
+// Side effects:
+//   - None.
+func (i *Intent) Response() string {
+	return i.response
+}
+
+// SpinnerFrame returns the current spinner animation frame as a string.
+//
+// Returns:
+//   - The braille spinner character for the current tick frame.
+//
+// Side effects:
+//   - None.
+func (i *Intent) SpinnerFrame() string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	return frames[i.tickFrame%len(frames)]
+}
+
+// TickFrame returns the current tick frame counter for testing.
+//
+// Returns:
+//   - The current integer tick frame index.
+//
+// Side effects:
+//   - None.
+func (i *Intent) TickFrame() int {
+	return i.tickFrame
 }
 
 // IsStreaming returns whether the intent is currently streaming a response.

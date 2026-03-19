@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
@@ -30,6 +31,13 @@ func main() {
 //   - Loads configuration, initialises the application, and runs the CLI.
 //   - Defers MCP server disconnection for graceful shutdown.
 func run() int {
+	logPath := filepath.Join(config.DataDir(), "flowstate.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
+		if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			log.SetOutput(f)
+			defer f.Close()
+		}
+	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Printf("using default config: %v", err)

@@ -67,32 +67,24 @@ var _ = Describe("ChatView", func() {
 			})
 		})
 
-		It("renders input prompt", func() {
+		It("does not render input prompt in content area", func() {
 			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("> "))
-		})
-
-		It("renders current input", func() {
-			view.SetInput("test input")
-			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("test input"))
-		})
-
-		It("shows normal mode indicator", func() {
-			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("[NORMAL]"))
-		})
-
-		It("shows insert mode indicator", func() {
-			view.SetMode("insert")
-			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("[INSERT]"))
+			Expect(content).NotTo(ContainSubstring("> "))
 		})
 
 		It("shows streaming response", func() {
 			view.SetStreaming(true, "streaming...")
 			content := view.RenderContent(80)
 			Expect(content).To(ContainSubstring("streaming..."))
+		})
+
+		Context("spinner frame wiring", func() {
+			It("uses the set spinner frame when rendering", func() {
+				view.SetStreaming(true, "")
+				view.SetSpinnerFrame(3)
+				content := view.RenderContent(80)
+				Expect(content).To(ContainSubstring("Thinking"))
+			})
 		})
 
 		Describe("Markdown", func() {
