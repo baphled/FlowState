@@ -108,6 +108,24 @@ var _ = Describe("ChatIntent", func() {
 				Expect(intent.TickFrame()).To(Equal(before))
 			})
 		})
+
+		Context("viewport scrolling", func() {
+			BeforeEach(func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			})
+
+			It("scrolls viewport up on PageUp", func() {
+				for range 20 {
+					intent.Update(chat.StreamChunkMsg{Content: "line\n", Done: false})
+				}
+				intent.Update(chat.StreamChunkMsg{Content: "last", Done: true})
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+			})
+
+			It("scrolls viewport down on PageDown", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+			})
+		})
 	})
 
 	Describe("View", func() {

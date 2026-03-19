@@ -22,12 +22,12 @@ type StatusBarMsg struct {
 // It is theme-aware and uses Badge for mode, Text for provider/model, and ProgressBar for tokens.
 type StatusBar struct {
 	theme.Aware
-	provider    string
-	model       string
-	tokensUsed  int
-	tokenBudget int
-	mode        string
-	width       int
+	provider     string
+	model        string
+	tokensUsed   int
+	tokenBudget  int
+	mode         string
+	width        int
 	streaming    bool
 	spinnerFrame int
 }

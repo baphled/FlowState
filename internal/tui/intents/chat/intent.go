@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
@@ -77,7 +77,7 @@ type Intent struct {
 	tickFrame         int
 	pendingPermission *ToolPermissionMsg
 	result            *app.IntentResult
-	msgViewport      viewport.Model
+	msgViewport       viewport.Model
 	vpReady           bool
 }
 
@@ -200,6 +200,15 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return i.handlePermissionKey(msg)
 	}
 
+	if i.vpReady {
+		switch msg.Type {
+		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+			var cmd tea.Cmd
+			i.msgViewport, cmd = i.msgViewport.Update(msg)
+			return cmd
+		}
+	}
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
@@ -263,7 +272,6 @@ func (i *Intent) syncStatusBar() {
 	})
 }
 
-
 // refreshViewport rebuilds the message viewport content and scrolls to the bottom.
 //
 // Side effects:
@@ -282,6 +290,7 @@ func (i *Intent) refreshViewport() {
 	i.msgViewport.SetContent(content)
 	i.msgViewport.GotoBottom()
 }
+
 // sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
@@ -341,7 +350,7 @@ func (i *Intent) View() string {
 		WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp("Enter: send  ·  Ctrl+C: quit").
+		WithHelp("Enter: send  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 
 	return sl.Render()
