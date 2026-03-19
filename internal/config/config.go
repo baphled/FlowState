@@ -27,13 +27,24 @@ type ProvidersConfig struct {
 	Ollama    ProviderConfig `json:"ollama" yaml:"ollama"`
 	OpenAI    ProviderConfig `json:"openai" yaml:"openai"`
 	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
+	GitHub    ProviderConfig `json:"github" yaml:"github"`
 }
 
 // ProviderConfig holds configuration for a single LLM provider.
 type ProviderConfig struct {
-	Host   string `json:"host" yaml:"host"`
-	APIKey string `json:"api_key" yaml:"api_key"`
-	Model  string `json:"model" yaml:"model"`
+	Host   string      `json:"host" yaml:"host"`
+	APIKey string      `json:"api_key" yaml:"api_key"`
+	Model  string      `json:"model" yaml:"model"`
+	OAuth  OAuthConfig `json:"oauth" yaml:"oauth"`
+}
+
+// OAuthConfig holds OAuth-specific configuration for a provider.
+type OAuthConfig struct {
+	Enabled   bool   `json:"enabled" yaml:"enabled"`
+	ClientID  string `json:"client_id" yaml:"client_id"`
+	TokenFile string `json:"token_file" yaml:"token_file"`
+	Scopes    string `json:"scopes" yaml:"scopes"`
+	UseOAuth  bool   `json:"use_oauth" yaml:"use_oauth"`
 }
 
 // MCPServerConfig holds configuration for a single MCP server connection.
@@ -291,5 +302,11 @@ func applyProviderDefaults(cfg *ProviderConfig, defaults ProviderConfig) {
 	}
 	if cfg.Model == "" {
 		cfg.Model = defaults.Model
+	}
+	if cfg.OAuth.ClientID == "" {
+		cfg.OAuth.ClientID = defaults.OAuth.ClientID
+	}
+	if cfg.OAuth.Scopes == "" {
+		cfg.OAuth.Scopes = defaults.OAuth.Scopes
 	}
 }

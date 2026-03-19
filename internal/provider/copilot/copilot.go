@@ -1,0 +1,384 @@
+// Package copilot provides a GitHub Copilot provider implementation.
+package copilot
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/baphled/flowstate/internal/oauth"
+	"github.com/baphled/flowstate/internal/provider"
+)
+
+var errTokenRequired = errors.New("GitHub token is required")
+
+const (
+	providerName      = "github-copilot"
+	defaultBaseURL    = "https://api.github.com"
+	headerAccept      = "application/vnd.github.copilot-integration+json"
+	headerContentType = "application/json"
+)
+
+// Provider implements the GitHub Copilot API provider.
+type Provider struct {
+	token   string
+	baseURL string
+	client  *http.Client
+}
+
+// New creates a new GitHub Copilot provider with the given token.
+//
+// Expected:
+//   - token is a non-empty GitHub authentication token.
+//
+// Returns:
+//   - A configured Provider with default base URL and HTTP client, or an error if token is empty.
+//
+// Side effects:
+//   - None.
+func New(token string) (*Provider, error) {
+	if token == "" {
+		return nil, errTokenRequired
+	}
+	return &Provider{
+		token:   token,
+		baseURL: defaultBaseURL,
+		client:  &http.Client{},
+	}, nil
+}
+
+// NewWithOAuth creates a new GitHub Copilot provider using an OAuth token response.
+//
+// Expected:
+//   - tokenResp contains a valid OAuth access token.
+//
+// Returns:
+//   - A configured Provider with the OAuth token, default base URL and HTTP client.
+//
+// Side effects:
+//   - None.
+func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
+	if tokenResp == nil || tokenResp.AccessToken == "" {
+		return nil, errTokenRequired
+	}
+	return &Provider{
+		token:   tokenResp.AccessToken,
+		baseURL: defaultBaseURL,
+		client:  &http.Client{},
+	}, nil
+}
+
+// SetBaseURL sets the base URL for the GitHub Copilot API endpoint.
+//
+// Expected:
+//   - url is a valid HTTP or HTTPS URL string.
+//
+// Side effects:
+//   - Mutates the baseURL field of the Provider.
+func (p *Provider) SetBaseURL(url string) {
+	p.baseURL = strings.TrimSuffix(url, "/")
+}
+
+// Name returns the provider name.
+//
+// Returns:
+//   - The string "github-copilot".
+//
+// Side effects:
+//   - None.
+func (p *Provider) Name() string {
+	return providerName
+}
+
+// Models returns the list of available models from GitHub Copilot.
+//
+// Returns:
+//   - A slice of provider.Model with supported Copilot models and a nil error.
+//
+// Side effects:
+//   - None.
+func (p *Provider) Models() ([]provider.Model, error) {
+	return []provider.Model{
+		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000},
+		{ID: "gpt-4o-mini", Provider: providerName, ContextLength: 128000},
+		{ID: "claude-3.5-sonnet", Provider: providerName, ContextLength: 200000},
+		{ID: "o1-mini", Provider: providerName, ContextLength: 65536},
+		{ID: "o1-preview", Provider: providerName, ContextLength: 32768},
+	}, nil
+}
+
+// Chat sends a chat request to GitHub Copilot and returns the response.
+//
+// Expected:
+//   - ctx is a non-nil context for request cancellation.
+//   - req contains a valid Model and at least one Message.
+//
+// Returns:
+//   - A ChatResponse with the first choice from the Copilot API, or an error on failure.
+//
+// Side effects:
+//   - Makes an HTTP POST request to the Copilot chat completions endpoint.
+func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	endpoint := p.baseURL + "/copilot_next/v1/chat/completions"
+
+	payload := map[string]interface{}{
+		"model":    req.Model,
+		"messages": convertMessages(req.Messages),
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return provider.ChatResponse{}, fmt.Errorf("marshalling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return provider.ChatResponse{}, fmt.Errorf("creating request: %w", err)
+	}
+	setHeaders(httpReq, p.token)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return provider.ChatResponse{}, fmt.Errorf("copilot chat: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return provider.ChatResponse{}, fmt.Errorf("copilot chat: status %d", resp.StatusCode)
+		}
+		return provider.ChatResponse{}, fmt.Errorf("copilot chat: status %d: %s", resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return provider.ChatResponse{}, fmt.Errorf("decoding response: %w", err)
+	}
+
+	if len(result.Choices) == 0 {
+		return provider.ChatResponse{}, errors.New("no choices in response")
+	}
+
+	return provider.ChatResponse{
+		Message: provider.Message{
+			Role:    result.Choices[0].Message.Role,
+			Content: result.Choices[0].Message.Content,
+		},
+	}, nil
+}
+
+// Stream sends a chat request to GitHub Copilot and streams the response.
+//
+// Expected:
+//   - ctx is a non-nil context for request cancellation.
+//   - req contains a valid Model and at least one Message.
+//
+// Returns:
+//   - A receive-only channel of StreamChunk values, or an error on setup failure.
+//
+// Side effects:
+//   - Spawns a goroutine that makes an HTTP POST request and sends chunks to the channel.
+func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 16)
+
+	go func() {
+		defer close(ch)
+
+		endpoint := p.baseURL + "/copilot_next/v1/chat/completions"
+
+		payload := map[string]interface{}{
+			"model":    req.Model,
+			"messages": convertMessages(req.Messages),
+			"stream":   true,
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			ch <- provider.StreamChunk{Error: err, Done: true}
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			ch <- provider.StreamChunk{Error: err, Done: true}
+			return
+		}
+		setHeaders(httpReq, p.token)
+
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			ch <- provider.StreamChunk{Error: err, Done: true}
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				ch <- provider.StreamChunk{Error: fmt.Errorf("status %d", resp.StatusCode), Done: true}
+				return
+			}
+			ch <- provider.StreamChunk{Error: fmt.Errorf("status %d: %s", resp.StatusCode, respBody), Done: true}
+			return
+		}
+
+		reader := json.NewDecoder(resp.Body)
+		finished := streamSSE(ctx, ch, reader)
+		if !finished {
+			ch <- provider.StreamChunk{Done: true}
+		}
+	}()
+
+	return ch, nil
+}
+
+// Embed is not implemented for GitHub Copilot.
+//
+// Expected:
+//   - ctx is a context (unused).
+//   - req is an EmbedRequest (unused).
+//
+// Returns:
+//   - nil and nil; embedding is not supported by this provider.
+//
+// Side effects:
+//   - None.
+func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+// streamSSE parses server-sent events from the JSON decoder and sends chunks to the channel.
+//
+// Expected:
+//   - ctx is a non-nil context for cancellation.
+//   - ch is an open, writable channel for stream chunks.
+//   - reader is a JSON decoder positioned at the start of the SSE event stream.
+//
+// Returns:
+//   - true if the stream completed with a finish reason, false otherwise.
+//
+// Side effects:
+//   - Sends StreamChunk values to ch.
+func streamSSE(ctx context.Context, ch chan<- provider.StreamChunk, reader *json.Decoder) bool {
+	for reader.More() {
+		var event map[string]interface{}
+		if err := reader.Decode(&event); err != nil {
+			break
+		}
+
+		choice := extractChoice(event)
+		if choice == nil {
+			continue
+		}
+
+		if content := extractContent(choice); content != "" {
+			select {
+			case ch <- provider.StreamChunk{Content: content}:
+			case <-ctx.Done():
+				ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
+				return false
+			}
+		}
+
+		if finish, ok := choice["finish_reason"].(string); ok && finish != "" {
+			ch <- provider.StreamChunk{Done: true}
+			return true
+		}
+	}
+	return false
+}
+
+// extractChoice extracts the first choice from an SSE event.
+//
+// Expected:
+//   - event must be a valid SSE event map with a "choices" field.
+//
+// Returns:
+//   - The first choice as a map, or nil if not found.
+//
+// Side effects:
+//   - None.
+func extractChoice(event map[string]interface{}) map[string]interface{} {
+	choices, ok := event["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return nil
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return choice
+}
+
+// extractContent extracts text content from a choice delta.
+//
+// Expected:
+//   - choice must be a valid choice map with a "delta" field.
+//
+// Returns:
+//   - The content string, or empty string if not found.
+//
+// Side effects:
+//   - None.
+func extractContent(choice map[string]interface{}) string {
+	delta, ok := choice["delta"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	content, ok := delta["content"].(string)
+	if !ok {
+		return ""
+	}
+	return content
+}
+
+// setHeaders sets the required HTTP headers for the Copilot API request.
+//
+// Expected:
+//   - req must be a non-nil HTTP request.
+//   - token must be a valid GitHub Copilot token.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates the Header map of req.
+func setHeaders(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", headerContentType)
+	req.Header.Set("Accept", headerAccept)
+}
+
+// convertMessages converts provider.Message slice to the Copilot API format.
+//
+// Expected:
+//   - msgs must be a slice of provider.Message values.
+//
+// Returns:
+//   - A slice of string maps suitable for the Copilot chat API.
+//
+// Side effects:
+//   - Allocates a new result slice.
+func convertMessages(msgs []provider.Message) []map[string]string {
+	result := make([]map[string]string, 0, len(msgs))
+	for _, m := range msgs {
+		result = append(result, map[string]string{
+			"role":    m.Role,
+			"content": m.Content,
+		})
+	}
+	return result
+}

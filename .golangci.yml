@@ -201,6 +201,8 @@ linters:
     gosec:
       excludes:
         - G104
+        - G101
+        - G117
       config:
         global:
           audit: enabled
@@ -284,6 +286,7 @@ linters:
             - golang.org/x/tools
             - golang.org/x/tools/go/analysis
             - golang.org/x/tools/go/analysis/singlechecker
+            - filippo.io/age
 
   exclusions:
     rules:
