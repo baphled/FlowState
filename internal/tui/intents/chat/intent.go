@@ -2,6 +2,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
+	"github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
@@ -40,11 +42,11 @@ type Intent struct {
 	engine            *engine.Engine
 	agentID           string
 	sessionID         string
-	messages          []string
+	messages          []chat.Message
 	input             string
 	mode              string
 	streaming         bool
-	response          strings.Builder
+	response          string
 	width             int
 	height            int
 	statusBar         *layout.StatusBar
@@ -83,10 +85,11 @@ func NewIntent(cfg IntentConfig) *Intent {
 		engine:       cfg.Engine,
 		agentID:      cfg.AgentID,
 		sessionID:    cfg.SessionID,
-		messages:     []string{},
+		messages:     []chat.Message{},
 		input:        "",
 		mode:         "normal",
 		streaming:    false,
+		response:     "",
 		width:        80,
 		height:       24,
 		statusBar:    sb,
@@ -266,18 +269,45 @@ func (i *Intent) statusBarMode() string {
 	return "NORMAL"
 }
 
-// sendMessage appends the current input to messages and starts streaming.
+// sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
-//   - nil (no command to execute).
+//   - A tea.Cmd that performs the streaming operation.
 //
 // Side effects:
-//   - Appends the input to messages, clears input, and sets streaming to true.
+//   - Appends the input to messages as a user message, clears input, and sets streaming to true.
+//   - Initiates engine.Stream() to fetch the AI response.
 func (i *Intent) sendMessage() tea.Cmd {
-	i.messages = append(i.messages, "> "+i.input)
+	userMessage := i.input
+	i.messages = append(i.messages, chat.Message{
+		Role:    "user",
+		Content: userMessage,
+	})
 	i.input = ""
 	i.streaming = true
-	return nil
+	i.response = ""
+
+	return func() tea.Msg {
+		ctx := context.Background()
+		stream, err := i.engine.Stream(ctx, i.agentID, userMessage)
+		if err != nil {
+			return nil
+		}
+
+		var accumulated strings.Builder
+		for chunk := range stream {
+			accumulated.WriteString(chunk.Content)
+		}
+
+		i.messages = append(i.messages, chat.Message{
+			Role:    "assistant",
+			Content: accumulated.String(),
+		})
+		i.streaming = false
+		i.response = ""
+
+		return nil
+	}
 }
 
 // View renders the chat interface as a string.
@@ -286,23 +316,20 @@ func (i *Intent) sendMessage() tea.Cmd {
 //   - A rendered chat view with messages, input, mode indicator, and StatusBar.
 //
 // Side effects:
-//   - None.
+//   - Recreates the ChatView state from the current intent state before rendering.
 func (i *Intent) View() string {
-	var builder strings.Builder
+	cv := chat.NewView()
+	cv.SetDimensions(i.width, i.height)
+	cv.SetInput(i.input)
+	cv.SetMode(i.mode)
+	cv.SetStreaming(i.streaming, i.response)
 
 	for _, msg := range i.messages {
-		builder.WriteString(msg)
-		builder.WriteString("\n")
+		cv.AddMessage(msg)
 	}
 
-	if i.response.Len() > 0 {
-		builder.WriteString(i.response.String())
-		builder.WriteString("\n")
-	}
-
-	builder.WriteString("\n")
-	builder.WriteString("> ")
-	builder.WriteString(i.input)
+	var builder strings.Builder
+	builder.WriteString(cv.RenderContent(i.width))
 	builder.WriteString("\n\n")
 
 	switch i.mode {
@@ -426,7 +453,7 @@ func (i *Intent) Input() string {
 //
 // Side effects:
 //   - None.
-func (i *Intent) Messages() []string {
+func (i *Intent) Messages() []chat.Message {
 	return i.messages
 }
 
