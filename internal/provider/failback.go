@@ -152,3 +152,37 @@ func (f *FailbackChain) LastProvider() string {
 func (f *FailbackChain) LastModel() string {
 	return f.lastModel
 }
+
+// DefaultProvider returns the provider name from the first configured preference.
+//
+// Expected:
+//   - preferences is non-empty (populated at construction).
+//
+// Returns:
+//   - The provider name string from the first preference, or empty string if none.
+//
+// Side effects:
+//   - None.
+func (f *FailbackChain) DefaultProvider() string {
+	if len(f.preferences) > 0 {
+		return f.preferences[0].Provider
+	}
+	return ""
+}
+
+// DefaultModel returns the model name from the first configured preference.
+//
+// Expected:
+//   - preferences is non-empty (populated at construction).
+//
+// Returns:
+//   - The model name string from the first preference, or empty string if none.
+//
+// Side effects:
+//   - None.
+func (f *FailbackChain) DefaultModel() string {
+	if len(f.preferences) > 0 {
+		return f.preferences[0].Model
+	}
+	return ""
+}

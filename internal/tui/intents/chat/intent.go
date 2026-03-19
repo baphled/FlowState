@@ -100,7 +100,6 @@ func NewIntent(cfg IntentConfig) *Intent {
 		Provider:    cfg.ProviderName,
 		Model:       cfg.ModelName,
 		AgentID:     cfg.AgentID,
-		Mode:        "CHAT",
 		TokensUsed:  0,
 		TokenBudget: cfg.TokenBudget,
 	})
@@ -268,7 +267,6 @@ func (i *Intent) syncStatusBar() {
 		Provider:    i.providerName,
 		Model:       i.modelName,
 		AgentID:     i.agentID,
-		Mode:        "CHAT",
 		TokensUsed:  i.tokenCount,
 		TokenBudget: i.tokenBudget,
 	})

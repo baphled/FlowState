@@ -16,12 +16,11 @@ type StatusBarMsg struct {
 	AgentID     string
 	TokensUsed  int
 	TokenBudget int
-	Mode        string
 }
 
 // StatusBar renders a two-line status bar with token usage on line 1
 // and provider/model/agent details on line 2.
-// It is theme-aware and uses Badge for mode, Text for provider/model, and ProgressBar for tokens.
+// It is theme-aware and uses Text for provider/model and ProgressBar for tokens.
 type StatusBar struct {
 	theme.Aware
 	provider     string
@@ -29,7 +28,6 @@ type StatusBar struct {
 	agentID      string
 	tokensUsed   int
 	tokenBudget  int
-	mode         string
 	width        int
 	streaming    bool
 	spinnerFrame int
@@ -41,13 +39,12 @@ type StatusBar struct {
 //   - width is a positive integer representing terminal columns.
 //
 // Returns:
-//   - An initialised StatusBar with mode set to "NORMAL" and the default theme.
+//   - An initialised StatusBar with the default theme.
 //
 // Side effects:
 //   - None.
 func NewStatusBar(width int) *StatusBar {
 	sb := &StatusBar{
-		mode:  "NORMAL",
 		width: width,
 	}
 	sb.SetTheme(theme.Default())
@@ -75,7 +72,7 @@ func (s *StatusBar) WithTheme(th theme.Theme) *StatusBar {
 //   - msg is a StatusBarMsg with status updates.
 //
 // Side effects:
-//   - Updates provider, model, agentID, tokens, and mode fields from the message.
+//   - Updates provider, model, agentID, and token fields from the message.
 func (s *StatusBar) Update(msg StatusBarMsg) {
 	if msg.Provider != "" {
 		s.provider = msg.Provider
@@ -88,10 +85,6 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 	}
 	s.tokensUsed = msg.TokensUsed
 	s.tokenBudget = msg.TokenBudget
-
-	if msg.Mode != "" {
-		s.mode = msg.Mode
-	}
 }
 
 // SetStreaming sets the streaming state and current spinner frame for animated display.
@@ -138,7 +131,7 @@ func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 }
 
 // RenderContent renders the two-line status bar for the given width using UIKit primitives.
-// Line 1: mode badge (left) + token bar + count (right) with full-width background.
+// Line 1: spinner prefix when streaming (left) + token bar + count (right) with full-width background.
 // Line 2: provider + model + agentID (left-aligned, muted colour, no background).
 //
 // Expected:
@@ -152,12 +145,14 @@ func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 func (s *StatusBar) RenderContent(width int) string {
 	th := s.Theme()
 
-	modeText := s.mode
+	var spinnerPrefix string
 	if s.streaming {
 		frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-		modeText = frames[s.spinnerFrame%len(frames)]
+		spinnerChar := frames[s.spinnerFrame%len(frames)]
+		spinnerPrefix = lipgloss.NewStyle().
+			Foreground(th.PrimaryColor()).
+			Render(spinnerChar + " ")
 	}
-	modeBadge := primitives.NewBadge(modeText, th).Variant(primitives.BadgeStatus).Render()
 
 	var tokenValue float64
 	if s.tokenBudget > 0 {
@@ -176,12 +171,12 @@ func (s *StatusBar) RenderContent(width int) string {
 		Background(th.MutedColor()).
 		Foreground(th.PrimaryColor())
 
-	spacerWidth := width - lipgloss.Width(modeBadge) - lipgloss.Width(rightSide)
+	spacerWidth := width - lipgloss.Width(spinnerPrefix) - lipgloss.Width(rightSide)
 	if spacerWidth < 0 {
 		spacerWidth = 0
 	}
 	spacer := strings.Repeat(" ", spacerWidth)
-	line1 := containerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, modeBadge, spacer, rightSide))
+	line1 := containerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, spinnerPrefix, spacer, rightSide))
 
 	mutedStyle := lipgloss.NewStyle().Foreground(th.MutedColor())
 

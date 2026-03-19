@@ -3350,7 +3350,6 @@ func (s *StepDefinitions) theAIIsStreamingAResponse() error {
 		Model:       "llama3.2",
 		TokensUsed:  42,
 		TokenBudget: 4096,
-		Mode:        "INSERT",
 	})
 	return nil
 }

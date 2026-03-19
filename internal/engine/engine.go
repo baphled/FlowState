@@ -138,7 +138,10 @@ func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 //   - None.
 func (e *Engine) LastProvider() string {
 	if e.failbackChain != nil {
-		return e.failbackChain.LastProvider()
+		if p := e.failbackChain.LastProvider(); p != "" {
+			return p
+		}
+		return e.failbackChain.DefaultProvider()
 	}
 	if e.chatProvider != nil {
 		return e.chatProvider.Name()
@@ -147,15 +150,19 @@ func (e *Engine) LastProvider() string {
 }
 
 // LastModel returns the model name used by the most recently active provider.
+// Falls back to the first configured preference if no stream has run yet.
 //
 // Returns:
-//   - The model name string, or empty string if no provider has been used.
+//   - The model name string, or empty string if no provider is configured.
 //
 // Side effects:
 //   - None.
 func (e *Engine) LastModel() string {
 	if e.failbackChain != nil {
-		return e.failbackChain.LastModel()
+		if m := e.failbackChain.LastModel(); m != "" {
+			return m
+		}
+		return e.failbackChain.DefaultModel()
 	}
 	return ""
 }

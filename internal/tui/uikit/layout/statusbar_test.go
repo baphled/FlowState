@@ -22,7 +22,6 @@ var _ = Describe("StatusBar", func() {
 				Model:       "claude-3-opus",
 				TokensUsed:  1000,
 				TokenBudget: 10000,
-				Mode:        "NORMAL",
 			})
 		})
 
@@ -35,8 +34,24 @@ var _ = Describe("StatusBar", func() {
 		It("contains token count", func() {
 			Expect(sb.RenderContent(80)).To(ContainSubstring("1000 / 10000"))
 		})
-		It("shows NORMAL mode by default", func() {
-			Expect(sb.RenderContent(80)).To(ContainSubstring("NORMAL"))
+		It("shows no badge or mode indicator when idle", func() {
+			output := sb.RenderContent(80)
+			Expect(output).NotTo(ContainSubstring("CHAT"))
+			Expect(output).NotTo(ContainSubstring("NORMAL"))
+		})
+
+		Context("streaming", func() {
+			It("shows spinner character when streaming", func() {
+				sb.SetStreaming(true, 0)
+				output := sb.RenderContent(80)
+				Expect(output).To(ContainSubstring("⠋"))
+			})
+
+			It("shows no spinner when idle", func() {
+				sb.SetStreaming(false, 0)
+				output := sb.RenderContent(80)
+				Expect(output).NotTo(ContainSubstring("⠋"))
+			})
 		})
 
 		Context("width responsiveness", func() {
