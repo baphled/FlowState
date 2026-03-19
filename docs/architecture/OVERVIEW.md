@@ -29,9 +29,11 @@ FlowState is built as a layered TUI application using BubbleTea.
 │                              │                                  │
 │                              ▼                                  │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │                        UIKit                             │   │
+│  │                  Views + UIKit                           │   │
+│  │  Render intent UI using reusable UIKit components       │   │
+│  │  with consistent Theme system styling                    │   │
 │  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
-│  │  │ Containers │  │ Layout  │  │  Theme   │             │   │
+│  │  │ Containers │  │ Layout  │  │  Theme   │  (MVP)      │   │
 │  │  └────────────┘  └─────────┘  └──────────┘             │   │
 │  │  ┌────────────┐  ┌─────────┐  ┌──────────┐             │   │
 │  │  │ Primitives │  │ Render  │  │ Feedback │             │   │
@@ -60,6 +62,54 @@ FlowState is built as a layered TUI application using BubbleTea.
 │  │  └──────────────┘  └─────────────┘                      │   │
 │  └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+## TUI Architecture (MVP)
+
+### Layer Hierarchy
+
+The FlowState TUI is structured in clear layers:
+
+```
+App → Intents → Views → UIKit Components + Theme System
+```
+
+**Each layer only depends on layers to its right:**
+- **App** — Coordinates the active intent and routes global keyboard shortcuts
+- **Intents** — Workflow orchestrators that manage view lifecycle and coordinate with providers/tools
+- **Views** — Intent-specific rendering using UIKit components styled with the Theme system
+- **UIKit** — Reusable components: layout (grid, flex, stack), containers (box, overlay, modal), primitives (button, input, list), and render utilities
+- **Theme** — Consistent styling system used by all UIKit components (MVP scope, not deferred)
+
+### UIKit Scope (MVP)
+
+UIKit provides a complete set of reusable components for building intent views:
+
+| Component Category | Examples | Purpose |
+|-------------------|----------|---------|
+| **Layout** | Grid, Flex, Stack | Responsive component arrangement |
+| **Containers** | Box, Overlay, Modal | Content wrapper and positioning |
+| **Primitives** | Button, Input, List | Basic interactive elements |
+| **Render** | AsScreen, AsModal | Flexible rendering as view or modal |
+| **Feedback** | Toast, Alert, Spinner | User feedback and loading states |
+| **Theme** | Colors, Spacing, Styles | Consistent styling across all components |
+
+All UIKit components accept a **Theme** parameter for consistent, customizable styling.
+
+### Intent/View → UIKit Flow
+
+```
+Intent (Workflow Orchestrator)
+  ├─ Init() → Initialize state, subscribe to events
+  ├─ Update(msg) → Handle user input, update state
+  ├─ View() → Render using UIKit components
+  │   └─ UIKit components styled with Theme
+  └─ Result() → Return workflow result
+
+Views use:
+  - UIKit containers (Box, Modal) for layout
+  - UIKit components (Button, Input, List) for interaction
+  - Theme system for consistent colors and spacing
 ```
 
 ## Data Flow
@@ -190,7 +240,23 @@ type Component struct {
 }
 ```
 
+## Deferred to v2
+
+The following features are **explicitly deferred** and not part of the MVP scope:
+
+- **Vim navigation keybindings** — MVP supports basic arrow keys and `Ctrl+p`; Vim mode (hjkl, modeful navigation) planned for v2
+- **Command palette** — Quick command invocation will be added in v2; MVP uses intent-based navigation
+- **Memory MCP server** — Optional local memory server is deferred; external MCP servers supported in MVP
+- **Structured session persistence** — MVP uses file-based sessions; SQLite migration planned for v2
+- **Advanced modal composition** — Current modal priority system meets MVP needs; enhanced composition patterns in v2
+
+**These deferral decisions allow us to:**
+- Launch MVP with core chat and session functionality
+- Keep codebase focused and testable
+- Iterate on user feedback before building optional features
+- Plan v2 with clearer requirements from MVP usage
+
 ## See Also
 
-- [ARCHITECTURE.md](../../rules/ARCHITECTURE.md) - Architecture rules
+- [ARCHITECTURE.md](../../rules/ARCHITECTURE.md) - Architecture rules and dependency constraints
 - [PLAN.md](../PLAN.md) - Full project plan

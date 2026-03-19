@@ -5,18 +5,27 @@ FlowState follows a strict layered architecture inspired by the KaRiya project.
 ## Layer Hierarchy
 
 ```
-App -> Intents -> UIKit + Behaviors
+App -> Intents -> Views -> UIKit Components + Theme System
 ```
 
 Each layer can only depend on layers to its right.
+
+**Specifically:**
+- **App** → manages active intent, routes global keys, renders layout
+- **Intents** → workflow orchestrators, manage view lifecycle, coordinate providers/tools
+- **Views** → render intent UI using UIKit components and theme system
+- **UIKit** → reusable components (containers, layout, primitives, render utilities)
+- **Theme** → MVP-scoped system for consistent styling across the UI
 
 ## Dependency Rules
 
 | Layer | Can Import | CANNOT Import |
 |-------|------------|---------------|
-| `app/` | `intents/`, `uikit/` | - |
-| `intents/` | `uikit/` | `app/` |
-| `uikit/` | Standard lib, external | `app/`, `intents/` |
+| `app/` | `intents/` | - |
+| `intents/` | `uikit/` (via views) | `app/` |
+| `views/` | `uikit/`, `theme/` | `intents/`, `app/` |
+| `uikit/` | `theme/`, standard lib, external | `app/`, `intents/`, `views/` |
+| `theme/` | Standard lib, external | `app/`, `intents/`, `uikit/` |
 
 ### Critical Rule
 
@@ -62,6 +71,40 @@ type Intent interface {
 - Reduces boilerplate
 - Cleaner composition
 - Intents communicate results via `IntentResult[T]` — never direct state mutation
+
+## Theme System (MVP Scope)
+
+The theme system provides consistent styling across all UI components and is part of the MVP.
+
+```go
+type Theme struct {
+    // Color palette
+    Primary, Secondary, Accent color.Color
+    Background, Surface, Overlay color.Color
+    Text, TextSecondary color.Color
+    
+    // Component styling
+    BorderStyle string
+    PaddingX, PaddingY int
+}
+
+// All UIKit components accept and embed a Theme
+type Component struct {
+    theme theme.Theme
+    // ...
+}
+
+func New(t theme.Theme) *Component {
+    return &Component{theme: t}
+}
+```
+
+**Theme is used by:**
+- All UIKit components (containers, layout, primitives, feedback)
+- Intent views for consistent styling
+- Modal overlays and feedback components
+
+**Theme is NOT deferred** — it is required for MVP launch.
 
 ## ContentProvider Pattern
 
@@ -238,3 +281,13 @@ func (s *MemoryServer) ListResources() []Resource
 func (s *MemoryServer) ReadResource(uri string) ResourceContent
 func (s *MemoryServer) WriteResource(uri string, content ResourceContent) error
 ```
+
+## Deferred to v2
+
+The following features are **NOT** part of the MVP scope and are planned for future releases:
+
+- **Vim navigation keybindings** — Currently supports basic arrow keys and Ctrl+p; Vim mode (hjkl, modes) planned for v2
+- **Command palette** — Quick command invocation will be added in v2
+- **Memory MCP server** — Optional local memory server is deferred; external MCP memory servers supported in MVP
+- **SQLite session persistence** — Session storage will move to structured database in v2; MVP uses file-based sessions
+- **Advanced modal state management** — Current modal priority system is v1; enhanced composition planned for v2
