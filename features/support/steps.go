@@ -4819,7 +4819,7 @@ func (s *StepDefinitions) iSelectPlan(id string) error {
 	retrievedPlan, err := s.planStore.Get(id)
 	if err != nil {
 		s.lastError = err
-		return err
+		return nil //nolint:nilerr // intentional: capture error for assertion in next step
 	}
 	s.selectedPlan = retrievedPlan
 	s.lastError = nil
@@ -4838,7 +4838,7 @@ func (s *StepDefinitions) iDeletePlan(id string) error {
 	err := s.planStore.Delete(id)
 	if err != nil {
 		s.lastError = err
-		return err
+		return nil //nolint:nilerr // intentional: capture error for assertion in next step
 	}
 	s.lastError = nil
 	return nil
