@@ -3,6 +3,8 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
@@ -268,6 +271,48 @@ var _ = Describe("Engine", func() {
 	})
 
 	Describe("Stream", func() {
+		It("does not duplicate the user message in the context window when store and windowBuilder are present", func() {
+			tempDir, err := os.MkdirTemp("", "engine-stream-test-*")
+			Expect(err).NotTo(HaveOccurred())
+
+			defer os.RemoveAll(tempDir)
+
+			storePath := filepath.Join(tempDir, "context.json")
+			store, err := ctxstore.NewFileContextStore(storePath, "test-model")
+			Expect(err).NotTo(HaveOccurred())
+
+			tokenCounter := ctxstore.NewTiktokenCounter()
+
+			testMsg := "test message"
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Store:        store,
+				TokenCounter: tokenCounter,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", testMsg)
+
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(chatProvider.capturedRequest).NotTo(BeNil())
+
+			userMessages := []provider.Message{}
+			for _, msg := range chatProvider.capturedRequest.Messages {
+				if msg.Role == "user" && msg.Content == testMsg {
+					userMessages = append(userMessages, msg)
+				}
+			}
+
+			Expect(userMessages).To(HaveLen(1), "user message should appear exactly once in context window")
+		})
+
 		It("returns chunks from provider", func() {
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,

@@ -326,13 +326,13 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	_ = agentID
 
+	messages := e.buildContextWindow(ctx, message)
+
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
 		e.store.Append(userMsg)
 		e.embedMessage(ctx, message)
 	}
-
-	messages := e.buildContextWindow(ctx, message)
 
 	providerChunks, err := e.streamFromProvider(ctx, provider.ChatRequest{
 		Messages: messages,
