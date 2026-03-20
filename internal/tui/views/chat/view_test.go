@@ -110,4 +110,30 @@ var _ = Describe("ChatView", func() {
 			Expect(result).To(BeAssignableToTypeOf(chat.ResultCancel{}))
 		})
 	})
+
+	Describe("Tool call rendering", func() {
+		It("renders tool call widget when streaming with active tool call", func() {
+			view.SetStreaming(true, "processing...")
+			view.SetToolCall("web_search", "running")
+			content := view.RenderContent(80)
+			Expect(content).To(ContainSubstring("⚡"))
+			Expect(content).To(ContainSubstring("web_search"))
+			Expect(content).To(ContainSubstring("running"))
+		})
+
+		It("does not render tool call when none is set", func() {
+			view.SetStreaming(true, "processing...")
+			content := view.RenderContent(80)
+			Expect(content).NotTo(ContainSubstring("⚡"))
+		})
+
+		It("renders tool call with complete status", func() {
+			view.SetStreaming(true, "")
+			view.SetToolCall("file_read", "complete")
+			content := view.RenderContent(80)
+			Expect(content).To(ContainSubstring("⚡"))
+			Expect(content).To(ContainSubstring("file_read"))
+			Expect(content).To(ContainSubstring("complete"))
+		})
+	})
 })
