@@ -18,7 +18,6 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
-	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
@@ -108,6 +107,7 @@ type Intent struct {
 	agentRegistry     *agent.Registry
 	toolCallName      string
 	toolCallStatus    string
+	view              *chat.View
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -154,6 +154,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		tickFrame:       0,
 		result:          nil,
 		agentRegistry:   cfg.AgentRegistry,
+		view:            chat.NewView(),
 	}
 }
 
@@ -251,7 +252,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyCtrlC:
 		return tea.Quit
 	case tea.KeyTab:
-		return i.openAgentPicker()
+		return i.toggleAgent()
 	case tea.KeyCtrlP:
 		return i.openModelSelector()
 	case tea.KeyBackspace:
@@ -532,16 +533,13 @@ func (i *Intent) refreshViewport() {
 	if !i.vpReady {
 		return
 	}
-	cv := chat.NewView()
-	cv.SetDimensions(i.width, i.msgViewport.Height)
-	cv.SetStreaming(i.streaming, i.response)
+	i.view.SetDimensions(i.width, i.msgViewport.Height)
+	i.view.SetStreaming(i.streaming, i.response)
 	if i.toolCallName != "" && i.toolCallStatus != "" {
-		cv.SetToolCall(i.toolCallName, i.toolCallStatus)
+		i.view.SetToolCall(i.toolCallName, i.toolCallStatus)
 	}
-	for _, msg := range i.messages {
-		cv.AddMessage(msg)
-	}
-	content := cv.RenderContent(i.width)
+	i.view.SetMessages(i.messages)
+	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
 	i.msgViewport.GotoBottom()
 }
@@ -794,41 +792,33 @@ func (i *Intent) openModelSelector() tea.Cmd {
 	}
 }
 
-// openAgentPicker creates and shows the agent picker as a modal overlay.
+// toggleAgent alternates the active agent between "planner" and "executor".
+//
+// Expected:
+//   - i.agentRegistry is non-nil.
+//   - Both "planner" and "executor" manifests exist in the registry.
 //
 // Returns:
-//   - A tea.Cmd that emits a ShowModalMsg to display the agent picker.
+//   - nil (no async command needed — switch is synchronous).
 //
 // Side effects:
-//   - None.
-func (i *Intent) openAgentPicker() tea.Cmd {
-	return func() tea.Msg {
-		if i.agentRegistry == nil {
-			return nil
-		}
-
-		manifests := i.agentRegistry.List()
-		agents := make([]agentpicker.AgentEntry, len(manifests))
-		for idx, m := range manifests {
-			agents[idx] = agentpicker.AgentEntry{
-				ID:   m.ID,
-				Name: m.Name,
-			}
-		}
-
-		pickerIntent := agentpicker.NewIntent(agentpicker.IntentConfig{
-			Agents: agents,
-			OnSelect: func(selectedID string) {
-				if manifest, found := i.agentRegistry.Get(selectedID); found {
-					i.engine.SetManifest(*manifest)
-					i.agentID = selectedID
-					i.syncStatusBar()
-				}
-			},
-		})
-
-		return tuiintents.ShowModalMsg{Modal: pickerIntent}
+//   - Updates i.agentID, i.engine manifest, and status bar.
+func (i *Intent) toggleAgent() tea.Cmd {
+	if i.agentRegistry == nil {
+		return nil
 	}
+	next := "planner"
+	if i.agentID == "planner" {
+		next = "executor"
+	}
+	manifest, found := i.agentRegistry.Get(next)
+	if !found {
+		return nil
+	}
+	i.engine.SetManifest(*manifest)
+	i.agentID = next
+	i.syncStatusBar()
+	return nil
 }
 
 // handlePermissionKey processes key input during permission mode.
@@ -985,4 +975,26 @@ func (i *Intent) TokenCount() int {
 //   - Sets the internal app reference used for intent switching.
 func (i *Intent) SetApp(appShell AppShell) {
 	i.app = appShell
+}
+
+// AgentIDForTest returns the current agent ID for testing purposes.
+//
+// Returns:
+//   - The current agent ID.
+//
+// Side effects:
+//   - None.
+func (i *Intent) AgentIDForTest() string {
+	return i.agentID
+}
+
+// SetAgentIDForTest sets the agent ID for testing purposes.
+//
+// Expected:
+//   - id is a non-empty string matching a known agent ID.
+//
+// Side effects:
+//   - Sets the internal agentID field.
+func (i *Intent) SetAgentIDForTest(id string) {
+	i.agentID = id
 }

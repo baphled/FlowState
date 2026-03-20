@@ -258,6 +258,47 @@ linters:
             - pkg: "github.com/baphled/flowstate/internal/tui"
               desc: "ARCHITECTURE: skill/ cannot import tui/"
 
+
+        # UIKit layer cannot import intents
+        uikit-isolation:
+          files:
+            - "**/tui/uikit/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents"
+              desc: "ARCHITECTURE: uikit/ cannot import intents/ — uikit is a leaf layer"
+
+        # Views layer cannot import intents
+        views-isolation:
+          files:
+            - "**/tui/views/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents"
+              desc: "ARCHITECTURE: views/ cannot import intents/ — views is a leaf layer"
+
+        # Chat intent cannot import sibling intents
+        intents-chat-isolation:
+          files:
+            - "**/tui/intents/chat/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/agentpicker"
+              desc: "ARCHITECTURE: intents/chat/ cannot import sibling intent packages"
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/models"
+              desc: "ARCHITECTURE: intents/chat/ cannot import sibling intent packages"
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/providersetup"
+              desc: "ARCHITECTURE: intents/chat/ cannot import sibling intent packages"
+
+        # AgentPicker intent cannot import sibling intents
+        intents-agentpicker-isolation:
+          files:
+            - "**/tui/intents/agentpicker/**/*.go"
+          deny:
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/chat"
+              desc: "ARCHITECTURE: intents/agentpicker/ cannot import sibling intent packages"
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/models"
+              desc: "ARCHITECTURE: intents/agentpicker/ cannot import sibling intent packages"
+            - pkg: "github.com/baphled/flowstate/internal/tui/intents/providersetup"
+              desc: "ARCHITECTURE: intents/agentpicker/ cannot import sibling intent packages"
+
         # Main rule - allows all project internal packages and third-party deps
         main:
           files:

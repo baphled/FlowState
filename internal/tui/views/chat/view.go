@@ -90,6 +90,20 @@ func (v *View) AddMessage(msg Message) {
 	v.messages = append(v.messages, msg)
 }
 
+// SetMessages replaces the view's message list with the given slice.
+//
+// Expected:
+//   - msgs is a slice of Message values (may be empty).
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Replaces the internal messages slice entirely.
+func (v *View) SetMessages(msgs []Message) {
+	v.messages = msgs
+}
+
 // SetStreaming sets the streaming state and partial response content.
 //
 // Expected:

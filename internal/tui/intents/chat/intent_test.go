@@ -65,14 +65,6 @@ var _ = Describe("ChatIntent", func() {
 			Expect(cmd).NotTo(BeNil())
 		})
 
-		It("opens agent picker on Tab", func() {
-			intent.SetAgentRegistryForTest(&agent.Registry{})
-			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyTab})
-			Expect(cmd).NotTo(BeNil())
-			msg := cmd()
-			Expect(msg).NotTo(BeNil())
-		})
-
 		It("appends characters to input", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
 			Expect(intent.Input()).To(Equal("hi"))
@@ -551,6 +543,86 @@ var _ = Describe("ChatIntent", func() {
 				readyView := intent.View()
 				Expect(readyView).To(ContainSubstring("Ready"))
 			})
+		})
+	})
+
+	Describe("Tab key toggles between agents", func() {
+		var (
+			eng              *engine.Engine
+			reg              *provider.Registry
+			agentReg         *agent.Registry
+			plannerManifest  agent.Manifest
+			executorManifest agent.Manifest
+			toggleIntent     *chat.Intent
+		)
+
+		BeforeEach(func() {
+			plannerManifest = agent.Manifest{
+				ID:   "planner",
+				Name: "Planner Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {
+						{Provider: "test-provider", Model: "test-model"},
+					},
+				},
+			}
+			executorManifest = agent.Manifest{
+				ID:   "executor",
+				Name: "Executor Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {
+						{Provider: "test-provider", Model: "test-model"},
+					},
+				},
+			}
+
+			agentReg = agent.NewRegistry()
+			agentReg.Register(&plannerManifest)
+			agentReg.Register(&executorManifest)
+
+			reg = provider.NewRegistry()
+			reg.Register(&stubProvider{providerName: "test-provider"})
+
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: executorManifest,
+			})
+
+			toggleIntent = chat.NewIntent(chat.IntentConfig{
+				Engine:        eng,
+				AgentID:       "executor",
+				SessionID:     "test-session",
+				ProviderName:  "test-provider",
+				ModelName:     "test-model",
+				TokenBudget:   4096,
+				AgentRegistry: agentReg,
+			})
+		})
+
+		It("toggles from executor to planner on first Tab press", func() {
+			cmd := toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			Expect(cmd).To(BeNil())
+			Expect(toggleIntent.AgentIDForTest()).To(Equal("planner"))
+		})
+
+		It("toggles back from planner to executor on second Tab press", func() {
+			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			Expect(toggleIntent.AgentIDForTest()).To(Equal("planner"))
+			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			Expect(toggleIntent.AgentIDForTest()).To(Equal("executor"))
+		})
+
+		It("updates status bar with new agent on toggle", func() {
+			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			view := toggleIntent.View()
+			Expect(view).To(ContainSubstring("planner"))
+		})
+
+		It("preserves message history when toggling agents", func() {
+			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			Expect(toggleIntent.AgentIDForTest()).To(Equal("planner"))
+			Expect(toggleIntent.Input()).To(Equal("hi"))
 		})
 	})
 

@@ -82,7 +82,7 @@ var _ = Describe("Config", func() {
 			Expect(cfg).NotTo(BeNil())
 			Expect(cfg.Providers.Default).To(Equal("ollama"))
 			Expect(cfg.LogLevel).To(Equal("info"))
-			Expect(cfg.DefaultAgent).To(Equal("planner"))
+			Expect(cfg.DefaultAgent).To(Equal("executor"))
 		})
 
 		It("sets Ollama provider defaults", func() {
@@ -201,7 +201,7 @@ log_level: warn
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg.LogLevel).To(Equal("warn"))
 				Expect(cfg.Providers.Default).To(Equal("ollama"))
-				Expect(cfg.DefaultAgent).To(Equal("planner"))
+				Expect(cfg.DefaultAgent).To(Equal("executor"))
 			})
 
 			It("preserves all provider configurations", func() {

@@ -129,7 +129,7 @@ func DefaultConfig() *AppConfig {
 		SkillDir:     filepath.Join(dataDir, "skills"),
 		DataDir:      dataDir,
 		LogLevel:     "info",
-		DefaultAgent: "planner",
+		DefaultAgent: "executor",
 		AlwaysActiveSkills: []string{
 			"pre-action",
 			"memory-keeper",
