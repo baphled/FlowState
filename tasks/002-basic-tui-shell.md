@@ -1,6 +1,6 @@
 # Task 002: Basic TUI Shell
 
-**Status:** Not Started
+**Status:** Complete
 **Priority:** High
 **Depends On:** 001-foundation-setup
 
