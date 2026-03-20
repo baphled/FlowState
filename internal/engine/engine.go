@@ -99,34 +99,51 @@ func New(cfg Config) *Engine {
 	}
 }
 
-// buildModelPreferences constructs model preferences from the agent manifest's complexity tier.
+// buildModelPreferences constructs model preferences from the agent manifest.
+//
+// The manifest uses a provider-keyed format where keys are provider names
+// (e.g., "ollama", "anthropic", "openai") and values are model preference lists.
+// This function flattens all preferences in a deterministic order.
 //
 // Expected:
-//   - manifest contains a Complexity field and ModelPreferences mapping.
+//   - manifest contains a valid ModelPreferences map with provider keys.
 //
 // Returns:
-//   - A slice of ModelPreference values for the manifest's complexity tier, or nil if not found.
+//   - A slice of provider.ModelPreference with all preferences flattened, or empty if none exist.
 //
 // Side effects:
 //   - None.
 func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
-	complexity := manifest.Complexity
-	if complexity == "" {
-		complexity = "standard"
+	order := []string{"ollama", "anthropic", "openai"}
+
+	var result []provider.ModelPreference
+	seen := make(map[string]bool)
+
+	for _, key := range order {
+		prefs, ok := manifest.ModelPreferences[key]
+		if ok {
+			for _, p := range prefs {
+				result = append(result, provider.ModelPreference{
+					Provider: p.Provider,
+					Model:    p.Model,
+				})
+			}
+		}
+		seen[key] = true
 	}
 
-	prefs, ok := manifest.ModelPreferences[complexity]
-	if !ok || len(prefs) == 0 {
-		return nil
-	}
-
-	result := make([]provider.ModelPreference, len(prefs))
-	for i, p := range prefs {
-		result[i] = provider.ModelPreference{
-			Provider: p.Provider,
-			Model:    p.Model,
+	for key, prefs := range manifest.ModelPreferences {
+		if seen[key] {
+			continue
+		}
+		for _, p := range prefs {
+			result = append(result, provider.ModelPreference{
+				Provider: p.Provider,
+				Model:    p.Model,
+			})
 		}
 	}
+
 	return result
 }
 

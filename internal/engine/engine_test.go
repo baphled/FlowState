@@ -612,4 +612,63 @@ var _ = Describe("Engine", func() {
 			})
 		})
 	})
+
+	Describe("buildModelPreferences", func() {
+		It("flattens provider-keyed model preferences to initialize failback chain", func() {
+			registry := provider.NewRegistry()
+
+			ollamaProvider := &mockProvider{
+				name: "ollama",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response from ollama", Done: true},
+				},
+			}
+
+			anthropicProvider := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response from anthropic", Done: true},
+				},
+			}
+
+			registry.Register(ollamaProvider)
+			registry.Register(anthropicProvider)
+
+			manifestWithProviderKeys := agent.Manifest{
+				ID:         "planner",
+				Name:       "Strategic Planner",
+				Complexity: "deep",
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are a strategic planner.",
+				},
+				ContextManagement: agent.DefaultContextManagement(),
+				ModelPreferences: map[string][]agent.ModelPref{
+					"ollama": {
+						{Provider: "ollama", Model: "llama3.2"},
+					},
+					"anthropic": {
+						{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"},
+					},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				Registry: registry,
+				Manifest: manifestWithProviderKeys,
+			})
+
+			Expect(eng).NotTo(BeNil())
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "planner", "test message")
+			Expect(err).NotTo(HaveOccurred())
+
+			var response string
+			for chunk := range chunks {
+				response += chunk.Content
+			}
+
+			Expect(response).NotTo(BeEmpty())
+		})
+	})
 })
