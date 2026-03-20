@@ -47,17 +47,21 @@ func NewFailbackChain(registry *Registry, preferences []ModelPreference, timeout
 
 // Stream attempts to stream from providers in preference order.
 //
+// Uses a peek-and-replay pattern: reads the first chunk from each provider
+// to detect async errors (e.g. HTTP 404) before committing. If the first
+// chunk carries Error+Done, the provider is skipped and the next is tried.
+//
 // Expected:
 //   - ctx is a valid context.
 //   - req contains a valid chat request.
 //
 // Returns:
-//   - A channel of StreamChunk on success.
-//   - An error if all providers fail.
+//   - A channel of StreamChunk on success (first chunk replayed).
+//   - An error if all providers fail (sync or async errors).
 //
 // Side effects:
 //   - Makes network calls to LLM providers.
-//   - Updates lastProvider on success.
+//   - Updates lastProvider and lastModel on success.
 func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	if len(f.preferences) == 0 {
 		return nil, errNoPreferences
@@ -77,17 +81,29 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 			lastErr = err
 			continue
 		}
+		firstChunk, ok := <-ch
+		if !ok {
+			cancel()
+			lastErr = fmt.Errorf("provider %s: stream closed immediately", pref.Provider)
+			continue
+		}
+		if firstChunk.Error != nil && firstChunk.Done {
+			cancel()
+			lastErr = firstChunk.Error
+			continue
+		}
 		f.lastProvider = pref.Provider
 		f.lastModel = pref.Model
-		wrappedCh := make(chan StreamChunk, 16)
+		replayCh := make(chan StreamChunk, 16)
 		go func() {
-			defer close(wrappedCh)
+			defer close(replayCh)
 			defer cancel()
+			replayCh <- firstChunk
 			for chunk := range ch {
-				wrappedCh <- chunk
+				replayCh <- chunk
 			}
 		}()
-		return wrappedCh, nil
+		return replayCh, nil
 	}
 	return nil, fmt.Errorf("all providers failed: %w", lastErr)
 }
