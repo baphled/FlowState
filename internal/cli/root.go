@@ -77,6 +77,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 		newDiscoverCmd(getApp),
 		newSessionCmd(getApp),
 		newModelsCmd(getApp),
+		NewPlanCommand(getApp),
 	)
 
 	return cmd
