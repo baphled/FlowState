@@ -19,10 +19,11 @@ import (
 var errTokenRequired = errors.New("GitHub token is required")
 
 const (
-	providerName      = "github-copilot"
-	defaultBaseURL    = "https://api.github.com"
-	headerAccept      = "application/vnd.github.copilot-integration+json"
-	headerContentType = "application/json"
+	providerName         = "github-copilot"
+	defaultBaseURL       = "https://api.github.com"
+	headerAccept         = "application/vnd.github.copilot-integration+json"
+	headerContentType    = "application/json"
+	defaultContextLength = 128000
 )
 
 // Provider implements the GitHub Copilot API provider.
@@ -135,21 +136,84 @@ func (p *Provider) Name() string {
 	return providerName
 }
 
-// Models returns the list of available models from GitHub Copilot.
+// Models returns the list of available models from the GitHub Copilot API.
 //
 // Returns:
-//   - A slice of provider.Model with supported Copilot models and a nil error.
+//   - A slice of provider.Model fetched from the Copilot models endpoint.
+//   - A hardcoded fallback list if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP GET request to the Copilot models endpoint.
+func (p *Provider) Models() ([]provider.Model, error) {
+	models, err := p.fetchModels()
+	if err == nil {
+		return models, nil
+	}
+	return fallbackModels(), nil
+}
+
+// fetchModels queries the Copilot API for available models.
+//
+// Returns:
+//   - A slice of provider.Model values from the API.
+//   - An error if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP GET request to the Copilot models endpoint.
+func (p *Provider) fetchModels() ([]provider.Model, error) {
+	endpoint := p.baseURL + "/copilot_next/v1/models"
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("creating models request: %w", err)
+	}
+	setHeaders(req, p.token)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching copilot models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("copilot models: status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding models response: %w", err)
+	}
+
+	models := make([]provider.Model, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, provider.Model{
+			ID:            m.ID,
+			Provider:      providerName,
+			ContextLength: defaultContextLength,
+		})
+	}
+	return models, nil
+}
+
+// fallbackModels returns a hardcoded list of known GitHub Copilot models.
+//
+// Returns:
+//   - A static slice of well-known Copilot model definitions.
 //
 // Side effects:
 //   - None.
-func (p *Provider) Models() ([]provider.Model, error) {
+func fallbackModels() []provider.Model {
 	return []provider.Model{
 		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000},
 		{ID: "gpt-4o-mini", Provider: providerName, ContextLength: 128000},
 		{ID: "claude-3.5-sonnet", Provider: providerName, ContextLength: 200000},
 		{ID: "o1-mini", Provider: providerName, ContextLength: 65536},
 		{ID: "o1-preview", Provider: providerName, ContextLength: 32768},
-	}, nil
+	}
 }
 
 // Chat sends a chat request to GitHub Copilot and returns the response.

@@ -44,88 +44,116 @@ var _ = Describe("GitHub Copilot Provider", func() {
 	})
 
 	Describe("Models", func() {
-		var p *copilot.Provider
+		var (
+			server *httptest.Server
+			p      *copilot.Provider
+		)
 
-		BeforeEach(func() {
-			var err error
-			p, err = copilot.New("ghp_test_token")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("returns a non-empty slice of models", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(models).NotTo(BeEmpty())
-		})
-
-		It("sets provider to github-copilot for all models", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			for _, m := range models {
-				Expect(m.Provider).To(Equal("github-copilot"))
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
 			}
 		})
 
-		It("includes gpt-4o", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			var ids []string
-			for _, m := range models {
-				ids = append(ids, m.ID)
-			}
-			Expect(ids).To(ContainElement("gpt-4o"))
+		Context("when the API returns models successfully", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					Expect(r.URL.Path).To(Equal("/copilot_next/v1/models"))
+					Expect(r.Method).To(Equal(http.MethodGet))
+					Expect(r.Header.Get("Authorization")).To(Equal("Bearer ghp_test_token"))
+
+					resp := map[string]interface{}{
+						"data": []map[string]interface{}{
+							{"id": "gpt-5", "object": "model"},
+							{"id": "claude-sonnet-4", "object": "model"},
+						},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					err := json.NewEncoder(w).Encode(resp)
+					Expect(err).NotTo(HaveOccurred())
+				}))
+
+				var err error
+				p, err = copilot.New("ghp_test_token")
+				Expect(err).NotTo(HaveOccurred())
+				p.SetBaseURL(server.URL)
+			})
+
+			It("returns the models from the API", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(models).To(HaveLen(2))
+			})
+
+			It("sets provider to github-copilot for all models", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, m := range models {
+					Expect(m.Provider).To(Equal("github-copilot"))
+				}
+			})
+
+			It("preserves model IDs from the API", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+
+				var modelIDs []string
+				for _, m := range models {
+					modelIDs = append(modelIDs, m.ID)
+				}
+				Expect(modelIDs).To(ContainElement("gpt-5"))
+				Expect(modelIDs).To(ContainElement("claude-sonnet-4"))
+			})
+
+			It("sets default context length for all models", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, m := range models {
+					Expect(m.ContextLength).To(Equal(128000))
+				}
+			})
 		})
 
-		It("includes gpt-4o-mini", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			var ids []string
-			for _, m := range models {
-				ids = append(ids, m.ID)
-			}
-			Expect(ids).To(ContainElement("gpt-4o-mini"))
-		})
+		Context("when the API returns an error", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusInternalServerError)
+				}))
 
-		It("includes claude-3.5-sonnet", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			var ids []string
-			for _, m := range models {
-				ids = append(ids, m.ID)
-			}
-			Expect(ids).To(ContainElement("claude-3.5-sonnet"))
-		})
+				var err error
+				p, err = copilot.New("ghp_test_token")
+				Expect(err).NotTo(HaveOccurred())
+				p.SetBaseURL(server.URL)
+			})
 
-		It("includes o1-mini", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			var ids []string
-			for _, m := range models {
-				ids = append(ids, m.ID)
-			}
-			Expect(ids).To(ContainElement("o1-mini"))
-		})
+			It("falls back to hardcoded models", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(models).NotTo(BeEmpty())
+			})
 
-		It("includes o1-preview", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			var ids []string
-			for _, m := range models {
-				ids = append(ids, m.ID)
-			}
-			Expect(ids).To(ContainElement("o1-preview"))
-		})
+			It("sets provider to github-copilot for fallback models", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
 
-		It("sets correct context lengths", func() {
-			models, err := p.Models()
-			Expect(err).NotTo(HaveOccurred())
-			modelMap := make(map[string]providerPkg.Model)
-			for _, m := range models {
-				modelMap[m.ID] = m
-			}
-			Expect(modelMap["gpt-4o"].ContextLength).To(Equal(128000))
-			Expect(modelMap["o1-mini"].ContextLength).To(Equal(65536))
-			Expect(modelMap["o1-preview"].ContextLength).To(Equal(32768))
+				for _, m := range models {
+					Expect(m.Provider).To(Equal("github-copilot"))
+				}
+			})
+
+			It("includes known models in fallback", func() {
+				models, err := p.Models()
+				Expect(err).NotTo(HaveOccurred())
+
+				var modelIDs []string
+				for _, m := range models {
+					modelIDs = append(modelIDs, m.ID)
+				}
+				Expect(modelIDs).To(ContainElement("gpt-4o"))
+				Expect(modelIDs).To(ContainElement("claude-3.5-sonnet"))
+			})
 		})
 	})
 
