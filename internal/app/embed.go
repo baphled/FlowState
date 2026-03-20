@@ -2,10 +2,27 @@
 package app
 
 import (
+	"embed"
 	"io/fs"
 	"os"
 	"path/filepath"
 )
+
+//go:embed agents/planner.json agents/executor.json
+var agentsFS embed.FS
+
+// EmbeddedAgentsFS returns the embedded fs.FS containing bundled agent manifests.
+//
+// The embedded filesystem contains agent JSON manifests that are compiled into the binary.
+//
+// Returns:
+//   - An fs.FS rooted at the module root containing agents/{planner,executor}.json
+//
+// Side effects:
+//   - None.
+func EmbeddedAgentsFS() fs.FS {
+	return agentsFS
+}
 
 // BundledAgentsDir returns an fs.FS for bundled agents if running from the development tree,
 // or from the installed binary location otherwise.

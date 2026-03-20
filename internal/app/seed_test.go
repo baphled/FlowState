@@ -121,3 +121,58 @@ var _ = Describe("SeedAgentsDir", func() {
 		})
 	})
 })
+
+var _ = Describe("EmbeddedAgentsFS", func() {
+	Context("when calling EmbeddedAgentsFS", func() {
+		It("returns a valid fs.FS", func() {
+			embeddedFS := app.EmbeddedAgentsFS()
+
+			Expect(embeddedFS).NotTo(BeNil())
+		})
+
+		It("contains planner.json", func() {
+			embeddedFS := app.EmbeddedAgentsFS()
+
+			agentsDir, err := fs.Sub(embeddedFS, "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			plannerContent, err := fs.ReadFile(agentsDir, "planner.json")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(plannerContent)).To(ContainSubstring(`"id"`))
+		})
+
+		It("contains executor.json", func() {
+			embeddedFS := app.EmbeddedAgentsFS()
+
+			agentsDir, err := fs.Sub(embeddedFS, "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			executorContent, err := fs.ReadFile(agentsDir, "executor.json")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(executorContent)).To(ContainSubstring(`"id"`))
+		})
+
+		It("can seed both manifests on first run", func() {
+			destDir, err := os.MkdirTemp("", "embedded-seed-test")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(destDir) })
+
+			embeddedFS := app.EmbeddedAgentsFS()
+			err = app.SeedAgentsDir(embeddedFS, destDir)
+
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := os.ReadDir(destDir)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+
+			plannerContent, err := os.ReadFile(filepath.Join(destDir, "planner.json"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(plannerContent)).To(ContainSubstring(`"id"`))
+
+			executorContent, err := os.ReadFile(filepath.Join(destDir, "executor.json"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(executorContent)).To(ContainSubstring(`"id"`))
+		})
+	})
+})

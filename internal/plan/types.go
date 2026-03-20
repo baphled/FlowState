@@ -2,7 +2,7 @@ package plan
 
 import "time"
 
-// PlanFile represents a complete plan document with YAML frontmatter and tasks.
+// File represents a complete plan document with YAML frontmatter and tasks.
 //
 // Plans are stored as markdown files with YAML frontmatter. The frontmatter
 // contains metadata about the plan, and the body contains task descriptions
@@ -18,16 +18,16 @@ import "time"
 //
 // Side effects:
 //   - None.
-type PlanFile struct {
-	ID          string     `json:"id" yaml:"id"`
-	Title       string     `json:"title" yaml:"title"`
-	Description string     `json:"description" yaml:"description"`
-	Status      string     `json:"status" yaml:"status"`
-	CreatedAt   time.Time  `json:"created_at" yaml:"created_at"`
-	Tasks       []PlanTask `json:"tasks" yaml:"tasks"`
+type File struct {
+	ID          string    `json:"id" yaml:"id"`
+	Title       string    `json:"title" yaml:"title"`
+	Description string    `json:"description" yaml:"description"`
+	Status      string    `json:"status" yaml:"status"`
+	CreatedAt   time.Time `json:"created_at" yaml:"created_at"`
+	Tasks       []Task    `json:"tasks" yaml:"tasks"`
 }
 
-// PlanTask represents a single task within a plan.
+// Task represents a single task within a plan.
 //
 // Tasks are organized within a plan and include acceptance criteria
 // to help guide execution. Tasks may have associated skills that
@@ -42,7 +42,7 @@ type PlanFile struct {
 //
 // Side effects:
 //   - None.
-type PlanTask struct {
+type Task struct {
 	Title              string   `json:"title" yaml:"title"`
 	Description        string   `json:"description" yaml:"description"`
 	Status             string   `json:"status" yaml:"status"`
@@ -51,7 +51,7 @@ type PlanTask struct {
 	Category           string   `json:"category" yaml:"category"`
 }
 
-// PlanFrontmatter represents the YAML frontmatter of a plan markdown file.
+// Frontmatter represents the YAML frontmatter of a plan markdown file.
 //
 // This struct is used for parsing the frontmatter section only, before
 // the task content begins.
@@ -64,7 +64,7 @@ type PlanTask struct {
 //
 // Side effects:
 //   - None.
-type PlanFrontmatter struct {
+type Frontmatter struct {
 	ID          string    `yaml:"id"`
 	Title       string    `yaml:"title"`
 	Description string    `yaml:"description"`

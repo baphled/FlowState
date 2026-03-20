@@ -13,16 +13,16 @@ import (
 
 var _ = Describe("Plan Types", func() {
 	Describe("PlanFile", func() {
-		var pf *plan.PlanFile
+		var pf *plan.File
 
 		BeforeEach(func() {
-			pf = &plan.PlanFile{
+			pf = &plan.File{
 				ID:          "plan-001",
 				Title:       "Test Plan",
 				Description: "A test plan for validation",
 				Status:      "draft",
 				CreatedAt:   time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC),
-				Tasks: []plan.PlanTask{
+				Tasks: []plan.Task{
 					{
 						Title:       "Task 1",
 						Description: "First task",
@@ -53,7 +53,7 @@ var _ = Describe("Plan Types", func() {
 			Expect(yamlBytes).To(ContainSubstring("id: plan-001"))
 			Expect(yamlBytes).To(ContainSubstring("title: Test Plan"))
 
-			var unmarshalled plan.PlanFile
+			var unmarshalled plan.File
 			err = yaml.Unmarshal(yamlBytes, &unmarshalled)
 			Expect(err).NotTo(HaveOccurred())
 			// YAML unmarshal converts empty slices to nil; verify key fields match
@@ -71,7 +71,7 @@ var _ = Describe("Plan Types", func() {
 			Expect(jsonBytes).To(ContainSubstring("plan-001"))
 			Expect(jsonBytes).To(ContainSubstring("Test Plan"))
 
-			var unmarshalled plan.PlanFile
+			var unmarshalled plan.File
 			err = json.Unmarshal(jsonBytes, &unmarshalled)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(unmarshalled).To(Equal(*pf))
@@ -84,7 +84,7 @@ var _ = Describe("Plan Types", func() {
 			Expect(pf.Tasks[0].Skills).To(HaveLen(2))
 
 			yamlBytes, _ := yaml.Marshal(pf)
-			var unmarshalled plan.PlanFile
+			var unmarshalled plan.File
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.Tasks).To(HaveLen(2))
@@ -101,17 +101,17 @@ var _ = Describe("Plan Types", func() {
 
 		It("handles timestamps correctly in YAML", func() {
 			yamlBytes, _ := yaml.Marshal(pf)
-			var unmarshalled plan.PlanFile
+			var unmarshalled plan.File
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.CreatedAt).To(Equal(pf.CreatedAt))
 		})
 
 		It("handles empty task list", func() {
-			pf.Tasks = []plan.PlanTask{}
+			pf.Tasks = []plan.Task{}
 
 			yamlBytes, _ := yaml.Marshal(pf)
-			var unmarshalled plan.PlanFile
+			var unmarshalled plan.File
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.Tasks).To(BeEmpty())
@@ -119,10 +119,10 @@ var _ = Describe("Plan Types", func() {
 	})
 
 	Describe("PlanTask", func() {
-		var pt *plan.PlanTask
+		var pt *plan.Task
 
 		BeforeEach(func() {
-			pt = &plan.PlanTask{
+			pt = &plan.Task{
 				Title:       "Implement Feature",
 				Description: "Add new feature to system",
 				Status:      "in_progress",
@@ -142,7 +142,7 @@ var _ = Describe("Plan Types", func() {
 			yamlBytes, err := yaml.Marshal(pt)
 			Expect(err).NotTo(HaveOccurred())
 
-			var unmarshalled plan.PlanTask
+			var unmarshalled plan.Task
 			err = yaml.Unmarshal(yamlBytes, &unmarshalled)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(unmarshalled).To(Equal(*pt))
@@ -152,7 +152,7 @@ var _ = Describe("Plan Types", func() {
 			jsonBytes, err := json.Marshal(pt)
 			Expect(err).NotTo(HaveOccurred())
 
-			var unmarshalled plan.PlanTask
+			var unmarshalled plan.Task
 			err = json.Unmarshal(jsonBytes, &unmarshalled)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(unmarshalled).To(Equal(*pt))
@@ -160,7 +160,7 @@ var _ = Describe("Plan Types", func() {
 
 		It("preserves criteria and skills through marshal cycles", func() {
 			yamlBytes, _ := yaml.Marshal(pt)
-			var unmarshalled plan.PlanTask
+			var unmarshalled plan.Task
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.AcceptanceCriteria).To(Equal([]string{
@@ -178,7 +178,7 @@ var _ = Describe("Plan Types", func() {
 			pt.Skills = []string{}
 
 			yamlBytes, _ := yaml.Marshal(pt)
-			var unmarshalled plan.PlanTask
+			var unmarshalled plan.Task
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.AcceptanceCriteria).To(BeEmpty())
@@ -187,10 +187,10 @@ var _ = Describe("Plan Types", func() {
 	})
 
 	Describe("PlanFrontmatter", func() {
-		var pf *plan.PlanFrontmatter
+		var pf *plan.Frontmatter
 
 		BeforeEach(func() {
-			pf = &plan.PlanFrontmatter{
+			pf = &plan.Frontmatter{
 				ID:          "plan-001",
 				Title:       "Test Plan",
 				Description: "A test plan",
@@ -203,7 +203,7 @@ var _ = Describe("Plan Types", func() {
 			yamlBytes, err := yaml.Marshal(pf)
 			Expect(err).NotTo(HaveOccurred())
 
-			var unmarshalled plan.PlanFrontmatter
+			var unmarshalled plan.Frontmatter
 			err = yaml.Unmarshal(yamlBytes, &unmarshalled)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(unmarshalled).To(Equal(*pf))
@@ -211,7 +211,7 @@ var _ = Describe("Plan Types", func() {
 
 		It("preserves all fields through YAML marshal/unmarshal", func() {
 			yamlBytes, _ := yaml.Marshal(pf)
-			var unmarshalled plan.PlanFrontmatter
+			var unmarshalled plan.Frontmatter
 			yaml.Unmarshal(yamlBytes, &unmarshalled)
 
 			Expect(unmarshalled.ID).To(Equal("plan-001"))
