@@ -28,9 +28,11 @@ import (
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
 type StreamChunkMsg struct {
-	Content string
-	Error   error
-	Done    bool
+	Content    string
+	Error      error
+	Done       bool
+	ToolCall   *provider.ToolCall
+	ToolStatus string
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -104,6 +106,8 @@ type Intent struct {
 	msgViewport       viewport.Model
 	vpReady           bool
 	agentRegistry     *agent.Registry
+	toolCallName      string
+	toolCallStatus    string
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -280,12 +284,19 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //   - When Done is false, accumulates content in i.response.
 //   - If Error is set, appends error message to content and logs critical errors.
 //   - Preserves partial response accumulated during streaming even if an error occurs.
+//   - Updates tool call state when present.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if !msg.Done {
 		i.response += msg.Content
+		if msg.ToolCall != nil {
+			i.toolCallName = msg.ToolCall.Name
+			i.toolCallStatus = msg.ToolStatus
+		}
 	} else {
 		i.finalizeResponse(msg)
+		i.toolCallName = ""
+		i.toolCallStatus = ""
 	}
 
 	tokens := i.tokenCounter.Count(msg.Content)
@@ -524,6 +535,9 @@ func (i *Intent) refreshViewport() {
 	cv := chat.NewView()
 	cv.SetDimensions(i.width, i.msgViewport.Height)
 	cv.SetStreaming(i.streaming, i.response)
+	if i.toolCallName != "" && i.toolCallStatus != "" {
+		cv.SetToolCall(i.toolCallName, i.toolCallStatus)
+	}
 	for _, msg := range i.messages {
 		cv.AddMessage(msg)
 	}
@@ -539,7 +553,7 @@ func (i *Intent) refreshViewport() {
 //
 // Side effects:
 //   - Appends the input to messages as a user message, clears input, and sets streaming to true.
-//   - Stores the stream channel on the intent for subsequent chunk reads.
+//   - Clears tool call state and stores the stream channel on the intent for subsequent chunk reads.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
 	i.input = ""
@@ -551,6 +565,8 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.messages = append(i.messages, chat.Message{Role: "user", Content: userMessage})
 	i.streaming = true
 	i.response = ""
+	i.toolCallName = ""
+	i.toolCallStatus = ""
 	i.refreshViewport()
 
 	return func() tea.Msg {
@@ -572,15 +588,24 @@ func (i *Intent) sendMessage() tea.Cmd {
 //
 // Side effects:
 //   - Blocks until a chunk is available on the stream channel.
+//   - Captures tool call state if present in chunk.
 func (i *Intent) readNextChunk() tea.Msg {
 	chunk, ok := <-i.streamChan
 	if !ok {
 		return StreamChunkMsg{Done: true}
 	}
+
+	toolStatus := ""
+	if chunk.ToolCall != nil {
+		toolStatus = "running"
+	}
+
 	return StreamChunkMsg{
-		Content: chunk.Content,
-		Error:   chunk.Error,
-		Done:    chunk.Done,
+		Content:    chunk.Content,
+		Error:      chunk.Error,
+		Done:       chunk.Done,
+		ToolCall:   chunk.ToolCall,
+		ToolStatus: toolStatus,
 	}
 }
 

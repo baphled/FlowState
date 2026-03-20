@@ -242,6 +242,51 @@ var _ = Describe("PlanStore", func() {
 			Expect(retrieved.Title).To(Equal("Get Test Plan"))
 		})
 
+		Context("when the plan contains tasks", func() {
+			It("returns the tasks in the File", func() {
+				now := time.Now()
+				f := plan.File{
+					ID:          "tasks-test",
+					Title:       "Plan with Tasks",
+					Description: "Testing task parsing",
+					Status:      "draft",
+					CreatedAt:   now,
+					Tasks: []plan.Task{
+						{
+							Title:              "Task 1",
+							Description:        "First task description",
+							Status:             "pending",
+							AcceptanceCriteria: []string{"Criterion 1", "Criterion 2"},
+							Skills:             []string{"golang", "testing"},
+						},
+						{
+							Title:       "Task 2",
+							Description: "Second task description",
+							Status:      "pending",
+							Skills:      []string{"ginkgo"},
+						},
+					},
+				}
+				err := store.Create(f)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := store.Get("tasks-test")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Tasks).To(HaveLen(2))
+
+				Expect(retrieved.Tasks[0].Title).To(Equal("Task 1"))
+				Expect(retrieved.Tasks[0].Description).To(Equal("First task description"))
+				Expect(retrieved.Tasks[0].AcceptanceCriteria).To(HaveLen(2))
+				Expect(retrieved.Tasks[0].AcceptanceCriteria[0]).To(Equal("Criterion 1"))
+				Expect(retrieved.Tasks[0].Skills).To(HaveLen(2))
+				Expect(retrieved.Tasks[0].Skills[0]).To(Equal("golang"))
+
+				Expect(retrieved.Tasks[1].Title).To(Equal("Task 2"))
+				Expect(retrieved.Tasks[1].Description).To(Equal("Second task description"))
+				Expect(retrieved.Tasks[1].Skills).To(HaveLen(1))
+			})
+		})
+
 		It("returns error for nonexistent plan", func() {
 			_, err := store.Get("nonexistent")
 			Expect(err).To(HaveOccurred())

@@ -20,12 +20,14 @@ type Message struct {
 type View struct {
 	theme.Aware
 
-	width      int
-	height     int
-	messages   []Message
-	streaming  bool
-	response   string
-	renderFunc func(string, int) string
+	width          int
+	height         int
+	messages       []Message
+	streaming      bool
+	response       string
+	renderFunc     func(string, int) string
+	toolCallName   string
+	toolCallStatus string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -101,6 +103,19 @@ func (v *View) SetStreaming(streaming bool, response string) {
 	v.response = response
 }
 
+// SetToolCall sets the active tool call for rendering.
+//
+// Expected:
+//   - name is the tool name (e.g., "web_search").
+//   - status is one of "running", "complete", "error".
+//
+// Side effects:
+//   - Updates the toolCallName and toolCallStatus fields.
+func (v *View) SetToolCall(name, status string) {
+	v.toolCallName = name
+	v.toolCallStatus = status
+}
+
 // SetMarkdownRenderer sets a custom function for rendering markdown content.
 //
 // Expected:
@@ -173,9 +188,16 @@ func (v *View) RenderContent(width int) string {
 		sb.WriteString("\n\n")
 	}
 
-	if v.streaming && v.response != "" {
-		sb.WriteString(v.response)
-		sb.WriteString("\n")
+	if v.streaming {
+		if v.toolCallName != "" && v.toolCallStatus != "" {
+			tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
+			sb.WriteString(tcw.Render())
+			sb.WriteString("\n")
+		}
+		if v.response != "" {
+			sb.WriteString(v.response)
+			sb.WriteString("\n")
+		}
 	}
 
 	return sb.String()
