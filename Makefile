@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
 
 # Binary name
 BINARY_NAME=flowstate
@@ -95,7 +95,25 @@ check-docblocks: ## Run structured docblock analyser
 	@echo "Checking docblocks..."
 	@go run ./cmd/docblocks/... ./...
 
-check: build fmt lint test coverage-check check-docblocks ## Run all checks
+check-untested-packages: ## Fail if any internal/ package has no test files
+	@echo "Checking for untested internal packages..."
+	@FAILED=0; \
+	for pkg in $$(go list ./internal/...); do \
+		dir=$$(go list -f '{{.Dir}}' $$pkg); \
+		if ! ls $$dir/*_test.go > /dev/null 2>&1; then \
+			echo "  MISSING TESTS: $$pkg"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		echo ""; \
+		echo "ERROR: Some internal packages have no test files."; \
+		echo "Add at least one *_test.go file to each package above."; \
+		exit 1; \
+	fi
+	@echo "All internal packages have test files."
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages ## Run all checks
 
 #
 # Dependencies
