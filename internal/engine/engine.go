@@ -669,7 +669,17 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 		tokenBudget = e.tokenCounter.ModelLimit("")
 	}
 
-	return e.windowBuilder.BuildContext(ctx, &e.manifest, userMessage, e.store, tokenBudget)
+	messages := e.windowBuilder.BuildContext(ctx, &e.manifest, userMessage, e.store, tokenBudget)
+
+	// Replace the short inline system prompt with the full embedded prompt + skills.
+	// WindowBuilder.prepareSystemPrompt only uses manifest.Instructions.SystemPrompt;
+	// BuildSystemPrompt loads the full embedded .md file and appends skills.
+	fullPrompt := e.BuildSystemPrompt()
+	if len(messages) > 0 && messages[0].Role == "system" {
+		messages[0].Content = fullPrompt
+	}
+
+	return messages
 }
 
 // embedMessage sends the message content to the embedding provider if configured.

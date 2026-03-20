@@ -658,6 +658,68 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
+	Describe("buildContextWindow with window builder active", func() {
+		It("uses the full embedded system prompt rather than the short inline string", func() {
+			tempDir, err := os.MkdirTemp("", "engine-context-window-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer os.RemoveAll(tempDir)
+
+			storePath := filepath.Join(tempDir, "context.json")
+			store, err := ctxstore.NewFileContextStore(storePath, "test-model")
+			Expect(err).NotTo(HaveOccurred())
+
+			tokenCounter := ctxstore.NewTiktokenCounter()
+
+			testManifest := agent.Manifest{
+				ID:   "placeholder",
+				Name: "Placeholder Agent",
+				Instructions: agent.Instructions{
+					SystemPrompt: "Short inline prompt.",
+				},
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"memory-keeper"},
+				},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			testSkills := []skill.Skill{
+				{
+					Name:    "memory-keeper",
+					Content: "Always remember context.",
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     testManifest,
+				Store:        store,
+				TokenCounter: tokenCounter,
+				Skills:       testSkills,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "placeholder", "test message")
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(chatProvider.capturedRequest).NotTo(BeNil())
+			Expect(chatProvider.capturedRequest.Messages).NotTo(BeEmpty())
+
+			systemMessage := chatProvider.capturedRequest.Messages[0]
+			Expect(systemMessage.Role).To(Equal("system"))
+
+			// The full embedded prompt should be much longer than the short inline string
+			Expect(len(systemMessage.Content)).To(BeNumerically(">", len("Short inline prompt.")))
+
+			// Verify it contains the embedded prompt content and skills
+			Expect(systemMessage.Content).NotTo(ContainSubstring("Short inline prompt."))
+			Expect(systemMessage.Content).To(ContainSubstring("Always remember context."))
+		})
+	})
+
 	Describe("buildModelPreferences", func() {
 		It("flattens provider-keyed model preferences to initialize failback chain", func() {
 			registry := provider.NewRegistry()
