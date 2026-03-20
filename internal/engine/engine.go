@@ -184,6 +184,17 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 	}
 }
 
+// SetManifest updates the engine to use a different agent manifest.
+//
+// Expected:
+//   - manifest is a valid agent.Manifest with required fields populated.
+//
+// Side effects:
+//   - Replaces the engine's active manifest for subsequent chat operations.
+func (e *Engine) SetManifest(manifest agent.Manifest) {
+	e.manifest = manifest
+}
+
 // ListAvailableModels returns all available models from configured providers.
 //
 // Returns:

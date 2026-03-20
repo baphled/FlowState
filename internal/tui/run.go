@@ -21,13 +21,14 @@ import (
 //   - Launches a full-screen terminal UI that blocks until the user exits.
 func Run(application *flowapp.App, agentID string, sessionID string) error {
 	chatIntent := chat.NewIntent(chat.IntentConfig{
-		App:          nil,
-		Engine:       application.Engine,
-		AgentID:      agentID,
-		SessionID:    sessionID,
-		ModelName:    application.Engine.LastModel(),
-		ProviderName: application.Engine.LastProvider(),
-		TokenBudget:  4096,
+		App:           nil,
+		Engine:        application.Engine,
+		AgentID:       agentID,
+		SessionID:     sessionID,
+		ModelName:     application.Engine.LastModel(),
+		ProviderName:  application.Engine.LastProvider(),
+		TokenBudget:   4096,
+		AgentRegistry: application.Registry,
 	})
 	appShell := app.New(chatIntent, application)
 	chatIntent.SetApp(appShell)

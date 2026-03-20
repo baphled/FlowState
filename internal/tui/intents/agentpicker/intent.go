@@ -17,7 +17,8 @@ type AgentEntry struct {
 
 // IntentConfig holds configuration for AgentPickerIntent.
 type IntentConfig struct {
-	Agents []AgentEntry
+	Agents   []AgentEntry
+	OnSelect func(agentID string)
 }
 
 // Intent allows users to select an agent from a list.
@@ -25,6 +26,7 @@ type Intent struct {
 	agents        []AgentEntry
 	selectedAgent int
 	result        *intents.IntentResult
+	onSelect      func(agentID string)
 }
 
 // NewIntent creates a new agent picker intent from the given configuration.
@@ -42,6 +44,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		agents:        cfg.Agents,
 		selectedAgent: 0,
 		result:        nil,
+		onSelect:      cfg.OnSelect,
 	}
 }
 
@@ -98,8 +101,12 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	case tea.KeyEnter:
 		if i.selectedAgent < len(i.agents) {
+			selectedID := i.agents[i.selectedAgent].ID
 			i.result = &intents.IntentResult{
-				Data: i.agents[i.selectedAgent].ID,
+				Data: selectedID,
+			}
+			if i.onSelect != nil {
+				i.onSelect(selectedID)
 			}
 		}
 		return nil

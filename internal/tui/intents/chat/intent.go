@@ -12,11 +12,13 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
+	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
@@ -66,13 +68,14 @@ type AppShell interface {
 
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
-	App          AppShell
-	Engine       *engine.Engine
-	AgentID      string
-	SessionID    string
-	ProviderName string
-	ModelName    string
-	TokenBudget  int
+	App           AppShell
+	Engine        *engine.Engine
+	AgentID       string
+	SessionID     string
+	ProviderName  string
+	ModelName     string
+	TokenBudget   int
+	AgentRegistry *agent.Registry
 }
 
 // Intent handles chat interactions in the TUI.
@@ -100,6 +103,7 @@ type Intent struct {
 	result            *tuiintents.IntentResult
 	msgViewport       viewport.Model
 	vpReady           bool
+	agentRegistry     *agent.Registry
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -145,6 +149,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		tokenBudget:     cfg.TokenBudget,
 		tickFrame:       0,
 		result:          nil,
+		agentRegistry:   cfg.AgentRegistry,
 	}
 }
 
@@ -241,6 +246,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
+	case tea.KeyCtrlA:
+		return i.openAgentPicker()
 	case tea.KeyCtrlP:
 		return i.openModelSelector()
 	case tea.KeyBackspace:
@@ -759,6 +766,43 @@ func (i *Intent) openModelSelector() tea.Cmd {
 			},
 		})
 		return tuiintents.ShowModalMsg{Modal: modelIntent}
+	}
+}
+
+// openAgentPicker creates and shows the agent picker as a modal overlay.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the agent picker.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openAgentPicker() tea.Cmd {
+	return func() tea.Msg {
+		if i.agentRegistry == nil {
+			return nil
+		}
+
+		manifests := i.agentRegistry.List()
+		agents := make([]agentpicker.AgentEntry, len(manifests))
+		for idx, m := range manifests {
+			agents[idx] = agentpicker.AgentEntry{
+				ID:   m.ID,
+				Name: m.Name,
+			}
+		}
+
+		pickerIntent := agentpicker.NewIntent(agentpicker.IntentConfig{
+			Agents: agents,
+			OnSelect: func(selectedID string) {
+				if manifest, found := i.agentRegistry.Get(selectedID); found {
+					i.engine.SetManifest(*manifest)
+					i.agentID = selectedID
+					i.syncStatusBar()
+				}
+			},
+		})
+
+		return tuiintents.ShowModalMsg{Modal: pickerIntent}
 	}
 }
 
