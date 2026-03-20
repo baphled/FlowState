@@ -227,6 +227,84 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			Expect(eng.LastModel()).To(Equal("model-b"))
 		})
 	})
+
+	Describe("embedded prompt loading", func() {
+		var chatProvider *mockProvider
+
+		BeforeEach(func() {
+			chatProvider = &mockProvider{
+				name: "test-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "test", Done: true},
+				},
+			}
+		})
+
+		Context("when agent manifest ID is planner", func() {
+			It("uses embedded planner prompt instead of legacy system prompt", func() {
+				manifest := agent.Manifest{
+					ID:   "planner",
+					Name: "Planner",
+					Instructions: agent.Instructions{
+						SystemPrompt: "Legacy fallback should not appear",
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("FlowState Strategic Planner"))
+				Expect(prompt).NotTo(ContainSubstring("Legacy fallback should not appear"))
+			})
+		})
+
+		Context("when agent manifest ID is executor", func() {
+			It("uses embedded executor prompt instead of legacy system prompt", func() {
+				manifest := agent.Manifest{
+					ID:   "executor",
+					Name: "Executor",
+					Instructions: agent.Instructions{
+						SystemPrompt: "Legacy fallback should not appear",
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("FlowState Task Executor"))
+				Expect(prompt).NotTo(ContainSubstring("Legacy fallback should not appear"))
+			})
+		})
+
+		Context("when agent manifest ID has no embedded prompt", func() {
+			It("falls back to manifest system prompt", func() {
+				manifest := agent.Manifest{
+					ID:   "unknown-agent-12345",
+					Name: "Unknown Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful fallback assistant.",
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(Equal("You are a helpful fallback assistant."))
+			})
+		})
+	})
 })
 
 type asyncFailProvider struct {
