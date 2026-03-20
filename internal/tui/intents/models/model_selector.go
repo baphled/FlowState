@@ -211,6 +211,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			if i.selectedModel > 0 {
 				i.selectedModel--
 			}
+		} else if i.selectedGroup > 0 {
+			i.selectedGroup--
 		}
 		return nil
 	case tea.KeyDown:
@@ -219,6 +221,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			if i.selectedModel < maxModel {
 				i.selectedModel++
 			}
+		} else if i.selectedGroup < len(i.groups)-1 {
+			i.selectedGroup++
 		}
 		return nil
 	case tea.KeyEnter:

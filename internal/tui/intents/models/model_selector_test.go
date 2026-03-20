@@ -131,6 +131,69 @@ var _ = Describe("ModelSelectorIntent", func() {
 				Expect(intent.SelectedModel()).To(Equal(0))
 			})
 		})
+
+		Context("when groups are collapsed", func() {
+			It("moves to next group on Down arrow", func() {
+				Expect(intent.IsExpanded()).To(BeFalse())
+				Expect(intent.SelectedGroup()).To(Equal(0))
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.SelectedGroup()).To(Equal(1))
+			})
+
+			It("moves to previous group on Up arrow", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.SelectedGroup()).To(Equal(1))
+				intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+				Expect(intent.SelectedGroup()).To(Equal(0))
+			})
+
+			It("does not move past last group on Down arrow", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.SelectedGroup()).To(Equal(1))
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.SelectedGroup()).To(Equal(1))
+			})
+
+			It("does not move before first group on Up arrow", func() {
+				Expect(intent.SelectedGroup()).To(Equal(0))
+				intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+				Expect(intent.SelectedGroup()).To(Equal(0))
+			})
+		})
+	})
+
+	Describe("selecting from non-default provider", func() {
+		var selectedProvider, selectedModel string
+
+		BeforeEach(func() {
+			selectedProvider = ""
+			selectedModel = ""
+			intent = models.NewIntent(models.IntentConfig{
+				ProviderRegistry: mockRegistry,
+				OnSelect: func(p, m string) {
+					selectedProvider = p
+					selectedModel = m
+				},
+			})
+		})
+
+		It("navigating to second provider and expanding shows its models", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			Expect(intent.SelectedGroup()).To(Equal(1))
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(intent.IsExpanded()).To(BeTrue())
+			view := intent.View()
+			Expect(view).To(ContainSubstring("gpt-4o"))
+			Expect(view).To(ContainSubstring("gpt-4o-mini"))
+		})
+
+		It("selecting model from second provider calls OnSelect with correct provider and model", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(selectedProvider).To(Equal("openai"))
+			Expect(selectedModel).To(Equal("gpt-4o"))
+		})
 	})
 
 	Describe("group expansion", func() {
