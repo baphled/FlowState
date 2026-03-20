@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,7 @@ import (
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
+	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
 	"github.com/baphled/flowstate/internal/skill"
@@ -31,15 +33,16 @@ import (
 
 // App is the main application container holding all initialized components.
 type App struct {
-	Config    *config.AppConfig
-	Registry  *agent.Registry
-	Skills    []skill.Skill
-	Engine    *engine.Engine
-	Discovery *discovery.AgentDiscovery
-	Sessions  *ctxstore.FileSessionStore
-	Learning  *learning.JSONFileStore
-	API       *api.Server
-	mcpClient mcpclient.Client
+	Config           *config.AppConfig
+	Registry         *agent.Registry
+	Skills           []skill.Skill
+	Engine           *engine.Engine
+	Discovery        *discovery.AgentDiscovery
+	Sessions         *ctxstore.FileSessionStore
+	Learning         *learning.JSONFileStore
+	API              *api.Server
+	mcpClient        mcpclient.Client
+	providerRegistry *provider.Registry
 }
 
 // New creates a new App instance with all components initialised.
@@ -85,8 +88,11 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 	mcpMgr := mcpclient.NewManager()
 	appTools := buildTools()
-	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, cfg.MCPServers)
+	discoveredServers := config.DiscoverMCPServers()
+	allServers := mergeMCPServers(cfg.MCPServers, discoveredServers)
+	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
+	toolRegistry, permHandler := buildToolsSetup(appTools)
 	eng := engine.New(engine.Config{
 		ChatProvider:      defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(ollamaProvider),
@@ -96,20 +102,23 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Store:             contextStore,
 		HookChain:         buildHookChain(learningStore, alwaysActiveSkills),
 		Tools:             appTools,
+		ToolRegistry:      toolRegistry,
+		PermissionHandler: permHandler,
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
 
 	return &App{
-		Config:    cfg,
-		Registry:  agentRegistry,
-		Skills:    skills,
-		Engine:    eng,
-		Discovery: disc,
-		Sessions:  sessionStore,
-		Learning:  learningStore,
-		API:       apiServer,
-		mcpClient: mcpMgr,
+		Config:           cfg,
+		Registry:         agentRegistry,
+		Skills:           skills,
+		Engine:           eng,
+		Discovery:        disc,
+		Sessions:         sessionStore,
+		Learning:         learningStore,
+		API:              apiServer,
+		mcpClient:        mcpMgr,
+		providerRegistry: providerRegistry,
 	}, nil
 }
 
@@ -155,6 +164,102 @@ func (a *App) SessionsDir() string {
 //   - None.
 func (a *App) ConfigPath() string {
 	return filepath.Join(config.Dir(), "config.yaml")
+}
+
+// ListModels returns all available models from registered providers.
+//
+// Returns:
+//   - A slice of available models from all providers.
+//   - An error if fetching models from any provider fails.
+//
+// Side effects:
+//   - None.
+func (a *App) ListModels() ([]provider.Model, error) {
+	if a.providerRegistry == nil {
+		return []provider.Model{}, nil
+	}
+
+	var allModels []provider.Model
+	providerNames := a.providerRegistry.List()
+
+	for _, name := range providerNames {
+		p, err := a.providerRegistry.Get(name)
+		if err != nil {
+			return nil, fmt.Errorf("getting provider %q: %w", name, err)
+		}
+
+		models, err := p.Models()
+		if err != nil {
+			return nil, fmt.Errorf("listing models from provider %q: %w", name, err)
+		}
+
+		allModels = append(allModels, models...)
+	}
+
+	return allModels, nil
+}
+
+// SetProviderRegistry sets the provider registry for testing purposes.
+//
+// Expected:
+//   - registry is a valid provider.Registry.
+//
+// Side effects:
+//   - Updates the app's provider registry reference.
+func (a *App) SetProviderRegistry(registry *provider.Registry) {
+	a.providerRegistry = registry
+}
+
+// ProviderRegistry returns the provider registry for the TUI layer.
+//
+// Returns:
+//   - The provider registry.
+//
+// Side effects:
+//   - None.
+func (a *App) ProviderRegistry() *provider.Registry {
+	return a.providerRegistry
+}
+
+// SetModel overrides the engine's model preference to use the specified model.
+//
+// Expected:
+//   - modelID is a non-empty string identifying a model available in the registry.
+//   - The engine must be configured with a failback chain.
+//
+// Returns:
+//   - nil on success, or an error if the model is not found in any provider.
+//
+// Side effects:
+//   - Reconfigures the engine's failback chain to prioritise the requested model.
+func (a *App) SetModel(modelID string) error {
+	if a.Engine == nil {
+		return errors.New("engine not configured")
+	}
+
+	if a.providerRegistry == nil {
+		return errors.New("provider registry not available")
+	}
+
+	models, err := a.ListModels()
+	if err != nil {
+		return fmt.Errorf("listing available models: %w", err)
+	}
+
+	var selectedModel *provider.Model
+	for i := range models {
+		if models[i].ID == modelID {
+			selectedModel = &models[i]
+			break
+		}
+	}
+
+	if selectedModel == nil {
+		return fmt.Errorf("model %q not found in any provider", modelID)
+	}
+
+	a.Engine.SetModelPreference(selectedModel.Provider, selectedModel.ID)
+	return nil
 }
 
 // DisconnectAll closes all connected MCP server connections.
@@ -208,6 +313,28 @@ func buildTools() []tool.Tool {
 	}
 }
 
+// buildToolsSetup creates a tool registry and permission handler for the engine.
+//
+// Expected:
+//   - tools is a slice of tool.Tool values to register.
+//
+// Returns:
+//   - A tool.Registry with all tools registered.
+//   - A tool.PermissionHandler that allows all tool invocations.
+//
+// Side effects:
+//   - None.
+func buildToolsSetup(tools []tool.Tool) (*tool.Registry, tool.PermissionHandler) {
+	registry := tool.NewRegistry()
+	for _, t := range tools {
+		registry.Register(t)
+	}
+	handler := func(_ tool.PermissionRequest) (bool, error) {
+		return true, nil
+	}
+	return registry, handler
+}
+
 // ConnectMCPServers connects to configured MCP servers and returns proxy tools.
 // Connection failures are logged as warnings and do not stop processing.
 //
@@ -248,6 +375,33 @@ func ConnectMCPServers(ctx context.Context, client mcpclient.Client, servers []c
 		}
 	}
 	return tools
+}
+
+// mergeMCPServers merges discovered MCP servers with configured servers,
+// preferring configured servers when names conflict.
+//
+// Expected:
+//   - configured is the user-defined server list from config.
+//   - discovered is the auto-detected server list.
+//
+// Returns:
+//   - A merged slice with configured servers taking precedence.
+//
+// Side effects:
+//   - None.
+func mergeMCPServers(configured, discovered []config.MCPServerConfig) []config.MCPServerConfig {
+	existing := make(map[string]bool)
+	result := make([]config.MCPServerConfig, 0, len(configured)+len(discovered))
+	for _, s := range configured {
+		result = append(result, s)
+		existing[s.Name] = true
+	}
+	for _, s := range discovered {
+		if !existing[s.Name] {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // loadSkills loads all available skills and always-active skills from the configured skill directory.
@@ -307,6 +461,12 @@ func buildHookChain(learningStore *learning.JSONFileStore, alwaysActiveSkills []
 func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	providerRegistry := provider.NewRegistry()
 
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
+
 	ollamaProvider, err := ollama.New(cfg.Providers.Ollama.Host)
 	if err == nil {
 		providerRegistry.Register(ollamaProvider)
@@ -328,12 +488,22 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 		anthropicKey = cfg.Providers.Anthropic.APIKey
 	}
 	if anthropicKey != "" {
-		anthropicProvider, anthropicErr := anthropic.New(anthropicKey)
+		anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
 		if anthropicErr == nil {
 			providerRegistry.Register(anthropicProvider)
 		}
 	}
 
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		githubToken = cfg.Providers.GitHub.APIKey
+	}
+	if githubToken != "" {
+		copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
+		if copilotErr == nil {
+			providerRegistry.Register(copilotProvider)
+		}
+	}
 	return providerRegistry, ollamaProvider
 }
 
@@ -550,14 +720,15 @@ func NewForTest(tc TestConfig) (*App, error) {
 	disc := discovery.NewAgentDiscovery(manifestValues)
 
 	return &App{
-		Config:    cfg,
-		Registry:  agentRegistry,
-		Skills:    skills,
-		Engine:    nil,
-		Discovery: disc,
-		Sessions:  sessionStore,
-		Learning:  learningStore,
-		API:       nil,
-		mcpClient: tc.MCPClient,
+		Config:           cfg,
+		Registry:         agentRegistry,
+		Skills:           skills,
+		Engine:           nil,
+		Discovery:        disc,
+		Sessions:         sessionStore,
+		Learning:         learningStore,
+		API:              nil,
+		mcpClient:        tc.MCPClient,
+		providerRegistry: nil,
 	}, nil
 }

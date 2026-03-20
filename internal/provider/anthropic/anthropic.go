@@ -8,6 +8,7 @@ import (
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -45,6 +46,39 @@ func New(apiKey string) (*Provider, error) {
 	}
 	client := anthropicAPI.NewClient(option.WithAPIKey(apiKey))
 	return &Provider{client: client}, nil
+}
+
+// NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode auth.json,
+// falling back to the provided API key from config.
+//
+// Expected:
+//   - opencodePath is a file path to OpenCode's auth.json (or empty string to skip OpenCode).
+//   - fallbackKey is the API key from config.yaml (may be empty).
+//
+// Returns:
+//   - A configured Provider using OpenCode credential if found and valid.
+//   - A configured Provider using fallbackKey if OpenCode not available.
+//   - An error if OpenCode exists but cannot be parsed.
+//   - An error if neither OpenCode nor fallback key is available.
+//
+// Side effects:
+//   - Reads from opencodePath if provided.
+func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
+	if opencodePath != "" {
+		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
+		if err != nil {
+			return nil, fmt.Errorf("loading opencode auth: %w", err)
+		}
+		if authData != nil && authData.Anthropic != nil && authData.Anthropic.Access != "" {
+			return New(authData.Anthropic.Access)
+		}
+	}
+
+	if fallbackKey != "" {
+		return New(fallbackKey)
+	}
+
+	return nil, errAPIKeyRequired
 }
 
 // NewWithOptions creates a new Anthropic provider with the given API key and options.

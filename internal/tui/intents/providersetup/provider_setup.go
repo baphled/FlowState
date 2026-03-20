@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/tui/app"
@@ -62,6 +65,8 @@ type Intent struct {
 	editingAPIKey          bool
 	apiKeyInput            string
 	selectedProviderForKey string
+	showInputModeSelector  bool
+	credentialSource       string
 	width                  int
 	height                 int
 	config                 *config.AppConfig
@@ -82,16 +87,18 @@ type Intent struct {
 func NewIntent(cfg IntentConfig) *Intent {
 	providers := loadProviderStatuses(cfg.Config)
 	return &Intent{
-		currentStep:   stepProviders,
-		providers:     providers,
-		mcpServers:    cfg.MCPServers,
-		selectedItem:  0,
-		editingAPIKey: false,
-		apiKeyInput:   "",
-		width:         80,
-		height:        24,
-		config:        cfg.Config,
-		shell:         cfg.Shell,
+		currentStep:           stepProviders,
+		providers:             providers,
+		mcpServers:            cfg.MCPServers,
+		selectedItem:          0,
+		editingAPIKey:         false,
+		apiKeyInput:           "",
+		showInputModeSelector: false,
+		credentialSource:      "",
+		width:                 80,
+		height:                24,
+		config:                cfg.Config,
+		shell:                 cfg.Shell,
 	}
 }
 
@@ -180,6 +187,9 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 // Side effects:
 //   - May update navigation state, selected item, or current step.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	if i.showInputModeSelector {
+		return i.handleInputModeSelection(msg)
+	}
 	if i.editingAPIKey {
 		return i.handleAPIKeyInput(msg)
 	}
@@ -220,16 +230,16 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //   - A command to be executed by the Bubble Tea runtime, or nil.
 //
 // Side effects:
-//   - May toggle provider or MCP server state, or enter API key editing mode.
+//   - May toggle provider or MCP server state, enter API key editing mode, or show input mode selector.
 func (i *Intent) handleEnter() tea.Cmd {
 	switch i.currentStep {
 	case stepProviders:
 		if i.selectedItem < len(i.providers) {
 			provider := &i.providers[i.selectedItem]
 			if !provider.Enabled {
-				i.editingAPIKey = true
 				i.selectedProviderForKey = provider.Name
-				i.apiKeyInput = ""
+				i.showInputModeSelector = true
+				i.selectedItem = 0
 			} else {
 				provider.Enabled = !provider.Enabled
 			}
@@ -270,11 +280,130 @@ func (i *Intent) handleAPIKeyInput(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// handleInputModeSelection processes keyboard input in the credential mode selector.
+//
+// Expected:
+//   - msg is a valid Bubble Tea key message.
+//
+// Returns:
+//   - A command to be executed by the Bubble Tea runtime, or nil.
+//
+// Side effects:
+//   - May update the selected mode or enter credential input mode based on selection.
+func (i *Intent) handleInputModeSelection(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEsc:
+		i.showInputModeSelector = false
+		i.selectedItem = 0
+		return nil
+	case tea.KeyUp:
+		if i.selectedItem > 0 {
+			i.selectedItem--
+		}
+		return nil
+	case tea.KeyDown:
+		if i.selectedItem < 1 {
+			i.selectedItem++
+		}
+		return nil
+	case tea.KeyEnter:
+		i.showInputModeSelector = false
+		if i.selectedItem == 0 {
+			i.credentialSource = "OpenCode"
+			return i.loadOpenCodeCredential()
+		}
+		i.credentialSource = "Manual"
+		i.editingAPIKey = true
+		i.apiKeyInput = ""
+		i.selectedItem = 0
+		return nil
+	}
+	return nil
+}
+
+// loadOpenCodeCredential loads credentials from OpenCode auth.json.
+//
+// Returns:
+//   - A command to be executed by the Bubble Tea runtime.
+//
+// Side effects:
+//   - Updates provider configuration if OpenCode credentials are found.
+func (i *Intent) loadOpenCodeCredential() tea.Cmd {
+	if i.config == nil {
+		return nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
+
+	ocAuth, err := auth.LoadOpenCodeAuthFrom(opencodePath)
+	if err != nil || ocAuth == nil {
+		return nil
+	}
+
+	for idx := range i.providers {
+		if i.providers[idx].Name == i.selectedProviderForKey {
+			i.providers[idx].Enabled = true
+			switch i.selectedProviderForKey {
+			case "anthropic":
+				if ocAuth.Anthropic != nil && ocAuth.Anthropic.Access != "" {
+					i.providers[idx].APIKey = ocAuth.Anthropic.Access
+					i.config.Providers.Anthropic.APIKey = ocAuth.Anthropic.Access
+				}
+			case "github-copilot":
+				if ocAuth.GitHubCopilot != nil && ocAuth.GitHubCopilot.Access != "" {
+					i.providers[idx].APIKey = ocAuth.GitHubCopilot.Access
+					i.config.Providers.GitHub.APIKey = ocAuth.GitHubCopilot.Access
+				}
+			}
+			break
+		}
+	}
+
+	i.editingAPIKey = false
+	i.showInputModeSelector = false
+	return nil
+}
+
+// isValidCredential checks if a credential matches the expected format for the given provider.
+//
+// Expected:
+//   - providerName is a valid provider name (anthropic, github-copilot, openai).
+//   - credential is the credential string to validate.
+//
+// Returns:
+//   - true if the credential format is valid for the provider, false otherwise.
+//
+// Side effects:
+//   - None.
+func isValidCredential(providerName, credential string) bool {
+	if credential == "" {
+		return false
+	}
+	switch providerName {
+	case "anthropic":
+		return len(credential) > 10 && (credential[:13] == "sk-ant-api03-" || credential[:13] == "sk-ant-oat01-")
+	case "github-copilot":
+		return len(credential) > 4 && credential[:4] == "gho_"
+	case "openai":
+		return len(credential) > 3 && credential[:3] == "sk-"
+	default:
+		return false
+	}
+}
+
 // saveAPIKey saves the entered API key to the selected provider.
 //
 // Side effects:
-//   - Updates the matching provider status and application configuration with the entered API key.
+//   - Updates the matching provider status and application configuration with the entered API key if valid.
 func (i *Intent) saveAPIKey() {
+	if !isValidCredential(i.selectedProviderForKey, i.apiKeyInput) {
+		i.apiKeyInput = ""
+		return
+	}
 	for idx := range i.providers {
 		if i.providers[idx].Name == i.selectedProviderForKey {
 			i.providers[idx].APIKey = i.apiKeyInput
@@ -334,11 +463,18 @@ func (i *Intent) View() string {
 	var content string
 	var helpText string
 
-	switch i.currentStep {
-	case stepProviders:
-		content, helpText = i.renderProvidersStep()
-	case stepMCPServers:
-		content, helpText = i.renderMCPServersStep()
+	if i.showInputModeSelector {
+		content, helpText = i.renderInputModeSelector()
+	} else if i.editingAPIKey {
+		content = i.renderAPIKeyInput()
+		helpText = "Paste credential  ·  Esc save and return"
+	} else {
+		switch i.currentStep {
+		case stepProviders:
+			content, helpText = i.renderProvidersStep()
+		case stepMCPServers:
+			content, helpText = i.renderMCPServersStep()
+		}
 	}
 
 	helpStyled := lipgloss.NewStyle().
@@ -430,6 +566,40 @@ func (i *Intent) renderAPIKeyInput() string {
 		"",
 		inputStyle.Render("API Key: "+i.apiKeyInput+"_"),
 	)
+}
+
+// renderInputModeSelector renders the credential input mode selection menu.
+//
+// Returns:
+//   - The rendered content string and a help text string.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderInputModeSelector() (string, string) {
+	helpText := "↑↓ navigate  ·  Enter select  ·  Esc cancel"
+
+	modes := []string{"Use OpenCode credentials", "Enter manually"}
+	var lines []string
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Bold(true)
+
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("255"))
+
+	for idx, mode := range modes {
+		var line string
+		if idx == i.selectedItem {
+			line = selectedStyle.Render("> " + mode)
+		} else {
+			line = style.Render("  " + mode)
+		}
+		lines = append(lines, line)
+	}
+
+	header := styleFor("Select credential source for " + i.selectedProviderForKey + ":")
+
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{header, ""}, lines...)...), helpText
 }
 
 // renderMCPServersStep renders the MCP servers selection step.

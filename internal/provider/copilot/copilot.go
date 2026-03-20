@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -71,6 +72,45 @@ func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
 		baseURL: defaultBaseURL,
 		client:  &http.Client{},
 	}, nil
+}
+
+// NewFromOpenCodeOrFallback attempts to load GitHub Copilot credentials from OpenCode auth.json,
+// falling back to OAuth storage or API key if OpenCode not available.
+//
+// Expected:
+//   - opencodePath is a file path to OpenCode's auth.json (or empty string to skip OpenCode).
+//   - oauthToken is a stored OAuth token (may be nil or empty).
+//   - fallbackToken is a direct API key from config (may be empty).
+//
+// Returns:
+//   - A configured Provider using OpenCode token if found.
+//   - A configured Provider using oauthToken if OpenCode not available.
+//   - A configured Provider using fallbackToken if neither OpenCode nor OAuth available.
+//   - An error if OpenCode exists but cannot be parsed.
+//   - An error if none of the credential sources provide a token.
+//
+// Side effects:
+//   - Reads from opencodePath if provided.
+func NewFromOpenCodeOrFallback(opencodePath string, oauthToken *oauth.TokenResponse, fallbackToken string) (*Provider, error) {
+	if opencodePath != "" {
+		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
+		if err != nil {
+			return nil, fmt.Errorf("loading opencode auth: %w", err)
+		}
+		if authData != nil && authData.GitHubCopilot != nil && authData.GitHubCopilot.Access != "" {
+			return New(authData.GitHubCopilot.Access)
+		}
+	}
+
+	if oauthToken != nil && oauthToken.AccessToken != "" {
+		return NewWithOAuth(oauthToken)
+	}
+
+	if fallbackToken != "" {
+		return New(fallbackToken)
+	}
+
+	return nil, errTokenRequired
 }
 
 // SetBaseURL sets the base URL for the GitHub Copilot API endpoint.
