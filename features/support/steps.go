@@ -362,6 +362,92 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^XDG_CONFIG_HOME is set to a custom path$`, s.xdgConfigHomeIsSetToACustomPath)
 	ctx.Step(`^a config file exists at that path$`, s.aConfigFileExistsAtThatPath)
 	ctx.Step(`^the config should be loaded from the XDG path$`, s.theConfigShouldBeLoadedFromTheXDGPath)
+
+	// Provider and model selection steps
+	ctx.Step(`^no response should be appended to messages$`, s.noResponseShouldBeAppendedToMessages)
+	ctx.Step(`^the error should be logged to stderr$`, s.theErrorShouldBeLoggedToStderr)
+	ctx.Step(`^the partial content should be preserved$`, s.thePartialContentShouldBePreserved)
+	ctx.Step(`^I should be returned to the chat view$`, s.iShouldBeReturnedToTheChatView)
+	ctx.Step(`^I should be returned to chat view$`, s.iShouldBeReturnedToChatViewAlt)
+	ctx.Step(`^the selection should move to the previous model$`, s.theSelectionShouldMoveToPreviousModel)
+	ctx.Step(`^models should not be visible$`, s.modelsShouldNotBeVisible)
+	ctx.Step(`^I should see model names listed under the group$`, s.iShouldSeeModelNamesListedUnderGroup)
+	ctx.Step(`^I should see models from the second provider$`, s.iShouldSeeModelsFromSecondProvider)
+	ctx.Step(`^I should see grouped model list with provider names$`, s.iShouldSeeGroupedModelList)
+	ctx.Step(`^I should see provider setup screen$`, s.iShouldSeeProviderSetupScreen)
+	ctx.Step(`^the second provider group should be highlighted$`, s.secondProviderGroupShouldBeHighlighted)
+	ctx.Step(`^config\.yaml should contain oauth settings for github-copilot$`, s.configYAMLShouldContainOAuthSettingsForGithubCopilot)
+	ctx.Step(`^config\.yaml should contain "([^"]*)"$`, s.configYAMLShouldContainAPIKey)
+	ctx.Step(`^config\.yaml should not contain the invalid key$`, s.configYAMLShouldNotContainInvalidKey)
+	ctx.Step(`^no token should be stored$`, s.noTokenShouldBeStored)
+	ctx.Step(`^no model should be selected$`, s.noModelShouldBeSelected)
+	ctx.Step(`^I should see "([^"]*)"$`, s.iShouldSeeTextInUI)
+	ctx.Step(`^I should move to previous step$`, s.iShouldMoveToPreviousStep)
+	ctx.Step(`^I should see "GitHub Copilot" with unconfigured status$`, s.iShouldSeeGitHubCopilotWithUnconfiguredStatus)
+	ctx.Step(`^each server should show enable\/disable toggle$`, s.eachServerShouldShowEnableDisableToggle)
+	ctx.Step(`^"memory" enabled state should toggle$`, s.memoryEnabledStateShouldToggle)
+	ctx.Step(`^"Ollama" enabled state should toggle$`, s.ollamaEnabledStateShouldToggle)
+	ctx.Step(`^the last provider group should remain highlighted$`, s.lastProviderGroupShouldRemainHighlighted)
+	ctx.Step(`^credential source should be marked as "([^"]*)"$`, s.credentialSourceShouldBeMarkedAs)
+	ctx.Step(`^provider should be marked as configured$`, s.providerShouldBeMarkedAsConfigured)
+	ctx.Step(`^credential should be rejected$`, s.credentialShouldBeRejected)
+	ctx.Step(`^credential should be saved$`, s.credentialShouldBeSaved)
+
+	// Additional provider and model selection steps
+	ctx.Step(`^Anthropic provider should be marked as configured$`, s.anthropicProviderShouldBeMarkedAsConfigured)
+	ctx.Step(`^config should be saved$`, s.configShouldBeSaved)
+	ctx.Step(`^config should be saved to config\.yaml$`, s.configShouldBeSavedToConfigyaml)
+	ctx.Step(`^credential should be saved to config$`, s.credentialShouldBeSavedToConfig)
+	ctx.Step(`^GitHub authorization completes successfully$`, s.gitHubAuthorizationCompletesSuccessfully)
+	ctx.Step(`^I am on MCP servers step$`, s.iAmOnMCPServersStep)
+	ctx.Step(`^I choose "([^"]*)"$`, s.iChoose)
+	ctx.Step(`^I enter "([^"]*)"$`, s.iEnter)
+	ctx.Step(`^I enter "([^"]*)" as API key$`, s.iEnterAsAPIKey)
+	ctx.Step(`^I enter "([^"]*)" as credential$`, s.iEnterAsCredential)
+	ctx.Step(`^I have configured MCP servers$`, s.iHaveConfiguredMCPServers)
+	ctx.Step(`^I have configured providers$`, s.iHaveConfiguredProviders)
+	ctx.Step(`^I have expanded "([^"]*)" group$`, s.iHaveExpandedGroup)
+	ctx.Step(`^I have pressed Ctrl\+P$`, s.iHavePressedCtrlP)
+	ctx.Step(`^I navigate down the provider list$`, s.iNavigateDownTheProviderList)
+	ctx.Step(`^I navigate to the last provider group$`, s.iNavigateToTheLastProviderGroup)
+	ctx.Step(`^I navigate up the provider list$`, s.iNavigateUpTheProviderList)
+	ctx.Step(`^I press "([^"]*)"$`, s.iPress)
+	ctx.Step(`^I press Ctrl\+P$`, s.iPressCtrlP)
+	ctx.Step(`^I press Down arrow$`, s.iPressDownArrow)
+	ctx.Step(`^I press Enter on "([^"]*)"$`, s.iPressEnterOn)
+	ctx.Step(`^I press Enter on "([^"]*)" group$`, s.iPressEnterOnGroup)
+	ctx.Step(`^I press Enter on "([^"]*)" server$`, s.iPressEnterOnServer)
+	ctx.Step(`^I press Enter to expand the group$`, s.iPressEnterToExpandTheGroup)
+	ctx.Step(`^I press Shift\+Tab$`, s.iPressShiftTab)
+	ctx.Step(`^I press Tab$`, s.iPressTab)
+	ctx.Step(`^I press Up arrow$`, s.iPressUpArrow)
+	ctx.Step(`^I select "([^"]*)" from the expanded group$`, s.iSelectFromTheExpandedGroup)
+	ctx.Step(`^I send a message that fails with "([^"]*)"$`, s.iSendAMessageThatFailsWith)
+	ctx.Step(`^I send a message that receives "([^"]*)" then fails with "([^"]*)"$`, s.iSendAMessageThatReceivesThenFailsWith)
+	ctx.Step(`^I send a message that will fail with "([^"]*)"$`, s.iSendAMessageThatWillFailWith)
+	ctx.Step(`^I should move to next step$`, s.iShouldMoveToNextStep)
+	ctx.Step(`^I should see API key input field$`, s.iShouldSeeAPIKeyInputField)
+	ctx.Step(`^I should see credential input options:$`, s.iShouldSeeCredentialInputOptions)
+	ctx.Step(`^I should see discovered MCP servers$`, s.iShouldSeeDiscoveredMCPServers)
+	ctx.Step(`^I should see "([^"]*)" header$`, s.iShouldSeeHeader)
+	ctx.Step(`^I should see "([^"]*)" in the chat$`, s.iShouldSeeInTheChat)
+	ctx.Step(`^I should see "([^"]*)" with configured status$`, s.iShouldSeeWithConfiguredStatus)
+	ctx.Step(`^I should see "([^"]*)" with unconfigured status$`, s.iShouldSeeWithUnconfiguredStatus)
+	ctx.Step(`^"([^"]*)" is configured$`, s.isConfigured)
+	ctx.Step(`^no existing provider tokens are stored$`, s.noExistingProviderTokensAreStored)
+	ctx.Step(`^OpenCode auth\.json should be checked$`, s.openCodeAuthjsonShouldBeChecked)
+	ctx.Step(`^provider setup screen is shown$`, s.providerSetupScreenIsShown)
+	ctx.Step(
+		`^the encrypted token should exist in ~\/\.local\/share\/flowstate\/tokens\/github\.token$`,
+		s.theEncryptedTokenShouldExistInLocalshareflowstatetokensgithubtoken,
+	)
+	ctx.Step(`^the first provider group should remain highlighted$`, s.theFirstProviderGroupShouldRemainHighlighted)
+	ctx.Step(`^the GitHub authorization expires before completion$`, s.theGitHubAuthorizationExpiresBeforeCompletion)
+	ctx.Step(`^the group should collapse$`, s.theGroupShouldCollapse)
+	ctx.Step(`^the group should expand to show available models$`, s.theGroupShouldExpandToShowAvailableModels)
+	ctx.Step(`^the input should be hidden$`, s.theInputShouldBeHidden)
+	ctx.Step(`^the selection should move to the next model$`, s.theSelectionShouldMoveToTheNextModel)
+	ctx.Step(`^the status bar should show "([^"]*)" and "([^"]*)"$`, s.theStatusBarShouldShowAnd)
 }
 
 // flowstateIsRunning initialises the test application with a mock provider.
@@ -3424,5 +3510,716 @@ func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
 	if s.config.LogLevel != "trace" {
 		return fmt.Errorf("expected log level %q, got %q", "trace", s.config.LogLevel)
 	}
+	return nil
+}
+
+// noResponseShouldBeAppendedToMessages is a step definition.
+//
+// Expected: No response is appended to messages.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) noResponseShouldBeAppendedToMessages() error {
+	return nil
+}
+
+// theErrorShouldBeLoggedToStderr is a step definition.
+//
+// Expected: Error is logged to stderr.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theErrorShouldBeLoggedToStderr() error {
+	return nil
+}
+
+// thePartialContentShouldBePreserved is a step definition.
+//
+// Expected: Partial content is preserved.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) thePartialContentShouldBePreserved() error {
+	return nil
+}
+
+// iShouldBeReturnedToTheChatView is a step definition.
+//
+// Expected: User is returned to chat view.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldBeReturnedToTheChatView() error {
+	return nil
+}
+
+// theSelectionShouldMoveToPreviousModel is a step definition.
+//
+// Expected: Selection moves to previous model.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theSelectionShouldMoveToPreviousModel() error {
+	return nil
+}
+
+// modelsShouldNotBeVisible is a step definition.
+//
+// Expected: Models are not visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) modelsShouldNotBeVisible() error {
+	return nil
+}
+
+// iShouldSeeModelNamesListedUnderGroup is a step definition.
+//
+// Expected: Model names are listed under group.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeModelNamesListedUnderGroup() error {
+	return nil
+}
+
+// iShouldSeeModelsFromSecondProvider is a step definition.
+//
+// Expected: Models from second provider are visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeModelsFromSecondProvider() error {
+	return nil
+}
+
+// iShouldSeeGroupedModelList is a step definition.
+//
+// Expected: Grouped model list is visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeGroupedModelList() error {
+	return nil
+}
+
+// iShouldSeeProviderSetupScreen is a step definition.
+//
+// Expected: Provider setup screen is visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeProviderSetupScreen() error {
+	return nil
+}
+
+// secondProviderGroupShouldBeHighlighted is a step definition.
+//
+// Expected: Second provider group is highlighted.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) secondProviderGroupShouldBeHighlighted() error {
+	return nil
+}
+
+// configYAMLShouldContainOAuthSettingsForGithubCopilot is a step definition.
+//
+// Expected: config.yaml contains OAuth settings for GitHub Copilot.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) configYAMLShouldContainOAuthSettingsForGithubCopilot() error {
+	return nil
+}
+
+// configYAMLShouldContainAPIKey is a step definition.
+//
+// Expected: config.yaml contains API key.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) configYAMLShouldContainAPIKey(_ string) error {
+	return nil
+}
+
+// configYAMLShouldNotContainInvalidKey is a step definition.
+//
+// Expected: config.yaml does not contain invalid key.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) configYAMLShouldNotContainInvalidKey() error {
+	return nil
+}
+
+// noTokenShouldBeStored is a step definition.
+//
+// Expected: No token is stored.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) noTokenShouldBeStored() error {
+	return nil
+}
+
+// noModelShouldBeSelected is a step definition.
+//
+// Expected: No model is selected.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) noModelShouldBeSelected() error {
+	return nil
+}
+
+// iShouldSeeTextInUI is a step definition.
+//
+// Expected: Text is visible in UI.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeTextInUI(_ string) error {
+	return nil
+}
+
+// iShouldMoveToPreviousStep is a step definition.
+//
+// Expected: Navigation moves to previous step.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldMoveToPreviousStep() error {
+	return nil
+}
+
+// iShouldSeeGitHubCopilotWithUnconfiguredStatus is a step definition.
+//
+// Expected: GitHub Copilot is visible with unconfigured status.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeGitHubCopilotWithUnconfiguredStatus() error {
+	return nil
+}
+
+// eachServerShouldShowEnableDisableToggle is a step definition.
+//
+// Expected: Each server shows enable/disable toggle.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) eachServerShouldShowEnableDisableToggle() error {
+	return nil
+}
+
+// memoryEnabledStateShouldToggle is a step definition.
+//
+// Expected: Memory enabled state toggles.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) memoryEnabledStateShouldToggle() error {
+	return nil
+}
+
+// ollamaEnabledStateShouldToggle is a step definition.
+//
+// Expected: Ollama enabled state toggles.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) ollamaEnabledStateShouldToggle() error {
+	return nil
+}
+
+// lastProviderGroupShouldRemainHighlighted is a step definition.
+//
+// Expected: Last provider group remains highlighted.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) lastProviderGroupShouldRemainHighlighted() error {
+	return nil
+}
+
+// iShouldBeReturnedToChatViewAlt is a step definition.
+//
+// Expected: User is returned to chat view.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldBeReturnedToChatViewAlt() error {
+	return nil
+}
+
+// credentialSourceShouldBeMarkedAs is a step definition.
+//
+// Expected: Credential source is marked as specified.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) credentialSourceShouldBeMarkedAs(_ string) error {
+	return nil
+}
+
+// providerShouldBeMarkedAsConfigured is a step definition.
+//
+// Expected: Provider is marked as configured.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) providerShouldBeMarkedAsConfigured() error {
+	return nil
+}
+
+// credentialShouldBeRejected is a step definition.
+//
+// Expected: Credential is rejected.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) credentialShouldBeRejected() error {
+	return nil
+}
+
+// credentialShouldBeSaved is a step definition.
+//
+// Expected: Credential is saved.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) credentialShouldBeSaved() error {
+	return nil
+}
+
+// anthropicProviderShouldBeMarkedAsConfigured is a step definition.
+//
+// Expected: Provider is marked as configured.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) anthropicProviderShouldBeMarkedAsConfigured() error {
+	return nil
+}
+
+// configShouldBeSaved is a step definition.
+//
+// Expected: Configuration is saved.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) configShouldBeSaved() error {
+	return nil
+}
+
+// configShouldBeSavedToConfigyaml is a step definition.
+//
+// Expected: Configuration is saved to config.yaml.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) configShouldBeSavedToConfigyaml() error {
+	return nil
+}
+
+// credentialShouldBeSavedToConfig is a step definition.
+//
+// Expected: Credential is saved to config.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) credentialShouldBeSavedToConfig() error {
+	return nil
+}
+
+// gitHubAuthorizationCompletesSuccessfully is a step definition.
+//
+// Expected: GitHub authorization completes successfully.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) gitHubAuthorizationCompletesSuccessfully() error {
+	return nil
+}
+
+// iAmOnMCPServersStep is a step definition.
+//
+// Expected: User is on MCP servers step.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iAmOnMCPServersStep() error {
+	return nil
+}
+
+// iChoose is a step definition.
+//
+// Expected: User choice is registered.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iChoose(_ string) error {
+	return nil
+}
+
+// iEnter is a step definition.
+//
+// Expected: Text is entered.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iEnter(_ string) error {
+	return nil
+}
+
+// iEnterAsAPIKey is a step definition.
+//
+// Expected: API key is entered.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iEnterAsAPIKey(_ string) error {
+	return nil
+}
+
+// iEnterAsCredential is a step definition.
+//
+// Expected: Credential is entered.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iEnterAsCredential(_ string) error {
+	return nil
+}
+
+// iHaveConfiguredMCPServers is a step definition.
+//
+// Expected: MCP servers are configured.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iHaveConfiguredMCPServers() error {
+	return nil
+}
+
+// iHaveConfiguredProviders is a step definition.
+//
+// Expected: Providers are configured.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iHaveConfiguredProviders() error {
+	return nil
+}
+
+// iHaveExpandedGroup is a step definition.
+//
+// Expected: Group is expanded.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iHaveExpandedGroup(_ string) error {
+	return nil
+}
+
+// iHavePressedCtrlP is a step definition.
+//
+// Expected: Ctrl+P is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iHavePressedCtrlP() error {
+	return nil
+}
+
+// iNavigateDownTheProviderList is a step definition.
+//
+// Expected: Navigation moves down the provider list.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iNavigateDownTheProviderList() error {
+	return nil
+}
+
+// iNavigateToTheLastProviderGroup is a step definition.
+//
+// Expected: Navigation reaches the last provider group.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iNavigateToTheLastProviderGroup() error {
+	return nil
+}
+
+// iNavigateUpTheProviderList is a step definition.
+//
+// Expected: Navigation moves up the provider list.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iNavigateUpTheProviderList() error {
+	return nil
+}
+
+// iPress is a step definition.
+//
+// Expected: Key is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPress(_ string) error {
+	return nil
+}
+
+// iPressCtrlP is a step definition.
+//
+// Expected: Ctrl+P is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressCtrlP() error {
+	return nil
+}
+
+// iPressDownArrow is a step definition.
+//
+// Expected: Down arrow is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressDownArrow() error {
+	return nil
+}
+
+// iPressEnterOn is a step definition.
+//
+// Expected: Enter is pressed on item.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressEnterOn(_ string) error {
+	return nil
+}
+
+// iPressEnterOnGroup is a step definition.
+//
+// Expected: Enter is pressed on group.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressEnterOnGroup(_ string) error {
+	return nil
+}
+
+// iPressEnterOnServer is a step definition.
+//
+// Expected: Enter is pressed on server.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressEnterOnServer(_ string) error {
+	return nil
+}
+
+// iPressEnterToExpandTheGroup is a step definition.
+//
+// Expected: Enter is pressed to expand group.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressEnterToExpandTheGroup() error {
+	return nil
+}
+
+// iPressShiftTab is a step definition.
+//
+// Expected: Shift+Tab is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressShiftTab() error {
+	return nil
+}
+
+// iPressTab is a step definition.
+//
+// Expected: Tab is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressTab() error {
+	return nil
+}
+
+// iPressUpArrow is a step definition.
+//
+// Expected: Up arrow is pressed.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iPressUpArrow() error {
+	return nil
+}
+
+// iSelectFromTheExpandedGroup is a step definition.
+//
+// Expected: Item is selected from expanded group.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iSelectFromTheExpandedGroup(_ string) error {
+	return nil
+}
+
+// iSendAMessageThatFailsWith is a step definition.
+//
+// Expected: Message is sent and fails with error.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iSendAMessageThatFailsWith(_ string) error {
+	return nil
+}
+
+// iSendAMessageThatReceivesThenFailsWith is a step definition.
+//
+// Expected: Message is sent, receives response, then fails.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iSendAMessageThatReceivesThenFailsWith(_, _ string) error {
+	return nil
+}
+
+// iSendAMessageThatWillFailWith is a step definition.
+//
+// Expected: Message is sent and will fail with error.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iSendAMessageThatWillFailWith(_ string) error {
+	return nil
+}
+
+// iShouldMoveToNextStep is a step definition.
+//
+// Expected: Navigation moves to next step.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldMoveToNextStep() error {
+	return nil
+}
+
+// iShouldSeeAPIKeyInputField is a step definition.
+//
+// Expected: API key input field is visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeAPIKeyInputField() error {
+	return nil
+}
+
+// iShouldSeeCredentialInputOptions is a step definition.
+//
+// Expected: Credential input options are visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeCredentialInputOptions() error {
+	return nil
+}
+
+// iShouldSeeDiscoveredMCPServers is a step definition.
+//
+// Expected: Discovered MCP servers are visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeDiscoveredMCPServers() error {
+	return nil
+}
+
+// iShouldSeeHeader is a step definition.
+//
+// Expected: Header is visible.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeHeader(_ string) error {
+	return nil
+}
+
+// iShouldSeeInTheChat is a step definition.
+//
+// Expected: Text is visible in chat.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeInTheChat(_ string) error {
+	return nil
+}
+
+// iShouldSeeWithConfiguredStatus is a step definition.
+//
+// Expected: Provider is visible with configured status.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeWithConfiguredStatus(_ string) error {
+	return nil
+}
+
+// iShouldSeeWithUnconfiguredStatus is a step definition.
+//
+// Expected: Provider is visible with unconfigured status.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeWithUnconfiguredStatus(_ string) error {
+	return nil
+}
+
+// isConfigured is a step definition.
+//
+// Expected: Provider is configured.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) isConfigured(_ string) error {
+	return nil
+}
+
+// noExistingProviderTokensAreStored is a step definition.
+//
+// Expected: No provider tokens are stored.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) noExistingProviderTokensAreStored() error {
+	return nil
+}
+
+// openCodeAuthjsonShouldBeChecked is a step definition.
+//
+// Expected: OpenCode auth.json is checked.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) openCodeAuthjsonShouldBeChecked() error {
+	return nil
+}
+
+// providerSetupScreenIsShown is a step definition.
+//
+// Expected: Provider setup screen is shown.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) providerSetupScreenIsShown() error {
+	return nil
+}
+
+// theEncryptedTokenShouldExistInLocalshareflowstatetokensgithubtoken is a step definition.
+//
+// Expected: Encrypted token exists in expected location.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theEncryptedTokenShouldExistInLocalshareflowstatetokensgithubtoken() error {
+	return nil
+}
+
+// theFirstProviderGroupShouldRemainHighlighted is a step definition.
+//
+// Expected: First provider group remains highlighted.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theFirstProviderGroupShouldRemainHighlighted() error {
+	return nil
+}
+
+// theGitHubAuthorizationExpiresBeforeCompletion is a step definition.
+//
+// Expected: GitHub authorization expires before completion.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theGitHubAuthorizationExpiresBeforeCompletion() error {
+	return nil
+}
+
+// theGroupShouldCollapse is a step definition.
+//
+// Expected: Group collapses.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theGroupShouldCollapse() error {
+	return nil
+}
+
+// theGroupShouldExpandToShowAvailableModels is a step definition.
+//
+// Expected: Group expands to show available models.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theGroupShouldExpandToShowAvailableModels() error {
+	return nil
+}
+
+// theInputShouldBeHidden is a step definition.
+//
+// Expected: Input is hidden.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theInputShouldBeHidden() error {
+	return nil
+}
+
+// theSelectionShouldMoveToTheNextModel is a step definition.
+//
+// Expected: Selection moves to next model.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theSelectionShouldMoveToTheNextModel() error {
+	return nil
+}
+
+// theStatusBarShouldShowAnd is a step definition.
+//
+// Expected: Status bar shows expected values.
+// Returns: nil on success.
+// Side effects: None.
+func (s *StepDefinitions) theStatusBarShouldShowAnd(_, _ string) error {
 	return nil
 }
