@@ -483,26 +483,24 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 		}
 	}
 
+	// Anthropic: Try OpenCode first, then env, then config
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	if anthropicKey == "" {
 		anthropicKey = cfg.Providers.Anthropic.APIKey
 	}
-	if anthropicKey != "" {
-		anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
-		if anthropicErr == nil {
-			providerRegistry.Register(anthropicProvider)
-		}
+	anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
+	if anthropicErr == nil {
+		providerRegistry.Register(anthropicProvider)
 	}
 
+	// GitHub Copilot: Try OpenCode first, then env, then config
 	githubToken := os.Getenv("GITHUB_TOKEN")
 	if githubToken == "" {
 		githubToken = cfg.Providers.GitHub.APIKey
 	}
-	if githubToken != "" {
-		copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
-		if copilotErr == nil {
-			providerRegistry.Register(copilotProvider)
-		}
+	copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
+	if copilotErr == nil {
+		providerRegistry.Register(copilotProvider)
 	}
 	return providerRegistry, ollamaProvider
 }

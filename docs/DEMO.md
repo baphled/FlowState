@@ -18,9 +18,8 @@ In this scenario, we'll start a conversation and see how FlowState handles rich 
    ```
 
 2. **Send a message**:
-   - Press `i` to enter Insert Mode.
    - Type: `Explain the Model Context Protocol (MCP) using a markdown table for its components.`
-   - Press `Enter`.
+   - Press `Enter` to send.
 
 3. **Observe the response**:
    - The AI starts streaming the response immediately.
@@ -42,7 +41,6 @@ FlowState can use external tools via MCP. Let's see how the AI identifies availa
    ```
 
 2. **Ask about tools**:
-   - Enter Insert Mode (`i`).
    - Type: `What tools do you have access to through the filesystem MCP server?`
    - Press `Enter`.
 
@@ -57,15 +55,10 @@ FlowState can use external tools via MCP. Let's see how the AI identifies availa
    - You will see a real-time **Token Count** incrementing as the response streams in.
    - This helps you stay aware of model usage and context window limits.
 
-2. **Switch Modes**:
-   - Observe the `NORMAL` or `INSERT` mode indicator in the StatusBar.
-   - Mode switching is instantaneous and changes the cursor behaviour and input handling.
-
 ## Scenario 4: Session Resume
 
 1. **Quit FlowState**:
-   - Press `Esc` to ensure you are in Normal Mode.
-   - Press `q` to quit.
+   - Press `Ctrl+C` to quit.
 
 2. **Find your session**:
    - FlowState automatically saves sessions.
@@ -81,6 +74,23 @@ FlowState can use external tools via MCP. Let's see how the AI identifies availa
    ```
    - The conversation history is restored, and you can continue exactly where you left off.
 
+## Scenario 5: List Available Models
+
+1. **List models from all providers**:
+   ```bash
+   flowstate models
+   ```
+
+2. **Observe the output**:
+   - Each line shows the provider, model ID, and context length.
+   - Only providers with valid credentials or connections display their models.
+
+3. **Use a specific model**:
+   ```bash
+   flowstate chat --model gpt-4o
+   ```
+   - The chat session will use the specified model instead of the default.
+
 ## Conclusion
 
-FlowState combines the flexibility of LLMs with the power of terminal tools and local model control. For more advanced usage, check out the `/help` command inside the TUI.
+FlowState combines the flexibility of LLMs with the power of terminal tools and local model control. For more advanced usage, check out the `flowstate help` command inside the TUI.

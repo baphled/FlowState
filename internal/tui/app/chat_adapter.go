@@ -1,6 +1,10 @@
 package app
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	tea "github.com/charmbracelet/bubbletea"
+
+	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
+)
 
 // ChatModel defines the interface for the chat model that ChatAdapter wraps.
 // This allows the adapter to work with any model that implements these methods.
@@ -80,6 +84,6 @@ func (a *ChatAdapter) View() string {
 //
 // Side effects:
 //   - None.
-func (a *ChatAdapter) Result() *IntentResult {
+func (a *ChatAdapter) Result() *tuiintents.IntentResult {
 	return nil
 }

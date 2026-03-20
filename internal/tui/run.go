@@ -3,33 +3,34 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/baphled/flowstate/internal/engine"
+	flowapp "github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
-// Run starts the chat TUI with the given engine and agent.
+// Run starts the FlowState TUI with the given application and session context.
 //
 // Expected:
-//   - eng is a non-nil Engine for handling chat requests.
-//   - agentID identifies the agent to converse with.
-//   - sessionID is the session identifier for context persistence.
+//   - application is a fully initialised App with a configured Engine.
+//   - agentID and sessionID are non-empty strings identifying the conversation.
 //
 // Returns:
-//   - An error if the Bubble Tea programme fails to start or run.
+//   - An error if the Bubble Tea program fails to run, or nil on success.
 //
 // Side effects:
-//   - Takes over the terminal with an alternate screen for the TUI.
-func Run(eng *engine.Engine, agentID string, sessionID string) error {
+//   - Launches a full-screen terminal UI that blocks until the user exits.
+func Run(application *flowapp.App, agentID string, sessionID string) error {
 	chatIntent := chat.NewIntent(chat.IntentConfig{
-		Engine:       eng,
+		App:          nil,
+		Engine:       application.Engine,
 		AgentID:      agentID,
 		SessionID:    sessionID,
-		ModelName:    eng.LastModel(),
-		ProviderName: eng.LastProvider(),
+		ModelName:    application.Engine.LastModel(),
+		ProviderName: application.Engine.LastProvider(),
 		TokenBudget:  4096,
 	})
-	appShell := app.New(chatIntent)
+	appShell := app.New(chatIntent, application)
+	chatIntent.SetApp(appShell)
 	p := tea.NewProgram(appShell, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

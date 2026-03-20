@@ -7,19 +7,20 @@ Feature: CLI Commands
     Given the FlowState CLI is available
 
   @smoke
-  Scenario: Root command shows help with global flags and subcommands
-    When I run "flowstate --help"
-    Then I should see usage for "flowstate"
-    And I should see the global flag "--config"
-    And I should see the global flag "--agents-dir"
-    And I should see the global flag "--skills-dir"
-    And I should see the global flag "--sessions-dir"
-    And I should see the subcommand "chat"
-    And I should see the subcommand "serve"
-    And I should see the subcommand "agent"
-    And I should see the subcommand "skill"
-    And I should see the subcommand "discover"
-    And I should see the subcommand "session"
+   Scenario: Root command shows help with global flags and subcommands
+     When I run "flowstate --help"
+     Then I should see usage for "flowstate"
+     And I should see the global flag "--config"
+     And I should see the global flag "--agents-dir"
+     And I should see the global flag "--skills-dir"
+     And I should see the global flag "--sessions-dir"
+     And I should see the subcommand "chat"
+     And I should see the subcommand "serve"
+     And I should see the subcommand "agent"
+     And I should see the subcommand "skill"
+     And I should see the subcommand "discover"
+     And I should see the subcommand "session"
+     And I should see the subcommand "models"
 
   @smoke
   Scenario: Chat command shows agent, message, model, and session flags
@@ -56,6 +57,6 @@ Feature: CLI Commands
     When I run "flowstate session list"
     Then I should see output containing "session"
 
-  Scenario: Session resume subcommand accepts a session identifier
-    When I run "flowstate session resume session-123"
-    Then I should see output containing "session-123"
+   Scenario: Session resume subcommand accepts a session identifier
+     When I run "flowstate session resume session-123"
+     Then I should see output containing "session-123"

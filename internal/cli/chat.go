@@ -65,6 +65,12 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 // Side effects:
 //   - Launches interactive chat or sends a single message.
 func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
+	if opts.Model != "" {
+		if err := application.SetModel(opts.Model); err != nil {
+			return fmt.Errorf("setting model: %w", err)
+		}
+	}
+
 	if opts.Message != "" {
 		return runSingleMessageChat(cmd, application, opts)
 	}
@@ -128,7 +134,7 @@ func runInteractiveChat(application *app.App, opts *ChatOptions) error {
 	agentName := resolveChatAgentName(opts.Agent)
 	sessionID := resolveChatSessionID(opts.Session)
 
-	return tui.Run(application.Engine, agentName, sessionID)
+	return tui.Run(application, agentName, sessionID)
 }
 
 // resolveChatAgentName returns the agent name, defaulting to "default" if empty.

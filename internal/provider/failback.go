@@ -186,3 +186,41 @@ func (f *FailbackChain) DefaultModel() string {
 	}
 	return ""
 }
+
+// SetPreferences updates the model preferences used for failback.
+//
+// Expected:
+//   - preferences is a non-empty slice of ModelPreference values.
+//
+// Side effects:
+//   - Replaces the current preferences list.
+func (f *FailbackChain) SetPreferences(preferences []ModelPreference) {
+	f.preferences = preferences
+}
+
+// ListModels returns all available models from all configured providers.
+//
+// Returns:
+//   - A slice of all available models from all providers.
+//   - An error if no models are available.
+//
+// Side effects:
+//   - May make network calls to providers to fetch model lists.
+func (f *FailbackChain) ListModels() ([]Model, error) {
+	var allModels []Model
+	for _, providerName := range f.registry.List() {
+		p, err := f.registry.Get(providerName)
+		if err != nil {
+			continue
+		}
+		models, err := p.Models()
+		if err != nil {
+			continue
+		}
+		allModels = append(allModels, models...)
+	}
+	if len(allModels) == 0 {
+		return nil, errors.New("no models available from any provider")
+	}
+	return allModels, nil
+}

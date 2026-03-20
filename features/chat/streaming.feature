@@ -20,3 +20,24 @@ Feature: Streaming Responses
     When I type "Write a very long essay"
     And I press Enter
     And I should see tokens appearing
+
+  @wip
+  Scenario: Stream error is displayed to user
+    Given I am in insert mode
+    When I send a message that will fail with "connection refused"
+    Then I should see "[ERROR: connection refused]" in the chat
+    And no response should be appended to messages
+
+  @wip
+  Scenario: Partial response preserved when error occurs
+    Given I am in insert mode
+    When I send a message that receives "Hello " then fails with "provider timeout"
+    Then I should see "Hello [ERROR: provider timeout]" in the chat
+    And the partial content should be preserved
+
+  @wip
+  Scenario: Critical errors are logged
+    Given I am in insert mode
+    When I send a message that fails with "API key invalid"
+    Then I should see "[ERROR: API key invalid]" in the chat
+    And the error should be logged to stderr

@@ -236,6 +236,83 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("Error handling in streaming", func() {
+		Context("when a stream error occurs", func() {
+			It("displays error message in the chat", func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				testErr := fmt.Errorf("connection refused")
+				intent.Update(chat.StreamChunkMsg{
+					Content: "",
+					Error:   testErr,
+					Done:    true,
+				})
+				messages := intent.Messages()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("connection refused"))
+			})
+
+			It("preserves partial content when error occurs", func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				intent.Update(chat.StreamChunkMsg{Content: "Hello ", Error: nil, Done: false})
+				Expect(intent.Response()).To(Equal("Hello "))
+				testErr := fmt.Errorf("timeout")
+				intent.Update(chat.StreamChunkMsg{
+					Content: "",
+					Error:   testErr,
+					Done:    true,
+				})
+				messages := intent.Messages()
+				Expect(messages[0].Content).To(ContainSubstring("Hello"))
+				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("timeout"))
+			})
+
+			It("appends error message to assistant messages", func() {
+				testErr := fmt.Errorf("API key invalid")
+				intent.Update(chat.StreamChunkMsg{
+					Content: "",
+					Error:   testErr,
+					Done:    true,
+				})
+				messages := intent.Messages()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Role).To(Equal("assistant"))
+				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("API key invalid"))
+			})
+
+			It("accumulates partial response with error", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "Part 1 ", Error: nil, Done: false})
+				intent.Update(chat.StreamChunkMsg{Content: "Part 2 ", Error: nil, Done: false})
+				Expect(intent.Response()).To(Equal("Part 1 Part 2 "))
+				testErr := fmt.Errorf("provider error")
+				intent.Update(chat.StreamChunkMsg{
+					Content: "",
+					Error:   testErr,
+					Done:    true,
+				})
+				messages := intent.Messages()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Content).To(ContainSubstring("Part 1"))
+				Expect(messages[0].Content).To(ContainSubstring("Part 2"))
+				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+			})
+		})
+
+		Context("when no error occurs", func() {
+			It("processes normal chunks without error field", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "Hello", Error: nil, Done: false})
+				Expect(intent.Response()).To(Equal("Hello"))
+				intent.Update(chat.StreamChunkMsg{Content: " World", Error: nil, Done: true})
+				messages := intent.Messages()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Content).To(Equal("Hello World"))
+				Expect(messages[0].Content).NotTo(ContainSubstring("ERROR"))
+			})
+		})
+	})
+
 	Describe("Intent interface compliance", func() {
 		It("satisfies app.Intent interface", func() {
 			var _ interface {

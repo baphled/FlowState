@@ -4,15 +4,19 @@ package chat
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/baphled/flowstate/internal/config"
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
-	"github.com/baphled/flowstate/internal/tui/app"
+	"github.com/baphled/flowstate/internal/provider"
+	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
+	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/ui/terminal"
@@ -21,6 +25,7 @@ import (
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
 type StreamChunkMsg struct {
 	Content string
+	Error   error
 	Done    bool
 }
 
@@ -47,8 +52,19 @@ type ToolPermissionMsg struct {
 	Response  chan<- bool
 }
 
+// AppShell abstracts app methods needed by the chat intent.
+type AppShell interface {
+	// WriteConfig persists the given application configuration.
+	WriteConfig(cfg *config.AppConfig) error
+	// List returns the names of all registered providers.
+	List() []string
+	// Get returns the provider with the given name.
+	Get(name string) (provider.Provider, error)
+}
+
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
+	App          AppShell
 	Engine       *engine.Engine
 	AgentID      string
 	SessionID    string
@@ -59,6 +75,7 @@ type IntentConfig struct {
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
+	app               AppShell
 	engine            *engine.Engine
 	agentID           string
 	sessionID         string
@@ -76,7 +93,7 @@ type Intent struct {
 	tokenBudget       int
 	tickFrame         int
 	pendingPermission *ToolPermissionMsg
-	result            *app.IntentResult
+	result            *tuiintents.IntentResult
 	msgViewport       viewport.Model
 	vpReady           bool
 }
@@ -105,6 +122,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 	})
 
 	return &Intent{
+		app:          cfg.App,
 		engine:       cfg.Engine,
 		agentID:      cfg.AgentID,
 		sessionID:    cfg.SessionID,
@@ -212,6 +230,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
+	case tea.KeyCtrlP:
+		return i.openModelSelector()
 	case tea.KeyBackspace:
 		if i.input != "" {
 			i.input = i.input[:len(i.input)-1]
@@ -240,22 +260,78 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 // Side effects:
 //   - When Done is true, appends the accumulated response to messages, clears streaming state.
 //   - When Done is false, accumulates content in i.response.
+//   - If Error is set, appends error message to content and logs critical errors.
+//   - Preserves partial response accumulated during streaming even if an error occurs.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
-	if msg.Done {
-		i.messages = append(i.messages, chat.Message{
-			Role:    "assistant",
-			Content: msg.Content,
-		})
-		i.streaming = false
-		i.response = ""
-	} else {
+	if !msg.Done {
 		i.response += msg.Content
+	} else {
+		i.finalizeResponse(msg)
 	}
 
 	tokens := i.tokenCounter.Count(msg.Content)
 	i.tokenCount += tokens
 	i.syncStatusBar()
+}
+
+// finalizeResponse completes a streaming response and handles any errors.
+//
+// Expected:
+//   - msg.Done is true.
+//   - i.response contains the accumulated partial response.
+//
+// Returns:
+//   - Nothing (modifies i.messages, i.response, and i.streaming in place).
+//
+// Side effects:
+//   - Appends the final message to i.messages.
+//   - Clears i.response and sets i.streaming to false.
+//   - Logs critical errors to stderr.
+func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
+	content := i.response + msg.Content
+	if msg.Error != nil {
+		if content != "" {
+			content += " "
+		}
+		content += fmt.Sprintf("[ERROR: %v]", msg.Error)
+		if isLogWorthy(msg.Error) {
+			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
+		}
+	}
+	i.messages = append(i.messages, chat.Message{
+		Role:    "assistant",
+		Content: content,
+	})
+	i.streaming = false
+	i.response = ""
+}
+
+// isLogWorthy determines which errors are critical enough to log to stderr.
+//
+// Expected:
+//   - err may be nil (returns false immediately).
+//
+// Returns:
+//   - true if the error should be logged to stderr, false otherwise.
+//
+// Critical errors include: missing configuration, authentication failures,
+// and complete provider failures. Non-critical errors (partial responses, timeouts)
+// are logged to the chat but not stderr.
+//
+// Side effects:
+//   - None.
+func isLogWorthy(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return strings.Contains(errMsg, "no model preferences") ||
+		strings.Contains(errMsg, "API key") ||
+		strings.Contains(errMsg, "invalid") ||
+		strings.Contains(errMsg, "required") ||
+		strings.Contains(errMsg, "all providers failed") ||
+		strings.Contains(errMsg, "authentication")
 }
 
 // syncStatusBar updates the StatusBar with the current intent state.
@@ -301,8 +377,13 @@ func (i *Intent) refreshViewport() {
 //   - The returned Cmd streams the response and returns a StreamChunkMsg{Done: true}.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
-	i.messages = append(i.messages, chat.Message{Role: "user", Content: userMessage})
 	i.input = ""
+
+	if strings.HasPrefix(userMessage, "/") {
+		return i.handleSlashCommand(userMessage)
+	}
+
+	i.messages = append(i.messages, chat.Message{Role: "user", Content: userMessage})
 	i.streaming = true
 	i.response = ""
 	i.refreshViewport()
@@ -311,14 +392,22 @@ func (i *Intent) sendMessage() tea.Cmd {
 		ctx := context.Background()
 		stream, err := i.engine.Stream(ctx, i.agentID, userMessage)
 		if err != nil {
-			return StreamChunkMsg{Content: "", Done: true}
+			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}
 
 		var accumulated strings.Builder
+		var streamErr error
 		for chunk := range stream {
+			if chunk.Error != nil {
+				streamErr = chunk.Error
+			}
 			accumulated.WriteString(chunk.Content)
 		}
-		return StreamChunkMsg{Content: accumulated.String(), Done: true}
+		return StreamChunkMsg{
+			Content: accumulated.String(),
+			Error:   streamErr,
+			Done:    true,
+		}
 	}
 }
 
@@ -350,7 +439,7 @@ func (i *Intent) View() string {
 		WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp("Enter: send  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
+		WithHelp("Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 
 	return sl.Render()
@@ -363,8 +452,80 @@ func (i *Intent) View() string {
 //
 // Side effects:
 //   - None.
-func (i *Intent) Result() *app.IntentResult {
+func (i *Intent) Result() *tuiintents.IntentResult {
 	return i.result
+}
+
+// handleSlashCommand processes a slash command and returns a Cmd.
+//
+// Expected:
+//   - cmd is a non-empty string starting with "/".
+//
+// Returns:
+//   - A tea.Cmd that appends a system message and refreshes the viewport.
+//
+// Side effects:
+//   - Parses the command and executes its logic.
+//   - Appends system messages to the message list.
+//   - May update model preference via SetModelPreference.
+func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
+	return func() tea.Msg {
+		parts := strings.SplitN(strings.TrimPrefix(cmd, "/"), " ", 2)
+		command := parts[0]
+		args := ""
+		if len(parts) > 1 {
+			args = parts[1]
+		}
+
+		var response string
+		switch command {
+		case "models":
+			availableModels, err := i.engine.ListAvailableModels()
+			if err != nil {
+				response = "Error listing models: " + err.Error()
+			} else if len(availableModels) == 0 {
+				response = "No models available"
+			} else {
+				var sb strings.Builder
+				sb.WriteString("Available models:\n")
+				for _, m := range availableModels {
+					fmt.Fprintf(&sb, "  • %s (%s, %d tokens)\n", m.ID, m.Provider, m.ContextLength)
+				}
+				response = sb.String()
+			}
+
+		case "model":
+			if args == "" {
+				response = "Usage: /model <provider>/<model-name>\nExample: /model ollama/llama2"
+			} else {
+				parts := strings.Split(args, "/")
+				if len(parts) != 2 {
+					response = "Usage: /model <provider>/<model>"
+				} else {
+					providerName := strings.TrimSpace(parts[0])
+					model := strings.TrimSpace(parts[1])
+					i.engine.SetModelPreference(providerName, model)
+					i.providerName = providerName
+					i.modelName = model
+					i.syncStatusBar()
+					response = "Switched to model: " + providerName + "/" + model
+				}
+			}
+
+		case "help":
+			response = "Available slash commands:\n" +
+				"  /models - List all available models\n" +
+				"  /model <provider>/<model> - Switch to a model\n" +
+				"  /help - Show this help message"
+
+		default:
+			response = "Unknown command: /" + command
+		}
+
+		i.messages = append(i.messages, chat.Message{Role: "system", Content: response})
+		i.refreshViewport()
+		return nil
+	}
 }
 
 // handleToolPermission processes a tool permission request by entering permission mode.
@@ -376,6 +537,31 @@ func (i *Intent) Result() *app.IntentResult {
 //   - Switches the intent to "permission" mode and stores the pending request.
 func (i *Intent) handleToolPermission(msg ToolPermissionMsg) {
 	i.pendingPermission = &msg
+}
+
+// openModelSelector creates and shows the model selector as a modal overlay.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the model selector.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openModelSelector() tea.Cmd {
+	return func() tea.Msg {
+		if i.app == nil {
+			return nil
+		}
+		modelIntent := models.NewIntent(models.IntentConfig{
+			AppShell:         i.app,
+			ProviderRegistry: i.app,
+			OnSelect: func(provider, model string) {
+				i.providerName = provider
+				i.modelName = model
+				i.syncStatusBar()
+			},
+		})
+		return tuiintents.ShowModalMsg{Modal: modelIntent}
+	}
 }
 
 // handlePermissionKey processes key input during permission mode.
@@ -521,4 +707,15 @@ func (i *Intent) Height() int {
 //   - None.
 func (i *Intent) TokenCount() int {
 	return i.tokenCount
+}
+
+// SetApp sets the TUI app shell reference for navigation.
+//
+// Expected:
+//   - appShell is a non-nil reference to the TUI app shell.
+//
+// Side effects:
+//   - Sets the internal app reference used for intent switching.
+func (i *Intent) SetApp(appShell AppShell) {
+	i.app = appShell
 }

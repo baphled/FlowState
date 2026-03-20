@@ -13,7 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/oauth"
-	"github.com/baphled/flowstate/internal/tui/app"
+	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/ui/terminal"
 )
@@ -447,7 +447,7 @@ func (i *Intent) saveAndReturn() tea.Cmd {
 			slog.Error("saving config", "error", err)
 		}
 	}
-	return func() tea.Msg { return app.DismissModalMsg{} }
+	return func() tea.Msg { return tuiintents.DismissModalMsg{} }
 }
 
 // View renders the provider setup interface.
@@ -660,7 +660,7 @@ func styleFor(text string) string {
 //
 // Side effects:
 //   - None.
-func (i *Intent) Result() *app.IntentResult {
+func (i *Intent) Result() *tuiintents.IntentResult {
 	return nil
 }
 

@@ -625,4 +625,129 @@ When to use: Testing purposes
 			})
 		})
 	})
+
+	Describe("OpenCode credential integration", func() {
+		var tempDir string
+		var originalHome string
+
+		BeforeEach(func() {
+			var err error
+			tempDir, err = os.MkdirTemp("", "opencode-integration-test-*")
+			Expect(err).NotTo(HaveOccurred())
+
+			originalHome = os.Getenv("HOME")
+			os.Setenv("HOME", tempDir)
+		})
+
+		AfterEach(func() {
+			os.Setenv("HOME", originalHome)
+			os.RemoveAll(tempDir)
+		})
+
+		Context("when OpenCode has Anthropic credentials but config and env do not", func() {
+			It("registers Anthropic provider using OpenCode credentials", func() {
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
+
+				opencodePath := filepath.Join(tempDir, ".local", "share", "opencode")
+				Expect(os.MkdirAll(opencodePath, 0o755)).To(Succeed())
+				authPath := filepath.Join(opencodePath, "auth.json")
+				jsonContent := `{
+  "anthropic": {
+    "type": "oauth",
+    "access": "sk-ant-oat01-test-token",
+    "refresh": "sk-ant-ort01-refresh-token",
+    "expires": 9999999999999
+  }
+}`
+				Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Anthropic.APIKey = ""
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+				provider, err := registry.Get("anthropic")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider).NotTo(BeNil())
+			})
+		})
+
+		Context("when OpenCode has GitHub Copilot credentials but config and env do not", func() {
+			It("registers GitHub Copilot provider using OpenCode credentials", func() {
+				os.Unsetenv("GITHUB_TOKEN")
+				DeferCleanup(func() { os.Unsetenv("GITHUB_TOKEN") })
+
+				opencodePath := filepath.Join(tempDir, ".local", "share", "opencode")
+				Expect(os.MkdirAll(opencodePath, 0o755)).To(Succeed())
+				authPath := filepath.Join(opencodePath, "auth.json")
+				jsonContent := `{
+  "github-copilot": {
+    "type": "oauth",
+    "access": "gho_test_access_token",
+    "refresh": "gho_test_refresh_token",
+    "expires": 0
+  }
+}`
+				Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.GitHub.APIKey = ""
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+				provider, err := registry.Get("github-copilot")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider).NotTo(BeNil())
+			})
+		})
+
+		Context("when OpenCode has both Anthropic and GitHub Copilot credentials", func() {
+			It("registers both providers using OpenCode credentials", func() {
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				os.Unsetenv("GITHUB_TOKEN")
+				DeferCleanup(func() {
+					os.Unsetenv("ANTHROPIC_API_KEY")
+					os.Unsetenv("GITHUB_TOKEN")
+				})
+
+				opencodePath := filepath.Join(tempDir, ".local", "share", "opencode")
+				Expect(os.MkdirAll(opencodePath, 0o755)).To(Succeed())
+				authPath := filepath.Join(opencodePath, "auth.json")
+				jsonContent := `{
+  "anthropic": {
+    "type": "oauth",
+    "access": "sk-ant-oat01-test-token",
+    "refresh": "sk-ant-ort01-refresh-token",
+    "expires": 9999999999999
+  },
+  "github-copilot": {
+    "type": "oauth",
+    "access": "gho_test_access_token",
+    "refresh": "gho_test_refresh_token",
+    "expires": 0
+  }
+}`
+				Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Anthropic.APIKey = ""
+				cfg.Providers.GitHub.APIKey = ""
+
+				registry, _ := app.RegisterProvidersForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+
+				anthropicProvider, err := registry.Get("anthropic")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(anthropicProvider).NotTo(BeNil())
+
+				githubProvider, err := registry.Get("github-copilot")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(githubProvider).NotTo(BeNil())
+			})
+		})
+	})
 })

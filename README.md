@@ -11,7 +11,7 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 - **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol.
 - **Session management** - Persistent conversations with search.
 - **Tool system** - Bash, file operations, web fetching with granular permissions.
-- **Skills & commands** - `/analyze`, `/research`, `/challenge`, `/decide`, and more.
+- **Extensible skill and command system** - Add custom commands and integrate with your workflows.
 - **Local-first** - Optional local memory server with user control.
 
 ## Installation
@@ -74,9 +74,9 @@ always_active_skills:
    flowstate chat
    ```
 4. **Interact**:
-   - Press `i` to enter Insert Mode.
-   - Type your message and press `Enter`.
-   - Press `Esc` to return to Normal Mode for navigation.
+   - Type your message and press `Enter` to send.
+   - Use arrow keys or `PgUp`/`PgDn` to scroll through chat history.
+   - Press `Ctrl+C` to quit.
 
 For a full walkthrough, see the [Demo Guide](docs/DEMO.md).
 
@@ -90,20 +90,20 @@ Configure MCP servers in your `config.yaml` under the `mcp_servers` section. Eac
 
 | Key | Action |
 |-----|--------|
-| `i` | Enter insert mode (compose message) |
-| `Esc` | Return to normal mode |
-| `q` | Quit |
+| `Enter` | Send message |
+| `↑/↓`, `PgUp/PgDn` | Scroll through chat history |
+| `Ctrl+C` | Quit |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/analyze <topic>` | Systems thinking analysis |
-| `/challenge <idea>` | Devil's advocate evaluation |
-| `/research <topic>` | Systematic investigation |
-| `/decide <options>` | Structured decision making |
-| `/models` | List and select models |
-| `/help` | Show all commands |
+| `flowstate analyze` | Systems thinking analysis |
+| `flowstate challenge` | Devil's advocate evaluation |
+| `flowstate research` | Systematic investigation |
+| `flowstate decide` | Structured decision making |
+| `flowstate models` | List available models from all configured providers |
+| `flowstate help` | Show all available commands |
 
 ## Development
 

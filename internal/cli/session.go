@@ -100,7 +100,7 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 				agentID = defaultAgentID
 			}
 
-			return tui.Run(a.Engine, agentID, sessionID)
+			return tui.Run(a, agentID, sessionID)
 		},
 	}
 }

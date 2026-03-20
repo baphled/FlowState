@@ -1,5 +1,5 @@
-// Package app provides the root Bubble Tea model for FlowState TUI.
-package app
+// Package intents provides shared types and interfaces for FlowState TUI intents.
+package intents
 
 import tea "github.com/charmbracelet/bubbletea"
 

@@ -167,6 +167,40 @@ func (e *Engine) LastModel() string {
 	return ""
 }
 
+// SetModelPreference updates the engine's model preference to prioritise the given provider and model.
+//
+// Expected:
+//   - providerName is a non-empty string.
+//   - modelName is a non-empty string.
+//
+// Side effects:
+//   - Modifies the failback chain's preferences to use the specified model first.
+func (e *Engine) SetModelPreference(providerName string, modelName string) {
+	if e.failbackChain != nil {
+		e.failbackChain.SetPreferences([]provider.ModelPreference{
+			{Provider: providerName, Model: modelName},
+		})
+	}
+}
+
+// ListAvailableModels returns all available models from configured providers.
+//
+// Returns:
+//   - A slice of available Model values from all providers.
+//   - An error if model listing fails.
+//
+// Side effects:
+//   - May make network calls to providers to fetch model lists.
+func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
+	if e.failbackChain != nil {
+		return e.failbackChain.ListModels()
+	}
+	if e.chatProvider != nil {
+		return e.chatProvider.Models()
+	}
+	return nil, nil
+}
+
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // Returns:

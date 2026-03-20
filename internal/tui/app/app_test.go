@@ -6,6 +6,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tui/app"
+	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 )
 
 type mockIntent struct {
@@ -16,7 +17,7 @@ type mockIntent struct {
 	lastMsg        tea.Msg
 	cmdToReturn    tea.Cmd
 	viewToReturn   string
-	resultToReturn *app.IntentResult
+	resultToReturn *tuiintents.IntentResult
 }
 
 func (m *mockIntent) Init() tea.Cmd {
@@ -35,7 +36,7 @@ func (m *mockIntent) View() string {
 	return m.viewToReturn
 }
 
-func (m *mockIntent) Result() *app.IntentResult {
+func (m *mockIntent) Result() *tuiintents.IntentResult {
 	m.resultCalled = true
 	return m.resultToReturn
 }
@@ -50,7 +51,7 @@ var _ = Describe("App", func() {
 		intent = &mockIntent{
 			viewToReturn: "test view",
 		}
-		subject = app.New(intent)
+		subject = app.NewForTest(intent)
 	})
 
 	Describe("New", func() {

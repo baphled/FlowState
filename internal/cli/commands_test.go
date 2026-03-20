@@ -2,12 +2,14 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"path/filepath"
 	"runtime"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,6 +28,45 @@ func createTestApp(agentsDir, skillsDir string) *app.App {
 	testApp, err := app.NewForTest(tc)
 	Expect(err).NotTo(HaveOccurred())
 	return testApp
+}
+
+func createTestModelApp() *app.App {
+	testApp := createTestApp("", "")
+	testProvider := &testModelProvider{
+		name: "test-provider",
+		models: []provider.Model{
+			{ID: "test-model", Provider: "test-provider", ContextLength: 4096},
+		},
+	}
+	registry := provider.NewRegistry()
+	registry.Register(testProvider)
+	testApp.Engine = engine.New(engine.Config{
+		ChatProvider: testProvider,
+		Registry:     registry,
+	})
+	testApp.SetProviderRegistry(registry)
+	return testApp
+}
+
+type testModelProvider struct {
+	name   string
+	models []provider.Model
+}
+
+func (p *testModelProvider) Name() string {
+	return p.name
+}
+func (p *testModelProvider) Models() ([]provider.Model, error) {
+	return p.models, nil
+}
+func (p *testModelProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return nil, errors.New("stream not implemented for test provider")
+}
+func (p *testModelProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (p *testModelProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
 }
 
 var _ = Describe("CLI Commands", func() {
@@ -312,6 +353,28 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("Import a skill from a GitHub"))
 			Expect(out.String()).To(ContainSubstring("OWNER/REPO"))
+		})
+	})
+
+	Describe("models", func() {
+		Context("with no providers configured", func() {
+			It("prints no models available message", func() {
+				testApp := createTestApp("", "")
+				err := cmd(testApp, "models")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("No models available"))
+			})
+		})
+
+		Context("with providers configured", func() {
+			It("lists models with provider, ID, and context length", func() {
+				testApp := createTestModelApp()
+				err := cmd(testApp, "models")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("test-provider"))
+				Expect(out.String()).To(ContainSubstring("test-model"))
+				Expect(out.String()).To(ContainSubstring("4096"))
+			})
 		})
 	})
 })
