@@ -488,6 +488,24 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("status indicator display", func() {
+		Context("when streaming is true", func() {
+			It("displays thinking status indicator in the view", func() {
+				intent.SetStreamingForTest(true)
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Thinking"))
+			})
+		})
+
+		Context("when streaming is false", func() {
+			It("displays ready status in the view", func() {
+				intent.SetStreamingForTest(false)
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Ready"))
+			})
+		})
+	})
+
 	Describe("Intent interface compliance", func() {
 		It("satisfies app.Intent interface", func() {
 			var _ interface {

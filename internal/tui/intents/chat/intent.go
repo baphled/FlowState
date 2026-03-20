@@ -19,6 +19,7 @@ import (
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
+	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/ui/terminal"
 )
@@ -87,6 +88,7 @@ type Intent struct {
 	width             int
 	height            int
 	statusBar         *layout.StatusBar
+	statusIndicator   *widgets.StatusIndicator
 	tokenCount        int
 	tokenCounter      contextpkg.TokenCounter
 	providerName      string
@@ -124,24 +126,25 @@ func NewIntent(cfg IntentConfig) *Intent {
 	})
 
 	return &Intent{
-		app:          cfg.App,
-		engine:       cfg.Engine,
-		agentID:      cfg.AgentID,
-		sessionID:    cfg.SessionID,
-		messages:     []chat.Message{},
-		input:        "",
-		streaming:    false,
-		response:     "",
-		width:        80,
-		height:       24,
-		statusBar:    sb,
-		tokenCount:   0,
-		tokenCounter: contextpkg.NewTiktokenCounter(),
-		providerName: cfg.ProviderName,
-		modelName:    cfg.ModelName,
-		tokenBudget:  cfg.TokenBudget,
-		tickFrame:    0,
-		result:       nil,
+		app:             cfg.App,
+		engine:          cfg.Engine,
+		agentID:         cfg.AgentID,
+		sessionID:       cfg.SessionID,
+		messages:        []chat.Message{},
+		input:           "",
+		streaming:       false,
+		response:        "",
+		width:           80,
+		height:          24,
+		statusBar:       sb,
+		statusIndicator: widgets.NewStatusIndicator(nil),
+		tokenCount:      0,
+		tokenCounter:    contextpkg.NewTiktokenCounter(),
+		providerName:    cfg.ProviderName,
+		modelName:       cfg.ModelName,
+		tokenBudget:     cfg.TokenBudget,
+		tickFrame:       0,
+		result:          nil,
 	}
 }
 
@@ -581,8 +584,10 @@ func (i *Intent) readNextChunk() tea.Msg {
 //
 // Side effects:
 //   - Syncs streaming state into the StatusBar.
+//   - Updates status indicator based on streaming state.
 func (i *Intent) View() string {
 	i.statusBar.SetStreaming(i.streaming, i.tickFrame)
+	i.updateStatusIndicator()
 
 	var content string
 	if i.vpReady {
@@ -597,15 +602,44 @@ func (i *Intent) View() string {
 		inputLine = "> " + i.input
 	}
 
+	status := i.renderStatusString()
+
 	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
 		WithBreadcrumbs("Chat").
 		WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp("Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
+		WithHelp(status + "  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 
 	return sl.Render()
+}
+
+// updateStatusIndicator updates the status indicator based on streaming state.
+//
+// Side effects:
+//   - Updates the status indicator active state and advances frame if streaming.
+func (i *Intent) updateStatusIndicator() {
+	if i.streaming {
+		i.statusIndicator.SetActive(true)
+		i.statusIndicator.SetFrame(i.tickFrame)
+	} else {
+		i.statusIndicator.SetActive(false)
+	}
+}
+
+// renderStatusString returns the current status as a display string.
+//
+// Returns:
+//   - "Thinking..." with spinner when streaming, "Ready" when idle.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderStatusString() string {
+	if i.streaming {
+		return i.statusIndicator.Render()
+	}
+	return "Ready"
 }
 
 // Result returns the current outcome state of the chat intent.
