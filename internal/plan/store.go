@@ -392,7 +392,7 @@ func parseAcceptanceCriteria(lines []string, startIdx int, task *Task) int {
 			i++
 		}
 	}
-	return i - 1 // Adjust for outer loop increment
+	return i - 1
 }
 
 // shouldStopCriteriaParsing checks if we should stop parsing criteria.

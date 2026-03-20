@@ -542,7 +542,7 @@ When to use: Testing purposes
 				Expect(err).NotTo(HaveOccurred())
 				Expect(application).NotTo(BeNil())
 				agents := application.Registry.List()
-				Expect(agents).To(HaveLen(1))
+				Expect(agents).To(HaveLen(3))
 			})
 		})
 
