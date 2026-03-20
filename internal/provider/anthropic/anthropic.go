@@ -128,16 +128,12 @@ func (p *Provider) Name() string {
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
-	messages := buildMessages(req.Messages)
+	params := buildRequestParams(req)
 
 	go func() {
 		defer close(ch)
 
-		stream := p.client.Messages.NewStreaming(ctx, anthropicAPI.MessageNewParams{
-			Model:     req.Model,
-			MaxTokens: defaultMaxTokens,
-			Messages:  messages,
-		})
+		stream := p.client.Messages.NewStreaming(ctx, params)
 
 		for stream.Next() {
 			event := stream.Current()
@@ -173,13 +169,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the Anthropic API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	messages := buildMessages(req.Messages)
+	params := buildRequestParams(req)
 
-	resp, err := p.client.Messages.New(ctx, anthropicAPI.MessageNewParams{
-		Model:     req.Model,
-		MaxTokens: defaultMaxTokens,
-		Messages:  messages,
-	})
+	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
 		return provider.ChatResponse{}, fmt.Errorf("anthropic chat failed: %w", err)
 	}
@@ -213,29 +205,73 @@ func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64,
 	return nil, ErrNotSupported
 }
 
-// Models returns the list of available Anthropic models.
+// Models returns the list of available Anthropic models by querying the API.
 //
 // Returns:
-//   - A slice of supported Anthropic model definitions.
+//   - A slice of model definitions fetched from the Anthropic Models API.
+//   - A hardcoded fallback list if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the Anthropic Models API.
+func (p *Provider) Models() ([]provider.Model, error) {
+	models, err := p.fetchModels()
+	if err == nil {
+		return models, nil
+	}
+	return fallbackModels(), nil
+}
+
+// fetchModels queries the Anthropic Models API for available models.
+//
+// Returns:
+//   - A slice of provider.Model values from the API.
+//   - An error if the API call fails.
+//
+// Side effects:
+//   - Makes an HTTP request to the Anthropic Models API.
+func (p *Provider) fetchModels() ([]provider.Model, error) {
+	ctx := context.Background()
+	pager := p.client.Models.ListAutoPaging(ctx, anthropicAPI.ModelListParams{})
+
+	var models []provider.Model
+	for pager.Next() {
+		info := pager.Current()
+		models = append(models, provider.Model{
+			ID:            info.ID,
+			Provider:      providerName,
+			ContextLength: defaultContextLength,
+		})
+	}
+	if err := pager.Err(); err != nil {
+		return nil, fmt.Errorf("listing anthropic models: %w", err)
+	}
+	return models, nil
+}
+
+// fallbackModels returns a hardcoded list of known Anthropic models.
+//
+// Returns:
+//   - A static slice of well-known Anthropic model definitions.
 //
 // Side effects:
 //   - None.
-func (p *Provider) Models() ([]provider.Model, error) {
+func fallbackModels() []provider.Model {
 	return []provider.Model{
 		{ID: "claude-sonnet-4-20250514", Provider: providerName, ContextLength: defaultContextLength},
 		{ID: "claude-3-5-haiku-latest", Provider: providerName, ContextLength: defaultContextLength},
 		{ID: "claude-opus-4-20250514", Provider: providerName, ContextLength: defaultContextLength},
-	}, nil
+	}
 }
 
-// buildMessages converts provider messages to Anthropic API message parameters.
+// buildMessages converts provider messages to Anthropic API message parameters,
+// filtering out system role messages which are handled separately.
 //
 // Expected:
 //   - msgs is a slice of provider messages with role and content fields.
 //
 // Returns:
 //   - A slice of Anthropic MessageParam values.
-//   - Only user and assistant roles are converted; other roles are skipped.
+//   - Only user and assistant roles are converted; system and other roles are skipped.
 //
 // Side effects:
 //   - None.
@@ -246,10 +282,98 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 		case "user":
 			messages = append(messages, anthropicAPI.NewUserMessage(anthropicAPI.NewTextBlock(m.Content)))
 		case "assistant":
+			if m.Content == "" {
+				continue
+			}
 			messages = append(messages, anthropicAPI.NewAssistantMessage(anthropicAPI.NewTextBlock(m.Content)))
 		}
 	}
 	return messages
+}
+
+// extractSystemPrompt collects all system role messages and returns them as
+// Anthropic TextBlockParam values suitable for the MessageNewParams.System field.
+//
+// Expected:
+//   - msgs is a slice of provider messages that may include system role messages.
+//
+// Returns:
+//   - A slice of TextBlockParam values from system messages.
+//   - An empty slice if no system messages exist.
+//
+// Side effects:
+//   - None.
+func extractSystemPrompt(msgs []provider.Message) []anthropicAPI.TextBlockParam {
+	var blocks []anthropicAPI.TextBlockParam
+	for _, m := range msgs {
+		if m.Role == "system" && m.Content != "" {
+			blocks = append(blocks, anthropicAPI.TextBlockParam{
+				Text:         m.Content,
+				CacheControl: anthropicAPI.NewCacheControlEphemeralParam(),
+			})
+		}
+	}
+	return blocks
+}
+
+// buildTools converts provider tool definitions to Anthropic API tool parameters.
+//
+// Expected:
+//   - tools is a slice of provider.Tool values with name, description, and schema.
+//
+// Returns:
+//   - A slice of Anthropic ToolUnionParam values.
+//   - An empty slice if no tools are provided.
+//
+// Side effects:
+//   - None.
+func buildTools(tools []provider.Tool) []anthropicAPI.ToolUnionParam {
+	if len(tools) == 0 {
+		return nil
+	}
+	result := make([]anthropicAPI.ToolUnionParam, 0, len(tools))
+	for _, t := range tools {
+		toolParam := anthropicAPI.ToolParam{
+			Name:        t.Name,
+			Description: anthropicAPI.String(t.Description),
+			InputSchema: anthropicAPI.ToolInputSchemaParam{
+				Properties: t.Schema.Properties,
+				Required:   t.Schema.Required,
+			},
+		}
+		result = append(result, anthropicAPI.ToolUnionParam{OfTool: &toolParam})
+	}
+	return result
+}
+
+// buildRequestParams constructs the Anthropic MessageNewParams from a ChatRequest,
+// properly mapping system prompts, messages, tools, and model.
+//
+// Expected:
+//   - req is a valid provider.ChatRequest.
+//
+// Returns:
+//   - A fully populated MessageNewParams ready for the Anthropic API.
+//
+// Side effects:
+//   - None.
+func buildRequestParams(req provider.ChatRequest) anthropicAPI.MessageNewParams {
+	params := anthropicAPI.MessageNewParams{
+		Model:       req.Model,
+		MaxTokens:   defaultMaxTokens,
+		Temperature: anthropicAPI.Float(0),
+		Messages:    buildMessages(req.Messages),
+	}
+
+	if systemBlocks := extractSystemPrompt(req.Messages); len(systemBlocks) > 0 {
+		params.System = systemBlocks
+	}
+
+	if tools := buildTools(req.Tools); len(tools) > 0 {
+		params.Tools = tools
+	}
+
+	return params
 }
 
 // convertStreamEvent transforms an Anthropic stream event into a provider StreamChunk.
