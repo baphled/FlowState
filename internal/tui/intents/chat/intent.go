@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -92,6 +93,7 @@ type Intent struct {
 	modelName         string
 	tokenBudget       int
 	tickFrame         int
+	streamChan        <-chan provider.StreamChunk
 	pendingPermission *ToolPermissionMsg
 	result            *tuiintents.IntentResult
 	msgViewport       viewport.Model
@@ -190,6 +192,12 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case StreamChunkMsg:
 		i.handleStreamChunk(msg)
 		i.refreshViewport()
+		if !msg.Done {
+			return tea.Batch(
+				func() tea.Msg { return i.readNextChunk() },
+				tickSpinner(),
+			)
+		}
 		return tickSpinner()
 	case ToolPermissionMsg:
 		i.handleToolPermission(msg)
@@ -291,10 +299,12 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
 	content := i.response + msg.Content
 	if msg.Error != nil {
+		formatted := formatErrorMessage(msg.Error)
 		if content != "" {
-			content += " "
+			content += "\n\n" + formatted
+		} else {
+			content = formatted
 		}
-		content += fmt.Sprintf("[ERROR: %v]", msg.Error)
 		if isLogWorthy(msg.Error) {
 			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
 		}
@@ -305,6 +315,151 @@ func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
 	})
 	i.streaming = false
 	i.response = ""
+}
+
+// httpErrorPattern matches HTTP error strings like POST "https://api.example.com/v1/messages": 404 Not Found.
+var httpErrorPattern = regexp.MustCompile(
+	`^(\w+)\s+"(https?://[^"]+)":\s+(\d+\s+\S[\w\s]*)(?:\s+(.+))?$`,
+)
+
+// modelInBodyPattern extracts model names from JSON error bodies.
+var modelInBodyPattern = regexp.MustCompile(`"model[:\s]*([a-zA-Z0-9._/-]+)"`)
+
+// messageInBodyPattern extracts human-readable messages from JSON error bodies.
+var messageInBodyPattern = regexp.MustCompile(`"message":\s*"([^"]+)"`)
+
+const maxFallbackLength = 100
+
+// formatErrorMessage parses a raw error and returns a structured, readable display string.
+//
+// Expected:
+//   - err is a non-nil error from a provider streaming operation.
+//
+// Returns:
+//   - A formatted multi-line string for HTTP errors with extracted fields.
+//   - A truncated single-line fallback for unparseable errors.
+//
+// Side effects:
+//   - None.
+func formatErrorMessage(err error) string {
+	errMsg := err.Error()
+	if matches := httpErrorPattern.FindStringSubmatch(errMsg); matches != nil {
+		return buildHTTPErrorDisplay(matches)
+	}
+	return buildFallbackDisplay(errMsg)
+}
+
+// buildHTTPErrorDisplay formats an HTTP error into a structured multi-line display.
+//
+// Expected:
+//   - matches contains [full, method, url, status, body] from httpErrorPattern.
+//
+// Returns:
+//   - A multi-line formatted error string with provider, model, and detail fields.
+//
+// Side effects:
+//   - None.
+func buildHTTPErrorDisplay(matches []string) string {
+	url := matches[2]
+	status := strings.TrimSpace(matches[3])
+	body := matches[4]
+
+	providerName := extractProviderFromURL(url)
+	modelName := extractModelFromBody(body)
+	detail := extractDetailFromBody(body)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "⚠ API Error (%s)", status)
+	if providerName != "" {
+		fmt.Fprintf(&sb, "\n  Provider: %s", providerName)
+	}
+	if modelName != "" {
+		fmt.Fprintf(&sb, "\n  Model: %s", modelName)
+	}
+	if detail != "" {
+		fmt.Fprintf(&sb, "\n  Detail: %s", detail)
+	}
+	return sb.String()
+}
+
+// buildFallbackDisplay returns a truncated single-line error for unparseable messages.
+//
+// Expected:
+//   - errMsg is the raw error string.
+//
+// Returns:
+//   - A single line prefixed with ⚠ Error:, truncated if longer than maxFallbackLength.
+//
+// Side effects:
+//   - None.
+func buildFallbackDisplay(errMsg string) string {
+	if len(errMsg) > maxFallbackLength {
+		return "⚠ Error: " + errMsg[:maxFallbackLength] + "..."
+	}
+	return "⚠ Error: " + errMsg
+}
+
+// extractProviderFromURL extracts a provider name from an API URL hostname.
+//
+// Expected:
+//   - url is a valid HTTP(S) URL string.
+//
+// Returns:
+//   - A provider name like "anthropic" or "openai", or empty string if not recognised.
+//
+// Side effects:
+//   - None.
+func extractProviderFromURL(url string) string {
+	switch {
+	case strings.Contains(url, "anthropic"):
+		return "anthropic"
+	case strings.Contains(url, "openai"):
+		return "openai"
+	case strings.Contains(url, "ollama"):
+		return "ollama"
+	default:
+		return ""
+	}
+}
+
+// extractModelFromBody extracts a model name from a JSON error body.
+//
+// Expected:
+//   - body is a JSON string that may contain a model reference.
+//
+// Returns:
+//   - The model name if found, or empty string.
+//
+// Side effects:
+//   - None.
+func extractModelFromBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	if matches := modelInBodyPattern.FindStringSubmatch(body); matches != nil {
+		return matches[1]
+	}
+	return ""
+}
+
+// extractDetailFromBody extracts a human-readable detail from a JSON error body.
+//
+// Expected:
+//   - body is a JSON string that may contain a "message" field.
+//
+// Returns:
+//   - The extracted detail message, or empty string.
+//
+// Side effects:
+//   - None.
+func extractDetailFromBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	if matches := messageInBodyPattern.FindStringSubmatch(body); matches != nil {
+		return matches[1]
+	}
+	return ""
 }
 
 // isLogWorthy determines which errors are critical enough to log to stderr.
@@ -370,11 +525,11 @@ func (i *Intent) refreshViewport() {
 // sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
-//   - A tea.Cmd that performs the streaming operation.
+//   - A tea.Cmd that starts the stream and reads the first chunk.
 //
 // Side effects:
 //   - Appends the input to messages as a user message, clears input, and sets streaming to true.
-//   - The returned Cmd streams the response and returns a StreamChunkMsg{Done: true}.
+//   - Stores the stream channel on the intent for subsequent chunk reads.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
 	i.input = ""
@@ -394,20 +549,28 @@ func (i *Intent) sendMessage() tea.Cmd {
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}
+		i.streamChan = stream
+		return i.readNextChunk()
+	}
+}
 
-		var accumulated strings.Builder
-		var streamErr error
-		for chunk := range stream {
-			if chunk.Error != nil {
-				streamErr = chunk.Error
-			}
-			accumulated.WriteString(chunk.Content)
-		}
-		return StreamChunkMsg{
-			Content: accumulated.String(),
-			Error:   streamErr,
-			Done:    true,
-		}
+// readNextChunk reads one chunk from the active stream channel.
+//
+// Returns:
+//   - A StreamChunkMsg with the next chunk's content, error, and done state.
+//   - If the channel is closed, returns StreamChunkMsg{Done: true}.
+//
+// Side effects:
+//   - Blocks until a chunk is available on the stream channel.
+func (i *Intent) readNextChunk() tea.Msg {
+	chunk, ok := <-i.streamChan
+	if !ok {
+		return StreamChunkMsg{Done: true}
+	}
+	return StreamChunkMsg{
+		Content: chunk.Content,
+		Error:   chunk.Error,
+		Done:    chunk.Done,
 	}
 }
 
@@ -555,6 +718,7 @@ func (i *Intent) openModelSelector() tea.Cmd {
 			AppShell:         i.app,
 			ProviderRegistry: i.app,
 			OnSelect: func(provider, model string) {
+				i.engine.SetModelPreference(provider, model)
 				i.providerName = provider
 				i.modelName = model
 				i.syncStatusBar()

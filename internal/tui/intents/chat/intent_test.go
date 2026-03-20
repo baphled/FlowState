@@ -1,12 +1,17 @@
 package chat_test
 
 import (
+	"context"
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
@@ -236,9 +241,179 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("formatErrorMessage", func() {
+		Context("with an HTTP error containing JSON body", func() {
+			It("extracts status code and formats structured output", func() {
+				err := fmt.Errorf(`POST "https://api.anthropic.com/v1/messages": 404 Not Found {"type":"error","error":{"type":"not_found_error","message":"model: claude-3-5-haiku-latest is not found"}}`)
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(result).To(ContainSubstring("API Error"))
+				Expect(result).To(ContainSubstring("404"))
+				Expect(result).To(ContainSubstring("anthropic"))
+				Expect(result).To(ContainSubstring("claude-3-5-haiku-latest"))
+			})
+		})
+
+		Context("with a generic error string", func() {
+			It("returns a truncated fallback message", func() {
+				err := fmt.Errorf("connection refused")
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(result).To(HavePrefix("⚠ Error:"))
+				Expect(result).To(ContainSubstring("connection refused"))
+			})
+		})
+
+		Context("with an empty error message", func() {
+			It("handles gracefully", func() {
+				err := fmt.Errorf("")
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(result).To(HavePrefix("⚠ Error:"))
+			})
+		})
+
+		Context("with a long unparseable error message", func() {
+			It("truncates to a readable length", func() {
+				longMsg := ""
+				for range 20 {
+					longMsg += "some long error text "
+				}
+				err := fmt.Errorf("%s", longMsg)
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(len(result)).To(BeNumerically("<", len(longMsg)))
+				Expect(result).To(ContainSubstring("..."))
+			})
+		})
+
+		Context("with an HTTP error with model in JSON body", func() {
+			It("extracts the model name from the error detail", func() {
+				err := fmt.Errorf(`POST "https://api.openai.com/v1/chat/completions": 404 Not Found {"error":{"message":"The model gpt-5-turbo does not exist","type":"invalid_request_error"}}`)
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(result).To(ContainSubstring("gpt-5-turbo"))
+				Expect(result).To(ContainSubstring("openai"))
+			})
+		})
+
+		Context("with an HTTP error without JSON body", func() {
+			It("formats with status code only", func() {
+				err := fmt.Errorf(`POST "https://api.anthropic.com/v1/messages": 500 Internal Server Error`)
+				result := chat.FormatErrorMessageForTest(err)
+				Expect(result).To(ContainSubstring("500"))
+				Expect(result).To(ContainSubstring("API Error"))
+			})
+		})
+	})
+
+	Describe("streaming chunk-by-chunk", func() {
+		Context("when Update receives an intermediate StreamChunkMsg", func() {
+			It("returns a non-nil command to continue reading", func() {
+				cmd := intent.Update(chat.StreamChunkMsg{Content: "chunk1", Done: false})
+				Expect(cmd).NotTo(BeNil())
+			})
+
+			It("accumulates content in response", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "chunk1 ", Done: false})
+				intent.Update(chat.StreamChunkMsg{Content: "chunk2 ", Done: false})
+				Expect(intent.Response()).To(Equal("chunk1 chunk2 "))
+			})
+		})
+
+		Context("when Update receives a final StreamChunkMsg", func() {
+			It("returns a command for spinner tick only", func() {
+				cmd := intent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
+				Expect(cmd).NotTo(BeNil())
+			})
+
+			It("finalizes the response into messages", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "part1 ", Done: false})
+				intent.Update(chat.StreamChunkMsg{Content: "part2", Done: true})
+				messages := intent.Messages()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Content).To(Equal("part1 part2"))
+			})
+		})
+
+		Context("readNextChunk behaviour", func() {
+			It("reads a single chunk from the stream channel", func() {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "hello", Done: false}
+				intent.SetStreamChanForTest(ch)
+				msg := intent.ReadNextChunkForTest()
+				chunkMsg, ok := msg.(chat.StreamChunkMsg)
+				Expect(ok).To(BeTrue())
+				Expect(chunkMsg.Content).To(Equal("hello"))
+				Expect(chunkMsg.Done).To(BeFalse())
+			})
+
+			It("returns Done when channel is closed", func() {
+				ch := make(chan provider.StreamChunk)
+				close(ch)
+				intent.SetStreamChanForTest(ch)
+				msg := intent.ReadNextChunkForTest()
+				chunkMsg, ok := msg.(chat.StreamChunkMsg)
+				Expect(ok).To(BeTrue())
+				Expect(chunkMsg.Done).To(BeTrue())
+			})
+
+			It("propagates chunk errors", func() {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "partial", Error: fmt.Errorf("stream error"), Done: true}
+				intent.SetStreamChanForTest(ch)
+				msg := intent.ReadNextChunkForTest()
+				chunkMsg, ok := msg.(chat.StreamChunkMsg)
+				Expect(ok).To(BeTrue())
+				Expect(chunkMsg.Error).To(MatchError("stream error"))
+				Expect(chunkMsg.Done).To(BeTrue())
+			})
+		})
+
+		Context("sendMessage with streaming engine", func() {
+			var (
+				eng          *engine.Engine
+				reg          *provider.Registry
+				streamIntent *chat.Intent
+			)
+
+			BeforeEach(func() {
+				reg = provider.NewRegistry()
+				streamProv := &streamingStubProvider{
+					providerName: "test-provider",
+					chunks: []provider.StreamChunk{
+						{Content: "Hello ", Done: false},
+						{Content: "World", Done: false},
+					},
+				}
+				reg.Register(streamProv)
+
+				eng = engine.New(engine.Config{
+					Registry: reg,
+					Manifest: stubManifestWithProvider("test-provider", "test-model"),
+				})
+
+				streamIntent = chat.NewIntent(chat.IntentConfig{
+					Engine:       eng,
+					AgentID:      "test-agent",
+					SessionID:    "test-session",
+					ProviderName: "test-provider",
+					ModelName:    "test-model",
+					TokenBudget:  4096,
+				})
+			})
+
+			It("returns a cmd that produces the first chunk, not all at once", func() {
+				streamIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+				cmd := streamIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).NotTo(BeNil())
+				msg := cmd()
+				chunkMsg, ok := msg.(chat.StreamChunkMsg)
+				Expect(ok).To(BeTrue())
+				Expect(chunkMsg.Done).To(BeFalse())
+				Expect(chunkMsg.Content).To(Equal("Hello "))
+			})
+		})
+	})
+
 	Describe("Error handling in streaming", func() {
 		Context("when a stream error occurs", func() {
-			It("displays error message in the chat", func() {
+			It("displays formatted error message in the chat", func() {
 				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 				testErr := fmt.Errorf("connection refused")
 				intent.Update(chat.StreamChunkMsg{
@@ -248,7 +423,7 @@ var _ = Describe("ChatIntent", func() {
 				})
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
-				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("Error"))
 				Expect(messages[0].Content).To(ContainSubstring("connection refused"))
 			})
 
@@ -264,7 +439,7 @@ var _ = Describe("ChatIntent", func() {
 				})
 				messages := intent.Messages()
 				Expect(messages[0].Content).To(ContainSubstring("Hello"))
-				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("Error"))
 				Expect(messages[0].Content).To(ContainSubstring("timeout"))
 			})
 
@@ -278,7 +453,7 @@ var _ = Describe("ChatIntent", func() {
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Role).To(Equal("assistant"))
-				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("Error"))
 				Expect(messages[0].Content).To(ContainSubstring("API key invalid"))
 			})
 
@@ -296,7 +471,7 @@ var _ = Describe("ChatIntent", func() {
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Content).To(ContainSubstring("Part 1"))
 				Expect(messages[0].Content).To(ContainSubstring("Part 2"))
-				Expect(messages[0].Content).To(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).To(ContainSubstring("Error"))
 			})
 		})
 
@@ -308,7 +483,7 @@ var _ = Describe("ChatIntent", func() {
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Content).To(Equal("Hello World"))
-				Expect(messages[0].Content).NotTo(ContainSubstring("ERROR"))
+				Expect(messages[0].Content).NotTo(ContainSubstring("Error:"))
 			})
 		})
 	})
@@ -322,4 +497,126 @@ var _ = Describe("ChatIntent", func() {
 			} = intent
 		})
 	})
+
+	Describe("modal model selection updates engine routing", func() {
+		var (
+			eng           *engine.Engine
+			reg           *provider.Registry
+			intentWithEng *chat.Intent
+		)
+
+		BeforeEach(func() {
+			reg = provider.NewRegistry()
+			reg.Register(&stubProvider{providerName: "anthropic", providerModels: []provider.Model{
+				{ID: "claude-3", Provider: "anthropic"},
+			}})
+
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("anthropic", "claude-3"),
+			})
+
+			intentWithEng = chat.NewIntent(chat.IntentConfig{
+				App:          &stubAppShell{registry: reg},
+				Engine:       eng,
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "ollama",
+				ModelName:    "llama3.2",
+				TokenBudget:  4096,
+			})
+		})
+
+		It("updates engine failback preferences after modal model selection", func() {
+			selected := intentWithEng.SimulateModalModelSelectionForTest()
+			Expect(selected).To(BeTrue())
+
+			Expect(eng.LastProvider()).To(Equal("anthropic"))
+			Expect(eng.LastModel()).To(Equal("claude-3"))
+		})
+
+		It("updates intent display state after modal model selection", func() {
+			selected := intentWithEng.SimulateModalModelSelectionForTest()
+			Expect(selected).To(BeTrue())
+
+			Expect(intentWithEng.ProviderNameForTest()).To(Equal("anthropic"))
+			Expect(intentWithEng.ModelNameForTest()).To(Equal("claude-3"))
+		})
+	})
 })
+
+type stubProvider struct {
+	providerName   string
+	providerModels []provider.Model
+}
+
+func (p *stubProvider) Name() string { return p.providerName }
+
+func (p *stubProvider) Models() ([]provider.Model, error) {
+	return p.providerModels, nil
+}
+
+func (p *stubProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *stubProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	go func() { close(ch) }()
+	return ch, nil
+}
+
+func (p *stubProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+type stubAppShell struct {
+	registry *provider.Registry
+}
+
+func (s *stubAppShell) WriteConfig(_ *config.AppConfig) error { return nil }
+
+func (s *stubAppShell) List() []string { return s.registry.List() }
+
+func (s *stubAppShell) Get(name string) (provider.Provider, error) { return s.registry.Get(name) }
+
+type streamingStubProvider struct {
+	providerName string
+	chunks       []provider.StreamChunk
+}
+
+func (p *streamingStubProvider) Name() string { return p.providerName }
+
+func (p *streamingStubProvider) Models() ([]provider.Model, error) {
+	return []provider.Model{{ID: "test-model", Provider: p.providerName}}, nil
+}
+
+func (p *streamingStubProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *streamingStubProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, len(p.chunks))
+	for _, chunk := range p.chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (p *streamingStubProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func stubManifestWithProvider(providerName, model string) agent.Manifest {
+	return agent.Manifest{
+		ID:         "test-agent",
+		Name:       "Test Agent",
+		Complexity: "standard",
+		ModelPreferences: map[string][]agent.ModelPref{
+			"standard": {
+				{Provider: providerName, Model: model},
+			},
+		},
+	}
+}
