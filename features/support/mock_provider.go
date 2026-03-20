@@ -2,7 +2,11 @@ package support
 
 import (
 	"context"
+	"fmt"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 // ChatRequest represents a chat completion request for BDD testing.
@@ -289,4 +293,168 @@ func (m *MockProvider) SetEmbeddings(embeddings []float64) {
 //   - Replaces the provider's internal model list.
 func (m *MockProvider) SetModels(models []Model) {
 	m.models = models
+}
+
+// BDDProviderRegistry is a test registry for BDD model selection scenarios.
+type BDDProviderRegistry struct{}
+
+// NewBDDProviderRegistry creates a new BDDProviderRegistry.
+//
+// Returns:
+//   - New BDDProviderRegistry instance.
+//
+// Side effects:
+//   - None.
+func NewBDDProviderRegistry() *BDDProviderRegistry {
+	return &BDDProviderRegistry{}
+}
+
+// List returns the names of all registered providers.
+//
+// Returns:
+//   - Slice of provider names.
+//
+// Side effects:
+//   - None.
+func (r *BDDProviderRegistry) List() []string {
+	return []string{"ollama", "openai"}
+}
+
+// Get returns the provider with the given name.
+//
+// Expected:
+//   - name is a valid provider name.
+//
+// Returns:
+//   - Provider instance and nil error on success.
+//
+// Side effects:
+//   - None.
+func (r *BDDProviderRegistry) Get(name string) (provider.Provider, error) {
+	switch name {
+	case "ollama":
+		return &bddMockProvider{name: "ollama", modelList: []provider.Model{
+			{ID: "llama3.2", Provider: "ollama", ContextLength: 8192},
+			{ID: "mistral", Provider: "ollama", ContextLength: 8192},
+		}}, nil
+	case "openai":
+		return &bddMockProvider{name: "openai", modelList: []provider.Model{
+			{ID: "gpt-4o", Provider: "openai", ContextLength: 128000},
+			{ID: "gpt-4o-mini", Provider: "openai", ContextLength: 128000},
+		}}, nil
+	default:
+		return nil, fmt.Errorf("provider %q not found", name)
+	}
+}
+
+// bddMockProvider is a mock provider for BDD testing.
+type bddMockProvider struct {
+	name      string
+	modelList []provider.Model
+}
+
+// Name returns the provider name.
+//
+// Returns:
+//   - Provider name string.
+//
+// Side effects:
+//   - None.
+func (p *bddMockProvider) Name() string { return p.name }
+
+// Models returns the list of available models.
+//
+// Returns:
+//   - Slice of models and nil error.
+//
+// Side effects:
+//   - None.
+func (p *bddMockProvider) Models() ([]provider.Model, error) {
+	return p.modelList, nil
+}
+
+// Chat performs a chat request (no-op for BDD testing).
+//
+// Expected:
+//   - Request context and chat request are provided.
+//
+// Returns:
+//   - Empty response and nil error.
+//
+// Side effects:
+//   - None.
+func (p *bddMockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+// Stream performs a streaming chat request (no-op for BDD testing).
+//
+// Expected:
+//   - Request context and chat request are provided.
+//
+// Returns:
+//   - Empty stream channel and nil error.
+//
+// Side effects:
+//   - None.
+func (p *bddMockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	go func() { close(ch) }()
+	return ch, nil
+}
+
+// Embed generates embeddings (no-op for BDD testing).
+//
+// Expected:
+//   - Request context and embed request are provided.
+//
+// Returns:
+//   - Nil slice and nil error.
+//
+// Side effects:
+//   - None.
+func (p *bddMockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+// BDDMockShell is a test shell for BDD provider setup scenarios.
+type BDDMockShell struct {
+	savedConfig *config.AppConfig
+}
+
+// NewBDDMockShell creates a new BDDMockShell.
+//
+// Returns:
+//   - New BDDMockShell instance.
+//
+// Side effects:
+//   - None.
+func NewBDDMockShell() *BDDMockShell {
+	return &BDDMockShell{}
+}
+
+// WriteConfig saves the config to the mock shell.
+//
+// Expected:
+//   - cfg is the configuration to save.
+//
+// Returns:
+//   - Nil error on success.
+//
+// Side effects:
+//   - Stores config in savedConfig field.
+func (s *BDDMockShell) WriteConfig(cfg *config.AppConfig) error {
+	s.savedConfig = cfg
+	return nil
+}
+
+// SavedConfig returns the last saved config.
+//
+// Returns:
+//   - Last saved config or nil if none saved.
+//
+// Side effects:
+//   - None.
+func (s *BDDMockShell) SavedConfig() *config.AppConfig {
+	return s.savedConfig
 }

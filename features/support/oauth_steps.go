@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/baphled/flowstate/internal/oauth"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cucumber/godog"
+
+	"github.com/baphled/flowstate/internal/oauth"
 )
 
 // OAuthStepDefinitions holds state for OAuth BDD step definitions.
@@ -1182,12 +1184,12 @@ func (s *OAuthStepDefinitions) noResidualTokenDataShouldRemain() error {
 // theProviderSetupScreenIsShown implements a BDD step definition.
 //
 // Returns:
-//   - nil.
+//   - nil on success.
 //
 // Side effects:
-//   - None.
+//   - Creates the provider setup intent via stepDefs.
 func (s *OAuthStepDefinitions) theProviderSetupScreenIsShown() error {
-	return nil
+	return s.stepDefs.providerSetupScreenIsShown()
 }
 
 // iAmOnTheProvidersStep implements a BDD step definition.
@@ -1204,15 +1206,37 @@ func (s *OAuthStepDefinitions) iAmOnTheProvidersStep() error {
 // iSelectProvider implements a BDD step definition.
 //
 // Expected:
-//   - provider is the name of the provider to select.
+//   - provider is the provider to select.
 //
 // Returns:
-//   - nil.
+//   - nil on success, or an error if provider setup is not open.
 //
 // Side effects:
-//   - None.
-func (s *OAuthStepDefinitions) iSelectProvider(_ string) error {
-	return nil
+//   - Navigates to the specified provider and presses Enter.
+//   - For unconfigured providers: shows input mode selector.
+//   - For enabled providers: disables it then shows input mode selector.
+func (s *OAuthStepDefinitions) iSelectProvider(provider string) error {
+	ps := s.stepDefs.providerSetup
+	if ps == nil {
+		return errors.New("provider setup not open")
+	}
+	normalised := normaliseProviderName(provider)
+	providers := ps.Providers()
+	for idx, p := range providers {
+		if !strings.EqualFold(p.Name, normalised) {
+			continue
+		}
+		for ps.SelectedProvider() != idx {
+			ps.Update(tea.KeyMsg{Type: tea.KeyDown})
+		}
+		wasEnabled := p.Enabled
+		ps.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if wasEnabled {
+			ps.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		}
+		return nil
+	}
+	return errors.New("provider " + provider + " not found")
 }
 
 // iShouldSeeAsAuthOption implements a BDD step definition.

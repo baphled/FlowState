@@ -385,11 +385,11 @@ func isValidCredential(providerName, credential string) bool {
 	}
 	switch providerName {
 	case "anthropic":
-		return len(credential) > 10 && (credential[:13] == "sk-ant-api03-" || credential[:13] == "sk-ant-oat01-")
+		return len(credential) >= 13 && (credential[:13] == "sk-ant-api03-" || credential[:13] == "sk-ant-oat01-")
 	case "github-copilot":
-		return len(credential) > 4 && credential[:4] == "gho_"
+		return len(credential) >= 4 && credential[:4] == "gho_"
 	case "openai":
-		return len(credential) > 3 && credential[:3] == "sk-"
+		return len(credential) >= 3 && credential[:3] == "sk-"
 	default:
 		return false
 	}

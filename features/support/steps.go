@@ -15,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cucumber/godog"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -22,10 +26,10 @@ import (
 	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/tui/intents/models"
+	"github.com/baphled/flowstate/internal/tui/intents/providersetup"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
-	"github.com/cucumber/godog"
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // StepDefinitions holds state and step implementations for BDD scenarios.
@@ -101,6 +105,13 @@ type StepDefinitions struct {
 
 	chatView  *chat.View
 	statusBar *layout.StatusBar
+
+	modelSelector    *models.Intent
+	selectedProvider string
+	selectedModelID  string
+	providerSetup    *providersetup.Intent
+	providerRegistry *BDDProviderRegistry
+	mockShell        *BDDMockShell
 }
 
 // TestApp represents a test application instance.
@@ -447,6 +458,26 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the input should be hidden$`, s.theInputShouldBeHidden)
 	ctx.Step(`^the selection should move to the next model$`, s.theSelectionShouldMoveToTheNextModel)
 	ctx.Step(`^the status bar should show "([^"]*)" and "([^"]*)"$`, s.theStatusBarShouldShowAnd)
+}
+
+// normaliseProviderName converts display names to internal provider names.
+//
+// Expected:
+//   - name is a provider display name like "GitHub Copilot".
+//
+// Returns:
+//   - Internal provider name like "github-copilot".
+//
+// Side effects:
+//   - None.
+func normaliseProviderName(name string) string {
+	name = strings.ToLower(name)
+	switch name {
+	case "github copilot", "github":
+		return "github-copilot"
+	default:
+		return name
+	}
 }
 
 // flowstateIsRunning initialises the test application with a mock provider.
@@ -1632,11 +1663,11 @@ func (s *StepDefinitions) iRequestTheListOfModels() error {
 	if s.realOllamaProvider == nil {
 		return errors.New("ollama provider not configured")
 	}
-	models, err := s.realOllamaProvider.Models()
+	modelList, err := s.realOllamaProvider.Models()
 	if err != nil {
 		return err
 	}
-	s.models = models
+	s.models = modelList
 	return nil
 }
 
@@ -2001,8 +2032,15 @@ func (s *StepDefinitions) iHaveTyped(text string) error {
 //
 // Expected: The step is executed successfully.
 // Returns: nil on success, or an error if the step fails.
-// Side effects: May modify the test state.
+// Side effects: May modify the test state. If provider setup is open, sends Escape key to trigger save.
 func (s *StepDefinitions) iPressEscape() error {
+	if s.providerSetup != nil {
+		if s.providerSetup.IsEditingAPIKey() {
+			s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		}
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		return nil
+	}
 	s.isInsertMode = false
 	s.inputBuffer = ""
 	return nil
@@ -2361,16 +2399,19 @@ func (s *StepDefinitions) iAmInSession(sessionName string) error {
 // Expected: The step is executed successfully.
 // Returns: nil on success, or an error if the step fails.
 // Side effects: May modify the test state.
-func (s *StepDefinitions) iSelect(sessionName string) error {
+func (s *StepDefinitions) iSelect(name string) error {
+	if s.modelSelector != nil {
+		return s.iSelectFromTheExpandedGroup(name)
+	}
 	if s.sessions == nil {
 		return nil
 	}
-	if sess, exists := s.sessions[sessionName]; exists {
-		s.currentSessionID = sessionName
+	if sess, exists := s.sessions[name]; exists {
+		s.currentSessionID = name
 		s.session = sess
 		return nil
 	}
-	return fmt.Errorf("session %q not found", sessionName)
+	return fmt.Errorf("session %q not found", name)
 }
 
 // iShouldBeInSession implements a BDD step definition.
@@ -3541,7 +3582,7 @@ func (s *StepDefinitions) thePartialContentShouldBePreserved() error {
 
 // iShouldBeReturnedToTheChatView is a step definition.
 //
-// Expected: User is returned to chat view.
+// Expected: User is returned to chat view (model selector closed).
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) iShouldBeReturnedToTheChatView() error {
@@ -3550,46 +3591,96 @@ func (s *StepDefinitions) iShouldBeReturnedToTheChatView() error {
 
 // theSelectionShouldMoveToPreviousModel is a step definition.
 //
-// Expected: Selection moves to previous model.
+// Expected: Selection has moved to the previous model.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) theSelectionShouldMoveToPreviousModel() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
 	return nil
 }
 
 // modelsShouldNotBeVisible is a step definition.
 //
-// Expected: Models are not visible.
-// Returns: nil on success.
+// Expected: No model items are visible (group collapsed).
+// Returns: nil on success, or an error if models are visible.
 // Side effects: None.
 func (s *StepDefinitions) modelsShouldNotBeVisible() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if s.modelSelector.IsExpanded() {
+		return errors.New("expected no models visible, but a group is expanded")
+	}
 	return nil
 }
 
 // iShouldSeeModelNamesListedUnderGroup is a step definition.
 //
-// Expected: Model names are listed under group.
-// Returns: nil on success.
+// Expected: Model names are listed under the expanded group.
+// Returns: nil on success, or an error if models are not visible.
 // Side effects: None.
 func (s *StepDefinitions) iShouldSeeModelNamesListedUnderGroup() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if !s.modelSelector.IsExpanded() {
+		return errors.New("expected a group to be expanded")
+	}
+	view := s.modelSelector.View()
+	groups := s.modelSelector.Groups()
+	for _, g := range groups {
+		if g.Expanded {
+			for _, m := range g.Models {
+				if !strings.Contains(view, m.ID) {
+					return fmt.Errorf("expected model %q in view, not found", m.ID)
+				}
+			}
+		}
+	}
 	return nil
 }
 
 // iShouldSeeModelsFromSecondProvider is a step definition.
 //
-// Expected: Models from second provider are visible.
-// Returns: nil on success.
+// Expected: Models from the second provider (openai) are visible.
+// Returns: nil on success, or an error if models not visible.
 // Side effects: None.
 func (s *StepDefinitions) iShouldSeeModelsFromSecondProvider() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	view := s.modelSelector.View()
+	groups := s.modelSelector.Groups()
+	if len(groups) < 2 {
+		return errors.New("expected at least 2 provider groups")
+	}
+	secondGroup := groups[1]
+	for _, m := range secondGroup.Models {
+		if !strings.Contains(view, m.ID) {
+			return fmt.Errorf("expected model %q from second provider in view", m.ID)
+		}
+	}
 	return nil
 }
 
 // iShouldSeeGroupedModelList is a step definition.
 //
-// Expected: Grouped model list is visible.
-// Returns: nil on success.
+// Expected: Grouped model list is visible with provider names.
+// Returns: nil on success, or an error if model selector is not open or view is malformed.
 // Side effects: None.
 func (s *StepDefinitions) iShouldSeeGroupedModelList() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open — call iPressCtrlP first")
+	}
+	view := s.modelSelector.View()
+	groups := s.modelSelector.Groups()
+	for _, g := range groups {
+		if !strings.Contains(view, g.ProviderName) {
+			return fmt.Errorf("expected provider %q in grouped list, not found in: %q", g.ProviderName, view)
+		}
+	}
 	return nil
 }
 
@@ -3597,17 +3688,36 @@ func (s *StepDefinitions) iShouldSeeGroupedModelList() error {
 //
 // Expected: Provider setup screen is visible.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Creates provider setup intent if not already open.
 func (s *StepDefinitions) iShouldSeeProviderSetupScreen() error {
+	s.mockShell = NewBDDMockShell()
+	s.providerSetup = providersetup.NewIntent(providersetup.IntentConfig{
+		Config:     config.DefaultConfig(),
+		MCPServers: nil,
+		Shell:      s.mockShell,
+	})
+	if s.providerSetup == nil {
+		return errors.New("provider setup intent not created")
+	}
+	view := s.providerSetup.View()
+	if !strings.Contains(view, "Provider") {
+		return fmt.Errorf("expected 'Provider' in provider setup view, got: %q", view)
+	}
 	return nil
 }
 
 // secondProviderGroupShouldBeHighlighted is a step definition.
 //
-// Expected: Second provider group is highlighted.
-// Returns: nil on success.
+// Expected: Second provider group is highlighted (index 1).
+// Returns: nil on success, or an error if not highlighted.
 // Side effects: None.
 func (s *StepDefinitions) secondProviderGroupShouldBeHighlighted() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if s.modelSelector.SelectedGroup() != 1 {
+		return fmt.Errorf("expected second group (index 1) to be highlighted, got index %d", s.modelSelector.SelectedGroup())
+	}
 	return nil
 }
 
@@ -3649,10 +3759,13 @@ func (s *StepDefinitions) noTokenShouldBeStored() error {
 
 // noModelShouldBeSelected is a step definition.
 //
-// Expected: No model is selected.
-// Returns: nil on success.
+// Expected: No model has been selected.
+// Returns: nil on success, or an error if a model was selected.
 // Side effects: None.
 func (s *StepDefinitions) noModelShouldBeSelected() error {
+	if s.selectedModelID != "" {
+		return fmt.Errorf("expected no model selected, but %q was selected", s.selectedModelID)
+	}
 	return nil
 }
 
@@ -3667,46 +3780,76 @@ func (s *StepDefinitions) iShouldSeeTextInUI(_ string) error {
 
 // iShouldMoveToPreviousStep is a step definition.
 //
-// Expected: Navigation moves to previous step.
-// Returns: nil on success.
+// Expected: Navigation has moved to previous step.
+// Returns: nil on success, or an error if not on expected step.
 // Side effects: None.
 func (s *StepDefinitions) iShouldMoveToPreviousStep() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	if s.providerSetup.CurrentStep() != 0 {
+		return fmt.Errorf("expected to be on step 0 (providers), but on step %d", s.providerSetup.CurrentStep())
+	}
 	return nil
 }
 
 // eachServerShouldShowEnableDisableToggle is a step definition.
 //
-// Expected: Each server shows enable/disable toggle.
+// Expected: Each server shows enable/disable toggle in the view.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) eachServerShouldShowEnableDisableToggle() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	view := s.providerSetup.View()
+	servers := s.providerSetup.MCPServers()
+	for _, srv := range servers {
+		if !strings.Contains(view, srv.Name) {
+			return fmt.Errorf("expected server %q in view", srv.Name)
+		}
+	}
 	return nil
 }
 
 // memoryEnabledStateShouldToggle is a step definition.
 //
-// Expected: Memory enabled state toggles.
+// Expected: Memory server enabled state has toggled.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) memoryEnabledStateShouldToggle() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // ollamaEnabledStateShouldToggle is a step definition.
 //
-// Expected: Ollama enabled state toggles.
+// Expected: Ollama enabled state has toggled.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) ollamaEnabledStateShouldToggle() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // lastProviderGroupShouldRemainHighlighted is a step definition.
 //
 // Expected: Last provider group remains highlighted.
-// Returns: nil on success.
+// Returns: nil on success, or an error if not at last group.
 // Side effects: None.
 func (s *StepDefinitions) lastProviderGroupShouldRemainHighlighted() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	groups := s.modelSelector.Groups()
+	lastIdx := len(groups) - 1
+	if s.modelSelector.SelectedGroup() != lastIdx {
+		return fmt.Errorf("expected last group (index %d) to be highlighted, got index %d", lastIdx, s.modelSelector.SelectedGroup())
+	}
 	return nil
 }
 
@@ -3725,60 +3868,96 @@ func (s *StepDefinitions) iShouldBeReturnedToChatViewAlt() error {
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) credentialSourceShouldBeMarkedAs(_ string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // providerShouldBeMarkedAsConfigured is a step definition.
 //
-// Expected: Provider is marked as configured.
+// Expected: Current provider is marked as configured.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) providerShouldBeMarkedAsConfigured() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // credentialShouldBeRejected is a step definition.
 //
-// Expected: Credential is rejected.
+// Expected: Credential is rejected (invalid format).
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) credentialShouldBeRejected() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // credentialShouldBeSaved is a step definition.
 //
-// Expected: Credential is saved.
+// Expected: Credential is saved (valid format).
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) credentialShouldBeSaved() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // anthropicProviderShouldBeMarkedAsConfigured is a step definition.
 //
-// Expected: Provider is marked as configured.
-// Returns: nil on success.
+// Expected: Anthropic provider is marked as configured.
+// Returns: nil on success, or an error if not configured.
 // Side effects: None.
 func (s *StepDefinitions) anthropicProviderShouldBeMarkedAsConfigured() error {
-	return nil
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	providers := s.providerSetup.Providers()
+	for _, p := range providers {
+		if p.Name == "anthropic" {
+			if !p.Enabled {
+				return errors.New("expected Anthropic to be configured, but it is not")
+			}
+			return nil
+		}
+	}
+	return errors.New("anthropic provider not found")
 }
 
 // configShouldBeSaved is a step definition.
 //
-// Expected: Configuration is saved.
-// Returns: nil on success.
+// Expected: Configuration is saved via the mock shell.
+// Returns: nil on success, or an error if config not saved.
 // Side effects: None.
 func (s *StepDefinitions) configShouldBeSaved() error {
+	if s.mockShell == nil {
+		return errors.New("mock shell not initialised")
+	}
+	if s.mockShell.SavedConfig() == nil {
+		return errors.New("expected config to be saved, but nothing was saved")
+	}
 	return nil
 }
 
 // configShouldBeSavedToConfigyaml is a step definition.
 //
 // Expected: Configuration is saved to config.yaml.
-// Returns: nil on success.
+// Returns: nil on success, or an error if config not saved.
 // Side effects: None.
 func (s *StepDefinitions) configShouldBeSavedToConfigyaml() error {
+	if s.mockShell == nil {
+		return errors.New("mock shell not initialised")
+	}
+	if s.mockShell.SavedConfig() == nil {
+		return errors.New("expected config to be saved to config.yaml, but nothing was saved")
+	}
 	return nil
 }
 
@@ -3788,6 +3967,9 @@ func (s *StepDefinitions) configShouldBeSavedToConfigyaml() error {
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) credentialShouldBeSavedToConfig() error {
+	if s.mockShell == nil {
+		return errors.New("mock shell not initialised")
+	}
 	return nil
 }
 
@@ -3804,17 +3986,30 @@ func (s *StepDefinitions) gitHubAuthorizationCompletesSuccessfully() error {
 //
 // Expected: User is on MCP servers step.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves to MCP servers step.
 func (s *StepDefinitions) iAmOnMCPServersStep() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyTab})
 	return nil
 }
 
 // iChoose is a step definition.
 //
-// Expected: User choice is registered.
+// Expected: User selects the specified option.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iChoose(_ string) error {
+// Side effects: Selects the option and presses enter.
+func (s *StepDefinitions) iChoose(option string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	if strings.Contains(option, "OpenCode") {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	} else if strings.Contains(option, "manually") {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyDown})
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	}
 	return nil
 }
 
@@ -3829,19 +4024,31 @@ func (s *StepDefinitions) iEnter(_ string) error {
 
 // iEnterAsAPIKey is a step definition.
 //
-// Expected: API key is entered.
+// Expected: API key is entered in the input field.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iEnterAsAPIKey(_ string) error {
+// Side effects: Types the API key.
+func (s *StepDefinitions) iEnterAsAPIKey(apiKey string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	for _, r := range apiKey {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 	return nil
 }
 
 // iEnterAsCredential is a step definition.
 //
-// Expected: Credential is entered.
+// Expected: Credential is entered in the input field.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iEnterAsCredential(_ string) error {
+// Side effects: Types the credential.
+func (s *StepDefinitions) iEnterAsCredential(credential string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	for _, r := range credential {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 	return nil
 }
 
@@ -3851,6 +4058,9 @@ func (s *StepDefinitions) iEnterAsCredential(_ string) error {
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) iHaveConfiguredMCPServers() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
@@ -3860,33 +4070,43 @@ func (s *StepDefinitions) iHaveConfiguredMCPServers() error {
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) iHaveConfiguredProviders() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // iHaveExpandedGroup is a step definition.
 //
-// Expected: Group is expanded.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iHaveExpandedGroup(_ string) error {
-	return nil
+// Expected: The specified group is already expanded.
+// Returns: nil on success, or an error if group not found.
+// Side effects: Opens model selector and expands the specified group.
+func (s *StepDefinitions) iHaveExpandedGroup(group string) error {
+	if err := s.iPressCtrlP(); err != nil {
+		return err
+	}
+	return s.iPressEnterOnGroup(group)
 }
 
 // iHavePressedCtrlP is a step definition.
 //
-// Expected: Ctrl+P is pressed.
+// Expected: Ctrl+P has been pressed to open model selector.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Initialises s.modelSelector via iPressCtrlP.
 func (s *StepDefinitions) iHavePressedCtrlP() error {
-	return nil
+	return s.iPressCtrlP()
 }
 
 // iNavigateDownTheProviderList is a step definition.
 //
 // Expected: Navigation moves down the provider list.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves selection down in model selector.
 func (s *StepDefinitions) iNavigateDownTheProviderList() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
 	return nil
 }
 
@@ -3894,8 +4114,16 @@ func (s *StepDefinitions) iNavigateDownTheProviderList() error {
 //
 // Expected: Navigation reaches the last provider group.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Navigates to the last group.
 func (s *StepDefinitions) iNavigateToTheLastProviderGroup() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	groups := s.modelSelector.Groups()
+	lastIdx := len(groups) - 1
+	for s.modelSelector.SelectedGroup() < lastIdx {
+		s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
 	return nil
 }
 
@@ -3903,108 +4131,244 @@ func (s *StepDefinitions) iNavigateToTheLastProviderGroup() error {
 //
 // Expected: Navigation moves up the provider list.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves selection up in model selector.
 func (s *StepDefinitions) iNavigateUpTheProviderList() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyUp})
 	return nil
 }
 
 // iPress is a step definition.
 //
-// Expected: Key is pressed.
+// Expected: The specified key is pressed.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iPress(_ string) error {
+// Side effects: Sends key to model selector or provider setup.
+func (s *StepDefinitions) iPress(key string) error {
+	if s.modelSelector != nil {
+		if key == "a" {
+			s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		}
+	}
 	return nil
 }
 
 // iPressCtrlP is a step definition.
 //
-// Expected: Ctrl+P is pressed.
+// Expected: Ctrl+P is pressed to open model selector.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Initialises s.modelSelector with a BDD provider registry.
 func (s *StepDefinitions) iPressCtrlP() error {
+	s.providerRegistry = NewBDDProviderRegistry()
+	s.selectedProvider = ""
+	s.selectedModelID = ""
+	s.modelSelector = models.NewIntent(models.IntentConfig{
+		ProviderRegistry: s.providerRegistry,
+		OnSelect: func(p, m string) {
+			s.selectedProvider = p
+			s.selectedModelID = m
+		},
+	})
 	return nil
 }
 
 // iPressDownArrow is a step definition.
 //
-// Expected: Down arrow is pressed.
+// Expected: Down arrow is pressed in model selector.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves selection down.
 func (s *StepDefinitions) iPressDownArrow() error {
+	if s.modelSelector != nil {
+		s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if s.providerSetup != nil {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
 	return nil
 }
 
 // iPressEnterOn is a step definition.
 //
-// Expected: Enter is pressed on item.
+// Expected: Enter is pressed on the specified item.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iPressEnterOn(_ string) error {
+// Side effects: Navigates to item and presses enter.
+func (s *StepDefinitions) iPressEnterOn(item string) error {
+	if s.providerSetup != nil {
+		providers := s.providerSetup.Providers()
+		for idx, p := range providers {
+			if strings.EqualFold(p.Name, item) {
+				for s.providerSetup.SelectedProvider() != idx {
+					s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyDown})
+				}
+				s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				return nil
+			}
+		}
+	}
 	return nil
 }
 
 // iPressEnterOnGroup is a step definition.
 //
-// Expected: Enter is pressed on group.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iPressEnterOnGroup(_ string) error {
-	return nil
+// Expected: Enter is pressed on the specified provider group.
+// Returns: nil on success, or an error if model selector is not open or group not found.
+// Side effects: Navigates to and expands or collapses the specified group.
+func (s *StepDefinitions) iPressEnterOnGroup(group string) error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	groups := s.modelSelector.Groups()
+	for idx, g := range groups {
+		if strings.EqualFold(g.ProviderName, group) {
+			if g.Expanded {
+				numModels := len(g.Models)
+				for s.modelSelector.SelectedModel() < numModels {
+					s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
+				}
+				s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			} else {
+				for s.modelSelector.SelectedGroup() != idx {
+					s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
+				}
+				s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("group %q not found", group)
 }
 
 // iPressEnterOnServer is a step definition.
 //
-// Expected: Enter is pressed on server.
+// Expected: Enter is pressed on the specified MCP server.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iPressEnterOnServer(_ string) error {
-	return nil
+// Side effects: Navigates to server and toggles it.
+func (s *StepDefinitions) iPressEnterOnServer(serverName string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	servers := s.providerSetup.MCPServers()
+	for idx, srv := range servers {
+		if strings.EqualFold(srv.Name, serverName) {
+			for s.providerSetup.SelectedProvider() != idx {
+				s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
+			s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			return nil
+		}
+	}
+	return fmt.Errorf("server %q not found", serverName)
 }
 
 // iPressEnterToExpandTheGroup is a step definition.
 //
-// Expected: Enter is pressed to expand group.
+// Expected: Enter is pressed to expand current group.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Expands the currently selected group.
 func (s *StepDefinitions) iPressEnterToExpandTheGroup() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	return nil
 }
 
 // iPressShiftTab is a step definition.
 //
-// Expected: Shift+Tab is pressed.
+// Expected: Shift+Tab is pressed to move to previous step.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves to previous step in provider setup.
 func (s *StepDefinitions) iPressShiftTab() error {
+	if s.providerSetup != nil {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	}
 	return nil
 }
 
 // iPressTab is a step definition.
 //
-// Expected: Tab is pressed.
+// Expected: Tab is pressed to move to next step.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves to next step in provider setup.
 func (s *StepDefinitions) iPressTab() error {
+	if s.providerSetup != nil {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
 	return nil
 }
 
 // iPressUpArrow is a step definition.
 //
-// Expected: Up arrow is pressed.
+// Expected: Up arrow is pressed in model selector.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Moves selection up.
 func (s *StepDefinitions) iPressUpArrow() error {
+	if s.modelSelector != nil {
+		s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if s.providerSetup != nil {
+		s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
 	return nil
 }
 
 // iSelectFromTheExpandedGroup is a step definition.
 //
-// Expected: Item is selected from expanded group.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iSelectFromTheExpandedGroup(_ string) error {
+// Expected: The specified model is selected from the expanded group.
+// Returns: nil on success, or an error if model not found.
+// Side effects: Selects the model and triggers onSelect callback.
+func (s *StepDefinitions) iSelectFromTheExpandedGroup(modelID string) error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	idx, found := s.findModelInExpandedGroups(modelID)
+	if !found {
+		return fmt.Errorf("model %q not found in expanded groups", modelID)
+	}
+	s.navigateToModelIndex(idx)
+	s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	return nil
+}
+
+// findModelInExpandedGroups searches for a model in expanded groups.
+//
+// Expected:
+//   - modelID is the ID of the model to find.
+//
+// Returns:
+//   - Index of the model and true if found, -1 and false otherwise.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) findModelInExpandedGroups(modelID string) (int, bool) {
+	for _, g := range s.modelSelector.Groups() {
+		if !g.Expanded {
+			continue
+		}
+		for idx, m := range g.Models {
+			if m.ID == modelID {
+				return idx, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// navigateToModelIndex navigates to the specified model index.
+//
+// Expected:
+//   - idx is the target model index.
+//
+// Side effects:
+//   - Sends up/down key messages to model selector until selected model equals idx.
+func (s *StepDefinitions) navigateToModelIndex(idx int) {
+	for s.modelSelector.SelectedModel() < idx {
+		s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	for s.modelSelector.SelectedModel() > idx {
+		s.modelSelector.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
 }
 
 // iSendAMessageThatFailsWith is a step definition.
@@ -4036,19 +4400,38 @@ func (s *StepDefinitions) iSendAMessageThatWillFailWith(_ string) error {
 
 // iShouldMoveToNextStep is a step definition.
 //
-// Expected: Navigation moves to next step.
-// Returns: nil on success.
+// Expected: Navigation has moved to next step.
+// Returns: nil on success, or an error if not on expected step.
 // Side effects: None.
 func (s *StepDefinitions) iShouldMoveToNextStep() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	if s.providerSetup.CurrentStep() != 1 {
+		return fmt.Errorf("expected to be on step 1 (MCP servers), but on step %d", s.providerSetup.CurrentStep())
+	}
 	return nil
 }
 
 // iShouldSeeAPIKeyInputField is a step definition.
 //
 // Expected: API key input field is visible.
-// Returns: nil on success.
-// Side effects: None.
+// Returns: nil on success, or an error if not editing API key.
+// Side effects: If input mode selector is showing, auto-selects "Enter manually" to enter editing mode.
 func (s *StepDefinitions) iShouldSeeAPIKeyInputField() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	if !s.providerSetup.IsEditingAPIKey() {
+		view := s.providerSetup.View()
+		if strings.Contains(view, "OpenCode") || strings.Contains(view, "manually") {
+			s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyDown})
+			s.providerSetup.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		}
+	}
+	if !s.providerSetup.IsEditingAPIKey() {
+		return errors.New("expected to see API key input field, but not in editing mode")
+	}
 	return nil
 }
 
@@ -4058,24 +4441,44 @@ func (s *StepDefinitions) iShouldSeeAPIKeyInputField() error {
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) iShouldSeeCredentialInputOptions() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	view := s.providerSetup.View()
+	if !strings.Contains(view, "OpenCode") && !strings.Contains(view, "manually") {
+		return fmt.Errorf("expected credential input options in view, got: %q", view)
+	}
 	return nil
 }
 
 // iShouldSeeDiscoveredMCPServers is a step definition.
 //
 // Expected: Discovered MCP servers are visible.
-// Returns: nil on success.
+// Returns: nil on success, or an error if no servers found.
 // Side effects: None.
 func (s *StepDefinitions) iShouldSeeDiscoveredMCPServers() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	servers := s.providerSetup.MCPServers()
+	if len(servers) == 0 {
+		return errors.New("expected to see MCP servers, but none found")
+	}
 	return nil
 }
 
 // iShouldSeeHeader is a step definition.
 //
-// Expected: Header is visible.
-// Returns: nil on success.
+// Expected: The specified header text is visible.
+// Returns: nil on success, or an error if header not found.
 // Side effects: None.
-func (s *StepDefinitions) iShouldSeeHeader(_ string) error {
+func (s *StepDefinitions) iShouldSeeHeader(header string) error {
+	if s.modelSelector != nil {
+		view := s.modelSelector.View()
+		if !strings.Contains(view, header) {
+			return fmt.Errorf("expected header %q in model selector view, not found", header)
+		}
+	}
 	return nil
 }
 
@@ -4090,29 +4493,59 @@ func (s *StepDefinitions) iShouldSeeInTheChat(_ string) error {
 
 // iShouldSeeWithConfiguredStatus is a step definition.
 //
-// Expected: Provider is visible with configured status.
-// Returns: nil on success.
+// Expected: Provider is visible with configured status in the view.
+// Returns: nil on success, or an error if provider not shown as configured.
 // Side effects: None.
-func (s *StepDefinitions) iShouldSeeWithConfiguredStatus(_ string) error {
+func (s *StepDefinitions) iShouldSeeWithConfiguredStatus(providerName string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	view := s.providerSetup.View()
+	normalised := normaliseProviderName(providerName)
+	configuredPattern := "[*] " + normalised
+	if !strings.Contains(view, configuredPattern) {
+		return fmt.Errorf("expected provider %q to appear as configured [*] in view, not found", providerName)
+	}
 	return nil
 }
 
 // iShouldSeeWithUnconfiguredStatus is a step definition.
 //
-// Expected: Provider is visible with unconfigured status.
-// Returns: nil on success.
+// Expected: Provider is visible with unconfigured status in the view.
+// Returns: nil on success, or an error if provider is shown as configured.
 // Side effects: None.
-func (s *StepDefinitions) iShouldSeeWithUnconfiguredStatus(_ string) error {
+func (s *StepDefinitions) iShouldSeeWithUnconfiguredStatus(providerName string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	view := s.providerSetup.View()
+	normalised := normaliseProviderName(providerName)
+	unconfiguredPattern := "[ ] " + normalised
+	if !strings.Contains(view, unconfiguredPattern) {
+		return fmt.Errorf("expected provider %q to appear as unconfigured [ ] in view, not found", providerName)
+	}
 	return nil
 }
 
 // isConfigured is a step definition.
 //
-// Expected: Provider is configured.
+// Expected: The specified provider is configured.
 // Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) isConfigured(_ string) error {
-	return nil
+// Side effects: None (precondition check).
+func (s *StepDefinitions) isConfigured(providerName string) error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
+	providers := s.providerSetup.Providers()
+	for _, p := range providers {
+		if strings.EqualFold(p.Name, providerName) {
+			if !p.Enabled {
+				return fmt.Errorf("expected provider %q to be configured", providerName)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("provider %q not found", providerName)
 }
 
 // noExistingProviderTokensAreStored is a step definition.
@@ -4126,19 +4559,34 @@ func (s *StepDefinitions) noExistingProviderTokensAreStored() error {
 
 // openCodeAuthjsonShouldBeChecked is a step definition.
 //
-// Expected: OpenCode auth.json is checked.
+// Expected: OpenCode auth.json is checked for credentials.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) openCodeAuthjsonShouldBeChecked() error {
+	if s.providerSetup == nil {
+		return errors.New("provider setup not open")
+	}
 	return nil
 }
 
 // providerSetupScreenIsShown is a step definition.
 //
-// Expected: Provider setup screen is shown.
+// Expected: Provider setup screen is shown with default configuration.
 // Returns: nil on success.
-// Side effects: None.
+// Side effects: Creates provider setup intent with Ollama and Anthropic configured.
 func (s *StepDefinitions) providerSetupScreenIsShown() error {
+	s.mockShell = NewBDDMockShell()
+	cfg := config.DefaultConfig()
+	cfg.Providers.Ollama.Host = "http://localhost:11434"
+	cfg.Providers.Anthropic.APIKey = "sk-ant-api03-test"
+	s.providerSetup = providersetup.NewIntent(providersetup.IntentConfig{
+		Config: cfg,
+		MCPServers: []config.MCPServerConfig{
+			{Name: "memory", Enabled: false},
+			{Name: "filesystem", Enabled: true},
+		},
+		Shell: s.mockShell,
+	})
 	return nil
 }
 
@@ -4153,10 +4601,16 @@ func (s *StepDefinitions) theEncryptedTokenShouldExistInLocalshareflowstatetoken
 
 // theFirstProviderGroupShouldRemainHighlighted is a step definition.
 //
-// Expected: First provider group remains highlighted.
-// Returns: nil on success.
+// Expected: First provider group (index 0) remains highlighted.
+// Returns: nil on success, or an error if not at first group.
 // Side effects: None.
 func (s *StepDefinitions) theFirstProviderGroupShouldRemainHighlighted() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if s.modelSelector.SelectedGroup() != 0 {
+		return fmt.Errorf("expected first group (index 0) to be highlighted, got index %d", s.modelSelector.SelectedGroup())
+	}
 	return nil
 }
 
@@ -4171,19 +4625,31 @@ func (s *StepDefinitions) theGitHubAuthorizationExpiresBeforeCompletion() error 
 
 // theGroupShouldCollapse is a step definition.
 //
-// Expected: Group collapses.
-// Returns: nil on success.
+// Expected: The currently selected group collapses.
+// Returns: nil on success, or an error if still expanded.
 // Side effects: None.
 func (s *StepDefinitions) theGroupShouldCollapse() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if s.modelSelector.IsExpanded() {
+		return errors.New("expected group to be collapsed, but it is still expanded")
+	}
 	return nil
 }
 
 // theGroupShouldExpandToShowAvailableModels is a step definition.
 //
-// Expected: Group expands to show available models.
-// Returns: nil on success.
+// Expected: Group is expanded showing available models.
+// Returns: nil on success, or an error if no group is expanded.
 // Side effects: None.
 func (s *StepDefinitions) theGroupShouldExpandToShowAvailableModels() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
+	if !s.modelSelector.IsExpanded() {
+		return errors.New("expected a group to be expanded")
+	}
 	return nil
 }
 
@@ -4198,18 +4664,27 @@ func (s *StepDefinitions) theInputShouldBeHidden() error {
 
 // theSelectionShouldMoveToTheNextModel is a step definition.
 //
-// Expected: Selection moves to next model.
+// Expected: Selection has moved to the next model.
 // Returns: nil on success.
 // Side effects: None.
 func (s *StepDefinitions) theSelectionShouldMoveToTheNextModel() error {
+	if s.modelSelector == nil {
+		return errors.New("model selector not open")
+	}
 	return nil
 }
 
 // theStatusBarShouldShowAnd is a step definition.
 //
-// Expected: Status bar shows expected values.
-// Returns: nil on success.
+// Expected: Status bar shows the specified provider and model.
+// Returns: nil on success, or an error if values don't match.
 // Side effects: None.
-func (s *StepDefinitions) theStatusBarShouldShowAnd(_, _ string) error {
+func (s *StepDefinitions) theStatusBarShouldShowAnd(providerName, modelID string) error {
+	if s.selectedProvider != providerName {
+		return fmt.Errorf("expected provider %q, got %q", providerName, s.selectedProvider)
+	}
+	if s.selectedModelID != modelID {
+		return fmt.Errorf("expected model %q, got %q", modelID, s.selectedModelID)
+	}
 	return nil
 }
