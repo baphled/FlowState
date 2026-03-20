@@ -3,6 +3,7 @@ package chat
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 )
@@ -35,6 +36,11 @@ func (i *Intent) SetStreamChanForTest(ch <-chan provider.StreamChunk) {
 // ReadNextChunkForTest exposes readNextChunk for test assertions.
 func (i *Intent) ReadNextChunkForTest() tea.Msg {
 	return i.readNextChunk()
+}
+
+// SetAgentRegistryForTest sets the agent registry for testing purposes.
+func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {
+	i.agentRegistry = reg
 }
 
 // SimulateModalModelSelectionForTest calls openModelSelector, executes the Cmd

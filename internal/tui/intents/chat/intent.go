@@ -246,7 +246,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
-	case tea.KeyCtrlA:
+	case tea.KeyTab:
 		return i.openAgentPicker()
 	case tea.KeyCtrlP:
 		return i.openModelSelector()

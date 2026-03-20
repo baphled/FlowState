@@ -65,6 +65,14 @@ var _ = Describe("ChatIntent", func() {
 			Expect(cmd).NotTo(BeNil())
 		})
 
+		It("opens agent picker on Tab", func() {
+			intent.SetAgentRegistryForTest(&agent.Registry{})
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			Expect(cmd).NotTo(BeNil())
+			msg := cmd()
+			Expect(msg).NotTo(BeNil())
+		})
+
 		It("appends characters to input", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
 			Expect(intent.Input()).To(Equal("hi"))
