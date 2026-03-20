@@ -208,6 +208,9 @@ func (s *PlanStore) Get(id string) (*File, error) {
 	filePath := filepath.Join(s.dataDir, id+".md")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("plan not found: %s", id)
+		}
 		return nil, fmt.Errorf("reading plan file: %w", err)
 	}
 

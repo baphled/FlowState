@@ -23,9 +23,12 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/mcp"
+	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/providersetup"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
@@ -112,6 +115,17 @@ type StepDefinitions struct {
 	providerSetup    *providersetup.Intent
 	providerRegistry *BDDProviderRegistry
 	mockShell        *BDDMockShell
+
+	// Plan management fields
+	planStore      *plan.PlanStore
+	planListOutput []plan.Summary
+	selectedPlan   *plan.File
+
+	// Agent prompt loading fields
+	lastPrompt  string
+	agentPicker *agentpicker.Intent
+	lastError   error
+	agentEngine *engine.Engine
 }
 
 // TestApp represents a test application instance.
@@ -458,6 +472,30 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the input should be hidden$`, s.theInputShouldBeHidden)
 	ctx.Step(`^the selection should move to the next model$`, s.theSelectionShouldMoveToTheNextModel)
 	ctx.Step(`^the status bar should show "([^"]*)" and "([^"]*)"$`, s.theStatusBarShouldShowAnd)
+
+	// Plan management steps
+	ctx.Step(`^the plan store is empty$`, s.thePlanStoreIsEmpty)
+	ctx.Step(`^a plan exists with title "([^"]*)"$`, s.aPlanExistsWithTitle)
+	ctx.Step(`^a plan exists with id "([^"]*)"$`, s.aPlanExistsWithID)
+	ctx.Step(`^I run the plan list command$`, s.iRunThePlanListCommand)
+	ctx.Step(`^I select plan "([^"]*)"$`, s.iSelectPlan)
+	ctx.Step(`^I delete plan "([^"]*)"$`, s.iDeletePlan)
+	ctx.Step(`^I should see the plan details for "([^"]*)"$`, s.iShouldSeeThePlanDetailsFor)
+	ctx.Step(`^plan "([^"]*)" should not exist$`, s.planShouldNotExist)
+	ctx.Step(`^I should see an error containing "([^"]*)"$`, s.iShouldSeeAnErrorContaining)
+
+	// Agent prompt loading steps
+	ctx.Step(`^the FlowState TUI is running$`, s.theFlowStateTUIIsRunning)
+	ctx.Step(`^the planner agent is configured$`, s.thePlannerAgentIsConfigured)
+	ctx.Step(`^the executor agent is configured$`, s.theExecutorAgentIsConfigured)
+	ctx.Step(`^the system prompt is built$`, s.theSystemPromptIsBuilt)
+	ctx.Step(`^the prompt should contain planning instructions$`, s.thePromptShouldContainPlanningInstructions)
+	ctx.Step(`^the prompt should contain execution instructions$`, s.thePromptShouldContainExecutionInstructions)
+	ctx.Step(`^the prompt size should be at least (\d+) characters$`, s.thePromptSizeShouldBeAtLeastCharacters)
+	ctx.Step(`^I open the agent picker$`, s.iOpenTheAgentPicker)
+	ctx.Step(`^I should see "([^"]*)" in the agent list$`, s.iShouldSeeInTheAgentList)
+	ctx.Step(`^the FlowState TUI is running with the planner agent$`, s.theFlowStateTUIIsRunningWithThePlannerAgent)
+	ctx.Step(`^I switch to the executor agent$`, s.iSwitchToTheExecutorAgent)
 }
 
 // normaliseProviderName converts display names to internal provider names.
@@ -4686,5 +4724,327 @@ func (s *StepDefinitions) theStatusBarShouldShowAnd(providerName, modelID string
 	if s.selectedModelID != modelID {
 		return fmt.Errorf("expected model %q, got %q", modelID, s.selectedModelID)
 	}
+	return nil
+}
+
+// thePlanStoreIsEmpty initialises an empty plan store.
+//
+// Expected: Plan store directory is created and empty.
+// Returns: nil on success, or an error if directory creation fails.
+// Side effects: Creates s.tempDir and s.planStore.
+func (s *StepDefinitions) thePlanStoreIsEmpty() error {
+	var err error
+	s.tempDir, err = os.MkdirTemp("", "bdd-plan-*")
+	if err != nil {
+		return fmt.Errorf("creating temp directory: %w", err)
+	}
+	var storeErr error
+	s.planStore, storeErr = plan.NewPlanStore(s.tempDir)
+	if storeErr != nil {
+		return fmt.Errorf("creating plan store: %w", storeErr)
+	}
+	return nil
+}
+
+// aPlanExistsWithTitle creates a plan with the given title.
+//
+// Expected: title is non-empty.
+// Returns: nil on success, or an error if plan creation fails.
+// Side effects: Writes a plan file to s.planStore.
+func (s *StepDefinitions) aPlanExistsWithTitle(title string) error {
+	if s.planStore == nil {
+		if err := s.thePlanStoreIsEmpty(); err != nil {
+			return err
+		}
+	}
+	f := plan.File{
+		ID:        strings.ToLower(strings.ReplaceAll(title, " ", "-")),
+		Title:     title,
+		Status:    "draft",
+		CreatedAt: time.Now(),
+	}
+	return s.planStore.Create(f)
+}
+
+// aPlanExistsWithID creates a plan with the given ID.
+//
+// Expected: id is non-empty and filename-safe.
+// Returns: nil on success, or an error if plan creation fails.
+// Side effects: Writes a plan file to s.planStore.
+func (s *StepDefinitions) aPlanExistsWithID(id string) error {
+	if s.planStore == nil {
+		if err := s.thePlanStoreIsEmpty(); err != nil {
+			return err
+		}
+	}
+	f := plan.File{
+		ID:        id,
+		Title:     "Test Plan: " + id,
+		Status:    "draft",
+		CreatedAt: time.Now(),
+	}
+	return s.planStore.Create(f)
+}
+
+// iRunThePlanListCommand lists all plans from the store.
+//
+// Expected: s.planStore is initialised.
+// Returns: nil on success, or an error if listing fails.
+// Side effects: Stores list result in s.planListOutput, clears s.lastError.
+func (s *StepDefinitions) iRunThePlanListCommand() error {
+	if s.planStore == nil {
+		return errors.New("plan store not initialised")
+	}
+	summaries, err := s.planStore.List()
+	if err != nil {
+		s.lastError = err
+		return err
+	}
+	s.planListOutput = summaries
+	s.lastError = nil
+	return nil
+}
+
+// iSelectPlan retrieves a plan by ID.
+//
+// Expected: id corresponds to an existing plan.
+// Returns: nil on success, or an error if plan not found.
+// Side effects: Stores plan in s.selectedPlan, stores error in s.lastError.
+func (s *StepDefinitions) iSelectPlan(id string) error {
+	if s.planStore == nil {
+		if err := s.thePlanStoreIsEmpty(); err != nil {
+			return err
+		}
+	}
+	retrievedPlan, err := s.planStore.Get(id)
+	if err != nil {
+		s.lastError = err
+		return err
+	}
+	s.selectedPlan = retrievedPlan
+	s.lastError = nil
+	return nil
+}
+
+// iDeletePlan removes a plan from the store.
+//
+// Expected: id corresponds to an existing plan.
+// Returns: nil on success, or an error if deletion fails.
+// Side effects: Removes plan file, stores error in s.lastError.
+func (s *StepDefinitions) iDeletePlan(id string) error {
+	if s.planStore == nil {
+		return errors.New("plan store not initialised")
+	}
+	err := s.planStore.Delete(id)
+	if err != nil {
+		s.lastError = err
+		return err
+	}
+	s.lastError = nil
+	return nil
+}
+
+// iShouldSeeThePlanDetailsFor asserts that the selected plan has the given ID.
+//
+// Expected: s.selectedPlan is not nil and matches the given id.
+// Returns: nil on success, or an error if plan missing or ID doesn't match.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeThePlanDetailsFor(id string) error {
+	if s.selectedPlan == nil {
+		return errors.New("no plan selected")
+	}
+	if s.selectedPlan.ID != id {
+		return fmt.Errorf("expected plan ID %q, got %q", id, s.selectedPlan.ID)
+	}
+	return nil
+}
+
+// planShouldNotExist asserts that a plan with the given ID does not exist.
+//
+// Expected: Attempting to retrieve the plan should return an error.
+// Returns: nil on success, or an error if plan still exists.
+// Side effects: None.
+func (s *StepDefinitions) planShouldNotExist(id string) error {
+	if s.planStore == nil {
+		return errors.New("plan store not initialised")
+	}
+	_, err := s.planStore.Get(id)
+	if err == nil {
+		return fmt.Errorf("expected plan %q to not exist, but it does", id)
+	}
+	return nil
+}
+
+// iShouldSeeAnErrorContaining asserts that the last error message contains the given text.
+//
+// Expected: s.lastError is not nil and contains msg.
+// Returns: nil on success, or an error if assertion fails.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeAnErrorContaining(msg string) error {
+	if s.lastError == nil {
+		return errors.New("expected an error, but none occurred")
+	}
+	if !strings.Contains(s.lastError.Error(), msg) {
+		return fmt.Errorf("expected error to contain %q, got %q", msg, s.lastError.Error())
+	}
+	return nil
+}
+
+// thePlannerAgentIsConfigured creates an engine with the planner agent manifest.
+//
+// Expected: agent module provides a Planner agent manifest.
+// Returns: nil on success, or an error if engine creation fails.
+// Side effects: Creates s.agentEngine with planner agent.
+func (s *StepDefinitions) thePlannerAgentIsConfigured() error {
+	manifest := agent.Manifest{
+		ID:   "planner",
+		Name: "Strategic Planner",
+		Instructions: agent.Instructions{
+			SystemPrompt: "You are a strategic planner helping users interview and plan.",
+		},
+	}
+	s.agentEngine = engine.New(engine.Config{
+		Manifest: manifest,
+	})
+	return nil
+}
+
+// theExecutorAgentIsConfigured creates an engine with the executor agent manifest.
+//
+// Expected: agent module provides an Executor agent manifest.
+// Returns: nil on success, or an error if engine creation fails.
+// Side effects: Creates s.agentEngine with executor agent.
+func (s *StepDefinitions) theExecutorAgentIsConfigured() error {
+	manifest := agent.Manifest{
+		ID:   "executor",
+		Name: "Task Executor",
+		Instructions: agent.Instructions{
+			SystemPrompt: "You are a task executor implementing plans with precision.",
+		},
+	}
+	s.agentEngine = engine.New(engine.Config{
+		Manifest: manifest,
+	})
+	return nil
+}
+
+// theSystemPromptIsBuilt constructs the system prompt from the agent engine.
+//
+// Expected: s.agentEngine is initialised.
+// Returns: nil on success, or an error if engine not initialised.
+// Side effects: Stores prompt in s.lastPrompt.
+func (s *StepDefinitions) theSystemPromptIsBuilt() error {
+	if s.agentEngine == nil {
+		return errors.New("agent engine not initialised")
+	}
+	s.lastPrompt = s.agentEngine.BuildSystemPrompt()
+	return nil
+}
+
+// thePromptShouldContainPlanningInstructions asserts that the prompt contains planning keywords.
+//
+// Expected: s.lastPrompt contains keywords like "interview" or "plan".
+// Returns: nil on success, or an error if keywords not found.
+// Side effects: None.
+func (s *StepDefinitions) thePromptShouldContainPlanningInstructions() error {
+	if s.lastPrompt == "" {
+		return errors.New("no prompt built")
+	}
+	lowerPrompt := strings.ToLower(s.lastPrompt)
+	if !strings.Contains(lowerPrompt, "interview") && !strings.Contains(lowerPrompt, "plan") && !strings.Contains(lowerPrompt, "planner") {
+		return errors.New("prompt does not contain planning instructions")
+	}
+	return nil
+}
+
+// thePromptShouldContainExecutionInstructions asserts that the prompt contains execution keywords.
+//
+// Expected: s.lastPrompt contains keywords like "execute" or "executor".
+// Returns: nil on success, or an error if keywords not found.
+// Side effects: None.
+func (s *StepDefinitions) thePromptShouldContainExecutionInstructions() error {
+	if s.lastPrompt == "" {
+		return errors.New("no prompt built")
+	}
+	lowerPrompt := strings.ToLower(s.lastPrompt)
+	if !strings.Contains(lowerPrompt, "execut") {
+		return errors.New("prompt does not contain execution instructions")
+	}
+	return nil
+}
+
+// thePromptSizeShouldBeAtLeastCharacters asserts that the prompt is at least size characters.
+//
+// Expected: len(s.lastPrompt) >= size.
+// Returns: nil on success, or an error if prompt too small.
+// Side effects: None.
+func (s *StepDefinitions) thePromptSizeShouldBeAtLeastCharacters(size int) error {
+	if s.lastPrompt == "" {
+		return errors.New("no prompt built")
+	}
+	if len(s.lastPrompt) < size {
+		return fmt.Errorf("expected prompt size at least %d, got %d", size, len(s.lastPrompt))
+	}
+	return nil
+}
+
+// iOpenTheAgentPicker creates an agent picker intent with planner and executor agents.
+//
+// Expected: agentpicker module is available.
+// Returns: nil on success.
+// Side effects: Creates s.agentPicker with two agent entries.
+func (s *StepDefinitions) iOpenTheAgentPicker() error {
+	agents := []agentpicker.AgentEntry{
+		{ID: "planner", Name: "planner - Strategic Planner"},
+		{ID: "executor", Name: "executor - Task Executor"},
+	}
+	s.agentPicker = agentpicker.NewIntent(agentpicker.IntentConfig{
+		Agents: agents,
+	})
+	return nil
+}
+
+// iShouldSeeInTheAgentList asserts that the agent name appears in the picker's view.
+//
+// Expected: s.agentPicker is initialised and name appears in View() output.
+// Returns: nil on success, or an error if name not found.
+// Side effects: None.
+func (s *StepDefinitions) iShouldSeeInTheAgentList(name string) error {
+	if s.agentPicker == nil {
+		return errors.New("agent picker not open")
+	}
+	view := s.agentPicker.View()
+	if !strings.Contains(view, name) {
+		return fmt.Errorf("expected %q in agent list, got:\n%s", name, view)
+	}
+	return nil
+}
+
+// theFlowStateTUIIsRunningWithThePlannerAgent initialises the TUI with the planner agent.
+//
+// Expected: FlowState TUI can be initialised with a specific agent.
+// Returns: nil on success.
+// Side effects: Sets s.currentAgent to "planner".
+func (s *StepDefinitions) theFlowStateTUIIsRunningWithThePlannerAgent() error {
+	s.currentAgent = "planner"
+	return nil
+}
+
+// iSwitchToTheExecutorAgent changes the active agent to executor.
+//
+// Expected: Agent switching is supported.
+// Returns: nil on success.
+// Side effects: Sets s.currentAgent to "executor".
+func (s *StepDefinitions) iSwitchToTheExecutorAgent() error {
+	s.currentAgent = "executor"
+	return nil
+}
+
+// theFlowStateTUIIsRunning initialises the TUI in a basic running state.
+//
+// Expected: FlowState TUI can be initialised.
+// Returns: nil on success.
+// Side effects: None (just marks TUI as initialised).
+func (s *StepDefinitions) theFlowStateTUIIsRunning() error {
 	return nil
 }

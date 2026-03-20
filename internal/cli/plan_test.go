@@ -112,7 +112,7 @@ var _ = Describe("Plan Command", func() {
 			out.Reset()
 			err := planCmd("plan", "select", "nonexistent")
 			Expect(err).To(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("reading plan file"))
+			Expect(out.String()).To(ContainSubstring("plan not found"))
 		})
 
 		It("displays full plan content", func() {
