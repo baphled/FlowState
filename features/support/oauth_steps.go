@@ -128,7 +128,6 @@ func RegisterOAuthSteps(ctx *godog.ScenarioContext, stepDefs *StepDefinitions) {
 	ctx.Step(`^I approve in browser$`, s.iApproveInBrowser)
 	ctx.Step(`^the TUI should detect the approval$`, s.theTUIShouldDetectTheApproval)
 	ctx.Step(`^I should see a success message$`, s.iShouldSeeASuccessMessage)
-	ctx.Step(`^I should see "Authentication successful"$`, s.iShouldSeeAuthenticationSuccessful)
 	ctx.Step(`^OAuth authentication completes$`, s.oAuthAuthenticationCompletes)
 	ctx.Step(`^GitHub Copilot should be marked as configured$`, s.gitHubCopilotShouldBeMarkedAsConfigured)
 	ctx.Step(`^I should be able to return to provider list$`, s.iShouldBeAbleToReturnToProviderList)
@@ -1362,17 +1361,6 @@ func (s *OAuthStepDefinitions) theTUIShouldDetectTheApproval() error {
 // Side effects:
 //   - None.
 func (s *OAuthStepDefinitions) iShouldSeeASuccessMessage() error {
-	return nil
-}
-
-// iShouldSeeAuthenticationSuccessful implements a BDD step definition.
-//
-// Returns:
-//   - nil.
-//
-// Side effects:
-//   - None.
-func (s *OAuthStepDefinitions) iShouldSeeAuthenticationSuccessful() error {
 	return nil
 }
 
