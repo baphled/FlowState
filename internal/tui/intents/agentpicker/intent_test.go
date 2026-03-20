@@ -125,4 +125,45 @@ var _ = Describe("AgentPickerIntent", func() {
 			} = intent
 		})
 	})
+
+	Describe("integration: multi-agent picker with navigation", func() {
+		Context("with two agents", func() {
+			BeforeEach(func() {
+				agents = []agentpicker.AgentEntry{
+					{ID: "planner", Name: "Strategic Planner"},
+					{ID: "executor", Name: "Task Executor"},
+				}
+				intent = agentpicker.NewIntent(agentpicker.IntentConfig{
+					Agents: agents,
+				})
+			})
+
+			It("displays both agents in view", func() {
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Strategic Planner"))
+				Expect(view).To(ContainSubstring("Task Executor"))
+			})
+
+			It("navigates from first to second agent on KeyDown", func() {
+				Expect(intent.SelectedAgent()).To(Equal(0))
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.SelectedAgent()).To(Equal(1))
+			})
+
+			It("returns correct agent ID on selection of second agent", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				result := intent.Result()
+				Expect(result).NotTo(BeNil())
+				Expect(result.Data).To(Equal("executor"))
+			})
+
+			It("shows cursor on selected agent after navigation", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("> Task Executor"))
+				Expect(view).NotTo(ContainSubstring("> Strategic Planner"))
+			})
+		})
+	})
 })

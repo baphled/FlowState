@@ -76,4 +76,58 @@ var _ = Describe("ToolCallWidget", func() {
 			})
 		})
 	})
+
+	Describe("integration: tool call widget state transitions", func() {
+		Context("when rendering a running tool", func() {
+			It("contains tool name and running status", func() {
+				w := widgets.NewToolCallWidget("fetch_api_data", "running")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("fetch_api_data"))
+				Expect(output).To(ContainSubstring("running"))
+			})
+
+			It("includes the tool icon", func() {
+				w := widgets.NewToolCallWidget("database_query", "running")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("⚡"))
+			})
+		})
+
+		Context("when rendering a complete tool", func() {
+			It("contains tool name and complete status", func() {
+				w := widgets.NewToolCallWidget("fetch_api_data", "complete")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("fetch_api_data"))
+				Expect(output).To(ContainSubstring("complete"))
+			})
+
+			It("has the tool icon and status marker", func() {
+				w := widgets.NewToolCallWidget("database_query", "complete")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("⚡"))
+				Expect(output).To(ContainSubstring("[complete]"))
+			})
+		})
+
+		Context("when tool transitions from running to complete", func() {
+			It("changes rendered status", func() {
+				w := widgets.NewToolCallWidget("process_data", "running")
+				runningOutput := w.Render()
+				Expect(runningOutput).To(ContainSubstring("running"))
+
+				complete := widgets.NewToolCallWidget("process_data", "complete")
+				completeOutput := complete.Render()
+				Expect(completeOutput).To(ContainSubstring("complete"))
+			})
+		})
+
+		Context("when rendering an errored tool", func() {
+			It("contains tool name and error status", func() {
+				w := widgets.NewToolCallWidget("fetch_api_data", "error")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("fetch_api_data"))
+				Expect(output).To(ContainSubstring("error"))
+			})
+		})
+	})
 })

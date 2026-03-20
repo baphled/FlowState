@@ -516,6 +516,36 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("integration: thinking and ready state display", func() {
+		Context("when chat is streaming", func() {
+			It("displays Thinking status in view", func() {
+				intent.SetStreamingForTest(true)
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Thinking"))
+			})
+		})
+
+		Context("when chat is idle", func() {
+			It("displays Ready status in view", func() {
+				intent.SetStreamingForTest(false)
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Ready"))
+			})
+		})
+
+		Context("transitioning from streaming to idle", func() {
+			It("shows status change from Thinking to Ready", func() {
+				intent.SetStreamingForTest(true)
+				streamingView := intent.View()
+				Expect(streamingView).To(ContainSubstring("Thinking"))
+
+				intent.SetStreamingForTest(false)
+				readyView := intent.View()
+				Expect(readyView).To(ContainSubstring("Ready"))
+			})
+		})
+	})
+
 	Describe("modal model selection updates engine routing", func() {
 		var (
 			eng           *engine.Engine
