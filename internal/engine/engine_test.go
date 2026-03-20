@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -201,6 +202,67 @@ var _ = Describe("Engine", func() {
 				prompt := eng.BuildSystemPrompt()
 
 				Expect(prompt).To(Equal("You are a helpful assistant."))
+			})
+		})
+
+		Context("when agent ID has an embedded prompt", func() {
+			It("uses embedded prompt as base instead of legacy SystemPrompt", func() {
+				manifest.ID = "planner"
+				manifest.Instructions.SystemPrompt = "Legacy fallback prompt"
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       skills,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("FlowState Strategic Planner"))
+				Expect(prompt).NotTo(ContainSubstring("Legacy fallback prompt"))
+			})
+		})
+
+		Context("when agent ID has no embedded prompt", func() {
+			It("falls back to legacy SystemPrompt from manifest", func() {
+				manifest.ID = "unknown-agent"
+				manifest.Instructions.SystemPrompt = "You are a helpful assistant."
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       skills,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("You are a helpful assistant."))
+			})
+		})
+
+		Context("when agent has agent-level skills", func() {
+			It("includes agent-level skill content after always-active skills", func() {
+				manifest.Capabilities.Skills = []string{"agent-skill"}
+				manifest.Capabilities.AlwaysActiveSkills = []string{"memory-keeper"}
+
+				skills = append(skills, skill.Skill{
+					Name:    "agent-skill",
+					Content: "This is an agent-level skill.",
+				})
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       skills,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("Always remember context."))
+				Expect(prompt).To(ContainSubstring("This is an agent-level skill."))
+				indexOfAlwaysActive := strings.Index(prompt, "Always remember context.")
+				indexOfAgentSkill := strings.Index(prompt, "This is an agent-level skill.")
+				Expect(indexOfAlwaysActive < indexOfAgentSkill).To(BeTrue())
 			})
 		})
 	})

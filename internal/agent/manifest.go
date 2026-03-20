@@ -59,7 +59,8 @@ type Hooks struct {
 
 // Instructions contains system prompts for an agent.
 type Instructions struct {
-	SystemPrompt string `json:"system_prompt" yaml:"system_prompt"`
+	SystemPrompt         string `json:"system_prompt" yaml:"system_prompt"`
+	StructuredPromptFile string `json:"structured_prompt_file" yaml:"structured_prompt_file"`
 }
 
 // DefaultContextManagement returns sensible default context management settings.

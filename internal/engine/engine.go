@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
@@ -204,15 +205,34 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // Returns:
-//   - The concatenated system prompt string including always-active skill content.
+//   - The concatenated system prompt string including always-active and agent-level skill content.
 //
 // Side effects:
 //   - None.
 func (e *Engine) BuildSystemPrompt() string {
 	var builder strings.Builder
-	builder.WriteString(e.manifest.Instructions.SystemPrompt)
+
+	if prompt.HasPrompt(e.manifest.ID) {
+		embeddedPrompt, err := prompt.GetPrompt(e.manifest.ID)
+		if err == nil {
+			builder.WriteString(embeddedPrompt)
+		} else {
+			builder.WriteString(e.manifest.Instructions.SystemPrompt)
+		}
+	} else {
+		builder.WriteString(e.manifest.Instructions.SystemPrompt)
+	}
 
 	for _, skillName := range e.manifest.Capabilities.AlwaysActiveSkills {
+		for i := range e.skills {
+			if e.skills[i].Name == skillName && e.skills[i].Content != "" {
+				builder.WriteString("\n\n")
+				builder.WriteString(e.skills[i].Content)
+			}
+		}
+	}
+
+	for _, skillName := range e.manifest.Capabilities.Skills {
 		for i := range e.skills {
 			if e.skills[i].Name == skillName && e.skills[i].Content != "" {
 				builder.WriteString("\n\n")
