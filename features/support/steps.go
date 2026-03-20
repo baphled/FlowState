@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -885,12 +886,16 @@ func (s *StepDefinitions) iShouldReceiveAnSSEStream() error {
 	if s.sseResponse == nil {
 		return errors.New("no SSE response received")
 	}
+	defer s.sseResponse.Body.Close()
 	contentType := s.sseResponse.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "text/event-stream") {
 		return fmt.Errorf("expected text/event-stream, got %s", contentType)
 	}
 	body := make([]byte, 4096)
-	n, _ := s.sseResponse.Body.Read(body)
+	n, err := s.sseResponse.Body.Read(body)
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("reading SSE body: %w", err)
+	}
 	s.sseChunks = strings.Split(string(body[:n]), "\n\n")
 	return nil
 }
