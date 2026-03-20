@@ -39,19 +39,19 @@ Feature: CLI Commands
 
   Scenario: Agent list subcommand shows agents or empty message
     When I run "flowstate agent list"
-    Then I should see output containing "agent"
+    Then I should see output containing "executor"
 
   Scenario: Agent info subcommand accepts an agent name
-    When I run "flowstate agent info coder"
-    Then I should see output containing "coder"
+    When I run "flowstate agent info planner"
+    Then I should see output containing "planner"
 
   Scenario: Skill list subcommand shows skills or empty message
     When I run "flowstate skill list"
     Then I should see output containing "skill"
 
   Scenario: Discover command accepts a positional message argument
-    When I run "flowstate discover write tests for the CLI"
-    Then I should see output containing "agent"
+    When I run "flowstate discover execute plan"
+    Then I should see output containing "executor"
 
   Scenario: Session list subcommand shows sessions or empty message
     When I run "flowstate session list"
