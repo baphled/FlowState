@@ -28,6 +28,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	"github.com/baphled/flowstate/internal/tool/file"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	"github.com/baphled/flowstate/internal/tool/web"
 )
 
@@ -82,7 +83,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		return nil, err
 	}
 	mcpMgr := mcpclient.NewManager()
-	appTools := buildTools()
+	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir))
 	discoveredServers := config.DiscoverMCPServers()
 	allServers := mergeMCPServers(cfg.MCPServers, discoveredServers)
 	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
@@ -293,18 +294,19 @@ func extractSkillNames(skills []skill.Skill) []string {
 // buildTools constructs and returns the default set of available tools.
 //
 // Expected:
-//   - None.
+//   - skillLoader is a non-nil skill.FileSkillLoader.
 //
 // Returns:
-//   - A slice containing bash, file, and web tools.
+//   - A slice containing bash, file, web, and skill_load tools.
 //
 // Side effects:
 //   - Initialises new tool instances.
-func buildTools() []tool.Tool {
+func buildTools(skillLoader *skill.FileSkillLoader) []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
 		file.New(),
 		web.New(),
+		skilltool.New(skillLoader),
 	}
 }
 
