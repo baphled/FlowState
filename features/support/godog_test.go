@@ -40,5 +40,6 @@ func TestFeatures(t *testing.T) {
 func InitializeScenario(ctx *godog.ScenarioContext) {
 	s := &StepDefinitions{}
 	RegisterOAuthSteps(ctx, s)
+	RegisterSkillSteps(ctx, s)
 	s.RegisterSteps(ctx)
 }
