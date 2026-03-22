@@ -35,11 +35,7 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper",
-      "token-cost-estimation",
-      "retrospective",
-      "note-taking",
-      "knowledge-base"
+      "memory-keeper"
     ],
     "mcp_servers": []
   },
