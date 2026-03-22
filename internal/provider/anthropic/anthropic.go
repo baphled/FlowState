@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
@@ -18,7 +19,9 @@ var ErrNotSupported = errors.New("anthropic does not support embeddings")
 
 var errAPIKeyRequired = errors.New("anthropic API key is required")
 var errOAuthTokenRequired = errors.New("anthropic OAuth token is required")
-var errNoOpenCodeCredentials = errors.New("no anthropic credentials in opencode auth")
+var errNoOpenCodeCredentials = errors.New(
+	"no anthropic credentials in opencode auth",
+)
 
 const (
 	providerName          = "anthropic"
@@ -29,13 +32,16 @@ const (
 	oauthBetaHeader       = "oauth-2025-04-20"
 	oauthUserAgent        = "claude-cli/2.1.2 (external, cli)"
 	oauthAppHeader        = "cli"
-	oauthBillingHeader    = "x-anthropic-billing-header: cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"
+	oauthBillingHeader    = "x-anthropic-billing-header: " +
+		"cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"
 )
 
 // Provider implements the provider.Provider interface for Anthropic Claude.
 type Provider struct {
-	client  anthropicAPI.Client
-	isOAuth bool
+	client       anthropicAPI.Client
+	isOAuth      bool
+	tokenManager *TokenManager
+	currentToken string
 }
 
 // New creates a new Anthropic provider with the given API key.
@@ -72,8 +78,7 @@ func IsOAuthToken(token string) bool {
 	return strings.HasPrefix(token, oauthTokenPrefix)
 }
 
-// NewOAuth creates a new Anthropic provider configured for OAuth token authentication.
-// OAuth tokens use the Authorization: Bearer header instead of X-Api-Key.
+// NewOAuth creates a new Anthropic provider configured for OAuth authentication.
 //
 // Expected:
 //   - token is a non-empty Anthropic OAuth token string.
@@ -88,13 +93,55 @@ func NewOAuth(token string) (*Provider, error) {
 	if token == "" {
 		return nil, errOAuthTokenRequired
 	}
-	client := anthropicAPI.NewClient(
+	return &Provider{
+		client:       newOAuthClient(token),
+		isOAuth:      true,
+		tokenManager: NewDirectTokenManager(token),
+		currentToken: token,
+	}, nil
+}
+
+// NewOAuthWithRefresh creates an OAuth provider with automatic token refresh.
+//
+// Expected:
+//   - tm is a non-nil TokenManager with valid credentials.
+//
+// Returns:
+//   - A configured Provider that refreshes tokens automatically.
+//   - An error if the initial token cannot be obtained.
+//
+// Side effects:
+//   - May perform an HTTP token refresh.
+func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
+	token, err := tm.EnsureToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("obtaining initial token: %w", err)
+	}
+	return &Provider{
+		client:       newOAuthClient(token),
+		isOAuth:      true,
+		tokenManager: tm,
+		currentToken: token,
+	}, nil
+}
+
+// newOAuthClient creates an Anthropic API client configured for OAuth bearer authentication.
+//
+// Expected:
+//   - token is a non-empty OAuth bearer token.
+//
+// Returns:
+//   - A configured Anthropic API client with OAuth headers.
+//
+// Side effects:
+//   - None.
+func newOAuthClient(token string) anthropicAPI.Client {
+	return anthropicAPI.NewClient(
 		option.WithAuthToken(token),
 		option.WithHeaderAdd("anthropic-beta", oauthBetaHeader),
 		option.WithHeaderAdd("user-agent", oauthUserAgent),
 		option.WithHeaderAdd("x-app", oauthAppHeader),
 	)
-	return &Provider{client: client, isOAuth: true}, nil
 }
 
 // tryOpenCodeAuth attempts to load Anthropic credentials from OpenCode auth.json.
@@ -114,38 +161,67 @@ func tryOpenCodeAuth(opencodePath string) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading opencode auth: %w", err)
 	}
-	if authData != nil && authData.Anthropic != nil && authData.Anthropic.Access != "" {
-		token := authData.Anthropic.Access
-		if IsOAuthToken(token) {
-			return NewOAuth(token)
-		}
+	if authData == nil || authData.Anthropic == nil {
+		return nil, errNoOpenCodeCredentials
+	}
+	if authData.Anthropic.Access == "" {
+		return nil, errNoOpenCodeCredentials
+	}
+	token := authData.Anthropic.Access
+	if !IsOAuthToken(token) {
 		return New(token)
 	}
-	return nil, errNoOpenCodeCredentials
+	return buildOAuthProvider(authData.Anthropic, opencodePath)
 }
 
-// NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode auth.json,
-// falling back to the provided API key from config.
+// buildOAuthProvider creates an OAuth provider with optional token refresh from auth credentials.
 //
 // Expected:
-//   - opencodePath is a file path to OpenCode's auth.json (or empty string to skip OpenCode).
+//   - pa contains valid Anthropic OAuth credentials.
+//   - authPath is the file path to auth.json for token persistence.
+//
+// Returns:
+//   - (*Provider, nil) on success.
+//   - (nil, error) if provider creation fails.
+//
+// Side effects:
+//   - May perform an HTTP token refresh via NewOAuthWithRefresh.
+func buildOAuthProvider(
+	pa *auth.ProviderAuth, authPath string,
+) (*Provider, error) {
+	if pa.Refresh == "" {
+		return NewOAuth(pa.Access)
+	}
+	refresher := &HTTPTokenRefresher{
+		Client: &http.Client{},
+	}
+	tm := NewTokenManager(
+		pa.Access, pa.Refresh, pa.Expires,
+		refresher, authPath,
+	)
+	return NewOAuthWithRefresh(tm)
+}
+
+// NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode
+// auth.json, falling back to the provided API key from config.
+//
+// Expected:
+//   - opencodePath is a file path to auth.json (or empty to skip).
 //   - fallbackKey is the API key from config.yaml (may be empty).
 //
 // Returns:
-//   - A configured Provider using OpenCode credential if found and valid.
+//   - A configured Provider using OpenCode credential if found.
 //   - A configured Provider using fallbackKey if OpenCode not available.
-//   - An error if OpenCode exists but cannot be parsed.
-//   - An error if neither OpenCode nor fallback key is available.
+//   - An error if neither source provides a valid credential.
 //
 // Side effects:
 //   - Reads from opencodePath if provided.
-func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
+func NewFromOpenCodeOrConfig(
+	opencodePath string, fallbackKey string,
+) (*Provider, error) {
 	if opencodePath != "" {
 		p, err := tryOpenCodeAuth(opencodePath)
-		if err != nil &&
-			!errors.Is(err, errNoOpenCodeCredentials) &&
-			!errors.Is(err, auth.ErrAuthFileNotFound) &&
-			!errors.Is(err, auth.ErrNoCredentials) {
+		if err != nil && !isExpectedAuthError(err) {
 			return nil, err
 		}
 		if p != nil {
@@ -160,6 +236,23 @@ func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider
 	return nil, errAPIKeyRequired
 }
 
+// isExpectedAuthError reports whether the error is a benign auth-file-not-found condition.
+//
+// Expected:
+//   - err is a non-nil error to classify.
+//
+// Returns:
+//   - true if the error indicates missing credentials or auth file.
+//   - false for unexpected errors that should be propagated.
+//
+// Side effects:
+//   - None.
+func isExpectedAuthError(err error) bool {
+	return errors.Is(err, errNoOpenCodeCredentials) ||
+		errors.Is(err, auth.ErrAuthFileNotFound) ||
+		errors.Is(err, auth.ErrNoCredentials)
+}
+
 // NewWithOptions creates a new Anthropic provider with the given API key and options.
 //
 // Expected:
@@ -172,11 +265,15 @@ func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider
 //
 // Side effects:
 //   - None.
-func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, error) {
+func NewWithOptions(
+	apiKey string, opts ...option.RequestOption,
+) (*Provider, error) {
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
 	}
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	allOpts := append(
+		[]option.RequestOption{option.WithAPIKey(apiKey)}, opts...,
+	)
 	client := anthropicAPI.NewClient(allOpts...)
 	return &Provider{client: client}, nil
 }
@@ -199,40 +296,64 @@ func (p *Provider) Name() string {
 //   - req contains the messages and model to use.
 //
 // Returns:
-//   - A channel of StreamChunk values containing the streamed response.
+//   - A channel of StreamChunk values for the streamed response.
 //   - An error if the request cannot be initiated.
 //
 // Side effects:
 //   - Spawns a goroutine to read from the Anthropic streaming API.
-func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+//   - May refresh the OAuth token if expired.
+func (p *Provider) Stream(
+	ctx context.Context, req provider.ChatRequest,
+) (<-chan provider.StreamChunk, error) {
+	if err := p.refreshClientIfNeeded(ctx); err != nil {
+		return nil, fmt.Errorf("refreshing token: %w", err)
+	}
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
-
 	params := p.buildRequestParams(req)
 
-	go func() {
-		defer close(ch)
-
-		stream := p.client.Messages.NewStreaming(ctx, params)
-
-		for stream.Next() {
-			event := stream.Current()
-			chunk := convertStreamEvent(event)
-			if chunk.Content != "" || chunk.Done || chunk.Error != nil {
-				select {
-				case <-ctx.Done():
-					ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-					return
-				case ch <- chunk:
-				}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-		}
-	}()
+	go p.streamMessages(ctx, params, ch)
 
 	return ch, nil
+}
+
+// streamMessages reads from the Anthropic streaming API and sends chunks to the channel.
+//
+// Expected:
+//   - ctx is a valid context for the streaming call.
+//   - params contains the configured Anthropic request parameters.
+//   - ch is an open channel for receiving stream chunks.
+//
+// Side effects:
+//   - Closes ch when streaming completes.
+//   - Makes an HTTP streaming request to the Anthropic API.
+func (p *Provider) streamMessages(
+	ctx context.Context,
+	params anthropicAPI.MessageNewParams,
+	ch chan<- provider.StreamChunk,
+) {
+	defer close(ch)
+
+	stream := p.client.Messages.NewStreaming(ctx, params)
+
+	for stream.Next() {
+		event := stream.Current()
+		chunk := convertStreamEvent(event)
+		if chunk.Content == "" && !chunk.Done && chunk.Error == nil {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			ch <- provider.StreamChunk{
+				Error: ctx.Err(), Done: true,
+			}
+			return
+		case ch <- chunk:
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		ch <- provider.StreamChunk{Error: err, Done: true}
+	}
 }
 
 // Chat sends a non-streaming chat request to the Anthropic API.
@@ -247,12 +368,20 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 //
 // Side effects:
 //   - Makes an HTTP request to the Anthropic API.
-func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+//   - May refresh the OAuth token if expired.
+func (p *Provider) Chat(
+	ctx context.Context, req provider.ChatRequest,
+) (provider.ChatResponse, error) {
+	if err := p.refreshClientIfNeeded(ctx); err != nil {
+		return provider.ChatResponse{},
+			fmt.Errorf("refreshing token: %w", err)
+	}
 	params := p.buildRequestParams(req)
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("anthropic chat failed: %w", err)
+		return provider.ChatResponse{},
+			fmt.Errorf("anthropic chat failed: %w", err)
 	}
 
 	content := extractTextContent(resp.Content)
@@ -265,29 +394,62 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		Usage: provider.Usage{
 			PromptTokens:     int(resp.Usage.InputTokens),
 			CompletionTokens: int(resp.Usage.OutputTokens),
-			TotalTokens:      int(resp.Usage.InputTokens + resp.Usage.OutputTokens),
+			TotalTokens: int(
+				resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			),
 		},
 	}, nil
+}
+
+// refreshClientIfNeeded ensures the OAuth token is current and rebuilds the client if it changed.
+//
+// Expected:
+//   - ctx is a valid context for potential token refresh.
+//
+// Returns:
+//   - nil if the token is valid or was refreshed successfully.
+//   - An error if token refresh fails.
+//
+// Side effects:
+//   - May perform an HTTP token refresh.
+//   - May replace the internal Anthropic API client.
+func (p *Provider) refreshClientIfNeeded(
+	ctx context.Context,
+) error {
+	if p.tokenManager == nil {
+		return nil
+	}
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return err
+	}
+	if token != p.currentToken {
+		p.client = newOAuthClient(token)
+		p.currentToken = token
+	}
+	return nil
 }
 
 // Embed returns an error as Anthropic does not support embeddings.
 //
 // Expected:
-//   - This method always fails as Anthropic does not offer embedding support.
+//   - This method always fails as embeddings are not offered.
 //
 // Returns:
 //   - nil and ErrNotSupported unconditionally.
 //
 // Side effects:
 //   - None.
-func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+func (p *Provider) Embed(
+	_ context.Context, _ provider.EmbedRequest,
+) ([]float64, error) {
 	return nil, ErrNotSupported
 }
 
-// Models returns the list of available Anthropic models by querying the API.
+// Models returns the list of available Anthropic models.
 //
 // Returns:
-//   - A slice of model definitions fetched from the Anthropic Models API.
+//   - A slice of model definitions from the Anthropic Models API.
 //   - A hardcoded fallback list if the API call fails.
 //
 // Side effects:
@@ -300,17 +462,19 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	return fallbackModels(), nil
 }
 
-// fetchModels queries the Anthropic Models API for available models.
+// fetchModels retrieves the available model list from the Anthropic Models API.
 //
 // Returns:
-//   - A slice of provider.Model values from the API.
-//   - An error if the API call fails.
+//   - ([]provider.Model, nil) on success.
+//   - (nil, error) if the API call fails.
 //
 // Side effects:
 //   - Makes an HTTP request to the Anthropic Models API.
 func (p *Provider) fetchModels() ([]provider.Model, error) {
 	ctx := context.Background()
-	pager := p.client.Models.ListAutoPaging(ctx, anthropicAPI.ModelListParams{})
+	pager := p.client.Models.ListAutoPaging(
+		ctx, anthropicAPI.ModelListParams{},
+	)
 
 	var models []provider.Model
 	for pager.Next() {
@@ -327,65 +491,109 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 	return models, nil
 }
 
-// fallbackModels returns a hardcoded list of known Anthropic models.
+// fallbackModels returns a hardcoded list of Anthropic models when the API is unavailable.
 //
 // Returns:
-//   - A static slice of well-known Anthropic model definitions.
+//   - A slice of commonly available Anthropic models.
 //
 // Side effects:
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "claude-sonnet-4-20250514", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "claude-3-5-haiku-latest", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "claude-opus-4-20250514", Provider: providerName, ContextLength: defaultContextLength},
+		{
+			ID: "claude-sonnet-4-20250514", Provider: providerName,
+			ContextLength: defaultContextLength,
+		},
+		{
+			ID: "claude-3-5-haiku-latest", Provider: providerName,
+			ContextLength: defaultContextLength,
+		},
+		{
+			ID: "claude-opus-4-20250514", Provider: providerName,
+			ContextLength: defaultContextLength,
+		},
 	}
 }
 
-// buildAssistantMessage constructs an assistant message with optional tool calls.
+// buildAssistantMessage converts a provider message to an Anthropic assistant message parameter.
 //
 // Expected:
-//   - m is a provider message with role "assistant".
+//   - m is a message with role "assistant".
 //
 // Returns:
-//   - A MessageParam for the assistant message, or nil if empty.
+//   - A non-nil MessageParam if the message has content or tool calls.
+//   - nil if the message is empty.
 //
 // Side effects:
 //   - None.
-func buildAssistantMessage(m provider.Message) *anthropicAPI.MessageParam {
+func buildAssistantMessage(
+	m provider.Message,
+) *anthropicAPI.MessageParam {
 	if len(m.ToolCalls) > 0 {
-		blocks := make([]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls)+1)
-		if m.Content != "" {
-			blocks = append(blocks, anthropicAPI.NewTextBlock(m.Content))
-		}
-		for _, tc := range m.ToolCalls {
-			blocks = append(blocks, anthropicAPI.NewToolUseBlock(tc.ID, tc.Arguments, tc.Name))
-		}
-		msg := anthropicAPI.NewAssistantMessage(blocks...)
-		return &msg
+		return buildAssistantWithTools(m)
 	}
 	if m.Content != "" {
-		msg := anthropicAPI.NewAssistantMessage(anthropicAPI.NewTextBlock(m.Content))
+		msg := anthropicAPI.NewAssistantMessage(
+			anthropicAPI.NewTextBlock(m.Content),
+		)
 		return &msg
 	}
 	return nil
 }
 
-// buildToolResultMessage constructs a user message containing tool result blocks.
+// buildAssistantWithTools creates an assistant message with text and tool-use blocks.
 //
 // Expected:
-//   - m is a provider message with role "tool".
+//   - m is a message with at least one tool call.
 //
 // Returns:
-//   - A MessageParam for the tool result message, or nil if empty.
+//   - A MessageParam containing text and tool-use content blocks.
 //
 // Side effects:
 //   - None.
-func buildToolResultMessage(m provider.Message) *anthropicAPI.MessageParam {
-	blocks := make([]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls))
+func buildAssistantWithTools(
+	m provider.Message,
+) *anthropicAPI.MessageParam {
+	blocks := make(
+		[]anthropicAPI.ContentBlockParamUnion,
+		0, len(m.ToolCalls)+1,
+	)
+	if m.Content != "" {
+		blocks = append(
+			blocks, anthropicAPI.NewTextBlock(m.Content),
+		)
+	}
+	for _, tc := range m.ToolCalls {
+		blocks = append(blocks, anthropicAPI.NewToolUseBlock(
+			tc.ID, tc.Arguments, tc.Name,
+		))
+	}
+	msg := anthropicAPI.NewAssistantMessage(blocks...)
+	return &msg
+}
+
+// buildToolResultMessage creates an Anthropic user message containing tool result blocks.
+//
+// Expected:
+//   - m is a message with role "tool" and associated tool calls.
+//
+// Returns:
+//   - A non-nil MessageParam if tool results exist.
+//   - nil if no tool calls are present.
+//
+// Side effects:
+//   - None.
+func buildToolResultMessage(
+	m provider.Message,
+) *anthropicAPI.MessageParam {
+	blocks := make(
+		[]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls),
+	)
 	for _, tc := range m.ToolCalls {
 		isError := strings.HasPrefix(m.Content, "Error:")
-		blocks = append(blocks, anthropicAPI.NewToolResultBlock(tc.ID, m.Content, isError))
+		blocks = append(blocks, anthropicAPI.NewToolResultBlock(
+			tc.ID, m.Content, isError,
+		))
 	}
 	if len(blocks) > 0 {
 		msg := anthropicAPI.NewUserMessage(blocks...)
@@ -394,19 +602,19 @@ func buildToolResultMessage(m provider.Message) *anthropicAPI.MessageParam {
 	return nil
 }
 
-// sanitizeMessageSequence ensures the message sequence is valid for Anthropic's API,
-// which requires strict user/assistant alternation.
+// sanitizeMessageSequence removes system messages and merges consecutive user messages.
 //
 // Expected:
-//   - msgs is a slice of provider messages from the context window.
+//   - msgs is a slice of provider messages in conversation order.
 //
 // Returns:
-//   - A sanitized slice where consecutive user messages are merged into one.
-//   - System messages are excluded (handled separately by extractSystemPrompt).
+//   - A sanitized slice with system messages removed and consecutive user messages merged.
 //
 // Side effects:
 //   - None.
-func sanitizeMessageSequence(msgs []provider.Message) []provider.Message {
+func sanitizeMessageSequence(
+	msgs []provider.Message,
+) []provider.Message {
 	result := make([]provider.Message, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "system" {
@@ -426,15 +634,17 @@ func sanitizeMessageSequence(msgs []provider.Message) []provider.Message {
 	return result
 }
 
-// mergeConsecutiveUserMessages combines two consecutive user messages into the first one.
+// mergeConsecutiveUserMessages appends content from m into last to combine adjacent user messages.
 //
 // Expected:
-//   - last is a pointer to a user message to be updated.
-//   - m is the next user message to merge into last.
+//   - last is a non-nil pointer to the preceding user message.
+//   - m is the subsequent user message to merge.
 //
 // Side effects:
-//   - Updates last.Content in place by appending m.Content with "\n\n" separator if both non-empty.
-func mergeConsecutiveUserMessages(last *provider.Message, m provider.Message) {
+//   - Mutates last.Content by appending m.Content.
+func mergeConsecutiveUserMessages(
+	last *provider.Message, m provider.Message,
+) {
 	if m.Content != "" {
 		if last.Content != "" {
 			last.Content += "\n\n" + m.Content
@@ -444,25 +654,31 @@ func mergeConsecutiveUserMessages(last *provider.Message, m provider.Message) {
 	}
 }
 
-// buildMessages converts provider messages to Anthropic API message parameters,
-// filtering out system role messages which are handled separately.
+// buildMessages converts provider messages to Anthropic API message parameters.
 //
 // Expected:
-//   - msgs is a slice of provider messages with role and content fields.
+//   - msgs is a slice of provider messages in conversation order.
 //
 // Returns:
-//   - A slice of Anthropic MessageParam values.
-//   - Only user and assistant roles are converted; system and other roles are skipped.
+//   - A slice of Anthropic MessageParam values ready for the API.
 //
 // Side effects:
 //   - None.
-func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
+func buildMessages(
+	msgs []provider.Message,
+) []anthropicAPI.MessageParam {
 	sanitized := sanitizeMessageSequence(msgs)
-	messages := make([]anthropicAPI.MessageParam, 0, len(sanitized))
+	messages := make(
+		[]anthropicAPI.MessageParam, 0, len(sanitized),
+	)
 	for _, m := range sanitized {
 		switch m.Role {
 		case "user":
-			messages = append(messages, anthropicAPI.NewUserMessage(anthropicAPI.NewTextBlock(m.Content)))
+			messages = append(messages,
+				anthropicAPI.NewUserMessage(
+					anthropicAPI.NewTextBlock(m.Content),
+				),
+			)
 		case "assistant":
 			if msg := buildAssistantMessage(m); msg != nil {
 				messages = append(messages, *msg)
@@ -476,53 +692,57 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 	return messages
 }
 
-// extractSystemPrompt collects all system role messages and returns them as
-// Anthropic TextBlockParam values suitable for the MessageNewParams.System field.
-// When the provider uses OAuth authentication, CacheControl is omitted because
-// prompt caching is not supported on the OAuth path.
+// extractSystemPrompt collects system messages into text blocks, prepending the billing header for OAuth.
 //
 // Expected:
-//   - msgs is a slice of provider messages that may include system role messages.
+//   - msgs is a slice of provider messages that may include system messages.
 //
 // Returns:
-//   - A slice of TextBlockParam values from system messages.
-//   - An empty slice if no system messages exist.
+//   - A slice of TextBlockParam values for the system prompt.
 //
 // Side effects:
 //   - None.
-func (p *Provider) extractSystemPrompt(msgs []provider.Message) []anthropicAPI.TextBlockParam {
+func (p *Provider) extractSystemPrompt(
+	msgs []provider.Message,
+) []anthropicAPI.TextBlockParam {
 	var blocks []anthropicAPI.TextBlockParam
 	if p.isOAuth {
-		blocks = append(blocks, anthropicAPI.TextBlockParam{Text: oauthBillingHeader})
+		blocks = append(blocks, anthropicAPI.TextBlockParam{
+			Text: oauthBillingHeader,
+		})
 	}
 	for _, m := range msgs {
-		if m.Role == "system" && m.Content != "" {
-			block := anthropicAPI.TextBlockParam{Text: m.Content}
-			if !p.isOAuth {
-				block.CacheControl = anthropicAPI.NewCacheControlEphemeralParam()
-			}
-			blocks = append(blocks, block)
+		if m.Role != "system" || m.Content == "" {
+			continue
 		}
+		block := anthropicAPI.TextBlockParam{Text: m.Content}
+		if !p.isOAuth {
+			block.CacheControl = anthropicAPI.NewCacheControlEphemeralParam()
+		}
+		blocks = append(blocks, block)
 	}
 	return blocks
 }
 
-// buildTools converts provider tool definitions to Anthropic API tool parameters.
+// buildTools converts provider tool definitions to Anthropic tool parameters.
 //
 // Expected:
-//   - tools is a slice of provider.Tool values with name, description, and schema.
+//   - tools is a slice of provider tool definitions.
 //
 // Returns:
-//   - A slice of Anthropic ToolUnionParam values.
-//   - An empty slice if no tools are provided.
+//   - A slice of Anthropic ToolUnionParam values, or nil if tools is empty.
 //
 // Side effects:
 //   - None.
-func buildTools(tools []provider.Tool) []anthropicAPI.ToolUnionParam {
+func buildTools(
+	tools []provider.Tool,
+) []anthropicAPI.ToolUnionParam {
 	if len(tools) == 0 {
 		return nil
 	}
-	result := make([]anthropicAPI.ToolUnionParam, 0, len(tools))
+	result := make(
+		[]anthropicAPI.ToolUnionParam, 0, len(tools),
+	)
 	for _, t := range tools {
 		toolParam := anthropicAPI.ToolParam{
 			Name:        t.Name,
@@ -532,23 +752,26 @@ func buildTools(tools []provider.Tool) []anthropicAPI.ToolUnionParam {
 				Required:   t.Schema.Required,
 			},
 		}
-		result = append(result, anthropicAPI.ToolUnionParam{OfTool: &toolParam})
+		result = append(result, anthropicAPI.ToolUnionParam{
+			OfTool: &toolParam,
+		})
 	}
 	return result
 }
 
-// buildRequestParams constructs the Anthropic MessageNewParams from a ChatRequest,
-// properly mapping system prompts, messages, tools, and model.
+// buildRequestParams assembles the Anthropic API request from a ChatRequest.
 //
 // Expected:
-//   - req is a valid provider.ChatRequest.
+//   - req contains the model, messages, and optional tools for the request.
 //
 // Returns:
-//   - A fully populated MessageNewParams ready for the Anthropic API.
+//   - A fully configured MessageNewParams for the Anthropic API.
 //
 // Side effects:
 //   - None.
-func (p *Provider) buildRequestParams(req provider.ChatRequest) anthropicAPI.MessageNewParams {
+func (p *Provider) buildRequestParams(
+	req provider.ChatRequest,
+) anthropicAPI.MessageNewParams {
 	params := anthropicAPI.MessageNewParams{
 		Model:       req.Model,
 		MaxTokens:   defaultMaxTokens,
@@ -556,8 +779,9 @@ func (p *Provider) buildRequestParams(req provider.ChatRequest) anthropicAPI.Mes
 		Messages:    buildMessages(req.Messages),
 	}
 
-	if systemBlocks := p.extractSystemPrompt(req.Messages); len(systemBlocks) > 0 {
-		params.System = systemBlocks
+	sysBlocks := p.extractSystemPrompt(req.Messages)
+	if len(sysBlocks) > 0 {
+		params.System = sysBlocks
 	}
 
 	if tools := buildTools(req.Tools); len(tools) > 0 {
@@ -567,18 +791,19 @@ func (p *Provider) buildRequestParams(req provider.ChatRequest) anthropicAPI.Mes
 	return params
 }
 
-// convertStreamEvent transforms an Anthropic stream event into a provider StreamChunk.
+// convertStreamEvent maps an Anthropic stream event to a provider StreamChunk.
 //
 // Expected:
-//   - event is a valid Anthropic MessageStreamEventUnion.
+//   - event is a valid Anthropic streaming event.
 //
 // Returns:
-//   - A StreamChunk with content, tool call, or done flag set appropriately.
-//   - An empty StreamChunk if the event type is not recognised.
+//   - A StreamChunk with content, tool call data, or done signal.
 //
 // Side effects:
 //   - None.
-func convertStreamEvent(event anthropicAPI.MessageStreamEventUnion) provider.StreamChunk {
+func convertStreamEvent(
+	event anthropicAPI.MessageStreamEventUnion,
+) provider.StreamChunk {
 	switch event.Type {
 	case "content_block_delta":
 		if event.Delta.Type == "text_delta" {
@@ -600,18 +825,19 @@ func convertStreamEvent(event anthropicAPI.MessageStreamEventUnion) provider.Str
 	return provider.StreamChunk{}
 }
 
-// extractTextContent retrieves the first text block from a content block slice.
+// extractTextContent returns the text from the first text-type content block.
 //
 // Expected:
-//   - blocks is a slice of Anthropic content blocks (may be empty).
+//   - blocks is a slice of Anthropic content blocks from a response.
 //
 // Returns:
-//   - The text content of the first text block found.
-//   - An empty string if no text block exists.
+//   - The text content of the first text block, or empty string if none found.
 //
 // Side effects:
 //   - None.
-func extractTextContent(blocks []anthropicAPI.ContentBlockUnion) string {
+func extractTextContent(
+	blocks []anthropicAPI.ContentBlockUnion,
+) string {
 	for i := range blocks {
 		if blocks[i].Type == "text" {
 			return blocks[i].Text
