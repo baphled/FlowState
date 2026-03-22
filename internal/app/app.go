@@ -97,7 +97,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Manifest:          defaultManifest,
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,
-		HookChain:         buildHookChain(learningStore, alwaysActiveSkills),
+		HookChain:         buildHookChain(learningStore, alwaysActiveSkills, func() agent.Manifest { return defaultManifest }),
 		Tools:             appTools,
 		ToolRegistry:      toolRegistry,
 		PermissionHandler: permHandler,
@@ -426,21 +426,31 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 	return skills, alwaysActiveSkills
 }
 
-// buildHookChain constructs a hook chain with logging, learning, and context injection hooks.
+// buildHookChain constructs a hook chain with logging, learning, skill auto-loading, and context injection hooks.
 //
 // Expected:
 //   - learningStore is a non-nil JSONFileStore for persisting learning data.
 //   - alwaysActiveSkills is a non-nil slice of skills to inject into context.
+//   - manifestGetter returns the current agent manifest for skill selection.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
 //
 // Side effects:
-//   - None.
-func buildHookChain(learningStore *learning.JSONFileStore, alwaysActiveSkills []skill.Skill) *hook.Chain {
+//   - Reads skill-autoloader.yaml from the config directory if it exists.
+func buildHookChain(
+	learningStore *learning.JSONFileStore,
+	alwaysActiveSkills []skill.Skill,
+	manifestGetter func() agent.Manifest,
+) *hook.Chain {
+	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
+	if err != nil {
+		cfg = hook.DefaultSkillAutoLoaderConfig()
+	}
 	return hook.NewChain(
 		hook.LoggingHook(),
 		hook.LearningHook(learningStore),
+		hook.SkillAutoLoaderHook(cfg, manifestGetter),
 		hook.ContextInjectionHook(alwaysActiveSkills, extractSkillNames(alwaysActiveSkills)),
 	)
 }
