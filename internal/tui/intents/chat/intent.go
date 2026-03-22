@@ -327,10 +327,6 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		return
 	}
 
-	if msg.Done && !i.streaming && i.response == "" {
-		return
-	}
-
 	if !msg.Done {
 		i.response += msg.Content
 		if msg.ToolCall != nil {
@@ -374,10 +370,12 @@ func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
 			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
 		}
 	}
-	i.messages = append(i.messages, chat.Message{
-		Role:    "assistant",
-		Content: content,
-	})
+	if content != "" {
+		i.messages = append(i.messages, chat.Message{
+			Role:    "assistant",
+			Content: content,
+		})
+	}
 	i.streaming = false
 	i.response = ""
 }
