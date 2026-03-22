@@ -46,6 +46,16 @@ func RegisterSkillAutoloadingSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the skill documentation should not be inlined in the prompt$`, s.theSkillDocumentationShouldNotBeInlinedInThePrompt)
 }
 
+// runSelectionAndCapture runs skill selection and builds a captured chat request.
+//
+// Expected:
+//   - s.cfg is a non-nil SkillAutoLoaderConfig.
+//   - s.manifest is populated with agent details.
+//   - s.prompt is set to the user prompt text.
+//
+// Side effects:
+//   - Sets s.selection with the skill selection result.
+//   - Sets s.capturedReq with a ChatRequest containing the lean skill injection.
 func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 	input := hook.SkillSelectionInput{
 		AgentID:            s.manifest.ID,
@@ -129,6 +139,10 @@ func (s *SkillAutoloadingStepDefinitions) theBaselineSkillsShouldBePresentInTheS
 
 // theSkillsShouldIncludeAnd verifies two specific skills are in the selection.
 //
+// Expected:
+//   - skill1 and skill2 are the skill names to check.
+//   - s.capturedReq is non-nil from a prior session start step.
+//
 // Returns:
 //   - nil if both skills found, error otherwise.
 //
@@ -149,6 +163,9 @@ func (s *SkillAutoloadingStepDefinitions) theSkillsShouldIncludeAnd(skill1, skil
 }
 
 // anAgentManifestSpecifiesTheSkill configures a manifest with the given skill.
+//
+// Expected:
+//   - skillName is the skill to include in the agent manifest.
 //
 // Returns:
 //   - nil on success.
@@ -184,6 +201,10 @@ func (s *SkillAutoloadingStepDefinitions) theAgentIsStarted() error {
 
 // theSystemPromptShouldIncludeTheSkill verifies a specific skill is in the prompt.
 //
+// Expected:
+//   - skillName is the skill name to check for in the system prompt.
+//   - s.capturedReq is non-nil from a prior agent start step.
+//
 // Returns:
 //   - nil if skill found, error otherwise.
 //
@@ -201,6 +222,9 @@ func (s *SkillAutoloadingStepDefinitions) theSystemPromptShouldIncludeTheSkill(s
 }
 
 // thePromptContainsTheKeyword sets up a prompt containing the keyword and configures a matching pattern.
+//
+// Expected:
+//   - keyword is the keyword to embed in the prompt and match against.
 //
 // Returns:
 //   - nil on success.
@@ -239,6 +263,10 @@ func (s *SkillAutoloadingStepDefinitions) theAgentSessionIsCreated() error {
 }
 
 // theSystemShouldInjectTheSkillIntoTheSystemPrompt verifies a skill was injected.
+//
+// Expected:
+//   - skillName is the skill name to check for in the system prompt.
+//   - s.capturedReq is non-nil from a prior session creation step.
 //
 // Returns:
 //   - nil if skill found, error otherwise.

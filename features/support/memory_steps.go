@@ -73,6 +73,16 @@ func RegisterMemorySteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the entity "([^"]*)" should still exist after restart$`, m.theEntityShouldStillExistAfterRestart)
 }
 
+// ensureTmpDir creates a temporary directory if one does not already exist.
+//
+// Expected:
+//   - No preconditions required.
+//
+// Returns:
+//   - nil on success, error if directory creation fails.
+//
+// Side effects:
+//   - Sets m.tmpDir and m.storePath.
 func (m *MemoryStepDefinitions) ensureTmpDir() error {
 	if m.tmpDir != "" {
 		return nil
@@ -86,6 +96,16 @@ func (m *MemoryStepDefinitions) ensureTmpDir() error {
 	return nil
 }
 
+// ensureGraphAndStore initialises the graph and store if not already set.
+//
+// Expected:
+//   - No preconditions required.
+//
+// Returns:
+//   - nil on success, error if initialisation fails.
+//
+// Side effects:
+//   - Sets m.graph and m.store via ensureTmpDir.
 func (m *MemoryStepDefinitions) ensureGraphAndStore() error {
 	if m.graph != nil {
 		return nil
@@ -111,6 +131,11 @@ func (m *MemoryStepDefinitions) theMemoryServerIsRunning() error {
 
 // iCreateAnEntityNamedWithDescription creates an entity in the graph.
 //
+// Expected:
+//   - name is the entity name to create.
+//   - description is the observation text to attach.
+//   - m.graph is non-nil from a prior Given step.
+//
 // Returns:
 //   - nil on success.
 //
@@ -128,6 +153,10 @@ func (m *MemoryStepDefinitions) iCreateAnEntityNamedWithDescription(name, descri
 
 // iShouldBeAbleToRetrieveTheEntity retrieves an entity by name and verifies it exists.
 //
+// Expected:
+//   - name is the entity name to retrieve.
+//   - m.graph is non-nil and contains the entity.
+//
 // Returns:
 //   - nil if found, error otherwise.
 //
@@ -143,6 +172,10 @@ func (m *MemoryStepDefinitions) iShouldBeAbleToRetrieveTheEntity(name string) er
 }
 
 // theEntityDetailsShouldInclude verifies the retrieved entity contains the expected detail.
+//
+// Expected:
+//   - detail is the observation text to check for.
+//   - m.lastEntity is populated from a prior retrieve step.
 //
 // Returns:
 //   - nil if detail found, error otherwise.
@@ -161,6 +194,9 @@ func (m *MemoryStepDefinitions) theEntityDetailsShouldInclude(detail string) err
 }
 
 // theMemoryServerContainsEntitiesAnd creates three named entities in the graph.
+//
+// Expected:
+//   - name1, name2, and name3 are unique entity names.
 //
 // Returns:
 //   - nil on success.
@@ -181,6 +217,10 @@ func (m *MemoryStepDefinitions) theMemoryServerContainsEntitiesAnd(name1, name2,
 
 // iSearchForEntitiesWithTheQuery searches the graph by query.
 //
+// Expected:
+//   - query is the search string to match against.
+//   - m.graph is non-nil from a prior Given step.
+//
 // Returns:
 //   - nil on success.
 //
@@ -195,6 +235,10 @@ func (m *MemoryStepDefinitions) iSearchForEntitiesWithTheQuery(query string) err
 }
 
 // iShouldSeeInTheSearchResults verifies the search results contain the named entity.
+//
+// Expected:
+//   - name is the entity name expected in search results.
+//   - m.lastSearch is populated from a prior search step.
 //
 // Returns:
 //   - nil if found, error otherwise.
@@ -212,6 +256,10 @@ func (m *MemoryStepDefinitions) iShouldSeeInTheSearchResults(name string) error 
 
 // iShouldNotSeeOrInTheSearchResults verifies the search results exclude two named entities.
 //
+// Expected:
+//   - name1 and name2 are entity names that should be absent.
+//   - m.lastSearch is populated from a prior search step.
+//
 // Returns:
 //   - nil if neither found, error otherwise.
 //
@@ -227,6 +275,9 @@ func (m *MemoryStepDefinitions) iShouldNotSeeOrInTheSearchResults(name1, name2 s
 }
 
 // theEntityExistsInTheMemoryServer creates a named entity in the graph.
+//
+// Expected:
+//   - name is the entity name to create.
 //
 // Returns:
 //   - nil on success.
@@ -245,6 +296,11 @@ func (m *MemoryStepDefinitions) theEntityExistsInTheMemoryServer(name string) er
 
 // iAddTheObservationTo adds an observation to an existing entity.
 //
+// Expected:
+//   - observation is the observation text to add.
+//   - entityName is the target entity name.
+//   - m.graph is non-nil from a prior Given step.
+//
 // Returns:
 //   - nil on success, error if entity not found.
 //
@@ -258,6 +314,11 @@ func (m *MemoryStepDefinitions) iAddTheObservationTo(observation, entityName str
 }
 
 // theEntityShouldIncludeTheObservation verifies the entity contains the expected observation.
+//
+// Expected:
+//   - entityName is the entity to inspect.
+//   - observation is the observation text to find.
+//   - m.graph is non-nil and contains the entity.
 //
 // Returns:
 //   - nil if found, error otherwise.
@@ -278,6 +339,9 @@ func (m *MemoryStepDefinitions) theEntityShouldIncludeTheObservation(entityName,
 }
 
 // theEntityExistsAndIsRelatedTo creates two entities and a relation between them.
+//
+// Expected:
+//   - entity1 and entity2 are the entity names to create and relate.
 //
 // Returns:
 //   - nil on success.
@@ -300,6 +364,10 @@ func (m *MemoryStepDefinitions) theEntityExistsAndIsRelatedTo(entity1, entity2 s
 
 // iDeleteTheEntity deletes an entity from the graph.
 //
+// Expected:
+//   - name is the entity name to delete.
+//   - m.graph is non-nil from a prior Given step.
+//
 // Returns:
 //   - nil on success.
 //
@@ -315,6 +383,10 @@ func (m *MemoryStepDefinitions) iDeleteTheEntity(name string) error {
 
 // theEntityShouldNoLongerExistInTheMemoryServer verifies the entity was deleted.
 //
+// Expected:
+//   - name is the entity name expected to be absent.
+//   - m.graph is non-nil from a prior Given step.
+//
 // Returns:
 //   - nil if absent, error if still exists.
 //
@@ -329,6 +401,10 @@ func (m *MemoryStepDefinitions) theEntityShouldNoLongerExistInTheMemoryServer(na
 }
 
 // anyRelationsInvolvingShouldBeRemoved verifies no relations reference the deleted entity.
+//
+// Expected:
+//   - name is the entity name to check for in remaining relations.
+//   - m.graph is non-nil from a prior Given step.
 //
 // Returns:
 //   - nil if no relations found, error otherwise.
@@ -346,6 +422,10 @@ func (m *MemoryStepDefinitions) anyRelationsInvolvingShouldBeRemoved(name string
 }
 
 // iAttemptToRetrieveTheEntity tries to find an entity and stores the error state.
+//
+// Expected:
+//   - name is the entity name to look up.
+//   - m.graph is non-nil from a prior Given step.
 //
 // Returns:
 //   - nil (always; error is stored in m.lastErr).
@@ -412,6 +492,10 @@ func (m *MemoryStepDefinitions) iRestartTheMemoryServer() error {
 }
 
 // theEntityShouldStillExistAfterRestart verifies entity survived the restart.
+//
+// Expected:
+//   - name is the entity name to verify existence of.
+//   - m.graph is non-nil and has been reloaded from a prior restart step.
 //
 // Returns:
 //   - nil if found, error otherwise.
