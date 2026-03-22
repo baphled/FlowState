@@ -99,6 +99,9 @@ func (s *SkillAutoloadingStepDefinitions) theAgentSystemIsInitialised() error {
 // Side effects:
 //   - Runs skill selection and captures the request.
 func (s *SkillAutoloadingStepDefinitions) aNewAgentSessionStartsWithAnyPrompt() error {
+	if s.cfg == nil {
+		return errors.New("agent system not initialised")
+	}
 	s.prompt = "Hello, help me with something"
 	s.runSelectionAndCapture()
 	return nil
@@ -171,6 +174,9 @@ func (s *SkillAutoloadingStepDefinitions) anAgentManifestSpecifiesTheSkill(skill
 // Side effects:
 //   - Runs skill selection and captures the request.
 func (s *SkillAutoloadingStepDefinitions) theAgentIsStarted() error {
+	if s.cfg == nil {
+		return errors.New("agent system not initialised")
+	}
 	s.prompt = "Help me with a task"
 	s.runSelectionAndCapture()
 	return nil
@@ -225,6 +231,9 @@ func (s *SkillAutoloadingStepDefinitions) thePromptContainsTheKeyword(keyword st
 // Side effects:
 //   - Runs skill selection and captures the request.
 func (s *SkillAutoloadingStepDefinitions) theAgentSessionIsCreated() error {
+	if s.cfg == nil {
+		return errors.New("agent system not initialised")
+	}
 	s.runSelectionAndCapture()
 	return nil
 }
@@ -248,6 +257,9 @@ func (s *SkillAutoloadingStepDefinitions) theSystemShouldInjectTheSkillIntoTheSy
 // Side effects:
 //   - Runs skill selection and captures the request.
 func (s *SkillAutoloadingStepDefinitions) aSkillIsInjected() error {
+	if s.cfg == nil {
+		return errors.New("agent system not initialised")
+	}
 	if s.capturedReq == nil {
 		s.prompt = "Hello"
 		s.runSelectionAndCapture()

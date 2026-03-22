@@ -117,6 +117,9 @@ func (m *MemoryStepDefinitions) theMemoryServerIsRunning() error {
 // Side effects:
 //   - Adds entity to m.graph.
 func (m *MemoryStepDefinitions) iCreateAnEntityNamedWithDescription(name, description string) error {
+	if m.graph == nil {
+		return errors.New("graph not initialized")
+	}
 	m.graph.CreateEntities([]memory.Entity{
 		{Name: name, EntityType: "general", Observations: []string{description}},
 	})
@@ -184,6 +187,9 @@ func (m *MemoryStepDefinitions) theMemoryServerContainsEntitiesAnd(name1, name2,
 // Side effects:
 //   - Sets m.lastSearch.
 func (m *MemoryStepDefinitions) iSearchForEntitiesWithTheQuery(query string) error {
+	if m.graph == nil {
+		return errors.New("graph not initialized")
+	}
 	m.lastSearch = m.graph.SearchNodes(query)
 	return nil
 }
@@ -245,6 +251,9 @@ func (m *MemoryStepDefinitions) theEntityExistsInTheMemoryServer(name string) er
 // Side effects:
 //   - Modifies entity observations in m.graph.
 func (m *MemoryStepDefinitions) iAddTheObservationTo(observation, entityName string) error {
+	if m.graph == nil {
+		return errors.New("graph not initialized")
+	}
 	return m.graph.AddObservations(entityName, []string{observation})
 }
 
@@ -297,6 +306,9 @@ func (m *MemoryStepDefinitions) theEntityExistsAndIsRelatedTo(entity1, entity2 s
 // Side effects:
 //   - Removes entity and cascading relations from m.graph.
 func (m *MemoryStepDefinitions) iDeleteTheEntity(name string) error {
+	if m.graph == nil {
+		return errors.New("graph not initialized")
+	}
 	m.graph.DeleteEntities([]string{name})
 	return nil
 }
@@ -341,6 +353,9 @@ func (m *MemoryStepDefinitions) anyRelationsInvolvingShouldBeRemoved(name string
 // Side effects:
 //   - Sets m.lastErr.
 func (m *MemoryStepDefinitions) iAttemptToRetrieveTheEntity(name string) error {
+	if m.graph == nil {
+		return errors.New("graph not initialized")
+	}
 	entities, _ := m.graph.OpenNodes([]string{name})
 	if len(entities) == 0 {
 		m.lastErr = errors.New("entity not found")
@@ -375,6 +390,9 @@ func (m *MemoryStepDefinitions) iShouldReceiveANotFoundErrorMessage() error {
 // Side effects:
 //   - Saves graph to JSONL, creates a new graph, and loads data from disk.
 func (m *MemoryStepDefinitions) iRestartTheMemoryServer() error {
+	if m.graph == nil || m.store == nil {
+		return errors.New("memory server not running")
+	}
 	kg := m.graph.ReadGraph()
 	if err := m.store.Save(&kg); err != nil {
 		return fmt.Errorf("saving graph before restart: %w", err)
