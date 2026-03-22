@@ -316,6 +316,56 @@ func buildToolResultMessage(m provider.Message) *anthropicAPI.MessageParam {
 	return nil
 }
 
+// sanitizeMessageSequence ensures the message sequence is valid for Anthropic's API,
+// which requires strict user/assistant alternation.
+//
+// Expected:
+//   - msgs is a slice of provider messages from the context window.
+//
+// Returns:
+//   - A sanitized slice where consecutive user messages are merged into one.
+//   - System messages are excluded (handled separately by extractSystemPrompt).
+//
+// Side effects:
+//   - None.
+func sanitizeMessageSequence(msgs []provider.Message) []provider.Message {
+	result := make([]provider.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			continue
+		}
+		if len(result) == 0 {
+			result = append(result, m)
+			continue
+		}
+		last := &result[len(result)-1]
+		if last.Role != "user" || m.Role != "user" {
+			result = append(result, m)
+			continue
+		}
+		mergeConsecutiveUserMessages(last, m)
+	}
+	return result
+}
+
+// mergeConsecutiveUserMessages combines two consecutive user messages into the first one.
+//
+// Expected:
+//   - last is a pointer to a user message to be updated.
+//   - m is the next user message to merge into last.
+//
+// Side effects:
+//   - Updates last.Content in place by appending m.Content with "\n\n" separator if both non-empty.
+func mergeConsecutiveUserMessages(last *provider.Message, m provider.Message) {
+	if m.Content != "" {
+		if last.Content != "" {
+			last.Content += "\n\n" + m.Content
+		} else {
+			last.Content = m.Content
+		}
+	}
+}
+
 // buildMessages converts provider messages to Anthropic API message parameters,
 // filtering out system role messages which are handled separately.
 //
@@ -329,8 +379,9 @@ func buildToolResultMessage(m provider.Message) *anthropicAPI.MessageParam {
 // Side effects:
 //   - None.
 func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
-	messages := make([]anthropicAPI.MessageParam, 0, len(msgs))
-	for _, m := range msgs {
+	sanitized := sanitizeMessageSequence(msgs)
+	messages := make([]anthropicAPI.MessageParam, 0, len(sanitized))
+	for _, m := range sanitized {
 		switch m.Role {
 		case "user":
 			messages = append(messages, anthropicAPI.NewUserMessage(anthropicAPI.NewTextBlock(m.Content)))

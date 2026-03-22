@@ -1380,5 +1380,80 @@ var _ = Describe("Anthropic Provider", func() {
 				Expect(capturedReq).To(HaveKey("messages"))
 			})
 		})
+
+		Context("when message sequence has consecutive user messages", func() {
+			BeforeEach(func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model: "claude-sonnet-4-20250514",
+					Messages: []providerPkg.Message{
+						{Role: "user", Content: "first"},
+						{Role: "user", Content: "second"},
+						{Role: "user", Content: "third"},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("merges consecutive user messages into a single user message", func() {
+				messages, ok := capturedReq["messages"].([]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(messages).To(HaveLen(1))
+
+				msg, ok := messages[0].(map[string]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(msg["role"]).To(Equal("user"))
+
+				content, ok := msg["content"].([]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(content).To(HaveLen(1))
+
+				block, ok := content[0].(map[string]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(block["text"]).To(ContainSubstring("first"))
+				Expect(block["text"]).To(ContainSubstring("second"))
+				Expect(block["text"]).To(ContainSubstring("third"))
+			})
+		})
+
+		Context("when alternating sequence has consecutive users before assistant", func() {
+			BeforeEach(func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model: "claude-sonnet-4-20250514",
+					Messages: []providerPkg.Message{
+						{Role: "user", Content: "hello"},
+						{Role: "user", Content: "hey"},
+						{Role: "assistant", Content: "Hi there!"},
+						{Role: "user", Content: "current"},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("produces valid alternating sequence", func() {
+				messages, ok := capturedReq["messages"].([]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(messages).To(HaveLen(3))
+
+				roles := make([]string, 0, 3)
+				for _, m := range messages {
+					msg := m.(map[string]interface{})
+					roles = append(roles, msg["role"].(string))
+				}
+				Expect(roles).To(Equal([]string{"user", "assistant", "user"}))
+			})
+
+			It("merges the two leading user messages into one", func() {
+				messages, ok := capturedReq["messages"].([]interface{})
+				Expect(ok).To(BeTrue())
+
+				first := messages[0].(map[string]interface{})
+				content := first["content"].([]interface{})
+				block := content[0].(map[string]interface{})
+				Expect(block["text"]).To(ContainSubstring("hello"))
+				Expect(block["text"]).To(ContainSubstring("hey"))
+			})
+		})
 	})
 })
