@@ -313,6 +313,7 @@ func (i *Intent) handleEscapeKey() tea.Cmd {
 //   - If Error is set, appends error message to content and logs critical errors.
 //   - Preserves partial response accumulated during streaming even if an error occurs.
 //   - Updates tool call state when present.
+//   - When Done is true and streaming is already false (cancelled), discards the chunk without appending.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if msg.EventType == "skills_loaded" {
@@ -324,6 +325,11 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		})
 		i.syncStatusBar()
 		i.refreshViewport()
+		return
+	}
+
+	if msg.Done && !i.streaming {
+		i.response = ""
 		return
 	}
 
