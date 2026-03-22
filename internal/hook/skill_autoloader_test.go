@@ -202,4 +202,43 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			))
 		})
 	})
+
+	Context("metadata propagation", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "System prompt."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("sets loaded_skills in request metadata", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedRequest.Metadata).NotTo(BeNil())
+			skills, ok := capturedRequest.Metadata["loaded_skills"]
+			Expect(ok).To(BeTrue())
+			skillNames, ok := skills.([]string)
+			Expect(ok).To(BeTrue())
+			Expect(skillNames).To(ContainElement("pre-action"))
+			Expect(skillNames).To(ContainElement("memory-keeper"))
+			Expect(skillNames).To(ContainElement("clean-code"))
+		})
+
+		It("initialises metadata map when nil", func() {
+			request.Metadata = nil
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedRequest.Metadata).NotTo(BeNil())
+		})
+	})
 })

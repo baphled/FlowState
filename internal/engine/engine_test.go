@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
@@ -416,6 +417,72 @@ var _ = Describe("Engine", func() {
 				_, err := eng.Stream(ctx, "test-agent", "Hello")
 
 				Expect(err).To(MatchError("provider error"))
+			})
+		})
+
+		Context("when hook chain sets loaded_skills metadata", func() {
+			It("emits a skills_loaded chunk before content chunks", func() {
+				metadataHook := func(next hook.HandlerFunc) hook.HandlerFunc {
+					return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						if req.Metadata == nil {
+							req.Metadata = make(map[string]any)
+						}
+						req.Metadata["loaded_skills"] = []string{"golang", "tdd-first"}
+						return next(ctx, req)
+					}
+				}
+
+				chain := hook.NewChain(metadataHook)
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					HookChain:    chain,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(len(received)).To(BeNumerically(">=", 3))
+				Expect(received[0].EventType).To(Equal("skills_loaded"))
+				Expect(received[0].Content).To(ContainSubstring("golang"))
+				Expect(received[0].Content).To(ContainSubstring("tdd-first"))
+			})
+
+			It("does not emit skills_loaded when metadata has no loaded_skills", func() {
+				noopHook := func(next hook.HandlerFunc) hook.HandlerFunc {
+					return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						return next(ctx, req)
+					}
+				}
+
+				chain := hook.NewChain(noopHook)
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					HookChain:    chain,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).To(HaveLen(2))
+				for _, chunk := range received {
+					Expect(chunk.EventType).NotTo(Equal("skills_loaded"))
+				}
 			})
 		})
 	})

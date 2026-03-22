@@ -334,10 +334,12 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		e.embedMessage(ctx, message)
 	}
 
-	providerChunks, err := e.streamFromProvider(ctx, provider.ChatRequest{
+	req := provider.ChatRequest{
 		Messages: messages,
 		Tools:    e.buildToolSchemas(),
-	})
+	}
+
+	providerChunks, err := e.streamFromProvider(ctx, &req)
 	if err != nil {
 		return nil, err
 	}
@@ -346,30 +348,58 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
+		e.emitLoadedSkills(req.Metadata, outChan)
 		e.streamWithToolLoop(ctx, messages, providerChunks, outChan)
 	}()
 
 	return outChan, nil
 }
 
+// emitLoadedSkills sends a skills_loaded event chunk if the metadata contains loaded skill names.
+//
+// Expected:
+//   - metadata may be nil (no skills to emit).
+//   - outChan is an open channel for writing chunks.
+//
+// Side effects:
+//   - Sends a StreamChunk with EventType "skills_loaded" to outChan if skills are present.
+func (e *Engine) emitLoadedSkills(metadata map[string]any, outChan chan<- provider.StreamChunk) {
+	if metadata == nil {
+		return
+	}
+	raw, ok := metadata["loaded_skills"]
+	if !ok {
+		return
+	}
+	skills, ok := raw.([]string)
+	if !ok || len(skills) == 0 {
+		return
+	}
+	outChan <- provider.StreamChunk{
+		EventType: "skills_loaded",
+		Content:   strings.Join(skills, ","),
+	}
+}
+
 // streamFromProvider initiates a streaming chat request with the provider, applying any configured hooks.
+// The hook chain may set req.Metadata which the caller can inspect after this returns.
 //
 // Expected:
 //   - ctx is a valid context for the streaming operation.
-//   - req contains the chat request with messages and tools.
+//   - req is a pointer to a chat request with messages and tools.
 //
 // Returns:
 //   - A channel of StreamChunk values from the provider.
 //   - An error if the stream fails to initialise.
 //
 // Side effects:
-//   - Executes hook chain if configured.
-func (e *Engine) streamFromProvider(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+//   - Executes hook chain if configured. Hooks may mutate req.Metadata.
+func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {
 		handler = e.hookChain.Execute(handler)
 	}
-	return handler(ctx, &req)
+	return handler(ctx, req)
 }
 
 // baseStreamHandler returns the base handler function for streaming chat requests.
@@ -431,10 +461,11 @@ func (e *Engine) streamWithToolLoop(
 		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
 
 		var streamErr error
-		providerChunks, streamErr = e.streamFromProvider(ctx, provider.ChatRequest{
+		toolReq := provider.ChatRequest{
 			Messages: messages,
 			Tools:    e.buildToolSchemas(),
-		})
+		}
+		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
 		if streamErr != nil {
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
