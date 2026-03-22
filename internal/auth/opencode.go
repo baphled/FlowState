@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // OpenCodeAuth holds credentials loaded from OpenCode's auth.json.
@@ -19,6 +20,21 @@ type ProviderAuth struct {
 	Access  string `json:"access"`
 	Refresh string `json:"refresh"`
 	Expires int64  `json:"expires"`
+}
+
+// IsOAuthToken checks if the provider credential is an OAuth token.
+//
+// Expected:
+//   - p is a valid ProviderAuth instance.
+//
+// Returns:
+//   - true if the credential is an OAuth token (type="oauth" or access token starts with "sk-ant-oat01-").
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func (p *ProviderAuth) IsOAuthToken() bool {
+	return p.Type == "oauth" || strings.HasPrefix(p.Access, "sk-ant-oat01-")
 }
 
 // LoadOpenCodeAuthFrom loads OpenCode credentials from the specified path.

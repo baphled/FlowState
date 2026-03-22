@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
@@ -16,7 +17,10 @@ import (
 // ErrNotSupported is returned when an unsupported operation is attempted.
 var ErrNotSupported = errors.New("anthropic does not support embeddings")
 
-var errAPIKeyRequired = errors.New("anthropic API key is required")
+var (
+	errAPIKeyRequired = errors.New("anthropic API key is required")
+	errNoValidAuth    = errors.New("no valid anthropic credentials found")
+)
 
 const (
 	providerName          = "anthropic"
@@ -49,6 +53,34 @@ func New(apiKey string) (*Provider, error) {
 	return &Provider{client: client}, nil
 }
 
+// tryOpenCodeAuth attempts to load and validate Anthropic credentials from OpenCode auth.json.
+//
+// Expected:
+//   - opencodePath is a file path to OpenCode's auth.json.
+//
+// Returns:
+//   - (*Provider, nil) if valid non-OAuth API key found.
+//   - (nil, error) if auth file exists but cannot be parsed.
+//   - (nil, errNoValidAuth) if no valid non-OAuth credentials found.
+//
+// Side effects:
+//   - Reads from opencodePath.
+//   - Logs a warning if OAuth token is detected.
+func tryOpenCodeAuth(opencodePath string) (*Provider, error) {
+	authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
+	if err != nil {
+		return nil, fmt.Errorf("loading opencode auth: %w", err)
+	}
+	if authData != nil && authData.Anthropic != nil && authData.Anthropic.Access != "" {
+		if authData.Anthropic.IsOAuthToken() {
+			log.Printf("[WARN] Anthropic OAuth tokens are not supported for direct API use. Falling back to config.yaml API key.")
+			return nil, errNoValidAuth
+		}
+		return New(authData.Anthropic.Access)
+	}
+	return nil, errNoValidAuth
+}
+
 // NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode auth.json,
 // falling back to the provided API key from config.
 //
@@ -66,12 +98,12 @@ func New(apiKey string) (*Provider, error) {
 //   - Reads from opencodePath if provided.
 func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
 	if opencodePath != "" {
-		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-		if err != nil {
-			return nil, fmt.Errorf("loading opencode auth: %w", err)
+		p, err := tryOpenCodeAuth(opencodePath)
+		if err != nil && !errors.Is(err, errNoValidAuth) {
+			return nil, err
 		}
-		if authData != nil && authData.Anthropic != nil && authData.Anthropic.Access != "" {
-			return New(authData.Anthropic.Access)
+		if p != nil {
+			return p, nil
 		}
 	}
 

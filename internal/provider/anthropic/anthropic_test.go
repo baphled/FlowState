@@ -84,14 +84,41 @@ var _ = Describe("Anthropic Provider", func() {
 			})
 		})
 
-		Context("when opencode auth has oauth credentials", func() {
-			It("returns a provider using the access token via WithAPIKey", func() {
+		Context("when opencode auth has oauth credentials and no fallback key", func() {
+			It("returns an error", func() {
 				authJSON := `{"anthropic": {"type": "oauth", "access": "sk-ant-oat01-test"}}`
 				authPath := filepath.Join(tmpDir, "auth.json")
 				err := os.WriteFile(authPath, []byte(authJSON), 0o600)
 				Expect(err).NotTo(HaveOccurred())
 
 				p, err := anthropic.NewFromOpenCodeOrConfig(authPath, "")
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("API key is required"))
+				Expect(p).To(BeNil())
+			})
+		})
+
+		Context("when opencode auth has oauth credentials and fallback key is provided", func() {
+			It("returns a provider using the fallback key", func() {
+				authJSON := `{"anthropic": {"type": "oauth", "access": "sk-ant-oat01-test"}}`
+				authPath := filepath.Join(tmpDir, "auth.json")
+				err := os.WriteFile(authPath, []byte(authJSON), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				p, err := anthropic.NewFromOpenCodeOrConfig(authPath, "fallback-api-key")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(p).NotTo(BeNil())
+			})
+		})
+
+		Context("when opencode auth has oauth prefix without oauth type", func() {
+			It("detects oauth by prefix and falls back to fallback key", func() {
+				authJSON := `{"anthropic": {"type": "api_key", "access": "sk-ant-oat01-sneaky"}}`
+				authPath := filepath.Join(tmpDir, "auth.json")
+				err := os.WriteFile(authPath, []byte(authJSON), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				p, err := anthropic.NewFromOpenCodeOrConfig(authPath, "fallback-key")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(p).NotTo(BeNil())
 			})
