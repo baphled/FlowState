@@ -32,10 +32,10 @@ var _ = Describe("LoadOpenCodeAuth", func() {
 	})
 
 	Context("when auth.json does not exist", func() {
-		It("returns nil, nil", func() {
+		It("returns ErrAuthFileNotFound", func() {
 			nonExistentPath := filepath.Join(tmpDir, "nonexistent", "auth.json")
 			authData, err := auth.LoadOpenCodeAuthFrom(nonExistentPath)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(MatchError(auth.ErrAuthFileNotFound))
 			Expect(authData).To(BeNil())
 		})
 	})

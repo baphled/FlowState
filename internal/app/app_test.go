@@ -654,8 +654,8 @@ When to use: Testing purposes
 				authPath := filepath.Join(opencodePath, "auth.json")
 				jsonContent := `{
   "anthropic": {
-    "type": "api_key",
-    "access": "sk-ant-api03-test-token"
+    "type": "oauth",
+    "access": "sk-ant-oat01-test-token"
   }
 }`
 				Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
@@ -716,8 +716,8 @@ When to use: Testing purposes
 				authPath := filepath.Join(opencodePath, "auth.json")
 				jsonContent := `{
   "anthropic": {
-    "type": "api_key",
-    "access": "sk-ant-api03-test-token"
+    "type": "oauth",
+    "access": "sk-ant-oat01-test-token"
   },
   "github-copilot": {
     "type": "oauth",

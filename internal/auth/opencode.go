@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 )
 
 // OpenCodeAuth holds credentials loaded from OpenCode's auth.json.
@@ -22,20 +21,12 @@ type ProviderAuth struct {
 	Expires int64  `json:"expires"`
 }
 
-// IsOAuthToken checks if the provider credential is an OAuth token.
-//
-// Expected:
-//   - p is a valid ProviderAuth instance.
-//
-// Returns:
-//   - true if the credential is an OAuth token (type="oauth" or access token starts with "sk-ant-oat01-").
-//   - false otherwise.
-//
-// Side effects:
-//   - None.
-func (p *ProviderAuth) IsOAuthToken() bool {
-	return p.Type == "oauth" || strings.HasPrefix(p.Access, "sk-ant-oat01-")
-}
+var (
+	// ErrAuthFileNotFound is returned when the OpenCode auth.json file does not exist.
+	ErrAuthFileNotFound = errors.New("opencode auth file not found")
+	// ErrNoCredentials is returned when auth.json exists but contains no provider credentials.
+	ErrNoCredentials = errors.New("no provider credentials in opencode auth")
+)
 
 // LoadOpenCodeAuthFrom loads OpenCode credentials from the specified path.
 //
@@ -53,8 +44,7 @@ func LoadOpenCodeAuthFrom(path string) (*OpenCodeAuth, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			//nolint:nilnil // File not found is not an error for optional config
-			return nil, nil
+			return nil, ErrAuthFileNotFound
 		}
 		return nil, fmt.Errorf("reading opencode auth: %w", err)
 	}
@@ -65,8 +55,7 @@ func LoadOpenCodeAuthFrom(path string) (*OpenCodeAuth, error) {
 	}
 
 	if auth.GitHubCopilot == nil && auth.Anthropic == nil {
-		//nolint:nilnil // No credentials in file is not an error
-		return nil, nil
+		return nil, ErrNoCredentials
 	}
 
 	return &auth, nil

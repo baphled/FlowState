@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
@@ -17,21 +16,25 @@ import (
 // ErrNotSupported is returned when an unsupported operation is attempted.
 var ErrNotSupported = errors.New("anthropic does not support embeddings")
 
-var (
-	errAPIKeyRequired = errors.New("anthropic API key is required")
-	errNoValidAuth    = errors.New("no valid anthropic credentials found")
-)
+var errAPIKeyRequired = errors.New("anthropic API key is required")
+var errOAuthTokenRequired = errors.New("anthropic OAuth token is required")
+var errNoOpenCodeCredentials = errors.New("no anthropic credentials in opencode auth")
 
 const (
 	providerName          = "anthropic"
 	defaultContextLength  = 200000
 	streamChannelBuffSize = 16
 	defaultMaxTokens      = 4096
+	oauthTokenPrefix      = "sk-ant-oat01-"
+	oauthBetaHeader       = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+	oauthUserAgent        = "claude-cli/2.1.2 (external, cli)"
+	oauthAppHeader        = "cli"
 )
 
 // Provider implements the provider.Provider interface for Anthropic Claude.
 type Provider struct {
-	client anthropicAPI.Client
+	client  anthropicAPI.Client
+	isOAuth bool
 }
 
 // New creates a new Anthropic provider with the given API key.
@@ -53,32 +56,71 @@ func New(apiKey string) (*Provider, error) {
 	return &Provider{client: client}, nil
 }
 
-// tryOpenCodeAuth attempts to load and validate Anthropic credentials from OpenCode auth.json.
+// IsOAuthToken reports whether the given token is an Anthropic OAuth token.
+//
+// Expected:
+//   - token is a string that may be an API key or OAuth token.
+//
+// Returns:
+//   - true if the token starts with the OAuth prefix "sk-ant-oat01-".
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func IsOAuthToken(token string) bool {
+	return strings.HasPrefix(token, oauthTokenPrefix)
+}
+
+// NewOAuth creates a new Anthropic provider configured for OAuth token authentication.
+// OAuth tokens use the Authorization: Bearer header instead of X-Api-Key.
+//
+// Expected:
+//   - token is a non-empty Anthropic OAuth token string.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the token is empty.
+//
+// Side effects:
+//   - None.
+func NewOAuth(token string) (*Provider, error) {
+	if token == "" {
+		return nil, errOAuthTokenRequired
+	}
+	client := anthropicAPI.NewClient(
+		option.WithAuthToken(token),
+		option.WithHeaderAdd("anthropic-beta", oauthBetaHeader),
+		option.WithHeaderAdd("user-agent", oauthUserAgent),
+		option.WithHeaderAdd("x-app", oauthAppHeader),
+	)
+	return &Provider{client: client, isOAuth: true}, nil
+}
+
+// tryOpenCodeAuth attempts to load Anthropic credentials from OpenCode auth.json.
 //
 // Expected:
 //   - opencodePath is a file path to OpenCode's auth.json.
 //
 // Returns:
-//   - (*Provider, nil) if valid non-OAuth API key found.
+//   - (*Provider, nil) if valid credentials found.
 //   - (nil, error) if auth file exists but cannot be parsed.
-//   - (nil, errNoValidAuth) if no valid non-OAuth credentials found.
+//   - (nil, errNoOpenCodeCredentials) if no credentials found.
 //
 // Side effects:
 //   - Reads from opencodePath.
-//   - Logs a warning if OAuth token is detected.
 func tryOpenCodeAuth(opencodePath string) (*Provider, error) {
 	authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
 	if err != nil {
 		return nil, fmt.Errorf("loading opencode auth: %w", err)
 	}
 	if authData != nil && authData.Anthropic != nil && authData.Anthropic.Access != "" {
-		if authData.Anthropic.IsOAuthToken() {
-			log.Printf("[WARN] Anthropic OAuth tokens are not supported for direct API use. Falling back to config.yaml API key.")
-			return nil, errNoValidAuth
+		token := authData.Anthropic.Access
+		if IsOAuthToken(token) {
+			return NewOAuth(token)
 		}
-		return New(authData.Anthropic.Access)
+		return New(token)
 	}
-	return nil, errNoValidAuth
+	return nil, errNoOpenCodeCredentials
 }
 
 // NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode auth.json,
@@ -99,7 +141,10 @@ func tryOpenCodeAuth(opencodePath string) (*Provider, error) {
 func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
 	if opencodePath != "" {
 		p, err := tryOpenCodeAuth(opencodePath)
-		if err != nil && !errors.Is(err, errNoValidAuth) {
+		if err != nil &&
+			!errors.Is(err, errNoOpenCodeCredentials) &&
+			!errors.Is(err, auth.ErrAuthFileNotFound) &&
+			!errors.Is(err, auth.ErrNoCredentials) {
 			return nil, err
 		}
 		if p != nil {
@@ -161,7 +206,7 @@ func (p *Provider) Name() string {
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
-	params := buildRequestParams(req)
+	params := p.buildRequestParams(req)
 
 	go func() {
 		defer close(ch)
@@ -202,7 +247,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the Anthropic API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	params := buildRequestParams(req)
+	params := p.buildRequestParams(req)
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
@@ -432,6 +477,8 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 
 // extractSystemPrompt collects all system role messages and returns them as
 // Anthropic TextBlockParam values suitable for the MessageNewParams.System field.
+// When the provider uses OAuth authentication, CacheControl is omitted because
+// prompt caching is not supported on the OAuth path.
 //
 // Expected:
 //   - msgs is a slice of provider messages that may include system role messages.
@@ -442,14 +489,15 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 //
 // Side effects:
 //   - None.
-func extractSystemPrompt(msgs []provider.Message) []anthropicAPI.TextBlockParam {
+func (p *Provider) extractSystemPrompt(msgs []provider.Message) []anthropicAPI.TextBlockParam {
 	var blocks []anthropicAPI.TextBlockParam
 	for _, m := range msgs {
 		if m.Role == "system" && m.Content != "" {
-			blocks = append(blocks, anthropicAPI.TextBlockParam{
-				Text:         m.Content,
-				CacheControl: anthropicAPI.NewCacheControlEphemeralParam(),
-			})
+			block := anthropicAPI.TextBlockParam{Text: m.Content}
+			if !p.isOAuth {
+				block.CacheControl = anthropicAPI.NewCacheControlEphemeralParam()
+			}
+			blocks = append(blocks, block)
 		}
 	}
 	return blocks
@@ -496,7 +544,7 @@ func buildTools(tools []provider.Tool) []anthropicAPI.ToolUnionParam {
 //
 // Side effects:
 //   - None.
-func buildRequestParams(req provider.ChatRequest) anthropicAPI.MessageNewParams {
+func (p *Provider) buildRequestParams(req provider.ChatRequest) anthropicAPI.MessageNewParams {
 	params := anthropicAPI.MessageNewParams{
 		Model:       req.Model,
 		MaxTokens:   defaultMaxTokens,
@@ -504,7 +552,7 @@ func buildRequestParams(req provider.ChatRequest) anthropicAPI.MessageNewParams 
 		Messages:    buildMessages(req.Messages),
 	}
 
-	if systemBlocks := extractSystemPrompt(req.Messages); len(systemBlocks) > 0 {
+	if systemBlocks := p.extractSystemPrompt(req.Messages); len(systemBlocks) > 0 {
 		params.System = systemBlocks
 	}
 

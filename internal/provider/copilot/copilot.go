@@ -18,19 +18,27 @@ import (
 
 var errTokenRequired = errors.New("GitHub token is required")
 
+// ErrEmbedNotSupported is returned when embedding is not supported by Copilot.
+var ErrEmbedNotSupported = errors.New("embedding is not supported by GitHub Copilot")
+
 const (
 	providerName         = "github-copilot"
-	defaultBaseURL       = "https://api.github.com"
-	headerAccept         = "application/vnd.github.copilot-integration+json"
+	defaultBaseURL       = "https://api.githubcopilot.com"
+	tokenExchangeBaseURL = "https://api.github.com"
+	headerAccept         = "application/json"
 	headerContentType    = "application/json"
 	defaultContextLength = 128000
+	copilotUserAgent     = "GitHubCopilotChat/0.35.0"
+	copilotEditorVersion = "vscode/1.107.0"
+	copilotPluginVersion = "copilot-chat/0.35.0"
+	copilotIntegrationID = "vscode-chat"
 )
 
 // Provider implements the GitHub Copilot API provider.
 type Provider struct {
-	token   string
-	baseURL string
-	client  *http.Client
+	baseURL      string
+	client       *http.Client
+	tokenManager *TokenManager
 }
 
 // New creates a new GitHub Copilot provider with the given token.
@@ -47,11 +55,18 @@ func New(token string) (*Provider, error) {
 	if token == "" {
 		return nil, errTokenRequired
 	}
-	return &Provider{
-		token:   token,
+	client := &http.Client{}
+	p := &Provider{
 		baseURL: defaultBaseURL,
-		client:  &http.Client{},
-	}, nil
+		client:  client,
+	}
+	if strings.HasPrefix(token, "gho_") {
+		exchanger := &TokenExchangerImpl{Client: client, BaseURL: tokenExchangeBaseURL}
+		p.tokenManager = NewTokenManager(token, exchanger)
+	} else {
+		p.tokenManager = NewDirectTokenManager(token)
+	}
+	return p, nil
 }
 
 // NewWithOAuth creates a new GitHub Copilot provider using an OAuth token response.
@@ -68,11 +83,18 @@ func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
 	if tokenResp == nil || tokenResp.AccessToken == "" {
 		return nil, errTokenRequired
 	}
-	return &Provider{
-		token:   tokenResp.AccessToken,
+	client := &http.Client{}
+	p := &Provider{
 		baseURL: defaultBaseURL,
-		client:  &http.Client{},
-	}, nil
+		client:  client,
+	}
+	if strings.HasPrefix(tokenResp.AccessToken, "gho_") {
+		exchanger := &TokenExchangerImpl{Client: client, BaseURL: tokenExchangeBaseURL}
+		p.tokenManager = NewTokenManager(tokenResp.AccessToken, exchanger)
+	} else {
+		p.tokenManager = NewDirectTokenManager(tokenResp.AccessToken)
+	}
+	return p, nil
 }
 
 // NewFromOpenCodeOrFallback attempts to load GitHub Copilot credentials from OpenCode auth.json,
@@ -95,7 +117,7 @@ func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
 func NewFromOpenCodeOrFallback(opencodePath string, oauthToken *oauth.TokenResponse, fallbackToken string) (*Provider, error) {
 	if opencodePath != "" {
 		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-		if err != nil {
+		if err != nil && !errors.Is(err, auth.ErrAuthFileNotFound) && !errors.Is(err, auth.ErrNoCredentials) {
 			return nil, fmt.Errorf("loading opencode auth: %w", err)
 		}
 		if authData != nil && authData.GitHubCopilot != nil && authData.GitHubCopilot.Access != "" {
@@ -123,6 +145,11 @@ func NewFromOpenCodeOrFallback(opencodePath string, oauthToken *oauth.TokenRespo
 //   - Mutates the baseURL field of the Provider.
 func (p *Provider) SetBaseURL(url string) {
 	p.baseURL = strings.TrimSuffix(url, "/")
+	if p.tokenManager != nil {
+		if exchanger, ok := p.tokenManager.exchanger.(*TokenExchangerImpl); ok {
+			exchanger.BaseURL = p.baseURL
+		}
+	}
 }
 
 // Name returns the provider name.
@@ -161,13 +188,17 @@ func (p *Provider) Models() ([]provider.Model, error) {
 // Side effects:
 //   - Makes an HTTP GET request to the Copilot models endpoint.
 func (p *Provider) fetchModels() ([]provider.Model, error) {
-	endpoint := p.baseURL + "/copilot_next/v1/models"
+	endpoint := p.baseURL + "/models"
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating models request: %w", err)
 	}
-	setHeaders(req, p.token)
+	token, err := p.tokenManager.EnsureToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("fetchModels: %w", err)
+	}
+	setHeaders(req, token)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -228,7 +259,7 @@ func fallbackModels() []provider.Model {
 // Side effects:
 //   - Makes an HTTP POST request to the Copilot chat completions endpoint.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	endpoint := p.baseURL + "/copilot_next/v1/chat/completions"
+	endpoint := p.baseURL + "/chat/completions"
 
 	payload := map[string]interface{}{
 		"model":    req.Model,
@@ -244,7 +275,11 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	if err != nil {
 		return provider.ChatResponse{}, fmt.Errorf("creating request: %w", err)
 	}
-	setHeaders(httpReq, p.token)
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return provider.ChatResponse{}, err
+	}
+	setHeaders(httpReq, token)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -301,7 +336,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	go func() {
 		defer close(ch)
 
-		endpoint := p.baseURL + "/copilot_next/v1/chat/completions"
+		endpoint := p.baseURL + "/chat/completions"
 
 		payload := map[string]interface{}{
 			"model":    req.Model,
@@ -320,7 +355,12 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 			ch <- provider.StreamChunk{Error: err, Done: true}
 			return
 		}
-		setHeaders(httpReq, p.token)
+		token, err := p.tokenManager.EnsureToken(ctx)
+		if err != nil {
+			ch <- provider.StreamChunk{Error: err, Done: true}
+			return
+		}
+		setHeaders(httpReq, token)
 
 		resp, err := p.client.Do(httpReq)
 		if err != nil {
@@ -361,7 +401,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - None.
 func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
-	return nil, nil
+	return nil, ErrEmbedNotSupported
 }
 
 // streamSSE parses server-sent events from the JSON decoder and sends chunks to the channel.
@@ -464,6 +504,11 @@ func setHeaders(req *http.Request, token string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", headerContentType)
 	req.Header.Set("Accept", headerAccept)
+	req.Header.Set("Copilot-Integration-Id", copilotIntegrationID)
+	req.Header.Set("User-Agent", copilotUserAgent)
+	req.Header.Set("Editor-Version", copilotEditorVersion)
+	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
+	req.Header.Set("Openai-Intent", "conversation-edits")
 }
 
 // convertMessages converts provider.Message slice to the Copilot API format.
