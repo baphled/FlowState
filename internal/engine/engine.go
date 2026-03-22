@@ -628,6 +628,14 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
 func (e *Engine) appendToolResultToMessages(
 	messages []provider.Message, toolCall *provider.ToolCall, result tool.Result,
 ) []provider.Message {
+	assistantMsg := provider.Message{
+		Role: "assistant",
+		ToolCalls: []provider.ToolCall{
+			{ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+		},
+	}
+	messages = append(messages, assistantMsg)
+
 	content := result.Output
 	if result.Error != nil {
 		content = "Error: " + result.Error.Error()

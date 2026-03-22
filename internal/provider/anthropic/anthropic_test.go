@@ -1299,5 +1299,86 @@ var _ = Describe("Anthropic Provider", func() {
 				Expect(roles).To(Equal([]string{"user", "user"}))
 			})
 		})
+
+		Context("when request contains tool call history", func() {
+			BeforeEach(func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model: "claude-sonnet-4-20250514",
+					Messages: []providerPkg.Message{
+						{Role: "user", Content: "Run ls"},
+						{
+							Role: "assistant",
+							ToolCalls: []providerPkg.ToolCall{
+								{ID: "toolu_01", Name: "bash", Arguments: map[string]interface{}{"command": "ls"}},
+							},
+						},
+						{
+							Role:    "tool",
+							Content: "file1.txt\nfile2.txt",
+							ToolCalls: []providerPkg.ToolCall{
+								{ID: "toolu_01", Name: "bash"},
+							},
+						},
+						{Role: "user", Content: "What files are there?"},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("sends assistant message with tool_use block", func() {
+				messages, ok := capturedReq["messages"].([]interface{})
+				Expect(ok).To(BeTrue())
+
+				var assistantMsg map[string]interface{}
+				for _, m := range messages {
+					msg := m.(map[string]interface{})
+					if msg["role"] == "assistant" {
+						assistantMsg = msg
+					}
+				}
+				Expect(assistantMsg).NotTo(BeNil())
+
+				content, ok := assistantMsg["content"].([]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(content).NotTo(BeEmpty())
+
+				block := content[0].(map[string]interface{})
+				Expect(block["type"]).To(Equal("tool_use"))
+				Expect(block["id"]).To(Equal("toolu_01"))
+				Expect(block["name"]).To(Equal("bash"))
+			})
+
+			It("sends tool result as user message with tool_result block", func() {
+				messages, ok := capturedReq["messages"].([]interface{})
+				Expect(ok).To(BeTrue())
+
+				var toolResultMsg map[string]interface{}
+				for _, m := range messages {
+					msg := m.(map[string]interface{})
+					if msg["role"] == "user" {
+						content, ok := msg["content"].([]interface{})
+						if !ok || len(content) == 0 {
+							continue
+						}
+						block, ok := content[0].(map[string]interface{})
+						if ok && block["type"] == "tool_result" {
+							toolResultMsg = msg
+						}
+					}
+				}
+				Expect(toolResultMsg).NotTo(BeNil())
+
+				content := toolResultMsg["content"].([]interface{})
+				block := content[0].(map[string]interface{})
+				Expect(block["type"]).To(Equal("tool_result"))
+				Expect(block["tool_use_id"]).To(Equal("toolu_01"))
+				Expect(block["content"]).NotTo(BeEmpty())
+			})
+
+			It("does not return 400 Bad Request from Anthropic", func() {
+				Expect(capturedReq).To(HaveKey("messages"))
+			})
+		})
 	})
 })

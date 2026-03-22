@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -263,6 +264,58 @@ func fallbackModels() []provider.Model {
 	}
 }
 
+// buildAssistantMessage constructs an assistant message with optional tool calls.
+//
+// Expected:
+//   - m is a provider message with role "assistant".
+//
+// Returns:
+//   - A MessageParam for the assistant message, or nil if empty.
+//
+// Side effects:
+//   - None.
+func buildAssistantMessage(m provider.Message) *anthropicAPI.MessageParam {
+	if len(m.ToolCalls) > 0 {
+		blocks := make([]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls)+1)
+		if m.Content != "" {
+			blocks = append(blocks, anthropicAPI.NewTextBlock(m.Content))
+		}
+		for _, tc := range m.ToolCalls {
+			blocks = append(blocks, anthropicAPI.NewToolUseBlock(tc.ID, tc.Arguments, tc.Name))
+		}
+		msg := anthropicAPI.NewAssistantMessage(blocks...)
+		return &msg
+	}
+	if m.Content != "" {
+		msg := anthropicAPI.NewAssistantMessage(anthropicAPI.NewTextBlock(m.Content))
+		return &msg
+	}
+	return nil
+}
+
+// buildToolResultMessage constructs a user message containing tool result blocks.
+//
+// Expected:
+//   - m is a provider message with role "tool".
+//
+// Returns:
+//   - A MessageParam for the tool result message, or nil if empty.
+//
+// Side effects:
+//   - None.
+func buildToolResultMessage(m provider.Message) *anthropicAPI.MessageParam {
+	blocks := make([]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls))
+	for _, tc := range m.ToolCalls {
+		isError := strings.HasPrefix(m.Content, "Error:")
+		blocks = append(blocks, anthropicAPI.NewToolResultBlock(tc.ID, m.Content, isError))
+	}
+	if len(blocks) > 0 {
+		msg := anthropicAPI.NewUserMessage(blocks...)
+		return &msg
+	}
+	return nil
+}
+
 // buildMessages converts provider messages to Anthropic API message parameters,
 // filtering out system role messages which are handled separately.
 //
@@ -282,10 +335,13 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 		case "user":
 			messages = append(messages, anthropicAPI.NewUserMessage(anthropicAPI.NewTextBlock(m.Content)))
 		case "assistant":
-			if m.Content == "" {
-				continue
+			if msg := buildAssistantMessage(m); msg != nil {
+				messages = append(messages, *msg)
 			}
-			messages = append(messages, anthropicAPI.NewAssistantMessage(anthropicAPI.NewTextBlock(m.Content)))
+		case "tool":
+			if msg := buildToolResultMessage(m); msg != nil {
+				messages = append(messages, *msg)
+			}
 		}
 	}
 	return messages
