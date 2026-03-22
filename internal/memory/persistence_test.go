@@ -183,5 +183,65 @@ this is not valid json
 			Expect(loaded.Entities).To(HaveLen(1))
 			Expect(loaded.Entities[0].Name).To(Equal("Deep"))
 		})
+
+		Context("error paths", func() {
+			It("returns error when parent directory cannot be created", func() {
+				readOnlyDir := filepath.Join(tmpDir, "readonly")
+				Expect(os.MkdirAll(readOnlyDir, 0o555)).To(Succeed())
+				DeferCleanup(func() {
+					os.Chmod(readOnlyDir, 0o755)
+				})
+
+				storePath := filepath.Join(readOnlyDir, "subdir", "memory.jsonl")
+				store = memory.NewJSONLStore(storePath)
+
+				graph := &memory.KnowledgeGraph{
+					Entities: []memory.Entity{
+						{Name: "test", EntityType: "test", Observations: []string{}},
+					},
+				}
+				err := store.Save(graph)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("creating directory"))
+			})
+
+			It("returns error when temp file cannot be created", func() {
+				storePath := filepath.Join(tmpDir, "nowrite", "memory.jsonl")
+				store = memory.NewJSONLStore(storePath)
+
+				Expect(os.MkdirAll(filepath.Dir(storePath), 0o755)).To(Succeed())
+				Expect(os.Chmod(filepath.Dir(storePath), 0o555)).To(Succeed())
+				DeferCleanup(func() {
+					os.Chmod(filepath.Dir(storePath), 0o755)
+				})
+
+				graph := &memory.KnowledgeGraph{
+					Entities: []memory.Entity{
+						{Name: "test", EntityType: "test", Observations: []string{}},
+					},
+				}
+				err := store.Save(graph)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("creating temp file"))
+			})
+
+			It("returns error when rename target is an existing directory", func() {
+				targetDir := filepath.Join(tmpDir, "rename-fail")
+				Expect(os.MkdirAll(targetDir, 0o755)).To(Succeed())
+
+				storePath := filepath.Join(targetDir, "memory.jsonl")
+				Expect(os.MkdirAll(storePath, 0o755)).To(Succeed())
+
+				store = memory.NewJSONLStore(storePath)
+				graph := &memory.KnowledgeGraph{
+					Entities: []memory.Entity{
+						{Name: "test", EntityType: "test", Observations: []string{}},
+					},
+				}
+				err := store.Save(graph)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("renaming temp file"))
+			})
+		})
 	})
 })

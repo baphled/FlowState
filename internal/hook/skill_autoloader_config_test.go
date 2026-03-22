@@ -80,6 +80,35 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
+		Context("error paths", func() {
+			It("returns error when config path parent is not accessible", func() {
+				dir := GinkgoT().TempDir()
+				nestedDir := filepath.Join(dir, "nested")
+				configPath := filepath.Join(nestedDir, "config.yaml")
+				Expect(os.MkdirAll(nestedDir, 0o755)).To(Succeed())
+				Expect(os.WriteFile(configPath, []byte("baseline_skills: []"), 0o600)).To(Succeed())
+				Expect(os.Chmod(nestedDir, 0o000)).To(Succeed())
+				DeferCleanup(func() {
+					os.Chmod(nestedDir, 0o755)
+				})
+
+				_, err := hook.LoadSkillAutoLoaderConfig(configPath)
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("returns error when config file is not readable", func() {
+				dir := GinkgoT().TempDir()
+				configPath := filepath.Join(dir, "config.yaml")
+				Expect(os.WriteFile(configPath, []byte("baseline_skills: []"), 0o000)).To(Succeed())
+				DeferCleanup(func() {
+					os.Chmod(configPath, 0o644)
+				})
+
+				_, err := hook.LoadSkillAutoLoaderConfig(configPath)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
 		It("round-trips config through YAML correctly", func() {
 			dir := GinkgoT().TempDir()
 			configPath := filepath.Join(dir, "roundtrip.yaml")
