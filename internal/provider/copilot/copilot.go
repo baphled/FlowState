@@ -60,12 +60,7 @@ func New(token string) (*Provider, error) {
 		baseURL: defaultBaseURL,
 		client:  client,
 	}
-	if strings.HasPrefix(token, "gho_") {
-		exchanger := &TokenExchangerImpl{Client: client, BaseURL: tokenExchangeBaseURL}
-		p.tokenManager = NewTokenManager(token, exchanger)
-	} else {
-		p.tokenManager = NewDirectTokenManager(token)
-	}
+	p.tokenManager = NewDirectTokenManager(token)
 	return p, nil
 }
 
@@ -88,12 +83,7 @@ func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
 		baseURL: defaultBaseURL,
 		client:  client,
 	}
-	if strings.HasPrefix(tokenResp.AccessToken, "gho_") {
-		exchanger := &TokenExchangerImpl{Client: client, BaseURL: tokenExchangeBaseURL}
-		p.tokenManager = NewTokenManager(tokenResp.AccessToken, exchanger)
-	} else {
-		p.tokenManager = NewDirectTokenManager(tokenResp.AccessToken)
-	}
+	p.tokenManager = NewDirectTokenManager(tokenResp.AccessToken)
 	return p, nil
 }
 

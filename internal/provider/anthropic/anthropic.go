@@ -26,9 +26,10 @@ const (
 	streamChannelBuffSize = 16
 	defaultMaxTokens      = 4096
 	oauthTokenPrefix      = "sk-ant-oat01-"
-	oauthBetaHeader       = "oauth-2025-04-20,interleaved-thinking-2025-05-14"
+	oauthBetaHeader       = "oauth-2025-04-20"
 	oauthUserAgent        = "claude-cli/2.1.2 (external, cli)"
 	oauthAppHeader        = "cli"
+	oauthBillingHeader    = "x-anthropic-billing-header: cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"
 )
 
 // Provider implements the provider.Provider interface for Anthropic Claude.
@@ -491,6 +492,9 @@ func buildMessages(msgs []provider.Message) []anthropicAPI.MessageParam {
 //   - None.
 func (p *Provider) extractSystemPrompt(msgs []provider.Message) []anthropicAPI.TextBlockParam {
 	var blocks []anthropicAPI.TextBlockParam
+	if p.isOAuth {
+		blocks = append(blocks, anthropicAPI.TextBlockParam{Text: oauthBillingHeader})
+	}
 	for _, m := range msgs {
 		if m.Role == "system" && m.Content != "" {
 			block := anthropicAPI.TextBlockParam{Text: m.Content}

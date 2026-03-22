@@ -153,12 +153,15 @@ var _ = Describe("Token Exchange and Manager", func() {
 var _ = Describe("NewFromOpenCodeOrFallback", func() {
 	var tmpDir string
 
+	BeforeEach(func() {
+		var err error
+		tmpDir, err = os.MkdirTemp("", "copilot-test-*")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	AfterEach(func() {
 		Expect(os.RemoveAll(tmpDir)).To(Succeed())
 	})
-
-	// Simulate expiry
-	// (If this block is needed, place it inside an It or Context block)
 
 	Context("when opencode auth.json does not exist", func() {
 		It("falls through to fallback token", func() {
@@ -350,6 +353,80 @@ var _ = Describe("Authorization and Headers", func() {
 			Expect(capturedHeaders.Get("Content-Type")).To(Equal("application/json"))
 			Expect(capturedHeaders.Get("Accept")).To(Equal("application/json"))
 		})
+	})
+})
+
+var _ = Describe("Direct Token Management", func() {
+	It("uses gho_ token directly as Bearer without token exchange", func() {
+		var capturedAuth string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"role": "assistant", "content": "hi"}},
+				},
+			})
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("gho_direct_bearer_test")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		_, err = p.Chat(context.Background(), newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(capturedAuth).To(Equal("Bearer gho_direct_bearer_test"))
+	})
+
+	It("uses gho_ OAuth token directly as Bearer without token exchange", func() {
+		var capturedAuth string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"role": "assistant", "content": "hi"}},
+				},
+			})
+		}))
+		defer ts.Close()
+
+		oauthToken := &oauth.TokenResponse{AccessToken: "gho_oauth_direct_test"}
+		p, err := copilot.NewWithOAuth(oauthToken)
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		_, err = p.Chat(context.Background(), newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(capturedAuth).To(Equal("Bearer gho_oauth_direct_test"))
+	})
+
+	It("never contacts a token exchange endpoint for gho_ tokens", func() {
+		var exchangeCalls int32
+		exchangeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&exchangeCalls, 1)
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer exchangeServer.Close()
+
+		chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"role": "assistant", "content": "hi"}},
+				},
+			})
+		}))
+		defer chatServer.Close()
+
+		p, err := copilot.New("gho_no_exchange_test")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(chatServer.URL)
+
+		_, err = p.Chat(context.Background(), newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(atomic.LoadInt32(&exchangeCalls)).To(Equal(int32(0)))
 	})
 })
 

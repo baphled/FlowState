@@ -97,24 +97,59 @@ var _ = Describe("extractSystemPrompt", func() {
 			Expect(blocks[0].Text).To(Equal("You are a helpful assistant."))
 			Expect(blocks[0].CacheControl).NotTo(BeZero())
 		})
-	})
 
-	Context("when provider uses OAuth authentication", func() {
-		It("omits CacheControl on system blocks", func() {
-			p := &Provider{isOAuth: true}
+		It("does not include the billing header", func() {
+			p := &Provider{isOAuth: false}
 			blocks := p.extractSystemPrompt(msgs)
 			Expect(blocks).To(HaveLen(1))
-			Expect(blocks[0].Text).To(Equal("You are a helpful assistant."))
-			Expect(blocks[0].CacheControl).To(BeZero())
+			Expect(blocks[0].Text).NotTo(HavePrefix("x-anthropic-billing-header:"))
 		})
-	})
 
-	Context("when there are no system messages", func() {
-		It("returns an empty slice", func() {
+		It("returns an empty slice when there are no system messages", func() {
 			p := &Provider{isOAuth: false}
 			userOnly := []provider.Message{{Role: "user", Content: "Hello"}}
 			blocks := p.extractSystemPrompt(userOnly)
 			Expect(blocks).To(BeEmpty())
+		})
+	})
+
+	Context("when provider uses OAuth authentication", func() {
+		It("prepends the billing header as the first system block", func() {
+			p := &Provider{isOAuth: true}
+			blocks := p.extractSystemPrompt(msgs)
+			Expect(blocks).To(HaveLen(2))
+			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
+			Expect(blocks[1].Text).To(Equal("You are a helpful assistant."))
+		})
+
+		It("includes the billing header even with no system messages", func() {
+			p := &Provider{isOAuth: true}
+			userOnly := []provider.Message{{Role: "user", Content: "Hello"}}
+			blocks := p.extractSystemPrompt(userOnly)
+			Expect(blocks).To(HaveLen(1))
+			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
+		})
+
+		It("omits CacheControl on all blocks including billing", func() {
+			p := &Provider{isOAuth: true}
+			blocks := p.extractSystemPrompt(msgs)
+			for _, block := range blocks {
+				Expect(block.CacheControl).To(BeZero())
+			}
+		})
+
+		It("places the billing header before multiple system messages", func() {
+			p := &Provider{isOAuth: true}
+			multiSystem := []provider.Message{
+				{Role: "system", Content: "First system prompt."},
+				{Role: "system", Content: "Second system prompt."},
+				{Role: "user", Content: "Hello"},
+			}
+			blocks := p.extractSystemPrompt(multiSystem)
+			Expect(blocks).To(HaveLen(3))
+			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
+			Expect(blocks[1].Text).To(Equal("First system prompt."))
+			Expect(blocks[2].Text).To(Equal("Second system prompt."))
 		})
 	})
 
