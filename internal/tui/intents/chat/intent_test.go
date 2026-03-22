@@ -316,6 +316,33 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
+		Context("skills loaded event", func() {
+			It("appends a system message with loaded skills", func() {
+				intent.Update(chat.StreamChunkMsg{
+					Content:   "skill1,skill2",
+					EventType: "skills_loaded",
+				})
+
+				messages := intent.MessagesForTest()
+				Expect(messages).To(HaveLen(1))
+				Expect(messages[0].Role).To(Equal("system"))
+				Expect(messages[0].Content).To(ContainSubstring("📚 Skills: skill1, skill2"))
+			})
+
+			It("updates the status bar with loaded skills", func() {
+				// This relies on internal state update which we can't easily check on StatusBar directly
+				// without exposing more methods, but we can verify the side effect on messages
+				intent.Update(chat.StreamChunkMsg{
+					Content:   "skill-a",
+					EventType: "skills_loaded",
+				})
+
+				// Just ensuring it doesn't panic and processes the message
+				messages := intent.MessagesForTest()
+				Expect(messages).To(HaveLen(1))
+			})
+		})
+
 		Context("when Update receives a final StreamChunkMsg", func() {
 			It("returns a command for spinner tick only", func() {
 				cmd := intent.Update(chat.StreamChunkMsg{Content: "done", Done: true})

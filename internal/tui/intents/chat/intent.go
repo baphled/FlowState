@@ -292,7 +292,13 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if msg.EventType == "skills_loaded" {
 		i.loadedSkills = strings.Split(msg.Content, ",")
+		formattedSkills := strings.ReplaceAll(msg.Content, ",", ", ")
+		i.messages = append(i.messages, chat.Message{
+			Role:    "system",
+			Content: "📚 Skills: " + formattedSkills,
+		})
 		i.syncStatusBar()
+		i.refreshViewport()
 		return
 	}
 
@@ -1007,4 +1013,9 @@ func (i *Intent) AgentIDForTest() string {
 //   - Sets the internal agentID field.
 func (i *Intent) SetAgentIDForTest(id string) {
 	i.agentID = id
+}
+
+// MessagesForTest returns all messages including system and user roles.
+func (i *Intent) MessagesForTest() []chat.Message {
+	return i.messages
 }

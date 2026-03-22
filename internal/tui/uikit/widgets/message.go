@@ -65,7 +65,8 @@ func (w *MessageWidget) Render(width int) string {
 
 	var sb strings.Builder
 
-	if w.role == "assistant" {
+	switch w.role {
+	case "assistant":
 		labelStyle := lipgloss.NewStyle().
 			Foreground(th.SecondaryColor()).
 			Bold(true)
@@ -80,7 +81,14 @@ func (w *MessageWidget) Render(width int) string {
 		contentStyle := lipgloss.NewStyle().
 			PaddingLeft(2)
 		sb.WriteString(contentStyle.Render(content))
-	} else {
+
+	case "system":
+		annotationStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")). // muted grey
+			Italic(true)
+		sb.WriteString(annotationStyle.Render(w.content))
+
+	default:
 		labelStyle := lipgloss.NewStyle().
 			Foreground(th.PrimaryColor()).
 			Bold(true)
