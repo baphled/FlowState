@@ -9,7 +9,6 @@ import (
 
 	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/provider"
-	"github.com/baphled/flowstate/internal/skill"
 )
 
 const streamBufferSize = 16
@@ -136,91 +135,6 @@ func LearningHook(store learning.Store) Hook {
 
 			return outChan, nil
 		}
-	}
-}
-
-// ContextInjectionHook creates a hook that injects active skill content into the system prompt.
-//
-// Expected:
-//   - skills is a slice of available Skill values.
-//   - activeSkillNames is the list of skill names to inject.
-//
-// Returns:
-//   - A Hook that prepends matching skill content to the system prompt.
-//
-// Side effects:
-//   - Mutates the ChatRequest's system message to include skill content.
-func ContextInjectionHook(skills []skill.Skill, activeSkillNames []string) Hook {
-	activeSet := buildActiveSkillSet(activeSkillNames)
-	return func(next HandlerFunc) HandlerFunc {
-		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-			skillContent := buildSkillContent(skills, activeSet)
-			injectSkillContent(req, skillContent)
-			return next(ctx, req)
-		}
-	}
-}
-
-// buildActiveSkillSet creates a map of active skill names for fast lookup.
-//
-// Expected:
-//   - names is a slice of skill names to mark as active.
-//
-// Returns:
-//   - A map with skill names as keys and true as values.
-//
-// Side effects:
-//   - None.
-func buildActiveSkillSet(names []string) map[string]bool {
-	set := make(map[string]bool, len(names))
-	for _, name := range names {
-		set[name] = true
-	}
-	return set
-}
-
-// buildSkillContent concatenates content from active skills into a single string.
-//
-// Expected:
-//   - skills is a slice of available Skill values.
-//   - activeSet is a map of active skill names.
-//
-// Returns:
-//   - A concatenated string of skill content separated by double newlines.
-//   - An empty string if no active skills have content.
-//
-// Side effects:
-//   - None.
-func buildSkillContent(skills []skill.Skill, activeSet map[string]bool) string {
-	var builder strings.Builder
-	for i := range skills {
-		if activeSet[skills[i].Name] && skills[i].Content != "" {
-			if builder.Len() > 0 {
-				builder.WriteString("\n\n")
-			}
-			builder.WriteString(skills[i].Content)
-		}
-	}
-	return builder.String()
-}
-
-// injectSkillContent appends skill content to the system message in a chat request.
-//
-// Expected:
-//   - req is a non-nil ChatRequest with at least one message.
-//   - content is the skill content to inject (may be empty).
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Mutates the first message's content if it is a system message.
-func injectSkillContent(req *provider.ChatRequest, content string) {
-	if content == "" || len(req.Messages) == 0 {
-		return
-	}
-	if req.Messages[0].Role == "system" {
-		req.Messages[0].Content = req.Messages[0].Content + "\n\n" + content
 	}
 }
 

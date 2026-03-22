@@ -9,7 +9,6 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/provider"
-	"github.com/baphled/flowstate/internal/skill"
 )
 
 var _ = Describe("Hook", func() {
@@ -221,39 +220,6 @@ var _ = Describe("Hook", func() {
 		})
 	})
 
-	Describe("ContextInjectionHook", func() {
-		It("adds skill content to system message", func() {
-			skills := []skill.Skill{
-				{Name: "skill1", Content: "Skill 1 instructions"},
-				{Name: "skill2", Content: "Skill 2 instructions"},
-				{Name: "skill3", Content: "Skill 3 instructions"},
-			}
-			activeSkillNames := []string{"skill1", "skill3"}
-
-			var capturedMessages []provider.Message
-
-			handler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-				capturedMessages = req.Messages
-				ch := make(chan provider.StreamChunk, 1)
-				ch <- provider.StreamChunk{Done: true}
-				close(ch)
-				return ch, nil
-			}
-
-			chain := hook.NewChain(hook.ContextInjectionHook(skills, activeSkillNames))
-			wrappedHandler := chain.Execute(handler)
-
-			_, err := wrappedHandler(ctx, request)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(capturedMessages).To(HaveLen(2))
-			Expect(capturedMessages[0].Role).To(Equal("system"))
-			Expect(capturedMessages[0].Content).To(ContainSubstring("You are a helpful assistant."))
-			Expect(capturedMessages[0].Content).To(ContainSubstring("Skill 1 instructions"))
-			Expect(capturedMessages[0].Content).To(ContainSubstring("Skill 3 instructions"))
-			Expect(capturedMessages[0].Content).NotTo(ContainSubstring("Skill 2 instructions"))
-		})
-	})
 })
 
 type mockLearningStore struct {

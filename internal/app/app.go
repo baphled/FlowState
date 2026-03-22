@@ -97,7 +97,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Manifest:          defaultManifest,
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,
-		HookChain:         buildHookChain(learningStore, alwaysActiveSkills, func() agent.Manifest { return defaultManifest }),
+		HookChain:         buildHookChain(learningStore, func() agent.Manifest { return defaultManifest }),
 		Tools:             appTools,
 		ToolRegistry:      toolRegistry,
 		PermissionHandler: permHandler,
@@ -274,24 +274,6 @@ func (a *App) DisconnectAll() error {
 	return a.mcpClient.DisconnectAll()
 }
 
-// extractSkillNames extracts the name field from each skill in the provided slice.
-//
-// Expected:
-//   - skills is a non-nil slice of Skill values.
-//
-// Returns:
-//   - A string slice containing the name of each skill in the same order.
-//
-// Side effects:
-//   - None.
-func extractSkillNames(skills []skill.Skill) []string {
-	names := make([]string, len(skills))
-	for i := range skills {
-		names[i] = skills[i].Name
-	}
-	return names
-}
-
 // buildTools constructs and returns the default set of available tools.
 //
 // Expected:
@@ -426,11 +408,10 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 	return skills, alwaysActiveSkills
 }
 
-// buildHookChain constructs a hook chain with logging, learning, skill auto-loading, and context injection hooks.
+// buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
 //
 // Expected:
 //   - learningStore is a non-nil JSONFileStore for persisting learning data.
-//   - alwaysActiveSkills is a non-nil slice of skills to inject into context.
 //   - manifestGetter returns the current agent manifest for skill selection.
 //
 // Returns:
@@ -440,7 +421,6 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 //   - Reads skill-autoloader.yaml from the config directory if it exists.
 func buildHookChain(
 	learningStore *learning.JSONFileStore,
-	alwaysActiveSkills []skill.Skill,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
@@ -451,7 +431,6 @@ func buildHookChain(
 		hook.LoggingHook(),
 		hook.LearningHook(learningStore),
 		hook.SkillAutoLoaderHook(cfg, manifestGetter),
-		hook.ContextInjectionHook(alwaysActiveSkills, extractSkillNames(alwaysActiveSkills)),
 	)
 }
 
