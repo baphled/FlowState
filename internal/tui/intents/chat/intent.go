@@ -101,6 +101,8 @@ type Intent struct {
 	tokenBudget       int
 	tickFrame         int
 	streamChan        <-chan provider.StreamChunk
+	cancelStream      context.CancelFunc
+	lastEscTime       time.Time
 	pendingPermission *ToolPermissionMsg
 	result            *tuiintents.IntentResult
 	msgViewport       viewport.Model
@@ -251,6 +253,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.Type {
+	case tea.KeyEsc:
+		return i.handleEscapeKey()
 	case tea.KeyCtrlC:
 		return tea.Quit
 	case tea.KeyTab:
@@ -277,6 +281,27 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// handleEscapeKey detects double-press of Escape within 500ms to cancel a
+// streaming response.
+//
+// Returns:
+//   - A tea.Cmd from cancelStreamingResponse on double-press, or nil.
+//
+// Side effects:
+//   - Records escape timestamp on first press while streaming.
+//   - Cancels streaming and discards partial response on double-press.
+func (i *Intent) handleEscapeKey() tea.Cmd {
+	if !i.streaming {
+		return nil
+	}
+	now := time.Now()
+	if !i.lastEscTime.IsZero() && now.Sub(i.lastEscTime) < 500*time.Millisecond {
+		return i.cancelStreamingResponse()
+	}
+	i.lastEscTime = now
+	return nil
+}
+
 // handleStreamChunk processes a streaming response chunk.
 //
 // Expected:
@@ -299,6 +324,10 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		})
 		i.syncStatusBar()
 		i.refreshViewport()
+		return
+	}
+
+	if msg.Done && !i.streaming && i.response == "" {
 		return
 	}
 
@@ -583,7 +612,8 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.refreshViewport()
 
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
+		i.cancelStream = cancel
 		stream, err := i.engine.Stream(ctx, i.agentID, userMessage)
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
@@ -591,6 +621,26 @@ func (i *Intent) sendMessage() tea.Cmd {
 		i.streamChan = stream
 		return i.readNextChunk()
 	}
+}
+
+// cancelStreamingResponse cancels the active stream, discards partial content,
+// and resets the intent to accept new input.
+//
+// Returns:
+//   - nil (no async command needed).
+//
+// Side effects:
+//   - Calls the cancel function to stop the stream context.
+//   - Clears streaming state, partial response, and escape timing.
+func (i *Intent) cancelStreamingResponse() tea.Cmd {
+	if i.cancelStream != nil {
+		i.cancelStream()
+		i.cancelStream = nil
+	}
+	i.streaming = false
+	i.response = ""
+	i.lastEscTime = time.Time{}
+	return nil
 }
 
 // readNextChunk reads one chunk from the active stream channel.
@@ -1016,6 +1066,12 @@ func (i *Intent) SetAgentIDForTest(id string) {
 }
 
 // MessagesForTest returns all messages including system and user roles.
+//
+// Returns:
+//   - A slice of all messages in the chat, unfiltered by role.
+//
+// Side effects:
+//   - None.
 func (i *Intent) MessagesForTest() []chat.Message {
 	return i.messages
 }

@@ -41,3 +41,14 @@ Feature: Streaming Responses
     When I send a message that fails with "API key invalid"
     Then I should see "[ERROR: API key invalid]" in the chat
     And the error should be logged to stderr
+
+  @wip
+  Scenario: Double escape cancels a streaming response
+    Given I am in insert mode
+    When I type "Write a very long essay"
+    And I press Enter
+    And I should see tokens appearing
+    When I press Escape
+    And I press Escape again quickly
+    Then the streaming response should be cancelled
+    And I should be able to type a new message

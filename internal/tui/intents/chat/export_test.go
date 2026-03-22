@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -41,6 +43,16 @@ func (i *Intent) ReadNextChunkForTest() tea.Msg {
 // SetAgentRegistryForTest sets the agent registry for testing purposes.
 func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {
 	i.agentRegistry = reg
+}
+
+// SetLastEscTimeForTest sets the lastEscTime for testing double-escape detection.
+func (i *Intent) SetLastEscTimeForTest(t time.Time) {
+	i.lastEscTime = t
+}
+
+// SetCancelStreamForTest sets the cancelStream function for testing cancellation.
+func (i *Intent) SetCancelStreamForTest(cancel func()) {
+	i.cancelStream = cancel
 }
 
 // SimulateModalModelSelectionForTest calls openModelSelector, executes the Cmd

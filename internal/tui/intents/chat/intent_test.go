@@ -3,6 +3,7 @@ package chat_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -129,6 +130,54 @@ var _ = Describe("ChatIntent", func() {
 
 			It("scrolls viewport down on PageDown", func() {
 				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+			})
+		})
+
+		Context("double escape cancels streaming", func() {
+			BeforeEach(func() {
+				intent.SetStreamingForTest(true)
+				intent.SetCancelStreamForTest(func() {})
+			})
+
+			It("records time on first Escape but does not cancel", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.IsStreaming()).To(BeTrue())
+			})
+
+			It("cancels streaming on second Escape within 500ms", func() {
+				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.IsStreaming()).To(BeFalse())
+			})
+
+			It("does not cancel on second Escape after 500ms", func() {
+				intent.SetLastEscTimeForTest(time.Now().Add(-600 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.IsStreaming()).To(BeTrue())
+			})
+
+			It("clears partial response on cancel", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "partial data", Done: false})
+				Expect(intent.Response()).To(Equal("partial data"))
+				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.Response()).To(BeEmpty())
+			})
+
+			It("does not cancel when not streaming", func() {
+				intent.SetStreamingForTest(false)
+				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.IsStreaming()).To(BeFalse())
+			})
+
+			It("discards Done chunk when already cancelled", func() {
+				intent.Update(chat.StreamChunkMsg{Content: "partial ", Done: false})
+				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(intent.IsStreaming()).To(BeFalse())
+				intent.Update(chat.StreamChunkMsg{Content: "", Done: true})
+				Expect(intent.Messages()).To(BeEmpty())
 			})
 		})
 	})
@@ -345,11 +394,13 @@ var _ = Describe("ChatIntent", func() {
 
 		Context("when Update receives a final StreamChunkMsg", func() {
 			It("returns a command for spinner tick only", func() {
+				intent.SetStreamingForTest(true)
 				cmd := intent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
 				Expect(cmd).NotTo(BeNil())
 			})
 
 			It("finalizes the response into messages", func() {
+				intent.SetStreamingForTest(true)
 				intent.Update(chat.StreamChunkMsg{Content: "part1 ", Done: false})
 				intent.Update(chat.StreamChunkMsg{Content: "part2", Done: true})
 				messages := intent.Messages()
@@ -442,6 +493,7 @@ var _ = Describe("ChatIntent", func() {
 		Context("when a stream error occurs", func() {
 			It("displays formatted error message in the chat", func() {
 				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				intent.SetStreamingForTest(true)
 				testErr := fmt.Errorf("connection refused")
 				intent.Update(chat.StreamChunkMsg{
 					Content: "",
@@ -456,6 +508,7 @@ var _ = Describe("ChatIntent", func() {
 
 			It("preserves partial content when error occurs", func() {
 				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				intent.SetStreamingForTest(true)
 				intent.Update(chat.StreamChunkMsg{Content: "Hello ", Error: nil, Done: false})
 				Expect(intent.Response()).To(Equal("Hello "))
 				testErr := fmt.Errorf("timeout")
@@ -471,6 +524,7 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			It("appends error message to assistant messages", func() {
+				intent.SetStreamingForTest(true)
 				testErr := fmt.Errorf("API key invalid")
 				intent.Update(chat.StreamChunkMsg{
 					Content: "",
@@ -485,6 +539,7 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			It("accumulates partial response with error", func() {
+				intent.SetStreamingForTest(true)
 				intent.Update(chat.StreamChunkMsg{Content: "Part 1 ", Error: nil, Done: false})
 				intent.Update(chat.StreamChunkMsg{Content: "Part 2 ", Error: nil, Done: false})
 				Expect(intent.Response()).To(Equal("Part 1 Part 2 "))
@@ -504,6 +559,7 @@ var _ = Describe("ChatIntent", func() {
 
 		Context("when no error occurs", func() {
 			It("processes normal chunks without error field", func() {
+				intent.SetStreamingForTest(true)
 				intent.Update(chat.StreamChunkMsg{Content: "Hello", Error: nil, Done: false})
 				Expect(intent.Response()).To(Equal("Hello"))
 				intent.Update(chat.StreamChunkMsg{Content: " World", Error: nil, Done: true})
