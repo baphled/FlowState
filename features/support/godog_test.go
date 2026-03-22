@@ -41,5 +41,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	s := &StepDefinitions{}
 	RegisterOAuthSteps(ctx, s)
 	RegisterSkillSteps(ctx, s)
+	RegisterMemorySteps(ctx)
+	RegisterSkillAutoloadingSteps(ctx)
 	s.RegisterSteps(ctx)
 }
