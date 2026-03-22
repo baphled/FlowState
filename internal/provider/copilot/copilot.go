@@ -2,6 +2,7 @@
 package copilot
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -369,11 +370,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 			return
 		}
 
-		reader := json.NewDecoder(resp.Body)
-		finished := streamSSE(ctx, ch, reader)
-		if !finished {
-			ch <- provider.StreamChunk{Done: true}
-		}
+		streamSSE(ctx, ch, resp.Body)
 	}()
 
 	return ch, nil
@@ -394,23 +391,31 @@ func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64,
 	return nil, ErrEmbedNotSupported
 }
 
-// streamSSE parses server-sent events from the JSON decoder and sends chunks to the channel.
+// streamSSE parses server-sent events from an SSE text/event-stream body and sends chunks to the channel.
 //
 // Expected:
 //   - ctx is a non-nil context for cancellation.
 //   - ch is an open, writable channel for stream chunks.
-//   - reader is a JSON decoder positioned at the start of the SSE event stream.
-//
-// Returns:
-//   - true if the stream completed with a finish reason, false otherwise.
+//   - body is an io.Reader positioned at the start of the SSE event stream.
 //
 // Side effects:
 //   - Sends StreamChunk values to ch.
-func streamSSE(ctx context.Context, ch chan<- provider.StreamChunk, reader *json.Decoder) bool {
-	for reader.More() {
+func streamSSE(ctx context.Context, ch chan<- provider.StreamChunk, body io.Reader) {
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			ch <- provider.StreamChunk{Done: true}
+			return
+		}
+
 		var event map[string]interface{}
-		if err := reader.Decode(&event); err != nil {
-			break
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
 		}
 
 		choice := extractChoice(event)
@@ -423,16 +428,15 @@ func streamSSE(ctx context.Context, ch chan<- provider.StreamChunk, reader *json
 			case ch <- provider.StreamChunk{Content: content}:
 			case <-ctx.Done():
 				ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-				return false
+				return
 			}
 		}
 
 		if finish, ok := choice["finish_reason"].(string); ok && finish != "" {
 			ch <- provider.StreamChunk{Done: true}
-			return true
+			return
 		}
 	}
-	return false
 }
 
 // extractChoice extracts the first choice from an SSE event.

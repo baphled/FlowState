@@ -438,3 +438,212 @@ func newTestChatRequest() provider.ChatRequest {
 		},
 	}
 }
+
+var _ = Describe("SSE Streaming", func() {
+	var (
+		ctx context.Context
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("streams multiple content chunks from SSE events", func() {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Transfer-Encoding", "chunked")
+			flusher, ok := w.(http.Flusher)
+			Expect(ok).To(BeTrue())
+			chunks := []string{"Hello", " world", "!"}
+			for _, c := range chunks {
+				fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"},\"finish_reason\":null}]}\n\n", c)
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_test_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var contents []string
+		for chunk := range ch {
+			if chunk.Content != "" {
+				contents = append(contents, chunk.Content)
+			}
+		}
+		Expect(contents).To(Equal([]string{"Hello", " world", "!"}))
+	})
+
+	It("terminates stream on data: [DONE]", func() {
+		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+			"data: [DONE]\n\n",
+		)))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_done_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(HaveLen(2))
+		Expect(chunks[0].Content).To(Equal("hi"))
+		Expect(chunks[1].Done).To(BeTrue())
+	})
+
+	It("skips blank lines and non-data lines", func() {
+		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
+			"\n",
+			": this is a comment\n",
+			"event: ping\n",
+			"\n",
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+			"data: [DONE]\n\n",
+		)))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_skip_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var contents []string
+		for chunk := range ch {
+			if chunk.Content != "" {
+				contents = append(contents, chunk.Content)
+			}
+		}
+		Expect(contents).To(Equal([]string{"ok"}))
+	})
+
+	It("sends Done on finish_reason stop", func() {
+		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bye\"},\"finish_reason\":null}]}\n\n",
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+		)))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_finish_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(HaveLen(2))
+		Expect(chunks[0].Content).To(Equal("bye"))
+		Expect(chunks[1].Done).To(BeTrue())
+	})
+
+	It("returns error chunk for non-200 status", func() {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_error_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(HaveLen(1))
+		Expect(chunks[0].Error).To(HaveOccurred())
+		Expect(chunks[0].Done).To(BeTrue())
+	})
+
+	It("handles context cancellation gracefully", func() {
+		cancelCtx, cancel := context.WithCancel(ctx)
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			Expect(ok).To(BeTrue())
+			for i := range 1000 {
+				fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"chunk%d\"},\"finish_reason\":null}]}\n\n", i)
+				flusher.Flush()
+			}
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_cancel_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(cancelCtx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		cancel()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for chunk := range ch {
+				_ = chunk
+			}
+		}()
+		Eventually(done, 5*time.Second).Should(BeClosed())
+	})
+
+	It("handles single chunk stream", func() {
+		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
+			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"only\"},\"finish_reason\":null}]}\n\n",
+			"data: [DONE]\n\n",
+		)))
+		defer ts.Close()
+
+		p, err := copilot.New("sse_single_token")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+
+		var contents []string
+		for chunk := range ch {
+			if chunk.Content != "" {
+				contents = append(contents, chunk.Content)
+			}
+		}
+		Expect(contents).To(Equal([]string{"only"}))
+	})
+})
+
+func sseHandler(events ...string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Transfer-Encoding", "chunked")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		for _, ev := range events {
+			fmt.Fprint(w, ev)
+			flusher.Flush()
+		}
+	}
+}
