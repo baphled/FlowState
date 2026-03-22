@@ -6,8 +6,8 @@ import (
 )
 
 // DiscoverMCPServers auto-detects MCP servers available in PATH and returns
-// their configurations. Checks for mcp-mem0-server, mcp-vault-server, and
-// filesystem MCP via npx.
+// their configurations. Checks for mcp-mem0-server, mcp-vault-server,
+// flowstate-memory-server, and filesystem MCP via npx.
 //
 // Returns:
 //   - A slice of MCPServerConfig with Enabled=false for discovered servers.
@@ -28,6 +28,14 @@ func DiscoverMCPServers() []MCPServerConfig {
 	if path := findInPath("mcp-vault-server"); path != "" {
 		servers = append(servers, MCPServerConfig{
 			Name:    "vault-rag",
+			Command: path,
+			Enabled: false,
+		})
+	}
+
+	if path := findInPath("flowstate-memory-server"); path != "" {
+		servers = append(servers, MCPServerConfig{
+			Name:    "flowstate-memory",
 			Command: path,
 			Enabled: false,
 		})
