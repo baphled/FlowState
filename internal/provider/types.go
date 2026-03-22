@@ -23,7 +23,6 @@ type ChatRequest struct {
 	Model    string
 	Messages []Message
 	Tools    []Tool
-	Metadata map[string]any
 }
 
 // Tool describes a tool available for the model to use.

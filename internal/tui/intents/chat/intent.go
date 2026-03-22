@@ -32,7 +32,6 @@ type StreamChunkMsg struct {
 	Done       bool
 	ToolCall   *provider.ToolCall
 	ToolStatus string
-	EventType  string
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -108,7 +107,6 @@ type Intent struct {
 	agentRegistry     *agent.Registry
 	toolCallName      string
 	toolCallStatus    string
-	loadedSkills      []string
 	view              *chat.View
 }
 
@@ -290,18 +288,6 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //   - Updates tool call state when present.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
-	if msg.EventType == "skills_loaded" {
-		i.loadedSkills = strings.Split(msg.Content, ",")
-		formattedSkills := strings.ReplaceAll(msg.Content, ",", ", ")
-		i.messages = append(i.messages, chat.Message{
-			Role:    "system",
-			Content: "📚 Skills: " + formattedSkills,
-		})
-		i.syncStatusBar()
-		i.refreshViewport()
-		return
-	}
-
 	if !msg.Done {
 		i.response += msg.Content
 		if msg.ToolCall != nil {
@@ -619,7 +605,6 @@ func (i *Intent) readNextChunk() tea.Msg {
 		Done:       chunk.Done,
 		ToolCall:   chunk.ToolCall,
 		ToolStatus: toolStatus,
-		EventType:  chunk.EventType,
 	}
 }
 

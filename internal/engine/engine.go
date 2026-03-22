@@ -27,7 +27,6 @@ type Engine struct {
 	failbackChain     *provider.FailbackChain
 	manifest          agent.Manifest
 	tools             []tool.Tool
-	skills            []skill.Skill
 	store             *ctxstore.FileContextStore
 	windowBuilder     *ctxstore.WindowBuilder
 	tokenCounter      ctxstore.TokenCounter
@@ -88,7 +87,6 @@ func New(cfg Config) *Engine {
 		failbackChain:     failbackChain,
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
-		skills:            cfg.Skills,
 		store:             cfg.Store,
 		windowBuilder:     windowBuilder,
 		tokenCounter:      cfg.TokenCounter,
@@ -238,38 +236,13 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // Side effects:
 //   - None.
 func (e *Engine) BuildSystemPrompt() string {
-	var builder strings.Builder
-
 	if prompt.HasPrompt(e.manifest.ID) {
 		embeddedPrompt, err := prompt.GetPrompt(e.manifest.ID)
 		if err == nil {
-			builder.WriteString(embeddedPrompt)
-		} else {
-			builder.WriteString(e.manifest.Instructions.SystemPrompt)
-		}
-	} else {
-		builder.WriteString(e.manifest.Instructions.SystemPrompt)
-	}
-
-	for _, skillName := range e.manifest.Capabilities.AlwaysActiveSkills {
-		for i := range e.skills {
-			if e.skills[i].Name == skillName && e.skills[i].Content != "" {
-				builder.WriteString("\n\n")
-				builder.WriteString(e.skills[i].Content)
-			}
+			return embeddedPrompt
 		}
 	}
-
-	for _, skillName := range e.manifest.Capabilities.Skills {
-		for i := range e.skills {
-			if e.skills[i].Name == skillName && e.skills[i].Content != "" {
-				builder.WriteString("\n\n")
-				builder.WriteString(e.skills[i].Content)
-			}
-		}
-	}
-
-	return builder.String()
+	return e.manifest.Instructions.SystemPrompt
 }
 
 // buildToolSchemas converts the engine's tools into provider-compatible tool schemas.
@@ -348,41 +321,13 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
-		e.emitLoadedSkills(req.Metadata, outChan)
 		e.streamWithToolLoop(ctx, messages, providerChunks, outChan)
 	}()
 
 	return outChan, nil
 }
 
-// emitLoadedSkills sends a skills_loaded event chunk if the metadata contains loaded skill names.
-//
-// Expected:
-//   - metadata may be nil (no skills to emit).
-//   - outChan is an open channel for writing chunks.
-//
-// Side effects:
-//   - Sends a StreamChunk with EventType "skills_loaded" to outChan if skills are present.
-func (e *Engine) emitLoadedSkills(metadata map[string]any, outChan chan<- provider.StreamChunk) {
-	if metadata == nil {
-		return
-	}
-	raw, ok := metadata["loaded_skills"]
-	if !ok {
-		return
-	}
-	skills, ok := raw.([]string)
-	if !ok || len(skills) == 0 {
-		return
-	}
-	outChan <- provider.StreamChunk{
-		EventType: "skills_loaded",
-		Content:   strings.Join(skills, ","),
-	}
-}
-
 // streamFromProvider initiates a streaming chat request with the provider, applying any configured hooks.
-// The hook chain may set req.Metadata which the caller can inspect after this returns.
 //
 // Expected:
 //   - ctx is a valid context for the streaming operation.
@@ -393,7 +338,7 @@ func (e *Engine) emitLoadedSkills(metadata map[string]any, outChan chan<- provid
 //   - An error if the stream fails to initialise.
 //
 // Side effects:
-//   - Executes hook chain if configured. Hooks may mutate req.Metadata.
+//   - Executes hook chain if configured. Hooks may mutate req.
 func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {

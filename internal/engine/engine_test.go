@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -14,7 +13,6 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
-	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
@@ -169,7 +167,7 @@ var _ = Describe("Engine", func() {
 			Expect(prompt).To(ContainSubstring("You are a helpful assistant."))
 		})
 
-		It("appends always-active skill content", func() {
+		It("does not include skill content in system prompt", func() {
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,
 				Manifest:     manifest,
@@ -178,18 +176,7 @@ var _ = Describe("Engine", func() {
 
 			prompt := eng.BuildSystemPrompt()
 
-			Expect(prompt).To(ContainSubstring("Always remember context."))
-		})
-
-		It("does not include non-active skills", func() {
-			eng := engine.New(engine.Config{
-				ChatProvider: chatProvider,
-				Manifest:     manifest,
-				Skills:       skills,
-			})
-
-			prompt := eng.BuildSystemPrompt()
-
+			Expect(prompt).NotTo(ContainSubstring("Always remember context."))
 			Expect(prompt).NotTo(ContainSubstring("This should not appear."))
 		})
 
@@ -245,7 +232,7 @@ var _ = Describe("Engine", func() {
 		})
 
 		Context("when agent has agent-level skills", func() {
-			It("includes agent-level skill content after always-active skills", func() {
+			It("does not include agent-level skill content in system prompt", func() {
 				manifest.Capabilities.Skills = []string{"agent-skill"}
 				manifest.Capabilities.AlwaysActiveSkills = []string{"memory-keeper"}
 
@@ -262,11 +249,9 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("Always remember context."))
-				Expect(prompt).To(ContainSubstring("This is an agent-level skill."))
-				indexOfAlwaysActive := strings.Index(prompt, "Always remember context.")
-				indexOfAgentSkill := strings.Index(prompt, "This is an agent-level skill.")
-				Expect(indexOfAlwaysActive < indexOfAgentSkill).To(BeTrue())
+				Expect(prompt).NotTo(ContainSubstring("Always remember context."))
+				Expect(prompt).NotTo(ContainSubstring("This is an agent-level skill."))
+				Expect(prompt).To(Equal("You are a helpful assistant."))
 			})
 		})
 	})
@@ -420,71 +405,6 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
-		Context("when hook chain sets loaded_skills metadata", func() {
-			It("emits a skills_loaded chunk before content chunks", func() {
-				metadataHook := func(next hook.HandlerFunc) hook.HandlerFunc {
-					return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-						if req.Metadata == nil {
-							req.Metadata = make(map[string]any)
-						}
-						req.Metadata["loaded_skills"] = []string{"golang", "tdd-first"}
-						return next(ctx, req)
-					}
-				}
-
-				chain := hook.NewChain(metadataHook)
-
-				eng := engine.New(engine.Config{
-					ChatProvider: chatProvider,
-					Manifest:     manifest,
-					HookChain:    chain,
-				})
-
-				ctx := context.Background()
-				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
-				Expect(err).NotTo(HaveOccurred())
-
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
-				}
-
-				Expect(len(received)).To(BeNumerically(">=", 3))
-				Expect(received[0].EventType).To(Equal("skills_loaded"))
-				Expect(received[0].Content).To(ContainSubstring("golang"))
-				Expect(received[0].Content).To(ContainSubstring("tdd-first"))
-			})
-
-			It("does not emit skills_loaded when metadata has no loaded_skills", func() {
-				noopHook := func(next hook.HandlerFunc) hook.HandlerFunc {
-					return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-						return next(ctx, req)
-					}
-				}
-
-				chain := hook.NewChain(noopHook)
-
-				eng := engine.New(engine.Config{
-					ChatProvider: chatProvider,
-					Manifest:     manifest,
-					HookChain:    chain,
-				})
-
-				ctx := context.Background()
-				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
-				Expect(err).NotTo(HaveOccurred())
-
-				var received []provider.StreamChunk
-				for chunk := range chunks {
-					received = append(received, chunk)
-				}
-
-				Expect(received).To(HaveLen(2))
-				for _, chunk := range received {
-					Expect(chunk.EventType).NotTo(Equal("skills_loaded"))
-				}
-			})
-		})
 	})
 
 	Describe("embedding fallback", func() {
@@ -726,7 +646,7 @@ var _ = Describe("Engine", func() {
 	})
 
 	Describe("buildContextWindow with window builder active", func() {
-		It("uses the full embedded system prompt rather than the short inline string", func() {
+		It("uses the embedded system prompt rather than the inline string", func() {
 			tempDir, err := os.MkdirTemp("", "engine-context-window-test-*")
 			Expect(err).NotTo(HaveOccurred())
 			defer os.RemoveAll(tempDir)
@@ -749,19 +669,11 @@ var _ = Describe("Engine", func() {
 				ContextManagement: agent.DefaultContextManagement(),
 			}
 
-			testSkills := []skill.Skill{
-				{
-					Name:    "memory-keeper",
-					Content: "Always remember context.",
-				},
-			}
-
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,
 				Manifest:     testManifest,
 				Store:        store,
 				TokenCounter: tokenCounter,
-				Skills:       testSkills,
 			})
 
 			ctx := context.Background()
@@ -778,12 +690,8 @@ var _ = Describe("Engine", func() {
 			systemMessage := chatProvider.capturedRequest.Messages[0]
 			Expect(systemMessage.Role).To(Equal("system"))
 
-			// The full embedded prompt should be much longer than the short inline string
-			Expect(len(systemMessage.Content)).To(BeNumerically(">", len("Short inline prompt.")))
-
-			// Verify it contains the embedded prompt content and skills
+			Expect(systemMessage.Content).To(ContainSubstring("placeholder"))
 			Expect(systemMessage.Content).NotTo(ContainSubstring("Short inline prompt."))
-			Expect(systemMessage.Content).To(ContainSubstring("Always remember context."))
 		})
 	})
 
