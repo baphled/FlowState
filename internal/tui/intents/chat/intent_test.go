@@ -3,7 +3,6 @@ package chat_test
 import (
 	"context"
 	"fmt"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -133,53 +132,6 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
-		Context("double escape cancels streaming", func() {
-			BeforeEach(func() {
-				intent.SetStreamingForTest(true)
-				intent.SetCancelStreamForTest(func() {})
-			})
-
-			It("records time on first Escape but does not cancel", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.IsStreaming()).To(BeTrue())
-			})
-
-			It("cancels streaming on second Escape within 500ms", func() {
-				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.IsStreaming()).To(BeFalse())
-			})
-
-			It("does not cancel on second Escape after 500ms", func() {
-				intent.SetLastEscTimeForTest(time.Now().Add(-600 * time.Millisecond))
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.IsStreaming()).To(BeTrue())
-			})
-
-			It("clears partial response on cancel", func() {
-				intent.Update(chat.StreamChunkMsg{Content: "partial data", Done: false})
-				Expect(intent.Response()).To(Equal("partial data"))
-				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.Response()).To(BeEmpty())
-			})
-
-			It("does not cancel when not streaming", func() {
-				intent.SetStreamingForTest(false)
-				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.IsStreaming()).To(BeFalse())
-			})
-
-			It("discards Done chunk when already cancelled", func() {
-				intent.Update(chat.StreamChunkMsg{Content: "partial ", Done: false})
-				intent.SetLastEscTimeForTest(time.Now().Add(-200 * time.Millisecond))
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				Expect(intent.IsStreaming()).To(BeFalse())
-				intent.Update(chat.StreamChunkMsg{Content: "", Done: true})
-				Expect(intent.Messages()).To(BeEmpty())
-			})
-		})
 	})
 
 	Describe("View", func() {

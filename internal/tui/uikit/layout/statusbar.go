@@ -11,12 +11,11 @@ import (
 
 // StatusBarMsg carries status updates to the StatusBar component.
 type StatusBarMsg struct {
-	Provider     string
-	Model        string
-	AgentID      string
-	TokensUsed   int
-	TokenBudget  int
-	LoadedSkills []string
+	Provider    string
+	Model       string
+	AgentID     string
+	TokensUsed  int
+	TokenBudget int
 }
 
 // StatusBar renders a two-line status bar with token usage on line 1
@@ -29,7 +28,6 @@ type StatusBar struct {
 	agentID      string
 	tokensUsed   int
 	tokenBudget  int
-	loadedSkills []string
 	width        int
 	streaming    bool
 	spinnerFrame int
@@ -85,9 +83,6 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 	if msg.AgentID != "" {
 		s.agentID = msg.AgentID
 	}
-	if len(msg.LoadedSkills) > 0 {
-		s.loadedSkills = msg.LoadedSkills
-	}
 	s.tokensUsed = msg.TokensUsed
 	s.tokenBudget = msg.TokenBudget
 }
@@ -137,8 +132,7 @@ func tokenColor(used, budget int, th theme.Theme) lipgloss.Color {
 
 // RenderContent renders the status bar for the given width using UIKit primitives.
 // Line 1: spinner prefix when streaming (left) + token bar + count (right) with full-width background.
-// Line 2 (optional): loaded skill names, comma-separated.
-// Line 3: provider + model + agentID (left-aligned, muted colour, no background).
+// Line 2: provider + model + agentID (left-aligned, muted colour, no background).
 //
 // Expected:
 //   - width is the terminal width in columns (>0).
@@ -154,14 +148,7 @@ func (s *StatusBar) RenderContent(width int) string {
 	tokenLine := s.renderTokenLine(width, th)
 	providerLine := s.renderProviderLine(width, th)
 
-	lines := []string{tokenLine}
-	if len(s.loadedSkills) > 0 {
-		mutedStyle := lipgloss.NewStyle().Foreground(th.MutedColor())
-		lines = append(lines, mutedStyle.Render("Skills: "+strings.Join(s.loadedSkills, ", ")))
-	}
-	lines = append(lines, providerLine)
-
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.JoinVertical(lipgloss.Left, tokenLine, providerLine)
 }
 
 // renderTokenLine renders the top line with spinner, token bar, and token count.

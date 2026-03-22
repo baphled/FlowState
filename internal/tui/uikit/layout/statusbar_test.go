@@ -110,37 +110,4 @@ var _ = Describe("StatusBar", func() {
 		})
 	})
 
-	Describe("loaded skills display", func() {
-		It("renders loaded skills when set", func() {
-			sb.Update(layout.StatusBarMsg{
-				Provider:     "Anthropic",
-				Model:        "claude-3-opus",
-				LoadedSkills: []string{"pre-action", "memory-keeper"},
-			})
-			output := sb.RenderContent(80)
-			Expect(output).To(ContainSubstring("pre-action"))
-			Expect(output).To(ContainSubstring("memory-keeper"))
-		})
-
-		It("renders no skill line when skills are empty", func() {
-			sb.Update(layout.StatusBarMsg{
-				Provider: "Anthropic",
-				Model:    "claude-3-opus",
-			})
-			output := sb.RenderContent(80)
-			Expect(output).NotTo(ContainSubstring("Skills:"))
-		})
-
-		It("preserves skills across updates that do not set skills", func() {
-			sb.Update(layout.StatusBarMsg{
-				LoadedSkills: []string{"golang", "tdd-first"},
-			})
-			sb.Update(layout.StatusBarMsg{
-				Provider: "OpenAI",
-			})
-			output := sb.RenderContent(80)
-			Expect(output).To(ContainSubstring("golang"))
-			Expect(output).To(ContainSubstring("tdd-first"))
-		})
-	})
 })
