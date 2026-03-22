@@ -1,5 +1,7 @@
 package hook
 
+import "strings"
+
 // SkillSelection represents the result of skill selection.
 //
 // SkillSelection contains the list of selected skills and their sources,
@@ -65,4 +67,68 @@ type SkillSelectionInput struct {
 	Prompt             string   `json:"prompt"`
 	ExistingSkills     []string `json:"existingSkills"`
 	AgentDefaultSkills []string `json:"agentDefaultSkills"`
+}
+
+// SelectSkills applies the three-tier skill selection algorithm.
+//
+// SelectSkills selects skills from baseline, agent defaults, and keyword
+// patterns, deduplicating and applying the MaxAutoSkills cap to non-baseline
+// skills.
+//
+// Expected:
+//   - input contains the agent context and prompt for skill selection.
+//   - config contains baseline skills, keyword patterns, and the auto-skills cap.
+//
+// Returns:
+//   - A SkillSelection with deduplicated skills and their sources.
+//
+// Side effects:
+//   - None.
+func SelectSkills(input SkillSelectionInput, config *SkillAutoLoaderConfig) SkillSelection {
+	seen := make(map[string]bool)
+	var skills []string
+	var sources []SkillSource
+
+	for _, skill := range config.BaselineSkills {
+		if seen[skill] {
+			continue
+		}
+		seen[skill] = true
+		skills = append(skills, skill)
+		sources = append(sources, SkillSource{Skill: skill, Source: "baseline", Pattern: ""})
+	}
+
+	autoCount := 0
+
+	for _, skill := range input.AgentDefaultSkills {
+		if seen[skill] || autoCount >= config.MaxAutoSkills {
+			continue
+		}
+		seen[skill] = true
+		skills = append(skills, skill)
+		sources = append(sources, SkillSource{Skill: skill, Source: "agent", Pattern: ""})
+		autoCount++
+	}
+
+	promptLower := strings.ToLower(input.Prompt)
+	for _, kp := range config.KeywordPatterns {
+		if autoCount >= config.MaxAutoSkills {
+			break
+		}
+		patternLower := strings.ToLower(kp.Pattern)
+		if !strings.Contains(promptLower, patternLower) {
+			continue
+		}
+		for _, skill := range kp.Skills {
+			if seen[skill] || autoCount >= config.MaxAutoSkills {
+				continue
+			}
+			seen[skill] = true
+			skills = append(skills, skill)
+			sources = append(sources, SkillSource{Skill: skill, Source: "keyword", Pattern: kp.Pattern})
+			autoCount++
+		}
+	}
+
+	return SkillSelection{Skills: skills, Sources: sources}
 }
