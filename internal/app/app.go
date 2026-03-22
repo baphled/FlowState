@@ -69,7 +69,8 @@ func New(cfg *config.AppConfig) (*App, error) {
 
 	providerRegistry, ollamaProvider := registerProviders(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
-	skills, alwaysActiveSkills := loadSkills(cfg)
+	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
+	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
 	sessionStore, learningStore, err := createDataStores(cfg)
 	if err != nil {
 		return nil, err
@@ -93,7 +94,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		ChatProvider:      defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(ollamaProvider),
 		Registry:          providerRegistry,
-		Manifest:          selectDefaultManifest(agentRegistry, cfg.DefaultAgent),
+		Manifest:          defaultManifest,
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,
 		HookChain:         buildHookChain(learningStore, alwaysActiveSkills),
@@ -401,26 +402,27 @@ func mergeMCPServers(configured, discovered []config.MCPServerConfig) []config.M
 	return result
 }
 
-// loadSkills loads all available skills and always-active skills from the configured skill directory.
+// loadSkills loads all available skills and always-active skills from the configured skill directory and agent manifest.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with a valid SkillDir path.
+//   - manifest is the selected agent Manifest with Capabilities.
 //
 // Returns:
 //   - A slice of all loaded skills (empty slice if loading fails).
-//   - A slice of always-active skills loaded from the engine.
+//   - A slice of always-active skills loaded from the engine, merged from config and manifest.
 //
 // Side effects:
 //   - Reads skill files from the configured skill directory.
 //   - Logs a warning if skill loading fails.
-func loadSkills(cfg *config.AppConfig) ([]skill.Skill, []skill.Skill) {
+func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, []skill.Skill) {
 	skillLoader := skill.NewFileSkillLoader(cfg.SkillDir)
 	skills, err := skillLoader.LoadAll()
 	if err != nil {
 		log.Printf("warning: loading skills: %v", err)
 		skills = []skill.Skill{}
 	}
-	alwaysActiveSkills := engine.LoadAlwaysActiveSkills(cfg.SkillDir, nil, nil)
+	alwaysActiveSkills := engine.LoadAlwaysActiveSkills(cfg.SkillDir, cfg.AlwaysActiveSkills, manifest.Capabilities.AlwaysActiveSkills)
 	return skills, alwaysActiveSkills
 }
 
