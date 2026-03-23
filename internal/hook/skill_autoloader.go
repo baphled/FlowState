@@ -16,13 +16,19 @@ import (
 //   - manifestGetter is called per-request to get the current agent manifest.
 //
 // Returns:
-//   - A Hook that prepends "Your load_skills: [...]" to the system message.
+//   - A Hook that prepends "Your load_skills: [...]" to the system message on the first
+//     user message only.
 //
 // Side effects:
-//   - Mutates the ChatRequest system message.
+//   - Mutates the ChatRequest system message on first invocation.
+//   - Passes through without mutation on continuation messages (assistant reply present)
+//     or tool-call follow-ups (load_skills already injected).
 func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() agent.Manifest) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			if containsAssistantMessage(req.Messages) {
+				return next(ctx, req)
+			}
 			manifest := manifestGetter()
 			userPrompt := extractUserMessage(req.Messages)
 			input := SkillSelectionInput{
@@ -37,6 +43,26 @@ func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() ag
 			return next(ctx, req)
 		}
 	}
+}
+
+// containsAssistantMessage checks whether any message in the slice has the assistant role.
+//
+// Expected:
+//   - messages is a slice of provider messages (may be empty).
+//
+// Returns:
+//   - true if at least one message has Role == "assistant".
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func containsAssistantMessage(messages []provider.Message) bool {
+	for i := range messages {
+		if messages[i].Role == "assistant" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildLeanInjection formats a slice of skill names into the lean injection string.
@@ -64,7 +90,11 @@ func buildLeanInjection(skills []string) string {
 //
 // Side effects:
 //   - Mutates the first system message, or prepends a new system message if none exists.
+//   - No-ops when the system message already contains a load_skills directive.
 func injectLeanSkills(req *provider.ChatRequest, lean string) {
+	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Your load_skills:") {
+		return
+	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {
 		systemMsg := provider.Message{Role: "system", Content: lean}
 		req.Messages = append([]provider.Message{systemMsg}, req.Messages...)

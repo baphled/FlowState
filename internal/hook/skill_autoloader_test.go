@@ -2,6 +2,7 @@ package hook_test
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -92,7 +93,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
-	Context("when reading the last user message for keyword matching", func() {
+	Context("when the user message matches keyword patterns", func() {
 		BeforeEach(func() {
 			config.KeywordPatterns = []hook.KeywordPattern{
 				{Pattern: "test", Skills: []string{"golang-testing"}},
@@ -100,14 +101,12 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
 					{Role: "system", Content: "You are a helpful assistant."},
-					{Role: "user", Content: "first message"},
-					{Role: "assistant", Content: "response"},
 					{Role: "user", Content: "write a test for this"},
 				},
 			}
 		})
 
-		It("uses the last user message for keyword matching", func() {
+		It("includes keyword-matched skills in the injection", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
 			wrapped := autoloader(passthrough)
 
@@ -200,6 +199,96 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(ContainSubstring(
 				"Your load_skills: [pre-action, memory-keeper, clean-code]. Call skill_load(name) for each before starting work.",
 			))
+		})
+	})
+
+	Context("when system message already contains load_skills", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, clean-code]. Call skill_load(name) for each before starting work.\n\nYou are a helpful assistant."},
+					{Role: "user", Content: "follow-up after tool call"},
+				},
+			}
+		})
+
+		It("does not double-inject skills into the system message", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			occurrences := strings.Count(systemContent, "Your load_skills:")
+			Expect(occurrences).To(Equal(1))
+		})
+	})
+
+	Context("when messages contain an assistant reply (continuation)", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "first message"},
+					{Role: "assistant", Content: "I can help with that."},
+					{Role: "user", Content: "second message"},
+				},
+			}
+		})
+
+		It("skips skill injection entirely", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(Equal("You are a helpful assistant."))
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+		})
+
+		It("still calls through to the next handler", func() {
+			var handlerCalled bool
+			handler := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				handlerCalled = true
+				capturedRequest = req
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "ok", Done: true}
+				close(ch)
+				return ch, nil
+			}
+
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(handler)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handlerCalled).To(BeTrue())
+		})
+	})
+
+	Context("when no assistant messages exist (first message)", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("injects skills as normal", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).To(ContainSubstring("pre-action"))
 		})
 	})
 
