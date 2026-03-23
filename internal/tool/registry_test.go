@@ -19,8 +19,8 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(registry).NotTo(BeNil())
 	})
 
-	It("returns exactly 3 tools", func() {
-		Expect(registry.List()).To(HaveLen(3))
+	It("returns exactly 4 tools", func() {
+		Expect(registry.List()).To(HaveLen(4))
 	})
 
 	It("can retrieve bash tool", func() {
@@ -29,10 +29,16 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(t.Name()).To(Equal("bash"))
 	})
 
-	It("can retrieve file tool", func() {
-		t, err := registry.Get("file")
+	It("can retrieve read tool", func() {
+		t, err := registry.Get("read")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(t.Name()).To(Equal("file"))
+		Expect(t.Name()).To(Equal("read"))
+	})
+
+	It("can retrieve write tool", func() {
+		t, err := registry.Get("write")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("write"))
 	})
 
 	It("can retrieve web tool", func() {

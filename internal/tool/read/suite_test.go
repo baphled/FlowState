@@ -1,4 +1,4 @@
-package file_test
+package read_test
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestFile(t *testing.T) {
+func TestRead(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "File Tool Suite")
+	RunSpecs(t, "Read Tool Suite")
 }

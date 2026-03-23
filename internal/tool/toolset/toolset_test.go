@@ -20,9 +20,16 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(t).NotTo(BeNil())
 	})
 
-	It("contains the file tool", func() {
+	It("contains the read tool", func() {
 		registry := toolset.NewDefaultRegistry()
-		t, err := registry.Get("file")
+		t, err := registry.Get("read")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t).NotTo(BeNil())
+	})
+
+	It("contains the write tool", func() {
+		registry := toolset.NewDefaultRegistry()
+		t, err := registry.Get("write")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(t).NotTo(BeNil())
 	})

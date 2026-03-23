@@ -26,10 +26,11 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
-	"github.com/baphled/flowstate/internal/tool/file"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	"github.com/baphled/flowstate/internal/tool/read"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	"github.com/baphled/flowstate/internal/tool/web"
+	"github.com/baphled/flowstate/internal/tool/write"
 )
 
 // App is the main application container holding all initialized components.
@@ -358,7 +359,8 @@ func (a *App) DisconnectAll() error {
 func buildTools(skillLoader *skill.FileSkillLoader) []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
-		file.New(),
+		read.New(),
+		write.New(),
 		web.New(),
 		skilltool.New(skillLoader),
 	}
