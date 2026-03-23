@@ -86,8 +86,6 @@ type Intent struct {
 	agentID           string
 	sessionID         string
 	input             string
-	streaming         bool
-	response          string
 	width             int
 	height            int
 	statusBar         *layout.StatusBar
@@ -104,8 +102,6 @@ type Intent struct {
 	msgViewport       viewport.Model
 	vpReady           bool
 	agentRegistry     *agent.Registry
-	toolCallName      string
-	toolCallStatus    string
 	view              *chat.View
 }
 
@@ -138,8 +134,6 @@ func NewIntent(cfg IntentConfig) *Intent {
 		agentID:         cfg.AgentID,
 		sessionID:       cfg.SessionID,
 		input:           "",
-		streaming:       false,
-		response:        "",
 		width:           80,
 		height:          24,
 		statusBar:       sb,
@@ -214,7 +208,7 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		i.handleToolPermission(msg)
 		return nil
 	case SpinnerTickMsg:
-		if i.streaming {
+		if i.view.IsStreaming() {
 			i.tickFrame++
 		}
 		return tickSpinner()
@@ -279,64 +273,26 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //   - msg is a StreamChunkMsg with content from the provider stream.
 //
 // Side effects:
-//   - When Done is true, appends the accumulated response to messages, clears streaming state.
-//   - When Done is false, accumulates content in i.response.
-//   - If Error is set, appends error message to content and logs critical errors.
-//   - Preserves partial response accumulated during streaming even if an error occurs.
-//   - Updates tool call state when present.
+//   - Delegates to view.HandleChunk for streaming state management.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
-	if !msg.Done {
-		i.response += msg.Content
-		if msg.ToolCall != nil {
-			i.toolCallName = msg.ToolCall.Name
-			i.toolCallStatus = msg.ToolStatus
-		}
-	} else {
-		i.finalizeResponse(msg)
-		i.toolCallName = ""
-		i.toolCallStatus = ""
-	}
-
-	tokens := i.tokenCounter.Count(msg.Content)
-	i.tokenCount += tokens
-	i.syncStatusBar()
-}
-
-// finalizeResponse completes a streaming response and handles any errors.
-//
-// Expected:
-//   - msg.Done is true.
-//   - i.response contains the accumulated partial response.
-//
-// Returns:
-//   - Nothing (modifies i.messages, i.response, and i.streaming in place).
-//
-// Side effects:
-//   - Appends the final message to i.messages.
-//   - Clears i.response and sets i.streaming to false.
-//   - Logs critical errors to stderr.
-func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
-	content := i.response + msg.Content
+	errMsg := ""
 	if msg.Error != nil {
-		formatted := formatErrorMessage(msg.Error)
-		if content != "" {
-			content += "\n\n" + formatted
-		} else {
-			content = formatted
-		}
+		errMsg = formatErrorMessage(msg.Error)
 		if isLogWorthy(msg.Error) {
 			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
 		}
 	}
-	if content != "" {
-		i.view.AddMessage(chat.Message{
-			Role:    "assistant",
-			Content: content,
-		})
+	toolCallName := ""
+	toolCallStatus := ""
+	if msg.ToolCall != nil {
+		toolCallName = msg.ToolCall.Name
+		toolCallStatus = msg.ToolStatus
 	}
-	i.streaming = false
-	i.response = ""
+	i.view.HandleChunk(msg.Content, msg.Done, errMsg, toolCallName, toolCallStatus)
+	tokens := i.tokenCounter.Count(msg.Content)
+	i.tokenCount += tokens
+	i.syncStatusBar()
 }
 
 // httpErrorPattern matches HTTP error strings like POST "https://api.example.com/v1/messages": 404 Not Found.
@@ -534,10 +490,6 @@ func (i *Intent) refreshViewport() {
 		return
 	}
 	i.view.SetDimensions(i.width, i.msgViewport.Height)
-	i.view.SetStreaming(i.streaming, i.response)
-	if i.toolCallName != "" && i.toolCallStatus != "" {
-		i.view.SetToolCall(i.toolCallName, i.toolCallStatus)
-	}
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
 	i.msgViewport.GotoBottom()
@@ -560,10 +512,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	}
 
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
-	i.streaming = true
-	i.response = ""
-	i.toolCallName = ""
-	i.toolCallStatus = ""
+	i.view.StartStreaming()
 	i.refreshViewport()
 
 	return func() tea.Msg {
@@ -614,7 +563,7 @@ func (i *Intent) readNextChunk() tea.Msg {
 //   - Syncs streaming state into the StatusBar.
 //   - Updates status indicator based on streaming state.
 func (i *Intent) View() string {
-	i.statusBar.SetStreaming(i.streaming, i.tickFrame)
+	i.statusBar.SetStreaming(i.view.IsStreaming(), i.tickFrame)
 	i.updateStatusIndicator()
 
 	var content string
@@ -648,7 +597,7 @@ func (i *Intent) View() string {
 // Side effects:
 //   - Updates the status indicator active state and advances frame if streaming.
 func (i *Intent) updateStatusIndicator() {
-	if i.streaming {
+	if i.view.IsStreaming() {
 		i.statusIndicator.SetActive(true)
 		i.statusIndicator.SetFrame(i.tickFrame)
 	} else {
@@ -664,7 +613,7 @@ func (i *Intent) updateStatusIndicator() {
 // Side effects:
 //   - None.
 func (i *Intent) renderStatusString() string {
-	if i.streaming {
+	if i.view.IsStreaming() {
 		return i.statusIndicator.Render()
 	}
 	return "Ready"
@@ -894,7 +843,7 @@ func (i *Intent) Messages() []chat.Message {
 // Side effects:
 //   - None.
 func (i *Intent) Response() string {
-	return i.response
+	return i.view.Response()
 }
 
 // SpinnerFrame returns the current spinner animation frame as a string.
@@ -928,7 +877,7 @@ func (i *Intent) TickFrame() int {
 // Side effects:
 //   - None.
 func (i *Intent) IsStreaming() bool {
-	return i.streaming
+	return i.view.IsStreaming()
 }
 
 // Width returns the current terminal width.

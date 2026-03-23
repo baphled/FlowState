@@ -15,7 +15,7 @@ func FormatErrorMessageForTest(err error) string {
 
 // SetStreamingForTest sets the streaming state for testing purposes.
 func (i *Intent) SetStreamingForTest(streaming bool) {
-	i.streaming = streaming
+	i.view.SetStreaming(streaming, "")
 }
 
 // ProviderNameForTest returns the current provider name for test assertions.

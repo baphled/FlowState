@@ -776,11 +776,11 @@ var _ = Describe("Engine", func() {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					for i := 0; i < 10; i++ {
+					for range 10 {
 						eng.SetManifest(manifest)
 					}
 				}()
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					_ = eng.BuildSystemPrompt()
 				}
 				<-done

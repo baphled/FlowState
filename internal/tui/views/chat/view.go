@@ -101,6 +101,93 @@ func (v *View) Messages() []Message {
 	return append([]Message(nil), v.messages...)
 }
 
+// StartStreaming marks the view as actively streaming and clears partial state.
+//
+// Side effects:
+//   - Sets streaming to true, clears response and tool call state.
+func (v *View) StartStreaming() {
+	v.streaming = true
+	v.response = ""
+	v.toolCallName = ""
+	v.toolCallStatus = ""
+}
+
+// HandleChunk processes a streaming response chunk.
+//
+// Expected:
+//   - content is the partial response text (may be empty).
+//   - done indicates whether this is the final chunk.
+//   - errMsg is a pre-formatted error string (empty if no error).
+//   - toolCallName and toolCallStatus describe an active tool call (may be empty).
+//
+// Side effects:
+//   - Accumulates content in response when not done.
+//   - Finalises the response and appends to messages when done.
+func (v *View) HandleChunk(content string, done bool, errMsg string, toolCallName string, toolCallStatus string) {
+	if !done {
+		v.streaming = true
+		v.response += content
+		if toolCallName != "" {
+			v.toolCallName = toolCallName
+			v.toolCallStatus = toolCallStatus
+		}
+	} else {
+		v.finaliseChunk(content, errMsg)
+		v.toolCallName = ""
+		v.toolCallStatus = ""
+	}
+}
+
+// finaliseChunk completes a streaming response and appends it to messages.
+//
+// Expected:
+//   - content is the final chunk content (may be empty).
+//   - errMsg is a pre-formatted error string (empty if no error).
+//
+// Side effects:
+//   - Appends the final assistant message to messages.
+//   - Resets streaming and response state.
+func (v *View) finaliseChunk(content string, errMsg string) {
+	fullContent := v.response + content
+	if errMsg != "" {
+		if fullContent != "" {
+			fullContent += "\n\n" + errMsg
+		} else {
+			fullContent = errMsg
+		}
+	}
+	if fullContent != "" {
+		v.AddMessage(Message{
+			Role:    "assistant",
+			Content: fullContent,
+		})
+	}
+	v.streaming = false
+	v.response = ""
+}
+
+// IsStreaming returns whether the view is currently streaming a response.
+//
+// Returns:
+//   - true if streaming, false otherwise.
+//
+// Side effects:
+//   - None.
+func (v *View) IsStreaming() bool {
+	return v.streaming
+}
+
+// Response returns the current partial streaming response.
+//
+// Returns:
+//   - The partial response string accumulated during streaming.
+//
+// Side effects:
+//   - None.
+func (v *View) Response() string {
+	return v.response
+}
+
 // SetStreaming sets the streaming state and partial response content.
 //
 // Expected:
