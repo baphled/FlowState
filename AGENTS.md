@@ -261,3 +261,51 @@ make test          # Go tests
 | `rules/*.md` | Development rules |
 | `tasks/*.md` | Current tasks |
 | `features/*.feature` | BDD scenarios |
+
+## Provider Requirements for Planner/Executor
+
+### Anthropic is Required
+
+The planner and executor agents require **Anthropic** (or GitHub Copilot with Claude models) for reliable tool calling and skill loading. Llama3.2 (Ollama) does not reliably follow `skill_load` tool call instructions — it outputs code-like text instead of making actual tool calls.
+
+### Authentication
+
+FlowState reads Anthropic credentials from `~/.local/share/opencode/auth.json` (the same file OpenCode uses). No separate configuration is needed if OpenCode is already installed and authenticated. The provider supports both direct API keys and OAuth tokens with automatic refresh.
+
+To verify authentication is available:
+```bash
+cat ~/.local/share/opencode/auth.json | python3 -c "import json,sys; d=json.load(sys.stdin); print([k for k in d.keys()])"
+# Should show: ['anthropic', 'github-copilot'] or similar
+```
+
+### Skill Directory Configuration
+
+Set `skill_dir` in `~/.config/flowstate/config.yaml` to point to your skills directory:
+
+```yaml
+skill_dir: "/home/<user>/.config/opencode/skills"
+```
+
+Without this, FlowState defaults to `~/.local/share/flowstate/skills/` which only contains `test-skill`. The always-active skills (`pre-action`, `memory-keeper`, `token-cost-estimation`, `retrospective`, `note-taking`, `knowledge-base`) live in the OpenCode skills directory.
+
+### How Skill Loading Works
+
+The `SkillAutoLoaderHook` (at `internal/hook/skill_autoloader.go`) prepends a lean header to every system message:
+
+```
+Your load_skills: [pre-action, memory-keeper, ...]. Call skill_load(name) for each before starting work.
+```
+
+Claude then calls the `skill_load` tool to fetch each skill's SKILL.md content at runtime. The skill names are selected based on the agent manifest's `always_active_skills` and the user's config-level `always_active_skills`.
+
+### Provider Priority
+
+FlowState builds a failback chain with providers in this order: **anthropic → ollama → openai**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
+
+### Agent Manifest Model Names
+
+Agent manifests in `~/.local/share/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names.
+
+### Known Limitation: Streaming Tool Call Arguments
+
+Anthropic's streaming API sends tool call arguments via `input_json_delta` events. The current `convertStreamEvent` implementation captures the tool call name and ID from `content_block_start` but does not accumulate argument JSON from subsequent delta events. This means `skill_load` tool calls execute with empty arguments, returning an error. Text-only responses from Claude work correctly. This will be resolved in a future update to the Anthropic streaming handler.
