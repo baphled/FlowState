@@ -334,10 +334,32 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
-		// TODO: readNextChunk tests are pending implementation of readNextChunk() method
-		// and streamChan field in Intent struct. These are part of streaming refactor.
-		// See: T6 in planner-omo-parity.md
-		// Tests removed: SetStreamChanForTest, ReadNextChunkForTest not yet implemented
+		Context("readStreamChunk behaviour", func() {
+			It("reads a single chunk from the stream channel", func() {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "hello", Done: false}
+				chunkMsg := chat.ReadStreamChunkForTest(ch)
+				Expect(chunkMsg.Content).To(Equal("hello"))
+				Expect(chunkMsg.Done).To(BeFalse())
+				Expect(chunkMsg.Next).NotTo(BeNil())
+			})
+
+			It("returns Done when channel is closed", func() {
+				ch := make(chan provider.StreamChunk)
+				close(ch)
+				chunkMsg := chat.ReadStreamChunkForTest(ch)
+				Expect(chunkMsg.Done).To(BeTrue())
+				Expect(chunkMsg.Next).To(BeNil())
+			})
+
+			It("propagates chunk errors", func() {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "partial", Error: fmt.Errorf("stream error"), Done: true}
+				chunkMsg := chat.ReadStreamChunkForTest(ch)
+				Expect(chunkMsg.Error).To(MatchError("stream error"))
+				Expect(chunkMsg.Done).To(BeTrue())
+			})
+		})
 
 		Context("sendMessage with streaming engine", func() {
 			var (
@@ -372,10 +394,7 @@ var _ = Describe("ChatIntent", func() {
 				})
 			})
 
-			// TODO: This test is pending - streaming implementation incomplete
-			// The cmd() is not returning a StreamChunkMsg as expected
-			// This is part of the streaming refactor (T6 in planner-omo-parity.md)
-			PIt("returns a cmd that produces the first chunk, not all at once", func() {
+			It("returns a cmd that produces the first chunk, not all at once", func() {
 				streamIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
 				cmd := streamIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 				Expect(cmd).NotTo(BeNil())
