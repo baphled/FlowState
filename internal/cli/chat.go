@@ -90,7 +90,7 @@ func runChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error 
 // Side effects:
 //   - Writes message and response to stdout, saves session if available.
 func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOptions) error {
-	agentName := resolveChatAgentName(opts.Agent)
+	agentName := resolveChatAgentName(opts.Agent, application.Config.DefaultAgent)
 
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", agentName, opts.Message)
 	if err != nil {
@@ -131,25 +131,26 @@ func runInteractiveChat(application *app.App, opts *ChatOptions) error {
 		return errors.New("engine not configured")
 	}
 
-	agentName := resolveChatAgentName(opts.Agent)
+	agentName := resolveChatAgentName(opts.Agent, application.Config.DefaultAgent)
 	sessionID := resolveChatSessionID(opts.Session)
 
 	return tui.Run(application, agentName, sessionID)
 }
 
-// resolveChatAgentName returns the agent name, defaulting to "default" if empty.
+// resolveChatAgentName returns the agent name, defaulting to the provided defaultAgent if empty.
 //
 // Expected:
 //   - agent is a string (may be empty).
+//   - defaultAgent is a non-empty string.
 //
 // Returns:
-//   - The agent name, or "default" if agent is empty.
+//   - The agent name, or defaultAgent if agent is empty.
 //
 // Side effects:
 //   - None.
-func resolveChatAgentName(agent string) string {
+func resolveChatAgentName(agent, defaultAgent string) string {
 	if agent == "" {
-		return "default"
+		return defaultAgent
 	}
 	return agent
 }

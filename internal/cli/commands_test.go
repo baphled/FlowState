@@ -276,7 +276,7 @@ var _ = Describe("CLI Commands", func() {
 				testApp := createTestApp("", "")
 				err := cmd(testApp, "chat", "--message", "Hello")
 				Expect(err).To(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("[default] Hello"))
+				Expect(out.String()).To(ContainSubstring("[executor] Hello"))
 			})
 
 			It("streams and returns response when engine is configured", func() {
