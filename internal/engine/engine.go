@@ -34,6 +34,7 @@ type Engine struct {
 	hookChain         *hook.Chain
 	toolRegistry      *tool.Registry
 	permissionHandler tool.PermissionHandler
+	providerRegistry  *provider.Registry
 }
 
 // Config holds the configuration for creating a new Engine.
@@ -94,6 +95,7 @@ func New(cfg Config) *Engine {
 		hookChain:         cfg.HookChain,
 		toolRegistry:      cfg.ToolRegistry,
 		permissionHandler: cfg.PermissionHandler,
+		providerRegistry:  cfg.Registry,
 	}
 }
 
@@ -208,6 +210,12 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 //   - Replaces the engine's active manifest for subsequent chat operations.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.manifest = manifest
+	if e.providerRegistry != nil {
+		prefs := buildModelPreferences(manifest)
+		if len(prefs) > 0 {
+			e.failbackChain = provider.NewFailbackChain(e.providerRegistry, prefs, e.streamTimeout)
+		}
+	}
 }
 
 // ListAvailableModels returns all available models from configured providers.
