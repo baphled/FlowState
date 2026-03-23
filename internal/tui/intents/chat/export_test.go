@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
@@ -28,20 +29,20 @@ func (i *Intent) ModelNameForTest() string {
 	return i.modelName
 }
 
-// TODO: SetStreamChanForTest and ReadNextChunkForTest are broken stubs.
-// The Intent struct does not have streamChan field or readNextChunk method.
-// These need to be implemented when streaming is fully integrated.
-// See: intent_test.go and integration_test.go for usage.
-
 // SetStreamChanForTest sets the stream channel for testing readNextChunk.
-// func (i *Intent) SetStreamChanForTest(ch <-chan provider.StreamChunk) {
-// 	i.streamChan = ch
-// }
+func (i *Intent) SetStreamChanForTest(ch <-chan provider.StreamChunk) {
+	i.streamChan = ch
+}
 
 // ReadNextChunkForTest exposes readNextChunk for test assertions.
-// func (i *Intent) ReadNextChunkForTest() tea.Msg {
-// 	return i.readNextChunk()
-// }
+func (i *Intent) ReadNextChunkForTest() tea.Msg {
+	return i.readNextChunk()
+}
+
+// ReadStreamChunkForTest exposes readStreamChunk for test assertions.
+func ReadStreamChunkForTest(ch <-chan provider.StreamChunk) StreamChunkMsg {
+	return readStreamChunk(ch)
+}
 
 // SetAgentRegistryForTest sets the agent registry for testing purposes.
 func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {

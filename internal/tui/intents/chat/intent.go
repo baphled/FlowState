@@ -26,11 +26,12 @@ import (
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
 type StreamChunkMsg struct {
-	Content    string
-	Error      error
-	Done       bool
-	ToolCall   *provider.ToolCall
-	ToolStatus string
+	Content      string
+	Error        error
+	Done         bool
+	ToolCallName string
+	ToolStatus   string
+	Next         tea.Cmd
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -95,6 +96,7 @@ type Intent struct {
 	modelName         string
 	tokenBudget       int
 	tickFrame         int
+	streamChan        <-chan provider.StreamChunk
 	pendingPermission *ToolPermissionMsg
 	result            *tuiintents.IntentResult
 	msgViewport       viewport.Model
@@ -195,9 +197,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case StreamChunkMsg:
 		i.handleStreamChunk(msg)
 		i.refreshViewport()
-		if !msg.Done {
-			// Streaming logic will be inlined here in next step
-			return tickSpinner()
+		if !msg.Done && msg.Next != nil {
+			return tea.Batch(msg.Next, tickSpinner())
 		}
 		return tickSpinner()
 	case ToolPermissionMsg:
@@ -279,13 +280,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
 		}
 	}
-	toolCallName := ""
-	toolCallStatus := ""
-	if msg.ToolCall != nil {
-		toolCallName = msg.ToolCall.Name
-		toolCallStatus = msg.ToolStatus
-	}
-	i.view.HandleChunk(msg.Content, msg.Done, errMsg, toolCallName, toolCallStatus)
+	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 	tokens := i.tokenCounter.Count(msg.Content)
 	i.tokenCount += tokens
 	i.syncStatusBar()
@@ -326,7 +321,6 @@ func (i *Intent) refreshViewport() {
 //
 // Side effects:
 //   - Appends the input to messages as a user message, clears input, and sets streaming to true.
-//   - Clears tool call state and stores the stream channel on the intent for subsequent chunk reads.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
 	i.input = ""
@@ -340,13 +334,106 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.refreshViewport()
 
 	return func() tea.Msg {
-		_, err := i.engine.Stream(context.Background(), i.agentID, userMessage)
+		stream, err := i.engine.Stream(context.Background(), i.agentID, userMessage)
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}
-		// Streaming logic will be inlined here in next step
-		return nil
+		return i.readNextChunkFrom(stream)
 	}
+}
+
+// readNextChunk reads one chunk from the active stream channel.
+//
+// Returns:
+//   - A StreamChunkMsg with the next chunk's content, error, and done state.
+//   - If the channel is closed, returns StreamChunkMsg{Done: true}.
+//
+// Side effects:
+//   - Blocks until a chunk is available on the stream channel.
+func (i *Intent) readNextChunk() tea.Msg {
+	chunk, ok := <-i.streamChan
+	if !ok {
+		return StreamChunkMsg{Done: true}
+	}
+
+	toolCallName := ""
+	toolStatus := ""
+	if chunk.ToolCall != nil {
+		toolCallName = chunk.ToolCall.Name
+		toolStatus = "running"
+	}
+
+	msg := StreamChunkMsg{
+		Content:      chunk.Content,
+		Error:        chunk.Error,
+		Done:         chunk.Done,
+		ToolCallName: toolCallName,
+		ToolStatus:   toolStatus,
+	}
+
+	if !chunk.Done {
+		msg.Next = func() tea.Msg {
+			return i.readNextChunk()
+		}
+	}
+
+	return msg
+}
+
+// readNextChunkFrom stores the stream channel and reads the first chunk.
+//
+// Expected:
+//   - stream is a non-nil channel from engine.Stream.
+//
+// Returns:
+//   - A StreamChunkMsg with the first chunk's content, error, and done state.
+//
+// Side effects:
+//   - Stores the stream channel in i.streamChan for subsequent reads.
+func (i *Intent) readNextChunkFrom(stream <-chan provider.StreamChunk) tea.Msg {
+	i.streamChan = stream
+	return i.readNextChunk()
+}
+
+// readStreamChunk reads one chunk from the given stream channel and returns a StreamChunkMsg.
+//
+// Expected:
+//   - stream is a non-nil channel from engine.Stream.
+//
+// Returns:
+//   - A StreamChunkMsg with content, error, done state, and a Next closure for the following chunk.
+//   - If the channel is closed, returns StreamChunkMsg{Done: true} with nil Next.
+//
+// Side effects:
+//   - Blocks until a chunk is available on the stream channel.
+func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
+	chunk, ok := <-stream
+	if !ok {
+		return StreamChunkMsg{Done: true}
+	}
+
+	toolCallName := ""
+	toolStatus := ""
+	if chunk.ToolCall != nil {
+		toolCallName = chunk.ToolCall.Name
+		toolStatus = "running"
+	}
+
+	msg := StreamChunkMsg{
+		Content:      chunk.Content,
+		Error:        chunk.Error,
+		Done:         chunk.Done,
+		ToolCallName: toolCallName,
+		ToolStatus:   toolStatus,
+	}
+
+	if !chunk.Done {
+		msg.Next = func() tea.Msg {
+			return readStreamChunk(stream)
+		}
+	}
+
+	return msg
 }
 
 // View renders the chat interface as a string.
