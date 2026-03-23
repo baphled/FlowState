@@ -1,18 +1,11 @@
 package plan_test
 
 import (
-	"testing"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/plan"
 )
-
-func TestAssertionValidator(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "AssertionValidator Suite")
-}
 
 var _ = Describe("AssertionValidator", func() {
 	var validator *plan.AssertionValidator
