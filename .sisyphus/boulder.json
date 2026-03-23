@@ -1,16 +1,11 @@
 {
-  "active_plan": "/home/baphled/Projects/FlowState.git/agent-platform/.sisyphus/plans/omo-parity-planning-execution.md",
-  "started_at": "2026-03-22T18:35:35.824Z",
+  "active_plan": "/home/baphled/Projects/FlowState.git/agent-platform/.sisyphus/plans/planner-omo-parity.md",
+  "started_at": "2026-03-23T15:02:45.034Z",
   "session_ids": [
-    "ses_2e92b3c01ffeqWYRbUS85QC1ED",
-    "ses_2e927d7feffeLI0ADiEbhmO5py",
-    "ses_2e91e87d6ffeoWnlblQIg23Fv0",
-    "ses_2e91ba4f1ffe7lbOEXAkhR2aBB",
-    "ses_2e917cae7fferTHX5JldeFdIu3",
-    "ses_2e915d23cffebGaCJo885qnsNt",
-    "ses_2e91619d7ffeZRQTBKbp7rSZMq",
-    "ses_2e9159aa2ffescdq3iPs4DwrqL"
+    "ses_2e4c7bde9ffeEyCH0T0pzzaYab",
+    "ses_2e4c15c4fffe7S3EgbCL4YuhbU",
+    "ses_2e4bd29fdffeZ3yHjuWq1YPbAK"
   ],
-  "plan_name": "omo-parity-planning-execution",
+  "plan_name": "planner-omo-parity",
   "agent": "atlas"
 }

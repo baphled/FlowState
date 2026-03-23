@@ -752,5 +752,39 @@ var _ = Describe("Engine", func() {
 
 			Expect(response).NotTo(BeEmpty())
 		})
+
+		Describe("concurrent manifest access", func() {
+			It("does not race when SetManifest and BuildSystemPrompt are called concurrently", func() {
+				registry := provider.NewRegistry()
+				mockProv := &mockProvider{
+					name:         "ollama",
+					streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
+				}
+				registry.Register(mockProv)
+
+				manifest := agent.Manifest{
+					ID: "executor",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"ollama": {{Provider: "ollama", Model: "llama3.2"}},
+					},
+				}
+				eng := engine.New(engine.Config{
+					Registry: registry,
+					Manifest: manifest,
+				})
+
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					for i := 0; i < 10; i++ {
+						eng.SetManifest(manifest)
+					}
+				}()
+				for i := 0; i < 10; i++ {
+					_ = eng.BuildSystemPrompt()
+				}
+				<-done
+			})
+		})
 	})
 })

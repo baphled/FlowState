@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -35,6 +36,7 @@ type Engine struct {
 	toolRegistry      *tool.Registry
 	permissionHandler tool.PermissionHandler
 	providerRegistry  *provider.Registry
+	mu                sync.RWMutex
 }
 
 // Config holds the configuration for creating a new Engine.
@@ -209,6 +211,8 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 // Side effects:
 //   - Replaces the engine's active manifest for subsequent chat operations.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.manifest = manifest
 	if e.providerRegistry != nil {
 		prefs := buildModelPreferences(manifest)
@@ -244,6 +248,8 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // Side effects:
 //   - None.
 func (e *Engine) BuildSystemPrompt() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	if prompt.HasPrompt(e.manifest.ID) {
 		embeddedPrompt, err := prompt.GetPrompt(e.manifest.ID)
 		if err == nil {
@@ -664,7 +670,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 	// Use the full embedded prompt for token budgeting, not the short manifest one-liner.
 	// WindowBuilder.prepareSystemPrompt uses manifest.Instructions.SystemPrompt;
 	// BuildSystemPrompt loads the full embedded .md file (e.g., planner.md).
+	e.mu.RLock()
 	manifestCopy := e.manifest
+	e.mu.RUnlock()
 	manifestCopy.Instructions.SystemPrompt = e.BuildSystemPrompt()
 	messages := e.windowBuilder.BuildContext(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
 
