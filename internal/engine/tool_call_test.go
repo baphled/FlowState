@@ -695,4 +695,54 @@ var _ = Describe("Engine Tool Call Loop", func() {
 			})
 		})
 	})
+
+	Describe("ToolCallChunkForwarding", func() {
+		Context("when the provider emits a tool_call chunk", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_forward",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"key": "value"},
+							},
+						},
+					},
+					{
+						{Content: "Tool completed.", Done: true},
+					},
+				}
+			})
+
+			It("forwards the tool_call chunk to the output channel", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				var toolCallChunks []provider.StreamChunk
+				for _, chunk := range received {
+					if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+						toolCallChunks = append(toolCallChunks, chunk)
+					}
+				}
+
+				Expect(toolCallChunks).To(HaveLen(1))
+				Expect(toolCallChunks[0].ToolCall.Name).To(Equal("test_tool"))
+				Expect(toolCallChunks[0].ToolCall.ID).To(Equal("call_forward"))
+			})
+		})
+	})
 })

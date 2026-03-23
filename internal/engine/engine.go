@@ -488,6 +488,7 @@ func (e *Engine) processStreamChunks(
 			}
 
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+				outChan <- chunk
 				return chunk.ToolCall, responseContent.String(), false
 			}
 
