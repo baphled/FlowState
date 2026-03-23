@@ -520,8 +520,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}
-		i.streamChan = stream
-		return i.readNextChunk()
+		return i.readNextChunkFrom(stream)
 	}
 }
 
@@ -552,6 +551,21 @@ func (i *Intent) readNextChunk() tea.Msg {
 		ToolCall:   chunk.ToolCall,
 		ToolStatus: toolStatus,
 	}
+}
+
+// readNextChunkFrom stores the stream channel and reads the first chunk.
+//
+// Expected:
+//   - stream is a non-nil channel from engine.Stream.
+//
+// Returns:
+//   - A StreamChunkMsg with the first chunk's content, error, and done state.
+//
+// Side effects:
+//   - Stores the stream channel in i.streamChan for subsequent reads.
+func (i *Intent) readNextChunkFrom(stream <-chan provider.StreamChunk) tea.Msg {
+	i.streamChan = stream
+	return i.readNextChunk()
 }
 
 // View renders the chat interface as a string.
