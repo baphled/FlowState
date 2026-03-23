@@ -512,6 +512,109 @@ func (i *Intent) Result() *tuiintents.IntentResult {
 	return i.result
 }
 
+// handleModelsCommand processes the /models command.
+//
+// Returns:
+//   - A response message string listing available models.
+//
+// Side effects:
+//   - None.
+func (i *Intent) handleModelsCommand() string {
+	availableModels, err := i.engine.ListAvailableModels()
+	if err != nil {
+		return "Error listing models: " + err.Error()
+	}
+	if len(availableModels) == 0 {
+		return "No models available"
+	}
+	var sb strings.Builder
+	sb.WriteString("Available models:\n")
+	for _, m := range availableModels {
+		fmt.Fprintf(&sb, "  • %s (%s, %d tokens)\n", m.ID, m.Provider, m.ContextLength)
+	}
+	return sb.String()
+}
+
+// handleModelCommand processes the /model command.
+//
+// Expected:
+//   - args is in the format "provider/model".
+//
+// Returns:
+//   - A response message string.
+//
+// Side effects:
+//   - Updates providerName and modelName if valid format.
+//   - Calls engine.SetModelPreference if valid format.
+func (i *Intent) handleModelCommand(args string) string {
+	if args == "" {
+		return "Usage: /model <provider>/<model-name>\nExample: /model ollama/llama2"
+	}
+	parts := strings.Split(args, "/")
+	if len(parts) != 2 {
+		return "Usage: /model <provider>/<model>"
+	}
+	providerName := strings.TrimSpace(parts[0])
+	model := strings.TrimSpace(parts[1])
+	i.engine.SetModelPreference(providerName, model)
+	i.providerName = providerName
+	i.modelName = model
+	i.syncStatusBar()
+	return "Switched to model: " + providerName + "/" + model
+}
+
+// handleAgentCommand processes the /agent command.
+//
+// Expected:
+//   - args is the agent ID to switch to.
+//
+// Returns:
+//   - A response message string.
+//
+// Side effects:
+//   - Updates agentID and syncs status bar if agent is found.
+//   - Calls engine.SetManifest if agent is found.
+func (i *Intent) handleAgentCommand(args string) string {
+	if args == "" {
+		return "Usage: /agent <agent-id>\nExample: /agent planner"
+	}
+	if i.agentRegistry == nil {
+		return "No agent registry available"
+	}
+	agentID := strings.TrimSpace(args)
+	manifest, found := i.agentRegistry.Get(agentID)
+	if !found {
+		return "Unknown agent: " + agentID
+	}
+	i.engine.SetManifest(*manifest)
+	i.agentID = agentID
+	i.syncStatusBar()
+	return "Switched to agent: " + agentID
+}
+
+// handleAgentsCommand processes the /agents command.
+//
+// Returns:
+//   - A response message string listing available agents.
+//
+// Side effects:
+//   - None.
+func (i *Intent) handleAgentsCommand() string {
+	if i.agentRegistry == nil {
+		return "No agent registry available"
+	}
+	agents := i.agentRegistry.List()
+	if len(agents) == 0 {
+		return "No agents available"
+	}
+	var sb strings.Builder
+	sb.WriteString("Available agents:\n")
+	for _, m := range agents {
+		fmt.Fprintf(&sb, "  • %s\n", m.ID)
+	}
+	return sb.String()
+}
+
 // handleSlashCommand processes a slash command and returns a Cmd.
 //
 // Expected:
@@ -536,42 +639,23 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 		var response string
 		switch command {
 		case "models":
-			availableModels, err := i.engine.ListAvailableModels()
-			if err != nil {
-				response = "Error listing models: " + err.Error()
-			} else if len(availableModels) == 0 {
-				response = "No models available"
-			} else {
-				var sb strings.Builder
-				sb.WriteString("Available models:\n")
-				for _, m := range availableModels {
-					fmt.Fprintf(&sb, "  • %s (%s, %d tokens)\n", m.ID, m.Provider, m.ContextLength)
-				}
-				response = sb.String()
-			}
+			response = i.handleModelsCommand()
 
 		case "model":
-			if args == "" {
-				response = "Usage: /model <provider>/<model-name>\nExample: /model ollama/llama2"
-			} else {
-				parts := strings.Split(args, "/")
-				if len(parts) != 2 {
-					response = "Usage: /model <provider>/<model>"
-				} else {
-					providerName := strings.TrimSpace(parts[0])
-					model := strings.TrimSpace(parts[1])
-					i.engine.SetModelPreference(providerName, model)
-					i.providerName = providerName
-					i.modelName = model
-					i.syncStatusBar()
-					response = "Switched to model: " + providerName + "/" + model
-				}
-			}
+			response = i.handleModelCommand(args)
+
+		case "agent":
+			response = i.handleAgentCommand(args)
+
+		case "agents":
+			response = i.handleAgentsCommand()
 
 		case "help":
 			response = "Available slash commands:\n" +
 				"  /models - List all available models\n" +
 				"  /model <provider>/<model> - Switch to a model\n" +
+				"  /agent <agent-id> - Switch to an agent\n" +
+				"  /agents - List all available agents\n" +
 				"  /help - Show this help message"
 
 		default:

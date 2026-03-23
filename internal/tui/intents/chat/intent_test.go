@@ -132,6 +132,126 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
+		Context("slash commands", func() {
+			Context("/agent command", func() {
+				var (
+					eng         *engine.Engine
+					provReg     *provider.Registry
+					agentReg    *agent.Registry
+					agentIntent *chat.Intent
+				)
+
+				BeforeEach(func() {
+					provReg = provider.NewRegistry()
+					provReg.Register(&streamingStubProvider{
+						providerName: "test-provider",
+						chunks:       []provider.StreamChunk{},
+					})
+
+					agentReg = agent.NewRegistry()
+					agentReg.Register(&agent.Manifest{
+						ID:   "planner",
+						Name: "Planner",
+						Instructions: agent.Instructions{
+							SystemPrompt: "You are a planner.",
+						},
+					})
+
+					eng = engine.New(engine.Config{
+						Registry: provReg,
+						Manifest: stubManifestWithProvider("test-provider", "test-model"),
+					})
+
+					agentIntent = chat.NewIntent(chat.IntentConfig{
+						Engine:        eng,
+						AgentID:       "test-agent",
+						SessionID:     "test-session",
+						ProviderName:  "test-provider",
+						ModelName:     "test-model",
+						TokenBudget:   4096,
+						AgentRegistry: agentReg,
+					})
+				})
+
+				It("switches to a known agent", func() {
+					for _, r := range "/agent planner" {
+						agentIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+					cmd := agentIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(cmd).NotTo(BeNil())
+					cmd()
+					messages := agentIntent.MessagesForTest()
+					Expect(messages).NotTo(BeEmpty())
+					lastMsg := messages[len(messages)-1]
+					Expect(lastMsg.Role).To(Equal("system"))
+					Expect(lastMsg.Content).To(ContainSubstring("Switched to agent: planner"))
+				})
+
+				It("reports error for unknown agent", func() {
+					for _, r := range "/agent unknown" {
+						agentIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+					cmd := agentIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(cmd).NotTo(BeNil())
+					cmd()
+					messages := agentIntent.MessagesForTest()
+					Expect(messages).NotTo(BeEmpty())
+					lastMsg := messages[len(messages)-1]
+					Expect(lastMsg.Content).To(ContainSubstring("Unknown agent"))
+				})
+
+				It("shows usage when no agent ID provided", func() {
+					for _, r := range "/agent" {
+						agentIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+					cmd := agentIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(cmd).NotTo(BeNil())
+					cmd()
+					messages := agentIntent.MessagesForTest()
+					Expect(messages).NotTo(BeEmpty())
+					lastMsg := messages[len(messages)-1]
+					Expect(lastMsg.Content).To(ContainSubstring("Usage: /agent"))
+				})
+			})
+
+			Context("/agents command", func() {
+				It("lists available agents", func() {
+					agentReg := agent.NewRegistry()
+					agentReg.Register(&agent.Manifest{ID: "planner", Name: "Planner"})
+					agentReg.Register(&agent.Manifest{ID: "executor", Name: "Executor"})
+					intent.SetAgentRegistryForTest(agentReg)
+
+					for _, r := range "/agents" {
+						intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(cmd).NotTo(BeNil())
+					cmd()
+					messages := intent.MessagesForTest()
+					Expect(messages).NotTo(BeEmpty())
+					lastMsg := messages[len(messages)-1]
+					Expect(lastMsg.Content).To(ContainSubstring("planner"))
+					Expect(lastMsg.Content).To(ContainSubstring("executor"))
+				})
+
+				It("shows message when no agents available", func() {
+					agentReg := agent.NewRegistry()
+					intent.SetAgentRegistryForTest(agentReg)
+
+					for _, r := range "/agents" {
+						intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+					}
+					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(cmd).NotTo(BeNil())
+					cmd()
+					messages := intent.MessagesForTest()
+					Expect(messages).NotTo(BeEmpty())
+					lastMsg := messages[len(messages)-1]
+					Expect(lastMsg.Content).To(ContainSubstring("No agents available"))
+				})
+			})
+		})
+
 	})
 
 	Describe("View", func() {
