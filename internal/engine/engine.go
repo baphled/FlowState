@@ -653,15 +653,12 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 		tokenBudget = e.tokenCounter.ModelLimit("")
 	}
 
-	messages := e.windowBuilder.BuildContext(ctx, &e.manifest, userMessage, e.store, tokenBudget)
-
-	// Replace the short inline system prompt with the full embedded prompt + skills.
-	// WindowBuilder.prepareSystemPrompt only uses manifest.Instructions.SystemPrompt;
-	// BuildSystemPrompt loads the full embedded .md file and appends skills.
-	fullPrompt := e.BuildSystemPrompt()
-	if len(messages) > 0 && messages[0].Role == "system" {
-		messages[0].Content = fullPrompt
-	}
+	// Use the full embedded prompt for token budgeting, not the short manifest one-liner.
+	// WindowBuilder.prepareSystemPrompt uses manifest.Instructions.SystemPrompt;
+	// BuildSystemPrompt loads the full embedded .md file (e.g., planner.md).
+	manifestCopy := e.manifest
+	manifestCopy.Instructions.SystemPrompt = e.BuildSystemPrompt()
+	messages := e.windowBuilder.BuildContext(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
 
 	return messages
 }

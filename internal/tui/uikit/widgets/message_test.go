@@ -51,6 +51,16 @@ var _ = Describe("MessageWidget", func() {
 			})
 		})
 
+		Context("system messages", func() {
+			It("renders as dimmed annotation for slash command output", func() {
+				w := widgets.NewMessageWidget("system", "Available commands:\n  /help", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("Available commands"))
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
 		Context("with nil theme", func() {
 			It("still renders without panic", func() {
 				w := widgets.NewMessageWidget("user", "no theme", nil)
