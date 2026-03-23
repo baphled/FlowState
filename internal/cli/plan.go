@@ -224,11 +224,12 @@ func writePlanTasks(cmd *cobra.Command, planFile *plan.File) error {
 		return err
 	}
 
-	for _, t := range planFile.Tasks {
-		if err := writeTaskHeader(cmd, t); err != nil {
+	for i := range planFile.Tasks {
+		t := &planFile.Tasks[i]
+		if err := writeTaskHeader(cmd, *t); err != nil {
 			return err
 		}
-		if err := writeTaskDescription(cmd, t); err != nil {
+		if err := writeTaskDescription(cmd, *t); err != nil {
 			return err
 		}
 	}

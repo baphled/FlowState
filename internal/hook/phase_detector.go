@@ -19,6 +19,7 @@ const (
 	PhaseGeneration
 )
 
+// contextKey is a type for context keys to avoid collisions.
 type contextKey string
 
 const planPhaseKey contextKey = "plan-phase"

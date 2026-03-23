@@ -115,36 +115,7 @@ func (s *PlanStore) Create(f File) error {
 	body.Write(frontmatterBytes)
 	body.WriteString("---\n\n")
 
-	for _, task := range f.Tasks {
-		fmt.Fprintf(&body, "## %s\n", task.Title)
-		if task.Description != "" {
-			body.WriteString(task.Description + "\n\n")
-		}
-
-		if len(task.AcceptanceCriteria) > 0 {
-			body.WriteString("### Acceptance Criteria\n")
-			for _, criterion := range task.AcceptanceCriteria {
-				fmt.Fprintf(&body, "- %s\n", criterion)
-			}
-			body.WriteString("\n")
-		}
-
-		if len(task.Skills) > 0 {
-			fmt.Fprintf(&body, "**Skills**: %s\n\n", strings.Join(task.Skills, ", "))
-		}
-
-		if len(task.Dependencies) > 0 {
-			fmt.Fprintf(&body, "**Dependencies**: %s\n\n", strings.Join(task.Dependencies, ", "))
-		}
-
-		if task.EstimatedEffort != "" {
-			fmt.Fprintf(&body, "**Estimated Effort**: %s\n\n", task.EstimatedEffort)
-		}
-
-		if task.Wave > 0 {
-			fmt.Fprintf(&body, "**Wave**: %d\n\n", task.Wave)
-		}
-	}
+	writeTasksToMarkdown(&body, f.Tasks)
 
 	if err := os.WriteFile(filePath, []byte(body.String()), 0o600); err != nil {
 		return fmt.Errorf("writing plan file: %w", err)
@@ -503,6 +474,51 @@ func appendDescription(line string, task *Task) {
 		task.Description += "\n" + trimmedLine
 	} else {
 		task.Description = trimmedLine
+	}
+}
+
+// writeTasksToMarkdown writes tasks to the markdown body with all metadata fields.
+//
+// Expected:
+//   - body is a non-nil strings.Builder.
+//   - tasks may be empty.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Writes task markdown to body.
+func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
+	for i := range tasks {
+		task := &tasks[i]
+		fmt.Fprintf(body, "## %s\n", task.Title)
+		if task.Description != "" {
+			body.WriteString(task.Description + "\n\n")
+		}
+
+		if len(task.AcceptanceCriteria) > 0 {
+			body.WriteString("### Acceptance Criteria\n")
+			for _, criterion := range task.AcceptanceCriteria {
+				fmt.Fprintf(body, "- %s\n", criterion)
+			}
+			body.WriteString("\n")
+		}
+
+		if len(task.Skills) > 0 {
+			fmt.Fprintf(body, "**Skills**: %s\n\n", strings.Join(task.Skills, ", "))
+		}
+
+		if len(task.Dependencies) > 0 {
+			fmt.Fprintf(body, "**Dependencies**: %s\n\n", strings.Join(task.Dependencies, ", "))
+		}
+
+		if task.EstimatedEffort != "" {
+			fmt.Fprintf(body, "**Estimated Effort**: %s\n\n", task.EstimatedEffort)
+		}
+
+		if task.Wave > 0 {
+			fmt.Fprintf(body, "**Wave**: %d\n\n", task.Wave)
+		}
 	}
 }
 
