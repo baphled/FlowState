@@ -94,6 +94,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		ChatProvider:      defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(ollamaProvider),
 		Registry:          providerRegistry,
+		AgentRegistry:     agentRegistry,
 		Manifest:          defaultManifest,
 		Skills:            alwaysActiveSkills,
 		Store:             contextStore,

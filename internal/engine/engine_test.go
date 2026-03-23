@@ -786,5 +786,79 @@ var _ = Describe("Engine", func() {
 				<-done
 			})
 		})
+
+		Describe("Stream agentID resolution", func() {
+			var (
+				registry *provider.Registry
+				agentReg *agent.Registry
+				mockProv *mockProvider
+			)
+
+			BeforeEach(func() {
+				registry = provider.NewRegistry()
+				mockProv = &mockProvider{
+					name:         "ollama",
+					streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
+				}
+				registry.Register(mockProv)
+				agentReg = agent.NewRegistry()
+			})
+
+			It("uses planner manifest when agentID is 'planner'", func() {
+				plannerManifest := agent.Manifest{
+					ID: "planner",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a planner.",
+					},
+				}
+				agentReg.Register(&plannerManifest)
+
+				eng := engine.New(engine.Config{
+					ChatProvider:  mockProv,
+					Registry:      registry,
+					AgentRegistry: agentReg,
+					Manifest:      agent.Manifest{ID: "executor"},
+				})
+
+				ch, err := eng.Stream(context.Background(), "planner", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for chunk := range ch {
+					_ = chunk
+				}
+				Expect(eng.BuildSystemPrompt()).To(ContainSubstring("Planner"))
+			})
+
+			It("is a no-op for unknown agentID", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider:  mockProv,
+					Registry:      registry,
+					AgentRegistry: agentReg,
+					Manifest:      agent.Manifest{ID: "executor"},
+				})
+				Expect(func() {
+					ch, err := eng.Stream(context.Background(), "unknown", "hello")
+					Expect(err).NotTo(HaveOccurred())
+					for chunk := range ch {
+						_ = chunk
+					}
+				}).NotTo(Panic())
+			})
+
+			It("is a no-op for empty agentID", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider:  mockProv,
+					Registry:      registry,
+					AgentRegistry: agentReg,
+					Manifest:      agent.Manifest{ID: "executor"},
+				})
+				Expect(func() {
+					ch, err := eng.Stream(context.Background(), "", "hello")
+					Expect(err).NotTo(HaveOccurred())
+					for chunk := range ch {
+						_ = chunk
+					}
+				}).NotTo(Panic())
+			})
+		})
 	})
 })

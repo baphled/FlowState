@@ -36,6 +36,7 @@ type Engine struct {
 	toolRegistry      *tool.Registry
 	permissionHandler tool.PermissionHandler
 	providerRegistry  *provider.Registry
+	agentRegistry     *agent.Registry
 	mu                sync.RWMutex
 }
 
@@ -44,6 +45,7 @@ type Config struct {
 	ChatProvider      provider.Provider
 	EmbeddingProvider provider.Provider
 	Registry          *provider.Registry
+	AgentRegistry     *agent.Registry
 	Manifest          agent.Manifest
 	Tools             []tool.Tool
 	Skills            []skill.Skill
@@ -98,6 +100,7 @@ func New(cfg Config) *Engine {
 		toolRegistry:      cfg.ToolRegistry,
 		permissionHandler: cfg.PermissionHandler,
 		providerRegistry:  cfg.Registry,
+		agentRegistry:     cfg.AgentRegistry,
 	}
 }
 
@@ -311,7 +314,16 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 //   - Embeds the user message if an embedding provider is configured.
 //   - Spawns a goroutine to process the stream and handle tool calls.
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
-	_ = agentID
+	if agentID != "" && e.agentRegistry != nil {
+		if manifest, found := e.agentRegistry.Get(agentID); found {
+			e.mu.RLock()
+			currentID := e.manifest.ID
+			e.mu.RUnlock()
+			if manifest.ID != currentID {
+				e.SetManifest(*manifest)
+			}
+		}
+	}
 
 	messages := e.buildContextWindow(ctx, message)
 
