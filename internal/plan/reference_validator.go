@@ -12,7 +12,17 @@ import (
 type ReferenceValidator struct{}
 
 // Validate scans planText for backtick-wrapped .go file paths and checks their existence under projectRoot.
-// Returns a ValidationResult and error if any reference is invalid or outside project root.
+//
+// Expected:
+//   - planText contains backtick-wrapped file references.
+//   - projectRoot is a valid directory path.
+//
+// Returns:
+//   - A ValidationResult with score and errors.
+//   - An error if any reference is invalid or outside project root.
+//
+// Side effects:
+//   - Accesses the filesystem to check file existence.
 func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*ValidationResult, error) {
 	result := &ValidationResult{Valid: true, Score: 1.0}
 	refRegex := regexp.MustCompile("`([^`]+\\.go[^`]*)`")
@@ -32,6 +42,18 @@ func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*Val
 	return result, nil
 }
 
+// validateReferences processes all matched file references and returns the count of valid references.
+//
+// Expected:
+//   - matches contains regex match groups with file references.
+//   - projectRoot is a valid directory path.
+//
+// Returns:
+//   - The count of valid file references.
+//
+// Side effects:
+//   - Modifies result by appending errors for invalid references.
+//   - Accesses the filesystem to check file existence.
 func (v *ReferenceValidator) validateReferences(matches [][]string, projectRoot string, result *ValidationResult) int {
 	validRefs := 0
 	projRootAbs, err := filepath.Abs(projectRoot)
@@ -50,6 +72,16 @@ func (v *ReferenceValidator) validateReferences(matches [][]string, projectRoot 
 	return validRefs
 }
 
+// extractRef removes line number suffix (e.g., ":42") from a file reference.
+//
+// Expected:
+//   - refWithLine is a file reference string, optionally with ":linenum" suffix.
+//
+// Returns:
+//   - The file reference without line number suffix.
+//
+// Side effects:
+//   - None.
 func extractRef(refWithLine string) string {
 	colonIdx := strings.Index(refWithLine, ":")
 	if colonIdx != -1 {
@@ -58,6 +90,18 @@ func extractRef(refWithLine string) string {
 	return refWithLine
 }
 
+// validateReference checks a single file reference for validity, security, and existence.
+//
+// Expected:
+//   - ref is a relative file path.
+//   - projectRoot and projRootAbs are valid directory paths.
+//
+// Returns:
+//   - true if the reference is valid and the file exists, false otherwise.
+//
+// Side effects:
+//   - Modifies result by appending errors for invalid references.
+//   - Accesses the filesystem to check file existence.
 func (v *ReferenceValidator) validateReference(ref, projectRoot, projRootAbs string, result *ValidationResult) bool {
 	absPath := filepath.Clean(filepath.Join(projectRoot, ref))
 	absPath, err := filepath.Abs(absPath)
@@ -86,10 +130,27 @@ func (v *ReferenceValidator) validateReference(ref, projectRoot, projRootAbs str
 	return true
 }
 
+// isUnderProjectRoot checks whether an absolute path is within the project root directory.
+//
+// Expected:
+//   - absPath and projRootAbs are absolute file paths.
+//
+// Returns:
+//   - true if absPath is within projRootAbs, false otherwise.
+//
+// Side effects:
+//   - None.
 func isUnderProjectRoot(absPath, projRootAbs string) bool {
 	return absPath == projRootAbs || strings.HasPrefix(absPath, projRootAbs+string(os.PathSeparator))
 }
 
+// calculateScore computes the validation score based on the ratio of valid to total references.
+//
+// Expected:
+//   - validRefs is between 0 and totalRefs.
+//
+// Side effects:
+//   - Modifies result by setting the Valid field and Score.
 func (v *ReferenceValidator) calculateScore(result *ValidationResult, validRefs, totalRefs int) {
 	if validRefs < totalRefs {
 		result.Valid = false

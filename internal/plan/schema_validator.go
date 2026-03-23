@@ -25,7 +25,15 @@ type SchemaValidator struct{}
 
 // Validate checks the structure and content of a plan markdown document.
 //
-// Returns a ValidationResult and error if the plan is invalid.
+// Expected:
+//   - planText is a markdown document with YAML frontmatter.
+//
+// Returns:
+//   - A ValidationResult with score and errors.
+//   - An error if the plan is invalid.
+//
+// Side effects:
+//   - None.
 func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 	result := &ValidationResult{Score: 1.0}
 	if strings.TrimSpace(planText) == "" {
