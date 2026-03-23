@@ -797,17 +797,23 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 	return e.lastContextResult
 }
 
-// ModelContextLimit returns the context window token limit for the current model.
+// ModelContextLimit returns the context window token limit for the configured model.
 //
 // Returns:
-//   - The token limit from the token counter using the active model name.
+//   - The token limit from the token counter using the first configured preference (DefaultModel).
+//   - Falls back to the last-used model if no configured preference exists.
 //   - Falls back to 4096 if no token counter is configured.
 //
 // Side effects:
 //   - None.
 func (e *Engine) ModelContextLimit() int {
-	if e.tokenCounter != nil {
-		return e.tokenCounter.ModelLimit(e.LastModel())
+	if e.tokenCounter == nil {
+		return 4096
 	}
-	return 4096
+	if e.failbackChain != nil {
+		if m := e.failbackChain.DefaultModel(); m != "" {
+			return e.tokenCounter.ModelLimit(m)
+		}
+	}
+	return e.tokenCounter.ModelLimit(e.LastModel())
 }

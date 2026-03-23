@@ -971,5 +971,130 @@ var _ = Describe("Engine", func() {
 				Expect(eng.ModelContextLimit()).To(Equal(4096))
 			})
 		})
+
+		Context("after SetModelPreference changes the configured model", func() {
+			It("returns the new model limit even when a previous stream used a different model", func() {
+				registry := provider.NewRegistry()
+				ollamaProvider := &mockProvider{
+					name: "ollama",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+				anthropicProvider := &mockProvider{
+					name: "anthropic",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+				registry.Register(ollamaProvider)
+				registry.Register(anthropicProvider)
+
+				ollamaManifest := agent.Manifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
+					Complexity: "standard",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"standard": {
+							{Provider: "ollama", Model: "llama3.2"},
+						},
+					},
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				tokenCounter := ctxstore.NewTiktokenCounter()
+
+				eng := engine.New(engine.Config{
+					Registry:     registry,
+					Manifest:     ollamaManifest,
+					TokenCounter: tokenCounter,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+				Expect(eng.ModelContextLimit()).To(Equal(4096))
+
+				eng.SetModelPreference("anthropic", "claude-sonnet-4-6")
+
+				Expect(eng.ModelContextLimit()).To(Equal(200000))
+			})
+		})
+
+		Context("after SetManifest changes to a manifest with different model prefs", func() {
+			It("returns the new manifest first preference model limit even after a stream", func() {
+				registry := provider.NewRegistry()
+				anthropicProvider := &mockProvider{
+					name: "anthropic",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+				ollamaProvider := &mockProvider{
+					name: "ollama",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+				registry.Register(anthropicProvider)
+				registry.Register(ollamaProvider)
+
+				claudeManifest := agent.Manifest{
+					ID:         "claude-agent",
+					Name:       "Claude Agent",
+					Complexity: "standard",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"standard": {
+							{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+						},
+					},
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				tokenCounter := ctxstore.NewTiktokenCounter()
+
+				eng := engine.New(engine.Config{
+					Registry:     registry,
+					Manifest:     claudeManifest,
+					TokenCounter: tokenCounter,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "claude-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+				Expect(eng.ModelContextLimit()).To(Equal(200000))
+
+				llamaManifest := agent.Manifest{
+					ID:         "llama-agent",
+					Name:       "Llama Agent",
+					Complexity: "standard",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"standard": {
+							{Provider: "ollama", Model: "llama3.2"},
+						},
+					},
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a llama assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				eng.SetManifest(llamaManifest)
+
+				Expect(eng.ModelContextLimit()).To(Equal(4096))
+			})
+		})
 	})
 })

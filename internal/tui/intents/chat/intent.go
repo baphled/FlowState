@@ -675,6 +675,7 @@ func (i *Intent) handleModelCommand(args string) string {
 	i.engine.SetModelPreference(providerName, model)
 	i.providerName = providerName
 	i.modelName = model
+	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	return "Switched to model: " + providerName + "/" + model
 }
@@ -704,6 +705,7 @@ func (i *Intent) handleAgentCommand(args string) string {
 	}
 	i.engine.SetManifest(*manifest)
 	i.agentID = agentID
+	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	return "Switched to agent: " + agentID
 }
@@ -814,6 +816,7 @@ func (i *Intent) openModelSelector() tea.Cmd {
 				i.engine.SetModelPreference(provider, model)
 				i.providerName = provider
 				i.modelName = model
+				i.tokenBudget = i.engine.ModelContextLimit()
 				i.syncStatusBar()
 			},
 		})
@@ -846,6 +849,7 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	}
 	i.engine.SetManifest(*manifest)
 	i.agentID = next
+	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	return nil
 }
