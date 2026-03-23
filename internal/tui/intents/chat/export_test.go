@@ -49,6 +49,11 @@ func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {
 	i.agentRegistry = reg
 }
 
+// ViewportHeight returns the current message viewport height for test assertions.
+func (i *Intent) ViewportHeight() int {
+	return i.msgViewport.Height
+}
+
 // SimulateModalModelSelectionForTest calls openModelSelector, executes the Cmd
 // to get the models.Intent, then simulates selecting the first model in the
 // first group by pressing Enter twice (expand group, then select model).

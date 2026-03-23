@@ -180,7 +180,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		i.width = msg.Width
 		i.height = msg.Height
-		footerHeight := 8
+		extraLines := i.inputLineCount() - 1
+		footerHeight := 8 + extraLines
 		vpHeight := msg.Height - footerHeight
 		if vpHeight < 1 {
 			vpHeight = 1
@@ -250,6 +251,11 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case tea.KeyEnter:
+		if msg.Alt {
+			i.input += "\n"
+			i.updateViewportForInput()
+			return nil
+		}
 		if i.input != "" {
 			return i.sendMessage()
 		}
@@ -262,6 +268,34 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+// inputLineCount returns the number of lines in the current input.
+//
+// Returns:
+//   - The count of lines (1 for empty/single-line input, more for multiline).
+//
+// Side effects:
+//   - None.
+func (i *Intent) inputLineCount() int {
+	return strings.Count(i.input, "\n") + 1
+}
+
+// updateViewportForInput adjusts the viewport height to account for multiline input.
+//
+// Side effects:
+//   - Updates msgViewport.Height based on input line count.
+func (i *Intent) updateViewportForInput() {
+	if !i.vpReady {
+		return
+	}
+	extraLines := i.inputLineCount() - 1
+	footerHeight := 8 + extraLines
+	vpHeight := i.height - footerHeight
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	i.msgViewport.Height = vpHeight
 }
 
 // handleStreamChunk processes a streaming response chunk.
@@ -324,6 +358,7 @@ func (i *Intent) refreshViewport() {
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
 	i.input = ""
+	i.updateViewportForInput()
 
 	if strings.HasPrefix(userMessage, "/") {
 		return i.handleSlashCommand(userMessage)
@@ -458,7 +493,7 @@ func (i *Intent) View() string {
 	case i.pendingPermission != nil:
 		inputLine = fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
 	default:
-		inputLine = "> " + i.input
+		inputLine = i.renderInputLine()
 	}
 
 	status := i.renderStatusString()
@@ -468,10 +503,34 @@ func (i *Intent) View() string {
 		WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp(status + "  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
+		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 
 	return sl.Render()
+}
+
+// renderInputLine renders the current input with a "> " prompt on the first line
+// and "  " indent on continuation lines for multiline inputs.
+//
+// Returns:
+//   - The formatted input string with prompts.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderInputLine() string {
+	if !strings.Contains(i.input, "\n") {
+		return "> " + i.input
+	}
+	lines := strings.Split(i.input, "\n")
+	rendered := make([]string, len(lines))
+	for idx, line := range lines {
+		if idx == 0 {
+			rendered[idx] = "> " + line
+		} else {
+			rendered[idx] = "  " + line
+		}
+	}
+	return strings.Join(rendered, "\n")
 }
 
 // updateStatusIndicator updates the status indicator based on streaming state.

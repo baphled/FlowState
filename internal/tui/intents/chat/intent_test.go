@@ -132,6 +132,58 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
+		Context("multiline input", func() {
+			It("inserts a newline on Alt+Enter without sending", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				Expect(intent.Input()).To(Equal("hi\n"))
+				Expect(intent.MessagesForTest()).To(BeEmpty())
+			})
+
+			It("appends text after the newline", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+				Expect(intent.Input()).To(Equal("a\nb"))
+			})
+
+			It("removes the newline on Backspace", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+				Expect(intent.Input()).To(Equal("a"))
+			})
+
+			It("sends the full multiline message on Enter", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f', 'i', 'r', 's', 't'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s', 'e', 'c', 'o', 'n', 'd'}})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).NotTo(BeNil())
+				Expect(intent.Input()).To(BeEmpty())
+			})
+
+			It("renders multiline input with continuation indent in View", func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f', 'i', 'r', 's', 't'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s', 'e', 'c', 'o', 'n', 'd'}})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("> first"))
+				Expect(view).To(ContainSubstring("  second"))
+			})
+
+			It("reduces viewport height by 1 for each newline in input", func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				baseHeight := intent.ViewportHeight()
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				Expect(intent.ViewportHeight()).To(Equal(baseHeight - 1))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+				Expect(intent.ViewportHeight()).To(Equal(baseHeight - 2))
+			})
+		})
+
 		Context("slash commands", func() {
 			Context("/agent command", func() {
 				var (
