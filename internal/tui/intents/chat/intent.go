@@ -315,8 +315,16 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		}
 	}
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
-	tokens := i.tokenCounter.Count(msg.Content)
-	i.tokenCount += tokens
+
+	if msg.Done && i.engine != nil {
+		contextResult := i.engine.LastContextResult()
+		i.tokenCount = contextResult.TokensUsed
+		i.tokenBudget = i.engine.ModelContextLimit()
+	} else {
+		tokens := i.tokenCounter.Count(msg.Content)
+		i.tokenCount += tokens
+	}
+
 	i.syncStatusBar()
 }
 

@@ -221,6 +221,64 @@ import (
 
 **Exception:** E2E tests may have inline comments.
 
+## Code Documentation
+
+### Package Documentation
+
+Every package **MUST** have a `doc.go` file providing a high-level overview.
+
+- Start with: `// Package <name> provides <one-line summary>.`
+- Follow with a blank comment line and a bulleted list of responsibilities.
+- End with `package <name>` (no imports).
+- Use British English throughout.
+
+**Example:**
+```go
+// Package agent provides agent manifest loading, validation, and registry management.
+//
+// This package handles the core agent abstraction for FlowState, including:
+//   - Loading agent manifests from JSON or Markdown frontmatter files
+//   - Validating manifest structure and required fields
+//   - Maintaining a registry of available agents for discovery
+package agent
+```
+
+### Exported Identifiers
+
+Every exported type, function, method, variable, and constant **MUST** have a godoc comment.
+
+- Start with the identifier name: `// TypeName does...` or `// FunctionName returns...`
+- Use present tense, third-person singular (e.g. "provides", "returns", "manages").
+- Keep it to one sentence for simple cases; use multiple lines for complex ones.
+- Ensure all prose uses British English (e.g. "behaviour", "organise").
+
+**Example:**
+```go
+// Manifest defines the complete configuration for a FlowState agent.
+type Manifest struct { ... }
+
+// Capabilities defines the tools and skills available to an agent.
+type Capabilities struct { ... }
+```
+
+### Interface Documentation
+
+Document what the interface represents and when to use it, rather than how to implement it. Each method on the interface must have its own godoc comment explaining its purpose.
+
+### Constants and Variables
+
+Group related constants with a single leading comment for the block. Individual constants or variables only require a comment if their name is not self-explanatory.
+
+### What NOT to Document
+
+- **Private identifiers:** Unless the logic is non-obvious.
+- **Obvious accessors:** Do not document simple getter/setter functions.
+- **Test helpers:** Internal test utility functions do not require godoc.
+- **Verbatim repetition:** Do not simply repeat the type name or field names — add meaningful context.
+- **The obvious:** If the code already makes the purpose clear, do not add redundant comments.
+
+**Note:** The rule prohibiting comments inside function bodies (from the Code Style section) still applies.
+
 ## Testing
 
 ### BDD Tags

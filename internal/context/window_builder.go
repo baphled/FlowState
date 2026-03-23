@@ -92,6 +92,43 @@ func (b *WindowBuilder) BuildContext(
 	return result.Messages
 }
 
+// BuildContextResult constructs a context window and returns the full BuildResult including token counts.
+//
+// Expected:
+//   - ctx is a valid context.Context.
+//   - manifest is a non-nil agent manifest.
+//   - userMessage is the user's input text; may be empty.
+//   - store is a non-nil FileContextStore.
+//   - tokenBudget is the maximum number of tokens allowed.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages and budget usage including user message tokens.
+//
+// Side effects:
+//   - Logs a warning if the system prompt exceeds the token budget.
+func (b *WindowBuilder) BuildContextResult(
+	ctx context.Context,
+	manifest *agent.Manifest,
+	userMessage string,
+	store *FileContextStore,
+	tokenBudget int,
+) BuildResult {
+	_ = ctx
+	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true})
+
+	if userMessage != "" {
+		userTokens := b.counter.Count(userMessage)
+		result.Messages = append(result.Messages, provider.Message{
+			Role:    "user",
+			Content: userMessage,
+		})
+		result.TokensUsed += userTokens
+		result.BudgetRemaining -= userTokens
+	}
+
+	return result
+}
+
 // BuildWithSummary constructs a context window including a conversation summary.
 //
 // Expected:

@@ -127,6 +127,10 @@ type StepDefinitions struct {
 	agentPicker *agentpicker.Intent
 	lastError   error
 	agentEngine *engine.Engine
+
+	// AGENTS.md loading fields
+	agentsConfigDir  string
+	agentsWorkingDir string
 }
 
 // TestApp represents a test application instance.
@@ -497,6 +501,14 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I should see "([^"]*)" in the agent list$`, s.iShouldSeeInTheAgentList)
 	ctx.Step(`^the FlowState TUI is running with the planner agent$`, s.theFlowStateTUIIsRunningWithThePlannerAgent)
 	ctx.Step(`^I switch to the executor agent$`, s.iSwitchToTheExecutorAgent)
+
+	// AGENTS.md loading steps
+	ctx.Step(`^a global AGENTS\.md exists with content "([^"]*)"$`, s.aGlobalAgentsMdExistsWithContent)
+	ctx.Step(`^an AGENTS\.md exists in the working directory with content "([^"]*)"$`, s.anAgentsMdExistsInTheWorkingDirectoryWithContent)
+	ctx.Step(`^no AGENTS\.md files exist$`, s.noAgentsMdFilesExist)
+	ctx.Step(`^a new session is started$`, s.aNewSessionIsStarted)
+	ctx.Step(`^the system prompt should contain "([^"]*)"$`, s.theSystemPromptShouldContain)
+	ctx.Step(`^the system prompt should not contain AGENTS\.md content$`, s.theSystemPromptShouldNotContainAgentsMdContent)
 }
 
 // normaliseProviderName converts display names to internal provider names.
@@ -5051,5 +5063,107 @@ func (s *StepDefinitions) iSwitchToTheExecutorAgent() error {
 // Returns: nil on success.
 // Side effects: None (just marks TUI as initialised).
 func (s *StepDefinitions) theFlowStateTUIIsRunning() error {
+	return nil
+}
+
+// aGlobalAgentsMdExistsWithContent creates a global AGENTS.md in a temp config dir.
+//
+// Expected: content is a non-empty string.
+// Returns: nil on success, or an error if writing fails.
+// Side effects: Creates temp dir and writes AGENTS.md.
+func (s *StepDefinitions) aGlobalAgentsMdExistsWithContent(content string) error {
+	if s.agentsConfigDir == "" {
+		s.agentsConfigDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-config-%d", time.Now().UnixNano()))
+		if err := os.MkdirAll(s.agentsConfigDir, 0o755); err != nil {
+			return fmt.Errorf("creating config dir: %w", err)
+		}
+	}
+	return os.WriteFile(filepath.Join(s.agentsConfigDir, "AGENTS.md"), []byte(content), 0o600)
+}
+
+// anAgentsMdExistsInTheWorkingDirectoryWithContent creates a working dir AGENTS.md.
+//
+// Expected: content is a non-empty string.
+// Returns: nil on success, or an error if writing fails.
+// Side effects: Creates temp dir and writes AGENTS.md.
+func (s *StepDefinitions) anAgentsMdExistsInTheWorkingDirectoryWithContent(content string) error {
+	if s.agentsWorkingDir == "" {
+		s.agentsWorkingDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-workdir-%d", time.Now().UnixNano()))
+		if err := os.MkdirAll(s.agentsWorkingDir, 0o755); err != nil {
+			return fmt.Errorf("creating working dir: %w", err)
+		}
+	}
+	return os.WriteFile(filepath.Join(s.agentsWorkingDir, "AGENTS.md"), []byte(content), 0o600)
+}
+
+// noAgentsMdFilesExist ensures no AGENTS.md files exist by using empty temp dirs.
+//
+// Returns: nil on success.
+// Side effects: Creates empty temp dirs for config and working directory.
+func (s *StepDefinitions) noAgentsMdFilesExist() error {
+	s.agentsConfigDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-empty-config-%d", time.Now().UnixNano()))
+	s.agentsWorkingDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-empty-workdir-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(s.agentsConfigDir, 0o755); err != nil {
+		return fmt.Errorf("creating empty config dir: %w", err)
+	}
+	return os.MkdirAll(s.agentsWorkingDir, 0o755)
+}
+
+// aNewSessionIsStarted creates an engine with AgentsFileLoader and builds the system prompt.
+//
+// Returns: nil on success.
+// Side effects: Creates engine, builds and stores system prompt in s.lastPrompt.
+func (s *StepDefinitions) aNewSessionIsStarted() error {
+	configDir := s.agentsConfigDir
+	if configDir == "" {
+		configDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-noconfig-%d", time.Now().UnixNano()))
+		_ = os.MkdirAll(configDir, 0o755)
+	}
+	workingDir := s.agentsWorkingDir
+	if workingDir == "" {
+		workingDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-noworkdir-%d", time.Now().UnixNano()))
+		_ = os.MkdirAll(workingDir, 0o755)
+	}
+	loader := agent.NewAgentsFileLoader(configDir, workingDir)
+	s.agentEngine = engine.New(engine.Config{
+		Manifest: agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "Base system prompt.",
+			},
+		},
+		AgentsFileLoader: loader,
+	})
+	s.lastPrompt = s.agentEngine.BuildSystemPrompt()
+	return nil
+}
+
+// theSystemPromptShouldContain asserts the system prompt contains the expected text.
+//
+// Expected: expected is a non-empty string.
+// Returns: nil if found, error otherwise.
+// Side effects: None.
+func (s *StepDefinitions) theSystemPromptShouldContain(expected string) error {
+	if s.lastPrompt == "" {
+		return errors.New("no system prompt built")
+	}
+	if !strings.Contains(s.lastPrompt, expected) {
+		return fmt.Errorf("system prompt does not contain %q, got: %s", expected, s.lastPrompt)
+	}
+	return nil
+}
+
+// theSystemPromptShouldNotContainAgentsMdContent asserts the system prompt has no AGENTS.md content.
+//
+// Returns: nil if no AGENTS.md content found, error otherwise.
+// Side effects: None.
+func (s *StepDefinitions) theSystemPromptShouldNotContainAgentsMdContent() error {
+	if s.lastPrompt == "" {
+		return errors.New("no system prompt built")
+	}
+	if s.lastPrompt != "Base system prompt." {
+		return fmt.Errorf("expected only base prompt, got: %s", s.lastPrompt)
+	}
 	return nil
 }

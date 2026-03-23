@@ -90,6 +90,8 @@ func New(cfg *config.AppConfig) (*App, error) {
 	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
+	workingDir, _ := os.Getwd()
+	agentsFileLoader := agent.NewAgentsFileLoader(config.Dir(), workingDir)
 	eng := createEngine(engineParams{
 		defaultProvider:    defaultProvider,
 		ollamaProvider:     ollamaProvider,
@@ -102,6 +104,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		appTools:           appTools,
 		toolRegistry:       toolRegistry,
 		permissionHandler:  permHandler,
+		agentsFileLoader:   agentsFileLoader,
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
@@ -133,6 +136,7 @@ type engineParams struct {
 	appTools           []tool.Tool
 	toolRegistry       *tool.Registry
 	permissionHandler  tool.PermissionHandler
+	agentsFileLoader   *agent.AgentsFileLoader
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -165,6 +169,7 @@ func createEngine(params engineParams) *engine.Engine {
 		Tools:             params.appTools,
 		ToolRegistry:      params.toolRegistry,
 		PermissionHandler: params.permissionHandler,
+		AgentsFileLoader:  params.agentsFileLoader,
 	})
 	return eng
 }

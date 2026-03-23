@@ -37,6 +37,8 @@ type Engine struct {
 	permissionHandler tool.PermissionHandler
 	providerRegistry  *provider.Registry
 	agentRegistry     *agent.Registry
+	agentsFileLoader  *agent.AgentsFileLoader
+	lastContextResult ctxstore.BuildResult
 	mu                sync.RWMutex
 }
 
@@ -55,6 +57,7 @@ type Config struct {
 	HookChain         *hook.Chain
 	ToolRegistry      *tool.Registry
 	PermissionHandler tool.PermissionHandler
+	AgentsFileLoader  *agent.AgentsFileLoader
 }
 
 // New creates a new Engine from the given configuration.
@@ -101,6 +104,7 @@ func New(cfg Config) *Engine {
 		permissionHandler: cfg.PermissionHandler,
 		providerRegistry:  cfg.Registry,
 		agentRegistry:     cfg.AgentRegistry,
+		agentsFileLoader:  cfg.AgentsFileLoader,
 	}
 }
 
@@ -266,13 +270,26 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 func (e *Engine) BuildSystemPrompt() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
+	var base string
 	if prompt.HasPrompt(e.manifest.ID) {
 		embeddedPrompt, err := prompt.GetPrompt(e.manifest.ID)
 		if err == nil {
-			return embeddedPrompt
+			base = embeddedPrompt
+		} else {
+			base = e.manifest.Instructions.SystemPrompt
+		}
+	} else {
+		base = e.manifest.Instructions.SystemPrompt
+	}
+
+	if e.agentsFileLoader != nil {
+		if content := e.agentsFileLoader.Load(); content != "" {
+			base = base + "\n\n" + content
 		}
 	}
-	return e.manifest.Instructions.SystemPrompt
+
+	return base
 }
 
 // buildToolSchemas converts the engine's tools into provider-compatible tool schemas.
@@ -688,21 +705,19 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 		}
 	}
 
-	tokenBudget := 4096
-	if e.tokenCounter != nil {
-		tokenBudget = e.tokenCounter.ModelLimit("")
-	}
+	tokenBudget := e.ModelContextLimit()
 
-	// Use the full embedded prompt for token budgeting, not the short manifest one-liner.
-	// WindowBuilder.prepareSystemPrompt uses manifest.Instructions.SystemPrompt;
-	// BuildSystemPrompt loads the full embedded .md file (e.g., planner.md).
 	e.mu.RLock()
 	manifestCopy := e.manifest
 	e.mu.RUnlock()
 	manifestCopy.Instructions.SystemPrompt = e.BuildSystemPrompt()
-	messages := e.windowBuilder.BuildContext(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+	result := e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
 
-	return messages
+	e.mu.Lock()
+	e.lastContextResult = result
+	e.mu.Unlock()
+
+	return result.Messages
 }
 
 // embedMessage sends the message content to the embedding provider if configured.
@@ -762,4 +777,32 @@ func (e *Engine) SetContextStore(store *ctxstore.FileContextStore) {
 //   - None.
 func (e *Engine) ContextStore() *ctxstore.FileContextStore {
 	return e.store
+}
+
+// LastContextResult returns the most recent context window build result.
+//
+// Returns:
+//   - The BuildResult from the last call to buildContextWindow.
+//
+// Side effects:
+//   - None.
+func (e *Engine) LastContextResult() ctxstore.BuildResult {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lastContextResult
+}
+
+// ModelContextLimit returns the context window token limit for the current model.
+//
+// Returns:
+//   - The token limit from the token counter using the active model name.
+//   - Falls back to 4096 if no token counter is configured.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ModelContextLimit() int {
+	if e.tokenCounter != nil {
+		return e.tokenCounter.ModelLimit(e.LastModel())
+	}
+	return 4096
 }
