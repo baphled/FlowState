@@ -85,7 +85,6 @@ type Intent struct {
 	engine            *engine.Engine
 	agentID           string
 	sessionID         string
-	messages          []chat.Message
 	input             string
 	streaming         bool
 	response          string
@@ -138,7 +137,6 @@ func NewIntent(cfg IntentConfig) *Intent {
 		engine:          cfg.Engine,
 		agentID:         cfg.AgentID,
 		sessionID:       cfg.SessionID,
-		messages:        []chat.Message{},
 		input:           "",
 		streaming:       false,
 		response:        "",
@@ -332,7 +330,7 @@ func (i *Intent) finalizeResponse(msg StreamChunkMsg) {
 		}
 	}
 	if content != "" {
-		i.messages = append(i.messages, chat.Message{
+		i.view.AddMessage(chat.Message{
 			Role:    "assistant",
 			Content: content,
 		})
@@ -540,7 +538,6 @@ func (i *Intent) refreshViewport() {
 	if i.toolCallName != "" && i.toolCallStatus != "" {
 		i.view.SetToolCall(i.toolCallName, i.toolCallStatus)
 	}
-	i.view.SetMessages(i.messages)
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
 	i.msgViewport.GotoBottom()
@@ -562,7 +559,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 		return i.handleSlashCommand(userMessage)
 	}
 
-	i.messages = append(i.messages, chat.Message{Role: "user", Content: userMessage})
+	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
 	i.streaming = true
 	i.response = ""
 	i.toolCallName = ""
@@ -750,7 +747,7 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 			response = "Unknown command: /" + command
 		}
 
-		i.messages = append(i.messages, chat.Message{Role: "system", Content: response})
+		i.view.AddMessage(chat.Message{Role: "system", Content: response})
 		i.refreshViewport()
 		return nil
 	}
@@ -881,7 +878,7 @@ func (i *Intent) Input() string {
 //   - None.
 func (i *Intent) Messages() []chat.Message {
 	var result []chat.Message
-	for _, msg := range i.messages {
+	for _, msg := range i.view.Messages() {
 		if msg.Role == "assistant" {
 			result = append(result, msg)
 		}
@@ -1008,5 +1005,5 @@ func (i *Intent) SetAgentIDForTest(id string) {
 // Side effects:
 //   - None.
 func (i *Intent) MessagesForTest() []chat.Message {
-	return i.messages
+	return i.view.Messages()
 }
