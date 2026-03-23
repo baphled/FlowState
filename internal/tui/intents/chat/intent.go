@@ -319,7 +319,6 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if msg.Done && i.engine != nil {
 		contextResult := i.engine.LastContextResult()
 		i.tokenCount = contextResult.TokensUsed
-		i.tokenBudget = i.engine.ModelContextLimit()
 	} else {
 		tokens := i.tokenCounter.Count(msg.Content)
 		i.tokenCount += tokens

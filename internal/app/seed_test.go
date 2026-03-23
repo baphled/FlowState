@@ -68,12 +68,12 @@ var _ = Describe("SeedAgentsDir", func() {
 	})
 
 	Context("when destination directory already has files", func() {
-		It("does not overwrite existing files", func() {
+		It("overwrites existing files with source content", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			existingContent := `{"id": "general", "name": "Custom General"}`
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(existingContent), 0o600)).To(Succeed())
+			staleContent := `{"id": "general", "name": "Stale General"}`
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(staleContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
@@ -81,15 +81,16 @@ var _ = Describe("SeedAgentsDir", func() {
 
 			content, err := os.ReadFile(filepath.Join(agentsDest, "general.json"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(Equal(existingContent))
+			Expect(string(content)).To(ContainSubstring(`"name": "General"`))
+			Expect(string(content)).NotTo(ContainSubstring("Stale"))
 		})
 
-		It("copies missing files without touching existing ones", func() {
+		It("copies all files including previously missing ones", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			existingContent := `{"id": "general", "name": "Custom General"}`
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(existingContent), 0o600)).To(Succeed())
+			staleContent := `{"id": "general", "name": "Stale General"}`
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(staleContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
@@ -101,7 +102,7 @@ var _ = Describe("SeedAgentsDir", func() {
 
 			content, err := os.ReadFile(filepath.Join(agentsDest, "general.json"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(Equal(existingContent))
+			Expect(string(content)).To(ContainSubstring(`"name": "General"`))
 
 			content, err = os.ReadFile(filepath.Join(agentsDest, "coder.json"))
 			Expect(err).NotTo(HaveOccurred())

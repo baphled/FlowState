@@ -231,6 +231,47 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
+		Context("when AGENTS.md content is loaded via AgentsFileLoader", func() {
+			It("wraps the content with an instruction header", func() {
+				tempDir, err := os.MkdirTemp("", "agents-file-test-*")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() { os.RemoveAll(tempDir) })
+
+				agentsContent := "# Project Instructions\n\nFollow these rules."
+				Expect(os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte(agentsContent), 0o600)).To(Succeed())
+
+				loader := agent.NewAgentsFileLoader(tempDir, "")
+
+				eng := engine.New(engine.Config{
+					ChatProvider:     chatProvider,
+					Manifest:         manifest,
+					Skills:           skills,
+					AgentsFileLoader: loader,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("# Additional Instructions"))
+				Expect(prompt).To(ContainSubstring("Apply them where relevant, but do not summarise or repeat them"))
+				Expect(prompt).To(ContainSubstring(agentsContent))
+			})
+
+			It("does not add header when AGENTS.md is empty", func() {
+				loader := agent.NewAgentsFileLoader("", "")
+
+				eng := engine.New(engine.Config{
+					ChatProvider:     chatProvider,
+					Manifest:         manifest,
+					Skills:           skills,
+					AgentsFileLoader: loader,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).NotTo(ContainSubstring("# Additional Instructions"))
+			})
+		})
+
 		Context("when agent has agent-level skills", func() {
 			It("does not include agent-level skill content in system prompt", func() {
 				manifest.Capabilities.Skills = []string{"agent-skill"}

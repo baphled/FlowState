@@ -10,8 +10,7 @@ import (
 )
 
 // SeedAgentsDir copies all *.json files from the source filesystem to the destination directory.
-// It is idempotent: if destination already exists with files, no copy is attempted.
-// If a file already exists in the destination, it is not overwritten.
+// It always overwrites existing files to ensure embedded manifests stay current.
 //
 // Expected:
 //   - srcFS is a valid fs.FS containing an "agents" subdirectory with .json files.
@@ -23,7 +22,7 @@ import (
 //
 // Side effects:
 //   - Creates destDir if it does not exist.
-//   - Copies each .json file from srcFS to destDir if not already present.
+//   - Copies each .json file from srcFS to destDir, overwriting existing files.
 func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 	agentsDir, err := fs.Sub(srcFS, "agents")
 	if err != nil {
@@ -50,14 +49,6 @@ func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 		}
 
 		destPath := filepath.Join(destDir, filename)
-
-		_, err := os.Stat(destPath)
-		if err == nil {
-			continue
-		}
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("checking if %s exists: %w", destPath, err)
-		}
 
 		if err := copySingleFile(agentsDir, filename, destPath); err != nil {
 			return err
