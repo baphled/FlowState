@@ -20,6 +20,11 @@ import (
 // Side effects:
 //   - Launches a full-screen terminal UI that blocks until the user exits.
 func Run(application *flowapp.App, agentID string, sessionID string) error {
+	if agentID != "" && application.Registry != nil {
+		if manifest, ok := application.Registry.Get(agentID); ok {
+			application.Engine.SetManifest(*manifest)
+		}
+	}
 	chatIntent := chat.NewIntent(chat.IntentConfig{
 		App:           nil,
 		Engine:        application.Engine,
