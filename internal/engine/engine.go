@@ -119,7 +119,7 @@ func New(cfg Config) *Engine {
 // Side effects:
 //   - None.
 func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
-	order := []string{"ollama", "anthropic", "openai"}
+	order := []string{"anthropic", "ollama", "openai"}
 
 	var result []provider.ModelPreference
 	seen := make(map[string]bool)
