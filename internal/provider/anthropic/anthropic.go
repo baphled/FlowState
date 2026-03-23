@@ -333,21 +333,20 @@ func (p *Provider) streamMessages(
 ) {
 	defer close(ch)
 
+	handler := newStreamEventHandler()
 	stream := p.client.Messages.NewStreaming(ctx, params)
 
 	for stream.Next() {
 		event := stream.Current()
-		chunk := convertStreamEvent(event)
-		if chunk.Content == "" && !chunk.Done && chunk.Error == nil {
+		chunk, shouldSend := handler.handleEvent(event)
+		if !shouldSend {
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			ch <- provider.StreamChunk{
-				Error: ctx.Err(), Done: true,
-			}
+		if !sendChunk(ctx, ch, chunk) {
 			return
-		case ch <- chunk:
+		}
+		if chunk.Done {
+			return
 		}
 	}
 
@@ -789,40 +788,6 @@ func (p *Provider) buildRequestParams(
 	}
 
 	return params
-}
-
-// convertStreamEvent maps an Anthropic stream event to a provider StreamChunk.
-//
-// Expected:
-//   - event is a valid Anthropic streaming event.
-//
-// Returns:
-//   - A StreamChunk with content, tool call data, or done signal.
-//
-// Side effects:
-//   - None.
-func convertStreamEvent(
-	event anthropicAPI.MessageStreamEventUnion,
-) provider.StreamChunk {
-	switch event.Type {
-	case "content_block_delta":
-		if event.Delta.Type == "text_delta" {
-			return provider.StreamChunk{Content: event.Delta.Text}
-		}
-	case "message_stop":
-		return provider.StreamChunk{Done: true}
-	case "content_block_start":
-		if event.ContentBlock.Type == "tool_use" {
-			return provider.StreamChunk{
-				EventType: "tool_call",
-				ToolCall: &provider.ToolCall{
-					ID:   event.ContentBlock.ID,
-					Name: event.ContentBlock.Name,
-				},
-			}
-		}
-	}
-	return provider.StreamChunk{}
 }
 
 // extractTextContent returns the text from the first text-type content block.
