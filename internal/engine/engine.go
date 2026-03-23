@@ -19,11 +19,6 @@ import (
 const (
 	streamBufferSize     = 16
 	defaultStreamTimeout = 5 * time.Minute
-
-	agentsFileHeader = "# Additional Instructions\n\n" +
-		"The following instructions come from AGENTS.md files in the project " +
-		"and configuration directories. Apply them where relevant, " +
-		"but do not summarise or repeat them:\n\n"
 )
 
 // Engine orchestrates AI agent interactions with providers, tools, and context management.
@@ -289,8 +284,8 @@ func (e *Engine) BuildSystemPrompt() string {
 	}
 
 	if e.agentsFileLoader != nil {
-		if content := e.agentsFileLoader.Load(); content != "" {
-			base = base + "\n\n" + agentsFileHeader + content
+		for _, f := range e.agentsFileLoader.LoadFiles() {
+			base = base + "\n\nInstructions from: " + f.Path + "\n" + f.Content
 		}
 	}
 

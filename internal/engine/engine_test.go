@@ -232,7 +232,7 @@ var _ = Describe("Engine", func() {
 		})
 
 		Context("when AGENTS.md content is loaded via AgentsFileLoader", func() {
-			It("wraps the content with an instruction header", func() {
+			It("prefixes each file with Instructions from: and its absolute path", func() {
 				tempDir, err := os.MkdirTemp("", "agents-file-test-*")
 				Expect(err).NotTo(HaveOccurred())
 				DeferCleanup(func() { os.RemoveAll(tempDir) })
@@ -251,12 +251,13 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("# Additional Instructions"))
-				Expect(prompt).To(ContainSubstring("Apply them where relevant, but do not summarise or repeat them"))
+				absPath, pathErr := filepath.Abs(filepath.Join(tempDir, "AGENTS.md"))
+				Expect(pathErr).NotTo(HaveOccurred())
+				Expect(prompt).To(ContainSubstring("Instructions from: " + absPath))
 				Expect(prompt).To(ContainSubstring(agentsContent))
 			})
 
-			It("does not add header when AGENTS.md is empty", func() {
+			It("does not add instructions when no AGENTS.md files exist", func() {
 				loader := agent.NewAgentsFileLoader("", "")
 
 				eng := engine.New(engine.Config{
@@ -268,7 +269,7 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).NotTo(ContainSubstring("# Additional Instructions"))
+				Expect(prompt).NotTo(ContainSubstring("Instructions from:"))
 			})
 		})
 

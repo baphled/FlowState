@@ -8,6 +8,12 @@ import (
 
 const agentsFileName = "AGENTS.md"
 
+// InstructionFile holds the absolute path and content of a loaded AGENTS.md file.
+type InstructionFile struct {
+	Path    string
+	Content string
+}
+
 // AgentsFileLoader loads and merges AGENTS.md files from global config and working directories.
 type AgentsFileLoader struct {
 	configDir  string
@@ -29,6 +35,32 @@ func NewAgentsFileLoader(configDir, workingDir string) *AgentsFileLoader {
 	return &AgentsFileLoader{configDir: configDir, workingDir: workingDir}
 }
 
+// LoadFiles returns one InstructionFile per found AGENTS.md file, config dir first then working dir.
+//
+// Returns:
+//   - A slice of InstructionFile values, each with an absolute path and content.
+//   - An empty slice if neither file exists.
+//
+// Side effects:
+//   - Reads from the filesystem.
+func (l *AgentsFileLoader) LoadFiles() []InstructionFile {
+	var files []InstructionFile
+
+	if absPath, content := l.readFileWithPath(l.configDir); content != "" {
+		files = append(files, InstructionFile{Path: absPath, Content: content})
+	}
+
+	if l.isSameDirectory() {
+		return files
+	}
+
+	if absPath, content := l.readFileWithPath(l.workingDir); content != "" {
+		files = append(files, InstructionFile{Path: absPath, Content: content})
+	}
+
+	return files
+}
+
 // Load reads and merges AGENTS.md content from config and working directories.
 //
 // Returns:
@@ -39,44 +71,39 @@ func NewAgentsFileLoader(configDir, workingDir string) *AgentsFileLoader {
 // Side effects:
 //   - Reads from the filesystem.
 func (l *AgentsFileLoader) Load() string {
-	var parts []string
-
-	configContent := l.readFile(l.configDir)
-	if configContent != "" {
-		parts = append(parts, configContent)
+	files := l.LoadFiles()
+	parts := make([]string, 0, len(files))
+	for _, f := range files {
+		parts = append(parts, f.Content)
 	}
-
-	if l.isSameDirectory() {
-		return strings.Join(parts, "")
-	}
-
-	workingContent := l.readFile(l.workingDir)
-	if workingContent != "" {
-		parts = append(parts, workingContent)
-	}
-
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-// readFile reads the AGENTS.md file from the given directory.
+// readFileWithPath reads the AGENTS.md file from the given directory, returning its absolute path and content.
 //
 // Expected:
 //   - dir is a directory path; may be empty.
 //
 // Returns:
-//   - The file content as a string, or empty string if the file does not exist or dir is empty.
+//   - The absolute file path and content as strings.
+//   - Empty strings for both if the file does not exist or dir is empty.
 //
 // Side effects:
 //   - Reads from the filesystem.
-func (l *AgentsFileLoader) readFile(dir string) string {
+func (l *AgentsFileLoader) readFileWithPath(dir string) (string, string) {
 	if dir == "" {
-		return ""
+		return "", ""
 	}
-	data, err := os.ReadFile(filepath.Join(dir, agentsFileName))
+	filePath := filepath.Join(dir, agentsFileName)
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return string(data)
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", ""
+	}
+	return absPath, string(data)
 }
 
 // isSameDirectory reports whether the config and working directories resolve to the same absolute path.

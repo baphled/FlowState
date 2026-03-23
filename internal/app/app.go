@@ -175,15 +175,19 @@ func createEngine(params engineParams) *engine.Engine {
 	return eng
 }
 
-// buildAgentsFileLoader creates an AgentsFileLoader that loads AGENTS.md from the global configuration directory only.
+// buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
 //
 // Returns:
 //   - A configured AgentsFileLoader instance.
 //
 // Side effects:
-//   - None.
+//   - Calls os.Getwd to determine the current working directory.
 func buildAgentsFileLoader() *agent.AgentsFileLoader {
-	return agent.NewAgentsFileLoader(config.Dir(), "")
+	workingDir, err := os.Getwd()
+	if err != nil {
+		workingDir = ""
+	}
+	return agent.NewAgentsFileLoader(config.Dir(), workingDir)
 }
 
 // AgentsDir returns the directory where agent manifests are stored.
