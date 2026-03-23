@@ -873,4 +873,62 @@ var _ = Describe("Engine", func() {
 			Expect(eng.Manifest().ID).To(Equal("planner"))
 		})
 	})
+
+	Describe("ModelContextLimit", func() {
+		Context("when TokenCounter is configured with a Claude model", func() {
+			It("returns the Claude model limit instead of the default 4096", func() {
+				registry := provider.NewRegistry()
+				claudeProvider := &mockProvider{
+					name: "anthropic",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+				registry.Register(claudeProvider)
+
+				claudeManifest := agent.Manifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
+					Complexity: "standard",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"standard": {
+							{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+						},
+					},
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				tokenCounter := ctxstore.NewTiktokenCounter()
+
+				eng := engine.New(engine.Config{
+					Registry:     registry,
+					Manifest:     claudeManifest,
+					TokenCounter: tokenCounter,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(eng.ModelContextLimit()).To(Equal(200000))
+			})
+		})
+
+		Context("when TokenCounter is nil", func() {
+			It("returns the default 4096", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				Expect(eng.ModelContextLimit()).To(Equal(4096))
+			})
+		})
+	})
 })

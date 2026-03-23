@@ -103,6 +103,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		toolRegistry:       toolRegistry,
 		permissionHandler:  permHandler,
 		agentsFileLoader:   buildAgentsFileLoader(),
+		tokenCounter:       ctxstore.NewTiktokenCounter(),
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
@@ -135,6 +136,7 @@ type engineParams struct {
 	toolRegistry       *tool.Registry
 	permissionHandler  tool.PermissionHandler
 	agentsFileLoader   *agent.AgentsFileLoader
+	tokenCounter       ctxstore.TokenCounter
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -168,6 +170,7 @@ func createEngine(params engineParams) *engine.Engine {
 		ToolRegistry:      params.toolRegistry,
 		PermissionHandler: params.permissionHandler,
 		AgentsFileLoader:  params.agentsFileLoader,
+		TokenCounter:      params.tokenCounter,
 	})
 	return eng
 }
