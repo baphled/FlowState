@@ -90,8 +90,6 @@ func New(cfg *config.AppConfig) (*App, error) {
 	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
-	workingDir, _ := os.Getwd()
-	agentsFileLoader := agent.NewAgentsFileLoader(config.Dir(), workingDir)
 	eng := createEngine(engineParams{
 		defaultProvider:    defaultProvider,
 		ollamaProvider:     ollamaProvider,
@@ -104,7 +102,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		appTools:           appTools,
 		toolRegistry:       toolRegistry,
 		permissionHandler:  permHandler,
-		agentsFileLoader:   agentsFileLoader,
+		agentsFileLoader:   buildAgentsFileLoader(),
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
@@ -172,6 +170,21 @@ func createEngine(params engineParams) *engine.Engine {
 		AgentsFileLoader:  params.agentsFileLoader,
 	})
 	return eng
+}
+
+// buildAgentsFileLoader creates an AgentsFileLoader using the global config directory and current working directory.
+//
+// Returns:
+//   - A configured AgentsFileLoader instance.
+//
+// Side effects:
+//   - Reads the current working directory from the OS.
+func buildAgentsFileLoader() *agent.AgentsFileLoader {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		workingDir = ""
+	}
+	return agent.NewAgentsFileLoader(config.Dir(), workingDir)
 }
 
 // AgentsDir returns the directory where agent manifests are stored.

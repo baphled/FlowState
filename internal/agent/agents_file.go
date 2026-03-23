@@ -58,6 +58,16 @@ func (l *AgentsFileLoader) Load() string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
+// readFile reads the AGENTS.md file from the given directory.
+//
+// Expected:
+//   - dir is a directory path; may be empty.
+//
+// Returns:
+//   - The file content as a string, or empty string if the file does not exist or dir is empty.
+//
+// Side effects:
+//   - Reads from the filesystem.
 func (l *AgentsFileLoader) readFile(dir string) string {
 	if dir == "" {
 		return ""
@@ -69,6 +79,13 @@ func (l *AgentsFileLoader) readFile(dir string) string {
 	return string(data)
 }
 
+// isSameDirectory reports whether the config and working directories resolve to the same absolute path.
+//
+// Returns:
+//   - True if both directories exist and resolve to the same path.
+//
+// Side effects:
+//   - None.
 func (l *AgentsFileLoader) isSameDirectory() bool {
 	if l.configDir == "" || l.workingDir == "" {
 		return false
