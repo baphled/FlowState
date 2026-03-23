@@ -504,6 +504,7 @@ func buildHookChain(
 		hook.LoggingHook(),
 		hook.LearningHook(learningStore),
 		hook.SkillAutoLoaderHook(cfg, manifestGetter),
+		// --- Harness Hooks (wired when harness_enabled: true in planner manifest) ---
 	)
 }
 

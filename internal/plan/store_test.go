@@ -416,4 +416,118 @@ var _ = Describe("PlanStore", func() {
 			Expect(summaries[0].ID).To(Equal("plan-b"))
 		})
 	})
+
+	Describe("FileStruct", func() {
+		Context("with validation metadata fields", func() {
+			It("preserves validation metadata in roundtrip", func() {
+				f := plan.File{
+					ID:               "validation-test",
+					Title:            "Validation Test",
+					Description:      "Testing validation fields",
+					Status:           "draft",
+					CreatedAt:        time.Now(),
+					ValidationStatus: "pending",
+					AttemptCount:     3,
+					Score:            0.85,
+					ValidationErrors: []string{"error1", "error2"},
+					Tasks:            []plan.Task{},
+				}
+
+				err := store.Create(f)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := store.Get("validation-test")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(retrieved.ValidationStatus).To(Equal("pending"))
+				Expect(retrieved.AttemptCount).To(Equal(3))
+				Expect(retrieved.Score).To(Equal(0.85))
+				Expect(retrieved.ValidationErrors).To(HaveLen(2))
+				Expect(retrieved.ValidationErrors[0]).To(Equal("error1"))
+				Expect(retrieved.ValidationErrors[1]).To(Equal("error2"))
+			})
+
+			It("handles missing validation fields with zero values", func() {
+				f := plan.File{
+					ID:        "no-validation",
+					Title:     "No Validation",
+					Status:    "draft",
+					CreatedAt: time.Now(),
+					Tasks:     []plan.Task{},
+				}
+
+				err := store.Create(f)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := store.Get("no-validation")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(retrieved.ValidationStatus).To(Equal(""))
+				Expect(retrieved.AttemptCount).To(Equal(0))
+				Expect(retrieved.Score).To(Equal(0.0))
+				Expect(retrieved.ValidationErrors).To(BeEmpty())
+			})
+		})
+
+		Context("with task metadata fields", func() {
+			It("preserves task dependencies, effort, and wave", func() {
+				f := plan.File{
+					ID:        "task-metadata-test",
+					Title:     "Task Metadata Test",
+					Status:    "draft",
+					CreatedAt: time.Now(),
+					Tasks: []plan.Task{
+						{
+							Title:           "Task with metadata",
+							Description:     "Task description",
+							Dependencies:    []string{"task-1", "task-2"},
+							EstimatedEffort: "medium",
+							Wave:            2,
+						},
+					},
+				}
+
+				err := store.Create(f)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := store.Get("task-metadata-test")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(retrieved.Tasks).To(HaveLen(1))
+				task := retrieved.Tasks[0]
+				Expect(task.Dependencies).To(HaveLen(2))
+				Expect(task.Dependencies[0]).To(Equal("task-1"))
+				Expect(task.Dependencies[1]).To(Equal("task-2"))
+				Expect(task.EstimatedEffort).To(Equal("medium"))
+				Expect(task.Wave).To(Equal(2))
+			})
+
+			It("handles missing task metadata fields with zero values", func() {
+				f := plan.File{
+					ID:        "task-no-metadata",
+					Title:     "Task No Metadata",
+					Status:    "draft",
+					CreatedAt: time.Now(),
+					Tasks: []plan.Task{
+						{
+							Title:       "Simple task",
+							Description: "No metadata",
+						},
+					},
+				}
+
+				err := store.Create(f)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := store.Get("task-no-metadata")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(retrieved.Tasks).To(HaveLen(1))
+				task := retrieved.Tasks[0]
+				Expect(task.Dependencies).To(BeEmpty())
+				Expect(task.EstimatedEffort).To(Equal(""))
+				Expect(task.Wave).To(Equal(0))
+			})
+		})
+	})
 })

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,11 +94,15 @@ func (s *PlanStore) Create(f File) error {
 	filePath := filepath.Join(s.dataDir, f.ID+".md")
 
 	fm := Frontmatter{
-		ID:          f.ID,
-		Title:       f.Title,
-		Description: f.Description,
-		Status:      f.Status,
-		CreatedAt:   f.CreatedAt,
+		ID:               f.ID,
+		Title:            f.Title,
+		Description:      f.Description,
+		Status:           f.Status,
+		CreatedAt:        f.CreatedAt,
+		ValidationStatus: f.ValidationStatus,
+		AttemptCount:     f.AttemptCount,
+		Score:            f.Score,
+		ValidationErrors: f.ValidationErrors,
 	}
 
 	frontmatterBytes, err := yaml.Marshal(fm)
@@ -126,6 +131,18 @@ func (s *PlanStore) Create(f File) error {
 
 		if len(task.Skills) > 0 {
 			fmt.Fprintf(&body, "**Skills**: %s\n\n", strings.Join(task.Skills, ", "))
+		}
+
+		if len(task.Dependencies) > 0 {
+			fmt.Fprintf(&body, "**Dependencies**: %s\n\n", strings.Join(task.Dependencies, ", "))
+		}
+
+		if task.EstimatedEffort != "" {
+			fmt.Fprintf(&body, "**Estimated Effort**: %s\n\n", task.EstimatedEffort)
+		}
+
+		if task.Wave > 0 {
+			fmt.Fprintf(&body, "**Wave**: %d\n\n", task.Wave)
 		}
 	}
 
@@ -227,12 +244,16 @@ func (s *PlanStore) Get(id string) (*File, error) {
 	tasks := parseTasksFromMarkdown(parts[2])
 
 	return &File{
-		ID:          fm.ID,
-		Title:       fm.Title,
-		Description: fm.Description,
-		Status:      fm.Status,
-		CreatedAt:   fm.CreatedAt,
-		Tasks:       tasks,
+		ID:               fm.ID,
+		Title:            fm.Title,
+		Description:      fm.Description,
+		Status:           fm.Status,
+		CreatedAt:        fm.CreatedAt,
+		Tasks:            tasks,
+		ValidationStatus: fm.ValidationStatus,
+		AttemptCount:     fm.AttemptCount,
+		Score:            fm.Score,
+		ValidationErrors: fm.ValidationErrors,
 	}, nil
 }
 
@@ -309,6 +330,21 @@ func parseTasksFromMarkdown(markdown string) []Task {
 
 		if isSkillsLine(line) {
 			parseSkills(line, currentTask)
+			continue
+		}
+
+		if isDependenciesLine(line) {
+			parseDependencies(line, currentTask)
+			continue
+		}
+
+		if isEstimatedEffortLine(line) {
+			parseEstimatedEffort(line, currentTask)
+			continue
+		}
+
+		if isWaveLine(line) {
+			parseWave(line, currentTask)
 			continue
 		}
 
@@ -467,5 +503,106 @@ func appendDescription(line string, task *Task) {
 		task.Description += "\n" + trimmedLine
 	} else {
 		task.Description = trimmedLine
+	}
+}
+
+// isDependenciesLine checks if a line is the dependencies line.
+//
+// Expected:
+//   - line is a single line of text (no newlines).
+//
+// Returns:
+//   - true if line starts with "**Dependencies**:", false otherwise.
+//
+// Side effects:
+//   - None.
+func isDependenciesLine(line string) bool {
+	return strings.HasPrefix(line, "**Dependencies**:")
+}
+
+// parseDependencies extracts dependencies from a dependencies line and adds them to the task.
+//
+// Expected:
+//   - line starts with "**Dependencies**:" (checked by caller).
+//   - task is non-nil.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Modifies task.Dependencies to include parsed dependency names.
+func parseDependencies(line string, task *Task) {
+	depsStr := strings.TrimPrefix(line, "**Dependencies**: ")
+	depsStr = strings.TrimSpace(depsStr)
+	if depsStr != "" {
+		deps := strings.Split(depsStr, ", ")
+		for _, dep := range deps {
+			task.Dependencies = append(task.Dependencies, strings.TrimSpace(dep))
+		}
+	}
+}
+
+// isEstimatedEffortLine checks if a line is the estimated effort line.
+//
+// Expected:
+//   - line is a single line of text (no newlines).
+//
+// Returns:
+//   - true if line starts with "**Estimated Effort**:", false otherwise.
+//
+// Side effects:
+//   - None.
+func isEstimatedEffortLine(line string) bool {
+	return strings.HasPrefix(line, "**Estimated Effort**:")
+}
+
+// parseEstimatedEffort extracts estimated effort from a line and sets it on the task.
+//
+// Expected:
+//   - line starts with "**Estimated Effort**:" (checked by caller).
+//   - task is non-nil.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Modifies task.EstimatedEffort to the parsed value.
+func parseEstimatedEffort(line string, task *Task) {
+	effortStr := strings.TrimPrefix(line, "**Estimated Effort**: ")
+	task.EstimatedEffort = strings.TrimSpace(effortStr)
+}
+
+// isWaveLine checks if a line is the wave line.
+//
+// Expected:
+//   - line is a single line of text (no newlines).
+//
+// Returns:
+//   - true if line starts with "**Wave**:", false otherwise.
+//
+// Side effects:
+//   - None.
+func isWaveLine(line string) bool {
+	return strings.HasPrefix(line, "**Wave**:")
+}
+
+// parseWave extracts wave number from a line and sets it on the task.
+//
+// Expected:
+//   - line starts with "**Wave**:" (checked by caller).
+//   - task is non-nil.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Modifies task.Wave to the parsed integer value; ignores parse errors.
+func parseWave(line string, task *Task) {
+	waveStr := strings.TrimPrefix(line, "**Wave**: ")
+	waveStr = strings.TrimSpace(waveStr)
+	if waveStr != "" {
+		if wave, err := strconv.Atoi(waveStr); err == nil {
+			task.Wave = wave
+		}
 	}
 }

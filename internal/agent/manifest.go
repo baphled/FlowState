@@ -13,6 +13,7 @@ type Manifest struct {
 	Delegation        Delegation             `json:"delegation" yaml:"delegation"`
 	Hooks             Hooks                  `json:"hooks" yaml:"hooks"`
 	Instructions      Instructions           `json:"instructions" yaml:"instructions"`
+	HarnessEnabled    bool                   `json:"harness_enabled" yaml:"harness_enabled"`
 }
 
 // ModelPref specifies a preferred model for a provider.
