@@ -41,7 +41,6 @@ var _ = Describe("PlanHarness", func() {
 
 	It("returns a valid result on the first attempt", func() {
 		streamer := &mockStreamer{responses: []string{loadValidPlan()}}
-
 		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -54,7 +53,6 @@ var _ = Describe("PlanHarness", func() {
 	It("returns interview-phase text without validation", func() {
 		response := "Tell me more about the goal."
 		streamer := &mockStreamer{responses: []string{response}}
-
 		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Start")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -65,7 +63,6 @@ var _ = Describe("PlanHarness", func() {
 
 	It("retries after invalid output and returns a valid plan", func() {
 		streamer := &mockStreamer{responses: []string{invalidPlan(), loadValidPlan()}}
-
 		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -76,7 +73,6 @@ var _ = Describe("PlanHarness", func() {
 
 	It("returns best-effort results after exhausting retries", func() {
 		streamer := &mockStreamer{responses: []string{invalidPlan(), invalidPlan(), invalidPlan()}}
-
 		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -90,10 +86,39 @@ var _ = Describe("PlanHarness", func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		streamer := &mockStreamer{responses: []string{loadValidPlan()}}
-
 		result, err := harness.Evaluate(ctx, streamer, "planner", "Generate a plan")
 		Expect(err).To(MatchError(context.Canceled))
 		Expect(result).To(BeNil())
+	})
+})
+
+var _ = Describe("ValidatorChain", func() {
+	var (
+		chain       *plan.ValidatorChain
+		projectRoot string
+	)
+
+	BeforeEach(func() {
+		projectRoot = projectRootFromWorkingDir()
+		chain = plan.NewValidatorChain(projectRoot)
+	})
+
+	It("short-circuits if schema fails", func() {
+		invalid := "---\nid: bad\n---\nNo tasks here."
+		result, err := chain.Validate(invalid)
+		Expect(err).To(HaveOccurred())
+		Expect(result).NotTo(BeNil())
+		Expect(result.Valid).To(BeFalse())
+		Expect(result.Errors).NotTo(BeEmpty())
+		Expect(result.Errors).NotTo(BeEmpty())
+	})
+
+	It("computes weighted score", func() {
+		planText := loadValidPlan()
+		result, err := chain.Validate(planText)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).NotTo(BeNil())
+		Expect(result.Score).To(BeNumerically(">=", 0.7))
 	})
 })
 
