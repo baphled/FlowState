@@ -799,6 +799,131 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("detectAgentFromInput", func() {
+		DescribeTable("returns the correct agent for keyword-based input",
+			func(input, expected string) {
+				Expect(chat.DetectAgentFromInputForTest(input)).To(Equal(expected))
+			},
+			Entry("planner keyword: plan", "I want to create a plan for a new API", "planner"),
+			Entry("planner keyword: design", "design the architecture", "planner"),
+			Entry("planner keyword: architect", "architect a microservice", "planner"),
+			Entry("planner keyword: how do i", "how do i set up auth?", "planner"),
+			Entry("planner keyword: what should", "what should we build next?", "planner"),
+			Entry("planner keyword: help me", "help me figure this out", "planner"),
+			Entry("planner keyword: strategy", "we need a strategy", "planner"),
+			Entry("planner keyword: create a plan", "create a plan for deployment", "planner"),
+			Entry("planner keyword: let's plan", "let's plan the sprint", "planner"),
+			Entry("planner keyword: i want to build", "i want to build a CLI tool", "planner"),
+			Entry("planner keyword: i need to", "i need to refactor the API", "planner"),
+			Entry("executor keyword: execute", "execute this task", "executor"),
+			Entry("executor keyword: run the plan", "run the plan for deployment", "planner"),
+			Entry("executor keyword: start execution", "start execution of phase 1", "executor"),
+			Entry("executor keyword: begin execution", "begin execution immediately", "executor"),
+			Entry("executor keyword: run it", "run it please", "executor"),
+			Entry("executor keyword: do it", "do it now", "executor"),
+			Entry("executor keyword: implement", "implement the feature", "executor"),
+			Entry("no match: generic greeting", "hello, how are you?", ""),
+			Entry("no match: empty string", "", ""),
+			Entry("planner takes priority over executor", "plan to implement the feature", "planner"),
+			Entry("case insensitive: uppercase", "DESIGN the system", "planner"),
+			Entry("case insensitive: mixed case", "Execute The Task", "executor"),
+		)
+	})
+
+	Describe("auto agent switching on message send", func() {
+		var (
+			eng              *engine.Engine
+			reg              *provider.Registry
+			agentReg         *agent.Registry
+			plannerManifest  agent.Manifest
+			executorManifest agent.Manifest
+			autoSwitchIntent *chat.Intent
+		)
+
+		BeforeEach(func() {
+			plannerManifest = agent.Manifest{
+				ID:   "planner",
+				Name: "Planner Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {
+						{Provider: "test-provider", Model: "test-model"},
+					},
+				},
+			}
+			executorManifest = agent.Manifest{
+				ID:   "executor",
+				Name: "Executor Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {
+						{Provider: "test-provider", Model: "test-model"},
+					},
+				},
+			}
+
+			agentReg = agent.NewRegistry()
+			agentReg.Register(&plannerManifest)
+			agentReg.Register(&executorManifest)
+
+			reg = provider.NewRegistry()
+			reg.Register(&streamingStubProvider{
+				providerName: "test-provider",
+				chunks:       []provider.StreamChunk{},
+			})
+
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: executorManifest,
+			})
+
+			autoSwitchIntent = chat.NewIntent(chat.IntentConfig{
+				Engine:        eng,
+				AgentID:       "executor",
+				SessionID:     "test-session",
+				ProviderName:  "test-provider",
+				ModelName:     "test-model",
+				TokenBudget:   4096,
+				AgentRegistry: agentReg,
+			})
+		})
+
+		It("switches to planner when user sends a planner-keyword message", func() {
+			for _, r := range "help me design this" {
+				autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			cmd := autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+			Expect(autoSwitchIntent.AgentIDForTest()).To(Equal("planner"))
+		})
+
+		It("switches to executor when user sends an executor-keyword message", func() {
+			autoSwitchIntent.SetAgentIDForTest("planner")
+			for _, r := range "implement the feature" {
+				autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			cmd := autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+			Expect(autoSwitchIntent.AgentIDForTest()).To(Equal("executor"))
+		})
+
+		It("does not switch when no keywords match", func() {
+			for _, r := range "hello world" {
+				autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			cmd := autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+			Expect(autoSwitchIntent.AgentIDForTest()).To(Equal("executor"))
+		})
+
+		It("does not switch when already on the detected agent", func() {
+			for _, r := range "execute something" {
+				autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			}
+			cmd := autoSwitchIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+			Expect(autoSwitchIntent.AgentIDForTest()).To(Equal("executor"))
+		})
+	})
+
 	Describe("modal model selection updates engine routing", func() {
 		var (
 			eng           *engine.Engine

@@ -348,6 +348,46 @@ func (i *Intent) refreshViewport() {
 	i.msgViewport.GotoBottom()
 }
 
+// detectAgentFromInput examines the message for planner or executor keywords and returns the matching agent.
+//
+// Expected:
+//   - message is the raw user input string.
+//
+// Returns:
+//   - "planner" if any planner keywords are found (takes priority).
+//   - "executor" if any executor keywords are found.
+//   - "" if no keywords match.
+//
+// Side effects:
+//   - None.
+func detectAgentFromInput(message string) string {
+	lower := strings.ToLower(message)
+
+	plannerKeywords := []string{
+		"create a plan", "let's plan", "i want to build", "i need to",
+		"how do i", "what should", "help me",
+		"plan", "design", "architect", "strategy",
+	}
+	for _, kw := range plannerKeywords {
+		if strings.Contains(lower, kw) {
+			return "planner"
+		}
+	}
+
+	executorKeywords := []string{
+		"run the plan", "start execution", "begin execution",
+		"run it", "do it",
+		"execute", "implement",
+	}
+	for _, kw := range executorKeywords {
+		if strings.Contains(lower, kw) {
+			return "executor"
+		}
+	}
+
+	return ""
+}
+
 // sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
@@ -362,6 +402,16 @@ func (i *Intent) sendMessage() tea.Cmd {
 
 	if strings.HasPrefix(userMessage, "/") {
 		return i.handleSlashCommand(userMessage)
+	}
+
+	if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
+		if i.agentRegistry != nil {
+			if manifest, found := i.agentRegistry.Get(detected); found {
+				i.engine.SetManifest(*manifest)
+				i.agentID = detected
+				i.syncStatusBar()
+			}
+		}
 	}
 
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
