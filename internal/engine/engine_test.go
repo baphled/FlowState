@@ -861,4 +861,16 @@ var _ = Describe("Engine", func() {
 			})
 		})
 	})
+
+	Describe("Manifest", func() {
+		It("returns the current manifest after SetManifest", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{ID: "executor"},
+			})
+			Expect(eng.Manifest().ID).To(Equal("executor"))
+
+			eng.SetManifest(agent.Manifest{ID: "planner"})
+			Expect(eng.Manifest().ID).To(Equal("planner"))
+		})
+	})
 })

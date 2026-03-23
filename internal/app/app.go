@@ -90,18 +90,18 @@ func New(cfg *config.AppConfig) (*App, error) {
 	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
-	eng := engine.New(engine.Config{
-		ChatProvider:      defaultProvider,
-		EmbeddingProvider: toEmbeddingProvider(ollamaProvider),
-		Registry:          providerRegistry,
-		AgentRegistry:     agentRegistry,
-		Manifest:          defaultManifest,
-		Skills:            alwaysActiveSkills,
-		Store:             contextStore,
-		HookChain:         buildHookChain(learningStore, func() agent.Manifest { return defaultManifest }),
-		Tools:             appTools,
-		ToolRegistry:      toolRegistry,
-		PermissionHandler: permHandler,
+	eng := createEngine(engineParams{
+		defaultProvider:    defaultProvider,
+		ollamaProvider:     ollamaProvider,
+		providerRegistry:   providerRegistry,
+		agentRegistry:      agentRegistry,
+		defaultManifest:    defaultManifest,
+		alwaysActiveSkills: alwaysActiveSkills,
+		contextStore:       contextStore,
+		learningStore:      learningStore,
+		appTools:           appTools,
+		toolRegistry:       toolRegistry,
+		permissionHandler:  permHandler,
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
@@ -118,6 +118,55 @@ func New(cfg *config.AppConfig) (*App, error) {
 		mcpClient:        mcpMgr,
 		providerRegistry: providerRegistry,
 	}, nil
+}
+
+// engineParams holds parameters for engine creation.
+type engineParams struct {
+	defaultProvider    provider.Provider
+	ollamaProvider     *ollama.Provider
+	providerRegistry   *provider.Registry
+	agentRegistry      *agent.Registry
+	defaultManifest    agent.Manifest
+	alwaysActiveSkills []skill.Skill
+	contextStore       *ctxstore.FileContextStore
+	learningStore      *learning.JSONFileStore
+	appTools           []tool.Tool
+	toolRegistry       *tool.Registry
+	permissionHandler  tool.PermissionHandler
+}
+
+// createEngine initialises the engine with live manifest getter for hook chain.
+//
+// Expected:
+//   - params contains all required fields populated.
+//
+// Returns:
+//   - A fully initialised Engine with hook chain wired to live manifest.
+//
+// Side effects:
+//   - Creates engine and connects MCP servers.
+func createEngine(params engineParams) *engine.Engine {
+	var eng *engine.Engine
+	hookChain := buildHookChain(params.learningStore, func() agent.Manifest {
+		if eng != nil {
+			return eng.Manifest()
+		}
+		return params.defaultManifest
+	})
+	eng = engine.New(engine.Config{
+		ChatProvider:      params.defaultProvider,
+		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
+		Registry:          params.providerRegistry,
+		AgentRegistry:     params.agentRegistry,
+		Manifest:          params.defaultManifest,
+		Skills:            params.alwaysActiveSkills,
+		Store:             params.contextStore,
+		HookChain:         hookChain,
+		Tools:             params.appTools,
+		ToolRegistry:      params.toolRegistry,
+		PermissionHandler: params.permissionHandler,
+	})
+	return eng
 }
 
 // AgentsDir returns the directory where agent manifests are stored.

@@ -225,6 +225,19 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	}
 }
 
+// Manifest returns the current agent manifest.
+//
+// Returns:
+//   - The current agent.Manifest in use by the engine.
+//
+// Side effects:
+//   - None.
+func (e *Engine) Manifest() agent.Manifest {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.manifest
+}
+
 // ListAvailableModels returns all available models from configured providers.
 //
 // Returns:
