@@ -18,7 +18,7 @@ import (
 
 const (
 	streamBufferSize     = 16
-	defaultStreamTimeout = 60 * time.Second
+	defaultStreamTimeout = 5 * time.Minute
 
 	agentsFileHeader = "# Additional Instructions\n\n" +
 		"The following instructions come from AGENTS.md files in the project " +
