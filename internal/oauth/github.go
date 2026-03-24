@@ -38,11 +38,11 @@ type githubDeviceCodeResponse struct {
 }
 
 type githubTokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	Scope        string `json:"scope"`
-	Error        string `json:"error,omitempty"`
-	ErrorDesc    string `json:"error_description,omitempty"`
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	Scope       string `json:"scope"`
+	Error       string `json:"error,omitempty"`
+	ErrorDesc   string `json:"error_description,omitempty"`
 }
 
 func (g *GitHubOAuthProvider) RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {

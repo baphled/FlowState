@@ -52,15 +52,15 @@ test-coverage: ## Run tests with coverage
 
 bdd: ## Run all BDD tests
 	@echo "Running BDD tests..."
-	godog run ./features/...
+	godog run ./features/
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/...
+	godog run --tags=@smoke ./features/
 
 bdd-wip: ## Run WIP BDD tests
 	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/...
+	godog run --tags=@wip ./features/
 
 bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
 	@echo "Running feature: $(FEATURE)"

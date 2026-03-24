@@ -9,9 +9,9 @@ import (
 )
 
 type Provider struct {
-	token        string
+	token         string
 	oauthProvider *oauth.GitHubOAuthProvider
-	tokenStorage oauth.TokenStorage
+	tokenStorage  oauth.TokenStorage
 }
 
 func NewWithAPIKey(token string) *Provider {
@@ -22,16 +22,16 @@ func NewWithAPIKey(token string) *Provider {
 
 func NewWithOAuth(clientID string, storage oauth.TokenStorage) (*Provider, error) {
 	oauthProvider := oauth.NewGitHubOAuthProvider(clientID)
-	
+
 	token, err := storage.Load("github-copilot")
 	if err != nil {
 		return nil, fmt.Errorf("failed to load OAuth token: %w", err)
 	}
 
 	return &Provider{
-		token:        token.AccessToken,
+		token:         token.AccessToken,
 		oauthProvider: oauthProvider,
-		tokenStorage: storage,
+		tokenStorage:  storage,
 	}, nil
 }
 
