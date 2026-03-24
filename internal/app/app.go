@@ -24,6 +24,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
@@ -43,6 +44,7 @@ type App struct {
 	Sessions         *ctxstore.FileSessionStore
 	Learning         *learning.JSONFileStore
 	API              *api.Server
+	Streamer         streaming.Streamer
 	mcpClient        mcpclient.Client
 	providerRegistry *provider.Registry
 }
@@ -86,10 +88,8 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 	mcpMgr := mcpclient.NewManager()
 	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir))
-	discoveredServers := config.DiscoverMCPServers()
-	allServers := mergeMCPServers(cfg.MCPServers, discoveredServers)
-	mcpTools := ConnectMCPServers(context.Background(), mcpMgr, allServers)
-	appTools = append(appTools, mcpTools...)
+	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
+	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
 	eng := createEngine(engineParams{
 		defaultProvider:    defaultProvider,
@@ -108,6 +108,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	})
 	disc := createDiscovery(agentRegistry)
 	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
+	streamer := createHarnessStreamer(eng, agentRegistry)
 
 	return &App{
 		Config:           cfg,
@@ -118,6 +119,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Sessions:         sessionStore,
 		Learning:         learningStore,
 		API:              apiServer,
+		Streamer:         streamer,
 		mcpClient:        mcpMgr,
 		providerRegistry: providerRegistry,
 	}, nil
@@ -505,13 +507,12 @@ func buildHookChain(
 		hook.LearningHook(learningStore),
 		hook.SkillAutoLoaderHook(cfg, manifestGetter),
 	}
-	// --- Harness Hooks (wired when harness_enabled: true in planner manifest) ---
 	if manifestGetter().HarnessEnabled {
 		projectRoot, err := os.Getwd()
 		if err != nil {
 			projectRoot = "."
 		}
-		hooks = append(hooks, hook.ContextInjectionHook(manifestGetter, projectRoot))
+		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
 	}
 	return hook.NewChain(hooks...)
 }
@@ -588,6 +589,24 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 //   - Initialises provider instances and registers them in the registry.
 func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	return registerProviders(cfg)
+}
+
+// BuildHookChainForTest is a test helper that exposes buildHookChain for testing.
+//
+// Expected:
+//   - learningStore is a non-nil JSONFileStore for persisting learning data.
+//   - manifestGetter returns the current agent manifest for hook selection.
+//
+// Returns:
+//   - A fully configured hook.Chain for inspection in tests.
+//
+// Side effects:
+//   - None.
+func BuildHookChainForTest(
+	learningStore *learning.JSONFileStore,
+	manifestGetter func() agent.Manifest,
+) *hook.Chain {
+	return buildHookChain(learningStore, manifestGetter)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.

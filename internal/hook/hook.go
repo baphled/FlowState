@@ -38,6 +38,17 @@ func NewChain(hooks ...Hook) *Chain {
 	return &Chain{hooks: hooks}
 }
 
+// Len returns the number of hooks in the chain.
+//
+// Returns:
+//   - The count of hooks in the chain.
+//
+// Side effects:
+//   - None.
+func (c *Chain) Len() int {
+	return len(c.hooks)
+}
+
 // Execute applies all hooks in the chain to the given handler.
 //
 // Expected:
