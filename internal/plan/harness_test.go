@@ -103,14 +103,31 @@ var _ = Describe("ValidatorChain", func() {
 		chain = plan.NewValidatorChain(projectRoot)
 	})
 
-	It("short-circuits if schema fails", func() {
-		invalid := "---\nid: bad\n---\nNo tasks here."
-		result, err := chain.Validate(invalid)
+	It("short-circuits when plan has no title and no tasks", func() {
+		planMissingTitleAndTasks := "---\nid: valid-id\n---\nNo tasks here."
+		result, err := chain.Validate(planMissingTitleAndTasks)
 		Expect(err).To(HaveOccurred())
 		Expect(result).NotTo(BeNil())
 		Expect(result.Valid).To(BeFalse())
-		Expect(result.Errors).NotTo(BeEmpty())
 		Expect(result.Errors).To(ContainElement(ContainSubstring("missing title")))
+		Expect(result.Errors).To(ContainElement(ContainSubstring("no tasks found")))
+		Expect(result.Errors).NotTo(ContainElement(ContainSubstring("duplicate")))
+		Expect(result.Errors).NotTo(ContainElement(ContainSubstring("dependency")))
+		Expect(result.Errors).NotTo(ContainElement(ContainSubstring("effort")))
+	})
+
+	It("does not short-circuit when schema passes but assertions fail", func() {
+		planPassesSchemaFailsAssertion := "---\nid: dup-plan\ntitle: Duplicate Tasks\ntasks:\n" +
+			"  - title: Setup Database\n    estimated_effort: Simple\n" +
+			"  - title: Setup Database\n    estimated_effort: Simple\n" +
+			"---\n## Setup Database\n\nFirst task.\n\n**Estimated Effort**: Simple\n"
+		result, err := chain.Validate(planPassesSchemaFailsAssertion)
+		Expect(err).To(HaveOccurred())
+		Expect(result).NotTo(BeNil())
+		Expect(result.Valid).To(BeFalse())
+		Expect(result.Errors).To(ContainElement(ContainSubstring("duplicate task title")))
+		Expect(result.Errors).NotTo(ContainElement(ContainSubstring("missing title")))
+		Expect(result.Errors).NotTo(ContainElement(ContainSubstring("no tasks found")))
 	})
 
 	It("computes weighted score", func() {
