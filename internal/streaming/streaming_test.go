@@ -127,6 +127,11 @@ var _ = Describe("Streaming", func() {
 				Expect(consumer.errors).To(HaveLen(1))
 				Expect(consumer.errors[0]).To(MatchError("stream failed"))
 			})
+
+			It("calls Done even when Stream fails", func() {
+				_ = streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(consumer.doneCount).To(Equal(1))
+			})
 		})
 
 		Context("when a chunk carries an error", func() {

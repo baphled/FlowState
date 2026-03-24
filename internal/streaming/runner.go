@@ -22,6 +22,8 @@ import (
 //   - Calls c.WriteError for stream-level and chunk-level errors.
 //   - Calls c.Done after the stream completes regardless of errors.
 func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message string) error {
+	defer c.Done()
+
 	ch, err := s.Stream(ctx, agentID, message)
 	if err != nil {
 		c.WriteError(err)
@@ -41,8 +43,6 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 			break
 		}
 	}
-
-	c.Done()
 
 	return writeErr
 }
