@@ -1,0 +1,168 @@
+name: PR Validation
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate-pr-title:
+    name: Validate PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install commitlint
+        run: npm ci
+
+      - name: Validate PR title
+        run: echo "${{ github.event.pull_request.title }}" | npx commitlint
+
+  check-ai-attribution:
+    name: Check AI Attribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check AI attribution on Go file commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Checking AI attribution for commits touching Go files..."
+          missing_attribution=()
+
+          for commit in $(git rev-list ${BASE_SHA}..${HEAD_SHA}); do
+            go_files=$(git diff-tree --no-commit-id --name-only -r "$commit" | grep '\.go$' || true)
+
+            if [ -n "$go_files" ]; then
+              if ! git log -1 --format=%B "$commit" | grep -q "AI-Generated-By:"; then
+                short=$(git log -1 --format="%h %s" "$commit")
+                echo "::warning::Missing AI attribution: $short"
+                missing_attribution+=("$short")
+              fi
+            fi
+          done
+
+          if [ ${#missing_attribution[@]} -gt 0 ]; then
+            echo ""
+            echo "⚠️  ${#missing_attribution[@]} commit(s) touching .go files lack AI attribution:"
+            printf '  - %s\n' "${missing_attribution[@]}"
+            echo ""
+            echo "If these commits were AI-generated, please amend with:"
+            echo "  AI-Generated-By: <Agent> (<model>)"
+            echo "  Reviewed-By: <Your Name>"
+            echo "Note: Not all commits require AI attribution. Only AI-generated code needs the trailer."
+          fi
+
+          echo "✅ All Go file commits have proper AI attribution"
+
+  conventional-commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install commitlint
+        run: npm ci
+
+      - name: Validate all PR commits
+        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+
+  breaking-changes:
+    name: Breaking Changes Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for breaking changes
+        id: breaking
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          breaking_commits=""
+          for commit in $(git rev-list ${BASE_SHA}..${HEAD_SHA}); do
+            msg=$(git log -1 --format=%B "$commit")
+            if echo "$msg" | grep -qiE "BREAKING[ -]CHANGE|^[a-z]+(\(.+\))?!:"; then
+              short=$(git log -1 --format="%h %s" "$commit")
+              breaking_commits="${breaking_commits}\n- ${short}"
+            fi
+          done
+
+          if [ -n "$breaking_commits" ]; then
+            echo "has_breaking=true" >> "$GITHUB_OUTPUT"
+            echo "commits<<EOF" >> "$GITHUB_OUTPUT"
+            echo -e "$breaking_commits" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_breaking=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on breaking changes
+        if: steps.breaking.outputs.has_breaking == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commits = `${{ steps.breaking.outputs.commits }}`;
+            const body = `## ⚠️ Breaking Changes Detected
+
+            The following commits contain breaking changes:
+
+            ${commits}
+
+            Please ensure:
+            - [ ] Migration guide is included
+            - [ ] CHANGELOG is updated
+            - [ ] Major version bump is planned
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });
+
+  size-label:
+    name: PR Size Label
+    runs-on: ubuntu-latest
+    steps:
+      - uses: codelytv/pr-size-labeler@v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          xs_label: "size/XS"
+          xs_max_size: 10
+          s_label: "size/S"
+          s_max_size: 50
+          m_label: "size/M"
+          m_max_size: 200
+          l_label: "size/L"
+          l_max_size: 500
+          xl_label: "size/XL"
+          fail_if_xl: false
+          message_if_xl: >
+            This PR is very large. Consider breaking it into smaller PRs
+            for easier review.
+          files_to_ignore: |
+            "go.sum"
+            "*.lock"

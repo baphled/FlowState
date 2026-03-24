@@ -1,0 +1,58 @@
+{
+  "extends": ["@commitlint/config-conventional"],
+  "rules": {
+    "type-enum": [
+      2,
+      "always",
+      [
+        "feat",
+        "fix",
+        "docs",
+        "refactor",
+        "test",
+        "chore",
+        "perf",
+        "ci",
+        "build",
+        "revert",
+        "style"
+      ]
+    ],
+    "scope-enum": [
+      2,
+      "always",
+      [
+        "oauth",
+        "provider",
+        "tui",
+        "chat",
+        "nav",
+        "build",
+        "config",
+        "deps",
+        "docs",
+        "tests",
+        "lint",
+        "security",
+        "workflow",
+        "ci",
+        "release",
+        "intents",
+        "uikit",
+        "behaviors",
+        "tools",
+        "session",
+        "mcp",
+        "engine",
+        "streaming"
+      ]
+    ],
+    "scope-empty": [1, "never"],
+    "subject-case": [2, "always", "lower-case"],
+    "subject-empty": [2, "never"],
+    "subject-max-length": [2, "always", 72],
+    "header-max-length": [2, "always", 100],
+    "body-max-line-length": [2, "always", 200],
+    "footer-max-line-length": [2, "always", 200]
+  }
+}
