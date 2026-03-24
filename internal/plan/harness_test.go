@@ -110,7 +110,7 @@ var _ = Describe("ValidatorChain", func() {
 		Expect(result).NotTo(BeNil())
 		Expect(result.Valid).To(BeFalse())
 		Expect(result.Errors).NotTo(BeEmpty())
-		Expect(result.Errors).NotTo(BeEmpty())
+		Expect(result.Errors).To(ContainElement(ContainSubstring("missing title")))
 	})
 
 	It("computes weighted score", func() {

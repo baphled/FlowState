@@ -1,36 +1,122 @@
 package plan_test
 
 import (
+	"context"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/provider"
 )
 
-// NOTE: mockStreamer is defined in harness_test.go. Use a local stub or rename if needed for isolation.
+type incrementalStreamer struct {
+	receivedMessages []string
+	phaseOutputs     map[string]string
+	emptyOnFirstCall map[string]bool
+	callCounts       map[string]int
+}
+
+func newIncrementalStreamer() *incrementalStreamer {
+	return &incrementalStreamer{
+		phaseOutputs:     make(map[string]string),
+		emptyOnFirstCall: make(map[string]bool),
+		callCounts:       make(map[string]int),
+	}
+}
+
+func (s *incrementalStreamer) Stream(_ context.Context, _ string, message string) (<-chan provider.StreamChunk, error) {
+	s.receivedMessages = append(s.receivedMessages, message)
+	ch := make(chan provider.StreamChunk, 1)
+
+	var detectedPhase string
+	for _, phase := range plan.AllPhases {
+		if strings.Contains(message, string(phase)) {
+			detectedPhase = string(phase)
+			break
+		}
+	}
+
+	s.callCounts[detectedPhase]++
+
+	var content string
+	if s.emptyOnFirstCall[detectedPhase] && s.callCounts[detectedPhase] == 1 {
+		content = ""
+	} else {
+		content = s.phaseOutputs[detectedPhase]
+	}
+
+	go func() {
+		defer close(ch)
+		ch <- provider.StreamChunk{Content: content}
+	}()
+
+	return ch, nil
+}
 
 var _ = Describe("IncrementalGenerator", func() {
-	// Test variables will be defined per test block as needed
+	var (
+		gen      *plan.IncrementalGenerator
+		streamer *incrementalStreamer
+		ctx      context.Context
+	)
 
 	BeforeEach(func() {
-		// streamer = &mockStreamer{...} // Not needed for skeleton; will define per test
-		// gen = &plan.IncrementalGenerator{Streamer: streamer}
+		ctx = context.Background()
+		streamer = newIncrementalStreamer()
+		streamer.phaseOutputs["Rationale"] = "Rationale output"
+		streamer.phaseOutputs["Tasks"] = "Tasks output"
+		streamer.phaseOutputs["Waves"] = "Waves output"
+		streamer.phaseOutputs["SuccessCriteria"] = "SuccessCriteria output"
+		streamer.phaseOutputs["Risks"] = "Risks output"
+		gen = &plan.IncrementalGenerator{Streamer: streamer, MaxRetries: 3}
 	})
 
 	It("generates all phases in order", func() {
-		// TODO: Implement test
+		result, err := gen.Generate(ctx, "agent-1", "base prompt")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).NotTo(BeNil())
+		Expect(streamer.receivedMessages).To(HaveLen(5))
+		for i, phase := range plan.AllPhases {
+			expected := "base prompt\n\nGenerate ONLY the " + string(phase) + " section of the plan."
+			Expect(streamer.receivedMessages[i]).To(Equal(expected))
+		}
 	})
 
 	It("validates non-empty output per phase", func() {
-		// TODO: Implement test
+		streamer.phaseOutputs["Tasks"] = ""
+		_, err := gen.Generate(ctx, "agent-1", "base prompt")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("Tasks"))
+		Expect(err.Error()).To(ContainSubstring("empty output"))
 	})
 
 	It("retries on empty phase output", func() {
-		// TODO: Implement test
+		streamer.emptyOnFirstCall["Rationale"] = true
+		result, err := gen.Generate(ctx, "agent-1", "base prompt")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).NotTo(BeNil())
+		Expect(streamer.callCounts["Rationale"]).To(Equal(2))
 	})
 
 	It("aggregates final plan correctly", func() {
-		// TODO: Implement test
+		result, err := gen.Generate(ctx, "agent-1", "base prompt")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.PhaseResults).To(HaveLen(5))
+		Expect(result.PhaseResults[0].Phase).To(Equal(plan.PhaseRationale))
+		Expect(result.PhaseResults[0].Output).To(Equal("Rationale output"))
+		Expect(result.PhaseResults[4].Phase).To(Equal(plan.PhaseRisks))
+		Expect(result.PhaseResults[4].Output).To(Equal("Risks output"))
+		expectedFull := "Rationale output\n\nTasks output\n\nWaves output\n\nSuccessCriteria output\n\nRisks output"
+		Expect(result.FullPlan).To(Equal(expectedFull))
 	})
 
 	It("handles context cancellation", func() {
-		// TODO: Implement test
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := gen.Generate(cancelled, "agent-1", "base prompt")
+		Expect(err).To(HaveOccurred())
+		Expect(err).To(Equal(context.Canceled))
 	})
 })

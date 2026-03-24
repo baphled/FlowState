@@ -87,4 +87,55 @@ var _ = Describe("AssertionValidator", func() {
 		Expect(result.Errors[0]).To(ContainSubstring("missing estimated effort"))
 		Expect(result.Score).To(BeNumerically("<", 1.0))
 	})
+
+	It("validates an empty tasks slice as valid", func() {
+		file := &plan.File{
+			Tasks: []plan.Task{},
+		}
+		result, err := validator.Validate(file)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Valid).To(BeTrue())
+		Expect(result.Score).To(Equal(1.0))
+	})
+
+	It("detects self-referencing dependency", func() {
+		file := &plan.File{
+			Tasks: []plan.Task{
+				{Title: "A", Dependencies: []string{"A"}, EstimatedEffort: "1h"},
+			},
+		}
+		result, err := validator.Validate(file)
+		Expect(err).To(HaveOccurred())
+		Expect(result.Valid).To(BeFalse())
+		Expect(result.Errors).To(ContainElement(ContainSubstring("circular dependency")))
+	})
+
+	It("accumulates multiple errors and clamps score to zero", func() {
+		file := &plan.File{
+			Tasks: []plan.Task{
+				{Title: "A", Dependencies: []string{}, EstimatedEffort: ""},
+				{Title: "A", Dependencies: []string{"Z"}, EstimatedEffort: ""},
+				{Title: "B", Dependencies: []string{}, EstimatedEffort: ""},
+				{Title: "B", Dependencies: []string{}, EstimatedEffort: ""},
+			},
+		}
+		result, err := validator.Validate(file)
+		Expect(err).To(HaveOccurred())
+		Expect(result.Valid).To(BeFalse())
+		Expect(len(result.Errors)).To(BeNumerically(">=", 3))
+		Expect(result.Score).To(BeNumerically(">=", 0.0))
+	})
+
+	It("validates a single task with no dependencies", func() {
+		file := &plan.File{
+			Tasks: []plan.Task{
+				{Title: "Solo task", Dependencies: []string{}, EstimatedEffort: "30m"},
+			},
+		}
+		result, err := validator.Validate(file)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Valid).To(BeTrue())
+		Expect(result.Errors).To(BeEmpty())
+		Expect(result.Score).To(Equal(1.0))
+	})
 })

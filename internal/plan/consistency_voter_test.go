@@ -2,6 +2,7 @@ package plan_test
 
 import (
 	"context"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,14 +12,21 @@ import (
 )
 
 type testVoterStreamer struct {
+	mu        sync.Mutex
 	responses []string
 	callCount int
 }
 
-func (m *testVoterStreamer) Stream(ctx context.Context, agentID, message string) (<-chan provider.StreamChunk, error) {
-	ch := make(chan provider.StreamChunk, 10)
-	resp := m.responses[m.callCount]
+func (m *testVoterStreamer) Stream(_ context.Context, _, _ string) (<-chan provider.StreamChunk, error) {
+	m.mu.Lock()
+	idx := m.callCount
+	if idx >= len(m.responses) {
+		idx = len(m.responses) - 1
+	}
+	resp := m.responses[idx]
 	m.callCount++
+	m.mu.Unlock()
+	ch := make(chan provider.StreamChunk, 10)
 	go func() {
 		defer close(ch)
 		ch <- provider.StreamChunk{Content: resp}
@@ -27,13 +35,6 @@ func (m *testVoterStreamer) Stream(ctx context.Context, agentID, message string)
 }
 
 var _ = Describe("ConsistencyVoter", func() {
-	var (
-		_ = context.Background()          // silence unused warning
-		_ = (*plan.ConsistencyVoter)(nil) // silence unused warning
-	)
-
-	// BeforeEach intentionally left blank for now
-
 	Context("when the initial plan score is below the threshold", func() {
 		It("triggers variant generation and picks the best plan", func() {
 			ctx := context.Background()
@@ -56,6 +57,7 @@ var _ = Describe("ConsistencyVoter", func() {
 			Expect(result).NotTo(BeNil())
 			Expect(result.WasTriggered).To(BeTrue())
 			Expect(result.VariantsGenerated).To(Equal(2))
+			Expect(result.BestPlan).NotTo(Equal("initial plan"))
 		})
 	})
 
@@ -74,6 +76,26 @@ var _ = Describe("ConsistencyVoter", func() {
 			result, err := voter.Vote(ctx, streamer, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeNil())
+			Expect(result.WasTriggered).To(BeFalse())
+			Expect(result.BestPlan).To(Equal("initial plan"))
+			Expect(result.VariantsGenerated).To(Equal(0))
+		})
+	})
+
+	Context("when the score equals the threshold exactly", func() {
+		It("does not trigger variant generation", func() {
+			ctx := context.Background()
+			config := plan.VoterConfig{Enabled: true, Variants: 2, Threshold: 0.8}
+			voter := plan.NewConsistencyVoter(config, "/tmp")
+			streamer := &testVoterStreamer{responses: []string{}}
+			req := plan.VoteRequest{
+				AgentID:      "agent1",
+				Message:      "generate plan",
+				InitialPlan:  "initial plan",
+				InitialScore: 0.8,
+			}
+			result, err := voter.Vote(ctx, streamer, req)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(result.WasTriggered).To(BeFalse())
 			Expect(result.BestPlan).To(Equal("initial plan"))
 		})
@@ -101,18 +123,19 @@ var _ = Describe("ConsistencyVoter", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeNil())
 			Expect(result.VariantsGenerated).To(Equal(3))
+			Expect(result.BestPlan).NotTo(BeEmpty())
 		})
 	})
 
-	Context("when a variant fails validation", func() {
-		It("handles validation errors gracefully", func() {
+	Context("when variants are generated", func() {
+		It("selects a variant as best plan over the initial", func() {
 			ctx := context.Background()
 			config := plan.VoterConfig{Enabled: true, Variants: 2, Threshold: 0.9}
 			voter := plan.NewConsistencyVoter(config, "/tmp")
 			streamer := &testVoterStreamer{
 				responses: []string{
-					"valid variant",
-					"another variant",
+					"better variant plan",
+					"another variant plan",
 				},
 			}
 			req := plan.VoteRequest{
@@ -123,7 +146,8 @@ var _ = Describe("ConsistencyVoter", func() {
 			}
 			result, err := voter.Vote(ctx, streamer, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).NotTo(BeNil())
+			Expect(result.WasTriggered).To(BeTrue())
+			Expect(result.BestPlan).To(Equal("better variant plan"))
 		})
 	})
 
@@ -144,6 +168,16 @@ var _ = Describe("ConsistencyVoter", func() {
 			Expect(result).NotTo(BeNil())
 			Expect(result.WasTriggered).To(BeFalse())
 			Expect(result.BestPlan).To(Equal("initial plan"))
+			Expect(result.VariantsGenerated).To(Equal(0))
+		})
+	})
+
+	Context("when DefaultVoterConfig is used", func() {
+		It("returns sensible defaults", func() {
+			config := plan.DefaultVoterConfig()
+			Expect(config.Enabled).To(BeFalse())
+			Expect(config.Variants).To(Equal(3))
+			Expect(config.Threshold).To(Equal(0.8))
 		})
 	})
 })

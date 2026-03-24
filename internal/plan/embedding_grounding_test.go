@@ -52,14 +52,18 @@ var _ = Describe("EmbeddingGrounder", func() {
 		provider = &mockEmbedProvider{}
 	})
 
-	It("indexes code snippets from Go files", func() {
+	It("returns non-error for valid Go project directory", func() {
 		ctx := context.Background()
-		_, _ = g.InjectContext(ctx, tmpDir, "Bar", provider)
-		// Internal: check that at least one snippet was indexed
-		g2 := plan.NewEmbeddingGrounder()
-		_, _ = g2.InjectContext(ctx, tmpDir, "Baz", provider)
-		// No direct access to snippets, but no error = success
-		Expect(true).To(BeTrue())
+		out, err := g.InjectContext(ctx, tmpDir, "Bar", provider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).NotTo(BeEmpty())
+	})
+
+	It("returns empty string when query matches no code", func() {
+		ctx := context.Background()
+		out, err := g.InjectContext(ctx, tmpDir, "NonexistentSymbol", provider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty())
 	})
 
 	It("returns context string with relevant code", func() {
@@ -70,12 +74,39 @@ var _ = Describe("EmbeddingGrounder", func() {
 		Expect(out).To(ContainSubstring("Bar"))
 	})
 
-	It("caches index and does not re-index within 5 minutes", func() {
+	It("returns consistent LastIndexed value across calls", func() {
 		ctx := context.Background()
-		_, _ = g.InjectContext(ctx, tmpDir, "Bar", provider)
+		_, err := g.InjectContext(ctx, tmpDir, "Bar", provider)
+		Expect(err).NotTo(HaveOccurred())
 		first := g.LastIndexed()
-		_, _ = g.InjectContext(ctx, tmpDir, "Baz", provider)
+		_, err = g.InjectContext(ctx, tmpDir, "Baz", provider)
+		Expect(err).NotTo(HaveOccurred())
 		second := g.LastIndexed()
 		Expect(second).To(Equal(first))
+	})
+
+	It("returns error for non-existent directory", func() {
+		ctx := context.Background()
+		_, err := g.InjectContext(ctx, "/nonexistent/path", "Bar", provider)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("handles empty directory without error", func() {
+		emptyDir, err := os.MkdirTemp("", "emptyembedtest")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(emptyDir) })
+		ctx := context.Background()
+		out, err := g.InjectContext(ctx, emptyDir, "Bar", provider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty())
+	})
+
+	It("skips non-Go files in directory", func() {
+		txtFile := filepath.Join(tmpDir, "readme.txt")
+		Expect(os.WriteFile(txtFile, []byte("This is not Go code"), 0o600)).To(Succeed())
+		ctx := context.Background()
+		out, err := g.InjectContext(ctx, tmpDir, "readme", provider)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out).To(BeEmpty())
 	})
 })
