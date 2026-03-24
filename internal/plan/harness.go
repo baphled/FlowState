@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
+	"gopkg.in/yaml.v3"
 )
 
 // Streamer is the interface for streaming AI responses.
@@ -240,4 +241,101 @@ func appendFeedback(message string, feedback string) string {
 		return feedback
 	}
 	return message + "\n\n" + feedback
+}
+
+// ValidatorChain composes schema, assertion, and reference validators with short-circuit logic and weighted scoring.
+type ValidatorChain struct {
+	schemaValidator    *SchemaValidator
+	assertionValidator *AssertionValidator
+	referenceValidator *ReferenceValidator
+	projectRoot        string
+}
+
+// NewValidatorChain creates a ValidatorChain with all validators.
+func NewValidatorChain(projectRoot string) *ValidatorChain {
+	return &ValidatorChain{
+		schemaValidator:    &SchemaValidator{},
+		assertionValidator: &AssertionValidator{},
+		referenceValidator: &ReferenceValidator{},
+		projectRoot:        projectRoot,
+	}
+}
+
+// Validate runs schema, assertion, and reference validation with short-circuit and weighted scoring.
+func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
+	// 1. Schema validation (short-circuit on failure)
+	schemaResult, schemaErr := v.schemaValidator.Validate(planText)
+	if schemaErr != nil {
+		return schemaResult, schemaErr
+	}
+	if !schemaResult.Valid {
+		return schemaResult, nil
+	}
+
+	// 2. Assertion validation (requires parsed File)
+	file, err := parseFile(planText)
+	if err != nil {
+		return &ValidationResult{Valid: false, Errors: []string{fmt.Sprintf("failed to parse plan: %v", err)}}, nil
+	}
+	assertionResult, assertionErr := v.assertionValidator.Validate(file)
+	if assertionErr != nil {
+		return assertionResult, assertionErr
+	}
+
+	// 3. Reference validation
+	referenceResult, referenceErr := v.referenceValidator.Validate(planText, v.projectRoot)
+	if referenceErr != nil {
+		return referenceResult, referenceErr
+	}
+
+	// Combine results with weighted scoring
+	combined := &ValidationResult{Valid: true, Score: 1.0}
+	results := []*ValidationResult{schemaResult, assertionResult, referenceResult}
+	count := 0
+	scoreSum := 0.0
+
+	for _, result := range results {
+		if result == nil {
+			continue
+		}
+		count++
+		scoreSum += result.Score
+		if !result.Valid {
+			combined.Valid = false
+		}
+		combined.Errors = append(combined.Errors, result.Errors...)
+		combined.Warnings = append(combined.Warnings, result.Warnings...)
+	}
+
+	if count == 0 {
+		combined.Score = 0.0
+	} else {
+		combined.Score = scoreSum / float64(count)
+	}
+
+	if combined.Score < 0.0 {
+		combined.Score = 0.0
+	}
+	if combined.Score > 1.0 {
+		combined.Score = 1.0
+	}
+	if len(combined.Errors) > 0 {
+		combined.Valid = false
+	}
+
+	return combined, nil
+}
+
+func parseFile(planText string) (*File, error) {
+	parts := strings.SplitN(planText, "---", 3)
+	if len(parts) < 3 {
+		return nil, errors.New("missing YAML frontmatter")
+	}
+
+	var file File
+	if err := yaml.Unmarshal([]byte(parts[1]), &file); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal YAML: %w", err)
+	}
+
+	return &file, nil
 }
