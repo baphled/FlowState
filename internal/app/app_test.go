@@ -45,7 +45,7 @@ func (m *mockMCPClient) ListTools(ctx context.Context, serverName string) ([]mcp
 	if m.listToolsFn != nil {
 		return m.listToolsFn(ctx, serverName)
 	}
-	return nil, nil
+	return []mcp.ToolInfo{}, nil
 }
 
 func (m *mockMCPClient) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (*mcp.ToolResult, error) {
