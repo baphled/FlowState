@@ -40,7 +40,7 @@ func buildCacheContext(projectRoot string) string {
 	sb.WriteString("## Codebase Context\n")
 
 	// Git log
-	if out, err := exec.Command("git", "-C", projectRoot, "log", "--oneline", "-5").Output(); err == nil {
+	if out, err := exec.Command("git", "-C", projectRoot, "log", "--oneline", "-5").Output(); err == nil { //nolint:gosec // trusted path
 		sb.WriteString("### Recent Changes\n")
 		sb.WriteString(string(out))
 		sb.WriteString("\n")
@@ -83,8 +83,8 @@ func ContextInjectionHook(manifestGetter func() agent.Manifest, projectRoot stri
 				strings.Contains(req.Messages[0].Content, contextInjectionMarker) {
 				return next(ctx, req)
 			}
-			context := cache.get(projectRoot)
-			injectLeanSkills(req, context)
+			codebaseCtx := cache.get(projectRoot)
+			injectLeanSkills(req, codebaseCtx)
 			return next(ctx, req)
 		}
 	}
