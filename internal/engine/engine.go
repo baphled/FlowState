@@ -801,6 +801,17 @@ func (e *Engine) ContextStore() *ctxstore.FileContextStore {
 	return e.store
 }
 
+// LoadedSkills returns the always-active skills from the current manifest.
+//
+// Returns:
+//   - A slice of skill names that are always active for this agent, or nil if none are configured.
+//
+// Side effects:
+//   - None.
+func (e *Engine) LoadedSkills() []string {
+	return e.Manifest().Capabilities.AlwaysActiveSkills
+}
+
 // LastContextResult returns the most recent context window build result.
 //
 // Returns:

@@ -916,6 +916,32 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
+	Describe("LoadedSkills", func() {
+		It("returns AlwaysActiveSkills from the manifest", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID: "test-agent",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: []string{"pre-action", "memory-keeper"},
+					},
+				},
+			})
+			Expect(eng.LoadedSkills()).To(Equal([]string{"pre-action", "memory-keeper"}))
+		})
+
+		It("returns nil when AlwaysActiveSkills is empty", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID: "test-agent",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: nil,
+					},
+				},
+			})
+			Expect(eng.LoadedSkills()).To(BeNil())
+		})
+	})
+
 	Describe("ModelContextLimit", func() {
 		Context("when TokenCounter is configured with a Claude model", func() {
 			It("returns the Claude model limit instead of the default 4096", func() {
