@@ -57,11 +57,12 @@ var _ = Describe("LLMCritic", func() {
 		Expect(result.Issues).NotTo(BeEmpty())
 	})
 
-	It("returns nil when disabled", func() {
+	It("returns DISABLED verdict when disabled", func() {
 		critic := plan.NewLLMCritic(false, "mock-model")
 		provider := &mockChatProvider{response: "VERDICT: PASS\nISSUES: none\nSUGGESTIONS: none\nCONFIDENCE: 1.0"}
 		result, err := critic.Review(ctx, "# Plan\nDo X", provider)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(BeNil())
+		Expect(result).NotTo(BeNil())
+		Expect(result.Verdict).To(Equal(plan.VerdictDisabled))
 	})
 })

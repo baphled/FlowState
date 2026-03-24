@@ -16,6 +16,8 @@ const (
 	VerdictPass CriticVerdict = "PASS"
 	// VerdictFail indicates the plan failed review.
 	VerdictFail CriticVerdict = "FAIL"
+	// VerdictDisabled indicates the critic is disabled.
+	VerdictDisabled CriticVerdict = "DISABLED"
 )
 
 // CriticResult holds the result of a plan review.
@@ -40,7 +42,10 @@ func NewLLMCritic(enabled bool, model string) *LLMCritic {
 // Review reviews a plan using the LLM.
 func (c *LLMCritic) Review(ctx context.Context, planText string, llmProvider provider.Provider) (*CriticResult, error) {
 	if !c.enabled {
-		return nil, nil //nolint:nilnil // disabled critic returns no result
+		return &CriticResult{
+			Verdict:    VerdictDisabled,
+			Confidence: 1.0,
+		}, nil
 	}
 
 	systemPrompt := `You are a plan quality reviewer. Review the following plan and respond with:
