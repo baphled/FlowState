@@ -107,8 +107,8 @@ func New(cfg *config.AppConfig) (*App, error) {
 		tokenCounter:       ctxstore.NewTiktokenCounter(),
 	})
 	disc := createDiscovery(agentRegistry)
-	apiServer := api.NewServer(eng, agentRegistry, disc, skills, sessionStore)
 	streamer := createHarnessStreamer(eng, agentRegistry)
+	apiServer := api.NewServer(streamer, agentRegistry, disc, skills, sessionStore)
 
 	return &App{
 		Config:           cfg,

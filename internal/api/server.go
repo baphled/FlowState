@@ -2,20 +2,29 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
-	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/streaming"
 )
+
+// Streamer abstracts the streaming producer for chat responses.
+type Streamer interface {
+	// Stream returns a channel of response chunks for the given agent and message.
+	Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error)
+}
 
 // Server provides HTTP endpoints for the FlowState platform.
 type Server struct {
-	engine    *engine.Engine
+	streamer  Streamer
 	registry  *agent.Registry
 	discovery *discovery.AgentDiscovery
 	skills    []skill.Skill
@@ -26,7 +35,7 @@ type Server struct {
 // NewServer creates a new API server with the given dependencies.
 //
 // Expected:
-//   - eng is a non-nil Engine for handling chat requests.
+//   - streamer is a non-nil Streamer for handling chat requests.
 //   - registry is the agent registry for listing and retrieving manifests.
 //   - disc is the discovery service for agent suggestions.
 //   - skills is the list of available skills.
@@ -38,14 +47,14 @@ type Server struct {
 // Side effects:
 //   - Registers HTTP route handlers on the internal mux.
 func NewServer(
-	eng *engine.Engine,
+	streamer Streamer,
 	registry *agent.Registry,
 	disc *discovery.AgentDiscovery,
 	skills []skill.Skill,
 	sessions *ctxstore.FileSessionStore,
 ) *Server {
 	s := &Server{
-		engine:    eng,
+		streamer:  streamer,
 		registry:  registry,
 		discovery: disc,
 		skills:    skills,
@@ -153,34 +162,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	flusher, ok := w.(http.Flusher)
+	consumer, ok := NewSSEConsumer(w)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
-	ctx := r.Context()
-	chunks, err := s.engine.Stream(ctx, req.AgentID, req.Message)
-	if err != nil {
-		writeSSEError(w, flusher, err.Error())
-		writeSSEDone(w, flusher)
-		return
+	if err := streaming.Run(r.Context(), s.streamer, consumer, req.AgentID, req.Message); err != nil {
+		log.Printf("[api] chat stream error: %v", err)
 	}
-
-	for chunk := range chunks {
-		if chunk.Error != nil {
-			writeSSEError(w, flusher, chunk.Error.Error())
-			continue
-		}
-		if chunk.Content != "" {
-			writeSSEContent(w, flusher, chunk.Content)
-		}
-		if chunk.Done {
-			break
-		}
-	}
-
-	writeSSEDone(w, flusher)
 }
 
 // handleDiscover retrieves agent suggestions based on a message query parameter.

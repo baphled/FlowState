@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,44 +17,25 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
-	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
 )
 
-type mockProvider struct {
-	name         string
-	streamChunks []provider.StreamChunk
-	streamErr    error
+type mockStreamer struct {
+	chunks []provider.StreamChunk
+	err    error
 }
 
-func (m *mockProvider) Name() string { return m.name }
-
-func (m *mockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	if m.streamErr != nil {
-		return nil, m.streamErr
+func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+	if m.err != nil {
+		return nil, m.err
 	}
-
-	ch := make(chan provider.StreamChunk, len(m.streamChunks))
-	go func() {
-		defer close(ch)
-		for _, chunk := range m.streamChunks {
-			ch <- chunk
-		}
-	}()
+	ch := make(chan provider.StreamChunk, len(m.chunks))
+	for _, c := range m.chunks {
+		ch <- c
+	}
+	close(ch)
 	return ch, nil
-}
-
-func (m *mockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
-	return provider.ChatResponse{}, nil
-}
-
-func (m *mockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
-	return nil, nil
-}
-
-func (m *mockProvider) Models() ([]provider.Model, error) {
-	return nil, nil
 }
 
 var _ = Describe("Server", func() {
@@ -61,10 +43,9 @@ var _ = Describe("Server", func() {
 		server          *api.Server
 		recorder        *httptest.ResponseRecorder
 		registry        *agent.Registry
-		eng             *engine.Engine
+		streamer        *mockStreamer
 		disc            *discovery.AgentDiscovery
 		skills          []skill.Skill
-		mockChatProv    *mockProvider
 		testManifest    agent.Manifest
 		anotherManifest agent.Manifest
 	)
@@ -102,19 +83,13 @@ var _ = Describe("Server", func() {
 
 		registry = agent.NewRegistry()
 
-		mockChatProv = &mockProvider{
-			name: "test-provider",
-			streamChunks: []provider.StreamChunk{
+		streamer = &mockStreamer{
+			chunks: []provider.StreamChunk{
 				{Content: "Hello"},
 				{Content: " there!"},
 				{Content: "", Done: true},
 			},
 		}
-
-		eng = engine.New(engine.Config{
-			ChatProvider: mockChatProv,
-			Manifest:     testManifest,
-		})
 
 		disc = discovery.NewAgentDiscovery([]agent.Manifest{testManifest, anotherManifest})
 
@@ -123,7 +98,7 @@ var _ = Describe("Server", func() {
 			{Name: "skill-two", Description: "Second skill"},
 		}
 
-		server = api.NewServer(eng, registry, disc, skills, nil)
+		server = api.NewServer(streamer, registry, disc, skills, nil)
 	})
 
 	Describe("GET /api/agents", func() {
@@ -289,6 +264,23 @@ var _ = Describe("Server", func() {
 				server.Handler().ServeHTTP(recorder, req)
 
 				Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			})
+		})
+
+		Context("when streamer returns an error", func() {
+			BeforeEach(func() {
+				streamer.err = errors.New("stream failed")
+			})
+
+			It("writes SSE error and DONE", func() {
+				body := `{"agent_id":"test-agent","message":"Hello"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				server.Handler().ServeHTTP(recorder, req)
+
+				events := parseSSEEvents(recorder.Body)
+				Expect(events).To(ContainElement(ContainSubstring(`"error":"stream failed"`)))
+				Expect(events).To(ContainElement("[DONE]"))
 			})
 		})
 	})
