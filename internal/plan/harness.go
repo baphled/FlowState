@@ -263,7 +263,6 @@ func NewValidatorChain(projectRoot string) *ValidatorChain {
 
 // Validate runs schema, assertion, and reference validation with short-circuit and weighted scoring.
 func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
-	// 1. Schema validation (short-circuit on failure)
 	schemaResult, schemaErr := v.schemaValidator.Validate(planText)
 	if schemaErr != nil {
 		return schemaResult, schemaErr
@@ -272,7 +271,6 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 		return schemaResult, nil
 	}
 
-	// 2. Assertion validation (requires parsed File)
 	file, err := parseFile(planText)
 	if err != nil {
 		return &ValidationResult{Valid: false, Errors: []string{fmt.Sprintf("failed to parse plan: %v", err)}}, nil
@@ -282,7 +280,6 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 		return assertionResult, assertionErr
 	}
 
-	// 3. Reference validation
 	referenceResult, referenceErr := v.referenceValidator.Validate(planText, v.projectRoot)
 	if referenceErr != nil {
 		return referenceResult, referenceErr
