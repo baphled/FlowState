@@ -500,12 +500,20 @@ func buildHookChain(
 	if err != nil {
 		cfg = hook.DefaultSkillAutoLoaderConfig()
 	}
-	return hook.NewChain(
+	hooks := []hook.Hook{
 		hook.LoggingHook(),
 		hook.LearningHook(learningStore),
 		hook.SkillAutoLoaderHook(cfg, manifestGetter),
-		// --- Harness Hooks (wired when harness_enabled: true in planner manifest) ---
-	)
+	}
+	// --- Harness Hooks (wired when harness_enabled: true in planner manifest) ---
+	if manifestGetter().HarnessEnabled {
+		projectRoot, err := os.Getwd()
+		if err != nil {
+			projectRoot = "."
+		}
+		hooks = append(hooks, hook.ContextInjectionHook(manifestGetter, projectRoot))
+	}
+	return hook.NewChain(hooks...)
 }
 
 // registerProviders initialises and registers all configured LLM providers.
