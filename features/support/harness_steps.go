@@ -27,6 +27,7 @@ type harnessTestStreamer struct {
 	callCount int
 }
 
+// Stream returns a channel of pre-configured response chunks for BDD test scenarios.
 func (s *harnessTestStreamer) Stream(_ context.Context, _, _ string) (<-chan provider.StreamChunk, error) {
 	idx := s.callCount
 	if idx >= len(s.responses) {
