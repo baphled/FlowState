@@ -67,6 +67,12 @@ func (m *capturingChatProvider) Models() ([]provider.Model, error) {
 	panic("capturingChatProvider.Models must not be called in LLMCritic tests")
 }
 
+func newTestCritic(enabled bool) *plan.LLMCritic {
+	critic, err := plan.NewLLMCritic(enabled, "mock-model")
+	Expect(err).NotTo(HaveOccurred())
+	return critic
+}
+
 func validCriticResponse() string {
 	return "VERDICT: PASS\nCONFIDENCE: 0.95\n\nRUBRIC:\n" +
 		"- FEASIBILITY: PASS - All tasks are independently executable\n" +
@@ -106,7 +112,7 @@ var _ = Describe("LLMCritic", func() {
 	Describe("Review", func() {
 		Context("when critic is disabled", func() {
 			It("returns VerdictDisabled without calling the provider", func() {
-				critic := plan.NewLLMCritic(false, "mock-model")
+				critic := newTestCritic(false)
 				capProvider := &capturingChatProvider{response: validCriticResponse()}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, capProvider)
 				Expect(err).NotTo(HaveOccurred())
@@ -119,7 +125,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns valid PASS response", func() {
 			It("parses verdict, confidence, and rubric results", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				mockProv := &mockChatProvider{response: validCriticResponse()}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).NotTo(HaveOccurred())
@@ -140,7 +146,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns valid FAIL response with issues", func() {
 			It("parses verdict, rubric failures, issues, and suggestions", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				mockProv := &mockChatProvider{response: failingCriticResponse()}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).NotTo(HaveOccurred())
@@ -160,7 +166,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns empty response", func() {
 			It("returns an error, not a silent PASS", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				mockProv := &mockChatProvider{response: ""}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).To(HaveOccurred())
@@ -171,7 +177,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns free-form prose", func() {
 			It("returns an error for unstructured response", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				mockProv := &mockChatProvider{response: "The plan looks good overall. I think it covers all the bases."}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).To(HaveOccurred())
@@ -182,7 +188,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns response with missing RUBRIC block", func() {
 			It("returns an error for incomplete response", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				response := "VERDICT: PASS\nCONFIDENCE: 0.9\n\nISSUES:\n- none\n\nSUGGESTIONS:\n- none"
 				mockProv := &mockChatProvider{response: response}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
@@ -194,7 +200,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns response with fewer than 6 rubric entries", func() {
 			It("returns an error for incomplete rubric", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				response := "VERDICT: PASS\nCONFIDENCE: 0.9\n\nRUBRIC:\n" +
 					"- FEASIBILITY: PASS - Tasks are fine\n" +
 					"- CONSISTENCY: PASS - Looks good\n\n" +
@@ -209,7 +215,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns invalid verdict value", func() {
 			It("returns an error for unrecognised verdict", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				response := "VERDICT: MAYBE\nCONFIDENCE: 0.9\n\nRUBRIC:\n" +
 					"- FEASIBILITY: PASS - ok\n" +
 					"- CONSISTENCY: PASS - ok\n" +
@@ -228,7 +234,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider returns response with missing CONFIDENCE", func() {
 			It("returns an error for missing confidence", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				response := "VERDICT: PASS\n\nRUBRIC:\n" +
 					"- FEASIBILITY: PASS - ok\n" +
 					"- CONSISTENCY: PASS - ok\n" +
@@ -247,7 +253,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when provider Chat fails", func() {
 			It("returns the provider error", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				mockProv := &errorChatProvider{}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).To(HaveOccurred())
@@ -258,7 +264,7 @@ var _ = Describe("LLMCritic", func() {
 
 		Context("when VERDICT is case-insensitive", func() {
 			It("accepts lowercase pass", func() {
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				response := "VERDICT: pass\nCONFIDENCE: 0.85\n\nRUBRIC:\n" +
 					"- FEASIBILITY: PASS - ok\n" +
 					"- CONSISTENCY: PASS - ok\n" +
@@ -280,7 +286,7 @@ var _ = Describe("LLMCritic", func() {
 			It("returns a passing evaluation result with critic approval", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: validCriticResponse()}
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				harness := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
 				streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
@@ -296,7 +302,7 @@ var _ = Describe("LLMCritic", func() {
 			It("triggers a retry with critic feedback", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: failingCriticResponse()}
-				critic := plan.NewLLMCritic(true, "mock-model")
+				critic := newTestCritic(true)
 				harness := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
 				streamer := &mockStreamer{responses: []string{
 					loadValidPlan(),
