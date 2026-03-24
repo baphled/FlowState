@@ -285,7 +285,6 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 		return referenceResult, referenceErr
 	}
 
-	// Combine results with weighted scoring
 	combined := &ValidationResult{Valid: true, Score: 1.0}
 	results := []*ValidationResult{schemaResult, assertionResult, referenceResult}
 	count := 0

@@ -58,20 +58,16 @@ func (v *ConsistencyVoter) Vote(ctx context.Context, streamer Streamer, req Vote
 		BestScore: req.InitialScore,
 	}
 
-	// If voter is disabled, return initial plan
 	if !v.config.Enabled {
 		return result, nil
 	}
 
-	// If initial score is above threshold, no need to generate variants
 	if req.InitialScore >= v.config.Threshold {
 		return result, nil
 	}
 
-	// Score is below threshold, trigger variant generation
 	result.WasTriggered = true
 
-	// Generate variants in parallel
 	variantChan := make(chan string, v.config.Variants)
 	var wg sync.WaitGroup
 
@@ -93,13 +89,11 @@ func (v *ConsistencyVoter) Vote(ctx context.Context, streamer Streamer, req Vote
 		}()
 	}
 
-	// Close channel when all goroutines finish
 	go func() {
 		wg.Wait()
 		close(variantChan)
 	}()
 
-	// Collect variants
 	variants := []string{}
 	for variant := range variantChan {
 		variants = append(variants, variant)
@@ -107,7 +101,6 @@ func (v *ConsistencyVoter) Vote(ctx context.Context, streamer Streamer, req Vote
 
 	result.VariantsGenerated = len(variants)
 
-	// Pick the best variant (for now, just pick the first one)
 	if len(variants) > 0 {
 		result.BestPlan = variants[0]
 	}
