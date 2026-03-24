@@ -21,11 +21,29 @@ type CodeSnippet struct {
 type EmbeddingGrounder struct{}
 
 // NewEmbeddingGrounder creates a new EmbeddingGrounder.
+//
+// Returns:
+//   - An initialised EmbeddingGrounder instance.
+//
+// Side effects:
+//   - None.
 func NewEmbeddingGrounder() *EmbeddingGrounder {
 	return &EmbeddingGrounder{}
 }
 
 // InjectContext returns relevant code snippets for the given query.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - projectRoot points to a directory containing Go source files.
+//   - embedProvider is a valid provider capable of generating embeddings.
+//
+// Returns:
+//   - A string containing matching code snippets, or empty if none match.
+//   - An error if the project root cannot be read.
+//
+// Side effects:
+//   - Reads Go source files from projectRoot and calls embedProvider.Embed for each.
 func (g *EmbeddingGrounder) InjectContext(
 	ctx context.Context,
 	projectRoot string,
@@ -57,6 +75,12 @@ func (g *EmbeddingGrounder) InjectContext(
 }
 
 // LastIndexed returns the last indexed time (stub for test).
+//
+// Returns:
+//   - Always returns 0 as this is a stub implementation.
+//
+// Side effects:
+//   - None.
 func (g *EmbeddingGrounder) LastIndexed() int64 {
 	return 0
 }

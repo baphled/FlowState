@@ -14,6 +14,12 @@ type VoterConfig struct {
 }
 
 // DefaultVoterConfig returns the default configuration for the voter.
+//
+// Returns:
+//   - A VoterConfig with voting disabled, 3 variants, and 0.8 threshold.
+//
+// Side effects:
+//   - None.
 func DefaultVoterConfig() VoterConfig {
 	return VoterConfig{
 		Enabled:   false,
@@ -45,6 +51,16 @@ type ConsistencyVoter struct {
 }
 
 // NewConsistencyVoter creates a new ConsistencyVoter with the given config and projectRoot.
+//
+// Expected:
+//   - config contains valid voter settings.
+//   - projectRoot is the absolute path to the project root directory.
+//
+// Returns:
+//   - A configured ConsistencyVoter ready for use.
+//
+// Side effects:
+//   - None.
 func NewConsistencyVoter(config VoterConfig, projectRoot string) *ConsistencyVoter {
 	return &ConsistencyVoter{config: config, projectRoot: projectRoot}
 }
@@ -52,6 +68,18 @@ func NewConsistencyVoter(config VoterConfig, projectRoot string) *ConsistencyVot
 // Streamer is defined in harness.go, do not redefine here.
 
 // Vote runs the self-consistency voting process.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - req contains a valid initial plan and score.
+//
+// Returns:
+//   - A VoteResult with the best plan and score from voting, or the initial plan if voting was skipped.
+//   - An error if the voting process fails.
+//
+// Side effects:
+//   - Spawns goroutines to generate plan variants via the streamer.
 func (v *ConsistencyVoter) Vote(ctx context.Context, streamer Streamer, req VoteRequest) (*VoteResult, error) {
 	result := &VoteResult{
 		BestPlan:  req.InitialPlan,

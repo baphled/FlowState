@@ -37,6 +37,15 @@ type PlanHarness struct {
 }
 
 // NewPlanHarness creates a PlanHarness with validators and retry settings.
+//
+// Expected:
+//   - projectRoot is the absolute path to the project root directory.
+//
+// Returns:
+//   - A configured PlanHarness with schema, assertion, and reference validators.
+//
+// Side effects:
+//   - None.
 func NewPlanHarness(projectRoot string) *PlanHarness {
 	return &PlanHarness{
 		maxRetries:         3,
@@ -48,6 +57,19 @@ func NewPlanHarness(projectRoot string) *PlanHarness {
 }
 
 // Evaluate runs the plan harness over a streaming response.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the initial planning prompt.
+//
+// Returns:
+//   - An EvaluationResult containing the plan text, validation result, attempt count, and final score.
+//   - An error if streaming or context cancellation fails.
+//
+// Side effects:
+//   - Streams responses from the LLM; may retry up to maxRetries times.
 func (h *PlanHarness) Evaluate(
 	ctx context.Context,
 	streamer Streamer,
@@ -103,6 +125,16 @@ func (h *PlanHarness) Evaluate(
 	return nil, errors.New("evaluation exhausted retries")
 }
 
+// validatePlan runs schema, assertion, and reference validation against the given plan text.
+//
+// Expected:
+//   - planText contains a plan document to validate.
+//
+// Returns:
+//   - A combined ValidationResult from all validators.
+//
+// Side effects:
+//   - None.
 func (h *PlanHarness) validatePlan(planText string) *ValidationResult {
 	schemaResult, err := h.schemaValidator.Validate(planText)
 	if err != nil {
@@ -122,6 +154,18 @@ func (h *PlanHarness) validatePlan(planText string) *ValidationResult {
 	return combineValidationResults(schemaResult, assertionResult, referenceResult)
 }
 
+// streamPlan streams a plan response from the LLM and aggregates the chunks into a single string.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//
+// Returns:
+//   - The aggregated plan text string.
+//   - An error if streaming or aggregation fails.
+//
+// Side effects:
+//   - Streams data from the LLM via the streamer.
 func streamPlan(
 	ctx context.Context,
 	streamer Streamer,
@@ -148,6 +192,16 @@ func streamPlan(
 	return planText, nil
 }
 
+// tasksFromPlanText extracts and normalises tasks from a plan's markdown body.
+//
+// Expected:
+//   - planText contains a plan with YAML frontmatter delimiters.
+//
+// Returns:
+//   - A slice of Task values parsed from the markdown body.
+//
+// Side effects:
+//   - None.
 func tasksFromPlanText(planText string) []Task {
 	parts := strings.SplitN(planText, "---", 3)
 	if len(parts) < 3 {
@@ -160,6 +214,16 @@ func tasksFromPlanText(planText string) []Task {
 	return tasks
 }
 
+// normalizeDependencies removes empty and "none" entries from a dependency list.
+//
+// Expected:
+//   - deps is a string slice of dependency identifiers (may contain empty or "none" values).
+//
+// Returns:
+//   - A cleaned slice with empty and "none" entries removed.
+//
+// Side effects:
+//   - None.
 func normalizeDependencies(deps []string) []string {
 	if len(deps) == 0 {
 		return deps
@@ -179,6 +243,16 @@ func normalizeDependencies(deps []string) []string {
 	return cleaned
 }
 
+// combineValidationResults merges multiple validation results into a single averaged result.
+//
+// Expected:
+//   - results contains zero or more ValidationResult pointers (nil entries are skipped).
+//
+// Returns:
+//   - A single ValidationResult with averaged score and combined errors and warnings.
+//
+// Side effects:
+//   - None.
 func combineValidationResults(results ...*ValidationResult) *ValidationResult {
 	combined := &ValidationResult{Valid: true, Score: 1.0}
 	count := 0
@@ -216,6 +290,16 @@ func combineValidationResults(results ...*ValidationResult) *ValidationResult {
 	return combined
 }
 
+// buildFeedback constructs a human-readable feedback string from validation errors and warnings.
+//
+// Expected:
+//   - result is a non-nil ValidationResult.
+//
+// Returns:
+//   - A formatted feedback string listing validation issues.
+//
+// Side effects:
+//   - None.
 func buildFeedback(result *ValidationResult) string {
 	issues := result.Errors
 	if len(issues) == 0 {
@@ -236,6 +320,16 @@ func buildFeedback(result *ValidationResult) string {
 	return builder.String()
 }
 
+// appendFeedback appends validation feedback to the original message for retry prompts.
+//
+// Expected:
+//   - feedback contains the validation feedback to append.
+//
+// Returns:
+//   - The original message with feedback appended, or just the feedback if the message is empty.
+//
+// Side effects:
+//   - None.
 func appendFeedback(message string, feedback string) string {
 	if strings.TrimSpace(message) == "" {
 		return feedback
@@ -252,6 +346,15 @@ type ValidatorChain struct {
 }
 
 // NewValidatorChain creates a ValidatorChain with all validators.
+//
+// Expected:
+//   - projectRoot is the absolute path to the project root directory.
+//
+// Returns:
+//   - A configured ValidatorChain with schema, assertion, and reference validators.
+//
+// Side effects:
+//   - None.
 func NewValidatorChain(projectRoot string) *ValidatorChain {
 	return &ValidatorChain{
 		schemaValidator:    &SchemaValidator{},
@@ -262,6 +365,16 @@ func NewValidatorChain(projectRoot string) *ValidatorChain {
 }
 
 // Validate runs schema, assertion, and reference validation with short-circuit and weighted scoring.
+//
+// Expected:
+//   - planText contains a plan with YAML frontmatter and markdown body.
+//
+// Returns:
+//   - A ValidationResult with aggregated errors, warnings, and a weighted score.
+//   - An error if any validator encounters a fatal failure.
+//
+// Side effects:
+//   - None.
 func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 	schemaResult, schemaErr := v.schemaValidator.Validate(planText)
 	if schemaErr != nil {
@@ -322,6 +435,17 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 	return combined, nil
 }
 
+// parseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.
+//
+// Expected:
+//   - planText contains a plan with YAML frontmatter delimited by "---".
+//
+// Returns:
+//   - A File struct populated from the YAML frontmatter.
+//   - An error if the frontmatter is missing or cannot be unmarshalled.
+//
+// Side effects:
+//   - None.
 func parseFile(planText string) (*File, error) {
 	parts := strings.SplitN(planText, "---", 3)
 	if len(parts) < 3 {

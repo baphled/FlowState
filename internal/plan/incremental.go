@@ -50,6 +50,18 @@ type IncrementalGenerator struct {
 }
 
 // Generate produces a plan by generating each phase sequentially.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - agentID identifies the planner agent.
+//   - baseMessage is the base planning prompt to extend per phase.
+//
+// Returns:
+//   - An IncrementalResult containing phase outputs and the assembled full plan.
+//   - An error if any phase produces empty output or the context is cancelled.
+//
+// Side effects:
+//   - Streams responses from the LLM for each phase, retrying up to MaxRetries times.
 func (g *IncrementalGenerator) Generate(ctx context.Context, agentID, baseMessage string) (*IncrementalResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

@@ -22,12 +22,23 @@ type HarnessStepDefinitions struct {
 	planText         string
 }
 
+// harnessTestStreamer provides pre-configured streaming responses for BDD test scenarios.
 type harnessTestStreamer struct {
 	responses []string
 	callCount int
 }
 
 // Stream returns a channel of pre-configured response chunks for BDD test scenarios.
+//
+// Expected:
+//   - The streamer has been initialised with at least one response.
+//
+// Returns:
+//   - A channel of StreamChunk values containing the next pre-configured response.
+//   - A nil error (this test implementation does not produce errors).
+//
+// Side effects:
+//   - Increments the internal call counter to cycle through responses.
 func (s *harnessTestStreamer) Stream(_ context.Context, _, _ string) (<-chan provider.StreamChunk, error) {
 	idx := s.callCount
 	if idx >= len(s.responses) {
@@ -44,6 +55,12 @@ func (s *harnessTestStreamer) Stream(_ context.Context, _, _ string) (<-chan pro
 }
 
 // RegisterHarnessSteps registers all harness-related BDD step definitions.
+//
+// Expected:
+//   - ctx is a valid godog ScenarioContext for step registration.
+//
+// Side effects:
+//   - Registers Before hooks and step definitions on the provided scenario context.
 func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 	h := &HarnessStepDefinitions{}
 
@@ -80,6 +97,13 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the plan score is (\d+\.?\d*)$`, h.thePlanScoreIs)
 }
 
+// aPlannerAgentIsConfiguredWithHarnessEnabled verifies the harness has been initialised.
+//
+// Returns:
+//   - An error if the harness is nil.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) aPlannerAgentIsConfiguredWithHarnessEnabled() error {
 	if h.harness == nil {
 		return errors.New("harness not initialised")
@@ -87,6 +111,13 @@ func (h *HarnessStepDefinitions) aPlannerAgentIsConfiguredWithHarnessEnabled() e
 	return nil
 }
 
+// thePlannerGeneratesAValidPlan loads a valid plan fixture and evaluates it through the harness.
+//
+// Returns:
+//   - An error if the fixture cannot be loaded or the harness evaluation fails.
+//
+// Side effects:
+//   - Sets h.evaluationResult with the harness output.
 func (h *HarnessStepDefinitions) thePlannerGeneratesAValidPlan() error {
 	validPlan, err := loadValidPlanFromProject(h.projectRoot)
 	if err != nil {
@@ -101,6 +132,13 @@ func (h *HarnessStepDefinitions) thePlannerGeneratesAValidPlan() error {
 	return nil
 }
 
+// theHarnessAcceptsThePlanWithoutRetry asserts the plan was accepted on the first attempt.
+//
+// Returns:
+//   - An error if the attempt count is not 1 or the plan is not valid.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theHarnessAcceptsThePlanWithoutRetry() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -117,6 +155,16 @@ func (h *HarnessStepDefinitions) theHarnessAcceptsThePlanWithoutRetry() error {
 	return nil
 }
 
+// theValidationScoreIsAbove asserts the final score exceeds the given threshold.
+//
+// Expected:
+//   - threshold is the minimum acceptable score.
+//
+// Returns:
+//   - An error if the final score is at or below the threshold.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theValidationScoreIsAbove(threshold float64) error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -127,6 +175,13 @@ func (h *HarnessStepDefinitions) theValidationScoreIsAbove(threshold float64) er
 	return nil
 }
 
+// thePlannerGeneratesAnInvalidPlanMissingFrontmatter evaluates an invalid plan followed by a valid retry.
+//
+// Returns:
+//   - An error if the fixture cannot be loaded or the harness evaluation fails.
+//
+// Side effects:
+//   - Sets h.evaluationResult with the harness output from the retry cycle.
 func (h *HarnessStepDefinitions) thePlannerGeneratesAnInvalidPlanMissingFrontmatter() error {
 	invalidPlan := "---\nid: invalid-plan\ntitle: Invalid Plan\n---\n"
 	validPlan, err := loadValidPlanFromProject(h.projectRoot)
@@ -142,6 +197,13 @@ func (h *HarnessStepDefinitions) thePlannerGeneratesAnInvalidPlanMissingFrontmat
 	return nil
 }
 
+// theHarnessRetriesWithSpecificErrorFeedback asserts the harness retried with error feedback.
+//
+// Returns:
+//   - An error if fewer than 2 attempts were made or no validation result exists.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theHarnessRetriesWithSpecificErrorFeedback() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -155,6 +217,16 @@ func (h *HarnessStepDefinitions) theHarnessRetriesWithSpecificErrorFeedback() er
 	return nil
 }
 
+// theAttemptCountIsGreaterThan asserts the attempt count exceeds the given value.
+//
+// Expected:
+//   - count is the minimum number of attempts expected.
+//
+// Returns:
+//   - An error if the attempt count is not greater than count.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theAttemptCountIsGreaterThan(count int) error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -165,10 +237,24 @@ func (h *HarnessStepDefinitions) theAttemptCountIsGreaterThan(count int) error {
 	return nil
 }
 
+// aPlannerAgentIsInInterviewPhase sets up the harness for an interview-phase scenario.
+//
+// Returns:
+//   - An error if the harness is nil.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) aPlannerAgentIsInInterviewPhase() error {
 	return h.aPlannerAgentIsConfiguredWithHarnessEnabled()
 }
 
+// theUserSendsAPlanningQuestion simulates sending a planning question during interview phase.
+//
+// Returns:
+//   - An error if the harness evaluation fails.
+//
+// Side effects:
+//   - Sets h.evaluationResult with the harness output.
 func (h *HarnessStepDefinitions) theUserSendsAPlanningQuestion() error {
 	interviewResponse := "Can you tell me more about your project requirements and goals?"
 	streamer := &harnessTestStreamer{responses: []string{interviewResponse}}
@@ -180,6 +266,13 @@ func (h *HarnessStepDefinitions) theUserSendsAPlanningQuestion() error {
 	return nil
 }
 
+// theHarnessDoesNotValidateTheResponse asserts no validation was performed during interview phase.
+//
+// Returns:
+//   - An error if a validation result is present.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theHarnessDoesNotValidateTheResponse() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -190,6 +283,13 @@ func (h *HarnessStepDefinitions) theHarnessDoesNotValidateTheResponse() error {
 	return nil
 }
 
+// theResponseIsReturnedAsIs asserts the response was returned without modification.
+//
+// Returns:
+//   - An error if the plan text is empty.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theResponseIsReturnedAsIs() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -200,6 +300,13 @@ func (h *HarnessStepDefinitions) theResponseIsReturnedAsIs() error {
 	return nil
 }
 
+// thePlannerConsistentlyGeneratesInvalidPlans evaluates a streamer that always returns invalid plans.
+//
+// Returns:
+//   - An error if the harness evaluation fails.
+//
+// Side effects:
+//   - Sets h.evaluationResult with the harness output from repeated invalid plans.
 func (h *HarnessStepDefinitions) thePlannerConsistentlyGeneratesInvalidPlans() error {
 	invalidPlan := "---\nid: invalid-plan\ntitle: Invalid Plan\n---\n"
 	streamer := &harnessTestStreamer{responses: []string{invalidPlan, invalidPlan, invalidPlan}}
@@ -211,6 +318,16 @@ func (h *HarnessStepDefinitions) thePlannerConsistentlyGeneratesInvalidPlans() e
 	return nil
 }
 
+// theHarnessCapsRetriesAt asserts the attempt count does not exceed the given maximum.
+//
+// Expected:
+//   - maxRetries is the maximum number of attempts allowed.
+//
+// Returns:
+//   - An error if the attempt count exceeds maxRetries.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theHarnessCapsRetriesAt(maxRetries int) error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -221,6 +338,13 @@ func (h *HarnessStepDefinitions) theHarnessCapsRetriesAt(maxRetries int) error {
 	return nil
 }
 
+// returnsTheBestEffortPlanWithWarnings asserts the result contains an invalid plan with warnings.
+//
+// Returns:
+//   - An error if the plan is valid or has no warnings.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) returnsTheBestEffortPlanWithWarnings() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -237,11 +361,25 @@ func (h *HarnessStepDefinitions) returnsTheBestEffortPlanWithWarnings() error {
 	return nil
 }
 
+// aPlanDocumentWithoutYAMLFrontmatter sets up a plan document that lacks YAML frontmatter.
+//
+// Returns:
+//   - Always returns nil.
+//
+// Side effects:
+//   - Sets h.planText to a plain text string without frontmatter.
 func (h *HarnessStepDefinitions) aPlanDocumentWithoutYAMLFrontmatter() error {
 	h.planText = "This is just plain text without frontmatter"
 	return nil
 }
 
+// theSchemaValidatorProcessesThePlan runs schema validation on the configured plan text.
+//
+// Returns:
+//   - An error if no plan text has been configured.
+//
+// Side effects:
+//   - Sets h.validationResult with the schema validation output.
 func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
 	if h.planText == "" {
 		return errors.New("no plan text configured — Given step must set up the plan document first")
@@ -252,6 +390,13 @@ func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
 	return nil
 }
 
+// theValidationFailsWithMissingFrontmatterError asserts the validation failed with a frontmatter error.
+//
+// Returns:
+//   - An error if the validation passed or lacks the expected frontmatter error.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) theValidationFailsWithMissingFrontmatterError() error {
 	if h.validationResult == nil {
 		return errors.New("no validation result")
@@ -272,6 +417,16 @@ func (h *HarnessStepDefinitions) theValidationFailsWithMissingFrontmatterError()
 	return nil
 }
 
+// thePlanScoreIs asserts the validation score matches the expected value.
+//
+// Expected:
+//   - expectedScore is the exact score to match.
+//
+// Returns:
+//   - An error if the score does not match.
+//
+// Side effects:
+//   - None.
 func (h *HarnessStepDefinitions) thePlanScoreIs(expectedScore float64) error {
 	if h.validationResult == nil {
 		return errors.New("no validation result")
@@ -282,6 +437,17 @@ func (h *HarnessStepDefinitions) thePlanScoreIs(expectedScore float64) error {
 	return nil
 }
 
+// loadValidPlanFromProject reads the valid plan fixture from the project's testdata directory.
+//
+// Expected:
+//   - projectRoot contains the internal/plan/testdata/valid_plan.md fixture file.
+//
+// Returns:
+//   - The plan fixture content as a string.
+//   - An error if the file cannot be read.
+//
+// Side effects:
+//   - Reads a file from disk.
 func loadValidPlanFromProject(projectRoot string) (string, error) {
 	planPath := filepath.Join(projectRoot, "internal", "plan", "testdata", "valid_plan.md")
 	data, err := os.ReadFile(planPath)

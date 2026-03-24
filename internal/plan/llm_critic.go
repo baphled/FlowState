@@ -35,11 +35,32 @@ type LLMCritic struct {
 }
 
 // NewLLMCritic creates a new LLMCritic.
+//
+// Expected:
+//   - model is a valid LLM model identifier when enabled is true.
+//
+// Returns:
+//   - A configured LLMCritic instance.
+//
+// Side effects:
+//   - None.
 func NewLLMCritic(enabled bool, model string) *LLMCritic {
 	return &LLMCritic{enabled: enabled, model: model}
 }
 
 // Review reviews a plan using the LLM.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - planText contains the plan to review.
+//   - llmProvider is a valid provider for chat completions.
+//
+// Returns:
+//   - A CriticResult with verdict, issues, suggestions, and confidence.
+//   - An error if the LLM call fails.
+//
+// Side effects:
+//   - Sends a chat request to the LLM provider.
 func (c *LLMCritic) Review(ctx context.Context, planText string, llmProvider provider.Provider) (*CriticResult, error) {
 	if !c.enabled {
 		return &CriticResult{
@@ -70,6 +91,16 @@ CONFIDENCE: (0.0 to 1.0)`
 	return parseCriticResponse(resp.Message.Content), nil
 }
 
+// parseCriticResponse parses the structured text response from the LLM critic into a CriticResult.
+//
+// Expected:
+//   - content contains a structured response with VERDICT:, ISSUES:, SUGGESTIONS:, and CONFIDENCE: fields.
+//
+// Returns:
+//   - A CriticResult populated from the parsed fields.
+//
+// Side effects:
+//   - None.
 func parseCriticResponse(content string) *CriticResult {
 	result := &CriticResult{
 		Verdict:    VerdictPass,
@@ -106,6 +137,13 @@ func parseCriticResponse(content string) *CriticResult {
 	return result
 }
 
+// parseVerdict extracts the verdict from a VERDICT: line and sets it on the result.
+//
+// Expected:
+//   - line starts with "VERDICT:" followed by PASS or FAIL.
+//
+// Side effects:
+//   - Mutates result.Verdict to VerdictFail if the line contains "FAIL".
 func parseVerdict(line string, result *CriticResult) {
 	v := strings.TrimSpace(strings.TrimPrefix(line, "VERDICT:"))
 	if strings.Contains(strings.ToUpper(v), "FAIL") {
@@ -113,6 +151,13 @@ func parseVerdict(line string, result *CriticResult) {
 	}
 }
 
+// parseConfidenceField extracts the confidence value from a CONFIDENCE: line and sets it on the result.
+//
+// Expected:
+//   - line starts with "CONFIDENCE:" followed by a float value.
+//
+// Side effects:
+//   - Mutates result.Confidence if a valid float is parsed.
 func parseConfidenceField(line string, result *CriticResult) {
 	conf := strings.TrimSpace(strings.TrimPrefix(line, "CONFIDENCE:"))
 	if conf != "" {
@@ -122,6 +167,13 @@ func parseConfidenceField(line string, result *CriticResult) {
 	}
 }
 
+// appendToSection appends a line to the appropriate section (issues or suggestions) of the result.
+//
+// Expected:
+//   - section is one of "issues" or "suggestions".
+//
+// Side effects:
+//   - Mutates result.Issues or result.Suggestions by appending the line.
 func appendToSection(section, line string, result *CriticResult) {
 	switch section {
 	case "issues":
@@ -131,6 +183,17 @@ func appendToSection(section, line string, result *CriticResult) {
 	}
 }
 
+// parseConfidence converts a string to a float64 confidence score.
+//
+// Expected:
+//   - s is a string representation of a float64 value.
+//
+// Returns:
+//   - The parsed float64 value.
+//   - An error if the string cannot be parsed.
+//
+// Side effects:
+//   - None.
 func parseConfidence(s string) (float64, error) {
 	return strconv.ParseFloat(s, 64)
 }

@@ -18,12 +18,23 @@ const (
 	cacheRefreshInterval   = 5 * time.Minute
 )
 
+// contextCache holds a time-limited cache of codebase context strings.
 type contextCache struct {
 	mu        sync.Mutex
 	content   string
 	lastBuilt time.Time
 }
 
+// get returns the cached context, rebuilding it if the cache has expired.
+//
+// Expected:
+//   - projectRoot is the absolute path to the project root directory.
+//
+// Returns:
+//   - The cached or freshly built codebase context string.
+//
+// Side effects:
+//   - Rebuilds the cache by running git commands if the cache has expired.
 func (c *contextCache) get(projectRoot string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -35,6 +46,16 @@ func (c *contextCache) get(projectRoot string) string {
 	return c.content
 }
 
+// buildCacheContext assembles a codebase context string from git log and key package information.
+//
+// Expected:
+//   - projectRoot is the absolute path to a git repository.
+//
+// Returns:
+//   - A string containing codebase context, truncated to maxContextSize.
+//
+// Side effects:
+//   - Executes a git log command against the project root.
 func buildCacheContext(projectRoot string) string {
 	var sb strings.Builder
 	sb.WriteString("## Codebase Context\n")
