@@ -19,6 +19,7 @@ type HarnessStepDefinitions struct {
 	evaluationResult *plan.EvaluationResult
 	validationResult *plan.ValidationResult
 	projectRoot      string
+	planText         string
 }
 
 type harnessTestStreamer struct {
@@ -54,6 +55,7 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 		h.harness = plan.NewPlanHarness(h.projectRoot)
 		h.evaluationResult = nil
 		h.validationResult = nil
+		h.planText = ""
 		return bddCtx, nil
 	})
 
@@ -144,7 +146,10 @@ func (h *HarnessStepDefinitions) theHarnessRetriesWithSpecificErrorFeedback() er
 		return errors.New("no evaluation result")
 	}
 	if h.evaluationResult.AttemptCount < 2 {
-		return fmt.Errorf("expected at least 2 attempts, got %d", h.evaluationResult.AttemptCount)
+		return fmt.Errorf("expected at least 2 attempts (indicating retry occurred), got %d", h.evaluationResult.AttemptCount)
+	}
+	if h.evaluationResult.ValidationResult == nil {
+		return errors.New("expected validation result with error details from retry feedback")
 	}
 	return nil
 }
@@ -232,12 +237,16 @@ func (h *HarnessStepDefinitions) returnsTheBestEffortPlanWithWarnings() error {
 }
 
 func (h *HarnessStepDefinitions) aPlanDocumentWithoutYAMLFrontmatter() error {
+	h.planText = "This is just plain text without frontmatter"
 	return nil
 }
 
 func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
+	if h.planText == "" {
+		return errors.New("no plan text configured — Given step must set up the plan document first")
+	}
 	validator := &plan.SchemaValidator{}
-	result, _ := validator.Validate("This is just plain text without frontmatter")
+	result, _ := validator.Validate(h.planText)
 	h.validationResult = result
 	return nil
 }
