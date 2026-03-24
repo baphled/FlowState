@@ -67,5 +67,5 @@
     "goal": "Conduct interviews, research, and generate structured plans",
     "when_to_use": "When you need systematic planning, research, and structured decision-making frameworks"
   },
-  "harness_enabled": false
+  "harness_enabled": true
 }
