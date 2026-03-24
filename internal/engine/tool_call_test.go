@@ -746,3 +746,98 @@ var _ = Describe("Engine Tool Call Loop", func() {
 		})
 	})
 })
+
+var _ = Describe("Engine tool call context store", func() {
+	It("stores assistant tool_use message before tool result in context store", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-tooluse-store")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := ctxstore.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "test-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_store_test",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Final response.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store)
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
+		Expect(streamErr).NotTo(HaveOccurred())
+
+		for chunk := range chunks {
+			_ = chunk
+		}
+
+		msgs := store.AllMessages()
+		Expect(len(msgs)).To(BeNumerically(">=", 4))
+
+		var roles []string
+		for _, m := range msgs {
+			roles = append(roles, m.Role)
+		}
+
+		Expect(roles).To(ContainElement("assistant"))
+		Expect(roles).To(ContainElement("tool"))
+
+		assistantToolUseIdx := -1
+		toolResultIdx := -1
+		for idx, m := range msgs {
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 && m.ToolCalls[0].Name == "test_tool" {
+				assistantToolUseIdx = idx
+			}
+			if m.Role == "tool" && len(m.ToolCalls) > 0 && m.ToolCalls[0].ID == "call_store_test" {
+				toolResultIdx = idx
+			}
+		}
+
+		Expect(assistantToolUseIdx).NotTo(Equal(-1))
+		Expect(toolResultIdx).NotTo(Equal(-1))
+		Expect(assistantToolUseIdx).To(BeNumerically("<", toolResultIdx))
+
+		assistantMsg := msgs[assistantToolUseIdx]
+		Expect(assistantMsg.ToolCalls[0].ID).To(Equal("call_store_test"))
+		Expect(assistantMsg.ToolCalls[0].Name).To(Equal("test_tool"))
+	})
+})

@@ -457,6 +457,7 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
+		e.storeAssistantToolUse(toolCall, responseContent)
 		e.storeToolResult(toolCall.ID, toolResult)
 
 		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
@@ -617,6 +618,27 @@ func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<-
 	}
 
 	return false
+}
+
+// storeAssistantToolUse appends the assistant message containing a tool_use block to the context store.
+//
+// Expected:
+//   - toolCall contains the tool call identifier, name, and arguments.
+//   - content is the assistant's text content accumulated before the tool call (may be empty).
+//
+// Side effects:
+//   - Appends an assistant message with ToolCalls to the context store if configured.
+func (e *Engine) storeAssistantToolUse(toolCall *provider.ToolCall, content string) {
+	if e.store == nil {
+		return
+	}
+	e.store.Append(provider.Message{
+		Role:    "assistant",
+		Content: content,
+		ToolCalls: []provider.ToolCall{
+			{ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
+		},
+	})
 }
 
 // storeToolResult appends a tool result message to the context store.
