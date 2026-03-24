@@ -25,12 +25,10 @@ func (m *mockChatProvider) Chat(_ context.Context, _ provider.ChatRequest) (prov
 	return provider.ChatResponse{Message: provider.Message{Role: "assistant", Content: m.response}}, nil
 }
 func (m *mockChatProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
-	Fail("mockChatProvider.Embed must not be called in LLMCritic tests")
-	return nil, nil
+	panic("mockChatProvider.Embed must not be called in LLMCritic tests")
 }
 func (m *mockChatProvider) Models() ([]provider.Model, error) {
-	Fail("mockChatProvider.Models must not be called in LLMCritic tests")
-	return nil, nil
+	panic("mockChatProvider.Models must not be called in LLMCritic tests")
 }
 
 type errorChatProvider struct{}
