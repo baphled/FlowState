@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/hook"
@@ -25,7 +26,37 @@ type EvaluationResult struct {
 	FinalScore       float64
 }
 
-// PlanHarness wraps a Streamer with validate-retry logic.
+// HarnessOption configures optional behaviour on a PlanHarness.
+//
+// Expected:
+//   - Each option mutates the harness during construction only.
+//
+// Returns:
+//   - (nothing; type definition only)
+//
+// Side effects:
+//   - None.
+type HarnessOption func(*PlanHarness)
+
+// WithCritic attaches an LLM critic and its provider to the harness.
+//
+// Expected:
+//   - critic is a configured LLMCritic (enabled or disabled).
+//   - p is a valid provider for critic chat completions.
+//
+// Returns:
+//   - A HarnessOption that sets the critic and provider fields.
+//
+// Side effects:
+//   - None.
+func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
+	return func(h *PlanHarness) {
+		h.critic = critic
+		h.criticProvider = p
+	}
+}
+
+// PlanHarness wraps a Streamer with validate-retry logic and optional LLM critic.
 //
 //nolint:revive // PlanHarness name is intentional for plan-specific workflows.
 type PlanHarness struct {
@@ -34,26 +65,33 @@ type PlanHarness struct {
 	schemaValidator    *SchemaValidator
 	assertionValidator *AssertionValidator
 	referenceValidator *ReferenceValidator
+	critic             *LLMCritic
+	criticProvider     provider.Provider
 }
 
-// NewPlanHarness creates a PlanHarness with validators and retry settings.
+// NewPlanHarness creates a PlanHarness with validators, retry settings, and optional configuration.
 //
 // Expected:
 //   - projectRoot is the absolute path to the project root directory.
+//   - opts are optional HarnessOption values (e.g. WithCritic).
 //
 // Returns:
 //   - A configured PlanHarness with schema, assertion, and reference validators.
 //
 // Side effects:
 //   - None.
-func NewPlanHarness(projectRoot string) *PlanHarness {
-	return &PlanHarness{
+func NewPlanHarness(projectRoot string, opts ...HarnessOption) *PlanHarness {
+	h := &PlanHarness{
 		maxRetries:         3,
 		projectRoot:        projectRoot,
 		schemaValidator:    &SchemaValidator{},
 		assertionValidator: &AssertionValidator{},
 		referenceValidator: &ReferenceValidator{},
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Evaluate runs the plan harness over a streaming response.
@@ -91,38 +129,79 @@ func (h *PlanHarness) Evaluate(
 
 		phase := hook.DetectPhase(planText)
 		if phase != hook.PhaseGeneration {
-			return &EvaluationResult{
-				PlanText:     planText,
-				AttemptCount: attempt,
-			}, nil
+			return &EvaluationResult{PlanText: planText, AttemptCount: attempt}, nil
 		}
 
-		validation := h.validatePlan(planText)
-		if validation.Valid {
-			return &EvaluationResult{
-				PlanText:         planText,
-				ValidationResult: validation,
-				AttemptCount:     attempt,
-				FinalScore:       validation.Score,
-			}, nil
+		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
+		if result != nil {
+			return result, nil
 		}
-
-		if attempt < h.maxRetries {
-			feedback := buildFeedback(validation)
-			currentMessage = appendFeedback(currentMessage, feedback)
-			continue
-		}
-
-		validation.Warnings = append(validation.Warnings, fmt.Sprintf("validation failed after %d attempts", attempt))
-		return &EvaluationResult{
-			PlanText:         planText,
-			ValidationResult: validation,
-			AttemptCount:     attempt,
-			FinalScore:       validation.Score,
-		}, nil
+		currentMessage = appendFeedback(currentMessage, feedback)
 	}
 
 	return nil, errors.New("evaluation exhausted retries")
+}
+
+// evaluateAttempt validates and critiques a single plan attempt.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText contains a plan in the generation phase.
+//   - attempt is the current 1-based attempt number.
+//
+// Returns:
+//   - A final EvaluationResult if the attempt concludes evaluation, or nil with retry feedback.
+//
+// Side effects:
+//   - May send a chat request to the critic provider.
+func (h *PlanHarness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*EvaluationResult, string) {
+	validation := h.validatePlan(planText)
+	if validation.Valid {
+		return h.handleValidPlan(ctx, planText, validation, attempt)
+	}
+
+	if attempt < h.maxRetries {
+		return nil, buildFeedback(validation)
+	}
+
+	validation.Warnings = append(validation.Warnings, "validation failed after "+strconv.Itoa(attempt)+" attempts")
+	return &EvaluationResult{
+		PlanText: planText, ValidationResult: validation,
+		AttemptCount: attempt, FinalScore: validation.Score,
+	}, ""
+}
+
+// handleValidPlan runs the critic on a structurally valid plan and returns a result or retry feedback.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText is the structurally valid plan text.
+//   - validation is the passing ValidationResult.
+//   - attempt is the current 1-based attempt number.
+//
+// Returns:
+//   - A final EvaluationResult if critic passes or final attempt, or nil with critic feedback for retry.
+//
+// Side effects:
+//   - May send a chat request to the critic provider.
+func (h *PlanHarness) handleValidPlan(
+	ctx context.Context, planText string, validation *ValidationResult, attempt int,
+) (*EvaluationResult, string) {
+	criticFeedback := h.runCritic(ctx, planText, validation)
+	if criticFeedback == "" {
+		return &EvaluationResult{
+			PlanText: planText, ValidationResult: validation,
+			AttemptCount: attempt, FinalScore: validation.Score,
+		}, ""
+	}
+	if attempt < h.maxRetries {
+		return nil, criticFeedback
+	}
+	validation.Warnings = append(validation.Warnings, "critic rejected plan on final attempt")
+	return &EvaluationResult{
+		PlanText: planText, ValidationResult: validation,
+		AttemptCount: attempt, FinalScore: validation.Score,
+	}, ""
 }
 
 // validatePlan runs schema, assertion, and reference validation against the given plan text.
@@ -152,6 +231,71 @@ func (h *PlanHarness) validatePlan(planText string) *ValidationResult {
 	}
 
 	return combineValidationResults(schemaResult, assertionResult, referenceResult)
+}
+
+// runCritic invokes the LLM critic if configured and returns feedback for retry, or empty string on pass.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText is the raw plan text.
+//   - validation is the validator result to pass to the critic.
+//
+// Returns:
+//   - A feedback string for retry if the critic rejects the plan, or empty string if critic passes or is unconfigured.
+//
+// Side effects:
+//   - Sends a chat request to the critic provider when critic is configured and enabled.
+func (h *PlanHarness) runCritic(ctx context.Context, planText string, validation *ValidationResult) string {
+	if h.critic == nil || h.criticProvider == nil {
+		return ""
+	}
+
+	parsedPlan, parseErr := parseFile(planText)
+	if parseErr != nil {
+		parsedPlan = nil
+	}
+
+	criticResult, err := h.critic.Review(ctx, parsedPlan, planText, validation, h.criticProvider)
+	if err != nil {
+		validation.Warnings = append(validation.Warnings, "critic error: "+err.Error())
+		return ""
+	}
+
+	if criticResult.Verdict == VerdictFail {
+		return buildCriticFeedback(criticResult)
+	}
+
+	return ""
+}
+
+// buildCriticFeedback constructs a retry feedback string from critic issues.
+//
+// Expected:
+//   - result is a non-nil CriticResult with Verdict == VerdictFail.
+//
+// Returns:
+//   - A formatted feedback string listing critic issues and suggestions.
+//
+// Side effects:
+//   - None.
+func buildCriticFeedback(result *CriticResult) string {
+	var b strings.Builder
+	b.WriteString("The LLM critic rejected your plan. Issues:\n")
+	for _, issue := range result.Issues {
+		b.WriteString("- ")
+		b.WriteString(issue)
+		b.WriteString("\n")
+	}
+	if len(result.Suggestions) > 0 {
+		b.WriteString("Suggestions:\n")
+		for _, suggestion := range result.Suggestions {
+			b.WriteString("- ")
+			b.WriteString(suggestion)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("Fix these specific issues and regenerate the complete plan.")
+	return b.String()
 }
 
 // streamPlan streams a plan response from the LLM and aggregates the chunks into a single string.
