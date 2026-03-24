@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
 
 # Binary name
 BINARY_NAME=flowstate
@@ -113,7 +113,11 @@ check-untested-packages: ## Fail if any internal/ package has no test files
 	fi
 	@echo "All internal packages have test files."
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages ## Run all checks
+check-note-comments: ## Fail if NOTE: appears outside a docblock
+	@echo "Checking NOTE: comment placement..."
+	@bash scripts/check-note-comments.sh
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments ## Run all checks
 
 #
 # Dependencies
