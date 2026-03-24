@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -22,7 +21,7 @@ type ErrorMsg struct{ Err error }
 
 // Model is the Bubble Tea model for the chat interface.
 type Model struct {
-	engine    *engine.Engine
+	streamer  Streamer
 	agentID   string
 	sessionID string
 	messages  []string
@@ -36,10 +35,10 @@ type Model struct {
 	chunks    <-chan provider.StreamChunk
 }
 
-// NewModel creates a new chat model with the given engine and agent.
+// NewModel creates a new chat model with the given streamer and agent.
 //
 // Expected:
-//   - eng is a non-nil Engine for handling chat requests.
+//   - streamer is a non-nil Streamer for handling chat requests.
 //   - agentID identifies the agent to converse with.
 //   - sessionID is the session identifier for context persistence.
 //
@@ -48,9 +47,9 @@ type Model struct {
 //
 // Side effects:
 //   - None.
-func NewModel(eng *engine.Engine, agentID string, sessionID string) *Model {
+func NewModel(streamer Streamer, agentID string, sessionID string) *Model {
 	return &Model{
-		engine:    eng,
+		streamer:  streamer,
 		agentID:   agentID,
 		sessionID: sessionID,
 		messages:  []string{},
@@ -191,7 +190,7 @@ func (m *Model) sendMessage() tea.Cmd {
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		chunks, err := m.engine.Stream(ctx, m.agentID, message)
+		chunks, err := m.streamer.Stream(ctx, m.agentID, message)
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}

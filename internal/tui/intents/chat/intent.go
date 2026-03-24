@@ -71,6 +71,7 @@ type AppShell interface {
 type IntentConfig struct {
 	App           AppShell
 	Engine        *engine.Engine
+	Streamer      Streamer
 	AgentID       string
 	SessionID     string
 	ProviderName  string
@@ -83,6 +84,7 @@ type IntentConfig struct {
 type Intent struct {
 	app               AppShell
 	engine            *engine.Engine
+	streamer          Streamer
 	agentID           string
 	sessionID         string
 	input             string
@@ -131,6 +133,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 	return &Intent{
 		app:             cfg.App,
 		engine:          cfg.Engine,
+		streamer:        cfg.Streamer,
 		agentID:         cfg.AgentID,
 		sessionID:       cfg.SessionID,
 		input:           "",
@@ -426,7 +429,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.refreshViewport()
 
 	return func() tea.Msg {
-		stream, err := i.engine.Stream(context.Background(), i.agentID, userMessage)
+		stream, err := i.streamer.Stream(context.Background(), i.agentID, userMessage)
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}

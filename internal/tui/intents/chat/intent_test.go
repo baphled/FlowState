@@ -216,6 +216,7 @@ var _ = Describe("ChatIntent", func() {
 
 					agentIntent = chat.NewIntent(chat.IntentConfig{
 						Engine:        eng,
+						Streamer:      eng,
 						AgentID:       "test-agent",
 						SessionID:     "test-session",
 						ProviderName:  "test-provider",
@@ -558,6 +559,7 @@ var _ = Describe("ChatIntent", func() {
 
 				streamIntent = chat.NewIntent(chat.IntentConfig{
 					Engine:       eng,
+					Streamer:     eng,
 					AgentID:      "test-agent",
 					SessionID:    "test-session",
 					ProviderName: "test-provider",
@@ -763,6 +765,7 @@ var _ = Describe("ChatIntent", func() {
 
 			toggleIntent = chat.NewIntent(chat.IntentConfig{
 				Engine:        eng,
+				Streamer:      eng,
 				AgentID:       "executor",
 				SessionID:     "test-session",
 				ProviderName:  "test-provider",
@@ -877,6 +880,7 @@ var _ = Describe("ChatIntent", func() {
 
 			autoSwitchIntent = chat.NewIntent(chat.IntentConfig{
 				Engine:        eng,
+				Streamer:      eng,
 				AgentID:       "executor",
 				SessionID:     "test-session",
 				ProviderName:  "test-provider",
@@ -945,6 +949,7 @@ var _ = Describe("ChatIntent", func() {
 			intentWithEng = chat.NewIntent(chat.IntentConfig{
 				App:          &stubAppShell{registry: reg},
 				Engine:       eng,
+				Streamer:     eng,
 				AgentID:      "test-agent",
 				SessionID:    "test-session",
 				ProviderName: "ollama",

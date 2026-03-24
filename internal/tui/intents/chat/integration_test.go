@@ -73,6 +73,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 
 			testIntent = chat.NewIntent(chat.IntentConfig{
 				Engine:       eng,
+				Streamer:     eng,
 				AgentID:      "test-agent",
 				SessionID:    "test-session",
 				ProviderName: "test-provider",
@@ -174,6 +175,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 			testIntent = chat.NewIntent(chat.IntentConfig{
 				App:          &integrationAppShell{registry: reg},
 				Engine:       eng,
+				Streamer:     eng,
 				AgentID:      "test-agent",
 				SessionID:    "test-session",
 				ProviderName: "provider-a",
@@ -231,6 +233,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 
 				testIntent = chat.NewIntent(chat.IntentConfig{
 					Engine:       eng,
+					Streamer:     eng,
 					AgentID:      "test-agent",
 					SessionID:    "test-session",
 					ProviderName: "failing-provider",
@@ -279,6 +282,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 
 				testIntent = chat.NewIntent(chat.IntentConfig{
 					Engine:       eng,
+					Streamer:     eng,
 					AgentID:      "test-agent",
 					SessionID:    "test-session",
 					ProviderName: "partial-provider",
@@ -326,6 +330,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 
 				testIntent = chat.NewIntent(chat.IntentConfig{
 					Engine:       eng,
+					Streamer:     eng,
 					AgentID:      "test-agent",
 					SessionID:    "test-session",
 					ProviderName: "anthropic",
@@ -372,6 +377,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 
 			testIntent = chat.NewIntent(chat.IntentConfig{
 				Engine:       eng,
+				Streamer:     eng,
 				AgentID:      "test-agent",
 				SessionID:    "test-session",
 				ProviderName: "test-provider",

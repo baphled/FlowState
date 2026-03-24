@@ -28,6 +28,7 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 	chatIntent := chat.NewIntent(chat.IntentConfig{
 		App:           nil,
 		Engine:        application.Engine,
+		Streamer:      application.Streamer,
 		AgentID:       agentID,
 		SessionID:     sessionID,
 		ModelName:     application.Engine.LastModel(),
