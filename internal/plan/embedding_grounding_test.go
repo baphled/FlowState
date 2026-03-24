@@ -31,7 +31,10 @@ func (m *mockEmbedProvider) Embed(ctx context.Context, req provider.EmbedRequest
 	}
 	return []float64{h / 1000.0, 1.0 - h/1000.0}, nil
 }
-func (m *mockEmbedProvider) Models() ([]provider.Model, error) { return nil, nil }
+func (m *mockEmbedProvider) Models() ([]provider.Model, error) {
+	Fail("mockEmbedProvider.Models must not be called in EmbeddingGrounder tests")
+	return nil, nil
+}
 
 var _ = Describe("EmbeddingGrounder", func() {
 	var (
