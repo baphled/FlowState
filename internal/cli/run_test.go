@@ -53,7 +53,7 @@ func createRunTestApp(streamChunks []provider.StreamChunk, streamErr error) *app
 		streamChunks: streamChunks,
 		streamErr:    streamErr,
 	}
-	testApp.Engine = engine.New(engine.Config{
+	eng := engine.New(engine.Config{
 		ChatProvider: chatProvider,
 		Manifest: agent.Manifest{
 			ID:                "worker",
@@ -62,6 +62,8 @@ func createRunTestApp(streamChunks []provider.StreamChunk, streamErr error) *app
 			ContextManagement: agent.DefaultContextManagement(),
 		},
 	})
+	testApp.Engine = eng
+	testApp.Streamer = eng
 	return testApp
 }
 

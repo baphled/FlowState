@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/spf13/cobra"
 )
 
@@ -87,7 +88,7 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 		return err
 	}
 
-	if application.Engine == nil {
+	if application.Streamer == nil {
 		return errors.New("engine not configured")
 	}
 
@@ -177,11 +178,11 @@ func loadExistingSession(application *app.App, session string) {
 	}
 }
 
-// streamResponse streams a response from the engine and returns the complete message.
+// streamResponse streams a response from the streamer and returns the complete message.
 //
 // Expected:
 //   - cmd is a non-nil cobra.Command.
-//   - application is a non-nil App instance with a configured engine.
+//   - application is a non-nil App instance with a configured streamer.
 //   - agentName is a non-empty string.
 //   - opts is a non-nil RunOptions with a non-empty prompt.
 //
@@ -191,22 +192,14 @@ func loadExistingSession(application *app.App, session string) {
 // Side effects:
 //   - Streams response chunks to stdout if JSON output is not requested.
 func streamResponse(cmd *cobra.Command, application *app.App, agentName string, opts *RunOptions) (string, error) {
-	chunks, err := application.Engine.Stream(context.Background(), agentName, opts.Prompt)
-	if err != nil {
+	consumer := NewWriterConsumer(cmd.OutOrStdout(), opts.JSON)
+	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, opts.Prompt); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
-
-	var response strings.Builder
-	for chunk := range chunks {
-		if chunk.Error != nil {
-			return "", fmt.Errorf("stream error: %w", chunk.Error)
-		}
-		if !opts.JSON {
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), chunk.Content)
-		}
-		response.WriteString(chunk.Content)
+	if consumer.Err() != nil {
+		return "", fmt.Errorf("stream error: %w", consumer.Err())
 	}
-	return response.String(), nil
+	return consumer.Response(), nil
 }
 
 // saveSession saves the current session if the session store is available.

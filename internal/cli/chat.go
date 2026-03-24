@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"io"
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -97,7 +98,7 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		return err
 	}
 
-	if application.Engine == nil {
+	if application.Streamer == nil {
 		return errors.New("engine not configured")
 	}
 
@@ -192,10 +193,10 @@ func loadSessionIfRequested(application *app.App, session string) {
 	}
 }
 
-// streamChatResponse streams a response from the engine and returns the complete message.
+// streamChatResponse streams a response from the streamer and returns the complete message.
 //
 // Expected:
-//   - application is a non-nil App instance with a configured engine.
+//   - application is a non-nil App instance with a configured streamer.
 //   - agentName is a non-empty string.
 //   - message is a non-empty string.
 //
@@ -203,22 +204,16 @@ func loadSessionIfRequested(application *app.App, session string) {
 //   - The complete response string and nil on success, or empty string and error on failure.
 //
 // Side effects:
-//   - Streams response chunks from the engine.
+//   - Streams response chunks from the streamer.
 func streamChatResponse(application *app.App, agentName string, message string) (string, error) {
-	ctx := context.Background()
-	chunks, err := application.Engine.Stream(ctx, agentName, message)
-	if err != nil {
+	consumer := NewWriterConsumer(io.Discard, true)
+	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, message); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
-
-	var response strings.Builder
-	for chunk := range chunks {
-		if chunk.Error != nil {
-			return "", fmt.Errorf("stream error: %w", chunk.Error)
-		}
-		response.WriteString(chunk.Content)
+	if consumer.Err() != nil {
+		return "", fmt.Errorf("stream error: %w", consumer.Err())
 	}
-	return response.String(), nil
+	return consumer.Response(), nil
 }
 
 // saveSessionIfAvailable saves the current session if the session store is available.
