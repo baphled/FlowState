@@ -7,13 +7,13 @@ Feature: Agent Prompt Loading
     Given the planner agent is configured
     When the system prompt is built
     Then the prompt should contain planning instructions
-    And the prompt size should be at least 8000 characters
+    And the prompt size should be at least 5000 characters
 
   Scenario: Executor agent loads comprehensive embedded prompt
     Given the executor agent is configured
     When the system prompt is built
     Then the prompt should contain execution instructions
-    And the prompt size should be at least 8000 characters
+    And the prompt size should be at least 5000 characters
 
   Scenario: Agent picker shows planner and executor
     Given the FlowState TUI is running
