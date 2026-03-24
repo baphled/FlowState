@@ -1,0 +1,28 @@
+{
+  "name": "flowstate",
+  "version": "0.0.0-development",
+  "description": "FlowState - A general-purpose AI assistant TUI",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/baphled/FlowState.git"
+  },
+  "author": "Yomi Colledge <baphled@boodah.net>",
+  "license": "BUSL-1.1",
+  "devDependencies": {
+    "@commitlint/cli": "^19.0.0",
+    "@commitlint/config-conventional": "^19.0.0",
+    "@semantic-release/changelog": "^6.0.0",
+    "@semantic-release/commit-analyzer": "^13.0.0",
+    "@semantic-release/exec": "^6.0.0",
+    "@semantic-release/git": "^10.0.0",
+    "@semantic-release/github": "^10.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
