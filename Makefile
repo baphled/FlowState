@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
 
 # Binary name
 BINARY_NAME=flowstate
@@ -79,6 +79,7 @@ lint: ## Run linters
 	$(GOVET) ./...
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
 	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
+	@if command -v deadcode &> /dev/null; then deadcode ./... 2>/dev/null || true; fi
 
 check: fmt lint test ## Run all checks
 
@@ -91,6 +92,10 @@ deps: ## Download dependencies
 
 deps-tidy: ## Tidy dependencies
 	$(GOMOD) tidy
+
+install-tools: ## Install development tools
+	@echo "Installing development tools..."
+	@go install golang.org/x/tools/cmd/deadcode@latest
 
 #
 # Git Worktree Helpers
