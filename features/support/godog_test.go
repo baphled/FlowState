@@ -43,5 +43,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSkillSteps(ctx, s)
 	RegisterMemorySteps(ctx)
 	RegisterSkillAutoloadingSteps(ctx)
+	RegisterHarnessSteps(ctx)
 	s.RegisterSteps(ctx)
 }
