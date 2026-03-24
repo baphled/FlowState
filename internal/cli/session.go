@@ -57,8 +57,12 @@ func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 			}
 
 			for _, s := range sessions {
-				_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %d messages (last active: %s)\n",
-					s.ID, s.MessageCount, s.LastActive.Format("2006-01-02 15:04"))
+				title := s.Title
+				if title == "" {
+					title = s.ID[:8]
+				}
+				_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s  %s  %d messages (last active: %s)\n",
+					s.ID[:8], title, s.MessageCount, s.LastActive.Format("2006-01-02 15:04"))
 				if err != nil {
 					return err
 				}
@@ -122,6 +126,7 @@ func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
 		if s.ID == sessionID {
 			return &sessionInfo{
 				ID:      s.ID,
+				Title:   s.Title,
 				AgentID: s.AgentID,
 			}, nil
 		}
@@ -141,5 +146,6 @@ func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
 //   - None.
 type sessionInfo struct {
 	ID      string
+	Title   string
 	AgentID string
 }

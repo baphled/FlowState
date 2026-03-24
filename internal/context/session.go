@@ -13,6 +13,7 @@ import (
 // SessionInfo describes a saved session's metadata.
 type SessionInfo struct {
 	ID             string    `json:"id"`
+	Title          string    `json:"title"`
 	AgentID        string    `json:"agent_id"`
 	MessageCount   int       `json:"message_count"`
 	LastActive     time.Time `json:"last_active"`
@@ -27,6 +28,8 @@ type SessionStore interface {
 	Load(sessionID string) (*FileContextStore, error)
 	// List returns metadata for all saved sessions.
 	List() []SessionInfo
+	// SetTitle updates the title of an existing session.
+	SetTitle(sessionID string, title string) error
 }
 
 // FileSessionStore implements SessionStore with JSON file persistence.
@@ -37,6 +40,7 @@ type FileSessionStore struct {
 // sessionFile represents the persisted structure of a session stored in JSON format.
 type sessionFile struct {
 	SessionID      string           `json:"session_id"`
+	Title          string           `json:"title"`
 	AgentID        string           `json:"agent_id"`
 	EmbeddingModel string           `json:"embedding_model"`
 	LastActive     time.Time        `json:"last_active"`
@@ -93,6 +97,7 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error {
 	sf := sessionFile{
 		SessionID:      sessionID,
+		Title:          s.existingTitle(sessionID),
 		AgentID:        "",
 		EmbeddingModel: store.GetModel(),
 		LastActive:     time.Now(),
@@ -206,6 +211,7 @@ func (s *FileSessionStore) List() []SessionInfo {
 		sessionID := strings.TrimSuffix(filepath.Base(match), ".json")
 		sessions = append(sessions, SessionInfo{
 			ID:             sessionID,
+			Title:          sf.Title,
 			AgentID:        sf.AgentID,
 			MessageCount:   len(sf.Messages),
 			LastActive:     sf.LastActive,
@@ -218,4 +224,56 @@ func (s *FileSessionStore) List() []SessionInfo {
 	})
 
 	return sessions
+}
+
+// existingTitle reads the title from an existing session file on disk.
+//
+// Expected:
+//   - sessionID identifies a session that may or may not exist on disk.
+//
+// Returns:
+//   - The stored title string, or "" if the file does not exist or cannot be parsed.
+//
+// Side effects:
+//   - Reads a JSON file from the base directory.
+func (s *FileSessionStore) existingTitle(sessionID string) string {
+	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return ""
+	}
+	var sf sessionFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return ""
+	}
+	return sf.Title
+}
+
+// SetTitle updates the title of an existing session.
+//
+// Expected:
+//   - sessionID is a non-empty string matching an existing session file.
+//   - title is the new title to set.
+//
+// Returns:
+//   - An error if the session file cannot be read, parsed, or written.
+//
+// Side effects:
+//   - Reads and rewrites the session JSON file with the updated title.
+func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
+	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		return fmt.Errorf("reading session file: %w", err)
+	}
+	var sf sessionFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return fmt.Errorf("unmarshalling session: %w", err)
+	}
+	sf.Title = title
+	updated, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling session: %w", err)
+	}
+	return os.WriteFile(sessionPath, updated, 0o600)
 }

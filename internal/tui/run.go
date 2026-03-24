@@ -35,6 +35,7 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 		ProviderName:  application.Engine.LastProvider(),
 		TokenBudget:   application.Engine.ModelContextLimit(),
 		AgentRegistry: application.Registry,
+		SessionStore:  application.Sessions,
 	})
 	appShell := app.New(chatIntent, application)
 	chatIntent.SetApp(appShell)

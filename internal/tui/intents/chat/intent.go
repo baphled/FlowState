@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
@@ -18,10 +19,13 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
+	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
+	"github.com/baphled/flowstate/internal/tui/uikit/feedback"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/ui/terminal"
+	"github.com/baphled/flowstate/internal/ui/themes"
 )
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
@@ -67,6 +71,16 @@ type AppShell interface {
 	Get(name string) (provider.Provider, error)
 }
 
+// SessionLister lists available sessions and manages session metadata.
+type SessionLister interface {
+	// List returns metadata for all saved sessions, sorted by most recently active first.
+	List() []contextpkg.SessionInfo
+	// SetTitle updates the title of an existing session.
+	SetTitle(sessionID string, title string) error
+	// Load retrieves a context store from a saved session.
+	Load(sessionID string) (*contextpkg.FileContextStore, error)
+}
+
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
 	App           AppShell
@@ -78,6 +92,7 @@ type IntentConfig struct {
 	ModelName     string
 	TokenBudget   int
 	AgentRegistry *agent.Registry
+	SessionStore  SessionLister
 }
 
 // Intent handles chat interactions in the TUI.
@@ -104,7 +119,10 @@ type Intent struct {
 	msgViewport       viewport.Model
 	vpReady           bool
 	agentRegistry     *agent.Registry
+	sessionStore      SessionLister
 	view              *chat.View
+	loadingModal      *feedback.Modal
+	errorModal        *feedback.Modal
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -149,6 +167,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		tickFrame:       0,
 		result:          nil,
 		agentRegistry:   cfg.AgentRegistry,
+		sessionStore:    cfg.SessionStore,
 		view:            chat.NewView(),
 	}
 }
@@ -212,9 +231,59 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		if i.view.IsStreaming() {
 			i.tickFrame++
 		}
+		if i.loadingModal != nil {
+			i.loadingModal.AdvanceSpinner()
+		}
 		return tickSpinner()
+	case sessionbrowser.SessionSelectedMsg:
+		return i.handleSessionResult(msg)
+	case sessionbrowser.SessionLoadedMsg:
+		return i.handleSessionLoaded(msg)
 	}
 	return nil
+}
+
+// handleModalKeyMsg processes keyboard input when a feedback modal is active.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - true if a modal consumed the input, false otherwise.
+//
+// Side effects:
+//   - Dismisses error modal on Esc or Enter.
+func (i *Intent) handleModalKeyMsg(msg tea.KeyMsg) bool {
+	if i.errorModal != nil {
+		if msg.Type == tea.KeyEsc || msg.Type == tea.KeyEnter {
+			i.errorModal = nil
+		}
+		return true
+	}
+	return i.loadingModal != nil
+}
+
+// handleScrollKey processes viewport scroll keys when the viewport is ready.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd and true if the key was a scroll key, or nil and false otherwise.
+//
+// Side effects:
+//   - Updates the viewport position on scroll keys.
+func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	if !i.vpReady {
+		return nil, false
+	}
+	switch msg.Type {
+	case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		var cmd tea.Cmd
+		i.msgViewport, cmd = i.msgViewport.Update(msg)
+		return cmd, true
+	}
+	return nil, false
 }
 
 // handleKeyMsg processes keyboard input directly without mode switching.
@@ -228,17 +297,14 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 // Side effects:
 //   - Updates input or returns a quit command based on key input.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	if i.handleModalKeyMsg(msg) {
+		return nil
+	}
 	if i.pendingPermission != nil {
 		return i.handlePermissionKey(msg)
 	}
-
-	if i.vpReady {
-		switch msg.Type {
-		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
-			var cmd tea.Cmd
-			i.msgViewport, cmd = i.msgViewport.Update(msg)
-			return cmd
-		}
+	if cmd, handled := i.handleScrollKey(msg); handled {
+		return cmd
 	}
 
 	switch msg.Type {
@@ -248,6 +314,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return i.toggleAgent()
 	case tea.KeyCtrlP:
 		return i.openModelSelector()
+	case tea.KeyCtrlS:
+		return i.openSessionBrowser()
 	case tea.KeyBackspace:
 		if i.input != "" {
 			i.input = i.input[:len(i.input)-1]
@@ -566,7 +634,29 @@ func (i *Intent) View() string {
 		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 
-	return sl.Render()
+	return i.renderModalOverlay(sl.Render())
+}
+
+// renderModalOverlay applies loading or error modal overlays to the base view.
+//
+// Expected:
+//   - baseView is the fully rendered chat view string.
+//
+// Returns:
+//   - The base view with any active modal overlaid, or the base view unchanged.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderModalOverlay(baseView string) string {
+	if i.loadingModal != nil {
+		modalContent := i.loadingModal.Render(i.width, i.height)
+		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
+	}
+	if i.errorModal != nil {
+		modalContent := i.errorModal.Render(i.width, i.height)
+		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
+	}
+	return baseView
 }
 
 // renderInputLine renders the current input with a "> " prompt on the first line
@@ -825,6 +915,150 @@ func (i *Intent) openModelSelector() tea.Cmd {
 		})
 		return tuiintents.ShowModalMsg{Modal: modelIntent}
 	}
+}
+
+// openSessionBrowser creates and shows the session browser as a modal overlay.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the session browser.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openSessionBrowser() tea.Cmd {
+	return func() tea.Msg {
+		if i.sessionStore == nil {
+			return nil
+		}
+		sessions := i.sessionStore.List()
+		entries := make([]sessionbrowser.SessionEntry, len(sessions))
+		for idx, s := range sessions {
+			title := s.Title
+			if title == "" {
+				switch {
+				case !s.LastActive.IsZero():
+					title = "Session — " + s.LastActive.Format("2 Jan 2006 15:04")
+				case s.MessageCount > 0:
+					title = fmt.Sprintf("Session (%d messages)", s.MessageCount)
+				default:
+					title = "Session " + s.ID[:8]
+				}
+			}
+			entries[idx] = sessionbrowser.SessionEntry{
+				ID:           s.ID,
+				Title:        title,
+				MessageCount: s.MessageCount,
+				LastActive:   s.LastActive,
+			}
+		}
+		browserIntent := sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+			Sessions: entries,
+		})
+		return tuiintents.ShowModalMsg{Modal: browserIntent}
+	}
+}
+
+// handleSessionResult dispatches the session browser outcome to the
+// appropriate handler based on whether a new or existing session was chosen.
+//
+// Expected:
+//   - msg is a SessionSelectedMsg from the session browser intent.
+//
+// Returns:
+//   - A tea.Cmd, or nil when no further action is needed.
+//
+// Side effects:
+//   - Delegates to createNewSession or switchToSession.
+func (i *Intent) handleSessionResult(msg sessionbrowser.SessionSelectedMsg) tea.Cmd {
+	if msg.IsNew {
+		return i.createNewSession()
+	}
+	return i.switchToSession(msg.SessionID)
+}
+
+// createNewSession resets the chat to a fresh session with a new ID.
+//
+// Returns:
+//   - nil (no async command needed).
+//
+// Side effects:
+//   - Generates a new session ID, resets the chat view, and syncs the status bar.
+func (i *Intent) createNewSession() tea.Cmd {
+	i.sessionID = uuid.New().String()
+	i.view = chat.NewView()
+	i.refreshViewport()
+	i.syncStatusBar()
+	return nil
+}
+
+// switchToSession shows a loading modal and kicks off an async session load.
+//
+// Expected:
+//   - sessionID is a non-empty string matching an existing session file.
+//
+// Returns:
+//   - A tea.Cmd that loads the session from disk asynchronously.
+//
+// Side effects:
+//   - Sets the loading modal and syncs the status bar.
+func (i *Intent) switchToSession(sessionID string) tea.Cmd {
+	i.sessionID = sessionID
+	i.loadingModal = feedback.NewLoadingModal("Loading session\u2026", false)
+	i.syncStatusBar()
+	return i.loadSessionAsync(sessionID)
+}
+
+// loadSessionAsync returns a command that loads a session from disk.
+//
+// Expected:
+//   - sessionID is a non-empty string matching an existing session file.
+//
+// Returns:
+//   - A tea.Cmd that sends a SessionLoadedMsg when the load completes.
+//
+// Side effects:
+//   - None (I/O happens inside the returned command).
+func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
+	store := i.sessionStore
+	return func() tea.Msg {
+		loadedStore, err := store.Load(sessionID)
+		return sessionbrowser.SessionLoadedMsg{
+			SessionID: sessionID,
+			Store:     loadedStore,
+			Err:       err,
+		}
+	}
+}
+
+// handleSessionLoaded processes the result of an async session load.
+//
+// Expected:
+//   - msg contains the loaded FileContextStore, or an error.
+//
+// Returns:
+//   - nil (no further command needed).
+//
+// Side effects:
+//   - Clears the loading modal.
+//   - On error, shows an error modal.
+//   - On success, replaces the engine's context store with the loaded store,
+//     populates the chat view, and refreshes the viewport.
+func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cmd {
+	i.loadingModal = nil
+	if msg.Err != nil {
+		i.errorModal = feedback.NewErrorModal("Session Error", "Failed to load session: "+msg.Err.Error())
+		return nil
+	}
+	i.engine.SetContextStore(msg.Store)
+	i.view = chat.NewView()
+	for _, sm := range msg.Store.GetStoredMessages() {
+		i.view.AddMessage(chat.Message{
+			Role:    sm.Message.Role,
+			Content: sm.Message.Content,
+		})
+	}
+	i.refreshViewport()
+	i.syncStatusBar()
+	return nil
 }
 
 // toggleAgent alternates the active agent between "planner" and "executor".
