@@ -1,8 +1,8 @@
 package coordination_test
 
 import (
-	"os"
-	"path/filepath"
+	"fmt"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,180 +10,121 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 )
 
-var _ = Describe("Store", func() {
-	var (
-		store    coordination.Store
-		tempDir  string
-		filePath string
-	)
+var _ = Describe("MemoryStore", func() {
+	var store coordination.Store
 
 	BeforeEach(func() {
-		var err error
-		tempDir, err = os.MkdirTemp("", "coordination-test-*")
-		Expect(err).NotTo(HaveOccurred())
-		filePath = filepath.Join(tempDir, "coordination.json")
-		store = coordination.NewFileStore(filePath)
+		store = coordination.NewMemoryStore()
 	})
 
-	AfterEach(func() {
-		os.RemoveAll(tempDir)
+	Describe("Get", func() {
+		Context("when the key does not exist", func() {
+			It("returns an error", func() {
+				_, err := store.Get("nonexistent")
+				Expect(err).To(HaveOccurred())
+			})
+		})
 	})
 
 	Describe("Set and Get", func() {
-		It("stores and retrieves a value", func() {
-			err := store.Set("test-key", []byte("test-value"))
+		It("round-trips data correctly", func() {
+			err := store.Set("mykey", []byte("myvalue"))
 			Expect(err).NotTo(HaveOccurred())
 
-			value, err := store.Get("test-key")
+			val, err := store.Get("mykey")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(value)).To(Equal("test-value"))
-		})
-
-		It("creates the file on first write", func() {
-			Expect(filePath).NotTo(BeAnExistingFile())
-
-			err := store.Set("key", []byte("value"))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(filePath).To(BeAnExistingFile())
-		})
-
-		It("overwrites an existing key", func() {
-			err := store.Set("key", []byte("value1"))
-			Expect(err).NotTo(HaveOccurred())
-
-			err = store.Set("key", []byte("value2"))
-			Expect(err).NotTo(HaveOccurred())
-
-			value, err := store.Get("key")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(string(value)).To(Equal("value2"))
-		})
-
-		It("returns an error for non-existent key", func() {
-			_, err := store.Get("nonexistent")
-			Expect(err).To(MatchError("key not found: nonexistent"))
+			Expect(val).To(Equal([]byte("myvalue")))
 		})
 	})
 
 	Describe("List", func() {
 		BeforeEach(func() {
-			entries := map[string]string{
-				"chain1/requirements": "user requirements",
-				"chain1/interview":    "interview transcript",
-				"chain1/plan":         "generated plan",
-				"chain2/requirements": "other requirements",
-				"shared/key":          "shared value",
-			}
+			Expect(store.Set("chainA/plan", []byte("plan-a"))).To(Succeed())
+			Expect(store.Set("chainA/review", []byte("review-a"))).To(Succeed())
+			Expect(store.Set("chainB/plan", []byte("plan-b"))).To(Succeed())
+		})
 
-			for k, v := range entries {
-				err := store.Set(k, []byte(v))
+		Context("when keys match the prefix", func() {
+			It("returns matching keys", func() {
+				keys, err := store.List("chainA/")
 				Expect(err).NotTo(HaveOccurred())
-			}
+				Expect(keys).To(ConsistOf("chainA/plan", "chainA/review"))
+			})
 		})
 
-		It("lists all keys with empty prefix", func() {
-			keys, err := store.List("")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).To(HaveLen(5))
-		})
-
-		It("lists keys with chain prefix", func() {
-			keys, err := store.List("chain1/")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).To(HaveLen(3))
-			Expect(keys).To(ContainElements(
-				"chain1/requirements",
-				"chain1/interview",
-				"chain1/plan",
-			))
-		})
-
-		It("lists keys with full key match", func() {
-			keys, err := store.List("chain1/requirements")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).To(HaveLen(1))
-			Expect(keys[0]).To(Equal("chain1/requirements"))
-		})
-
-		It("returns empty slice for non-matching prefix", func() {
-			keys, err := store.List("nonexistent/")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).To(BeEmpty())
-		})
-
-		It("returns empty slice for empty store", func() {
-			emptyStore := coordination.NewFileStore(filepath.Join(tempDir, "empty.json"))
-			keys, err := emptyStore.List("")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(keys).To(BeEmpty())
+		Context("when no keys match the prefix", func() {
+			It("returns an empty slice", func() {
+				keys, err := store.List("chainC/")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(BeEmpty())
+			})
 		})
 	})
 
 	Describe("Delete", func() {
-		It("deletes an existing key", func() {
-			err := store.Set("to-delete", []byte("value"))
-			Expect(err).NotTo(HaveOccurred())
+		Context("when the key exists", func() {
+			It("removes the key", func() {
+				Expect(store.Set("todelete", []byte("val"))).To(Succeed())
 
-			err = store.Delete("to-delete")
-			Expect(err).NotTo(HaveOccurred())
+				err := store.Delete("todelete")
+				Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.Get("to-delete")
-			Expect(err).To(MatchError("key not found: to-delete"))
+				_, err = store.Get("todelete")
+				Expect(err).To(HaveOccurred())
+			})
 		})
 
-		It("returns error for non-existent key", func() {
-			err := store.Delete("nonexistent")
-			Expect(err).To(MatchError("key not found: nonexistent"))
+		Context("when the key does not exist", func() {
+			It("returns an error", func() {
+				err := store.Delete("nonexistent")
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("Concurrent access", func() {
+		It("handles concurrent Set from multiple goroutines without races", func() {
+			var wg sync.WaitGroup
+			const goroutines = 50
+
+			wg.Add(goroutines)
+			for i := range goroutines {
+				go func(n int) {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					key := fmt.Sprintf("concurrent/%d", n)
+					Expect(store.Set(key, []byte(fmt.Sprintf("value-%d", n)))).To(Succeed())
+				}(i)
+			}
+			wg.Wait()
+
+			keys, err := store.List("concurrent/")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keys).To(HaveLen(goroutines))
 		})
 	})
 
-	Describe("concurrent access", func() {
-		It("handles concurrent reads and writes", func() {
-			var (
-				numWriters = 10
-				numReads   = 10
-				iterations = 20
-			)
+	Describe("Chain ID namespace isolation", func() {
+		It("keeps chainA/key and chainB/key independent", func() {
+			Expect(store.Set("chainA/requirements", []byte("req-a"))).To(Succeed())
+			Expect(store.Set("chainB/requirements", []byte("req-b"))).To(Succeed())
 
-			done := make(chan bool, numWriters+numReads)
+			valA, err := store.Get("chainA/requirements")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(valA).To(Equal([]byte("req-a")))
 
-			// Writers
-			for range numWriters {
-				go func() {
-					defer GinkgoRecover()
-					for range iterations {
-						key := "concurrent/key"
-						value := []byte("value-writer-value")
-						err := store.Set(key, value)
-						Expect(err).NotTo(HaveOccurred())
-					}
-					done <- true
-				}()
-			}
+			valB, err := store.Get("chainB/requirements")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(valB).To(Equal([]byte("req-b")))
 
-			// Readers
-			for range numReads {
-				go func() {
-					defer GinkgoRecover()
-					for range iterations {
-						_, err := store.Get("concurrent/key")
-						Expect(err).NotTo(HaveOccurred())
-					}
-					done <- true
-				}()
-			}
+			keysA, err := store.List("chainA/")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keysA).To(ConsistOf("chainA/requirements"))
 
-			// Wait for all goroutines
-			for range numWriters + numReads {
-				<-done
-			}
+			keysB, err := store.List("chainB/")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keysB).To(ConsistOf("chainB/requirements"))
 		})
-	})
-})
-
-var _ = Describe("FileStore XDG Path", func() {
-	It("uses default XDG data directory path", func() {
-		store := coordination.NewFileStore("")
-		Expect(store).NotTo(BeNil())
 	})
 })

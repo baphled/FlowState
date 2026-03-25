@@ -2,244 +2,133 @@ package coordination_test
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	store "github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/tool"
-	"github.com/baphled/flowstate/internal/tool/coordination"
+	coordination "github.com/baphled/flowstate/internal/tool/coordination"
 )
 
 var _ = Describe("CoordinationTool", func() {
 	var (
-		toolInstance *coordination.Tool
-		tempDir      string
+		t   tool.Tool
+		mem *store.MemoryStore
+		ctx context.Context
 	)
 
 	BeforeEach(func() {
-		var err error
-		tempDir, err = os.MkdirTemp("", "coordination-tool-test-*")
-		Expect(err).NotTo(HaveOccurred())
-		storePath := filepath.Join(tempDir, "coordination.json")
-		toolInstance = coordination.New(storePath)
-	})
-
-	AfterEach(func() {
-		os.RemoveAll(tempDir)
+		ctx = context.Background()
+		mem = store.NewMemoryStore()
+		t = coordination.New(mem)
 	})
 
 	Describe("Name", func() {
-		It("returns the tool name", func() {
-			Expect(toolInstance.Name()).To(Equal("coordination_store"))
-		})
-	})
-
-	Describe("Description", func() {
-		It("returns a human-readable description", func() {
-			desc := toolInstance.Description()
-			Expect(desc).To(ContainSubstring("coordination"))
-			Expect(desc).To(ContainSubstring("store"))
+		It("returns coordination_store", func() {
+			Expect(t.Name()).To(Equal("coordination_store"))
 		})
 	})
 
 	Describe("Schema", func() {
-		It("returns the JSON schema", func() {
-			schema := toolInstance.Schema()
-			Expect(schema.Type).To(Equal("object"))
-			Expect(schema.Properties).To(HaveKey("operation"))
-			Expect(schema.Properties).To(HaveKey("key"))
-			Expect(schema.Required).To(ContainElement("operation"))
-			Expect(schema.Required).To(ContainElement("key"))
+		It("returns a valid schema with required parameters", func() {
+			s := t.Schema()
+			Expect(s.Type).To(Equal("object"))
+			Expect(s.Properties).To(HaveKey("operation"))
+			Expect(s.Properties).To(HaveKey("key"))
+			Expect(s.Properties).To(HaveKey("value"))
+			Expect(s.Properties).To(HaveKey("prefix"))
+			Expect(s.Required).To(ConsistOf("operation"))
+			Expect(s.Properties["operation"].Enum).To(ConsistOf("get", "set", "list", "delete"))
 		})
 	})
 
 	Describe("Execute", func() {
-		Context("with get operation", func() {
-			BeforeEach(func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
+		Context("set operation", func() {
+			It("stores a value", func() {
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
 					Arguments: map[string]interface{}{
 						"operation": "set",
-						"key":       "test-key",
-						"value":     "test-value",
+						"key":       "chain1/plan",
+						"value":     "my plan content",
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("retrieves a value by key", func() {
-				result, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "get",
-						"key":       "test-key",
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("test-value"))
-			})
-
-			It("returns error for non-existent key", func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "get",
-						"key":       "nonexistent",
-					},
-				})
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("not found"))
-			})
-		})
-
-		Context("with set operation", func() {
-			It("stores a key-value pair", func() {
-				result, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "set",
-						"key":       "new-key",
-						"value":     "new-value",
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("new-key"))
-			})
-
-			It("overwrites an existing key", func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "set",
-						"key":       "key",
-						"value":     "value1",
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-
-				result, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "set",
-						"key":       "key",
-						"value":     "value2",
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("key"))
 				Expect(result.Output).To(ContainSubstring("stored"))
 
-				// Verify the value was overwritten by getting it
-				getResult, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "get",
-						"key":       "key",
-					},
-				})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(getResult.Output).To(ContainSubstring("value2"))
+				val, storeErr := mem.Get("chain1/plan")
+				Expect(storeErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(Equal("my plan content"))
 			})
 		})
 
-		Context("with list operation", func() {
-			BeforeEach(func() {
-				entries := map[string]string{
-					"chain1/requirements": "reqs1",
-					"chain1/interview":    "interview1",
-					"chain2/requirements": "reqs2",
-				}
-				for k, v := range entries {
-					_, err := toolInstance.Execute(context.Background(), tool.Input{
-						Arguments: map[string]interface{}{
-							"operation": "set",
-							"key":       k,
-							"value":     v,
-						},
-					})
-					Expect(err).NotTo(HaveOccurred())
-				}
-			})
+		Context("get operation", func() {
+			It("returns a stored value", func() {
+				Expect(mem.Set("chain1/review", []byte("review content"))).To(Succeed())
 
-			It("lists all keys with empty prefix", func() {
-				result, err := toolInstance.Execute(context.Background(), tool.Input{
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
 					Arguments: map[string]interface{}{
-						"operation": "list",
-						"key":       "",
+						"operation": "get",
+						"key":       "chain1/review",
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("chain1/requirements"))
-				Expect(result.Output).To(ContainSubstring("chain1/interview"))
-				Expect(result.Output).To(ContainSubstring("chain2/requirements"))
+				Expect(result.Output).To(Equal("review content"))
 			})
+		})
 
-			It("lists keys with prefix", func() {
-				result, err := toolInstance.Execute(context.Background(), tool.Input{
+		Context("list operation", func() {
+			It("returns matching keys", func() {
+				Expect(mem.Set("chain1/plan", []byte("p"))).To(Succeed())
+				Expect(mem.Set("chain1/review", []byte("r"))).To(Succeed())
+				Expect(mem.Set("chain2/plan", []byte("p2"))).To(Succeed())
+
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
 					Arguments: map[string]interface{}{
 						"operation": "list",
-						"key":       "chain1/",
+						"prefix":    "chain1/",
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("chain1/requirements"))
-				Expect(result.Output).To(ContainSubstring("chain1/interview"))
+				Expect(result.Output).To(ContainSubstring("chain1/plan"))
+				Expect(result.Output).To(ContainSubstring("chain1/review"))
 				Expect(result.Output).NotTo(ContainSubstring("chain2/"))
 			})
 		})
 
-		Context("with missing arguments", func() {
-			It("returns error when operation is missing", func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
+		Context("delete operation", func() {
+			It("removes a key", func() {
+				Expect(mem.Set("chain1/temp", []byte("tmp"))).To(Succeed())
+
+				result, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
 					Arguments: map[string]interface{}{
-						"key": "test",
+						"operation": "delete",
+						"key":       "chain1/temp",
 					},
 				})
-				Expect(err).To(HaveOccurred())
-			})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("deleted"))
 
-			It("returns error when key is missing", func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
-					Arguments: map[string]interface{}{
-						"operation": "get",
-					},
-				})
-				Expect(err).To(HaveOccurred())
+				_, storeErr := mem.Get("chain1/temp")
+				Expect(storeErr).To(HaveOccurred())
 			})
+		})
 
-			It("returns error for unknown operation", func() {
-				_, err := toolInstance.Execute(context.Background(), tool.Input{
+		Context("unknown operation", func() {
+			It("returns an error", func() {
+				_, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
 					Arguments: map[string]interface{}{
-						"operation": "unknown",
-						"key":       "test",
+						"operation": "invalid",
 					},
 				})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("unknown operation"))
 			})
-		})
-	})
-
-	Describe("JSON output", func() {
-		It("returns valid JSON for get operation", func() {
-			_, err := toolInstance.Execute(context.Background(), tool.Input{
-				Arguments: map[string]interface{}{
-					"operation": "set",
-					"key":       "json-test",
-					"value":     `{"nested":"value"}`,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			result, err := toolInstance.Execute(context.Background(), tool.Input{
-				Arguments: map[string]interface{}{
-					"operation": "get",
-					"key":       "json-test",
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			var output map[string]interface{}
-			err = json.Unmarshal([]byte(result.Output), &output)
-			Expect(err).NotTo(HaveOccurred()) // Output should be valid JSON
-			Expect(output).To(HaveKey("key"))
-			Expect(output).To(HaveKey("value"))
 		})
 	})
 })

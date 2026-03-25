@@ -1,16 +1,12 @@
-// Package coordination provides a key-value store for sharing context between
-// agents during delegation chains.
+// Package coordination provides a shared key-value store for cross-agent context
+// sharing during delegation chains.
 //
-// This package handles the storage and retrieval of cross-agent context,
-// including:
-//   - Requirements captured during the planning phase
-//   - Interview transcripts from the analysis phase
-//   - Codebase findings from the exploration phase
-//   - External references from the research phase
-//   - Analysis evidence from the synthesis phase
-//   - Generated plans from the writing phase
-//   - Review verdicts from the evaluation phase
+// This package handles:
+//   - Defining the Store interface for key-value operations (Get, Set, List, Delete).
+//   - Providing a thread-safe in-memory implementation (MemoryStore) using sync.RWMutex.
+//   - Supporting chain ID namespace isolation via key prefix conventions.
 //
-// The Store interface defines the contract for persistence, while FileStore
-// provides a JSON-based implementation that persists to the XDG data directory.
+// Keys follow the convention {chainID}/{keyname} to scope data to a specific
+// delegation chain. The store itself is a flat key-value map; namespace isolation
+// is achieved by callers using consistent key prefixes.
 package coordination
