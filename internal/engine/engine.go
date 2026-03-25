@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -396,6 +397,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 // Side effects:
 //   - Executes hook chain if configured. Hooks may mutate req.
 func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	slog.Info("engine stream request", "provider", e.LastProvider(), "model", e.LastModel(), "messages", len(req.Messages))
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {
 		handler = e.hookChain.Execute(handler)
@@ -547,15 +549,17 @@ func (e *Engine) processStreamChunks(
 //   - Executes the tool, which may have its own side effects.
 func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.Result, error) {
 	for _, t := range e.tools {
-		if t.Name() == toolCall.Name {
-			input := tool.Input{
-				Name:      toolCall.Name,
-				Arguments: toolCall.Arguments,
-			}
-			result, err := t.Execute(ctx, input)
-			result.Error = err
-			return result, nil
+		if t.Name() != toolCall.Name {
+			continue
 		}
+		slog.Info("engine tool call", "tool", toolCall.Name)
+		input := tool.Input{
+			Name:      toolCall.Name,
+			Arguments: toolCall.Arguments,
+		}
+		result, err := t.Execute(ctx, input)
+		result.Error = err
+		return result, nil
 	}
 	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
 }
@@ -747,6 +751,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 	e.mu.RUnlock()
 	manifestCopy.Instructions.SystemPrompt = e.BuildSystemPrompt()
 	result := e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
 	e.mu.Lock()
 	e.lastContextResult = result
