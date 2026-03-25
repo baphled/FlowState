@@ -18,6 +18,8 @@ type SessionInfo struct {
 	MessageCount   int       `json:"message_count"`
 	LastActive     time.Time `json:"last_active"`
 	EmbeddingModel string    `json:"embedding_model"`
+	SystemPrompt   string    `json:"system_prompt"`
+	LoadedSkills   []string  `json:"loaded_skills"`
 }
 
 // SessionStore defines the interface for persisting and loading sessions.
@@ -46,6 +48,8 @@ type sessionFile struct {
 	LastActive     time.Time        `json:"last_active"`
 	Messages       []StoredMessage  `json:"messages"`
 	Embeddings     []EmbeddingEntry `json:"embeddings"`
+	SystemPrompt   string           `json:"system_prompt"`
+	LoadedSkills   []string         `json:"loaded_skills"`
 }
 
 // NewFileSessionStore creates a new file-based session store at the given directory.
@@ -216,6 +220,8 @@ func (s *FileSessionStore) List() []SessionInfo {
 			MessageCount:   len(sf.Messages),
 			LastActive:     sf.LastActive,
 			EmbeddingModel: sf.EmbeddingModel,
+			SystemPrompt:   sf.SystemPrompt,
+			LoadedSkills:   sf.LoadedSkills,
 		})
 	}
 

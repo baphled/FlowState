@@ -931,7 +931,8 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 		}
 		sessions := i.sessionStore.List()
 		entries := make([]sessionbrowser.SessionEntry, len(sessions))
-		for idx, s := range sessions {
+		for idx := range sessions {
+			s := &sessions[idx]
 			title := s.Title
 			if title == "" {
 				switch {

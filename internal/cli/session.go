@@ -56,7 +56,8 @@ func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 				return err
 			}
 
-			for _, s := range sessions {
+			for i := range sessions {
+				s := &sessions[i]
 				title := s.Title
 				if title == "" {
 					title = s.ID[:8]
@@ -122,7 +123,8 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 //   - None.
 func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
 	sessions := a.Sessions.List()
-	for _, s := range sessions {
+	for i := range sessions {
+		s := &sessions[i]
 		if s.ID == sessionID {
 			return &sessionInfo{
 				ID:      s.ID,

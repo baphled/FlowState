@@ -188,4 +188,53 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(store).NotTo(BeNil())
 		})
 	})
+
+	Describe("SessionFile round-trip with SystemPrompt and LoadedSkills", func() {
+		It("preserves SystemPrompt and LoadedSkills through marshal/unmarshal", func() {
+			ctxStore, err := context.NewFileContextStore(
+				filepath.Join(contextDir, "ctx.json"),
+				"text-embedding-ada-002",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			ctxStore.Append(provider.Message{Role: "user", Content: "Test"})
+
+			err = sessionStore.Save("roundtrip-session", ctxStore)
+			Expect(err).NotTo(HaveOccurred())
+
+			sessions := sessionStore.List()
+			Expect(sessions).To(HaveLen(1))
+			Expect(sessions[0].SystemPrompt).To(Equal(""))
+			Expect(sessions[0].LoadedSkills).To(BeEmpty())
+		})
+	})
+
+	Describe("Backward compatibility with old session files", func() {
+		It("loads sessions without system_prompt and loaded_skills fields", func() {
+			oldSessionJSON := `{
+  "session_id": "old-session",
+  "title": "Old Session",
+  "agent_id": "",
+  "embedding_model": "text-embedding-ada-002",
+  "last_active": "2024-01-01T00:00:00Z",
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "content": "Hello",
+      "timestamp": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "embeddings": []
+}`
+			sessionPath := filepath.Join(sessionsDir, "old-session.json")
+			err := os.WriteFile(sessionPath, []byte(oldSessionJSON), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			sessions := sessionStore.List()
+			Expect(sessions).To(HaveLen(1))
+			Expect(sessions[0].ID).To(Equal("old-session"))
+			Expect(sessions[0].SystemPrompt).To(Equal(""))
+			Expect(sessions[0].LoadedSkills).To(BeNil())
+		})
+	})
 })
