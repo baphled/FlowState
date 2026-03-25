@@ -139,6 +139,7 @@ type Intent struct {
 	errorModal        *feedback.Modal
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
+	streamCancel   context.CancelFunc
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -322,6 +323,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		i.cancelActiveStream()
 		return tea.Sequence(i.saveSession(), tea.Quit)
 	case tea.KeyTab:
 		return i.toggleAgent()
@@ -590,6 +592,17 @@ func detectAgentFromInput(message string) string {
 	return ""
 }
 
+// cancelActiveStream cancels the context of the current streaming producer, if any.
+//
+// Side effects:
+//   - Calls the stored cancel function and clears it.
+func (i *Intent) cancelActiveStream() {
+	if i.streamCancel != nil {
+		i.streamCancel()
+		i.streamCancel = nil
+	}
+}
+
 // sendMessage appends the current input to messages and streams a response from the engine.
 //
 // Returns:
@@ -620,8 +633,12 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.view.StartStreaming()
 	i.refreshViewport()
 
+	i.cancelActiveStream()
+	ctx, cancel := context.WithCancel(context.Background())
+	i.streamCancel = cancel
+
 	return func() tea.Msg {
-		stream, err := i.streamer.Stream(context.Background(), i.agentID, userMessage)
+		stream, err := i.streamer.Stream(ctx, i.agentID, userMessage)
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}

@@ -21,18 +21,19 @@ type ErrorMsg struct{ Err error }
 
 // Model is the Bubble Tea model for the chat interface.
 type Model struct {
-	streamer  Streamer
-	agentID   string
-	sessionID string
-	messages  []string
-	input     string
-	mode      string
-	streaming bool
-	response  strings.Builder
-	width     int
-	height    int
-	err       error
-	chunks    <-chan provider.StreamChunk
+	streamer     Streamer
+	agentID      string
+	sessionID    string
+	messages     []string
+	input        string
+	mode         string
+	streaming    bool
+	response     strings.Builder
+	width        int
+	height       int
+	err          error
+	chunks       <-chan provider.StreamChunk
+	streamCancel context.CancelFunc
 }
 
 // NewModel creates a new chat model with the given streamer and agent.
@@ -124,6 +125,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		m.cancelActiveStream()
 		return m, tea.Quit
 	case tea.KeyEscape:
 		if m.mode == "insert" {
@@ -165,6 +167,7 @@ func (m *Model) handleRunes(runes []rune) (tea.Model, tea.Cmd) {
 				m.mode = "insert"
 				return m, nil
 			case 'q':
+				m.cancelActiveStream()
 				return m, tea.Quit
 			}
 		}
@@ -173,6 +176,17 @@ func (m *Model) handleRunes(runes []rune) (tea.Model, tea.Cmd) {
 
 	m.input += string(runes)
 	return m, nil
+}
+
+// cancelActiveStream cancels the context of the current streaming producer, if any.
+//
+// Side effects:
+//   - Calls the stored cancel function and clears it.
+func (m *Model) cancelActiveStream() {
+	if m.streamCancel != nil {
+		m.streamCancel()
+		m.streamCancel = nil
+	}
 }
 
 // sendMessage initiates a streaming request to the engine with the current input.
@@ -188,8 +202,11 @@ func (m *Model) sendMessage() tea.Cmd {
 	m.input = ""
 	m.streaming = true
 
+	m.cancelActiveStream()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.streamCancel = cancel
+
 	return func() tea.Msg {
-		ctx := context.Background()
 		chunks, err := m.streamer.Stream(ctx, m.agentID, message)
 		if err != nil {
 			return ErrorMsg{Err: err}
