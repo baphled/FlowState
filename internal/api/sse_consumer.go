@@ -66,3 +66,15 @@ func (c *SSEConsumer) WriteError(err error) {
 func (c *SSEConsumer) Done() {
 	writeSSEDone(c.w, c.flusher)
 }
+
+// WriteToolCall writes a JSON-encoded tool call event as a server-sent event.
+//
+// Expected:
+//   - name is the name of the tool being invoked.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool call to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteToolCall(name string) {
+	writeSSEToolCall(c.w, c.flusher, name)
+}

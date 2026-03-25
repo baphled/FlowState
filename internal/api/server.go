@@ -301,6 +301,31 @@ func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
 	writeSSE(w, flusher, "[DONE]")
 }
 
+// sseToolCall represents a tool call event in a server-sent event stream.
+type sseToolCall struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// writeSSEToolCall marshals a tool call as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - name is the tool name being invoked.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool call to response.
+//   - Flushes response buffer.
+func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name string) {
+	data := sseToolCall{Type: "tool_call", Name: name, Status: "running"}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // writeSSE writes a server-sent event data line and flushes the response buffer.
 //
 // Expected:
