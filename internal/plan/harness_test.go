@@ -575,3 +575,84 @@ func filterEventChunks(chunks []provider.StreamChunk, eventType string) []provid
 	}
 	return filtered
 }
+
+var _ = Describe("PlanHarness with ConsistencyVoter", func() {
+	var (
+		harness     *plan.PlanHarness
+		projectRoot string
+	)
+
+	BeforeEach(func() {
+		projectRoot = projectRootFromWorkingDir()
+	})
+
+	Context("when voter is not configured (nil)", func() {
+		It("behaves identically to current behavior in Evaluate", func() {
+			harness = plan.NewPlanHarness(projectRoot)
+			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
+			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.ValidationResult.Valid).To(BeTrue())
+		})
+
+		It("behaves identically to current behavior in StreamEvaluate", func() {
+			harness = plan.NewPlanHarness(projectRoot)
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			received := drainChunks(outCh)
+			completeChunks := filterEventChunks(received, "harness_complete")
+			Expect(completeChunks).To(HaveLen(1))
+		})
+	})
+
+	Context("when voter is configured but score is above threshold", func() {
+		It("does not trigger voting in Evaluate", func() {
+			voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.5}
+			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
+			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
+			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.FinalScore).To(BeNumerically(">=", 0.5))
+		})
+
+		It("does not trigger voting in StreamEvaluate", func() {
+			voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.5}
+			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
+			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			received := drainChunks(outCh)
+			completeChunks := filterEventChunks(received, "harness_complete")
+			Expect(completeChunks).To(HaveLen(1))
+		})
+	})
+
+	Context("when voter is configured and enabled", func() {
+		It("still produces valid result when voter is enabled but score above threshold", func() {
+			voterCfg := plan.VoterConfig{Enabled: true, Variants: 2, Threshold: 0.95}
+			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
+			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
+			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.ValidationResult.Valid).To(BeTrue())
+			Expect(result.FinalScore).To(BeNumerically(">", 0.95))
+		})
+	})
+})

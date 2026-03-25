@@ -58,6 +58,22 @@ func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
 	}
 }
 
+// WithVoter attaches a ConsistencyVoter to the harness.
+//
+// Expected:
+//   - voter is a configured ConsistencyVoter (may be nil for no voting).
+//
+// Returns:
+//   - A HarnessOption that sets the voter field.
+//
+// Side effects:
+//   - None.
+func WithVoter(voter *ConsistencyVoter) HarnessOption {
+	return func(h *PlanHarness) {
+		h.voter = voter
+	}
+}
+
 // PlanHarness wraps a Streamer with validate-retry logic and optional LLM critic.
 //
 //nolint:revive // PlanHarness name is intentional for plan-specific workflows.
@@ -69,6 +85,7 @@ type PlanHarness struct {
 	referenceValidator *ReferenceValidator
 	critic             *LLMCritic
 	criticProvider     provider.Provider
+	voter              *ConsistencyVoter
 }
 
 // NewPlanHarness creates a PlanHarness with validators, retry settings, and optional configuration.
@@ -195,6 +212,7 @@ func (h *PlanHarness) runStreamEvaluation(
 
 		result, feedback := h.evaluateStreamAttempt(ctx, planText, attempt, outCh)
 		if result != nil {
+			result = h.applyVoter(ctx, streamer, agentID, currentMessage, result)
 			emitHarnessComplete(ctx, outCh, result)
 			trySend(ctx, outCh, provider.StreamChunk{Done: true})
 			return
@@ -388,6 +406,7 @@ func (h *PlanHarness) Evaluate(
 
 		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
 		if result != nil {
+			result = h.applyVoter(ctx, streamer, agentID, currentMessage, result)
 			return result, nil
 		}
 		currentMessage = appendFeedback(currentMessage, feedback)
@@ -633,6 +652,40 @@ func (h *PlanHarness) runCriticStream(
 	}
 
 	return ""
+}
+
+// applyVoter runs the consistency voter if configured and score is below threshold.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the original planning prompt.
+//   - result is a non-nil EvaluationResult from successful validation.
+//
+// Returns:
+//   - The original result if voter is nil or not triggered, otherwise result with updated plan and score.
+//
+// Side effects:
+//   - Spawns goroutines to generate plan variants when voter triggers.
+func (h *PlanHarness) applyVoter(
+	ctx context.Context, streamer Streamer, agentID string, message string, result *EvaluationResult,
+) *EvaluationResult {
+	if h.voter == nil {
+		return result
+	}
+	voteResult, err := h.voter.Vote(ctx, streamer, VoteRequest{
+		AgentID:      agentID,
+		Message:      message,
+		InitialPlan:  result.PlanText,
+		InitialScore: result.FinalScore,
+	})
+	if err != nil || !voteResult.WasTriggered {
+		return result
+	}
+	result.PlanText = voteResult.BestPlan
+	result.FinalScore = voteResult.BestScore
+	return result
 }
 
 // emitCriticFeedback sends a harness_critic_feedback event to outCh with the critic verdict.

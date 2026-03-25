@@ -140,6 +140,8 @@ type Intent struct {
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
 	streamCancel   context.CancelFunc
+	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
+	cachedScreenLayout *layout.ScreenLayout
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -233,6 +235,9 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 			i.msgViewport.Width = msg.Width
 			i.msgViewport.Height = vpHeight
 		}
+		i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: msg.Width, Height: msg.Height}).
+			WithBreadcrumbs("Chat").
+			WithFooterSeparator(true)
 		return nil
 	case StreamChunkMsg:
 		return i.handleStreamChunkMsg(msg)
@@ -501,6 +506,15 @@ func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
 
 // handleHarnessEvent silently consumes harness observability events.
 // These events are for internal tracking and do not affect the session.
+//
+// Expected:
+//   - msg is a StreamChunkMsg with a harness event type.
+//
+// Returns:
+//   - The next command from msg.Next if present, or nil.
+//
+// Side effects:
+//   - None.
 func (i *Intent) handleHarnessEvent(msg StreamChunkMsg) tea.Cmd {
 	if msg.Next != nil {
 		return msg.Next
@@ -781,13 +795,17 @@ func (i *Intent) View() string {
 
 	status := i.renderStatusString()
 
-	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
-		WithBreadcrumbs("Chat").
-		WithContent(content).
+	if i.cachedScreenLayout == nil {
+		i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
+			WithBreadcrumbs("Chat").
+			WithFooterSeparator(true)
+	}
+
+	sl := i.cachedScreenLayout
+	sl.WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit").
-		WithFooterSeparator(true)
+		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit")
 
 	return i.renderModalOverlay(sl.Render())
 }

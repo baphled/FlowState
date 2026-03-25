@@ -65,22 +65,73 @@ func (a *harnessAdapter) StreamEvaluate(
 	return a.harness.StreamEvaluate(ctx, streamer, agentID, message)
 }
 
-// createHarnessStreamer builds a HarnessStreamer wrapping the engine with plan harness validation.
+// createHarnessStreamer builds a HarnessStreamer wrapping the engine with plan
+// harness validation.
 //
 // Expected:
 //   - inner is a non-nil streaming.Streamer (typically the engine).
 //   - registry is a non-nil agent.Registry for manifest lookup.
+//   - cfg is a HarnessConfig specifying whether the critic is enabled.
+//   - p is a provider.Provider for the LLM critic (required when CriticEnabled is true).
 //
 // Returns:
 //   - A configured HarnessStreamer that routes harness-enabled agents through the evaluator.
+//   - When CriticEnabled is true in cfg and p is non-nil, the harness includes an LLM critic.
 //
 // Side effects:
-//   - Calls os.Getwd to determine the project root directory.
-func createHarnessStreamer(inner streaming.Streamer, registry *agent.Registry) *streaming.HarnessStreamer {
-	projectRoot, err := os.Getwd()
-	if err != nil {
-		projectRoot = "."
+//   - Calls os.Getwd to determine the project root directory if not set in cfg.
+func createHarnessStreamer(
+	inner streaming.Streamer,
+	registry *agent.Registry,
+	cfg HarnessConfig,
+	p provider.Provider,
+) *streaming.HarnessStreamer {
+	projectRoot := cfg.ProjectRoot
+	if projectRoot == "" {
+		var err error
+		projectRoot, err = os.Getwd()
+		if err != nil {
+			projectRoot = "."
+		}
 	}
-	harness := plan.NewPlanHarness(projectRoot)
+
+	var opts []plan.HarnessOption
+	if cfg.CriticEnabled && p != nil {
+		critic, err := plan.NewLLMCritic(true, "claude-sonnet-4-6")
+		if err == nil {
+			opts = append(opts, plan.WithCritic(critic, p))
+		}
+	}
+
+	if cfg.VotingEnabled {
+		voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.8}
+		voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
+		opts = append(opts, plan.WithVoter(voter))
+	}
+
+	harness := plan.NewPlanHarness(projectRoot, opts...)
 	return streaming.NewHarnessStreamer(inner, &harnessAdapter{harness: harness}, registry)
+}
+
+// CreateHarnessStreamerForTest is a test helper that exposes createHarnessStreamer for
+// testing.
+//
+// Expected:
+//   - inner is a streaming.Streamer (may be nil for testing).
+//   - registry is a non-nil agent.Registry for manifest lookup.
+//   - cfg is a HarnessConfig specifying whether the critic is enabled.
+//   - p is a provider.Provider for the LLM critic (may be nil when CriticEnabled is false).
+//
+// Returns:
+//   - A configured HarnessStreamer for testing.
+//
+// Side effects:
+//   - None.
+func CreateHarnessStreamerForTest(
+	inner streaming.Streamer,
+	registry *agent.Registry,
+	cfg HarnessConfig,
+	p provider.Provider,
+) *streaming.HarnessStreamer {
+	return createHarnessStreamer(inner, registry, cfg, p)
 }

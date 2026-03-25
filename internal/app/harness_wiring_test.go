@@ -107,4 +107,70 @@ var _ = Describe("Harness wiring", func() {
 			})
 		})
 	})
+
+	Describe("createHarnessStreamer with critic configuration", func() {
+		Context("when CriticEnabled is false (default)", func() {
+			It("accepts HarnessConfig and provider without error", func() {
+				cfg := app.HarnessConfig{
+					Enabled:       true,
+					CriticEnabled: false,
+					ProjectRoot:   tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+				Expect(streamer).To(BeAssignableToTypeOf(&streaming.HarnessStreamer{}))
+			})
+		})
+
+		Context("when CriticEnabled is true with valid provider", func() {
+			It("accepts HarnessConfig and provider and creates streamer", func() {
+				cfg := app.HarnessConfig{
+					Enabled:       true,
+					CriticEnabled: true,
+					ProjectRoot:   tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+				Expect(streamer).To(BeAssignableToTypeOf(&streaming.HarnessStreamer{}))
+			})
+		})
+	})
+
+	Describe("createHarnessStreamer with voting configuration", func() {
+		Context("when VotingEnabled is false (default)", func() {
+			It("creates streamer without voter", func() {
+				cfg := app.HarnessConfig{
+					Enabled:       true,
+					VotingEnabled: false,
+					ProjectRoot:   tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+			})
+		})
+
+		Context("when VotingEnabled is true", func() {
+			It("creates streamer with voter configured", func() {
+				cfg := app.HarnessConfig{
+					Enabled:       true,
+					VotingEnabled: true,
+					ProjectRoot:   tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+			})
+		})
+	})
 })
