@@ -144,6 +144,72 @@ var _ = Describe("Plan Command", func() {
 			Expect(output).To(ContainSubstring("A test plan for selection"))
 			Expect(output).To(ContainSubstring("in_progress"))
 		})
+
+		It("displays multiple tasks with descriptions", func() {
+			store, err := plan.NewPlanStore(planDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			planFile := plan.File{
+				ID:          "multi-task",
+				Title:       "Multi Task Plan",
+				Description: "",
+				Status:      "active",
+				CreatedAt:   time.Now(),
+				Tasks: []plan.Task{
+					{
+						Title:       "Task Alpha",
+						Description: "Alpha description",
+						Status:      "done",
+					},
+					{
+						Title:       "Task Beta",
+						Description: "Beta description",
+						Status:      "pending",
+					},
+					{
+						Title:       "Task Gamma",
+						Description: "",
+						Status:      "pending",
+					},
+				},
+			}
+			err = store.Create(planFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			out.Reset()
+			err = planCmd("plan", "select", "multi-task")
+			Expect(err).NotTo(HaveOccurred())
+			output := out.String()
+			Expect(output).To(ContainSubstring("Task Alpha"))
+			Expect(output).To(ContainSubstring("Alpha description"))
+			Expect(output).To(ContainSubstring("Task Beta"))
+			Expect(output).To(ContainSubstring("Beta description"))
+			Expect(output).To(ContainSubstring("Task Gamma"))
+			Expect(output).To(ContainSubstring("## Tasks"))
+		})
+
+		It("displays plan without description", func() {
+			store, err := plan.NewPlanStore(planDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			planFile := plan.File{
+				ID:        "no-desc",
+				Title:     "No Description Plan",
+				Status:    "draft",
+				CreatedAt: time.Now(),
+				Tasks:     []plan.Task{},
+			}
+			err = store.Create(planFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			out.Reset()
+			err = planCmd("plan", "select", "no-desc")
+			Expect(err).NotTo(HaveOccurred())
+			output := out.String()
+			Expect(output).To(ContainSubstring("No Description Plan"))
+			Expect(output).To(ContainSubstring("draft"))
+			Expect(output).NotTo(ContainSubstring("## Tasks"))
+		})
 	})
 
 	Context("when deleting a plan", func() {

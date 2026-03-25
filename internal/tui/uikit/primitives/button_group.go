@@ -226,7 +226,6 @@ func (g *ButtonGroup) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnd:
 			g.FocusLast()
 		case tea.KeyRunes:
-			// Handle vim-style navigation
 			if len(keyMsg.Runes) > 0 {
 				switch keyMsg.Runes[0] {
 				case 'l':

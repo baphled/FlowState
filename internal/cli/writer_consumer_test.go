@@ -131,4 +131,26 @@ var _ = Describe("WriterConsumer", func() {
 			})
 		})
 	})
+
+	Describe("WriteHarnessRetry", func() {
+		It("writes retry banner with emoji to the writer", func() {
+			var buf bytes.Buffer
+			consumer := cli.NewWriterConsumer(&buf, false)
+
+			consumer.WriteHarnessRetry("validation failed, retrying")
+
+			Expect(buf.String()).To(Equal("\n🔄 validation failed, retrying\n\n"))
+		})
+
+		Context("when silent is true", func() {
+			It("does not write to the writer", func() {
+				var buf bytes.Buffer
+				consumer := cli.NewWriterConsumer(&buf, true)
+
+				consumer.WriteHarnessRetry("validation failed, retrying")
+
+				Expect(buf.String()).To(BeEmpty())
+			})
+		})
+	})
 })

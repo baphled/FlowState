@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
@@ -195,6 +196,49 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(Equal("No sessions yet.\n"))
 		})
+
+		It("lists sessions with titles and message counts", func() {
+			testApp := createTestApp("", "")
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			store := ctxstore.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role:    "user",
+				Content: "Hello session test",
+			})
+			meta := ctxstore.SessionMetadata{
+				AgentID: "test-agent",
+				Title:   "Test Session",
+			}
+			Expect(sessStore.Save("sess-0001", store, meta)).To(Succeed())
+
+			out.Reset()
+			err = cmd(testApp, "session", "list")
+			Expect(err).NotTo(HaveOccurred())
+			output := out.String()
+			Expect(output).To(ContainSubstring("sess-000"))
+			Expect(output).To(ContainSubstring("Test Session"))
+		})
+
+		It("uses truncated ID when session has no title", func() {
+			testApp := createTestApp("", "")
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			store := ctxstore.NewEmptyContextStore("")
+			Expect(sessStore.Save("abcdefghijklmnop", store, ctxstore.SessionMetadata{})).To(Succeed())
+
+			out.Reset()
+			err = cmd(testApp, "session", "list")
+			Expect(err).NotTo(HaveOccurred())
+			output := out.String()
+			Expect(output).To(ContainSubstring("abcdefgh"))
+		})
 	})
 
 	Describe("session resume", func() {
@@ -203,6 +247,25 @@ var _ = Describe("CLI Commands", func() {
 			err := cmd(testApp, "session", "resume", "my-session-123")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(`session "my-session-123" not found`))
+		})
+
+		It("returns error when session not found among existing sessions", func() {
+			testApp := createTestApp("", "")
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			store := ctxstore.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "hello"})
+			Expect(sessStore.Save("existing-session", store, ctxstore.SessionMetadata{
+				AgentID: "test-agent",
+				Title:   "Existing",
+			})).To(Succeed())
+
+			err = cmd(testApp, "session", "resume", "wrong-id")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`session "wrong-id" not found`))
 		})
 	})
 
@@ -346,6 +409,15 @@ var _ = Describe("CLI Commands", func() {
 		})
 	})
 
+	Describe("discover --help", func() {
+		It("shows discover usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "discover", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Suggest an agent"))
+		})
+	})
+
 	Describe("skill add", func() {
 		It("shows help with correct usage", func() {
 			testApp := createTestApp("", "")
@@ -353,6 +425,19 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("Import a skill from a GitHub"))
 			Expect(out.String()).To(ContainSubstring("OWNER/REPO"))
+		})
+
+		It("returns error when import fails", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "skill", "add", "invalid/nonexistent-repo-xyz")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("importing skill"))
+		})
+
+		It("requires exactly one argument", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "skill", "add")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -375,6 +460,211 @@ var _ = Describe("CLI Commands", func() {
 				Expect(out.String()).To(ContainSubstring("test-model"))
 				Expect(out.String()).To(ContainSubstring("4096"))
 			})
+		})
+
+		Context("with multiple models from a provider", func() {
+			It("lists all models", func() {
+				testApp := createTestApp("", "")
+				testProvider := &testModelProvider{
+					name: "multi-provider",
+					models: []provider.Model{
+						{ID: "model-a", Provider: "multi-provider", ContextLength: 2048},
+						{ID: "model-b", Provider: "multi-provider", ContextLength: 8192},
+					},
+				}
+				registry := provider.NewRegistry()
+				registry.Register(testProvider)
+				testApp.Engine = engine.New(engine.Config{
+					ChatProvider: testProvider,
+					Registry:     registry,
+				})
+				testApp.SetProviderRegistry(registry)
+
+				err := cmd(testApp, "models")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("model-a"))
+				Expect(out.String()).To(ContainSubstring("model-b"))
+				Expect(out.String()).To(ContainSubstring("2048"))
+				Expect(out.String()).To(ContainSubstring("8192"))
+			})
+		})
+	})
+
+	Describe("auth anthropic --help", func() {
+		It("shows usage for anthropic subcommand", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "auth", "anthropic", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Authenticate with Anthropic"))
+			Expect(out.String()).To(ContainSubstring("API key"))
+		})
+	})
+
+	Describe("config --help", func() {
+		It("shows configuration management usage", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "config", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Configuration management"))
+			Expect(out.String()).To(ContainSubstring("harness"))
+		})
+	})
+
+	Describe("plan --help", func() {
+		It("shows plan usage with subcommands", func() {
+			testApp := createTestApp("", "")
+			err := cmd(testApp, "plan", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("Create, list, select, and delete plans"))
+			Expect(out.String()).To(ContainSubstring("list"))
+			Expect(out.String()).To(ContainSubstring("select"))
+			Expect(out.String()).To(ContainSubstring("delete"))
+		})
+	})
+
+	Describe("root with flag overrides", func() {
+		It("applies agents-dir override", func() {
+			testApp := createTestApp("", "")
+			overrideDir := GinkgoT().TempDir()
+			err := cmd(testApp, "--agents-dir", overrideDir)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring(overrideDir))
+		})
+
+		It("applies skills-dir override", func() {
+			testApp := createTestApp("", "")
+			overrideDir := GinkgoT().TempDir()
+			err := cmd(testApp, "--skills-dir", overrideDir)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring(overrideDir))
+		})
+
+		It("applies sessions-dir override", func() {
+			testApp := createTestApp("", "")
+			overrideDir := GinkgoT().TempDir()
+			err := cmd(testApp, "--sessions-dir", overrideDir)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("chat with model flag", func() {
+		It("returns error when model is invalid", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "ok", Done: true},
+			}, nil)
+			err := cmd(testApp, "chat", "--message", "test", "--model", "nonexistent-model")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("setting model"))
+		})
+	})
+
+	Describe("run with session persistence", func() {
+		It("saves session when session store is available", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "saved response", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			err = cmd(testApp, "run", "--prompt", "test save", "--session", "save-test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("saved response"))
+		})
+
+		It("loads existing session when session ID is provided", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "resumed", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			store := ctxstore.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "old message"})
+			Expect(sessStore.Save("resume-test", store, ctxstore.SessionMetadata{
+				AgentID: "worker",
+			})).To(Succeed())
+
+			err = cmd(testApp, "run", "--prompt", "continue", "--session", "resume-test")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("resumed"))
+		})
+
+		It("uses default agent name when agent flag is empty", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "ok", Done: true},
+			}, nil)
+			err := cmd(testApp, "run", "--prompt", "test", "--agent", "", "--json")
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("chat with session persistence", func() {
+		It("saves session when session store is available", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "chat saved", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			err = cmd(testApp, "chat", "--message", "test save", "--session", "chat-save")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("chat saved"))
+		})
+
+		It("loads existing session when session ID is provided", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "chat resumed", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			store := ctxstore.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "previous chat"})
+			Expect(sessStore.Save("chat-resume", store, ctxstore.SessionMetadata{
+				AgentID: "test-agent",
+			})).To(Succeed())
+
+			err = cmd(testApp, "chat", "--message", "resume chat", "--session", "chat-resume")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("chat resumed"))
+		})
+
+		It("handles session load gracefully for non-existent session", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "fresh chat", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			err = cmd(testApp, "chat", "--message", "test", "--session", "nonexistent-session")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("fresh chat"))
+		})
+	})
+
+	Describe("run with session load for non-existent session", func() {
+		It("proceeds without loading when session does not exist", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{
+				{Content: "fresh run", Done: true},
+			}, nil)
+			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
+			Expect(err).NotTo(HaveOccurred())
+			testApp.Sessions = sessStore
+
+			err = cmd(testApp, "run", "--prompt", "test", "--session", "nonexistent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("fresh run"))
 		})
 	})
 })
