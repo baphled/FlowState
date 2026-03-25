@@ -7,17 +7,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// PrometheusRecorder implements Recorder using Prometheus counters and histograms.
-type PrometheusRecorder struct {
+var _ Recorder = (*prometheusRecorder)(nil)
+
+// prometheusRecorder implements Recorder using Prometheus counters and histograms.
+type prometheusRecorder struct {
 	retries          *prometheus.CounterVec
 	validationScores *prometheus.HistogramVec
 	criticResults    *prometheus.CounterVec
 	providerLatency  *prometheus.HistogramVec
 }
 
-// NewPrometheusRecorder creates a PrometheusRecorder and registers its collectors with reg.
-func NewPrometheusRecorder(reg prometheus.Registerer) *PrometheusRecorder {
-	return &PrometheusRecorder{
+// NewPrometheusRecorder returns a Recorder backed by Prometheus metrics registered with reg.
+func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
+	return &prometheusRecorder{
 		retries: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "flowstate_harness_retries_total",
 			Help: "Total number of harness retry attempts.",
@@ -40,21 +42,21 @@ func NewPrometheusRecorder(reg prometheus.Registerer) *PrometheusRecorder {
 }
 
 // RecordRetry records a harness retry event for the given agent.
-func (p *PrometheusRecorder) RecordRetry(agentID string) {
+func (p *prometheusRecorder) RecordRetry(agentID string) {
 	p.retries.WithLabelValues(agentID).Inc()
 }
 
 // RecordValidationScore records a plan validation score for the given agent.
-func (p *PrometheusRecorder) RecordValidationScore(agentID string, score float64) {
+func (p *prometheusRecorder) RecordValidationScore(agentID string, score float64) {
 	p.validationScores.WithLabelValues(agentID).Observe(score)
 }
 
 // RecordCriticResult records whether the LLM critic passed or failed for the given agent.
-func (p *PrometheusRecorder) RecordCriticResult(agentID string, passed bool) {
+func (p *prometheusRecorder) RecordCriticResult(agentID string, passed bool) {
 	p.criticResults.WithLabelValues(agentID, strconv.FormatBool(passed)).Inc()
 }
 
 // RecordProviderLatency records the latency in milliseconds for a provider method call.
-func (p *PrometheusRecorder) RecordProviderLatency(prov, method string, ms float64) {
+func (p *prometheusRecorder) RecordProviderLatency(prov, method string, ms float64) {
 	p.providerLatency.WithLabelValues(prov, method).Observe(ms)
 }

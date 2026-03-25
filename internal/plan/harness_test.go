@@ -324,6 +324,109 @@ var _ = Describe("StreamEvaluate", func() {
 	})
 })
 
+var _ = Describe("StreamEvaluate event matrix", func() {
+	var projectRoot string
+
+	BeforeEach(func() {
+		projectRoot = projectRootFromWorkingDir()
+	})
+
+	type eventExpectation struct {
+		attemptStarts    int
+		completePresent  bool
+		expectedValid    bool
+		expectedAttempts []int
+	}
+
+	DescribeTable("harness events across retry scenarios",
+		func(buildStreamer func() *chunkMockStreamer, expected eventExpectation) {
+			harness := plan.NewPlanHarness(projectRoot)
+			streamer := buildStreamer()
+
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			attemptStartChunks := filterEventChunks(received, "harness_attempt_start")
+			Expect(attemptStartChunks).To(HaveLen(expected.attemptStarts))
+
+			for i, chunk := range attemptStartChunks {
+				var payload map[string]any
+				Expect(json.Unmarshal([]byte(chunk.Content), &payload)).To(Succeed())
+				Expect(payload["attempt"]).To(BeEquivalentTo(expected.expectedAttempts[i]))
+			}
+
+			completeChunks := filterEventChunks(received, "harness_complete")
+			if expected.completePresent {
+				Expect(completeChunks).To(HaveLen(1))
+				var payload map[string]any
+				Expect(json.Unmarshal([]byte(completeChunks[0].Content), &payload)).To(Succeed())
+				Expect(payload).To(HaveKey("valid"))
+				Expect(payload).To(HaveKey("score"))
+				Expect(payload).To(HaveKey("attemptCount"))
+				Expect(payload["valid"]).To(Equal(expected.expectedValid))
+			} else {
+				Expect(completeChunks).To(BeEmpty())
+			}
+		},
+		Entry("first attempt succeeds",
+			func() *chunkMockStreamer {
+				return &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+					{{Content: loadValidPlan()}, {Done: true}},
+				}}
+			},
+			eventExpectation{
+				attemptStarts:    1,
+				completePresent:  true,
+				expectedValid:    true,
+				expectedAttempts: []int{1},
+			},
+		),
+		Entry("retry then success",
+			func() *chunkMockStreamer {
+				return &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+					{{Content: invalidPlan()}, {Done: true}},
+					{{Content: loadValidPlan()}, {Done: true}},
+				}}
+			},
+			eventExpectation{
+				attemptStarts:    2,
+				completePresent:  true,
+				expectedValid:    true,
+				expectedAttempts: []int{1, 2},
+			},
+		),
+		Entry("all retries exhausted",
+			func() *chunkMockStreamer {
+				return &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+					{{Content: invalidPlan()}, {Done: true}},
+					{{Content: invalidPlan()}, {Done: true}},
+					{{Content: invalidPlan()}, {Done: true}},
+				}}
+			},
+			eventExpectation{
+				attemptStarts:    3,
+				completePresent:  true,
+				expectedValid:    false,
+				expectedAttempts: []int{1, 2, 3},
+			},
+		),
+		Entry("interview phase (no YAML frontmatter)",
+			func() *chunkMockStreamer {
+				return &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+					{{Content: "Tell me more about the goal."}, {Done: true}},
+				}}
+			},
+			eventExpectation{
+				attemptStarts:    1,
+				completePresent:  false,
+				expectedValid:    false,
+				expectedAttempts: []int{1},
+			},
+		),
+	)
+})
+
 var _ = Describe("ValidatorChain", func() {
 	var (
 		chain       *plan.ValidatorChain

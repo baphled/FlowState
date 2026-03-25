@@ -11,12 +11,10 @@ import (
 	"github.com/baphled/flowstate/internal/tracer"
 )
 
-var _ tracer.Recorder = (*tracer.PrometheusRecorder)(nil)
-
 var _ = Describe("PrometheusRecorder", func() {
 	var (
 		reg *prometheus.Registry
-		rec *tracer.PrometheusRecorder
+		rec tracer.Recorder
 	)
 
 	BeforeEach(func() {
