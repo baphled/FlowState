@@ -18,6 +18,12 @@ type ToolCall struct {
 	Arguments map[string]interface{}
 }
 
+// ToolResultInfo carries tool execution output in a stream chunk.
+type ToolResultInfo struct {
+	Content string
+	IsError bool
+}
+
 // ChatRequest contains the parameters for a chat completion request.
 type ChatRequest struct {
 	Model    string
@@ -54,11 +60,12 @@ type Usage struct {
 
 // StreamChunk represents a single chunk of a streaming response.
 type StreamChunk struct {
-	Content   string
-	Done      bool
-	Error     error
-	EventType string
-	ToolCall  *ToolCall
+	Content    string
+	Done       bool
+	Error      error
+	EventType  string
+	ToolCall   *ToolCall
+	ToolResult *ToolResultInfo
 }
 
 // EmbedRequest contains the parameters for an embedding request.
