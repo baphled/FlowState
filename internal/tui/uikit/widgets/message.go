@@ -90,7 +90,7 @@ func (w *MessageWidget) Render(width int) string {
 
 	case "system":
 		annotationStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")). // muted grey
+			Foreground(lipgloss.Color("240")).
 			Italic(true)
 		sb.WriteString(annotationStyle.Render(w.content))
 

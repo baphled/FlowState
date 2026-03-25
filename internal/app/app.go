@@ -693,7 +693,7 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //   - An error if context store creation fails.
 //
 // Side effects:
-//   - Creates the context.json file path (file creation deferred to store).
+//   - None; creates an in-memory context store with no file I/O.
 //
 //nolint:unparam // error return kept for interface compatibility
 func createContextStore(cfg *config.AppConfig) (*ctxstore.FileContextStore, error) {
