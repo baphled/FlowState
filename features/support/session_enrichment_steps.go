@@ -16,6 +16,7 @@ import (
 
 // SessionEnrichmentSteps holds state for session enrichment BDD scenarios.
 type SessionEnrichmentSteps struct {
+	steps                *StepDefinitions
 	sessionStore         *ctxstore.FileSessionStore
 	reloadedContextStore *ctxstore.FileContextStore
 	legacySessionID      string
@@ -28,11 +29,12 @@ type SessionEnrichmentSteps struct {
 //
 // Expected:
 //   - sc is a valid godog ScenarioContext for step registration.
+//   - steps is a pointer to the shared StepDefinitions instance.
 //
 // Side effects:
 //   - Registers After hooks and step definitions on the provided scenario context.
-func RegisterSessionEnrichmentSteps(sc *godog.ScenarioContext) {
-	s := &SessionEnrichmentSteps{}
+func RegisterSessionEnrichmentSteps(sc *godog.ScenarioContext, steps *StepDefinitions) {
+	s := &SessionEnrichmentSteps{steps: steps}
 
 	sc.After(func(bddCtx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 		if s.tempDir != "" {
@@ -53,65 +55,99 @@ func RegisterSessionEnrichmentSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the loaded skills should be empty$`, s.theLoadedSkillsShouldBeEmpty)
 }
 
-// theSessionHasASystemPromptAndLoadedSkills sets up enrichment metadata on a session.
-//
-// Returns:
-//   - godog.ErrPending because Save() does not yet accept enrichment metadata.
-//
-// Side effects:
-//   - None.
-func (s *SessionEnrichmentSteps) theSessionHasASystemPromptAndLoadedSkills() error {
-	return godog.ErrPending
-}
-
-// theSessionHasAnAgentIDOf sets the agent ID for the session.
+// theSessionHasASystemPromptAndLoadedSkills sets enrichment metadata to be used when saving.
 //
 // Expected:
-//   - agentID is a non-empty string.
+//   - s.steps is a valid pointer to the shared StepDefinitions.
 //
 // Returns:
-//   - godog.ErrPending because Save() currently hardcodes AgentID to empty.
+//   - nil on success.
 //
 // Side effects:
-//   - None.
-func (s *SessionEnrichmentSteps) theSessionHasAnAgentIDOf(_ string) error {
-	return godog.ErrPending
+//   - Sets SystemPrompt and LoadedSkills on s.steps.currentMeta.
+func (s *SessionEnrichmentSteps) theSessionHasASystemPromptAndLoadedSkills() error {
+	s.steps.currentMeta.SystemPrompt = "You are a test assistant with enrichment."
+	s.steps.currentMeta.LoadedSkills = []string{"pre-action", "memory-keeper"}
+	return nil
 }
 
-// theSessionShouldContainANonEmptySystemPrompt verifies the reloaded session has a system prompt.
+// theSessionHasAnAgentIDOf sets the agent ID in the enrichment metadata.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
 //
 // Returns:
-//   - godog.ErrPending because enrichment data is not yet persisted.
+//   - nil on success.
+//
+// Side effects:
+//   - Sets AgentID on s.steps.currentMeta.
+func (s *SessionEnrichmentSteps) theSessionHasAnAgentIDOf(agentID string) error {
+	s.steps.currentMeta.AgentID = agentID
+	return nil
+}
+
+// theSessionShouldContainANonEmptySystemPrompt verifies the saved session has a system prompt.
+//
+// Expected:
+//   - A session has been saved and reloaded via the shared StepDefinitions.
+//
+// Returns:
+//   - An error if the session is not found or the system prompt is empty.
 //
 // Side effects:
 //   - None.
 func (s *SessionEnrichmentSteps) theSessionShouldContainANonEmptySystemPrompt() error {
-	return godog.ErrPending
+	info := s.findSavedSessionInfo()
+	if info == nil {
+		return fmt.Errorf("session %q not found in list", s.steps.savedSessionID)
+	}
+	if info.SystemPrompt == "" {
+		return errors.New("expected non-empty system prompt, got empty string")
+	}
+	return nil
 }
 
-// theSessionShouldContainLoadedSkills verifies the reloaded session has loaded skills.
+// theSessionShouldContainLoadedSkills verifies the saved session has loaded skills.
+//
+// Expected:
+//   - A session has been saved and reloaded via the shared StepDefinitions.
 //
 // Returns:
-//   - godog.ErrPending because enrichment data is not yet persisted.
+//   - An error if the session is not found or loaded skills is empty.
 //
 // Side effects:
 //   - None.
 func (s *SessionEnrichmentSteps) theSessionShouldContainLoadedSkills() error {
-	return godog.ErrPending
+	info := s.findSavedSessionInfo()
+	if info == nil {
+		return fmt.Errorf("session %q not found in list", s.steps.savedSessionID)
+	}
+	if len(info.LoadedSkills) == 0 {
+		return errors.New("expected non-empty loaded skills, got empty slice")
+	}
+	return nil
 }
 
-// theSessionShouldContainAgentID verifies the reloaded session has the expected agent ID.
+// theSessionShouldContainAgentID verifies the saved session has the expected agent ID.
 //
 // Expected:
-//   - agentID is the expected agent identifier.
+//   - expected is the anticipated agent identifier string.
+//   - A session has been saved and reloaded via the shared StepDefinitions.
 //
 // Returns:
-//   - godog.ErrPending because Save() does not yet persist agent ID.
+//   - An error if the session is not found or the agent ID does not match.
 //
 // Side effects:
 //   - None.
-func (s *SessionEnrichmentSteps) theSessionShouldContainAgentID(_ string) error {
-	return godog.ErrPending
+func (s *SessionEnrichmentSteps) theSessionShouldContainAgentID(expected string) error {
+	info := s.findSavedSessionInfo()
+	if info == nil {
+		return fmt.Errorf("session %q not found in list", s.steps.savedSessionID)
+	}
+	if info.AgentID != expected {
+		return fmt.Errorf("expected agent ID %q, got %q", expected, info.AgentID)
+	}
+	return nil
 }
 
 // anExistingSessionFileWithoutEnrichmentFields creates a legacy session JSON file.
@@ -244,6 +280,29 @@ func (s *SessionEnrichmentSteps) findSessionInfo(id string) *ctxstore.SessionInf
 	for i := range s.sessionInfo {
 		if s.sessionInfo[i].ID == id {
 			return &s.sessionInfo[i]
+		}
+	}
+	return nil
+}
+
+// findSavedSessionInfo retrieves SessionInfo for the most recently saved session.
+//
+// Expected:
+//   - s.steps.sessionStore is not nil and s.steps.savedSessionID is not empty.
+//
+// Returns:
+//   - A pointer to the matching SessionInfo, or nil if not found.
+//
+// Side effects:
+//   - None.
+func (s *SessionEnrichmentSteps) findSavedSessionInfo() *ctxstore.SessionInfo {
+	if s.steps.sessionStore == nil || s.steps.savedSessionID == "" {
+		return nil
+	}
+	sessions := s.steps.sessionStore.List()
+	for i := range sessions {
+		if sessions[i].ID == s.steps.savedSessionID {
+			return &sessions[i]
 		}
 	}
 	return nil

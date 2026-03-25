@@ -64,6 +64,7 @@ type StepDefinitions struct {
 	contextStore           *ctxstore.FileContextStore
 	sessionStore           *ctxstore.FileSessionStore
 	savedSessionID         string
+	currentMeta            ctxstore.SessionMetadata
 	originalMessageCount   int
 	originalEmbeddingCount int
 	reloadedContextStore   *ctxstore.FileContextStore
@@ -1182,7 +1183,7 @@ func (s *StepDefinitions) iSaveTheSession() error {
 	}
 
 	s.savedSessionID = "test-session-" + time.Now().Format("20060102150405")
-	if err := s.sessionStore.Save(s.savedSessionID, s.contextStore, ctxstore.SessionMetadata{}); err != nil {
+	if err := s.sessionStore.Save(s.savedSessionID, s.contextStore, s.currentMeta); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
 
