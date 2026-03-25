@@ -227,6 +227,21 @@ var _ = Describe("StreamEvaluate", func() {
 			Eventually(outCh, 2*time.Second).Should(BeClosed())
 		})
 	})
+
+	Context("when the context is cancelled mid-send", func() {
+		It("closes the output channel promptly when the consumer stops reading", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			streamer := &blockingMockStreamer{ch: make(chan provider.StreamChunk)}
+
+			outCh, err := harness.StreamEvaluate(ctx, streamer, "planner", "msg")
+			Expect(err).NotTo(HaveOccurred())
+
+			cancel()
+			Eventually(outCh, 2*time.Second).Should(BeClosed())
+		})
+	})
 })
 
 var _ = Describe("ValidatorChain", func() {
