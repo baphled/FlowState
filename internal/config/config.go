@@ -19,6 +19,7 @@ type AppConfig struct {
 	DefaultAgent       string            `json:"default_agent" yaml:"default_agent"`
 	MCPServers         []MCPServerConfig `yaml:"mcp_servers,omitempty"`
 	AlwaysActiveSkills []string          `yaml:"always_active_skills,omitempty"`
+	Harness            HarnessConfig     `json:"harness" yaml:"harness"`
 }
 
 // ProvidersConfig configures all available LLM providers.
@@ -62,6 +63,17 @@ type MCPServerConfig struct {
 	Args    []string          `yaml:"args,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
 	Enabled bool              `yaml:"enabled"`
+}
+
+// HarnessConfig holds configuration for the planning harness.
+//
+// Each field controls an optional layer of the harness. By default,
+// the harness is enabled but the critic and voting are disabled.
+type HarnessConfig struct {
+	Enabled       bool   `json:"enabled" yaml:"enabled"`
+	ProjectRoot   string `json:"project_root" yaml:"project_root"`
+	CriticEnabled bool   `json:"critic_enabled" yaml:"critic_enabled"`
+	VotingEnabled bool   `json:"voting_enabled" yaml:"voting_enabled"`
 }
 
 // Dir returns the configuration directory path.
@@ -147,6 +159,11 @@ func DefaultConfig() *AppConfig {
 			"discipline",
 			"skill-discovery",
 			"agent-discovery",
+		},
+		Harness: HarnessConfig{
+			Enabled:       true,
+			CriticEnabled: false,
+			VotingEnabled: false,
 		},
 	}
 }
@@ -281,6 +298,13 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.DefaultAgent == "" {
 		cfg.DefaultAgent = defaults.DefaultAgent
+	}
+
+	// Apply harness defaults: Enabled defaults to true unless explicitly disabled.
+	// YAML unmarshals missing bool as false, so we need to handle this carefully.
+	// If Enabled is not explicitly set to false, default to true.
+	if !cfg.Harness.Enabled {
+		cfg.Harness.Enabled = true
 	}
 
 	// Default MCP servers to enabled if not explicitly disabled

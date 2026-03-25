@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -71,7 +72,7 @@ func (a *harnessAdapter) StreamEvaluate(
 // Expected:
 //   - inner is a non-nil streaming.Streamer (typically the engine).
 //   - registry is a non-nil agent.Registry for manifest lookup.
-//   - cfg is a HarnessConfig specifying whether the critic is enabled.
+//   - cfg is a config.HarnessConfig specifying whether the critic is enabled.
 //   - p is a provider.Provider for the LLM critic (required when CriticEnabled is true).
 //
 // Returns:
@@ -83,7 +84,7 @@ func (a *harnessAdapter) StreamEvaluate(
 func createHarnessStreamer(
 	inner streaming.Streamer,
 	registry *agent.Registry,
-	cfg HarnessConfig,
+	cfg config.HarnessConfig,
 	p provider.Provider,
 ) *streaming.HarnessStreamer {
 	projectRoot := cfg.ProjectRoot
@@ -119,7 +120,7 @@ func createHarnessStreamer(
 // Expected:
 //   - inner is a streaming.Streamer (may be nil for testing).
 //   - registry is a non-nil agent.Registry for manifest lookup.
-//   - cfg is a HarnessConfig specifying whether the critic is enabled.
+//   - cfg is a config.HarnessConfig specifying whether the critic is enabled.
 //   - p is a provider.Provider for the LLM critic (may be nil when CriticEnabled is false).
 //
 // Returns:
@@ -130,7 +131,7 @@ func createHarnessStreamer(
 func CreateHarnessStreamerForTest(
 	inner streaming.Streamer,
 	registry *agent.Registry,
-	cfg HarnessConfig,
+	cfg config.HarnessConfig,
 	p provider.Provider,
 ) *streaming.HarnessStreamer {
 	return createHarnessStreamer(inner, registry, cfg, p)

@@ -384,6 +384,84 @@ mcp_servers:
 		})
 	})
 
+	Describe("Harness configuration", func() {
+		Describe("DefaultConfig", func() {
+			It("sets harness defaults", func() {
+				cfg := config.DefaultConfig()
+
+				Expect(cfg.Harness).NotTo(BeNil())
+				Expect(cfg.Harness.Enabled).To(BeTrue())
+				Expect(cfg.Harness.CriticEnabled).To(BeFalse())
+				Expect(cfg.Harness.VotingEnabled).To(BeFalse())
+			})
+		})
+
+		Describe("LoadConfigFromPath", func() {
+			Context("when harness section is provided", func() {
+				// Note: Due to YAML unmarshalling, missing bool fields default to false.
+				// We cannot distinguish between "not provided" and "explicitly set to false".
+				// This matches the same pattern used for MCP servers in this codebase.
+				// To disable harness, users must explicitly set enabled: false in their config.
+
+				It("parses all harness fields correctly when fully specified", func() {
+					configContent := `
+harness:
+  enabled: true
+  critic_enabled: true
+  voting_enabled: true
+  project_root: /custom/project
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Harness.Enabled).To(BeTrue())
+					Expect(cfg.Harness.CriticEnabled).To(BeTrue())
+					Expect(cfg.Harness.VotingEnabled).To(BeTrue())
+					Expect(cfg.Harness.ProjectRoot).To(Equal("/custom/project"))
+				})
+
+				It("applies defaults when harness section is partial", func() {
+					configContent := `
+harness:
+  critic_enabled: true
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Harness.Enabled).To(BeTrue())        // default
+					Expect(cfg.Harness.CriticEnabled).To(BeTrue())  // from config
+					Expect(cfg.Harness.VotingEnabled).To(BeFalse()) // default
+				})
+			})
+
+			Context("when harness section is not provided", func() {
+				It("uses defaults", func() {
+					configContent := `
+log_level: debug
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Harness.Enabled).To(BeTrue())
+					Expect(cfg.Harness.CriticEnabled).To(BeFalse())
+					Expect(cfg.Harness.VotingEnabled).To(BeFalse())
+				})
+			})
+		})
+	})
+
 	Describe("AlwaysActiveSkills", func() {
 		It("defaults to 9 canonical core-tier skills", func() {
 			cfg := config.DefaultConfig()

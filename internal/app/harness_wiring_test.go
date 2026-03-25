@@ -111,7 +111,7 @@ var _ = Describe("Harness wiring", func() {
 	Describe("createHarnessStreamer with critic configuration", func() {
 		Context("when CriticEnabled is false (default)", func() {
 			It("accepts HarnessConfig and provider without error", func() {
-				cfg := app.HarnessConfig{
+				cfg := config.HarnessConfig{
 					Enabled:       true,
 					CriticEnabled: false,
 					ProjectRoot:   tempDir,
@@ -127,7 +127,7 @@ var _ = Describe("Harness wiring", func() {
 
 		Context("when CriticEnabled is true with valid provider", func() {
 			It("accepts HarnessConfig and provider and creates streamer", func() {
-				cfg := app.HarnessConfig{
+				cfg := config.HarnessConfig{
 					Enabled:       true,
 					CriticEnabled: true,
 					ProjectRoot:   tempDir,
@@ -145,7 +145,7 @@ var _ = Describe("Harness wiring", func() {
 	Describe("createHarnessStreamer with voting configuration", func() {
 		Context("when VotingEnabled is false (default)", func() {
 			It("creates streamer without voter", func() {
-				cfg := app.HarnessConfig{
+				cfg := config.HarnessConfig{
 					Enabled:       true,
 					VotingEnabled: false,
 					ProjectRoot:   tempDir,
@@ -160,7 +160,7 @@ var _ = Describe("Harness wiring", func() {
 
 		Context("when VotingEnabled is true", func() {
 			It("creates streamer with voter configured", func() {
-				cfg := app.HarnessConfig{
+				cfg := config.HarnessConfig{
 					Enabled:       true,
 					VotingEnabled: true,
 					ProjectRoot:   tempDir,

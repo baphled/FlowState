@@ -4,22 +4,23 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/baphled/flowstate/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultHarnessConfig returns a HarnessConfig populated with sensible defaults.
+// DefaultHarnessConfig returns a config.HarnessConfig populated with sensible defaults.
 //
 // Returns:
-//   - A HarnessConfig with Enabled=true and the current working directory as ProjectRoot.
+//   - A config.HarnessConfig with Enabled=true and the current working directory as ProjectRoot.
 //
 // Side effects:
 //   - Calls os.Getwd to determine the project root directory.
-func DefaultHarnessConfig() HarnessConfig {
+func DefaultHarnessConfig() config.HarnessConfig {
 	projectRoot, err := os.Getwd()
 	if err != nil {
 		projectRoot = "."
 	}
-	return HarnessConfig{
+	return config.HarnessConfig{
 		Enabled:       true,
 		ProjectRoot:   projectRoot,
 		CriticEnabled: false,
