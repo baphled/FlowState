@@ -29,10 +29,14 @@ import (
 )
 
 // StreamChunkMsg carries a streaming response chunk to the chat intent.
+// EventType propagates the provider.StreamChunk.EventType, enabling the intent
+// to handle special events such as "harness_retry" without modifying the
+// standard chunk processing pipeline.
 type StreamChunkMsg struct {
 	Content      string
 	Error        error
 	Done         bool
+	EventType    string
 	ToolCallName string
 	ToolStatus   string
 	ToolResult   string
@@ -444,7 +448,11 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 //
 // Side effects:
 //   - Calls handleStreamChunk and refreshViewport.
+//   - Intercepts harness_retry events before standard chunk processing.
 func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
+	if msg.EventType == "harness_retry" {
+		return i.handleHarnessRetry(msg)
+	}
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
 	if !msg.Done && msg.Next != nil {
@@ -452,6 +460,36 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	}
 	if msg.Done {
 		return i.saveSession()
+	}
+	return tickSpinner()
+}
+
+// handleHarnessRetry commits any partial response to history, adds a system
+// retry notice, resets streaming state, and continues reading from the same
+// stream channel.
+//
+// Expected:
+//   - msg.EventType is "harness_retry".
+//   - msg.Content carries the human-readable retry notice.
+//   - msg.Next is the continuation command for reading subsequent chunks.
+//
+// Returns:
+//   - A tea.Cmd that batches the next chunk read with a spinner tick.
+//
+// Side effects:
+//   - Commits accumulated partial text as an assistant message.
+//   - Adds a system message with the retry notice.
+//   - Resets the streaming buffer via StartStreaming.
+//   - Refreshes the viewport to reflect new messages.
+func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
+	if partial := i.view.Response(); partial != "" {
+		i.view.AddMessage(chat.Message{Role: "assistant", Content: partial})
+	}
+	i.view.AddMessage(chat.Message{Role: "system", Content: msg.Content})
+	i.view.StartStreaming()
+	i.refreshViewport()
+	if msg.Next != nil {
+		return tea.Batch(msg.Next, tickSpinner())
 	}
 	return tickSpinner()
 }
@@ -611,6 +649,7 @@ func (i *Intent) readNextChunk() tea.Msg {
 		Content:      chunk.Content,
 		Error:        chunk.Error,
 		Done:         chunk.Done,
+		EventType:    chunk.EventType,
 		ToolCallName: toolCallName,
 		ToolStatus:   toolStatus,
 	}
@@ -667,6 +706,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		Content:      chunk.Content,
 		Error:        chunk.Error,
 		Done:         chunk.Done,
+		EventType:    chunk.EventType,
 		ToolCallName: toolCallName,
 		ToolStatus:   toolStatus,
 	}
