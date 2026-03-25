@@ -47,6 +47,13 @@ type OAuthConfig struct {
 	UseOAuth  bool   `json:"use_oauth" yaml:"use_oauth"`
 }
 
+// MCPToolPermission defines the permission mode for a specific MCP server tool.
+type MCPToolPermission struct {
+	ServerName string `yaml:"server_name"`
+	ToolName   string `yaml:"tool_name"`
+	Permission string `yaml:"permission"`
+}
+
 // MCPServerConfig holds configuration for a single MCP server connection.
 // Name and Command are required fields.
 type MCPServerConfig struct {

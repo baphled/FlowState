@@ -29,8 +29,8 @@ jobs:
       - name: Unit tests
         run: make test
 
-      - name: BDD smoke tests
-        run: make bdd-smoke
+      - name: BDD tests
+        run: make bdd
 
       - name: Coverage check
         run: make coverage-check

@@ -30,7 +30,7 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 - Fork/continue sessions
 - Auto-generated titles
 
-### 3. Vim Navigation
+### 3. Vim Navigation — Deferred to v2
 - Full vim motions: `j/k`, `gg/G`, `Ctrl+u/d/f/b`
 - Search with `/`, navigate with `n/N`
 - Mode switching: Normal, Insert, Search
@@ -44,9 +44,9 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 
 ### 5. MCP Integration
 - Connect to external MCP servers (memory, RAG, filesystem, etc.)
-- Dual transport support (stdio + SSE)
+- Dual transport support (stdio + SSE) — SSE deferred to v2
 - Server discovery and management
-- Optional local memory MCP server (SQLite-based)
+- Optional local memory MCP server (SQLite-based) — Deferred to v2
 
 ### 6. Tool System
 - Bash execution with permissions
@@ -72,7 +72,7 @@ FlowState is inspired by opencode but not limited to coding. It provides AI-assi
 | Language | Go 1.22+ | Fast, single binary, strong concurrency |
 | TUI | BubbleTea | Elm architecture, excellent ecosystem |
 | Database | SQLite | Simple, embedded, reliable |
-| MCP | stdio + SSE | Model Context Protocol for external integrations |
+| MCP | stdio (SSE deferred to v2) | Model Context Protocol for external integrations |
 | Markdown | goldmark | Standard, pure Go |
 | Testing | Godog + Ginkgo | BDD-driven development |
 
@@ -138,9 +138,9 @@ flowstate/
 │   ├── tools/               # Built-in tools
 │   ├── skills/              # Skill system
 │   ├── mcp/                 # MCP integration
-│   │   ├── client/          # MCP client (stdio + SSE transport)
+│   │   ├── client/          # MCP client (stdio transport; SSE deferred to v2)
 │   │   ├── types/           # MCP types (Resource, Tool, etc.)
-│   │   └── memory/          # Optional local memory MCP server
+│   │   └── memory/          # Local memory MCP server (standalone binary; --memory-server flag deferred to v2)
 │   └── tui/                 # BubbleTea UI
 ├── docs/                    # Documentation
 ├── rules/                   # Development rules
@@ -208,7 +208,7 @@ flowstate/
 - [x] Server discovery (config file + env var)
 - [x] MCP resource access (documents, memory)
 - [x] MCP tool integration with permission prompts (Allow/Ask/Deny)
-- [x] Optional local memory MCP server (SQLite, `--memory-server` flag)
+- [ ] Optional local memory MCP server (`--memory-server` flag) — Deferred to v2
 - [ ] SSE transport support — Deferred to v2
 
 ### Phase 8: MVP Finalisation ✅ COMPLETE
@@ -218,7 +218,7 @@ flowstate/
 
 ---
 
-## Vim Navigation Specification
+## Vim Navigation Specification — Deferred to v2
 
 ### Motions
 
@@ -330,11 +330,10 @@ type Intent interface {
 
 ## Next Steps
 
-1. Complete basic TUI shell
-2. Implement Ollama provider
-3. Create chat intent with streaming
-4. Add vim navigation
-5. Implement session persistence
-6. Build task panel
+All MVP phases (1–8) are complete. See `tasks/` for current work items.
 
-See `tasks/` for current work items.
+Deferred to v2:
+- Vim navigation (j/k, gg/G, search)
+- SSE transport for MCP
+- Local memory MCP server integration (`--memory-server` flag)
+- Command palette

@@ -369,12 +369,14 @@ func buildTools(skillLoader *skill.FileSkillLoader) []tool.Tool {
 }
 
 // buildToolsSetup creates a tool registry and permission handler for the engine.
+// MCP proxy tools default to Ask permission, requiring user approval before execution.
+// Built-in tools (bash, file, web, skill) default to Allow.
 //
 // Expected:
 //   - tools is a slice of tool.Tool values to register.
 //
 // Returns:
-//   - A tool.Registry with all tools registered.
+//   - A tool.Registry with all tools registered and MCP tools set to Ask permission.
 //   - A tool.PermissionHandler that allows all tool invocations.
 //
 // Side effects:
@@ -383,6 +385,9 @@ func buildToolsSetup(tools []tool.Tool) (*tool.Registry, tool.PermissionHandler)
 	registry := tool.NewRegistry()
 	for _, t := range tools {
 		registry.Register(t)
+		if _, ok := t.(*mcpproxy.Proxy); ok {
+			registry.SetPermission(t.Name(), tool.Ask)
+		}
 	}
 	handler := func(_ tool.PermissionRequest) (bool, error) {
 		return true, nil
