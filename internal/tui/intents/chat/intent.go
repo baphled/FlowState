@@ -131,6 +131,8 @@ type Intent struct {
 	view              *chat.View
 	loadingModal      *feedback.Modal
 	errorModal        *feedback.Modal
+	// activeToolCall holds the name of the currently executing tool call during streaming.
+	activeToolCall string
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -390,6 +392,14 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
 		}
 	}
+
+	if msg.ToolCallName != "" {
+		i.activeToolCall = msg.ToolCallName
+	} else if i.activeToolCall != "" {
+		i.view.AddMessage(chat.Message{Role: "tool_call", Content: i.activeToolCall})
+		i.activeToolCall = ""
+	}
+
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
 	if msg.Done && i.engine != nil {
@@ -1108,10 +1118,19 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	i.engine.SetContextStore(msg.Store)
 	i.view = chat.NewView()
 	for _, sm := range msg.Store.GetStoredMessages() {
-		i.view.AddMessage(chat.Message{
-			Role:    sm.Message.Role,
-			Content: sm.Message.Content,
-		})
+		switch {
+		case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
+			for _, tc := range sm.Message.ToolCalls {
+				i.view.AddMessage(chat.Message{Role: "tool_call", Content: tc.Name})
+			}
+		case sm.Message.Role == "tool":
+			continue
+		default:
+			i.view.AddMessage(chat.Message{
+				Role:    sm.Message.Role,
+				Content: sm.Message.Content,
+			})
+		}
 	}
 	i.refreshViewport()
 	i.syncStatusBar()

@@ -97,3 +97,13 @@ func (i *Intent) SetEngineForTest(eng *engine.Engine) {
 func (i *Intent) SaveSessionForTest() tea.Cmd {
 	return i.saveSession()
 }
+
+// ActiveToolCallForTest returns the current activeToolCall value for test assertions.
+func (i *Intent) ActiveToolCallForTest() string {
+	return i.activeToolCall
+}
+
+// AllViewMessagesForTest returns all messages from the chat view for test assertions.
+func (i *Intent) AllViewMessagesForTest() []chatview.Message {
+	return i.view.Messages()
+}

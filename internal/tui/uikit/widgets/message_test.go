@@ -61,6 +61,27 @@ var _ = Describe("MessageWidget", func() {
 			})
 		})
 
+		Context("tool_call messages", func() {
+			It("includes the wrench emoji prefix", func() {
+				w := widgets.NewMessageWidget("tool_call", "bash", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("🔧"))
+			})
+
+			It("includes the tool name as content", func() {
+				w := widgets.NewMessageWidget("tool_call", "read_file", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("read_file"))
+			})
+
+			It("does not include You or Assistant labels", func() {
+				w := widgets.NewMessageWidget("tool_call", "bash", th)
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
 		Context("with nil theme", func() {
 			It("still renders without panic", func() {
 				w := widgets.NewMessageWidget("user", "no theme", nil)

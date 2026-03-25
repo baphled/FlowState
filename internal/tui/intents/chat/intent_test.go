@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
+	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 )
 
 var _ = Describe("ChatIntent", func() {
@@ -1096,6 +1097,142 @@ var _ = Describe("ChatIntent", func() {
 
 			Expect(intentWithEng.ProviderNameForTest()).To(Equal("anthropic"))
 			Expect(intentWithEng.ModelNameForTest()).To(Equal("claude-3"))
+		})
+	})
+
+	Describe("handleSessionLoaded tool call formatting", func() {
+		var (
+			eng           *engine.Engine
+			reg           *provider.Registry
+			sessionIntent *chat.Intent
+		)
+
+		BeforeEach(func() {
+			reg = provider.NewRegistry()
+			reg.Register(&streamingStubProvider{
+				providerName: "test-provider",
+				chunks:       []provider.StreamChunk{},
+			})
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("test-provider", "test-model"),
+			})
+			sessionIntent = chat.NewIntent(chat.IntentConfig{
+				Engine:       eng,
+				Streamer:     eng,
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "test-provider",
+				ModelName:    "test-model",
+				TokenBudget:  4096,
+			})
+		})
+
+		It("converts assistant messages with tool calls to tool_call messages", func() {
+			store := contextpkg.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "run ls"})
+			store.Append(provider.Message{
+				Role:      "assistant",
+				Content:   "",
+				ToolCalls: []provider.ToolCall{{Name: "bash", ID: "tc-1"}},
+			})
+			store.Append(provider.Message{Role: "tool", Content: "file1.go\nfile2.go"})
+			store.Append(provider.Message{Role: "assistant", Content: "Here are your files."})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			Expect(messages).To(HaveLen(3))
+			Expect(messages[0].Role).To(Equal("user"))
+			Expect(messages[0].Content).To(Equal("run ls"))
+			Expect(messages[1].Role).To(Equal("tool_call"))
+			Expect(messages[1].Content).To(Equal("bash"))
+			Expect(messages[2].Role).To(Equal("assistant"))
+			Expect(messages[2].Content).To(Equal("Here are your files."))
+		})
+
+		It("skips tool role messages entirely", func() {
+			store := contextpkg.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "tool", Content: "should not appear"})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			Expect(messages).To(BeEmpty())
+		})
+
+		It("adds one tool_call per ToolCall entry on assistant message", func() {
+			store := contextpkg.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []provider.ToolCall{
+					{Name: "bash", ID: "tc-1"},
+					{Name: "read_file", ID: "tc-2"},
+				},
+			})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			Expect(messages).To(HaveLen(2))
+			Expect(messages[0].Role).To(Equal("tool_call"))
+			Expect(messages[0].Content).To(Equal("bash"))
+			Expect(messages[1].Role).To(Equal("tool_call"))
+			Expect(messages[1].Content).To(Equal("read_file"))
+		})
+
+		It("passes through regular messages unchanged", func() {
+			store := contextpkg.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "hello"})
+			store.Append(provider.Message{Role: "assistant", Content: "hi there"})
+			store.Append(provider.Message{Role: "system", Content: "system prompt"})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			Expect(messages).To(HaveLen(3))
+			Expect(messages[0].Role).To(Equal("user"))
+			Expect(messages[1].Role).To(Equal("assistant"))
+			Expect(messages[2].Role).To(Equal("system"))
+		})
+	})
+
+	Describe("activeToolCall streaming lifecycle", func() {
+		It("tracks active tool call name during streaming", func() {
+			intent.Update(chat.StreamChunkMsg{ToolCallName: "bash", Content: ""})
+			Expect(intent.ActiveToolCallForTest()).To(Equal("bash"))
+		})
+
+		It("adds tool_call message and clears state when tool completes", func() {
+			intent.SetStreamingForTest(true)
+			intent.Update(chat.StreamChunkMsg{ToolCallName: "bash", Content: ""})
+			intent.Update(chat.StreamChunkMsg{ToolCallName: "", Content: "result"})
+
+			Expect(intent.ActiveToolCallForTest()).To(BeEmpty())
+			messages := intent.AllViewMessagesForTest()
+			Expect(messages).To(ContainElement(
+				HaveField("Role", "tool_call"),
+			))
+		})
+
+		It("does not add tool_call message when no tool was active", func() {
+			intent.SetStreamingForTest(true)
+			intent.Update(chat.StreamChunkMsg{ToolCallName: "", Content: "normal text"})
+
+			Expect(intent.ActiveToolCallForTest()).To(BeEmpty())
 		})
 	})
 })

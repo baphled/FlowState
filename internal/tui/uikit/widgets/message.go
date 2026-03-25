@@ -82,6 +82,12 @@ func (w *MessageWidget) Render(width int) string {
 			PaddingLeft(2)
 		sb.WriteString(contentStyle.Render(content))
 
+	case "tool_call":
+		toolStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+		sb.WriteString(toolStyle.Render("🔧 " + w.content))
+
 	case "system":
 		annotationStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")). // muted grey
