@@ -118,6 +118,9 @@ func (s *FileSessionStore) Save(sessionID string, store *FileContextStore, meta 
 	if title == "" {
 		title = s.existingTitle(sessionID)
 	}
+	if title == "" {
+		title = GenerateTitle(store.GetStoredMessages())
+	}
 	sf := sessionFile{
 		SessionID:      sessionID,
 		Title:          title,
@@ -298,4 +301,29 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 		return fmt.Errorf("marshalling session: %w", err)
 	}
 	return os.WriteFile(sessionPath, updated, 0o600)
+}
+
+// GenerateTitle generates a session title from the first user message in the message list.
+//
+// Expected:
+//   - messages is a slice of StoredMessage (may be empty).
+//
+// Returns:
+//   - A string containing the content of the first user message, truncated to 60 characters
+//     with "..." appended if longer. Returns "Untitled Session" if no messages exist or
+//     if no user-role message is found.
+//
+// Side effects:
+//   - None; this is a pure function.
+func GenerateTitle(messages []StoredMessage) string {
+	for _, msg := range messages {
+		if msg.Message.Role == "user" {
+			content := msg.Message.Content
+			if len(content) > 60 {
+				return content[:60] + "..."
+			}
+			return content
+		}
+	}
+	return "Untitled Session"
 }

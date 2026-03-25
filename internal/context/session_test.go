@@ -237,4 +237,55 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(sessions[0].LoadedSkills).To(BeNil())
 		})
 	})
+
+	Describe("GenerateTitle", func() {
+		It("returns first user message content when short", func() {
+			messages := []context.StoredMessage{
+				{
+					ID:       "msg-1",
+					Message:  provider.Message{Role: "user", Content: "What is Go?"},
+					Embedded: false,
+				},
+			}
+			title := context.GenerateTitle(messages)
+			Expect(title).To(Equal("What is Go?"))
+		})
+
+		It("truncates long user message to 60 chars with ellipsis", func() {
+			longContent := "This is a very long message that exceeds sixty characters and should be truncated"
+			messages := []context.StoredMessage{
+				{
+					ID:       "msg-1",
+					Message:  provider.Message{Role: "user", Content: longContent},
+					Embedded: false,
+				},
+			}
+			title := context.GenerateTitle(messages)
+			Expect(title).To(Equal("This is a very long message that exceeds sixty characters an..."))
+			Expect(title).To(HaveLen(63))
+		})
+
+		It("returns 'Untitled Session' when messages is empty", func() {
+			messages := []context.StoredMessage{}
+			title := context.GenerateTitle(messages)
+			Expect(title).To(Equal("Untitled Session"))
+		})
+
+		It("returns 'Untitled Session' when no user message exists", func() {
+			messages := []context.StoredMessage{
+				{
+					ID:       "msg-1",
+					Message:  provider.Message{Role: "assistant", Content: "Hello there"},
+					Embedded: false,
+				},
+				{
+					ID:       "msg-2",
+					Message:  provider.Message{Role: "assistant", Content: "How can I help?"},
+					Embedded: false,
+				},
+			}
+			title := context.GenerateTitle(messages)
+			Expect(title).To(Equal("Untitled Session"))
+		})
+	})
 })

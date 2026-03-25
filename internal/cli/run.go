@@ -223,7 +223,12 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	if store == nil {
 		return
 	}
-	if err := application.Sessions.Save(sessionID, store, ctxstore.SessionMetadata{}); err != nil {
+	metadata := ctxstore.SessionMetadata{
+		AgentID:      application.Engine.Manifest().ID,
+		SystemPrompt: application.Engine.BuildSystemPrompt(),
+		LoadedSkills: application.Engine.LoadedSkills(),
+	}
+	if err := application.Sessions.Save(sessionID, store, metadata); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 	}
 }
