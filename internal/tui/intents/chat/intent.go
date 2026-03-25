@@ -314,7 +314,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		return tea.Batch(i.saveSession(), tea.Quit)
+		return tea.Sequence(i.saveSession(), tea.Quit)
 	case tea.KeyTab:
 		return i.toggleAgent()
 	case tea.KeyCtrlP:
@@ -425,11 +425,6 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	return tickSpinner()
 }
 
-// syncStatusBar updates the StatusBar with the current intent state.
-//
-// Side effects:
-//   - Updates the StatusBar with provider, model, and token information.
-
 // saveSession builds session metadata from the current engine state and persists
 // the session asynchronously via a tea.Cmd.
 //
@@ -439,16 +434,22 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 // Side effects:
 //   - None until the returned Cmd is executed by the Bubble Tea runtime.
 func (i *Intent) saveSession() tea.Cmd {
+	if i.sessionStore == nil || i.engine == nil {
+		return nil
+	}
+	store := i.engine.ContextStore()
+	if store == nil {
+		return nil
+	}
+	sessionStore := i.sessionStore
+	sessionID := i.sessionID
+	meta := contextpkg.SessionMetadata{
+		AgentID:      i.agentID,
+		SystemPrompt: i.engine.BuildSystemPrompt(),
+		LoadedSkills: i.engine.LoadedSkills(),
+	}
 	return func() tea.Msg {
-		if i.sessionStore == nil || i.engine == nil || i.engine.ContextStore() == nil {
-			return SessionSavedMsg{}
-		}
-		meta := contextpkg.SessionMetadata{
-			AgentID:      i.engine.Manifest().ID,
-			SystemPrompt: i.engine.BuildSystemPrompt(),
-			LoadedSkills: i.engine.LoadedSkills(),
-		}
-		return SessionSavedMsg{Err: i.sessionStore.Save(i.sessionID, i.engine.ContextStore(), meta)}
+		return SessionSavedMsg{Err: sessionStore.Save(sessionID, store, meta)}
 	}
 }
 

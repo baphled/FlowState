@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
@@ -80,4 +81,19 @@ func (i *Intent) SimulateModalModelSelectionForTest() bool {
 	modal.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	modal.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	return true
+}
+
+// SetSessionStoreForTest sets the session store for testing purposes.
+func (i *Intent) SetSessionStoreForTest(store SessionLister) {
+	i.sessionStore = store
+}
+
+// SetEngineForTest sets the engine for testing purposes.
+func (i *Intent) SetEngineForTest(eng *engine.Engine) {
+	i.engine = eng
+}
+
+// SaveSessionForTest exposes saveSession for test assertions.
+func (i *Intent) SaveSessionForTest() tea.Cmd {
+	return i.saveSession()
 }
