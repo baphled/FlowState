@@ -94,6 +94,215 @@ func NewPlanHarness(projectRoot string, opts ...HarnessOption) *PlanHarness {
 	return h
 }
 
+// StreamEvaluate runs the plan harness over a streaming response, forwarding chunks in real-time.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the initial planning prompt.
+//
+// Returns:
+//   - A read-only channel of StreamChunk values forwarded live from the LLM.
+//   - An error if the initial context is already cancelled.
+//
+// Side effects:
+//   - Spawns a goroutine that streams responses, validates, and retries up to maxRetries times.
+//   - Emits harness_retry event chunks between retry attempts.
+//   - The returned channel is closed when streaming and evaluation are complete.
+func (h *PlanHarness) StreamEvaluate(
+	ctx context.Context,
+	streamer Streamer,
+	agentID string,
+	message string,
+) (<-chan provider.StreamChunk, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	outCh := make(chan provider.StreamChunk)
+	go h.runStreamEvaluation(ctx, streamer, agentID, message, outCh)
+	return outCh, nil
+}
+
+// runStreamEvaluation executes the retry loop for StreamEvaluate in a dedicated goroutine.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the initial planning prompt.
+//   - outCh is the channel to forward chunks to.
+//
+// Returns:
+//   - (nothing; sends results via outCh)
+//
+// Side effects:
+//   - Closes outCh when evaluation completes.
+//   - Sends error chunks on stream failures.
+//   - Sends harness_retry event chunks between retry attempts.
+func (h *PlanHarness) runStreamEvaluation(
+	ctx context.Context,
+	streamer Streamer,
+	agentID string,
+	message string,
+	outCh chan<- provider.StreamChunk,
+) {
+	defer close(outCh)
+	currentMessage := message
+
+	for attempt := 1; attempt <= h.maxRetries; attempt++ {
+		planText, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
+		if err != nil {
+			outCh <- provider.StreamChunk{Error: err}
+			return
+		}
+
+		phase := hook.DetectPhase(planText)
+		if phase != hook.PhaseGeneration {
+			outCh <- provider.StreamChunk{Done: true}
+			return
+		}
+
+		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
+		if result != nil {
+			outCh <- provider.StreamChunk{Done: true}
+			return
+		}
+
+		if attempt < h.maxRetries {
+			outCh <- provider.StreamChunk{
+				EventType: "harness_retry",
+				Content:   fmt.Sprintf("Plan validation failed (attempt %d/%d). Retrying...", attempt, h.maxRetries),
+			}
+		}
+		currentMessage = appendFeedback(currentMessage, feedback)
+	}
+
+	outCh <- provider.StreamChunk{Done: true}
+}
+
+// streamAttempt streams a single attempt from the LLM, forwarding chunks to outCh while accumulating text.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the planning prompt for this attempt.
+//   - outCh is the channel to forward live chunks to.
+//
+// Returns:
+//   - The accumulated plan text from all received chunks.
+//   - An error if streaming fails, context is cancelled, or the plan exceeds 1MB.
+//
+// Side effects:
+//   - Forwards each content chunk to outCh in real-time.
+//   - Suppresses the inner Done chunk (the caller owns final Done signalling).
+func (h *PlanHarness) streamAttempt(
+	ctx context.Context,
+	streamer Streamer,
+	agentID string,
+	message string,
+	outCh chan<- provider.StreamChunk,
+) (string, error) {
+	chunks, err := streamer.Stream(ctx, agentID, message)
+	if err != nil {
+		return "", fmt.Errorf("streaming response: %w", err)
+	}
+
+	return h.forwardAndAccumulate(ctx, chunks, outCh)
+}
+
+// forwardAndAccumulate reads from an inner chunk channel, forwarding to outCh and accumulating text.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - chunks is the inner chunk channel from the streamer.
+//   - outCh is the channel to forward live chunks to.
+//
+// Returns:
+//   - The accumulated plan text.
+//   - An error if the stream contains an error chunk, exceeds 1MB, or context is cancelled.
+//
+// Side effects:
+//   - Forwards non-Done chunks to outCh.
+func (h *PlanHarness) forwardAndAccumulate(
+	ctx context.Context,
+	chunks <-chan provider.StreamChunk,
+	outCh chan<- provider.StreamChunk,
+) (string, error) {
+	var builder strings.Builder
+	received := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case chunk, ok := <-chunks:
+			if !ok {
+				return closedChannelResult(builder.String(), received)
+			}
+			forwarded, err := processStreamChunk(chunk, &builder, outCh)
+			if err != nil {
+				return "", err
+			}
+			if forwarded {
+				received = true
+			}
+		}
+	}
+}
+
+// closedChannelResult returns the accumulated text or an error if no content was received.
+//
+// Expected:
+//   - text is the accumulated plan content.
+//   - received indicates whether any content chunks were processed.
+//
+// Returns:
+//   - The accumulated text if content was received, or an error if the stream was empty.
+//
+// Side effects:
+//   - None.
+func closedChannelResult(text string, received bool) (string, error) {
+	if !received {
+		return "", errors.New("empty stream: no content received")
+	}
+	return text, nil
+}
+
+// processStreamChunk handles a single chunk: checks for errors, skips Done markers,
+// accumulates content, and forwards to outCh.
+//
+// Expected:
+//   - chunk is a StreamChunk to process.
+//   - builder accumulates the plan text content.
+//   - outCh is the channel to forward non-Done, non-error chunks to.
+//
+// Returns:
+//   - True if content was forwarded, false otherwise.
+//   - An error if the chunk contained an error or the accumulated content exceeds 1MB.
+//
+// Side effects:
+//   - Sends non-Done chunks to outCh.
+//   - Appends chunk content to the builder.
+func processStreamChunk(chunk provider.StreamChunk, builder *strings.Builder, outCh chan<- provider.StreamChunk) (bool, error) {
+	if chunk.Error != nil {
+		return false, chunk.Error
+	}
+	if chunk.Done {
+		return false, nil
+	}
+	if chunk.Content != "" {
+		builder.WriteString(chunk.Content)
+		if builder.Len() > maxPlanSize {
+			return false, errors.New("plan exceeds maximum size of 1MB")
+		}
+	}
+	outCh <- chunk
+	return chunk.Content != "", nil
+}
+
 // Evaluate runs the plan harness over a streaming response.
 //
 // Expected:
