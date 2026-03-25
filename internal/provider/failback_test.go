@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestFailbackChainWithEmptyPreferences(t *testing.T) {
@@ -329,3 +333,67 @@ func (p *immediateCloseProvider) Embed(_ context.Context, _ EmbedRequest) ([]flo
 func (p *immediateCloseProvider) Models() ([]Model, error) {
 	return nil, errors.New("list models failed")
 }
+
+type blockingStreamProvider struct {
+	chunkCount int
+	exited     atomic.Bool
+}
+
+func (p *blockingStreamProvider) Name() string { return "blocking" }
+
+func (p *blockingStreamProvider) Chat(_ context.Context, _ ChatRequest) (ChatResponse, error) {
+	return ChatResponse{}, errors.New("chat not supported")
+}
+
+func (p *blockingStreamProvider) Stream(ctx context.Context, _ ChatRequest) (<-chan StreamChunk, error) {
+	ch := make(chan StreamChunk)
+	go func() {
+		defer close(ch)
+		defer p.exited.Store(true)
+		for range p.chunkCount {
+			select {
+			case ch <- StreamChunk{Content: "chunk"}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		ch <- StreamChunk{Done: true}
+	}()
+	return ch, nil
+}
+
+func (p *blockingStreamProvider) Embed(_ context.Context, _ EmbedRequest) ([]float64, error) {
+	return nil, errors.New("embeddings not supported")
+}
+
+func (p *blockingStreamProvider) Models() ([]Model, error) {
+	return nil, nil
+}
+
+var _ = Describe("FailbackChain replay goroutine", func() {
+	Context("when the consumer stops reading and context is cancelled", func() {
+		It("exits promptly without leaking", func() {
+			bp := &blockingStreamProvider{chunkCount: 50}
+			registry := NewRegistry()
+			registry.Register(bp)
+
+			chain := NewFailbackChain(registry, []ModelPreference{
+				{Provider: "blocking", Model: "test-model"},
+			}, 5*time.Minute)
+
+			ctx, cancel := context.WithCancel(context.Background())
+
+			ch, err := chain.Stream(ctx, ChatRequest{
+				Messages: []Message{{Role: "user", Content: "test"}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			<-ch
+			cancel()
+
+			Eventually(func() bool {
+				return bp.exited.Load()
+			}).WithTimeout(2 * time.Second).WithPolling(50 * time.Millisecond).Should(BeTrue())
+		})
+	})
+})

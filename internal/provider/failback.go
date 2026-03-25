@@ -94,18 +94,51 @@ func (f *FailbackChain) Stream(ctx context.Context, req ChatRequest) (<-chan Str
 		}
 		f.lastProvider = pref.Provider
 		f.lastModel = pref.Model
-		replayCh := make(chan StreamChunk, 16)
-		go func() {
-			defer close(replayCh)
-			defer cancel()
-			replayCh <- firstChunk
-			for chunk := range ch {
-				replayCh <- chunk
-			}
-		}()
+		replayCh := f.streamWithReplay(timeoutCtx, cancel, firstChunk, ch)
 		return replayCh, nil
 	}
 	return nil, fmt.Errorf("all providers failed: %w", lastErr)
+}
+
+// streamWithReplay creates a replay channel, starts a goroutine that sends
+// firstChunk then forwards remaining chunks from ch, and returns the channel.
+// All sends are guarded by timeoutCtx so the goroutine exits on cancellation.
+//
+// Expected:
+//   - timeoutCtx is a valid context with a deadline.
+//   - cancel is the corresponding cancel function for timeoutCtx.
+//   - firstChunk is a valid StreamChunk already read from the provider.
+//   - ch is a valid receive-only channel of StreamChunk.
+//
+// Returns:
+//   - A receive-only channel that replays firstChunk followed by remaining chunks.
+//
+// Side effects:
+//   - Starts a goroutine that closes replayCh and calls cancel on completion.
+func (f *FailbackChain) streamWithReplay(
+	timeoutCtx context.Context,
+	cancel context.CancelFunc,
+	firstChunk StreamChunk,
+	ch <-chan StreamChunk,
+) <-chan StreamChunk {
+	replayCh := make(chan StreamChunk, 16)
+	go func() {
+		defer close(replayCh)
+		defer cancel()
+		select {
+		case replayCh <- firstChunk:
+		case <-timeoutCtx.Done():
+			return
+		}
+		for chunk := range ch {
+			select {
+			case replayCh <- chunk:
+			case <-timeoutCtx.Done():
+				return
+			}
+		}
+	}()
+	return replayCh
 }
 
 // Chat attempts to chat with providers in preference order.
