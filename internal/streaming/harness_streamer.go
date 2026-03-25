@@ -9,9 +9,14 @@ import (
 )
 
 // PlanEvaluator abstracts the plan harness evaluation for testability.
+//
+// Evaluate runs validation synchronously and returns the completed result.
+// StreamEvaluate forwards chunks in real-time while running the same validation loop.
 type PlanEvaluator interface {
 	// Evaluate runs validation on the streamed plan output and returns the evaluation result.
 	Evaluate(ctx context.Context, streamer Streamer, agentID string, message string) (*plan.EvaluationResult, error)
+	// StreamEvaluate runs validation while forwarding response chunks live to the caller.
+	StreamEvaluate(ctx context.Context, streamer Streamer, agentID string, message string) (<-chan provider.StreamChunk, error)
 }
 
 // AgentRegistry abstracts agent manifest lookup for testability.
@@ -56,25 +61,24 @@ func NewHarnessStreamer(inner Streamer, harness PlanEvaluator, registry AgentReg
 //
 // Returns:
 //   - A channel of StreamChunk values containing the response.
-//   - An error if the harness evaluation fails or the inner stream fails.
+//   - An error if the harness streaming fails or the inner stream fails.
 //
 // Side effects:
-//   - Spawns a goroutine to deliver harness results when HarnessEnabled is true.
+//   - Delegates to StreamEvaluate for harness-enabled agents, forwarding chunks live.
 func (s *HarnessStreamer) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	manifest, ok := s.registry.Get(agentID)
 	if ok && manifest.HarnessEnabled {
-		result, err := s.harness.Evaluate(ctx, s.inner, agentID, message)
-		if err != nil {
-			return nil, err
-		}
-		return planResultToChannel(result), nil
+		return s.harness.StreamEvaluate(ctx, s.inner, agentID, message)
 	}
 	return s.inner.Stream(ctx, agentID, message)
 }
 
 const resultChannelBuffer = 2
 
-// planResultToChannel converts an EvaluationResult into a buffered stream channel.
+// PlanResultToChannel converts an EvaluationResult into a buffered stream channel.
+//
+// This is primarily useful for non-streaming callers and test mocks that wrap
+// a synchronous Evaluate call with channel-based delivery.
 //
 // Expected:
 //   - result is a non-nil EvaluationResult with a PlanText field.
@@ -84,7 +88,7 @@ const resultChannelBuffer = 2
 //
 // Side effects:
 //   - Spawns a goroutine that sends two chunks then closes the channel.
-func planResultToChannel(result *plan.EvaluationResult) <-chan provider.StreamChunk {
+func PlanResultToChannel(result *plan.EvaluationResult) <-chan provider.StreamChunk {
 	ch := make(chan provider.StreamChunk, resultChannelBuffer)
 	go func() {
 		defer close(ch)

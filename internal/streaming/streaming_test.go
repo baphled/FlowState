@@ -90,6 +90,18 @@ func (m *mockHarness) Evaluate(
 	return m.result, m.err
 }
 
+func (m *mockHarness) StreamEvaluate(
+	_ context.Context,
+	_ streaming.Streamer,
+	_ string,
+	_ string,
+) (<-chan provider.StreamChunk, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return streaming.PlanResultToChannel(m.result), nil
+}
+
 var _ = Describe("Streaming", func() {
 	Describe("Interface compliance", func() {
 		It("engine.Engine satisfies streaming.Streamer at compile time", func() {

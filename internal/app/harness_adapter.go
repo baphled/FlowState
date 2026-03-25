@@ -6,6 +6,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
@@ -39,6 +40,29 @@ func (a *harnessAdapter) Evaluate(
 	message string,
 ) (*plan.EvaluationResult, error) {
 	return a.harness.Evaluate(ctx, streamer, agentID, message)
+}
+
+// StreamEvaluate delegates to the wrapped PlanHarness, forwarding response chunks live.
+//
+// Expected:
+//   - ctx is a valid context for the evaluation.
+//   - streamer satisfies both streaming.Streamer and plan.Streamer (same method set).
+//   - agentID identifies the agent being evaluated.
+//   - message is the user's input text.
+//
+// Returns:
+//   - A read-only channel of StreamChunk values forwarded live from the LLM.
+//   - An error if evaluation fails to start.
+//
+// Side effects:
+//   - Delegates to PlanHarness.StreamEvaluate which spawns a goroutine for streaming and validation.
+func (a *harnessAdapter) StreamEvaluate(
+	ctx context.Context,
+	streamer streaming.Streamer,
+	agentID string,
+	message string,
+) (<-chan provider.StreamChunk, error) {
+	return a.harness.StreamEvaluate(ctx, streamer, agentID, message)
 }
 
 // createHarnessStreamer builds a HarnessStreamer wrapping the engine with plan harness validation.
