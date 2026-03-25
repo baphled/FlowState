@@ -55,7 +55,7 @@ var _ = Describe("SessionPersistence", func() {
 			ctxStore.Append(provider.Message{Role: "user", Content: "Hello"})
 			ctxStore.Append(provider.Message{Role: "assistant", Content: "Hi there"})
 
-			err = sessionStore.Save("session-1", ctxStore)
+			err = sessionStore.Save("session-1", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			loadedStore, err := sessionStore.Load("session-1")
@@ -80,7 +80,7 @@ var _ = Describe("SessionPersistence", func() {
 			msgID := ctxStore.GetMessageID(0)
 			ctxStore.StoreEmbedding(msgID, []float64{0.1, 0.2, 0.3}, "text-embedding-ada-002", 3)
 
-			err = sessionStore.Save("session-embed", ctxStore)
+			err = sessionStore.Save("session-embed", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			loadedStore, err := sessionStore.Load("session-embed")
@@ -113,7 +113,7 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(err).NotTo(HaveOccurred())
 			ctxStore.Append(provider.Message{Role: "user", Content: "Hello"})
 
-			err = sessionStore.Save("my-session", ctxStore)
+			err = sessionStore.Save("my-session", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			sessions := sessionStore.List()
@@ -131,7 +131,7 @@ var _ = Describe("SessionPersistence", func() {
 			ctxStore.Append(provider.Message{Role: "assistant", Content: "Two"})
 			ctxStore.Append(provider.Message{Role: "user", Content: "Three"})
 
-			err = sessionStore.Save("count-session", ctxStore)
+			err = sessionStore.Save("count-session", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			sessions := sessionStore.List()
@@ -149,7 +149,7 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(err).NotTo(HaveOccurred())
 			ctxStore.Append(provider.Message{Role: "user", Content: "Test"})
 
-			err = sessionStore.Save("atomic-session", ctxStore)
+			err = sessionStore.Save("atomic-session", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			sessionPath := filepath.Join(sessionsDir, "atomic-session.json")
@@ -170,7 +170,7 @@ var _ = Describe("SessionPersistence", func() {
 			msgID := ctxStore.GetMessageID(0)
 			ctxStore.StoreEmbedding(msgID, []float64{0.1, 0.2}, "old-model", 2)
 
-			err = sessionStore.Save("model-mismatch", ctxStore)
+			err = sessionStore.Save("model-mismatch", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			loadedStore, err := sessionStore.LoadWithModel("model-mismatch", "new-model")
@@ -198,7 +198,7 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(err).NotTo(HaveOccurred())
 			ctxStore.Append(provider.Message{Role: "user", Content: "Test"})
 
-			err = sessionStore.Save("roundtrip-session", ctxStore)
+			err = sessionStore.Save("roundtrip-session", ctxStore, context.SessionMetadata{})
 			Expect(err).NotTo(HaveOccurred())
 
 			sessions := sessionStore.List()

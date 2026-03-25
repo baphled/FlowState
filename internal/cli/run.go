@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/spf13/cobra"
 )
@@ -222,7 +223,7 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	if store == nil {
 		return
 	}
-	if err := application.Sessions.Save(sessionID, store); err != nil {
+	if err := application.Sessions.Save(sessionID, store, ctxstore.SessionMetadata{}); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 	}
 }

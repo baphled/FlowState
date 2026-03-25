@@ -22,10 +22,24 @@ type SessionInfo struct {
 	LoadedSkills   []string  `json:"loaded_skills"`
 }
 
+// SessionMetadata provides additional metadata for session persistence and enrichment.
+//
+// This struct is used to capture and persist key session attributes, including:
+//   - AgentID: The identifier of the agent handling the session.
+//   - Title: The human-readable session title (may be empty; fallback logic applies).
+//   - SystemPrompt: The system prompt used for the session, if any.
+//   - LoadedSkills: The list of skill names loaded for this session.
+type SessionMetadata struct {
+	AgentID      string   // Unique identifier for the agent (may be empty)
+	Title        string   // Session title (optional; fallback to previous if empty)
+	SystemPrompt string   // System prompt text (optional)
+	LoadedSkills []string // Names of loaded skills (optional)
+}
+
 // SessionStore defines the interface for persisting and loading sessions.
 type SessionStore interface {
 	// Save persists a context store to a session.
-	Save(sessionID string, store *FileContextStore) error
+	Save(sessionID string, store *FileContextStore, meta SessionMetadata) error
 	// Load retrieves a context store from a saved session.
 	Load(sessionID string) (*FileContextStore, error)
 	// List returns metadata for all saved sessions.
@@ -92,39 +106,41 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 // Expected:
 //   - sessionID is a non-empty string identifying the session.
 //   - store is a non-nil FileContextStore with messages to persist.
+//   - meta is the SessionMetadata to persist (may be empty).
 //
 // Returns:
 //   - An error if marshalling or writing the session file fails.
 //
 // Side effects:
 //   - Writes the session data to a JSON file in the base directory.
-func (s *FileSessionStore) Save(sessionID string, store *FileContextStore) error {
+func (s *FileSessionStore) Save(sessionID string, store *FileContextStore, meta SessionMetadata) error {
+	title := meta.Title
+	if title == "" {
+		title = s.existingTitle(sessionID)
+	}
 	sf := sessionFile{
 		SessionID:      sessionID,
-		Title:          s.existingTitle(sessionID),
-		AgentID:        "",
+		Title:          title,
+		AgentID:        meta.AgentID,
 		EmbeddingModel: store.GetModel(),
 		LastActive:     time.Now(),
 		Messages:       store.GetStoredMessages(),
 		Embeddings:     store.GetEmbeddings(),
+		SystemPrompt:   meta.SystemPrompt,
+		LoadedSkills:   meta.LoadedSkills,
 	}
-
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling session: %w", err)
 	}
-
 	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
 	tmpPath := sessionPath + ".tmp"
-
 	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
-
 	if err := os.Rename(tmpPath, sessionPath); err != nil {
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
-
 	return nil
 }
 

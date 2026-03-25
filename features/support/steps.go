@@ -1182,7 +1182,7 @@ func (s *StepDefinitions) iSaveTheSession() error {
 	}
 
 	s.savedSessionID = "test-session-" + time.Now().Format("20060102150405")
-	if err := s.sessionStore.Save(s.savedSessionID, s.contextStore); err != nil {
+	if err := s.sessionStore.Save(s.savedSessionID, s.contextStore, ctxstore.SessionMetadata{}); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
 
