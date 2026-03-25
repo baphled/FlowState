@@ -23,10 +23,10 @@ type Handoff struct {
 // NewHandoff creates a new handoff with the supplied delegation metadata.
 //
 // Expected:
-//   - h contains the delegation metadata to copy.
+//   - h contains a Handoff with populated fields.
 //
 // Returns:
-//   - A new Handoff with the supplied field values.
+//   - A pointer to a new Handoff copy.
 //
 // Side effects:
 //   - None.
@@ -45,11 +45,10 @@ func NewHandoff(h Handoff) *Handoff {
 // Validate checks the required delegation metadata fields.
 //
 // Expected:
-//   - h contains delegation metadata to validate.
+//   - h is a Handoff receiver with SourceAgent, TargetAgent, and ChainID populated.
 //
 // Returns:
-//   - nil when required fields are present.
-//   - An error when a required field is empty.
+//   - An error if required fields are empty, nil otherwise.
 //
 // Side effects:
 //   - None.
