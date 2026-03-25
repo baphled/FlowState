@@ -112,3 +112,8 @@ func (i *Intent) AllViewMessagesForTest() []chatview.Message {
 func (i *Intent) HandleStreamChunkForTest(msg StreamChunkMsg) {
 	i.handleStreamChunk(msg)
 }
+
+// ToolCallSummaryForTest exposes toolCallSummary for test assertions.
+func ToolCallSummaryForTest(name string, args map[string]interface{}) string {
+	return toolCallSummary(name, args)
+}

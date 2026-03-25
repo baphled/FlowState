@@ -1127,6 +1127,79 @@ func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
 //   - On error, shows an error modal.
 //   - On success, replaces the engine's context store with the loaded store,
 //     populates the chat view, and refreshes the viewport.
+
+// toolCallSummary extracts the primary argument from a tool call and formats it as "toolName: arg".
+//
+// Expected:
+//   - name is a valid tool name.
+//   - args contains the tool call arguments.
+//
+// Returns:
+//   - A formatted string "toolName: arg" if a primary argument is found.
+//   - Just the tool name if no primary argument is found.
+//   - For bash commands longer than 80 characters, truncates and appends "...".
+//
+// Side effects:
+//   - None.
+func toolCallSummary(name string, args map[string]interface{}) string {
+	argKey := toolCallArgKey(name)
+	if argKey == "" {
+		return name
+	}
+
+	arg, ok := args[argKey].(string)
+	if !ok || arg == "" {
+		return name
+	}
+
+	if name == "bash" && len(arg) > 80 {
+		arg = arg[:80] + "..."
+	}
+
+	return fmt.Sprintf("%s: %s", name, arg)
+}
+
+// toolCallArgKey returns the argument key for a given tool name.
+//
+// Expected:
+//   - name is a valid tool name.
+//
+// Returns:
+//   - The argument key for the tool (e.g., "command" for bash, "filePath" for read).
+//   - An empty string if the tool is not recognized.
+//
+// Side effects:
+//   - None.
+func toolCallArgKey(name string) string {
+	switch name {
+	case "bash":
+		return "command"
+	case "read", "write", "edit":
+		return "filePath"
+	case "glob", "grep":
+		return "pattern"
+	case "task", "call_omo_agent":
+		return "description"
+	case "skill_load":
+		return "name"
+	default:
+		return ""
+	}
+}
+
+// handleSessionLoaded processes the result of an async session load.
+//
+// Expected:
+//   - msg contains the loaded FileContextStore, or an error.
+//
+// Returns:
+//   - nil (no further command needed).
+//
+// Side effects:
+//   - Clears the loading modal.
+//   - On error, shows an error modal.
+//   - On success, replaces the engine's context store with the loaded store,
+//     populates the chat view, and refreshes the viewport.
 func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cmd {
 	i.loadingModal = nil
 	if msg.Err != nil {
@@ -1140,10 +1213,11 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 		case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
 			for _, tc := range sm.Message.ToolCalls {
 				role := "tool_call"
+				content := toolCallSummary(tc.Name, tc.Arguments)
 				if tc.Name == "skill_load" {
 					role = "skill_load"
 				}
-				i.view.AddMessage(chat.Message{Role: role, Content: tc.Name})
+				i.view.AddMessage(chat.Message{Role: role, Content: content})
 			}
 		case sm.Message.Role == "tool":
 			i.view.AddMessage(chat.Message{Role: "tool_result", Content: sm.Message.Content})

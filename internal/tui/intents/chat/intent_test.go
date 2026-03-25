@@ -308,6 +308,118 @@ var _ = Describe("ChatIntent", func() {
 					Expect(lastMsg.Content).To(ContainSubstring("No agents available"))
 				})
 			})
+
+			Describe("toolCallSummary", func() {
+				It("extracts bash command and caps at 80 chars", func() {
+					args := map[string]interface{}{
+						"command": "ls -la /home/user/very/long/path/that/exceeds/eighty/characters/and/should/be/truncated",
+					}
+					result := chat.ToolCallSummaryForTest("bash", args)
+					Expect(result).To(Equal("bash: ls -la /home/user/very/long/path/that/exceeds/eighty/characters/and/should/be/tr..."))
+				})
+
+				It("returns bash command under 80 chars without truncation", func() {
+					args := map[string]interface{}{
+						"command": "ls -la",
+					}
+					result := chat.ToolCallSummaryForTest("bash", args)
+					Expect(result).To(Equal("bash: ls -la"))
+				})
+
+				It("returns just tool name when bash command is empty", func() {
+					args := map[string]interface{}{
+						"command": "",
+					}
+					result := chat.ToolCallSummaryForTest("bash", args)
+					Expect(result).To(Equal("bash"))
+				})
+
+				It("extracts filePath for read tool", func() {
+					args := map[string]interface{}{
+						"filePath": "/home/user/file.go",
+					}
+					result := chat.ToolCallSummaryForTest("read", args)
+					Expect(result).To(Equal("read: /home/user/file.go"))
+				})
+
+				It("extracts filePath for write tool", func() {
+					args := map[string]interface{}{
+						"filePath": "/home/user/file.go",
+					}
+					result := chat.ToolCallSummaryForTest("write", args)
+					Expect(result).To(Equal("write: /home/user/file.go"))
+				})
+
+				It("extracts filePath for edit tool", func() {
+					args := map[string]interface{}{
+						"filePath": "/home/user/file.go",
+					}
+					result := chat.ToolCallSummaryForTest("edit", args)
+					Expect(result).To(Equal("edit: /home/user/file.go"))
+				})
+
+				It("extracts pattern for glob tool", func() {
+					args := map[string]interface{}{
+						"pattern": "**/*.go",
+					}
+					result := chat.ToolCallSummaryForTest("glob", args)
+					Expect(result).To(Equal("glob: **/*.go"))
+				})
+
+				It("extracts pattern for grep tool", func() {
+					args := map[string]interface{}{
+						"pattern": "func.*Test",
+					}
+					result := chat.ToolCallSummaryForTest("grep", args)
+					Expect(result).To(Equal("grep: func.*Test"))
+				})
+
+				It("extracts description for task tool", func() {
+					args := map[string]interface{}{
+						"description": "Run tests",
+					}
+					result := chat.ToolCallSummaryForTest("task", args)
+					Expect(result).To(Equal("task: Run tests"))
+				})
+
+				It("extracts description for call_omo_agent tool", func() {
+					args := map[string]interface{}{
+						"description": "Investigate codebase",
+					}
+					result := chat.ToolCallSummaryForTest("call_omo_agent", args)
+					Expect(result).To(Equal("call_omo_agent: Investigate codebase"))
+				})
+
+				It("extracts name for skill_load tool", func() {
+					args := map[string]interface{}{
+						"name": "golang",
+					}
+					result := chat.ToolCallSummaryForTest("skill_load", args)
+					Expect(result).To(Equal("skill_load: golang"))
+				})
+
+				It("returns just tool name for unknown tool", func() {
+					args := map[string]interface{}{
+						"someArg": "value",
+					}
+					result := chat.ToolCallSummaryForTest("unknown_tool", args)
+					Expect(result).To(Equal("unknown_tool"))
+				})
+
+				It("returns just tool name when args is empty", func() {
+					args := map[string]interface{}{}
+					result := chat.ToolCallSummaryForTest("bash", args)
+					Expect(result).To(Equal("bash"))
+				})
+
+				It("returns just tool name when type assertion fails", func() {
+					args := map[string]interface{}{
+						"command": 123,
+					}
+					result := chat.ToolCallSummaryForTest("bash", args)
+					Expect(result).To(Equal("bash"))
+				})
+			})
 		})
 
 	})
