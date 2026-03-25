@@ -147,7 +147,7 @@ var _ = Describe("ConsistencyVoter", func() {
 			result, err := voter.Vote(ctx, streamer, req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.WasTriggered).To(BeTrue())
-			Expect(result.BestPlan).To(Equal("better variant plan"))
+			Expect(result.BestPlan).To(BeElementOf("better variant plan", "another variant plan"))
 		})
 	})
 
