@@ -452,8 +452,11 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 //   - Calls handleStreamChunk and refreshViewport.
 //   - Intercepts harness_retry events before standard chunk processing.
 func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
-	if msg.EventType == "harness_retry" {
+	switch msg.EventType {
+	case "harness_retry":
 		return i.handleHarnessRetry(msg)
+	case "harness_attempt_start", "harness_complete", "harness_critic_feedback":
+		return i.handleHarnessEvent(msg)
 	}
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
@@ -494,6 +497,15 @@ func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
 		return tea.Batch(msg.Next, tickSpinner())
 	}
 	return tickSpinner()
+}
+
+// handleHarnessEvent silently consumes harness observability events.
+// These events are for internal tracking and do not affect the session.
+func (i *Intent) handleHarnessEvent(msg StreamChunkMsg) tea.Cmd {
+	if msg.Next != nil {
+		return msg.Next
+	}
+	return nil
 }
 
 // saveSession builds session metadata from the current engine state and persists
