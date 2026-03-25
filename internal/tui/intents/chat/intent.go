@@ -1178,8 +1178,6 @@ func toolCallArgKey(name string) string {
 		return "filePath"
 	case "glob", "grep":
 		return "pattern"
-	case "task", "call_omo_agent":
-		return "description"
 	case "skill_load":
 		return "name"
 	default:

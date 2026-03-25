@@ -374,20 +374,20 @@ var _ = Describe("ChatIntent", func() {
 					Expect(result).To(Equal("grep: func.*Test"))
 				})
 
-				It("extracts description for task tool", func() {
+				It("returns just tool name for unimplemented task tool", func() {
 					args := map[string]interface{}{
 						"description": "Run tests",
 					}
 					result := chat.ToolCallSummaryForTest("task", args)
-					Expect(result).To(Equal("task: Run tests"))
+					Expect(result).To(Equal("task"))
 				})
 
-				It("extracts description for call_omo_agent tool", func() {
+				It("returns just tool name for unimplemented call_omo_agent tool", func() {
 					args := map[string]interface{}{
 						"description": "Investigate codebase",
 					}
 					result := chat.ToolCallSummaryForTest("call_omo_agent", args)
-					Expect(result).To(Equal("call_omo_agent: Investigate codebase"))
+					Expect(result).To(Equal("call_omo_agent"))
 				})
 
 				It("extracts name for skill_load tool", func() {
