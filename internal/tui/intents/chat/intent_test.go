@@ -2,7 +2,10 @@ package chat_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
+	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
@@ -491,10 +495,10 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		Context("when Update receives a final StreamChunkMsg", func() {
-			It("returns a command for spinner tick only", func() {
+			It("returns nil command when no session store configured", func() {
 				intent.SetStreamingForTest(true)
 				cmd := intent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
-				Expect(cmd).NotTo(BeNil())
+				Expect(cmd).To(BeNil())
 			})
 
 			It("finalizes the response into messages", func() {
@@ -802,6 +806,126 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("session saving", func() {
+		var (
+			eng          *engine.Engine
+			reg          *provider.Registry
+			sessionStore *stubSessionLister
+			saveIntent   *chat.Intent
+		)
+
+		BeforeEach(func() {
+			reg = provider.NewRegistry()
+			reg.Register(&streamingStubProvider{
+				providerName: "test-provider",
+				chunks:       []provider.StreamChunk{},
+			})
+
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("test-provider", "test-model"),
+			})
+
+			tmpDir, err := os.MkdirTemp("", "chat-save-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tmpDir) })
+			ctxStore, err := contextpkg.NewFileContextStore(filepath.Join(tmpDir, "ctx.json"), "")
+			Expect(err).NotTo(HaveOccurred())
+			eng.SetContextStore(ctxStore)
+
+			sessionStore = &stubSessionLister{}
+
+			saveIntent = chat.NewIntent(chat.IntentConfig{
+				Engine:       eng,
+				Streamer:     eng,
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "test-provider",
+				ModelName:    "test-model",
+				TokenBudget:  4096,
+				SessionStore: sessionStore,
+			})
+		})
+
+		Context("on streaming completion", func() {
+			It("triggers async session save when Done is true", func() {
+				saveIntent.SetStreamingForTest(true)
+				cmd := saveIntent.Update(chat.StreamChunkMsg{Content: "response", Done: true})
+				Expect(cmd).NotTo(BeNil())
+				msg := cmd()
+				_, ok := msg.(chat.SessionSavedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(sessionStore.saveCalled).To(BeTrue())
+			})
+
+			It("passes the correct session ID", func() {
+				saveIntent.SetStreamingForTest(true)
+				cmd := saveIntent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
+				Expect(cmd).NotTo(BeNil())
+				cmd()
+				Expect(sessionStore.savedID).To(Equal("test-session"))
+			})
+
+			It("passes the correct agent ID in metadata", func() {
+				saveIntent.SetStreamingForTest(true)
+				cmd := saveIntent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
+				Expect(cmd).NotTo(BeNil())
+				cmd()
+				Expect(sessionStore.savedMeta.AgentID).To(Equal("test-agent"))
+			})
+		})
+
+		Context("on KeyCtrlC exit", func() {
+			It("returns a non-nil command that includes session save", func() {
+				cmd := saveIntent.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				Expect(cmd).NotTo(BeNil())
+			})
+		})
+
+		Context("with nil session store", func() {
+			It("returns nil command on streaming completion", func() {
+				nilStoreIntent := chat.NewIntent(chat.IntentConfig{
+					AgentID:      "test-agent",
+					SessionID:    "test-session",
+					ProviderName: "openai",
+					ModelName:    "gpt-4o",
+					TokenBudget:  4096,
+				})
+				nilStoreIntent.SetStreamingForTest(true)
+				cmd := nilStoreIntent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
+				Expect(cmd).To(BeNil())
+			})
+		})
+
+		Context("with nil engine", func() {
+			It("returns nil from saveSession", func() {
+				noEngineIntent := chat.NewIntent(chat.IntentConfig{
+					AgentID:      "test-agent",
+					SessionID:    "test-session",
+					ProviderName: "openai",
+					ModelName:    "gpt-4o",
+					TokenBudget:  4096,
+					SessionStore: sessionStore,
+				})
+				cmd := noEngineIntent.SaveSessionForTest()
+				Expect(cmd).To(BeNil())
+			})
+		})
+
+		Context("when save returns an error", func() {
+			It("propagates the error in SessionSavedMsg", func() {
+				sessionStore.saveErr = fmt.Errorf("disk full")
+				saveIntent.SetStreamingForTest(true)
+				cmd := saveIntent.Update(chat.StreamChunkMsg{Content: "done", Done: true})
+				Expect(cmd).NotTo(BeNil())
+				msg := cmd()
+				savedMsg, ok := msg.(chat.SessionSavedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(savedMsg.Err).To(MatchError("disk full"))
+			})
+		})
+	})
+
 	Describe("detectAgentFromInput", func() {
 		DescribeTable("returns the correct agent for keyword-based input",
 			func(input, expected string) {
@@ -1050,4 +1174,27 @@ func stubManifestWithProvider(providerName, model string) agent.Manifest {
 			},
 		},
 	}
+}
+
+type stubSessionLister struct {
+	saveCalled bool
+	savedID    string
+	savedMeta  contextpkg.SessionMetadata
+	saveErr    error
+	sessions   []contextpkg.SessionInfo
+}
+
+func (s *stubSessionLister) List() []contextpkg.SessionInfo { return s.sessions }
+
+func (s *stubSessionLister) SetTitle(_ string, _ string) error { return nil }
+
+func (s *stubSessionLister) Load(_ string) (*contextpkg.FileContextStore, error) {
+	return nil, errors.New("stub: not implemented")
+}
+
+func (s *stubSessionLister) Save(sessionID string, _ *contextpkg.FileContextStore, meta contextpkg.SessionMetadata) error {
+	s.saveCalled = true
+	s.savedID = sessionID
+	s.savedMeta = meta
+	return s.saveErr
 }
