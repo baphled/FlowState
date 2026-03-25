@@ -2,6 +2,7 @@ package plan_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -242,6 +243,85 @@ var _ = Describe("StreamEvaluate", func() {
 			Eventually(outCh, 2*time.Second).Should(BeClosed())
 		})
 	})
+
+	Context("when streaming a valid plan on the first attempt", func() {
+		It("emits harness_attempt_start on first attempt", func() {
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			attemptStartChunks := filterEventChunks(received, "harness_attempt_start")
+			Expect(attemptStartChunks).To(HaveLen(1))
+			Expect(attemptStartChunks[0].Content).To(ContainSubstring(`"attempt":1`))
+		})
+	})
+
+	Context("when the plan passes validation", func() {
+		It("emits harness_complete before Done", func() {
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			completeChunks := filterEventChunks(received, "harness_complete")
+			Expect(completeChunks).To(HaveLen(1))
+
+			var payload map[string]any
+			Expect(json.Unmarshal([]byte(completeChunks[0].Content), &payload)).To(Succeed())
+			Expect(payload).To(HaveKey("valid"))
+			Expect(payload).To(HaveKey("score"))
+			Expect(payload).To(HaveKey("attemptCount"))
+
+			doneIdx := -1
+			completeIdx := -1
+			for i, c := range received {
+				if c.EventType == "harness_complete" {
+					completeIdx = i
+				}
+				if c.Done {
+					doneIdx = i
+				}
+			}
+			Expect(completeIdx).To(BeNumerically("<", doneIdx))
+		})
+	})
+
+	Context("when critic is wired and the plan passes validation", func() {
+		It("emits harness_critic_feedback when critic runs", func() {
+			projectRoot := projectRootFromWorkingDir()
+			criticProv := &mockChatProvider{response: validCriticResponse()}
+			critic := newTestCritic(true)
+			harnessWithCritic := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
+
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+
+			outCh, err := harnessWithCritic.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			criticChunks := filterEventChunks(received, "harness_critic_feedback")
+			Expect(criticChunks).To(HaveLen(1))
+			Expect(criticChunks[0].Content).To(ContainSubstring(`"verdict"`))
+		})
+	})
 })
 
 var _ = Describe("ValidatorChain", func() {
@@ -377,6 +457,16 @@ func filterErrorChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
 	for _, c := range chunks {
 		if c.Error != nil {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+func filterEventChunks(chunks []provider.StreamChunk, eventType string) []provider.StreamChunk {
+	var filtered []provider.StreamChunk
+	for _, c := range chunks {
+		if c.EventType == eventType {
 			filtered = append(filtered, c)
 		}
 	}

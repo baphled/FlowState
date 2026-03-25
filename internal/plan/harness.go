@@ -2,8 +2,10 @@ package plan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -173,6 +175,11 @@ func (h *PlanHarness) runStreamEvaluation(
 	currentMessage := message
 
 	for attempt := 1; attempt <= h.maxRetries; attempt++ {
+		trySend(ctx, outCh, provider.StreamChunk{
+			EventType: "harness_attempt_start",
+			Content:   fmt.Sprintf(`{"attempt":%d,"maxRetries":%d}`, attempt, h.maxRetries),
+		})
+
 		planText, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
 		if err != nil {
 			trySend(ctx, outCh, provider.StreamChunk{Error: err})
@@ -180,18 +187,21 @@ func (h *PlanHarness) runStreamEvaluation(
 		}
 
 		phase := hook.DetectPhase(planText)
+		slog.Info("harness phase detected", "phase", phaseString(phase), "agentID", agentID)
 		if phase != hook.PhaseGeneration {
 			trySend(ctx, outCh, provider.StreamChunk{Done: true})
 			return
 		}
 
-		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
+		result, feedback := h.evaluateStreamAttempt(ctx, planText, attempt, outCh)
 		if result != nil {
+			emitHarnessComplete(ctx, outCh, result)
 			trySend(ctx, outCh, provider.StreamChunk{Done: true})
 			return
 		}
 
 		if attempt < h.maxRetries {
+			slog.Warn("harness retrying", "attempt", attempt, "maxRetries", h.maxRetries, "feedbackLen", len(feedback))
 			retryChunk := provider.StreamChunk{
 				EventType: "harness_retry",
 				Content:   fmt.Sprintf("Plan validation failed (attempt %d/%d). Retrying...", attempt, h.maxRetries),
@@ -203,6 +213,7 @@ func (h *PlanHarness) runStreamEvaluation(
 		currentMessage = appendFeedback(currentMessage, feedback)
 	}
 
+	slog.Error("harness exhausted retries", "maxRetries", h.maxRetries)
 	trySend(ctx, outCh, provider.StreamChunk{Done: true})
 }
 
@@ -509,6 +520,196 @@ func (h *PlanHarness) runCritic(ctx context.Context, planText string, validation
 	}
 
 	return ""
+}
+
+// evaluateStreamAttempt validates and critiques a single plan attempt, emitting events to outCh.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText contains a plan in the generation phase.
+//   - attempt is the current 1-based attempt number.
+//   - outCh is the channel for emitting observability events.
+//
+// Returns:
+//   - A final EvaluationResult if the attempt concludes evaluation, or nil with retry feedback.
+//
+// Side effects:
+//   - Emits harness_critic_feedback and slog validation events via outCh.
+func (h *PlanHarness) evaluateStreamAttempt(
+	ctx context.Context, planText string, attempt int, outCh chan<- provider.StreamChunk,
+) (*EvaluationResult, string) {
+	validation := h.validatePlan(planText)
+	slog.Info("harness validation",
+		"valid", validation.Valid,
+		"score", validation.Score,
+		"errors", len(validation.Errors),
+		"warnings", len(validation.Warnings),
+	)
+	if validation.Valid {
+		return h.handleValidPlanStream(ctx, planText, validation, attempt, outCh)
+	}
+
+	if attempt < h.maxRetries {
+		return nil, buildFeedback(validation)
+	}
+
+	validation.Warnings = append(validation.Warnings, "validation failed after "+strconv.Itoa(attempt)+" attempts")
+	return &EvaluationResult{
+		PlanText: planText, ValidationResult: validation,
+		AttemptCount: attempt, FinalScore: validation.Score,
+	}, ""
+}
+
+// handleValidPlanStream runs the critic on a structurally valid plan, emitting feedback events to outCh.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText is the structurally valid plan text.
+//   - validation is the passing ValidationResult.
+//   - attempt is the current 1-based attempt number.
+//   - outCh is the channel for emitting observability events.
+//
+// Returns:
+//   - A final EvaluationResult if critic passes or final attempt, or nil with critic feedback for retry.
+//
+// Side effects:
+//   - Emits harness_critic_feedback via outCh when the critic runs.
+func (h *PlanHarness) handleValidPlanStream(
+	ctx context.Context, planText string, validation *ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
+) (*EvaluationResult, string) {
+	criticFeedback := h.runCriticStream(ctx, planText, validation, outCh)
+	if criticFeedback == "" {
+		return &EvaluationResult{
+			PlanText: planText, ValidationResult: validation,
+			AttemptCount: attempt, FinalScore: validation.Score,
+		}, ""
+	}
+	if attempt < h.maxRetries {
+		return nil, criticFeedback
+	}
+	validation.Warnings = append(validation.Warnings, "critic rejected plan on final attempt")
+	return &EvaluationResult{
+		PlanText: planText, ValidationResult: validation,
+		AttemptCount: attempt, FinalScore: validation.Score,
+	}, ""
+}
+
+// runCriticStream invokes the LLM critic and emits a harness_critic_feedback event to outCh.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - planText is the raw plan text.
+//   - validation is the validator result to pass to the critic.
+//   - outCh is the channel for emitting observability events.
+//
+// Returns:
+//   - A feedback string for retry if the critic rejects the plan, or empty string if critic passes or is unconfigured.
+//
+// Side effects:
+//   - Sends a chat request to the critic provider when configured.
+//   - Emits harness_critic_feedback to outCh on successful critic review.
+func (h *PlanHarness) runCriticStream(
+	ctx context.Context, planText string, validation *ValidationResult, outCh chan<- provider.StreamChunk,
+) string {
+	if h.critic == nil || h.criticProvider == nil {
+		return ""
+	}
+
+	parsedPlan, parseErr := parseFile(planText)
+	if parseErr != nil {
+		parsedPlan = nil
+	}
+
+	criticResult, err := h.critic.Review(ctx, parsedPlan, planText, validation, h.criticProvider)
+	if err != nil {
+		validation.Warnings = append(validation.Warnings, "critic error: "+err.Error())
+		return ""
+	}
+
+	emitCriticFeedback(ctx, outCh, criticResult)
+
+	if criticResult.Verdict == VerdictFail {
+		return buildCriticFeedback(criticResult)
+	}
+
+	return ""
+}
+
+// emitCriticFeedback sends a harness_critic_feedback event to outCh with the critic verdict.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - outCh is the channel for emitting observability events.
+//   - result is a non-nil CriticResult.
+//
+// Side effects:
+//   - Sends a harness_critic_feedback StreamChunk to outCh.
+func emitCriticFeedback(ctx context.Context, outCh chan<- provider.StreamChunk, result *CriticResult) {
+	issuesJSON, err := json.Marshal(result.Issues)
+	if err != nil {
+		issuesJSON = []byte("[]")
+	}
+	trySend(ctx, outCh, provider.StreamChunk{
+		EventType: "harness_critic_feedback",
+		Content: fmt.Sprintf(
+			`{"verdict":%q,"confidence":%g,"issues":%s}`,
+			result.Verdict, result.Confidence, issuesJSON,
+		),
+	})
+}
+
+// emitHarnessComplete sends a harness_complete event to outCh with the evaluation result summary.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - outCh is the channel for emitting observability events.
+//   - result is a non-nil EvaluationResult.
+//
+// Side effects:
+//   - Sends a harness_complete StreamChunk to outCh.
+func emitHarnessComplete(ctx context.Context, outCh chan<- provider.StreamChunk, result *EvaluationResult) {
+	payload, err := json.Marshal(map[string]any{
+		"valid":        result.ValidationResult != nil && result.ValidationResult.Valid,
+		"score":        result.FinalScore,
+		"attemptCount": result.AttemptCount,
+		"errors":       validationErrors(result.ValidationResult),
+		"warnings":     validationWarnings(result.ValidationResult),
+	})
+	if err != nil {
+		payload = []byte("{}")
+	}
+	trySend(ctx, outCh, provider.StreamChunk{
+		EventType: "harness_complete",
+		Content:   string(payload),
+	})
+}
+
+// validationErrors returns the error list from a ValidationResult, or nil if the result is nil.
+func validationErrors(v *ValidationResult) []string {
+	if v != nil {
+		return v.Errors
+	}
+	return nil
+}
+
+// validationWarnings returns the warning list from a ValidationResult, or nil if the result is nil.
+func validationWarnings(v *ValidationResult) []string {
+	if v != nil {
+		return v.Warnings
+	}
+	return nil
+}
+
+// phaseString returns a human-readable string for a PlanPhase value.
+func phaseString(phase hook.PlanPhase) string {
+	switch phase {
+	case hook.PhaseInterview:
+		return "interview"
+	case hook.PhaseGeneration:
+		return "generation"
+	default:
+		return "unknown"
+	}
 }
 
 // buildCriticFeedback constructs a retry feedback string from critic issues.
