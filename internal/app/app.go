@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
@@ -32,6 +36,7 @@ import (
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
+	"github.com/baphled/flowstate/internal/tracer"
 )
 
 // App is the main application container holding all initialized components.
@@ -47,6 +52,7 @@ type App struct {
 	Streamer         streaming.Streamer
 	mcpClient        mcpclient.Client
 	providerRegistry *provider.Registry
+	metricsRegistry  *prometheus.Registry
 }
 
 // New creates a new App instance with all components initialised.
@@ -78,9 +84,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	defaultProvider, err := providerRegistry.Get(cfg.Providers.Default)
+	metricsReg, tracedProvider, err := buildTracedProvider(providerRegistry, cfg.Providers.Default)
 	if err != nil {
-		return nil, fmt.Errorf("getting default provider %q: %w", cfg.Providers.Default, err)
+		return nil, err
 	}
 	contextStore, err := createContextStore(cfg)
 	if err != nil {
@@ -92,7 +98,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
 	eng := createEngine(engineParams{
-		defaultProvider:    defaultProvider,
+		defaultProvider:    tracedProvider,
 		ollamaProvider:     ollamaProvider,
 		providerRegistry:   providerRegistry,
 		agentRegistry:      agentRegistry,
@@ -122,6 +128,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Streamer:         streamer,
 		mcpClient:        mcpMgr,
 		providerRegistry: providerRegistry,
+		metricsRegistry:  metricsReg,
 	}, nil
 }
 
@@ -290,6 +297,19 @@ func (a *App) SetProviderRegistry(registry *provider.Registry) {
 //   - None.
 func (a *App) ProviderRegistry() *provider.Registry {
 	return a.providerRegistry
+}
+
+// MetricsHandler returns an HTTP handler serving Prometheus metrics from the
+// application's metrics registry. Register this on the API server's router at
+// the "/metrics" path to expose collected observability data.
+//
+// Returns:
+//   - An http.Handler that serves Prometheus metrics in exposition format.
+//
+// Side effects:
+//   - None.
+func (a *App) MetricsHandler() http.Handler {
+	return promhttp.HandlerFor(a.metricsRegistry, promhttp.HandlerOpts{})
 }
 
 // SetModel overrides the engine's model preference to use the specified model.
@@ -519,7 +539,36 @@ func buildHookChain(
 		}
 		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
 	}
+	hooks = append(hooks, tracer.Hook())
 	return hook.NewChain(hooks...)
+}
+
+// buildTracedProvider creates a Prometheus metrics registry, wraps the default
+// provider with a TracingProvider that records per-method latency, and returns
+// both for use in the application container.
+//
+// Expected:
+//   - providerRegistry is a non-nil provider.Registry with registered providers.
+//   - defaultName is the name of the default provider to retrieve.
+//
+// Returns:
+//   - A prometheus.Registry for gathering metrics.
+//   - A TracingProvider wrapping the default provider with latency recording.
+//   - An error if the default provider cannot be found.
+//
+// Side effects:
+//   - Registers Prometheus collectors with the metrics registry.
+func buildTracedProvider(
+	providerRegistry *provider.Registry,
+	defaultName string,
+) (*prometheus.Registry, *tracer.TracingProvider, error) {
+	metricsReg := prometheus.NewRegistry()
+	recorder := tracer.NewPrometheusRecorder(metricsReg)
+	defaultProvider, err := providerRegistry.Get(defaultName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting default provider %q: %w", defaultName, err)
+	}
+	return metricsReg, tracer.NewTracingProvider(defaultProvider, recorder), nil
 }
 
 // registerProviders initialises and registers all configured LLM providers.

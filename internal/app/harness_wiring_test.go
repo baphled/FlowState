@@ -90,7 +90,7 @@ var _ = Describe("Harness wiring", func() {
 				chain := app.BuildHookChainForTest(learningStore, manifestGetter)
 
 				Expect(chain).NotTo(BeNil())
-				Expect(chain.Len()).To(Equal(3))
+				Expect(chain.Len()).To(Equal(4))
 			})
 		})
 
@@ -103,7 +103,7 @@ var _ = Describe("Harness wiring", func() {
 				chain := app.BuildHookChainForTest(learningStore, manifestGetter)
 
 				Expect(chain).NotTo(BeNil())
-				Expect(chain.Len()).To(Equal(5))
+				Expect(chain.Len()).To(Equal(6))
 			})
 		})
 	})
