@@ -685,6 +685,15 @@ func emitHarnessComplete(ctx context.Context, outCh chan<- provider.StreamChunk,
 }
 
 // validationErrors returns the error list from a ValidationResult, or nil if the result is nil.
+//
+// Expected:
+//   - v may be nil; returns nil in that case.
+//
+// Returns:
+//   - A slice of error message strings, or nil if v is nil.
+//
+// Side effects:
+//   - None.
 func validationErrors(v *ValidationResult) []string {
 	if v != nil {
 		return v.Errors
@@ -693,6 +702,15 @@ func validationErrors(v *ValidationResult) []string {
 }
 
 // validationWarnings returns the warning list from a ValidationResult, or nil if the result is nil.
+//
+// Expected:
+//   - v may be nil; returns nil in that case.
+//
+// Returns:
+//   - A slice of warning message strings, or nil if v is nil.
+//
+// Side effects:
+//   - None.
 func validationWarnings(v *ValidationResult) []string {
 	if v != nil {
 		return v.Warnings
@@ -701,6 +719,15 @@ func validationWarnings(v *ValidationResult) []string {
 }
 
 // phaseString returns a human-readable string for a PlanPhase value.
+//
+// Expected:
+//   - phase is a valid hook.PlanPhase constant.
+//
+// Returns:
+//   - A lowercase string representation of the phase, or "unknown" for unrecognised values.
+//
+// Side effects:
+//   - None.
 func phaseString(phase hook.PlanPhase) string {
 	switch phase {
 	case hook.PhaseInterview:
