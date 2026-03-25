@@ -398,6 +398,78 @@ func writeSSEHarnessRetry(w http.ResponseWriter, flusher http.Flusher, content s
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// sseAttemptStart represents a harness attempt start event in a server-sent event stream.
+type sseAttemptStart struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSEAttemptStart marshals a harness attempt start as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - content describes the attempt being started.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded attempt start event to response.
+//   - Flushes response buffer.
+func writeSSEAttemptStart(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseAttemptStart{Type: "harness_attempt_start", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseHarnessComplete represents a harness completion event in a server-sent event stream.
+type sseHarnessComplete struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSEHarnessComplete marshals a harness completion as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - content describes the evaluation outcome.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness complete event to response.
+//   - Flushes response buffer.
+func writeSSEHarnessComplete(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseHarnessComplete{Type: "harness_complete", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseCriticFeedback represents a harness critic feedback event in a server-sent event stream.
+type sseCriticFeedback struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSECriticFeedback marshals harness critic feedback as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - content describes the critic's feedback on the plan.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded critic feedback event to response.
+//   - Flushes response buffer.
+func writeSSECriticFeedback(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseCriticFeedback{Type: "harness_critic_feedback", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // writeSSE writes a server-sent event data line and flushes the response buffer.
 //
 // Expected:

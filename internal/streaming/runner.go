@@ -38,8 +38,7 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 			c.WriteError(chunk.Error)
 			continue
 		}
-		if chunk.EventType == "harness_retry" {
-			deliverHarnessEvent(c, chunk.Content)
+		if dispatchHarnessEvent(c, chunk) {
 			continue
 		}
 		deliverToolCall(c, chunk.ToolCall)
@@ -82,20 +81,37 @@ func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 	tc.WriteToolCall(name)
 }
 
-// deliverHarnessEvent delivers a harness retry notification to the consumer.
+// dispatchHarnessEvent checks whether the chunk is a harness lifecycle event and delivers it
+// to the consumer if supported. Returns true if the chunk was a harness event and was consumed.
 //
 // Expected:
 //   - c is a non-nil StreamConsumer.
-//   - content is the retry message describing the validation failure.
+//   - chunk is the current stream chunk to inspect.
+//
+// Returns:
+//   - true if the chunk carried a harness event type (regardless of consumer support).
+//   - false if the chunk is not a harness event.
 //
 // Side effects:
-//   - If c implements HarnessEventConsumer, calls c.WriteHarnessRetry with the content.
-func deliverHarnessEvent(c StreamConsumer, content string) {
-	hc, ok := c.(HarnessEventConsumer)
-	if !ok {
-		return
+//   - If c implements HarnessEventConsumer, calls the corresponding method for the event type.
+func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
+	var fn func(HarnessEventConsumer)
+	switch chunk.EventType {
+	case "harness_retry":
+		fn = func(h HarnessEventConsumer) { h.WriteHarnessRetry(chunk.Content) }
+	case "harness_attempt_start":
+		fn = func(h HarnessEventConsumer) { h.WriteAttemptStart(chunk.Content) }
+	case "harness_complete":
+		fn = func(h HarnessEventConsumer) { h.WriteComplete(chunk.Content) }
+	case "harness_critic_feedback":
+		fn = func(h HarnessEventConsumer) { h.WriteCriticFeedback(chunk.Content) }
+	default:
+		return false
 	}
-	hc.WriteHarnessRetry(content)
+	if hc, ok := c.(HarnessEventConsumer); ok {
+		fn(hc)
+	}
+	return true
 }
 
 // deliverToolResult delivers the tool result to the consumer.

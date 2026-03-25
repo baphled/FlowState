@@ -112,15 +112,18 @@ func (m *mockHarness) StreamEvaluate(
 }
 
 type mockHarnessConsumer struct {
-	chunks       []string
-	toolCalls    []string
-	toolResults  []string
-	errors       []error
-	retryContent []string
-	doneCount    int
-	writeErr     error
-	enableTool   bool
-	enableResult bool
+	chunks          []string
+	toolCalls       []string
+	toolResults     []string
+	errors          []error
+	retryContent    []string
+	attemptStarts   []string
+	completes       []string
+	criticFeedbacks []string
+	doneCount       int
+	writeErr        error
+	enableTool      bool
+	enableResult    bool
 }
 
 func (m *mockHarnessConsumer) WriteChunk(content string) error {
@@ -150,6 +153,18 @@ func (m *mockHarnessConsumer) WriteToolResult(content string) {
 
 func (m *mockHarnessConsumer) WriteHarnessRetry(content string) {
 	m.retryContent = append(m.retryContent, content)
+}
+
+func (m *mockHarnessConsumer) WriteAttemptStart(content string) {
+	m.attemptStarts = append(m.attemptStarts, content)
+}
+
+func (m *mockHarnessConsumer) WriteComplete(content string) {
+	m.completes = append(m.completes, content)
+}
+
+func (m *mockHarnessConsumer) WriteCriticFeedback(content string) {
+	m.criticFeedbacks = append(m.criticFeedbacks, content)
 }
 
 var _ = Describe("Streaming", func() {
@@ -572,6 +587,188 @@ var _ = Describe("Streaming", func() {
 					"attempt-2 ",
 					"attempt-3",
 				}))
+			})
+		})
+	})
+
+	Describe("Run with harness_attempt_start events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockHarnessConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockHarnessConsumer{}
+		})
+
+		Context("when the stream contains a harness_attempt_start event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "harness_attempt_start", Content: "attempt 2 of 3"},
+					{Content: "plan output"},
+					{Done: true},
+				}
+			})
+
+			It("calls WriteAttemptStart on the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.attemptStarts).To(HaveLen(1))
+				Expect(consumer.attemptStarts[0]).To(Equal("attempt 2 of 3"))
+			})
+
+			It("does not deliver attempt start content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{"plan output"}))
+			})
+		})
+
+		Context("when the consumer does not implement HarnessEventConsumer", func() {
+			It("silently skips harness_attempt_start events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "harness_attempt_start", Content: "attempt 1"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+	})
+
+	Describe("Run with harness_complete events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockHarnessConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockHarnessConsumer{}
+		})
+
+		Context("when the stream contains a harness_complete event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "plan text "},
+					{EventType: "harness_complete", Content: "score: 0.95, attempts: 2"},
+					{Done: true},
+				}
+			})
+
+			It("calls WriteComplete on the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.completes).To(HaveLen(1))
+				Expect(consumer.completes[0]).To(Equal("score: 0.95, attempts: 2"))
+			})
+
+			It("does not deliver complete content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{"plan text "}))
+			})
+		})
+
+		Context("when the consumer does not implement HarnessEventConsumer", func() {
+			It("silently skips harness_complete events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "harness_complete", Content: "done"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+	})
+
+	Describe("Run with harness_critic_feedback events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockHarnessConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockHarnessConsumer{}
+		})
+
+		Context("when the stream contains a harness_critic_feedback event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "plan draft "},
+					{EventType: "harness_critic_feedback", Content: "missing error handling section"},
+					{Content: "revised plan"},
+					{Done: true},
+				}
+			})
+
+			It("calls WriteCriticFeedback on the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.criticFeedbacks).To(HaveLen(1))
+				Expect(consumer.criticFeedbacks[0]).To(Equal("missing error handling section"))
+			})
+
+			It("does not deliver critic feedback content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{"plan draft ", "revised plan"}))
+			})
+		})
+
+		Context("when the consumer does not implement HarnessEventConsumer", func() {
+			It("silently skips harness_critic_feedback events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "harness_critic_feedback", Content: "feedback"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+
+		Context("when multiple harness event types occur in one stream", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "harness_attempt_start", Content: "attempt 1"},
+					{Content: "draft "},
+					{EventType: "harness_critic_feedback", Content: "needs improvement"},
+					{EventType: "harness_retry", Content: "retrying"},
+					{EventType: "harness_attempt_start", Content: "attempt 2"},
+					{Content: "final plan"},
+					{EventType: "harness_complete", Content: "passed"},
+					{Done: true},
+				}
+			})
+
+			It("delivers each event type to the correct consumer method", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.attemptStarts).To(Equal([]string{"attempt 1", "attempt 2"}))
+				Expect(consumer.criticFeedbacks).To(Equal([]string{"needs improvement"}))
+				Expect(consumer.retryContent).To(Equal([]string{"retrying"}))
+				Expect(consumer.completes).To(Equal([]string{"passed"}))
+				Expect(consumer.chunks).To(Equal([]string{"draft ", "final plan"}))
 			})
 		})
 	})

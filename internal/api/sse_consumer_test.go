@@ -108,6 +108,66 @@ var _ = Describe("SSEConsumer", func() {
 		})
 	})
 
+	Describe("WriteAttemptStart", func() {
+		It("writes JSON attempt start as an SSE data line", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteAttemptStart("attempt 2 of 3")
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`data: {"type":"harness_attempt_start","content":"attempt 2 of 3"}`))
+		})
+
+		It("flushes after writing", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteAttemptStart("attempt 1")
+
+			Expect(recorder.Flushed).To(BeTrue())
+		})
+	})
+
+	Describe("WriteComplete", func() {
+		It("writes JSON harness complete as an SSE data line", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteComplete("score: 0.95, attempts: 2")
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`data: {"type":"harness_complete","content":"score: 0.95, attempts: 2"}`))
+		})
+
+		It("flushes after writing", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteComplete("done")
+
+			Expect(recorder.Flushed).To(BeTrue())
+		})
+	})
+
+	Describe("WriteCriticFeedback", func() {
+		It("writes JSON critic feedback as an SSE data line", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteCriticFeedback("missing error handling section")
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`data: {"type":"harness_critic_feedback","content":"missing error handling section"}`))
+		})
+
+		It("flushes after writing", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteCriticFeedback("feedback")
+
+			Expect(recorder.Flushed).To(BeTrue())
+		})
+	})
+
 	Describe("WriteToolResult", func() {
 		It("writes JSON tool result as an SSE data line", func() {
 			consumer, ok := api.NewSSEConsumer(recorder)

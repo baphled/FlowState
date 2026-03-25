@@ -107,3 +107,39 @@ func (c *SSEConsumer) WriteToolResult(content string) {
 func (c *SSEConsumer) WriteHarnessRetry(content string) {
 	writeSSEHarnessRetry(c.w, c.flusher, content)
 }
+
+// WriteAttemptStart writes a JSON-encoded harness attempt start event as a server-sent event.
+//
+// Expected:
+//   - content describes the attempt being started.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded attempt start event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteAttemptStart(content string) {
+	writeSSEAttemptStart(c.w, c.flusher, content)
+}
+
+// WriteComplete writes a JSON-encoded harness completion event as a server-sent event.
+//
+// Expected:
+//   - content describes the evaluation outcome.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness complete event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteComplete(content string) {
+	writeSSEHarnessComplete(c.w, c.flusher, content)
+}
+
+// WriteCriticFeedback writes a JSON-encoded harness critic feedback event as a server-sent event.
+//
+// Expected:
+//   - content describes the critic's feedback on the plan.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded critic feedback event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteCriticFeedback(content string) {
+	writeSSECriticFeedback(c.w, c.flusher, content)
+}
