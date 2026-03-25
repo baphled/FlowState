@@ -11,6 +11,15 @@ import (
 
 // Hook returns a hook.Hook that wraps each provider call with timing and slog logging.
 // It records request message count, response chunk count, duration, and any error.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A hook.Hook that logs request metadata and response chunk count via slog.
+//
+// Side effects:
+//   - The returned hook starts a goroutine per provider call to count chunks.
 func Hook() hook.Hook {
 	return func(next hook.HandlerFunc) hook.HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
