@@ -385,16 +385,19 @@ mcp_servers:
 	})
 
 	Describe("AlwaysActiveSkills", func() {
-		It("defaults to 6 mandatory skills", func() {
+		It("defaults to 9 canonical core-tier skills", func() {
 			cfg := config.DefaultConfig()
 
-			Expect(cfg.AlwaysActiveSkills).To(HaveLen(6))
+			Expect(cfg.AlwaysActiveSkills).To(HaveLen(9))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("pre-action"))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("memory-keeper"))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("token-cost-estimation"))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("retrospective"))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("note-taking"))
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("knowledge-base"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("discipline"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("skill-discovery"))
+			Expect(cfg.AlwaysActiveSkills).To(ContainElement("agent-discovery"))
 		})
 
 		It("loads from YAML config", func() {

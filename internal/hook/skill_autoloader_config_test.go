@@ -13,9 +13,19 @@ import (
 
 var _ = Describe("SkillAutoLoaderConfig", func() {
 	Describe("DefaultSkillAutoLoaderConfig", func() {
-		It("returns baseline skills of pre-action and memory-keeper", func() {
+		It("returns baseline skills matching the canonical core-tier set", func() {
 			cfg := hook.DefaultSkillAutoLoaderConfig()
-			Expect(cfg.BaselineSkills).To(Equal([]string{"pre-action", "memory-keeper"}))
+			Expect(cfg.BaselineSkills).To(Equal([]string{
+				"pre-action",
+				"memory-keeper",
+				"token-cost-estimation",
+				"retrospective",
+				"note-taking",
+				"knowledge-base",
+				"discipline",
+				"skill-discovery",
+				"agent-discovery",
+			}))
 		})
 
 		It("returns max auto skills of 6", func() {
@@ -38,7 +48,17 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 		It("returns default config when file does not exist", func() {
 			cfg, err := hook.LoadSkillAutoLoaderConfig("/nonexistent/path/config.yaml")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.BaselineSkills).To(Equal([]string{"pre-action", "memory-keeper"}))
+			Expect(cfg.BaselineSkills).To(Equal([]string{
+				"pre-action",
+				"memory-keeper",
+				"token-cost-estimation",
+				"retrospective",
+				"note-taking",
+				"knowledge-base",
+				"discipline",
+				"skill-discovery",
+				"agent-discovery",
+			}))
 			Expect(cfg.MaxAutoSkills).To(Equal(6))
 		})
 

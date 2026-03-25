@@ -196,9 +196,12 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring(
-				"Your load_skills: [pre-action, memory-keeper, clean-code]. Call skill_load(name) for each before starting work.",
-			))
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("]. Call skill_load(name) for each before starting work."))
+			for _, skill := range config.BaselineSkills {
+				Expect(systemContent).To(ContainSubstring(skill))
+			}
+			Expect(systemContent).To(ContainSubstring("clean-code"))
 		})
 	})
 
@@ -206,7 +209,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, clean-code]. Call skill_load(name) for each before starting work.\n\nYou are a helpful assistant."},
+					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery, clean-code]. Call skill_load(name) for each before starting work.\n\nYou are a helpful assistant."},
 					{Role: "user", Content: "follow-up after tool call"},
 				},
 			}

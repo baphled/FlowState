@@ -27,13 +27,23 @@ type SkillAutoLoaderConfig struct {
 //   - No arguments required.
 //
 // Returns:
-//   - A SkillAutoLoaderConfig with baseline skills ["pre-action", "memory-keeper"] and max 6 auto skills.
+//   - A SkillAutoLoaderConfig with baseline skills matching the canonical core-tier set
 //
 // Side effects:
 //   - None.
 func DefaultSkillAutoLoaderConfig() *SkillAutoLoaderConfig {
 	return &SkillAutoLoaderConfig{
-		BaselineSkills:   []string{"pre-action", "memory-keeper"},
+		BaselineSkills: []string{
+			"pre-action",
+			"memory-keeper",
+			"token-cost-estimation",
+			"retrospective",
+			"note-taking",
+			"knowledge-base",
+			"discipline",
+			"skill-discovery",
+			"agent-discovery",
+		},
 		MaxAutoSkills:    6,
 		CategoryMappings: map[string][]string{},
 		KeywordPatterns:  []KeywordPattern{},

@@ -21,8 +21,9 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 	)
 
 	BeforeEach(func() {
+		defaultCfg := hook.DefaultSkillAutoLoaderConfig()
 		cfg = &hook.SkillAutoLoaderConfig{
-			BaselineSkills:   []string{"pre-action", "memory-keeper"},
+			BaselineSkills:   defaultCfg.BaselineSkills,
 			MaxAutoSkills:    4,
 			CategoryMappings: map[string][]string{},
 			KeywordPatterns: []hook.KeywordPattern{
@@ -69,8 +70,9 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 	Context("when injecting baseline skills", func() {
 		It("injects baseline skills into system prompt", func() {
 			req := runHook("Hello")
-			Expect(req.Messages[0].Content).To(ContainSubstring("pre-action"))
-			Expect(req.Messages[0].Content).To(ContainSubstring("memory-keeper"))
+			for _, skill := range cfg.BaselineSkills {
+				Expect(req.Messages[0].Content).To(ContainSubstring(skill))
+			}
 		})
 
 		It("injects lean format with load_skills directive", func() {
@@ -104,9 +106,13 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			skillList := content[loadSkillsIdx+len("Your load_skills: [") : loadSkillsIdx+closeBracketIdx]
 			skills := strings.Split(skillList, ", ")
 
+			baselineSet := make(map[string]bool)
+			for _, b := range cfg.BaselineSkills {
+				baselineSet[b] = true
+			}
 			baselineCount := 0
 			for _, s := range skills {
-				if s == "pre-action" || s == "memory-keeper" {
+				if baselineSet[s] {
 					baselineCount++
 				}
 			}

@@ -209,35 +209,27 @@ var _ = Describe("SelectSkills", func() {
 
 	BeforeEach(func() {
 		input = hook.SkillSelectionInput{}
-		config = &hook.SkillAutoLoaderConfig{
-			BaselineSkills:   []string{"pre-action", "memory-keeper"},
-			MaxAutoSkills:    6,
-			CategoryMappings: map[string][]string{},
-			KeywordPatterns:  []hook.KeywordPattern{},
-		}
+		config = hook.DefaultSkillAutoLoaderConfig()
 	})
 
 	Context("with empty input and minimal config", func() {
 		It("returns baseline skills only", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(Equal([]string{"pre-action", "memory-keeper"}))
-			Expect(result.Sources).To(HaveLen(2))
+			Expect(result.Skills).To(Equal(config.BaselineSkills))
+			Expect(result.Sources).To(HaveLen(len(config.BaselineSkills)))
 		})
 
 		It("marks baseline skills with source 'baseline'", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Sources[0]).To(Equal(hook.SkillSource{
-				Skill:   "pre-action",
-				Source:  "baseline",
-				Pattern: "",
-			}))
-			Expect(result.Sources[1]).To(Equal(hook.SkillSource{
-				Skill:   "memory-keeper",
-				Source:  "baseline",
-				Pattern: "",
-			}))
+			for i, skill := range config.BaselineSkills {
+				Expect(result.Sources[i]).To(Equal(hook.SkillSource{
+					Skill:   skill,
+					Source:  "baseline",
+					Pattern: "",
+				}))
+			}
 		})
 	})
 
@@ -262,10 +254,9 @@ var _ = Describe("SelectSkills", func() {
 		It("includes agent skills after baseline", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(Equal([]string{
-				"pre-action", "memory-keeper",
-				"golang", "clean-code", "ginkgo-gomega",
-			}))
+			expected := append([]string{}, config.BaselineSkills...)
+			expected = append(expected, "golang", "clean-code", "ginkgo-gomega")
+			Expect(result.Skills).To(Equal(expected))
 		})
 
 		It("marks agent skills with source 'agent'", func() {
@@ -379,7 +370,9 @@ var _ = Describe("SelectSkills", func() {
 		It("always includes all baseline skills regardless of cap", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(ContainElements("pre-action", "memory-keeper"))
+			for _, skill := range config.BaselineSkills {
+				Expect(result.Skills).To(ContainElement(skill))
+			}
 		})
 
 		It("caps combined agent and keyword skills", func() {
@@ -406,9 +399,9 @@ var _ = Describe("SelectSkills", func() {
 		It("includes baseline and agent skills but no keyword matches", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(Equal([]string{
-				"pre-action", "memory-keeper", "golang",
-			}))
+			expected := append([]string{}, config.BaselineSkills...)
+			expected = append(expected, "golang")
+			Expect(result.Skills).To(Equal(expected))
 		})
 	})
 
@@ -424,10 +417,15 @@ var _ = Describe("SelectSkills", func() {
 		It("tracks sources for skills from all three tiers", func() {
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Sources).To(ContainElements(
-				hook.SkillSource{Skill: "pre-action", Source: "baseline", Pattern: ""},
-				hook.SkillSource{Skill: "memory-keeper", Source: "baseline", Pattern: ""},
+			for _, skill := range config.BaselineSkills {
+				Expect(result.Sources).To(ContainElement(
+					hook.SkillSource{Skill: skill, Source: "baseline", Pattern: ""},
+				))
+			}
+			Expect(result.Sources).To(ContainElement(
 				hook.SkillSource{Skill: "golang", Source: "agent", Pattern: ""},
+			))
+			Expect(result.Sources).To(ContainElement(
 				hook.SkillSource{Skill: "ginkgo-gomega", Source: "keyword", Pattern: "ginkgo"},
 			))
 		})
@@ -455,7 +453,7 @@ var _ = Describe("SelectSkills", func() {
 
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(Equal([]string{"pre-action", "memory-keeper"}))
+			Expect(result.Skills).To(Equal(config.BaselineSkills))
 		})
 
 		It("handles nil AgentDefaultSkills", func() {
@@ -463,7 +461,7 @@ var _ = Describe("SelectSkills", func() {
 
 			result := hook.SelectSkills(input, config)
 
-			Expect(result.Skills).To(Equal([]string{"pre-action", "memory-keeper"}))
+			Expect(result.Skills).To(Equal(config.BaselineSkills))
 		})
 	})
 })

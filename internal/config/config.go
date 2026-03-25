@@ -144,6 +144,9 @@ func DefaultConfig() *AppConfig {
 			"retrospective",
 			"note-taking",
 			"knowledge-base",
+			"discipline",
+			"skill-discovery",
+			"agent-discovery",
 		},
 	}
 }
