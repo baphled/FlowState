@@ -89,4 +89,24 @@ var _ = Describe("SSEConsumer", func() {
 			Expect(recorder.Flushed).To(BeTrue())
 		})
 	})
+
+	Describe("WriteToolResult", func() {
+		It("writes JSON tool result as an SSE data line", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteToolResult("result data")
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`data: {"type":"tool_result","content":"result data"}`))
+		})
+
+		It("flushes after writing", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteToolResult("result data")
+
+			Expect(recorder.Flushed).To(BeTrue())
+		})
+	})
 })

@@ -326,6 +326,30 @@ func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name string) 
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// sseToolResult represents a tool result event in a server-sent event stream.
+type sseToolResult struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSEToolResult marshals a tool result as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - content is the tool result content to send.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool result to response.
+//   - Flushes response buffer.
+func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseToolResult{Type: "tool_result", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // writeSSE writes a server-sent event data line and flushes the response buffer.
 //
 // Expected:
