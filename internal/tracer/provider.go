@@ -7,6 +7,8 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+var _ provider.Provider = (*TracingProvider)(nil)
+
 // TracingProvider wraps a Provider to record per-method latency and errors via a Recorder.
 type TracingProvider struct {
 	inner    provider.Provider

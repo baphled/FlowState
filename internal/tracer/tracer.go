@@ -42,7 +42,11 @@ func Hook() hook.Hook {
 				chunkCount := 0
 				for chunk := range ch {
 					chunkCount++
-					out <- chunk
+					select {
+					case out <- chunk:
+					case <-ctx.Done():
+						return
+					}
 				}
 				slog.Info("tracer provider call complete",
 					"messages", msgCount,
