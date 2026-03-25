@@ -36,6 +36,11 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 			c.WriteError(chunk.Error)
 			continue
 		}
+		if chunk.ToolCall != nil {
+			if tc, ok := c.(ToolCallConsumer); ok {
+				tc.WriteToolCall(chunk.ToolCall.Name)
+			}
+		}
 		if chunk.Content != "" && writeErr == nil {
 			writeErr = c.WriteChunk(chunk.Content)
 		}

@@ -9,3 +9,10 @@ type StreamConsumer interface {
 	// Done signals that the stream has completed.
 	Done()
 }
+
+// ToolCallConsumer is an optional interface for consumers that support tool call visibility.
+// Consumers may implement this interface to receive notifications when a tool call is invoked.
+type ToolCallConsumer interface {
+	// WriteToolCall notifies the consumer of a tool invocation by name.
+	WriteToolCall(name string)
+}

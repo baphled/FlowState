@@ -69,4 +69,26 @@ var _ = Describe("WriterConsumer", func() {
 			Expect(consumer.Response()).To(Equal("abc"))
 		})
 	})
+
+	Describe("WriteToolCall", func() {
+		It("writes tool call name with emoji to the writer", func() {
+			var buf bytes.Buffer
+			consumer := cli.NewWriterConsumer(&buf, false)
+
+			consumer.WriteToolCall("bash")
+
+			Expect(buf.String()).To(Equal("🔧 bash...\n"))
+		})
+
+		Context("when silent is true", func() {
+			It("does not write to the writer", func() {
+				var buf bytes.Buffer
+				consumer := cli.NewWriterConsumer(&buf, true)
+
+				consumer.WriteToolCall("bash")
+
+				Expect(buf.String()).To(BeEmpty())
+			})
+		})
+	})
 })

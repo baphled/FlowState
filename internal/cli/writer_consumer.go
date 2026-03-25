@@ -88,3 +88,16 @@ func (c *WriterConsumer) Response() string {
 func (c *WriterConsumer) Err() error {
 	return c.err
 }
+
+// WriteToolCall notifies the consumer of a tool invocation by name.
+//
+// Expected:
+//   - name is the tool name being invoked.
+//
+// Side effects:
+//   - Writes "🔧 <name>...\n" to the writer unless silent is true.
+func (c *WriterConsumer) WriteToolCall(name string) {
+	if !c.silent {
+		fmt.Fprintf(c.w, "🔧 %s...\n", name)
+	}
+}
