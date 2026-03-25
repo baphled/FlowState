@@ -70,3 +70,28 @@ Feature: Session Management
     When I delete "Old Session"
     Then it should no longer appear in the session list
     And I should be prompted to confirm deletion
+
+  @enrichment @wip
+  Scenario: Session includes system prompt and skills
+    Given I have an active session with messages
+    And the session has a system prompt and loaded skills
+    When I save the session
+    And I reload the session
+    Then the session should contain a non-empty system prompt
+    And the session should contain loaded skills
+
+  @enrichment @wip
+  Scenario: Session includes agent ID
+    Given I have an active session with messages
+    And the session has an agent ID of "planner"
+    When I save the session
+    And I reload the session
+    Then the session should contain agent ID "planner"
+
+  @enrichment
+  Scenario: Old session loads without error
+    Given an existing session file without enrichment fields
+    When I load the legacy session
+    Then the session should load successfully
+    And the system prompt should be empty
+    And the loaded skills should be empty
