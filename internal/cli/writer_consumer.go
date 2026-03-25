@@ -92,14 +92,19 @@ func (c *WriterConsumer) Err() error {
 // WriteToolCall notifies the consumer of a tool invocation by name.
 //
 // Expected:
-//   - name is the tool name being invoked.
+//   - name is the tool name being invoked, optionally prefixed with "skill:".
 //
 // Side effects:
-//   - Writes "🔧 <name>...\n" to the writer unless silent is true.
+//   - Writes "📚 <name>\n" for skill calls, or "🔧 <name>...\n" for other tools, to the writer unless silent is true.
 func (c *WriterConsumer) WriteToolCall(name string) {
-	if !c.silent {
-		fmt.Fprintf(c.w, "🔧 %s...\n", name)
+	if c.silent {
+		return
 	}
+	if strings.HasPrefix(name, "skill:") {
+		fmt.Fprintf(c.w, "📚 %s\n", strings.TrimPrefix(name, "skill:"))
+		return
+	}
+	fmt.Fprintf(c.w, "🔧 %s...\n", name)
 }
 
 // WriteToolResult notifies the consumer of a tool result.

@@ -80,12 +80,30 @@ var _ = Describe("WriterConsumer", func() {
 			Expect(buf.String()).To(Equal("🔧 bash...\n"))
 		})
 
+		It("writes skill call with book emoji and no ellipsis", func() {
+			var buf bytes.Buffer
+			consumer := cli.NewWriterConsumer(&buf, false)
+
+			consumer.WriteToolCall("skill:pre-action")
+
+			Expect(buf.String()).To(Equal("📚 pre-action\n"))
+		})
+
 		Context("when silent is true", func() {
 			It("does not write to the writer", func() {
 				var buf bytes.Buffer
 				consumer := cli.NewWriterConsumer(&buf, true)
 
 				consumer.WriteToolCall("bash")
+
+				Expect(buf.String()).To(BeEmpty())
+			})
+
+			It("does not write skill calls either", func() {
+				var buf bytes.Buffer
+				consumer := cli.NewWriterConsumer(&buf, true)
+
+				consumer.WriteToolCall("skill:memory-keeper")
 
 				Expect(buf.String()).To(BeEmpty())
 			})

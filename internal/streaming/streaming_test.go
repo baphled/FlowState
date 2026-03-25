@@ -203,6 +203,48 @@ var _ = Describe("Streaming", func() {
 			})
 		})
 
+		Context("when a chunk carries a skill_load tool call", func() {
+			BeforeEach(func() {
+				consumer.enableTool = true
+				streamer.chunks = []provider.StreamChunk{
+					{ToolCall: &provider.ToolCall{
+						ID:   "call1",
+						Name: "skill_load",
+						Arguments: map[string]interface{}{
+							"name": "pre-action",
+						},
+					}},
+					{Content: "result", Done: true},
+				}
+			})
+
+			It("extracts skill name and passes skill:name to WriteToolCall", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolCalls).To(Equal([]string{"skill:pre-action"}))
+			})
+		})
+
+		Context("when a chunk carries a skill_load without name argument", func() {
+			BeforeEach(func() {
+				consumer.enableTool = true
+				streamer.chunks = []provider.StreamChunk{
+					{ToolCall: &provider.ToolCall{
+						ID:        "call1",
+						Name:      "skill_load",
+						Arguments: map[string]interface{}{},
+					}},
+					{Content: "result", Done: true},
+				}
+			})
+
+			It("passes skill_load as-is to WriteToolCall", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolCalls).To(Equal([]string{"skill_load"}))
+			})
+		})
+
 		Context("when a chunk carries a tool result", func() {
 			BeforeEach(func() {
 				consumer.enableResult = true

@@ -2,6 +2,8 @@ package streaming
 
 import (
 	"context"
+
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 // Run drives a Streamer into a StreamConsumer, coordinating the streaming lifecycle.
@@ -36,16 +38,8 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 			c.WriteError(chunk.Error)
 			continue
 		}
-		if chunk.ToolCall != nil {
-			if tc, ok := c.(ToolCallConsumer); ok {
-				tc.WriteToolCall(chunk.ToolCall.Name)
-			}
-		}
-		if chunk.ToolResult != nil {
-			if trc, ok := c.(ToolResultConsumer); ok {
-				trc.WriteToolResult(chunk.ToolResult.Content)
-			}
-		}
+		deliverToolCall(c, chunk.ToolCall)
+		deliverToolResult(c, chunk.ToolResult)
 		if chunk.Content != "" && writeErr == nil {
 			writeErr = c.WriteChunk(chunk.Content)
 		}
@@ -55,4 +49,50 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 	}
 
 	return writeErr
+}
+
+// deliverToolCall extracts the tool call name and delivers it to the consumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - toolCall may be nil.
+//
+// Side effects:
+//   - If toolCall is not nil and c implements ToolCallConsumer, calls c.WriteToolCall.
+//   - Extracts the skill name from skill_load tool calls and prefixes with "skill:".
+func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
+	if toolCall == nil {
+		return
+	}
+	tc, ok := c.(ToolCallConsumer)
+	if !ok {
+		return
+	}
+
+	name := toolCall.Name
+	if name == "skill_load" {
+		if skillName, ok := toolCall.Arguments["name"].(string); ok && skillName != "" {
+			name = "skill:" + skillName
+		}
+	}
+	tc.WriteToolCall(name)
+}
+
+// deliverToolResult delivers the tool result to the consumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - result may be nil.
+//
+// Side effects:
+//   - If result is not nil and c implements ToolResultConsumer, calls c.WriteToolResult.
+func deliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
+	if result == nil {
+		return
+	}
+	trc, ok := c.(ToolResultConsumer)
+	if !ok {
+		return
+	}
+	trc.WriteToolResult(result.Content)
 }

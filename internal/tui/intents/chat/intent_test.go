@@ -1520,7 +1520,7 @@ var _ = Describe("skill_load tool call handling", func() {
 
 			intent.SetStreamChanForTest(streamChan)
 			msg := intent.ReadNextChunkForTest().(chat.StreamChunkMsg)
-			Expect(msg.ToolCallName).To(Equal("bash"))
+			Expect(msg.ToolCallName).To(Equal("bash: ls"))
 		})
 
 		It("handles missing skill name gracefully", func() {
@@ -1577,7 +1577,7 @@ var _ = Describe("skill_load tool call handling", func() {
 			close(streamChan)
 
 			msg := chat.ReadStreamChunkForTest(streamChan)
-			Expect(msg.ToolCallName).To(Equal("bash"))
+			Expect(msg.ToolCallName).To(Equal("bash: ls"))
 		})
 	})
 
@@ -1631,6 +1631,64 @@ var _ = Describe("skill_load tool call handling", func() {
 			found := false
 			for _, msg := range messages {
 				if msg.Role == "tool_call" && msg.Content == "bash" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue())
+		})
+
+		It("suppresses skill_load results from view messages", func() {
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "skill:pre-action",
+				ToolResult:   "This is skill content that should not appear",
+				ToolIsError:  false,
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "",
+			})
+
+			messages := intent.MessagesForTest()
+			for _, msg := range messages {
+				Expect(msg.Role).NotTo(Equal("tool_result"))
+			}
+		})
+
+		It("shows tool_result for non-skill tool calls", func() {
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "bash",
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "",
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolResult:  "command output",
+				ToolIsError: false,
+			})
+
+			messages := intent.MessagesForTest()
+			found := false
+			for _, msg := range messages {
+				if msg.Role == "tool_result" && msg.Content == "command output" {
 					found = true
 					break
 				}

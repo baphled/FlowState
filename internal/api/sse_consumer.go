@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 )
 
 // SSEConsumer implements streaming.StreamConsumer for server-sent event responses.
@@ -70,12 +71,16 @@ func (c *SSEConsumer) Done() {
 // WriteToolCall writes a JSON-encoded tool call event as a server-sent event.
 //
 // Expected:
-//   - name is the name of the tool being invoked.
+//   - name is the name of the tool being invoked, optionally prefixed with "skill:".
 //
 // Side effects:
-//   - Writes SSE data line with JSON-encoded tool call to the response.
+//   - Writes SSE data line with JSON-encoded skill load or tool call to the response.
 //   - Flushes the response buffer.
 func (c *SSEConsumer) WriteToolCall(name string) {
+	if strings.HasPrefix(name, "skill:") {
+		writeSSESkillLoad(c.w, c.flusher, strings.TrimPrefix(name, "skill:"))
+		return
+	}
 	writeSSEToolCall(c.w, c.flusher, name)
 }
 

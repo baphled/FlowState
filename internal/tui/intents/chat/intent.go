@@ -395,20 +395,25 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		}
 	}
 
+	committedSkill := false
 	if msg.ToolCallName != "" {
 		i.activeToolCall = msg.ToolCallName
+		if strings.HasPrefix(msg.ToolCallName, "skill:") {
+			committedSkill = true
+		}
 	} else if i.activeToolCall != "" {
 		role := "tool_call"
 		content := i.activeToolCall
 		if strings.HasPrefix(i.activeToolCall, "skill:") {
 			role = "skill_load"
 			content = strings.TrimPrefix(i.activeToolCall, "skill:")
+			committedSkill = true
 		}
 		i.view.AddMessage(chat.Message{Role: role, Content: content})
 		i.activeToolCall = ""
 	}
 
-	if msg.ToolResult != "" {
+	if msg.ToolResult != "" && !committedSkill {
 		role := "tool_result"
 		if msg.ToolIsError {
 			role = "tool_error"
@@ -600,18 +605,7 @@ func (i *Intent) readNextChunk() tea.Msg {
 		return StreamChunkMsg{Done: true}
 	}
 
-	toolCallName := ""
-	toolStatus := ""
-	if chunk.ToolCall != nil {
-		toolCallName = chunk.ToolCall.Name
-		toolStatus = "running"
-
-		if chunk.ToolCall.Name == "skill_load" {
-			if name, ok := chunk.ToolCall.Arguments["name"].(string); ok && name != "" {
-				toolCallName = "skill:" + name
-			}
-		}
-	}
+	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
 		Content:      chunk.Content,
@@ -667,18 +661,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		return StreamChunkMsg{Done: true}
 	}
 
-	toolCallName := ""
-	toolStatus := ""
-	if chunk.ToolCall != nil {
-		toolCallName = chunk.ToolCall.Name
-		toolStatus = "running"
-
-		if chunk.ToolCall.Name == "skill_load" {
-			if name, ok := chunk.ToolCall.Arguments["name"].(string); ok && name != "" {
-				toolCallName = "skill:" + name
-			}
-		}
-	}
+	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
 		Content:      chunk.Content,
@@ -1177,6 +1160,35 @@ func toolCallSummary(name string, args map[string]interface{}) string {
 	}
 
 	return fmt.Sprintf("%s: %s", name, arg)
+}
+
+// extractToolInfo extracts the tool call name and status from a provider.ToolCall.
+//
+// Expected:
+//   - toolCall may be nil.
+//
+// Returns:
+//   - toolCallName: "skill:name" for skill_load, "tool: args" for other tools, or "" if toolCall is nil.
+//   - toolStatus: "running" if toolCall is not nil, or "" otherwise.
+//
+// Side effects:
+//   - None.
+func extractToolInfo(toolCall *provider.ToolCall) (string, string) {
+	if toolCall == nil {
+		return "", ""
+	}
+
+	var toolCallName string
+	if toolCall.Name == "skill_load" {
+		toolCallName = "skill_load"
+		if name, ok := toolCall.Arguments["name"].(string); ok && name != "" {
+			toolCallName = "skill:" + name
+		}
+	} else {
+		toolCallName = toolCallSummary(toolCall.Name, toolCall.Arguments)
+	}
+
+	return toolCallName, "running"
 }
 
 // toolCallArgKey returns the argument key for a given tool name.

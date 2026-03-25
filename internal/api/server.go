@@ -326,6 +326,30 @@ func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name string) 
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// sseSkillLoad represents a skill load event in a server-sent event stream.
+type sseSkillLoad struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+// writeSSESkillLoad marshals a skill load as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - name is the skill name being loaded.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded skill load to response.
+//   - Flushes response buffer.
+func writeSSESkillLoad(w http.ResponseWriter, flusher http.Flusher, name string) {
+	data := sseSkillLoad{Type: "skill_load", Name: name}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // sseToolResult represents a tool result event in a server-sent event stream.
 type sseToolResult struct {
 	Type    string `json:"type"`
