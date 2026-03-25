@@ -396,7 +396,13 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if msg.ToolCallName != "" {
 		i.activeToolCall = msg.ToolCallName
 	} else if i.activeToolCall != "" {
-		i.view.AddMessage(chat.Message{Role: "tool_call", Content: i.activeToolCall})
+		role := "tool_call"
+		content := i.activeToolCall
+		if strings.HasPrefix(i.activeToolCall, "skill:") {
+			role = "skill_load"
+			content = strings.TrimPrefix(i.activeToolCall, "skill:")
+		}
+		i.view.AddMessage(chat.Message{Role: role, Content: content})
 		i.activeToolCall = ""
 	}
 
@@ -589,6 +595,12 @@ func (i *Intent) readNextChunk() tea.Msg {
 	if chunk.ToolCall != nil {
 		toolCallName = chunk.ToolCall.Name
 		toolStatus = "running"
+
+		if chunk.ToolCall.Name == "skill_load" {
+			if name, ok := chunk.ToolCall.Arguments["name"].(string); ok && name != "" {
+				toolCallName = "skill:" + name
+			}
+		}
 	}
 
 	msg := StreamChunkMsg{
@@ -645,6 +657,12 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 	if chunk.ToolCall != nil {
 		toolCallName = chunk.ToolCall.Name
 		toolStatus = "running"
+
+		if chunk.ToolCall.Name == "skill_load" {
+			if name, ok := chunk.ToolCall.Arguments["name"].(string); ok && name != "" {
+				toolCallName = "skill:" + name
+			}
+		}
 	}
 
 	msg := StreamChunkMsg{

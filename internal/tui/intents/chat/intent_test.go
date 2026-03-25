@@ -1335,3 +1335,172 @@ func (s *stubSessionLister) Save(sessionID string, _ *contextpkg.FileContextStor
 	s.savedMeta = meta
 	return s.saveErr
 }
+
+var _ = Describe("skill_load tool call handling", func() {
+	Describe("readNextChunk with skill_load", func() {
+		It("extracts skill name from skill_load tool call arguments", func() {
+			streamChan := make(chan provider.StreamChunk, 1)
+			streamChan <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "skill_load",
+					Arguments: map[string]interface{}{
+						"name": "pre-action",
+					},
+				},
+			}
+			close(streamChan)
+
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.SetStreamChanForTest(streamChan)
+			msg := intent.ReadNextChunkForTest().(chat.StreamChunkMsg)
+			Expect(msg.ToolCallName).To(Equal("skill:pre-action"))
+		})
+
+		It("leaves non-skill tool calls unchanged", func() {
+			streamChan := make(chan provider.StreamChunk, 1)
+			streamChan <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "bash",
+					Arguments: map[string]interface{}{
+						"command": "ls",
+					},
+				},
+			}
+			close(streamChan)
+
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.SetStreamChanForTest(streamChan)
+			msg := intent.ReadNextChunkForTest().(chat.StreamChunkMsg)
+			Expect(msg.ToolCallName).To(Equal("bash"))
+		})
+
+		It("handles missing skill name gracefully", func() {
+			streamChan := make(chan provider.StreamChunk, 1)
+			streamChan <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "skill_load",
+					Arguments: map[string]interface{}{},
+				},
+			}
+			close(streamChan)
+
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.SetStreamChanForTest(streamChan)
+			msg := intent.ReadNextChunkForTest().(chat.StreamChunkMsg)
+			Expect(msg.ToolCallName).To(Equal("skill_load"))
+		})
+	})
+
+	Describe("readStreamChunk with skill_load", func() {
+		It("extracts skill name from skill_load tool call arguments", func() {
+			streamChan := make(chan provider.StreamChunk, 1)
+			streamChan <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "skill_load",
+					Arguments: map[string]interface{}{
+						"name": "memory-keeper",
+					},
+				},
+			}
+			close(streamChan)
+
+			msg := chat.ReadStreamChunkForTest(streamChan)
+			Expect(msg.ToolCallName).To(Equal("skill:memory-keeper"))
+		})
+
+		It("leaves non-skill tool calls unchanged", func() {
+			streamChan := make(chan provider.StreamChunk, 1)
+			streamChan <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "bash",
+					Arguments: map[string]interface{}{
+						"command": "ls",
+					},
+				},
+			}
+			close(streamChan)
+
+			msg := chat.ReadStreamChunkForTest(streamChan)
+			Expect(msg.ToolCallName).To(Equal("bash"))
+		})
+	})
+
+	Describe("handleStreamChunk with skill_load message", func() {
+		It("adds skill_load message with skill name when tool call completes", func() {
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "skill:pre-action",
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "",
+			})
+
+			messages := intent.MessagesForTest()
+			found := false
+			for _, msg := range messages {
+				if msg.Role == "skill_load" && msg.Content == "pre-action" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue())
+		})
+
+		It("adds tool_call message for non-skill tool calls", func() {
+			intent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "bash",
+			})
+
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "",
+			})
+
+			messages := intent.MessagesForTest()
+			found := false
+			for _, msg := range messages {
+				if msg.Role == "tool_call" && msg.Content == "bash" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue())
+		})
+	})
+})

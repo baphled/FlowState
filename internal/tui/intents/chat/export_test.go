@@ -107,3 +107,8 @@ func (i *Intent) ActiveToolCallForTest() string {
 func (i *Intent) AllViewMessagesForTest() []chatview.Message {
 	return i.view.Messages()
 }
+
+// HandleStreamChunkForTest exposes handleStreamChunk for test assertions.
+func (i *Intent) HandleStreamChunkForTest(msg StreamChunkMsg) {
+	i.handleStreamChunk(msg)
+}
