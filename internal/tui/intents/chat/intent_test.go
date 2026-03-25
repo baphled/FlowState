@@ -1145,18 +1145,20 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			messages := sessionIntent.AllViewMessagesForTest()
-			Expect(messages).To(HaveLen(3))
+			Expect(messages).To(HaveLen(4))
 			Expect(messages[0].Role).To(Equal("user"))
 			Expect(messages[0].Content).To(Equal("run ls"))
 			Expect(messages[1].Role).To(Equal("tool_call"))
 			Expect(messages[1].Content).To(Equal("bash"))
-			Expect(messages[2].Role).To(Equal("assistant"))
-			Expect(messages[2].Content).To(Equal("Here are your files."))
+			Expect(messages[2].Role).To(Equal("tool_result"))
+			Expect(messages[2].Content).To(Equal("file1.go\nfile2.go"))
+			Expect(messages[3].Role).To(Equal("assistant"))
+			Expect(messages[3].Content).To(Equal("Here are your files."))
 		})
 
-		It("skips tool role messages entirely", func() {
+		It("converts tool role messages to tool_result messages", func() {
 			store := contextpkg.NewEmptyContextStore("")
-			store.Append(provider.Message{Role: "tool", Content: "should not appear"})
+			store.Append(provider.Message{Role: "tool", Content: "file1.go\nfile2.go"})
 
 			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
 				SessionID: "loaded-session",
@@ -1164,7 +1166,9 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			messages := sessionIntent.AllViewMessagesForTest()
-			Expect(messages).To(BeEmpty())
+			Expect(messages).To(HaveLen(1))
+			Expect(messages[0].Role).To(Equal("tool_result"))
+			Expect(messages[0].Content).To(Equal("file1.go\nfile2.go"))
 		})
 
 		It("adds one tool_call per ToolCall entry on assistant message", func() {
@@ -1207,6 +1211,25 @@ var _ = Describe("ChatIntent", func() {
 			Expect(messages[0].Role).To(Equal("user"))
 			Expect(messages[1].Role).To(Equal("assistant"))
 			Expect(messages[2].Role).To(Equal("system"))
+		})
+
+		It("converts skill_load tool calls to skill_load messages", func() {
+			store := contextpkg.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role:      "assistant",
+				Content:   "",
+				ToolCalls: []provider.ToolCall{{Name: "skill_load", ID: "tc-skill"}},
+			})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			Expect(messages).To(HaveLen(1))
+			Expect(messages[0].Role).To(Equal("skill_load"))
+			Expect(messages[0].Content).To(Equal("skill_load"))
 		})
 	})
 

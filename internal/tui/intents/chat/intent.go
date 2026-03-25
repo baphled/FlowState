@@ -1139,10 +1139,14 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 		switch {
 		case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
 			for _, tc := range sm.Message.ToolCalls {
-				i.view.AddMessage(chat.Message{Role: "tool_call", Content: tc.Name})
+				role := "tool_call"
+				if tc.Name == "skill_load" {
+					role = "skill_load"
+				}
+				i.view.AddMessage(chat.Message{Role: role, Content: tc.Name})
 			}
 		case sm.Message.Role == "tool":
-			continue
+			i.view.AddMessage(chat.Message{Role: "tool_result", Content: sm.Message.Content})
 		default:
 			i.view.AddMessage(chat.Message{
 				Role:    sm.Message.Role,
