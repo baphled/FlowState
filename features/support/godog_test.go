@@ -45,6 +45,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSkillAutoloadingSteps(ctx)
 	RegisterHarnessSteps(ctx)
 	RegisterSessionEnrichmentSteps(ctx, s)
-	RegisterSessionIsolationSteps(ctx)
+	si := &SessionIsolationSteps{}
+	RegisterSessionIsolationSteps(ctx, si)
+	RegisterSessionVisibilitySteps(ctx, si)
 	s.RegisterSteps(ctx)
 }

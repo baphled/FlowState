@@ -107,3 +107,21 @@ Feature: Session Management
     Given a session was saved with tool call messages
     When I load the session
     Then the loaded session should contain the tool call message
+
+  @tool-output
+  Scenario: Tool output is visible when loading a session
+    Given a session was saved with tool result messages
+    When I load the session
+    Then I should see the tool result in the chat view
+
+  @skill-visibility
+  Scenario: Skill loads are visible when loading a session
+    Given a session was saved with skill load messages
+    When I load the session
+    Then I should see the skill load in the chat view
+
+  @tool-error
+  Scenario: Failed tool calls show error status when loading a session
+    Given a session was saved with a failed tool result
+    When I load the session
+    Then I should see the tool error in the chat view

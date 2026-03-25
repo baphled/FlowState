@@ -17,6 +17,7 @@ type SessionIsolationSteps struct {
 	sessionStore    *ctxstore.FileSessionStore
 	newContextStore *ctxstore.FileContextStore
 	loadedStore     *ctxstore.FileContextStore
+	savedSessionID  string
 	tempDir         string
 }
 
@@ -24,16 +25,16 @@ type SessionIsolationSteps struct {
 //
 // Expected:
 //   - sc is a valid godog ScenarioContext for step registration.
+//   - s is a non-nil SessionIsolationSteps instance shared across related registration functions.
 //
 // Side effects:
 //   - Registers Before hooks, After hooks, and step definitions on the provided scenario context.
-func RegisterSessionIsolationSteps(sc *godog.ScenarioContext) {
-	s := &SessionIsolationSteps{}
-
+func RegisterSessionIsolationSteps(sc *godog.ScenarioContext, s *SessionIsolationSteps) {
 	sc.Before(func(bctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		s.sessionStore = nil
 		s.newContextStore = nil
 		s.loadedStore = nil
+		s.savedSessionID = ""
 		return bctx, nil
 	})
 
@@ -124,18 +125,20 @@ func (s *SessionIsolationSteps) theNewSessionShouldHaveNoMessages() error {
 	return nil
 }
 
-// aSessionWasSavedWithToolCallMessages creates a session with a user message and an assistant tool call message.
+// saveSessionWithMessages creates a temporary directory, session store, and persists the given messages.
 //
 // Expected:
-//   - No prior state is required.
+//   - dirPrefix is a non-empty string for the temporary directory name pattern.
+//   - sessionID is the identifier under which to save the session.
+//   - messages is a non-empty slice of messages to persist.
 //
 // Returns:
-//   - An error if the temp directory, session store, or context store cannot be created.
+//   - An error if directory creation, store creation, or save fails.
 //
 // Side effects:
-//   - Creates a temporary directory with a session store containing a tool call message.
-func (s *SessionIsolationSteps) aSessionWasSavedWithToolCallMessages() error {
-	tmpDir, err := os.MkdirTemp("", "flowstate-tool-calls-*")
+//   - Sets tempDir, sessionStore, and savedSessionID on the receiver.
+func (s *SessionIsolationSteps) saveSessionWithMessages(dirPrefix, sessionID string, messages []provider.Message) error {
+	tmpDir, err := os.MkdirTemp("", dirPrefix)
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
@@ -148,24 +151,39 @@ func (s *SessionIsolationSteps) aSessionWasSavedWithToolCallMessages() error {
 	s.sessionStore = sessionStore
 
 	store := ctxstore.NewEmptyContextStore("test-model")
-	store.Append(provider.Message{Role: "user", Content: "Run a command"})
-	store.Append(provider.Message{
-		Role:      "assistant",
-		Content:   "",
-		ToolCalls: []provider.ToolCall{{Name: "bash"}},
-	})
+	for _, msg := range messages {
+		store.Append(msg)
+	}
 
-	if err := sessionStore.Save("tool-session", store, ctxstore.SessionMetadata{}); err != nil {
-		return fmt.Errorf("saving tool session: %w", err)
+	s.savedSessionID = sessionID
+	if err := sessionStore.Save(s.savedSessionID, store, ctxstore.SessionMetadata{}); err != nil {
+		return fmt.Errorf("saving session %q: %w", sessionID, err)
 	}
 
 	return nil
 }
 
-// iLoadTheSession loads the tool-session from the session store.
+// aSessionWasSavedWithToolCallMessages creates a session with a user message and an assistant tool call message.
 //
 // Expected:
-//   - aSessionWasSavedWithToolCallMessages has been called.
+//   - No prior state is required.
+//
+// Returns:
+//   - An error if the temp directory, session store, or context store cannot be created.
+//
+// Side effects:
+//   - Creates a temporary directory with a session store containing a tool call message.
+func (s *SessionIsolationSteps) aSessionWasSavedWithToolCallMessages() error {
+	return s.saveSessionWithMessages("flowstate-tool-calls-*", "tool-session", []provider.Message{
+		{Role: "user", Content: "Run a command"},
+		{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{{Name: "bash"}}},
+	})
+}
+
+// iLoadTheSession loads the saved session from the session store using the savedSessionID.
+//
+// Expected:
+//   - A Given step has populated savedSessionID and sessionStore.
 //
 // Returns:
 //   - An error if loading the session fails.
@@ -173,9 +191,9 @@ func (s *SessionIsolationSteps) aSessionWasSavedWithToolCallMessages() error {
 // Side effects:
 //   - Sets s.loadedStore to the loaded context store.
 func (s *SessionIsolationSteps) iLoadTheSession() error {
-	loaded, err := s.sessionStore.Load("tool-session")
+	loaded, err := s.sessionStore.Load(s.savedSessionID)
 	if err != nil {
-		return fmt.Errorf("loading tool session: %w", err)
+		return fmt.Errorf("loading session %q: %w", s.savedSessionID, err)
 	}
 	s.loadedStore = loaded
 	return nil
