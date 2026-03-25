@@ -95,3 +95,15 @@ Feature: Session Management
     Then the session should load successfully
     And the system prompt should be empty
     And the loaded skills should be empty
+
+  @session-isolation
+  Scenario: New session starts with empty context
+    Given I have a session store with existing messages
+    When I create a new empty context store
+    Then the new session should have no messages
+
+  @tool-calls
+  Scenario: Tool calls are visible when loading a session
+    Given a session was saved with tool call messages
+    When I load the session
+    Then the loaded session should contain the tool call message
