@@ -88,6 +88,17 @@ func (w *MessageWidget) Render(width int) string {
 			Bold(true)
 		sb.WriteString(toolStyle.Render("🔧 " + w.content))
 
+	case "tool_result":
+		resultStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+		sb.WriteString(resultStyle.Render("📤 " + w.content))
+
+	case "skill_load":
+		skillStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("51")).
+			Bold(true)
+		sb.WriteString(skillStyle.Render("📚 " + w.content))
+
 	case "system":
 		annotationStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")).

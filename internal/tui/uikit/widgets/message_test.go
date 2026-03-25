@@ -82,6 +82,54 @@ var _ = Describe("MessageWidget", func() {
 			})
 		})
 
+		Context("tool_result messages", func() {
+			It("includes the package emoji prefix", func() {
+				w := widgets.NewMessageWidget("tool_result", "output data", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("📤"))
+			})
+
+			It("includes the full content without truncation", func() {
+				w := widgets.NewMessageWidget("tool_result", "this is the complete output", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("this is the complete output"))
+			})
+
+			It("renders in muted grey color", func() {
+				w := widgets.NewMessageWidget("tool_result", "output", th)
+				output := w.Render(80)
+				Expect(output).NotTo(BeEmpty())
+			})
+
+			It("does not include You or Assistant labels", func() {
+				w := widgets.NewMessageWidget("tool_result", "output", th)
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
+		Context("skill_load messages", func() {
+			It("includes the books emoji prefix", func() {
+				w := widgets.NewMessageWidget("skill_load", "loading skill", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("📚"))
+			})
+
+			It("includes the full content without truncation", func() {
+				w := widgets.NewMessageWidget("skill_load", "skill_name loaded successfully", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("skill_name loaded successfully"))
+			})
+
+			It("does not include You or Assistant labels", func() {
+				w := widgets.NewMessageWidget("skill_load", "skill loaded", th)
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
 		Context("with nil theme", func() {
 			It("still renders without panic", func() {
 				w := widgets.NewMessageWidget("user", "no theme", nil)
