@@ -1,130 +1,134 @@
 package streaming
 
-import "fmt"
-
-// VerbosityLevel defines the verbosity setting for event emission.
-// Higher levels include more events.
+// VerbosityLevel controls how much event detail is visible to consumers.
 type VerbosityLevel int
 
 const (
-	// Minimal verbosity emits only high-level events: status transitions,
-	// plan artifacts, and review verdicts.
+	// Minimal shows only high-level status changes, plan artefacts, and review verdicts.
 	Minimal VerbosityLevel = iota
-	// Standard verbosity includes all minimal events plus tool calls
-	// and delegation events.
+	// Standard adds tool call and delegation visibility to the minimal set.
 	Standard
-	// Verbose verbosity emits all event types.
+	// Verbose shows all events including raw text chunks and coordination store operations.
 	Verbose
 )
 
-// String returns the string representation of the verbosity level.
-//
-// Returns:
-//   - A string representation of the verbosity level ("minimal", "standard", or "verbose").
-//
-// Side effects:
-//   - None.
-func (v VerbosityLevel) String() string {
-	switch v {
-	case Minimal:
-		return "minimal"
-	case Standard:
-		return "standard"
-	case Verbose:
-		return "verbose"
-	default:
-		return fmt.Sprintf("verbosity(%d)", v)
-	}
-}
-
-// VerbosityFilter determines which events should be emitted based on
-// the configured verbosity level.
+// VerbosityFilter wraps a StreamConsumer to filter typed events by verbosity level.
+// Plain StreamConsumer methods (WriteChunk, WriteError, Done) pass through unconditionally
+// for backward compatibility. Typed events delivered via WriteEvent are filtered by the
+// configured verbosity level before forwarding to the wrapped consumer.
 type VerbosityFilter struct {
-	Level VerbosityLevel
+	consumer StreamConsumer
+	level    VerbosityLevel
 }
 
-// NewVerbosityFilter creates a new VerbosityFilter with the specified level.
+// NewVerbosityFilter creates a VerbosityFilter wrapping the given consumer at the specified level.
 //
 // Expected:
-//   - level must be a valid VerbosityLevel (Minimal, Standard, or Verbose).
+//   - consumer is a non-nil StreamConsumer implementation.
+//   - level is one of Minimal, Standard, or Verbose.
 //
 // Returns:
-//   - A new VerbosityFilter configured with the specified level.
+//   - A VerbosityFilter that implements both StreamConsumer and EventConsumer.
 //
 // Side effects:
 //   - None.
-func NewVerbosityFilter(level VerbosityLevel) *VerbosityFilter {
-	return &VerbosityFilter{Level: level}
+func NewVerbosityFilter(consumer StreamConsumer, level VerbosityLevel) *VerbosityFilter {
+	return &VerbosityFilter{consumer: consumer, level: level}
 }
 
-// ShouldEmit determines whether the given event should be emitted
-// based on the current verbosity level.
+// WriteChunk passes content through to the wrapped consumer unconditionally.
 //
 // Expected:
-//   - event must be a non-nil Event implementation.
+//   - content contains the chunk to forward.
 //
 // Returns:
-//   - true if the event should be emitted at the current verbosity level,
-//     false otherwise.
+//   - The wrapped consumer's WriteChunk result.
+//
+// Side effects:
+//   - Delegates the chunk to the wrapped consumer.
+func (f *VerbosityFilter) WriteChunk(content string) error {
+	return f.consumer.WriteChunk(content)
+}
+
+// WriteError passes the error through to the wrapped consumer.
+//
+// Expected:
+//   - err may be nil or non-nil.
+//
+// Side effects:
+//   - Delegates the error to the wrapped consumer.
+func (f *VerbosityFilter) WriteError(err error) {
+	f.consumer.WriteError(err)
+}
+
+// Done signals stream completion to the wrapped consumer.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Signals completion to the wrapped consumer.
+func (f *VerbosityFilter) Done() {
+	f.consumer.Done()
+}
+
+// WriteEvent filters the event by verbosity level before passing to the wrapped consumer.
+// Events below the configured level are silently dropped. If the wrapped consumer does not
+// implement EventConsumer, the event is silently discarded after passing the level check.
+//
+// Expected:
+//   - event is a non-nil Event implementation.
+//
+// Returns:
+//   - nil if the event was filtered or the consumer does not support EventConsumer.
+//   - The wrapped consumer's WriteEvent error if delivery was attempted.
 //
 // Side effects:
 //   - None.
-func (f *VerbosityFilter) ShouldEmit(event Event) bool {
-	switch f.Level {
-	case Minimal:
-		return f.shouldEmitMinimal(event)
-	case Standard:
-		return f.shouldEmitStandard(event)
-	case Verbose:
-		return true
-	default:
-		return false
+func (f *VerbosityFilter) WriteEvent(event Event) error {
+	if !f.allowsEvent(event) {
+		return nil
 	}
-}
-
-// shouldEmitMinimal determines if an event should be emitted at minimal verbosity.
-//
-// At minimal verbosity, only status_transition, plan_artifact, and review_verdict
-// events are emitted.
-//
-// Expected:
-//   - event must be a non-nil Event implementation.
-//
-// Returns:
-//   - true for status_transition, plan_artifact, or review_verdict events;
-//     false for all other events.
-//
-// Side effects:
-//   - None.
-func (f *VerbosityFilter) shouldEmitMinimal(event Event) bool {
-	switch event.EventType() {
-	case "status_transition", "plan_artifact", "review_verdict":
-		return true
-	default:
-		return false
+	if ec, ok := f.consumer.(EventConsumer); ok {
+		return ec.WriteEvent(event)
 	}
+	return nil
 }
 
-// shouldEmitStandard determines if an event should be emitted at standard verbosity.
-//
-// At standard verbosity, all minimal events plus tool_call and delegation
-// events are emitted.
+// allowsEvent reports whether the current verbosity level permits the event.
 //
 // Expected:
-//   - event must be a non-nil Event implementation.
+//   - event is a valid Event implementation.
 //
 // Returns:
-//   - true for status_transition, plan_artifact, review_verdict, tool_call,
-//     or delegation events; false for all other events.
+//   - true when the event should be shown at the current level.
+//   - false otherwise.
 //
 // Side effects:
 //   - None.
-func (f *VerbosityFilter) shouldEmitStandard(event Event) bool {
-	switch event.EventType() {
-	case "status_transition", "plan_artifact", "review_verdict",
-		"tool_call", "delegation":
-		return true
+func (f *VerbosityFilter) allowsEvent(event Event) bool {
+	return f.level >= requiredLevel(event)
+}
+
+// requiredLevel returns the minimum verbosity level required to show the given event.
+//
+// Expected:
+//   - event is a valid Event implementation.
+//
+// Returns:
+//   - The minimum verbosity level required for the event.
+//
+// Side effects:
+//   - None.
+func requiredLevel(event Event) VerbosityLevel {
+	switch event.(type) {
+	case StatusTransitionEvent, PlanArtifactEvent, ReviewVerdictEvent:
+		return Minimal
+	case ToolCallEvent, DelegationEvent:
+		return Standard
+	case TextChunkEvent, CoordinationStoreEvent:
+		return Verbose
 	default:
-		return false
+		return Verbose
 	}
 }
