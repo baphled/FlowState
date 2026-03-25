@@ -374,6 +374,30 @@ func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content str
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// sseHarnessRetry represents a harness retry event in a server-sent event stream.
+type sseHarnessRetry struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSEHarnessRetry marshals a harness retry as a JSON event and writes it as a server-sent event.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness retry event to response.
+//   - Flushes response buffer.
+func writeSSEHarnessRetry(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseHarnessRetry{Type: "harness_retry", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // writeSSE writes a server-sent event data line and flushes the response buffer.
 //
 // Expected:

@@ -119,3 +119,16 @@ func (c *WriterConsumer) WriteToolResult(content string) {
 		fmt.Fprintf(c.w, "📤 %s\n", content)
 	}
 }
+
+// WriteHarnessRetry notifies the consumer that plan validation failed and a retry is starting.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//
+// Side effects:
+//   - Writes a retry banner to the writer unless silent is true.
+func (c *WriterConsumer) WriteHarnessRetry(content string) {
+	if !c.silent {
+		fmt.Fprintf(c.w, "\n🔄 %s\n\n", content)
+	}
+}

@@ -95,3 +95,15 @@ func (c *SSEConsumer) WriteToolCall(name string) {
 func (c *SSEConsumer) WriteToolResult(content string) {
 	writeSSEToolResult(c.w, c.flusher, content)
 }
+
+// WriteHarnessRetry writes a JSON-encoded harness retry event as a server-sent event.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded harness retry event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteHarnessRetry(content string) {
+	writeSSEHarnessRetry(c.w, c.flusher, content)
+}

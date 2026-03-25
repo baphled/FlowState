@@ -38,6 +38,10 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 			c.WriteError(chunk.Error)
 			continue
 		}
+		if chunk.EventType == "harness_retry" {
+			deliverHarnessEvent(c, chunk.Content)
+			continue
+		}
 		deliverToolCall(c, chunk.ToolCall)
 		deliverToolResult(c, chunk.ToolResult)
 		if chunk.Content != "" && writeErr == nil {
@@ -76,6 +80,22 @@ func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 		}
 	}
 	tc.WriteToolCall(name)
+}
+
+// deliverHarnessEvent delivers a harness retry notification to the consumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - content is the retry message describing the validation failure.
+//
+// Side effects:
+//   - If c implements HarnessEventConsumer, calls c.WriteHarnessRetry with the content.
+func deliverHarnessEvent(c StreamConsumer, content string) {
+	hc, ok := c.(HarnessEventConsumer)
+	if !ok {
+		return
+	}
+	hc.WriteHarnessRetry(content)
 }
 
 // deliverToolResult delivers the tool result to the consumer.

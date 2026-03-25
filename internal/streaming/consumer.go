@@ -23,3 +23,10 @@ type ToolResultConsumer interface {
 	// WriteToolResult notifies the consumer of a tool result.
 	WriteToolResult(content string)
 }
+
+// HarnessEventConsumer is an optional interface for consumers that support harness event visibility.
+// Consumers may implement this interface to receive notifications when the harness retries plan validation.
+type HarnessEventConsumer interface {
+	// WriteHarnessRetry notifies the consumer that plan validation failed and a retry is starting.
+	WriteHarnessRetry(content string)
+}
