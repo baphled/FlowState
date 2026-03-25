@@ -130,6 +130,33 @@ var _ = Describe("MessageWidget", func() {
 			})
 		})
 
+		Context("tool_error messages", func() {
+			It("includes the cross mark emoji prefix", func() {
+				w := widgets.NewMessageWidget("tool_error", "error: something failed", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("❌"))
+			})
+
+			It("includes the full error content without truncation", func() {
+				w := widgets.NewMessageWidget("tool_error", "error: connection timeout", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("error: connection timeout"))
+			})
+
+			It("renders in red color", func() {
+				w := widgets.NewMessageWidget("tool_error", "error: failed", th)
+				output := w.Render(80)
+				Expect(output).NotTo(BeEmpty())
+			})
+
+			It("does not include You or Assistant labels", func() {
+				w := widgets.NewMessageWidget("tool_error", "error: failed", th)
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
 		Context("with nil theme", func() {
 			It("still renders without panic", func() {
 				w := widgets.NewMessageWidget("user", "no theme", nil)

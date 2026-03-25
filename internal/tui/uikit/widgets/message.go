@@ -82,28 +82,8 @@ func (w *MessageWidget) Render(width int) string {
 			PaddingLeft(2)
 		sb.WriteString(contentStyle.Render(content))
 
-	case "tool_call":
-		toolStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-		sb.WriteString(toolStyle.Render("🔧 " + w.content))
-
-	case "tool_result":
-		resultStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-		sb.WriteString(resultStyle.Render("📤 " + w.content))
-
-	case "skill_load":
-		skillStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("51")).
-			Bold(true)
-		sb.WriteString(skillStyle.Render("📚 " + w.content))
-
-	case "system":
-		annotationStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
-			Italic(true)
-		sb.WriteString(annotationStyle.Render(w.content))
+	case "tool_call", "tool_result", "tool_error", "skill_load", "system":
+		sb.WriteString(w.renderToolMessage())
 
 	default:
 		labelStyle := lipgloss.NewStyle().
@@ -118,4 +98,49 @@ func (w *MessageWidget) Render(width int) string {
 	}
 
 	return sb.String()
+}
+
+// renderToolMessage renders tool-related messages with appropriate styling and emoji.
+//
+// Expected:
+//   - w.role is one of: "tool_call", "tool_result", "tool_error", "skill_load", "system".
+//
+// Returns:
+//   - A styled string with emoji prefix and content.
+//
+// Side effects:
+//   - None.
+func (w *MessageWidget) renderToolMessage() string {
+	switch w.role {
+	case "tool_call":
+		toolStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
+		return toolStyle.Render("🔧 " + w.content)
+
+	case "tool_result":
+		resultStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
+		return resultStyle.Render("📤 " + w.content)
+
+	case "tool_error":
+		errorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196"))
+		return errorStyle.Render("❌ " + w.content)
+
+	case "skill_load":
+		skillStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("51")).
+			Bold(true)
+		return skillStyle.Render("📚 " + w.content)
+
+	case "system":
+		annotationStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Italic(true)
+		return annotationStyle.Render(w.content)
+
+	default:
+		return ""
+	}
 }
