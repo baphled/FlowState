@@ -101,3 +101,16 @@ func (c *WriterConsumer) WriteToolCall(name string) {
 		fmt.Fprintf(c.w, "🔧 %s...\n", name)
 	}
 }
+
+// WriteToolResult notifies the consumer of a tool result.
+//
+// Expected:
+//   - content is the tool result content.
+//
+// Side effects:
+//   - Writes "📤 <content>\n" to the writer unless silent is true.
+func (c *WriterConsumer) WriteToolResult(content string) {
+	if !c.silent {
+		fmt.Fprintf(c.w, "📤 %s\n", content)
+	}
+}

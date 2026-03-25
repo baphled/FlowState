@@ -16,3 +16,10 @@ type ToolCallConsumer interface {
 	// WriteToolCall notifies the consumer of a tool invocation by name.
 	WriteToolCall(name string)
 }
+
+// ToolResultConsumer is an optional interface for consumers that support tool result visibility.
+// Consumers may implement this interface to receive notifications when a tool result is available.
+type ToolResultConsumer interface {
+	// WriteToolResult notifies the consumer of a tool result.
+	WriteToolResult(content string)
+}
