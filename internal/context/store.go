@@ -111,6 +111,26 @@ func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error)
 	return store, nil
 }
 
+// NewEmptyContextStore creates an in-memory context store with no file persistence.
+//
+// Expected:
+//   - model is the name of the embedding model to use.
+//
+// Returns:
+//   - A configured FileContextStore with empty path and no file I/O.
+//
+// Side effects:
+//   - None. No files are created or read.
+func NewEmptyContextStore(model string) *FileContextStore {
+	return &FileContextStore{
+		path:       "",
+		messages:   make([]StoredMessage, 0),
+		embeddings: make([]EmbeddingEntry, 0),
+		maxSize:    defaultMaxSize,
+		model:      model,
+	}
+}
+
 // load reads and deserialises the context store from its persisted file.
 //
 // Returns:
@@ -161,6 +181,10 @@ func (s *FileContextStore) load() error {
 //   - Writes the store's messages and embeddings to disk.
 //   - Uses atomic write (write-to-temp, then rename) to prevent corruption.
 func (s *FileContextStore) persist() error {
+	if s.path == "" {
+		return nil
+	}
+
 	persisted := persistedStore{
 		Messages:   s.messages,
 		Embeddings: s.embeddings,

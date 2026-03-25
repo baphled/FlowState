@@ -172,3 +172,46 @@ var _ = Describe("FileContextStore", func() {
 		})
 	})
 })
+
+var _ = Describe("EmptyContextStore", func() {
+	Describe("NewEmptyContextStore", func() {
+		It("returns a store with zero messages", func() {
+			store := context.NewEmptyContextStore("test-model")
+			Expect(store.Count()).To(Equal(0))
+		})
+
+		It("returns a store with empty messages slice", func() {
+			store := context.NewEmptyContextStore("test-model")
+			Expect(store.AllMessages()).To(BeEmpty())
+		})
+
+		It("stores the provided model name", func() {
+			store := context.NewEmptyContextStore("my-embedding-model")
+			Expect(store.AllMessages()).To(BeEmpty())
+		})
+	})
+
+	Describe("Append on empty store", func() {
+		It("increases count in memory", func() {
+			store := context.NewEmptyContextStore("test-model")
+			store.Append(provider.Message{Role: "user", Content: "hello"})
+			Expect(store.Count()).To(Equal(1))
+		})
+
+		It("stores message in memory without file I/O", func() {
+			store := context.NewEmptyContextStore("test-model")
+			store.Append(provider.Message{Role: "user", Content: "test message"})
+			messages := store.AllMessages()
+			Expect(messages).To(HaveLen(1))
+			Expect(messages[0].Content).To(Equal("test message"))
+		})
+	})
+
+	Describe("persist on empty store", func() {
+		It("is a no-op when path is empty", func() {
+			store := context.NewEmptyContextStore("test-model")
+			store.Append(provider.Message{Role: "user", Content: "test"})
+			Expect(store.Count()).To(Equal(1))
+		})
+	})
+})
