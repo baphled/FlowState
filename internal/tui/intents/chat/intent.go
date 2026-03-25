@@ -41,6 +41,12 @@ type StreamChunkMsg struct {
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
 type SpinnerTickMsg struct{}
 
+// SessionSavedMsg signals completion of an async session save operation.
+type SessionSavedMsg struct {
+	// Err holds any error that occurred during saving, or nil on success.
+	Err error
+}
+
 // tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
 //
 // Returns:
@@ -79,6 +85,8 @@ type SessionLister interface {
 	SetTitle(sessionID string, title string) error
 	// Load retrieves a context store from a saved session.
 	Load(sessionID string) (*contextpkg.FileContextStore, error)
+	// Save persists the session store to disk with the provided metadata.
+	Save(sessionID string, store *contextpkg.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
 // IntentConfig holds the configuration for creating a new chat Intent.
@@ -218,14 +226,11 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case StreamChunkMsg:
-		i.handleStreamChunk(msg)
-		i.refreshViewport()
-		if !msg.Done && msg.Next != nil {
-			return tea.Batch(msg.Next, tickSpinner())
-		}
-		return tickSpinner()
+		return i.handleStreamChunkMsg(msg)
 	case ToolPermissionMsg:
 		i.handleToolPermission(msg)
+		return nil
+	case SessionSavedMsg:
 		return nil
 	case SpinnerTickMsg:
 		if i.view.IsStreaming() {
@@ -309,7 +314,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		return tea.Quit
+		return tea.Batch(i.saveSession(), tea.Quit)
 	case tea.KeyTab:
 		return i.toggleAgent()
 	case tea.KeyCtrlP:
@@ -396,6 +401,55 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	}
 
 	i.syncStatusBar()
+}
+
+// handleStreamChunkMsg processes a StreamChunkMsg and returns the appropriate tea.Cmd.
+//
+// Expected:
+//   - msg contains streaming data, completion status, and optional next command.
+//
+// Returns:
+//   - A tea.Cmd that either batches the next command with spinner, saves the session, or ticks the spinner.
+//
+// Side effects:
+//   - Calls handleStreamChunk and refreshViewport.
+func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
+	i.handleStreamChunk(msg)
+	i.refreshViewport()
+	if !msg.Done && msg.Next != nil {
+		return tea.Batch(msg.Next, tickSpinner())
+	}
+	if msg.Done {
+		return i.saveSession()
+	}
+	return tickSpinner()
+}
+
+// syncStatusBar updates the StatusBar with the current intent state.
+//
+// Side effects:
+//   - Updates the StatusBar with provider, model, and token information.
+
+// saveSession builds session metadata from the current engine state and persists
+// the session asynchronously via a tea.Cmd.
+//
+// Returns:
+//   - A tea.Cmd that writes the session to disk and returns a SessionSavedMsg.
+//
+// Side effects:
+//   - None until the returned Cmd is executed by the Bubble Tea runtime.
+func (i *Intent) saveSession() tea.Cmd {
+	return func() tea.Msg {
+		if i.sessionStore == nil || i.engine == nil || i.engine.ContextStore() == nil {
+			return SessionSavedMsg{}
+		}
+		meta := contextpkg.SessionMetadata{
+			AgentID:      i.engine.Manifest().ID,
+			SystemPrompt: i.engine.BuildSystemPrompt(),
+			LoadedSkills: i.engine.LoadedSkills(),
+		}
+		return SessionSavedMsg{Err: i.sessionStore.Save(i.sessionID, i.engine.ContextStore(), meta)}
+	}
 }
 
 // syncStatusBar updates the StatusBar with the current intent state.
