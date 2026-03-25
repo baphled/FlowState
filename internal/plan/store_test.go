@@ -223,6 +223,106 @@ var _ = Describe("PlanStore", func() {
 	})
 
 	Describe("Get", func() {
+		It("preserves the new plan sections during roundtrip", func() {
+			now := time.Now()
+			original := plan.File{
+				ID:          "sections-roundtrip",
+				Title:       "Sections Roundtrip",
+				Description: "Testing section persistence",
+				Status:      "draft",
+				CreatedAt:   now,
+				TLDR:        "Short summary of the plan",
+				Context: plan.PlanContext{
+					OriginalRequest:  "Build a durable plan store",
+					InterviewSummary: "Need markdown sections preserved",
+					ResearchFindings: "Frontmatter must remain unchanged",
+				},
+				WorkObjectives: plan.WorkObjectives{
+					CoreObjective:    "Persist the new planning sections",
+					Deliverables:     []string{"Markdown serialisation", "Markdown parsing"},
+					DefinitionOfDone: []string{"Roundtrip passes", "Backwards compatibility holds"},
+					MustHave:         []string{"TL;DR", "Context", "Work Objectives"},
+					MustNotHave:      []string{"Frontmatter format changes"},
+				},
+				VerificationStrategy: "Run store tests and inspect the markdown output",
+				Reviews: []plan.ReviewResult{
+					{
+						Verdict:        "approved",
+						Confidence:     0.93,
+						BlockingIssues: []string{"none"},
+						Suggestions:    []string{"keep body formatting stable"},
+					},
+				},
+				Tasks: []plan.Task{
+					{Title: "Task 1", Description: "Keep task parsing intact"},
+				},
+			}
+
+			err := store.Create(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			retrieved, err := store.Get(original.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(retrieved.TLDR).To(Equal(original.TLDR))
+			Expect(retrieved.Context).To(Equal(original.Context))
+			Expect(retrieved.WorkObjectives).To(Equal(original.WorkObjectives))
+			Expect(retrieved.VerificationStrategy).To(Equal(original.VerificationStrategy))
+			Expect(retrieved.Reviews).To(Equal(original.Reviews))
+			Expect(retrieved.Tasks).To(HaveLen(1))
+			Expect(retrieved.Tasks[0].Title).To(Equal("Task 1"))
+		})
+
+		It("loads plans with empty new sections as zero values", func() {
+			f := plan.File{
+				ID:          "empty-sections",
+				Title:       "Empty Sections",
+				Description: "Testing zero values",
+				Status:      "draft",
+				CreatedAt:   time.Now(),
+				Tasks:       []plan.Task{},
+			}
+
+			err := store.Create(f)
+			Expect(err).NotTo(HaveOccurred())
+
+			retrieved, err := store.Get("empty-sections")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(retrieved.TLDR).To(Equal(""))
+			Expect(retrieved.Context).To(Equal(plan.PlanContext{}))
+			Expect(retrieved.WorkObjectives).To(Equal(plan.WorkObjectives{}))
+			Expect(retrieved.VerificationStrategy).To(Equal(""))
+			Expect(retrieved.Reviews).To(BeEmpty())
+		})
+
+		It("loads legacy plan files without new sections", func() {
+			legacy := "---\n" +
+				"id: legacy-plan\n" +
+				"title: Legacy Plan\n" +
+				"description: Pre-existing format\n" +
+				"status: draft\n" +
+				"created_at: 2025-03-25T10:00:00Z\n" +
+				"---\n\n" +
+				"## Legacy Task\n" +
+				"Legacy task description\n\n"
+
+			err := os.WriteFile(filepath.Join(tmpDir, "legacy-plan.md"), []byte(legacy), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			retrieved, err := store.Get("legacy-plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(retrieved.TLDR).To(Equal(""))
+			Expect(retrieved.Context).To(Equal(plan.PlanContext{}))
+			Expect(retrieved.WorkObjectives).To(Equal(plan.WorkObjectives{}))
+			Expect(retrieved.VerificationStrategy).To(Equal(""))
+			Expect(retrieved.Reviews).To(BeEmpty())
+			Expect(retrieved.Tasks).To(HaveLen(1))
+			Expect(retrieved.Tasks[0].Title).To(Equal("Legacy Task"))
+			Expect(retrieved.Tasks[0].Description).To(Equal("Legacy task description"))
+		})
+
 		It("retrieves a plan by ID", func() {
 			f := plan.File{
 				ID:          "get-test",

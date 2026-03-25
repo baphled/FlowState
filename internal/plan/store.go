@@ -94,17 +94,15 @@ func (s *PlanStore) Create(f File) error {
 	filePath := filepath.Join(s.dataDir, f.ID+".md")
 
 	fm := Frontmatter{
-		ID:                   f.ID,
-		Title:                f.Title,
-		Description:          f.Description,
-		Status:               f.Status,
-		CreatedAt:            f.CreatedAt,
-		ValidationStatus:     f.ValidationStatus,
-		AttemptCount:         f.AttemptCount,
-		Score:                f.Score,
-		ValidationErrors:     f.ValidationErrors,
-		TLDR:                 f.TLDR,
-		VerificationStrategy: f.VerificationStrategy,
+		ID:               f.ID,
+		Title:            f.Title,
+		Description:      f.Description,
+		Status:           f.Status,
+		CreatedAt:        f.CreatedAt,
+		ValidationStatus: f.ValidationStatus,
+		AttemptCount:     f.AttemptCount,
+		Score:            f.Score,
+		ValidationErrors: f.ValidationErrors,
 	}
 
 	frontmatterBytes, err := yaml.Marshal(fm)
@@ -117,7 +115,11 @@ func (s *PlanStore) Create(f File) error {
 	body.Write(frontmatterBytes)
 	body.WriteString("---\n\n")
 
-	writePlanSections(&body, f)
+	writeTLDRSection(&body, f.TLDR)
+	writeContextSection(&body, f.Context)
+	writeWorkObjectivesSection(&body, f.WorkObjectives)
+	writeVerificationStrategySection(&body, f.VerificationStrategy)
+	writeReviewsSection(&body, f.Reviews)
 
 	writeTasksToMarkdown(&body, f.Tasks)
 
@@ -216,11 +218,7 @@ func (s *PlanStore) Get(id string) (*File, error) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
-	body := parts[2]
-
-	planSections, taskMarkdown := splitPlanSectionsAndTasks(body)
-	ctx, wo, reviews := parsePlanSections(planSections)
-
+	sections, taskMarkdown := parsePlanBody(parts[2])
 	tasks := parseTasksFromMarkdown(taskMarkdown)
 
 	return &File{
@@ -230,15 +228,15 @@ func (s *PlanStore) Get(id string) (*File, error) {
 		Status:               fm.Status,
 		CreatedAt:            fm.CreatedAt,
 		Tasks:                tasks,
+		TLDR:                 sections.TLDR,
+		Context:              sections.Context,
+		WorkObjectives:       sections.WorkObjectives,
+		VerificationStrategy: sections.VerificationStrategy,
+		Reviews:              sections.Reviews,
 		ValidationStatus:     fm.ValidationStatus,
 		AttemptCount:         fm.AttemptCount,
 		Score:                fm.Score,
 		ValidationErrors:     fm.ValidationErrors,
-		TLDR:                 fm.TLDR,
-		VerificationStrategy: fm.VerificationStrategy,
-		Context:              ctx,
-		WorkObjectives:       wo,
-		Reviews:              reviews,
 	}, nil
 }
 
@@ -284,7 +282,16 @@ func (s *PlanStore) Delete(id string) error {
 // Side effects:
 //   - None.
 //
-//nolint:gocognit,revive,funlen // Cognitive complexity is inherent to the parsing logic
+// parseTasksFromMarkdown extracts tasks from markdown content.
+//
+// Expected:
+//   - markdown contains plan body text.
+//
+// Returns:
+//   - The parsed tasks.
+//
+// Side effects:
+//   - None.
 func parseTasksFromMarkdown(markdown string) []Task {
 	if strings.TrimSpace(markdown) == "" {
 		return []Task{}
@@ -335,16 +342,6 @@ func parseTasksFromMarkdown(markdown string) []Task {
 			continue
 		}
 
-		if isFileChangesLine(line) {
-			i = parseFileChanges(lines, i, currentTask)
-			continue
-		}
-
-		if isEvidenceLine(line) {
-			parseEvidence(line, currentTask)
-			continue
-		}
-
 		appendDescription(line, currentTask)
 	}
 
@@ -365,6 +362,17 @@ func parseTasksFromMarkdown(markdown string) []Task {
 //
 // Side effects:
 //   - None.
+//
+// isTaskHeader reports whether a line begins a task block.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when the line is a task header.
+//
+// Side effects:
+//   - None.
 func isTaskHeader(line string) bool {
 	return strings.HasPrefix(line, "## ")
 }
@@ -376,6 +384,17 @@ func isTaskHeader(line string) bool {
 //
 // Returns:
 //   - *Task with Title field populated from header.
+//
+// Side effects:
+//   - None.
+//
+// newTaskFromHeader creates a task from a header line.
+//
+// Expected:
+//   - line is a task header.
+//
+// Returns:
+//   - A task parsed from the header.
 //
 // Side effects:
 //   - None.
@@ -396,6 +415,17 @@ func newTaskFromHeader(line string) *Task {
 //
 // Side effects:
 //   - None.
+//
+// isAcceptanceCriteriaHeader reports whether a line starts the acceptance criteria list.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when the line is an acceptance criteria header.
+//
+// Side effects:
+//   - None.
 func isAcceptanceCriteriaHeader(line string) bool {
 	return strings.HasPrefix(line, "### Acceptance Criteria")
 }
@@ -411,6 +441,18 @@ func isAcceptanceCriteriaHeader(line string) bool {
 //
 // Side effects:
 //   - Modifies task.AcceptanceCriteria to include parsed criteria.
+//
+// parseAcceptanceCriteria reads acceptance criteria lines into a task.
+//
+// Expected:
+//   - lines contains plan body lines.
+//   - task is the task being populated.
+//
+// Returns:
+//   - The next line index to process.
+//
+// Side effects:
+//   - Mutates task.AcceptanceCriteria.
 func parseAcceptanceCriteria(lines []string, startIdx int, task *Task) int {
 	i := startIdx + 1
 	for i < len(lines) {
@@ -438,6 +480,17 @@ func parseAcceptanceCriteria(lines []string, startIdx int, task *Task) int {
 //
 // Side effects:
 //   - None.
+//
+// shouldStopCriteriaParsing reports whether criteria parsing should stop.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when parsing should stop.
+//
+// Side effects:
+//   - None.
 func shouldStopCriteriaParsing(line string) bool {
 	trimmed := strings.TrimSpace(line)
 	return trimmed == "" || strings.HasPrefix(line, "**") || strings.HasPrefix(line, "##")
@@ -450,6 +503,17 @@ func shouldStopCriteriaParsing(line string) bool {
 //
 // Returns:
 //   - true if line starts with "**Skills**:", false otherwise.
+//
+// Side effects:
+//   - None.
+//
+// isSkillsLine reports whether a line contains skills metadata.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when the line holds skills.
 //
 // Side effects:
 //   - None.
@@ -468,6 +532,18 @@ func isSkillsLine(line string) bool {
 //
 // Side effects:
 //   - Modifies task.Skills to include parsed skill names.
+//
+// parseSkills extracts skills from a metadata line.
+//
+// Expected:
+//   - line contains skills metadata.
+//   - task is the task being populated.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates task.Skills.
 func parseSkills(line string, task *Task) {
 	skillsStr := strings.TrimPrefix(line, "**Skills**: ")
 	skillsStr = strings.TrimSpace(skillsStr)
@@ -490,6 +566,18 @@ func parseSkills(line string, task *Task) {
 //
 // Side effects:
 //   - Modifies task.Description to append the line if it's valid content.
+//
+// appendDescription adds a description line to a task.
+//
+// Expected:
+//   - line contains task body text.
+//   - task is the task being populated.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates task.Description.
 func appendDescription(line string, task *Task) {
 	trimmedLine := strings.TrimSpace(line)
 	if trimmedLine == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "**") {
@@ -515,7 +603,17 @@ func appendDescription(line string, task *Task) {
 // Side effects:
 //   - Writes task markdown to body.
 //
-//nolint:gocognit,revive // Cognitive complexity is inherent to the writing logic
+// writeTasksToMarkdown writes tasks into markdown form.
+//
+// Expected:
+//   - body is a valid builder.
+//   - tasks contains zero or more tasks.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends task markdown to body.
 func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
 	for i := range tasks {
 		task := &tasks[i]
@@ -547,19 +645,606 @@ func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
 		if task.Wave > 0 {
 			fmt.Fprintf(body, "**Wave**: %d\n\n", task.Wave)
 		}
+	}
+}
 
-		if len(task.FileChanges) > 0 {
-			body.WriteString("**File Changes**:\n")
-			for _, fc := range task.FileChanges {
-				fmt.Fprintf(body, "- %s\n", fc)
-			}
-			body.WriteString("\n")
+// parsedPlanBody holds the structured components extracted from plan body markdown.
+//
+// Expected:
+//   - Fields are populated during parsing.
+//
+// Returns:
+//   - (nothing; type definition only)
+//
+// Side effects:
+//   - None.
+type parsedPlanBody struct {
+	TLDR                 string
+	Context              PlanContext
+	WorkObjectives       WorkObjectives
+	VerificationStrategy string
+	Reviews              []ReviewResult
+}
+
+// parsePlanBody splits plan body markdown into structured content.
+//
+// Expected:
+//   - markdown contains plan body text.
+//
+// Returns:
+//   - The parsed plan body and remaining task markdown.
+//
+// Side effects:
+//   - None.
+func parsePlanBody(markdown string) (parsedPlanBody, string) {
+	if strings.TrimSpace(markdown) == "" {
+		return parsedPlanBody{}, ""
+	}
+
+	lines := strings.Split(markdown, "\n")
+	var taskLines strings.Builder
+	parsed := parsedPlanBody{}
+	state := planBodyState{}
+
+	for _, line := range lines {
+		if handlePlanSectionHeader(line, &state, &parsed, &taskLines) {
+			continue
 		}
 
-		if task.Evidence != "" {
-			fmt.Fprintf(body, "**Evidence**: %s\n\n", task.Evidence)
+		if state.section == "" {
+			appendTaskLine(&taskLines, line)
+			continue
+		}
+
+		if handlePlanSubsectionHeader(line, &state) {
+			continue
+		}
+
+		handlePlanSectionContent(line, &state, &parsed)
+	}
+
+	if state.currentReview != nil {
+		finaliseReview(&state)
+		parsed.Reviews = append(parsed.Reviews, *state.currentReview)
+	}
+
+	return parsed, taskLines.String()
+}
+
+// planBodyState tracks the current position while parsing a plan body.
+//
+// Expected:
+//   - Fields remain zero-valued unless parsing is in progress.
+//
+// Returns:
+//   - (nothing; type definition only)
+//
+// Side effects:
+//   - None.
+type planBodyState struct {
+	section       string
+	subsection    string
+	currentReview *ReviewResult
+	reviewField   string
+	reviewContent strings.Builder
+}
+
+// handlePlanSectionHeader processes a plan section heading.
+//
+// Expected:
+//   - line contains a heading.
+//
+// Returns:
+//   - true when the line was handled.
+//
+// Side effects:
+//   - Mutates parsing state and accumulators.
+func handlePlanSectionHeader(line string, state *planBodyState, parsed *parsedPlanBody, taskLines *strings.Builder) bool {
+	if !isLevelTwoHeader(line) {
+		return false
+	}
+
+	if state.currentReview != nil {
+		finaliseReview(state)
+		parsed.Reviews = append(parsed.Reviews, *state.currentReview)
+		state.currentReview = nil
+	}
+
+	sectionName := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+	if isPlanSectionName(sectionName) {
+		state.section = sectionName
+		state.subsection = ""
+		return true
+	}
+
+	state.section = ""
+	state.subsection = ""
+	appendTaskLine(taskLines, line)
+	return true
+}
+
+// handlePlanSubsectionHeader processes a plan subsection heading.
+//
+// Expected:
+//   - line contains a heading.
+//
+// Returns:
+//   - true when the line was handled.
+//
+// Side effects:
+//   - Mutates parsing state.
+func handlePlanSubsectionHeader(line string, state *planBodyState) bool {
+	if !isLevelThreeHeader(line) {
+		return false
+	}
+
+	state.subsection = strings.TrimSpace(strings.TrimPrefix(line, "### "))
+	if state.section == "Reviews" {
+		finaliseReview(state)
+		state.currentReview = &ReviewResult{}
+		state.reviewField = ""
+		state.reviewContent.Reset()
+	}
+	return true
+}
+
+// handlePlanSectionContent routes content into the current plan section.
+//
+// Expected:
+//   - line contains section content.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the parsed plan body.
+func handlePlanSectionContent(line string, state *planBodyState, parsed *parsedPlanBody) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return
+	}
+
+	switch state.section {
+	case "TL;DR":
+		appendTextSection(&parsed.TLDR, trimmed)
+	case "Context":
+		handleContextContent(parsed, state.subsection, trimmed)
+	case "Work Objectives":
+		handleWorkObjectivesContent(parsed, state.subsection, line)
+	case "Verification Strategy":
+		appendTextSection(&parsed.VerificationStrategy, trimmed)
+	case "Reviews":
+		handleReviewsContent(state, line, trimmed)
+	}
+}
+
+// handleContextContent stores content for the plan context section.
+//
+// Expected:
+//   - trimmed contains a non-empty line.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates parsed context fields.
+func handleContextContent(parsed *parsedPlanBody, subsection, trimmed string) {
+	switch subsection {
+	case "Original Request":
+		appendTextSection(&parsed.Context.OriginalRequest, trimmed)
+	case "Interview Summary":
+		appendTextSection(&parsed.Context.InterviewSummary, trimmed)
+	case "Research Findings":
+		appendTextSection(&parsed.Context.ResearchFindings, trimmed)
+	}
+}
+
+// handleWorkObjectivesContent stores content for the work objectives section.
+//
+// Expected:
+//   - line contains section content.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates parsed work objectives fields.
+func handleWorkObjectivesContent(parsed *parsedPlanBody, subsection, line string) {
+	switch subsection {
+	case "Core Objective":
+		appendTextSection(&parsed.WorkObjectives.CoreObjective, strings.TrimSpace(line))
+	case "Deliverables":
+		appendSectionListItem(&parsed.WorkObjectives.Deliverables, line)
+	case "Definition of Done":
+		appendSectionListItem(&parsed.WorkObjectives.DefinitionOfDone, line)
+	case "Must Have":
+		appendSectionListItem(&parsed.WorkObjectives.MustHave, line)
+	case "Must Not Have":
+		appendSectionListItem(&parsed.WorkObjectives.MustNotHave, line)
+	}
+}
+
+// handleReviewsContent stores content for the reviews section.
+//
+// Expected:
+//   - line contains section content.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates review parsing state.
+func handleReviewsContent(state *planBodyState, line, trimmed string) {
+	if state.currentReview == nil {
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(line, "**Verdict**:"):
+		finaliseReview(state)
+		state.reviewField = "verdict"
+		state.reviewContent.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "**Verdict**:")))
+	case strings.HasPrefix(line, "**Confidence**:"):
+		finaliseReview(state)
+		state.reviewField = "confidence"
+		state.reviewContent.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "**Confidence**:")))
+	case strings.HasPrefix(line, "**Blocking Issues**:"):
+		finaliseReview(state)
+		state.reviewField = "blocking_issues"
+	case strings.HasPrefix(line, "**Suggestions**:"):
+		finaliseReview(state)
+		state.reviewField = "suggestions"
+	case strings.HasPrefix(line, "- "):
+		if state.reviewField == "blocking_issues" || state.reviewField == "suggestions" {
+			state.reviewContent.WriteString(strings.TrimPrefix(line, "- "))
+			state.reviewContent.WriteString("\n")
+		}
+	case trimmed != "" && state.reviewField != "":
+		state.reviewContent.WriteString(trimmed)
+		state.reviewContent.WriteString("\n")
+	}
+}
+
+// finaliseReview appends the current review to the parsed plan.
+//
+// Expected:
+//   - state contains a partially built review.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates parsed reviews.
+func finaliseReview(state *planBodyState) {
+	if state.currentReview == nil {
+		return
+	}
+
+	switch state.reviewField {
+	case "verdict":
+		state.currentReview.Verdict = strings.TrimSpace(state.reviewContent.String())
+	case "confidence":
+		if confidence, err := strconv.ParseFloat(strings.TrimSpace(state.reviewContent.String()), 64); err == nil {
+			state.currentReview.Confidence = confidence
+		}
+	case "blocking_issues":
+		state.currentReview.BlockingIssues = append(state.currentReview.BlockingIssues, splitSectionLines(state.reviewContent.String())...)
+	case "suggestions":
+		state.currentReview.Suggestions = append(state.currentReview.Suggestions, splitSectionLines(state.reviewContent.String())...)
+	}
+
+	state.reviewField = ""
+	state.reviewContent.Reset()
+}
+
+// appendTaskLine appends a raw task line to the task buffer.
+//
+// Expected:
+//   - line contains task markdown.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to taskLines.
+func appendTaskLine(taskLines *strings.Builder, line string) {
+	taskLines.WriteString(line)
+	taskLines.WriteString("\n")
+}
+
+// appendTextSection appends text to a multi-line section.
+//
+// Expected:
+//   - target points to the accumulated text.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the target string.
+func appendTextSection(target *string, value string) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return
+	}
+	if *target == "" {
+		*target = trimmed
+		return
+	}
+	*target += "\n" + trimmed
+}
+
+// isLevelTwoHeader reports whether a line is a level two heading.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when the line is a level two heading.
+//
+// Side effects:
+//   - None.
+func isLevelTwoHeader(line string) bool {
+	return strings.HasPrefix(line, "## ")
+}
+
+// isLevelThreeHeader reports whether a line is a level three heading.
+//
+// Expected:
+//   - line contains a single line of text.
+//
+// Returns:
+//   - true when the line is a level three heading.
+//
+// Side effects:
+//   - None.
+func isLevelThreeHeader(line string) bool {
+	return strings.HasPrefix(line, "### ")
+}
+
+// isPlanSectionName reports whether a heading name is a recognised plan section.
+//
+// Expected:
+//   - name contains a heading label.
+//
+// Returns:
+//   - true when the name matches a plan section.
+//
+// Side effects:
+//   - None.
+func isPlanSectionName(name string) bool {
+	switch name {
+	case "TL;DR", "Context", "Work Objectives", "Verification Strategy", "Reviews":
+		return true
+	default:
+		return false
+	}
+}
+
+// splitSectionLines breaks section content into trimmed lines.
+//
+// Expected:
+//   - content contains section text.
+//
+// Returns:
+//   - The split lines.
+//
+// Side effects:
+//   - None.
+func splitSectionLines(content string) []string {
+	lines := strings.Split(content, "\n")
+	var values []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			values = append(values, trimmed)
 		}
 	}
+	return values
+}
+
+// appendSectionListItem appends a list item to a section accumulator.
+//
+// Expected:
+//   - target points to the destination slice.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the destination slice.
+func appendSectionListItem(target *[]string, line string) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+	if trimmed == "" {
+		return
+	}
+	*target = append(*target, trimmed)
+}
+
+// writeTLDRSection writes the TL;DR section when present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeTLDRSection(body *strings.Builder, tldr string) {
+	if strings.TrimSpace(tldr) == "" {
+		return
+	}
+	body.WriteString("## TL;DR\n")
+	body.WriteString(strings.TrimSpace(tldr))
+	body.WriteString("\n\n")
+}
+
+// writeContextSection writes the context section when present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeContextSection(body *strings.Builder, context PlanContext) {
+	if context == (PlanContext{}) {
+		return
+	}
+	body.WriteString("## Context\n")
+	writeTextSubsection(body, "Original Request", context.OriginalRequest)
+	writeTextSubsection(body, "Interview Summary", context.InterviewSummary)
+	writeTextSubsection(body, "Research Findings", context.ResearchFindings)
+}
+
+// writeWorkObjectivesSection writes the work objectives section when present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeWorkObjectivesSection(body *strings.Builder, objectives WorkObjectives) {
+	if !hasWorkObjectivesData(objectives) {
+		return
+	}
+	body.WriteString("## Work Objectives\n")
+	writeTextSubsection(body, "Core Objective", objectives.CoreObjective)
+	writeListSubsection(body, "Deliverables", objectives.Deliverables)
+	writeListSubsection(body, "Definition of Done", objectives.DefinitionOfDone)
+	writeListSubsection(body, "Must Have", objectives.MustHave)
+	writeListSubsection(body, "Must Not Have", objectives.MustNotHave)
+}
+
+// writeVerificationStrategySection writes the verification strategy section when present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeVerificationStrategySection(body *strings.Builder, strategy string) {
+	if strings.TrimSpace(strategy) == "" {
+		return
+	}
+	body.WriteString("## Verification Strategy\n")
+	body.WriteString(strings.TrimSpace(strategy))
+	body.WriteString("\n\n")
+}
+
+// writeReviewsSection writes the reviews section when present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeReviewsSection(body *strings.Builder, reviews []ReviewResult) {
+	if len(reviews) == 0 {
+		return
+	}
+	body.WriteString("## Reviews\n")
+	for i := range reviews {
+		review := reviews[i]
+		fmt.Fprintf(body, "### Review %d\n", i+1)
+		fmt.Fprintf(body, "**Verdict**: %s\n\n", review.Verdict)
+		fmt.Fprintf(body, "**Confidence**: %g\n\n", review.Confidence)
+		writeLabelledList(body, "Blocking Issues", review.BlockingIssues)
+		writeLabelledList(body, "Suggestions", review.Suggestions)
+	}
+}
+
+// writeTextSubsection writes a text subsection when content is present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeTextSubsection(body *strings.Builder, title, content string) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return
+	}
+	fmt.Fprintf(body, "### %s\n", title)
+	body.WriteString(trimmed)
+	body.WriteString("\n\n")
+}
+
+// writeListSubsection writes a list subsection when items are present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeListSubsection(body *strings.Builder, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(body, "### %s\n", title)
+	for _, item := range items {
+		fmt.Fprintf(body, "- %s\n", item)
+	}
+	body.WriteString("\n")
+}
+
+// writeLabelledList writes a labelled list when items are present.
+//
+// Expected:
+//   - body is a valid builder.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Appends to body.
+func writeLabelledList(body *strings.Builder, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(body, "**%s**:\n", title)
+	for _, item := range items {
+		fmt.Fprintf(body, "- %s\n", item)
+	}
+	body.WriteString("\n")
+}
+
+// hasWorkObjectivesData reports whether the work objectives contain any meaningful data.
+//
+// Expected:
+//   - objectives may contain zero or more populated fields.
+//
+// Returns:
+//   - true when at least one work objective field is populated.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func hasWorkObjectivesData(objectives WorkObjectives) bool {
+	return strings.TrimSpace(objectives.CoreObjective) != "" ||
+		len(objectives.Deliverables) > 0 ||
+		len(objectives.DefinitionOfDone) > 0 ||
+		len(objectives.MustHave) > 0 ||
+		len(objectives.MustNotHave) > 0
 }
 
 // isDependenciesLine checks if a line is the dependencies line.
@@ -661,351 +1346,4 @@ func parseWave(line string, task *Task) {
 			task.Wave = wave
 		}
 	}
-}
-
-// isFileChangesLine checks if a line is the file changes line.
-//
-// Expected:
-//   - line is a single line of text (no newlines).
-//
-// Returns:
-//   - true if line starts with "**File Changes**:", false otherwise.
-//
-// Side effects:
-//   - None.
-func isFileChangesLine(line string) bool {
-	return strings.HasPrefix(line, "**File Changes**:")
-}
-
-// parseFileChanges extracts file changes from a file changes section.
-//
-// Expected:
-//   - startIdx points to the file changes header.
-//   - task is non-nil.
-//
-// Returns:
-//   - updated line index for the outer loop to continue from.
-//
-// Side effects:
-//   - Modifies task.FileChanges to include parsed file paths.
-func parseFileChanges(lines []string, startIdx int, task *Task) int {
-	i := startIdx + 1
-	for i < len(lines) {
-		line := lines[i]
-		if strings.HasPrefix(line, "- ") {
-			fc := strings.TrimPrefix(line, "- ")
-			task.FileChanges = append(task.FileChanges, strings.TrimSpace(fc))
-			i++
-		} else if shouldStopCriteriaParsing(line) {
-			break
-		} else {
-			i++
-		}
-	}
-	return i - 1
-}
-
-// isEvidenceLine checks if a line is the evidence line.
-//
-// Expected:
-//   - line is a single line of text (no newlines).
-//
-// Returns:
-//   - true if line starts with "**Evidence**:", false otherwise.
-//
-// Side effects:
-//   - None.
-func isEvidenceLine(line string) bool {
-	return strings.HasPrefix(line, "**Evidence**:")
-}
-
-// parseEvidence extracts evidence from a line and sets it on the task.
-//
-// Expected:
-//   - line starts with "**Evidence**:" (checked by caller).
-//   - task is non-nil.
-//
-// Returns:
-//   - (nothing; type void).
-//
-// Side effects:
-//   - Modifies task.Evidence to the parsed value.
-func parseEvidence(line string, task *Task) {
-	evidenceStr := strings.TrimPrefix(line, "**Evidence**: ")
-	task.Evidence = strings.TrimSpace(evidenceStr)
-}
-
-// writePlanSections writes the OMO-style plan sections to the markdown body.
-//
-// Expected:
-//   - body is a non-nil strings.Builder.
-//   - f contains the plan with optional sections.
-//
-// Returns:
-//   - (nothing; type void).
-//
-// Side effects:
-//   - Writes section markdown to body.
-//
-//nolint:gocognit,nestif,gocyclo,revive,funlen // Necessary complexity for handling multiple section types
-func writePlanSections(body *strings.Builder, f File) {
-	hasContext := f.Context.OriginalRequest != "" || f.Context.InterviewSummary != "" || f.Context.ResearchFindings != ""
-	hasWorkObjectives := f.WorkObjectives.CoreObjective != "" || len(f.WorkObjectives.Deliverables) > 0 ||
-		len(f.WorkObjectives.DefinitionOfDone) > 0 || len(f.WorkObjectives.MustHave) > 0 || len(f.WorkObjectives.MustNotHave) > 0
-	hasReviews := len(f.Reviews) > 0
-
-	if !hasContext && !hasWorkObjectives && !hasReviews {
-		return
-	}
-
-	if hasContext {
-		body.WriteString("## Context\n\n")
-		if f.Context.OriginalRequest != "" {
-			fmt.Fprintf(body, "**Original Request**: %s\n\n", f.Context.OriginalRequest)
-		}
-		if f.Context.InterviewSummary != "" {
-			fmt.Fprintf(body, "**Interview Summary**: %s\n\n", f.Context.InterviewSummary)
-		}
-		if f.Context.ResearchFindings != "" {
-			fmt.Fprintf(body, "**Research Findings**: %s\n\n", f.Context.ResearchFindings)
-		}
-	}
-
-	if hasWorkObjectives {
-		body.WriteString("## Work Objectives\n\n")
-		if f.WorkObjectives.CoreObjective != "" {
-			fmt.Fprintf(body, "**Core Objective**: %s\n\n", f.WorkObjectives.CoreObjective)
-		}
-		if len(f.WorkObjectives.Deliverables) > 0 {
-			body.WriteString("**Deliverables**:\n")
-			for _, d := range f.WorkObjectives.Deliverables {
-				fmt.Fprintf(body, "- %s\n", d)
-			}
-			body.WriteString("\n")
-		}
-		if len(f.WorkObjectives.DefinitionOfDone) > 0 {
-			body.WriteString("**Definition of Done**:\n")
-			for _, d := range f.WorkObjectives.DefinitionOfDone {
-				fmt.Fprintf(body, "- %s\n", d)
-			}
-			body.WriteString("\n")
-		}
-		if len(f.WorkObjectives.MustHave) > 0 {
-			body.WriteString("**Must Have**:\n")
-			for _, m := range f.WorkObjectives.MustHave {
-				fmt.Fprintf(body, "- %s\n", m)
-			}
-			body.WriteString("\n")
-		}
-		if len(f.WorkObjectives.MustNotHave) > 0 {
-			body.WriteString("**Must Not Have**:\n")
-			for _, m := range f.WorkObjectives.MustNotHave {
-				fmt.Fprintf(body, "- %s\n", m)
-			}
-			body.WriteString("\n")
-		}
-	}
-
-	if hasReviews {
-		body.WriteString("## Reviews\n\n")
-		for _, r := range f.Reviews {
-			if r.Reviewer != "" {
-				fmt.Fprintf(body, "**Reviewer**: %s\n\n", r.Reviewer)
-			}
-			if r.Verdict != "" {
-				fmt.Fprintf(body, "**Verdict**: %s\n\n", r.Verdict)
-			}
-			if r.Confidence > 0 {
-				fmt.Fprintf(body, "**Confidence**: %.2f\n\n", r.Confidence)
-			}
-			if len(r.Issues) > 0 {
-				body.WriteString("**Issues**:\n")
-				for _, i := range r.Issues {
-					fmt.Fprintf(body, "- %s\n", i)
-				}
-				body.WriteString("\n")
-			}
-			if len(r.Suggestions) > 0 {
-				body.WriteString("**Suggestions**:\n")
-				for _, s := range r.Suggestions {
-					fmt.Fprintf(body, "- %s\n", s)
-				}
-				body.WriteString("\n")
-			}
-		}
-	}
-}
-
-// splitPlanSectionsAndTasks separates the plan sections from the tasks section.
-//
-// Expected:
-//   - markdown is the content after the frontmatter delimiter.
-//
-// Returns:
-//   - planSections: content before ## Tasks
-//   - taskMarkdown: content starting from ## Tasks (or empty if no tasks)
-//
-// Side effects:
-//   - None.
-func splitPlanSectionsAndTasks(markdown string) (string, string) {
-	lines := strings.Split(markdown, "\n")
-
-	for i, line := range lines {
-		if strings.HasPrefix(line, "## ") && strings.TrimPrefix(line, "## ") != "Context" &&
-			strings.TrimPrefix(line, "## ") != "Work Objectives" && strings.TrimPrefix(line, "## ") != "Reviews" {
-			planSections := strings.Join(lines[:i], "\n")
-			taskMarkdown := strings.Join(lines[i:], "\n")
-			return planSections, taskMarkdown
-		}
-	}
-
-	return markdown, ""
-}
-
-// parsePlanSections extracts OMO-style plan sections from the markdown body.
-//
-// Expected:
-//   - markdown is the content after the frontmatter delimiter.
-//   - May contain Context, Work Objectives, Reviews sections before ## Tasks.
-//
-// Returns:
-//   - Context, WorkObjectives, Reviews extracted from markdown.
-//
-// Side effects:
-//   - None.
-//
-//nolint:gocognit,nestif,gocyclo,revive,funlen // Necessary complexity for parsing multiple section types
-func parsePlanSections(markdown string) (Context, WorkObjectives, []ReviewResult) {
-	var ctx Context
-	var wo WorkObjectives
-	var reviews []ReviewResult
-
-	if strings.TrimSpace(markdown) == "" {
-		return ctx, wo, reviews
-	}
-
-	lines := strings.Split(markdown, "\n")
-
-	var currentSection string
-	var currentReview *ReviewResult
-
-	//nolint:revive // Required to allow modifying loop variable in parseBulletList
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-
-		if strings.HasPrefix(line, "## Context") {
-			currentSection = "context"
-			continue
-		}
-
-		if strings.HasPrefix(line, "## Work Objectives") {
-			currentSection = "workObjectives"
-			continue
-		}
-
-		if strings.HasPrefix(line, "## Reviews") {
-			currentSection = "reviews"
-			continue
-		}
-
-		if strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "## Context") &&
-			!strings.HasPrefix(line, "## Work Objectives") && !strings.HasPrefix(line, "## Reviews") {
-			break
-		}
-
-		switch currentSection {
-		case "context":
-			if strings.HasPrefix(line, "**Original Request**:") {
-				ctx.OriginalRequest = strings.TrimPrefix(line, "**Original Request**: ")
-			}
-			if strings.HasPrefix(line, "**Interview Summary**:") {
-				ctx.InterviewSummary = strings.TrimPrefix(line, "**Interview Summary**: ")
-			}
-			if strings.HasPrefix(line, "**Research Findings**:") {
-				ctx.ResearchFindings = strings.TrimPrefix(line, "**Research Findings**: ")
-			}
-
-		case "workObjectives":
-			if strings.HasPrefix(line, "**Core Objective**:") {
-				wo.CoreObjective = strings.TrimPrefix(line, "**Core Objective**: ")
-			}
-			if strings.HasPrefix(line, "**Deliverables**:") {
-				wo.Deliverables, i = parseBulletList(lines, i)
-			}
-			if strings.HasPrefix(line, "**Definition of Done**:") {
-				wo.DefinitionOfDone, i = parseBulletList(lines, i)
-			}
-			if strings.HasPrefix(line, "**Must Have**:") {
-				wo.MustHave, i = parseBulletList(lines, i)
-			}
-			if strings.HasPrefix(line, "**Must Not Have**:") {
-				wo.MustNotHave, i = parseBulletList(lines, i)
-			}
-
-		case "reviews":
-			if strings.HasPrefix(line, "**Reviewer**:") {
-				if currentReview != nil {
-					reviews = append(reviews, *currentReview)
-				}
-				currentReview = &ReviewResult{
-					Reviewer: strings.TrimPrefix(line, "**Reviewer**: "),
-				}
-			}
-			if currentReview != nil {
-				if strings.HasPrefix(line, "**Verdict**:") {
-					currentReview.Verdict = strings.TrimPrefix(line, "**Verdict**: ")
-				}
-				if strings.HasPrefix(line, "**Confidence**:") {
-					confStr := strings.TrimPrefix(line, "**Confidence**: ")
-					if conf, err := strconv.ParseFloat(confStr, 64); err == nil {
-						currentReview.Confidence = conf
-					}
-				}
-				if strings.HasPrefix(line, "**Issues**:") {
-					currentReview.Issues, i = parseBulletList(lines, i)
-				}
-				if strings.HasPrefix(line, "**Suggestions**:") {
-					currentReview.Suggestions, i = parseBulletList(lines, i)
-				}
-			}
-		}
-	}
-
-	if currentReview != nil {
-		reviews = append(reviews, *currentReview)
-	}
-
-	return ctx, wo, reviews
-}
-
-// parseBulletList parses bullet list items from subsequent lines.
-//
-// Expected:
-//   - lines is the full markdown lines.
-//   - startIdx points to the line with the bullet list header.
-//
-// Returns:
-//   - slice of bullet item strings.
-//   - updated index to continue parsing from.
-//
-// Side effects:
-//   - None.
-func parseBulletList(lines []string, startIdx int) ([]string, int) {
-	var items []string
-	i := startIdx + 1
-
-	for i < len(lines) {
-		line := lines[i]
-		if strings.HasPrefix(line, "- ") {
-			items = append(items, strings.TrimPrefix(line, "- "))
-			i++
-		} else if strings.TrimSpace(line) == "" {
-			i++
-			continue
-		} else {
-			break
-		}
-	}
-
-	return items, i - 1
 }
