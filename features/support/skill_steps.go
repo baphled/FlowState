@@ -93,7 +93,7 @@ func (s *SkillStepDefinitions) theSkillLoadToolIsAvailable() error {
 func (s *SkillStepDefinitions) iCallSkillLoadWithSkillName(skillName string) error {
 	input := tool.Input{
 		Name:      "skill_load",
-		Arguments: map[string]interface{}{"skill_name": skillName},
+		Arguments: map[string]interface{}{"name": skillName},
 	}
 	s.lastResult, s.lastErr = s.skillTool.Execute(context.Background(), input)
 	return nil

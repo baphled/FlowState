@@ -577,7 +577,7 @@ func (s *StepDefinitions) iAmInInsertMode() error {
 // Returns: nil on success.
 // Side effects: Updates s.inputBuffer with the provided text.
 func (s *StepDefinitions) iType(text string) error {
-	s.inputBuffer = text
+	s.inputBuffer += text
 	return nil
 }
 
