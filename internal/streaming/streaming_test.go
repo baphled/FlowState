@@ -32,10 +32,14 @@ func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan pro
 }
 
 type mockConsumer struct {
-	chunks    []string
-	errors    []error
-	doneCount int
-	writeErr  error
+	chunks       []string
+	toolCalls    []string
+	toolResults  []string
+	errors       []error
+	doneCount    int
+	writeErr     error
+	enableTool   bool
+	enableResult bool
 }
 
 func (m *mockConsumer) WriteChunk(content string) error {
@@ -49,6 +53,18 @@ func (m *mockConsumer) WriteError(err error) {
 
 func (m *mockConsumer) Done() {
 	m.doneCount++
+}
+
+func (m *mockConsumer) WriteToolCall(name string) {
+	if m.enableTool {
+		m.toolCalls = append(m.toolCalls, name)
+	}
+}
+
+func (m *mockConsumer) WriteToolResult(content string) {
+	if m.enableResult {
+		m.toolResults = append(m.toolResults, content)
+	}
 }
 
 type mockRegistry struct {
@@ -168,6 +184,38 @@ var _ = Describe("Streaming", func() {
 			It("still calls Done on the consumer", func() {
 				_ = streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
 				Expect(consumer.doneCount).To(Equal(1))
+			})
+		})
+
+		Context("when a chunk carries a tool call", func() {
+			BeforeEach(func() {
+				consumer.enableTool = true
+				streamer.chunks = []provider.StreamChunk{
+					{ToolCall: &provider.ToolCall{ID: "call1", Name: "bash"}},
+					{Content: "result", Done: true},
+				}
+			})
+
+			It("calls WriteToolCall on ToolCallConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolCalls).To(Equal([]string{"bash"}))
+			})
+		})
+
+		Context("when a chunk carries a tool result", func() {
+			BeforeEach(func() {
+				consumer.enableResult = true
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "tool_result", ToolResult: &provider.ToolResultInfo{Content: "output"}},
+					{Content: "final", Done: true},
+				}
+			})
+
+			It("calls WriteToolResult on ToolResultConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolResults).To(Equal([]string{"output"}))
 			})
 		})
 	})

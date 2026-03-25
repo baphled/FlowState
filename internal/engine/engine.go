@@ -460,6 +460,19 @@ func (e *Engine) streamWithToolLoop(
 		e.storeAssistantToolUse(toolCall, responseContent)
 		e.storeToolResult(toolCall.ID, toolResult)
 
+		resultContent := toolResult.Output
+		isError := toolResult.Error != nil
+		if isError {
+			resultContent = "Error: " + toolResult.Error.Error()
+		}
+		outChan <- provider.StreamChunk{
+			EventType: "tool_result",
+			ToolResult: &provider.ToolResultInfo{
+				Content: resultContent,
+				IsError: isError,
+			},
+		}
+
 		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
 
 		var streamErr error

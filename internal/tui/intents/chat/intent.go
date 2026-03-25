@@ -35,6 +35,8 @@ type StreamChunkMsg struct {
 	Done         bool
 	ToolCallName string
 	ToolStatus   string
+	ToolResult   string
+	ToolIsError  bool
 	Next         tea.Cmd
 }
 
@@ -406,6 +408,14 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		i.activeToolCall = ""
 	}
 
+	if msg.ToolResult != "" {
+		role := "tool_result"
+		if msg.ToolIsError {
+			role = "tool_error"
+		}
+		i.view.AddMessage(chat.Message{Role: role, Content: msg.ToolResult})
+	}
+
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
 	if msg.Done && i.engine != nil {
@@ -611,6 +621,11 @@ func (i *Intent) readNextChunk() tea.Msg {
 		ToolStatus:   toolStatus,
 	}
 
+	if chunk.ToolResult != nil {
+		msg.ToolResult = chunk.ToolResult.Content
+		msg.ToolIsError = chunk.ToolResult.IsError
+	}
+
 	if !chunk.Done {
 		msg.Next = func() tea.Msg {
 			return i.readNextChunk()
@@ -671,6 +686,11 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		Done:         chunk.Done,
 		ToolCallName: toolCallName,
 		ToolStatus:   toolStatus,
+	}
+
+	if chunk.ToolResult != nil {
+		msg.ToolResult = chunk.ToolResult.Content
+		msg.ToolIsError = chunk.ToolResult.IsError
 	}
 
 	if !chunk.Done {

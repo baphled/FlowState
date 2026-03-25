@@ -120,8 +120,14 @@ Feature: Session Management
     When I load the session
     Then I should see the skill load in the chat view
 
-  @tool-error
-  Scenario: Failed tool calls show error status when loading a session
-    Given a session was saved with a failed tool result
-    When I load the session
-    Then I should see the tool error in the chat view
+   @tool-error
+   Scenario: Failed tool calls show error status when loading a session
+     Given a session was saved with a failed tool result
+     When I load the session
+     Then I should see the tool error in the chat view
+
+   @streaming-tool-output
+   Scenario: Tool output is visible in live chat during streaming
+     Given the engine executes a tool that produces output
+     When the stream is processed
+     Then the tool result should be visible in the chat

@@ -48,5 +48,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	si := &SessionIsolationSteps{}
 	RegisterSessionIsolationSteps(ctx, si)
 	RegisterSessionVisibilitySteps(ctx, si)
+	sto := &StreamingToolOutputSteps{}
+	RegisterStreamingToolOutputSteps(ctx, sto)
 	s.RegisterSteps(ctx)
 }

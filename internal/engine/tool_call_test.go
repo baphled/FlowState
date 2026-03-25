@@ -841,3 +841,81 @@ var _ = Describe("Engine tool call context store", func() {
 		Expect(assistantMsg.ToolCalls[0].Name).To(Equal("test_tool"))
 	})
 })
+
+var _ = Describe("Engine tool result emission", func() {
+	It("emits tool result chunks on outChan after tool execution", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-toolresult-emit")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := ctxstore.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output here"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "test-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_emit_test",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"key": "val"},
+						},
+					},
+				},
+				{
+					{Content: "Final response.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store)
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
+		Expect(streamErr).NotTo(HaveOccurred())
+
+		var receivedChunks []provider.StreamChunk
+		for chunk := range chunks {
+			receivedChunks = append(receivedChunks, chunk)
+		}
+
+		var toolResultChunk *provider.StreamChunk
+		for i := range receivedChunks {
+			if receivedChunks[i].EventType == "tool_result" && receivedChunks[i].ToolResult != nil {
+				toolResultChunk = &receivedChunks[i]
+				break
+			}
+		}
+
+		Expect(toolResultChunk).NotTo(BeNil())
+		Expect(toolResultChunk.ToolResult.Content).To(Equal("tool output here"))
+		Expect(toolResultChunk.ToolResult.IsError).To(BeFalse())
+	})
+})
