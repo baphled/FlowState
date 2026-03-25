@@ -77,8 +77,9 @@ func (m *mockRegistry) Get(id string) (*agent.Manifest, bool) {
 }
 
 type mockHarness struct {
-	result *plan.EvaluationResult
-	err    error
+	result       *plan.EvaluationResult
+	err          error
+	streamChunks []provider.StreamChunk
 }
 
 func (m *mockHarness) Evaluate(
@@ -99,7 +100,56 @@ func (m *mockHarness) StreamEvaluate(
 	if m.err != nil {
 		return nil, m.err
 	}
+	if len(m.streamChunks) > 0 {
+		ch := make(chan provider.StreamChunk, len(m.streamChunks))
+		for _, c := range m.streamChunks {
+			ch <- c
+		}
+		close(ch)
+		return ch, nil
+	}
 	return streaming.PlanResultToChannel(m.result), nil
+}
+
+type mockHarnessConsumer struct {
+	chunks       []string
+	toolCalls    []string
+	toolResults  []string
+	errors       []error
+	retryContent []string
+	doneCount    int
+	writeErr     error
+	enableTool   bool
+	enableResult bool
+}
+
+func (m *mockHarnessConsumer) WriteChunk(content string) error {
+	m.chunks = append(m.chunks, content)
+	return m.writeErr
+}
+
+func (m *mockHarnessConsumer) WriteError(err error) {
+	m.errors = append(m.errors, err)
+}
+
+func (m *mockHarnessConsumer) Done() {
+	m.doneCount++
+}
+
+func (m *mockHarnessConsumer) WriteToolCall(name string) {
+	if m.enableTool {
+		m.toolCalls = append(m.toolCalls, name)
+	}
+}
+
+func (m *mockHarnessConsumer) WriteToolResult(content string) {
+	if m.enableResult {
+		m.toolResults = append(m.toolResults, content)
+	}
+}
+
+func (m *mockHarnessConsumer) WriteHarnessRetry(content string) {
+	m.retryContent = append(m.retryContent, content)
 }
 
 var _ = Describe("Streaming", func() {
@@ -384,6 +434,183 @@ var _ = Describe("Streaming", func() {
 				Expect(err).To(MatchError("harness evaluation failed"))
 				Expect(ch).To(BeNil())
 			})
+		})
+
+		Context("when StreamEvaluate emits live chunks", func() {
+			BeforeEach(func() {
+				registry.manifests["planner"] = &agent.Manifest{
+					ID:             "planner",
+					Name:           "Planner",
+					HarnessEnabled: true,
+				}
+				harness.streamChunks = []provider.StreamChunk{
+					{Content: "chunk-1 "},
+					{Content: "chunk-2 "},
+					{Content: "chunk-3"},
+					{Done: true},
+				}
+			})
+
+			It("delivers live chunks from StreamEvaluate", func() {
+				hs := streaming.NewHarnessStreamer(inner, harness, registry)
+				ch, err := hs.Stream(ctx, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for c := range ch {
+					if c.Content != "" {
+						contents = append(contents, c.Content)
+					}
+				}
+				Expect(contents).To(Equal([]string{"chunk-1 ", "chunk-2 ", "chunk-3"}))
+			})
+
+			It("does not delegate to the inner streamer", func() {
+				inner.chunks = []provider.StreamChunk{
+					{Content: "should-not-appear"},
+					{Done: true},
+				}
+				hs := streaming.NewHarnessStreamer(inner, harness, registry)
+				ch, err := hs.Stream(ctx, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for c := range ch {
+					if c.Content != "" {
+						contents = append(contents, c.Content)
+					}
+				}
+				Expect(contents).NotTo(ContainElement("should-not-appear"))
+			})
+		})
+	})
+
+	Describe("Run with harness_retry events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockHarnessConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockHarnessConsumer{}
+		})
+
+		Context("when the stream contains a harness_retry event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "initial "},
+					{EventType: "harness_retry", Content: "schema validation failed: missing title"},
+					{Content: "retried output"},
+					{Done: true},
+				}
+			})
+
+			It("calls WriteHarnessRetry on the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.retryContent).To(HaveLen(1))
+				Expect(consumer.retryContent[0]).To(Equal("schema validation failed: missing title"))
+			})
+
+			It("does not deliver retry event content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{"initial ", "retried output"}))
+			})
+
+			It("still calls Done on the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.doneCount).To(Equal(1))
+			})
+		})
+
+		Context("when the consumer does not implement HarnessEventConsumer", func() {
+			It("silently skips harness_retry events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "harness_retry", Content: "retry info"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+
+		Context("when multiple harness_retry events occur", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "attempt-1 "},
+					{EventType: "harness_retry", Content: "retry-1: missing field"},
+					{Content: "attempt-2 "},
+					{EventType: "harness_retry", Content: "retry-2: wrong format"},
+					{Content: "attempt-3"},
+					{Done: true},
+				}
+			})
+
+			It("delivers all retry events to the consumer", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.retryContent).To(Equal([]string{
+					"retry-1: missing field",
+					"retry-2: wrong format",
+				}))
+			})
+
+			It("delivers all non-retry content chunks", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{
+					"attempt-1 ",
+					"attempt-2 ",
+					"attempt-3",
+				}))
+			})
+		})
+	})
+
+	Describe("PlanResultToChannel", func() {
+		It("emits the plan text followed by a done sentinel", func() {
+			result := &plan.EvaluationResult{
+				PlanText:     "final plan output",
+				AttemptCount: 2,
+				FinalScore:   0.85,
+			}
+			ch := streaming.PlanResultToChannel(result)
+
+			var chunks []provider.StreamChunk
+			for c := range ch {
+				chunks = append(chunks, c)
+			}
+			Expect(chunks).To(HaveLen(2))
+			Expect(chunks[0].Content).To(Equal("final plan output"))
+			Expect(chunks[0].Done).To(BeFalse())
+			Expect(chunks[1].Done).To(BeTrue())
+			Expect(chunks[1].Content).To(BeEmpty())
+		})
+
+		It("handles empty plan text", func() {
+			result := &plan.EvaluationResult{
+				PlanText:     "",
+				AttemptCount: 1,
+				FinalScore:   0.0,
+			}
+			ch := streaming.PlanResultToChannel(result)
+
+			var chunks []provider.StreamChunk
+			for c := range ch {
+				chunks = append(chunks, c)
+			}
+			Expect(chunks).To(HaveLen(2))
+			Expect(chunks[0].Content).To(BeEmpty())
+			Expect(chunks[1].Done).To(BeTrue())
 		})
 	})
 })
