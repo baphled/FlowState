@@ -1040,6 +1040,7 @@ func (i *Intent) handleSessionResult(msg sessionbrowser.SessionSelectedMsg) tea.
 //   - Generates a new session ID, resets the chat view, and syncs the status bar.
 func (i *Intent) createNewSession() tea.Cmd {
 	i.sessionID = uuid.New().String()
+	i.engine.SetContextStore(contextpkg.NewEmptyContextStore(""))
 	i.view = chat.NewView()
 	i.refreshViewport()
 	i.syncStatusBar()

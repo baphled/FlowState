@@ -694,13 +694,10 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //
 // Side effects:
 //   - Creates the context.json file path (file creation deferred to store).
+//
+//nolint:unparam // error return kept for interface compatibility
 func createContextStore(cfg *config.AppConfig) (*ctxstore.FileContextStore, error) {
-	contextStorePath := filepath.Join(cfg.DataDir, "context.json")
-	contextStore, err := ctxstore.NewFileContextStore(contextStorePath, cfg.Providers.Ollama.Model)
-	if err != nil {
-		return nil, fmt.Errorf("creating context store: %w", err)
-	}
-	return contextStore, nil
+	return ctxstore.NewEmptyContextStore(cfg.Providers.Ollama.Model), nil
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.
