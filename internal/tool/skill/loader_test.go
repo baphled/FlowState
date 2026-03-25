@@ -45,14 +45,14 @@ var _ = Describe("Tool", func() {
 	})
 
 	Describe("Schema", func() {
-		It("has skill_name in Required", func() {
+		It("has name in Required", func() {
 			schema := skillTool.Schema()
-			Expect(schema.Required).To(ContainElement("skill_name"))
+			Expect(schema.Required).To(ContainElement("name"))
 		})
 
-		It("has skill_name property", func() {
+		It("has name property", func() {
 			schema := skillTool.Schema()
-			_, exists := schema.Properties["skill_name"]
+			_, exists := schema.Properties["name"]
 			Expect(exists).To(BeTrue())
 		})
 	})
@@ -72,7 +72,7 @@ var _ = Describe("Tool", func() {
 				fake.skills = []skill.Skill{{Name: "golang", Content: "# Golang skill content"}}
 				input = tool.Input{
 					Name:      "skill_load",
-					Arguments: map[string]interface{}{"skill_name": "golang"},
+					Arguments: map[string]interface{}{"name": "golang"},
 				}
 				result, err := skillTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
@@ -80,7 +80,7 @@ var _ = Describe("Tool", func() {
 			})
 		})
 
-		Context("with missing skill_name argument", func() {
+		Context("with missing name argument", func() {
 			It("returns a Go error", func() {
 				input = tool.Input{
 					Name:      "skill_load",
@@ -88,7 +88,7 @@ var _ = Describe("Tool", func() {
 				}
 				_, err := skillTool.Execute(ctx, input)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("skill_name argument is required"))
+				Expect(err.Error()).To(ContainSubstring("name argument is required"))
 			})
 		})
 
@@ -97,7 +97,7 @@ var _ = Describe("Tool", func() {
 				fake.skills = []skill.Skill{{Name: "golang", Content: "stuff"}}
 				input = tool.Input{
 					Name:      "skill_load",
-					Arguments: map[string]interface{}{"skill_name": "nonexistent"},
+					Arguments: map[string]interface{}{"name": "nonexistent"},
 				}
 				_, err := skillTool.Execute(ctx, input)
 				Expect(err).To(HaveOccurred())
@@ -110,7 +110,7 @@ var _ = Describe("Tool", func() {
 				fake.err = errors.New("disk error")
 				input = tool.Input{
 					Name:      "skill_load",
-					Arguments: map[string]interface{}{"skill_name": "golang"},
+					Arguments: map[string]interface{}{"name": "golang"},
 				}
 				_, err := skillTool.Execute(ctx, input)
 				Expect(err).To(HaveOccurred())

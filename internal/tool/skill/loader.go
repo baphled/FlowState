@@ -59,7 +59,7 @@ func (t *Tool) Description() string {
 // Schema returns the JSON schema for the skill_load tool arguments.
 //
 // Returns:
-//   - A tool.Schema describing the required skill_name property.
+//   - A tool.Schema describing the required name property.
 //
 // Side effects:
 //   - None.
@@ -67,19 +67,19 @@ func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
-			"skill_name": {
+			"name": {
 				Type:        "string",
 				Description: "The name of the skill to load (matches skill directory name or YAML name field)",
 			},
 		},
-		Required: []string{"skill_name"},
+		Required: []string{"name"},
 	}
 }
 
 // Execute loads skill content by name and returns it as tool output.
 //
 // Expected:
-//   - input contains a "skill_name" string argument.
+//   - input contains a "name" string argument.
 //
 // Returns:
 //   - A tool.Result with the skill markdown content on success.
@@ -88,9 +88,9 @@ func (t *Tool) Schema() tool.Schema {
 // Side effects:
 //   - Reads skill files from disk via the loader.
 func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
-	skillName, ok := input.Arguments["skill_name"].(string)
+	skillName, ok := input.Arguments["name"].(string)
 	if !ok || skillName == "" {
-		return tool.Result{}, errors.New("skill_name argument is required")
+		return tool.Result{}, errors.New("name argument is required")
 	}
 
 	skills, err := t.loader.LoadAll()
