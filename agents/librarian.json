@@ -38,7 +38,8 @@
       "pre-action",
       "memory-keeper"
     ],
-    "mcp_servers": []
+    "mcp_servers": [],
+    "capability_description": "Searches official documentation, library best practices, and external references for accurate technical information"
   },
   "delegation": {
     "can_delegate": false

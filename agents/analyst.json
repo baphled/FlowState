@@ -38,7 +38,8 @@
       "pre-action",
       "memory-keeper"
     ],
-    "mcp_servers": []
+    "mcp_servers": [],
+    "capability_description": "Synthesises research findings into structured evidence dossiers with critical analysis and system-level thinking"
   },
   "context_management": {
     "max_recursion_depth": 2,

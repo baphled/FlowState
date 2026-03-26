@@ -31,10 +31,11 @@ type Metadata struct {
 
 // Capabilities defines the tools and skills available to an agent.
 type Capabilities struct {
-	Tools              []string `json:"tools" yaml:"tools"`
-	Skills             []string `json:"skills" yaml:"skills"`
-	AlwaysActiveSkills []string `json:"always_active_skills" yaml:"always_active_skills"`
-	MCPServers         []string `json:"mcp_servers" yaml:"mcp_servers"`
+	Tools                 []string `json:"tools" yaml:"tools"`
+	Skills                []string `json:"skills" yaml:"skills"`
+	AlwaysActiveSkills    []string `json:"always_active_skills" yaml:"always_active_skills"`
+	MCPServers            []string `json:"mcp_servers" yaml:"mcp_servers"`
+	CapabilityDescription string   `json:"capability_description" yaml:"capability_description"`
 }
 
 // ContextManagement configures how an agent manages conversation context.

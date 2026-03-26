@@ -32,7 +32,8 @@
       "pre-action",
       "memory-keeper"
     ],
-    "mcp_servers": []
+    "mcp_servers": [],
+    "capability_description": "Explores codebase to find patterns, structures, conventions, and understand existing code organisation"
   },
   "context_management": {
     "max_recursion_depth": 2,
