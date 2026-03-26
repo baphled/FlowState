@@ -97,7 +97,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 // Side effects:
 //   - None (transport is not started).
 func defaultTransportFactory(_ context.Context, config ServerConfig) (mcp.Transport, error) {
-	cmd := exec.Command(config.Command, config.Args...) //nolint:gosec // intentional subprocess execution
+	cmd := exec.Command(config.Command, config.Args...)
 	if len(config.Env) > 0 {
 		env := make([]string, 0, len(config.Env))
 		for k, v := range config.Env {

@@ -30,7 +30,6 @@ import (
 	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
-	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -62,7 +61,7 @@ type App struct {
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
 	metricsRegistry  *prometheus.Registry
-	PlanStore        *plan.PlanStore
+	Store            *plan.Store
 }
 
 // New creates a new App instance with all components initialised.
@@ -126,11 +125,11 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
-	planStore, err := plan.NewPlanStore(planDir)
+	planStore, err := plan.NewStore(planDir)
 	if err != nil {
 		log.Printf("warning: creating plan store: %v", err)
 	} else {
-		app.PlanStore = planStore
+		app.Store = planStore
 	}
 
 	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
@@ -145,7 +144,7 @@ type engineParams struct {
 	agentRegistry      *agent.Registry
 	defaultManifest    agent.Manifest
 	alwaysActiveSkills []skill.Skill
-	contextStore       *recall.FileContextStore
+	contextStore       *ctxstore.FileContextStore
 	learningStore      *learning.JSONFileStore
 	appTools           []tool.Tool
 	toolRegistry       *tool.Registry
@@ -170,10 +169,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	if err != nil {
 		return nil, err
 	}
-	contextStore, err := createContextStore(params.cfg)
-	if err != nil {
-		return nil, err
-	}
+	contextStore := createContextStore(params.cfg)
 	mcpMgr := mcpclient.NewManager()
 	appTools := buildTools(skill.NewFileSkillLoader(params.cfg.SkillDir))
 	allServers := mergeMCPServers(params.cfg.MCPServers, config.DiscoverMCPServers())
@@ -391,7 +387,7 @@ func (a *App) hasCoordinationTool(tools []string) bool {
 }
 
 // PersistApprovedPlan retrieves an approved plan from the coordination store and
-// saves it to the PlanStore. This is called after the reviewer approves a plan.
+// saves it to the Store. This is called after the reviewer approves a plan.
 //
 // Expected:
 //   - chainID is the delegation chain identifier.
@@ -401,9 +397,9 @@ func (a *App) hasCoordinationTool(tools []string) bool {
 //   - error if the plan cannot be retrieved or saved.
 //
 // Side effects:
-//   - Writes plan file to the PlanStore directory.
+//   - Writes plan file to the Store directory.
 func (a *App) PersistApprovedPlan(chainID string, coordinationStore coordination.Store) error {
-	if a.PlanStore == nil {
+	if a.Store == nil {
 		return errors.New("plan store not configured")
 	}
 
@@ -430,7 +426,7 @@ func (a *App) PersistApprovedPlan(chainID string, coordinationStore coordination
 		TLDR:      string(planData),
 	}
 
-	if err := a.PlanStore.Create(planFile); err != nil {
+	if err := a.Store.Create(planFile); err != nil {
 		return fmt.Errorf("persisting plan: %w", err)
 	}
 
@@ -999,14 +995,11 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //
 // Returns:
 //   - A FileContextStore for persisting context data.
-//   - An error if context store creation fails.
 //
 // Side effects:
 //   - None; creates an in-memory context store with no file I/O.
-//
-//nolint:unparam // error return kept for interface compatibility
-func createContextStore(cfg *config.AppConfig) (*recall.FileContextStore, error) {
-	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model), nil
+func createContextStore(cfg *config.AppConfig) *ctxstore.FileContextStore {
+	return ctxstore.NewEmptyContextStore(cfg.Providers.Ollama.Model)
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.

@@ -12,10 +12,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// PlanStore manages persistent storage and retrieval of plan documents.
+// Store manages persistent storage and retrieval of plan documents.
 //
 // Plans are stored as markdown files with YAML frontmatter in the XDG
-// data directory (~/.local/share/flowstate/plans/). PlanStore handles
+// data directory (~/.local/share/flowstate/plans/). Store handles
 // all file I/O, YAML parsing, and directory creation.
 //
 // Expected:
@@ -27,9 +27,7 @@ import (
 //
 // Side effects:
 //   - None (methods have individual side effects).
-//
-//nolint:revive // PlanStore name is intentional (not redundant; distinguishes from generic Store)
-type PlanStore struct {
+type Store struct {
 	dataDir string
 }
 
@@ -55,7 +53,7 @@ type Summary struct {
 	CreatedAt time.Time
 }
 
-// NewPlanStore creates a new PlanStore for the given data directory.
+// NewStore creates a new Store for the given data directory.
 //
 // The directory is created if it does not exist. If directory creation
 // fails, the error is returned.
@@ -64,16 +62,16 @@ type Summary struct {
 //   - dataDir is a valid filesystem path.
 //
 // Returns:
-//   - *PlanStore pointing to the data directory.
+//   - *Store pointing to the data directory.
 //   - error if directory creation fails.
 //
 // Side effects:
 //   - Creates dataDir and any parent directories if needed.
-func NewPlanStore(dataDir string) (*PlanStore, error) {
+func NewStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating plan store directory: %w", err)
 	}
-	return &PlanStore{dataDir: dataDir}, nil
+	return &Store{dataDir: dataDir}, nil
 }
 
 // Create writes a plan file to the data directory.
@@ -90,7 +88,7 @@ func NewPlanStore(dataDir string) (*PlanStore, error) {
 //
 // Side effects:
 //   - Writes {dataDir}/{f.ID}.md to disk.
-func (s *PlanStore) Create(f File) error {
+func (s *Store) Create(f File) error {
 	filePath := filepath.Join(s.dataDir, f.ID+".md")
 
 	fm := Frontmatter{
@@ -144,7 +142,7 @@ func (s *PlanStore) Create(f File) error {
 //
 // Side effects:
 //   - Reads directory entries.
-func (s *PlanStore) List() ([]Summary, error) {
+func (s *Store) List() ([]Summary, error) {
 	entries, err := os.ReadDir(s.dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("reading plan directory: %w", err)
@@ -198,7 +196,7 @@ func (s *PlanStore) List() ([]Summary, error) {
 //
 // Side effects:
 //   - Reads {dataDir}/{id}.md from disk.
-func (s *PlanStore) Get(id string) (*File, error) {
+func (s *Store) Get(id string) (*File, error) {
 	filePath := filepath.Join(s.dataDir, id+".md")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -252,7 +250,7 @@ func (s *PlanStore) Get(id string) (*File, error) {
 //
 // Side effects:
 //   - Removes {dataDir}/{id}.md from disk.
-func (s *PlanStore) Delete(id string) error {
+func (s *Store) Delete(id string) error {
 	filePath := filepath.Join(s.dataDir, id+".md")
 
 	if _, err := os.Stat(filePath); err != nil {
@@ -660,7 +658,7 @@ func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
 //   - None.
 type parsedPlanBody struct {
 	TLDR                 string
-	Context              PlanContext
+	Context              SourceContext
 	WorkObjectives       WorkObjectives
 	VerificationStrategy string
 	Reviews              []ReviewResult
@@ -1090,8 +1088,8 @@ func writeTLDRSection(body *strings.Builder, tldr string) {
 //
 // Side effects:
 //   - Appends to body.
-func writeContextSection(body *strings.Builder, context PlanContext) {
-	if context == (PlanContext{}) {
+func writeContextSection(body *strings.Builder, context SourceContext) {
+	if context == (SourceContext{}) {
 		return
 	}
 	body.WriteString("## Context\n")

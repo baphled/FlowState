@@ -16,8 +16,6 @@ import (
 //
 // Side effects:
 //   - None.
-//
-//nolint:funlen // Vendored from KaRiya; complexity acceptable for theme generation
 func GenerateHuhTheme(theme Theme) *huh.Theme {
 	if theme == nil {
 		return huh.ThemeCatppuccin()

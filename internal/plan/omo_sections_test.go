@@ -16,7 +16,7 @@ var _ = Describe("OMOStyleSections", func() {
 		contextField, ok := fileType.FieldByName("Context")
 		Expect(ok).To(BeTrue())
 		Expect(contextField.Type.Kind()).To(Equal(reflect.Struct))
-		Expect(contextField.Type.Name()).To(Equal("PlanContext"))
+		Expect(contextField.Type.Name()).To(Equal("SourceContext"))
 
 		workObjectivesField, ok := fileType.FieldByName("WorkObjectives")
 		Expect(ok).To(BeTrue())

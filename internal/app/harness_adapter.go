@@ -11,16 +11,16 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
-// harnessAdapter wraps a PlanHarness to satisfy streaming.PlanEvaluator.
+// harnessAdapter wraps a Harness to satisfy streaming.PlanEvaluator.
 //
 // This adapter bridges the plan.Streamer and streaming.Streamer interfaces
 // which are structurally identical but defined in separate packages to
 // avoid import cycles.
 type harnessAdapter struct {
-	harness *plan.PlanHarness
+	harness *plan.Harness
 }
 
-// Evaluate delegates to the wrapped PlanHarness, converting the streaming.Streamer to plan.Streamer.
+// Evaluate delegates to the wrapped Harness, converting the streaming.Streamer to plan.Streamer.
 //
 // Expected:
 //   - ctx is a valid context for the evaluation.
@@ -33,7 +33,7 @@ type harnessAdapter struct {
 //   - An error if evaluation fails.
 //
 // Side effects:
-//   - Delegates to PlanHarness.Evaluate which may stream multiple attempts.
+//   - Delegates to Harness.Evaluate which may stream multiple attempts.
 func (a *harnessAdapter) Evaluate(
 	ctx context.Context,
 	streamer streaming.Streamer,
@@ -43,7 +43,7 @@ func (a *harnessAdapter) Evaluate(
 	return a.harness.Evaluate(ctx, streamer, agentID, message)
 }
 
-// StreamEvaluate delegates to the wrapped PlanHarness, forwarding response chunks live.
+// StreamEvaluate delegates to the wrapped Harness, forwarding response chunks live.
 //
 // Expected:
 //   - ctx is a valid context for the evaluation.
@@ -56,7 +56,7 @@ func (a *harnessAdapter) Evaluate(
 //   - An error if evaluation fails to start.
 //
 // Side effects:
-//   - Delegates to PlanHarness.StreamEvaluate which spawns a goroutine for streaming and validation.
+//   - Delegates to Harness.StreamEvaluate which spawns a goroutine for streaming and validation.
 func (a *harnessAdapter) StreamEvaluate(
 	ctx context.Context,
 	streamer streaming.Streamer,
@@ -110,12 +110,7 @@ func createHarnessStreamer(
 		opts = append(opts, plan.WithVoter(voter))
 	}
 
-	if cfg.IncrementalEnabled {
-		incrementalGen := &plan.IncrementalGenerator{Streamer: inner, MaxRetries: 3}
-		opts = append(opts, plan.WithIncremental(incrementalGen))
-	}
-
-	harness := plan.NewPlanHarness(projectRoot, opts...)
+	harness := plan.NewHarness(projectRoot, opts...)
 	return streaming.NewHarnessStreamer(inner, &harnessAdapter{harness: harness}, registry)
 }
 

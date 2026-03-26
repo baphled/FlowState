@@ -60,7 +60,7 @@ func buildCacheContext(projectRoot string) string {
 	var sb strings.Builder
 	sb.WriteString("## Codebase Context\n")
 
-	if out, err := exec.Command("git", "-C", projectRoot, "log", "--oneline", "-5").Output(); err == nil { //nolint:gosec // trusted path
+	if out, err := exec.Command("git", "-C", projectRoot, "log", "--oneline", "-5").Output(); err == nil {
 		sb.WriteString("### Recent Changes\n")
 		sb.WriteString(string(out))
 		sb.WriteString("\n")

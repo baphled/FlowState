@@ -28,7 +28,7 @@ type EvaluationResult struct {
 	FinalScore       float64
 }
 
-// HarnessOption configures optional behaviour on a PlanHarness.
+// HarnessOption configures optional behaviour on a Harness.
 //
 // Expected:
 //   - Each option mutates the harness during construction only.
@@ -38,7 +38,7 @@ type EvaluationResult struct {
 //
 // Side effects:
 //   - None.
-type HarnessOption func(*PlanHarness)
+type HarnessOption func(*Harness)
 
 // WithCritic attaches an LLM critic and its provider to the harness.
 //
@@ -52,7 +52,7 @@ type HarnessOption func(*PlanHarness)
 // Side effects:
 //   - None.
 func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
-	return func(h *PlanHarness) {
+	return func(h *Harness) {
 		h.critic = critic
 		h.criticProvider = p
 	}
@@ -69,31 +69,13 @@ func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
 // Side effects:
 //   - None.
 func WithVoter(voter *ConsistencyVoter) HarnessOption {
-	return func(h *PlanHarness) {
+	return func(h *Harness) {
 		h.voter = voter
 	}
 }
 
-// WithIncremental attaches an IncrementalGenerator to the harness for phase-by-phase streaming.
-//
-// Expected:
-//   - gen is a configured IncrementalGenerator (may be nil to disable incremental mode).
-//
-// Returns:
-//   - A HarnessOption that sets the incremental field.
-//
-// Side effects:
-//   - None.
-func WithIncremental(gen *IncrementalGenerator) HarnessOption {
-	return func(h *PlanHarness) {
-		h.incremental = gen
-	}
-}
-
-// PlanHarness wraps a Streamer with validate-retry logic and optional LLM critic.
-//
-//nolint:revive // PlanHarness name is intentional for plan-specific workflows.
-type PlanHarness struct {
+// Harness wraps a Streamer with validate-retry logic and optional LLM critic.
+type Harness struct {
 	maxRetries         int
 	projectRoot        string
 	schemaValidator    *SchemaValidator
@@ -102,22 +84,21 @@ type PlanHarness struct {
 	critic             *LLMCritic
 	criticProvider     provider.Provider
 	voter              *ConsistencyVoter
-	incremental        *IncrementalGenerator
 }
 
-// NewPlanHarness creates a PlanHarness with validators, retry settings, and optional configuration.
+// NewHarness creates a Harness with validators, retry settings, and optional configuration.
 //
 // Expected:
 //   - projectRoot is the absolute path to the project root directory.
 //   - opts are optional HarnessOption values (e.g. WithCritic).
 //
 // Returns:
-//   - A configured PlanHarness with schema, assertion, and reference validators.
+//   - A configured Harness with schema, assertion, and reference validators.
 //
 // Side effects:
 //   - None.
-func NewPlanHarness(projectRoot string, opts ...HarnessOption) *PlanHarness {
-	h := &PlanHarness{
+func NewHarness(projectRoot string, opts ...HarnessOption) *Harness {
+	h := &Harness{
 		maxRetries:         3,
 		projectRoot:        projectRoot,
 		schemaValidator:    &SchemaValidator{},
@@ -146,7 +127,7 @@ func NewPlanHarness(projectRoot string, opts ...HarnessOption) *PlanHarness {
 //   - Spawns a goroutine that streams responses, validates, and retries up to maxRetries times.
 //   - Emits harness_retry event chunks between retry attempts.
 //   - The returned channel is closed when streaming and evaluation are complete.
-func (h *PlanHarness) StreamEvaluate(
+func (h *Harness) StreamEvaluate(
 	ctx context.Context,
 	streamer Streamer,
 	agentID string,
@@ -198,7 +179,7 @@ func trySend(ctx context.Context, outCh chan<- provider.StreamChunk, chunk provi
 //   - Closes outCh when evaluation completes.
 //   - Sends error chunks on stream failures.
 //   - Sends harness_retry event chunks between retry attempts.
-func (h *PlanHarness) runStreamEvaluation(
+func (h *Harness) runStreamEvaluation(
 	ctx context.Context,
 	streamer Streamer,
 	agentID string,
@@ -214,16 +195,7 @@ func (h *PlanHarness) runStreamEvaluation(
 			Content:   fmt.Sprintf(`{"attempt":%d,"maxRetries":%d}`, attempt, h.maxRetries),
 		})
 
-		var planText string
-		var err error
-
-		// Use incremental generation for first attempt only if configured
-		if attempt == 1 && h.incremental != nil {
-			planText, err = h.runIncrementalStream(ctx, streamer, agentID, currentMessage, outCh)
-		} else {
-			planText, err = h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
-		}
-
+		planText, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
 		if err != nil {
 			trySend(ctx, outCh, provider.StreamChunk{Error: err})
 			return
@@ -278,7 +250,7 @@ func (h *PlanHarness) runStreamEvaluation(
 // Side effects:
 //   - Forwards each content chunk to outCh in real-time.
 //   - Suppresses the inner Done chunk (the caller owns final Done signalling).
-func (h *PlanHarness) streamAttempt(
+func (h *Harness) streamAttempt(
 	ctx context.Context,
 	streamer Streamer,
 	agentID string,
@@ -291,144 +263,6 @@ func (h *PlanHarness) streamAttempt(
 	}
 
 	return h.forwardAndAccumulate(ctx, chunks, outCh)
-}
-
-// runIncrementalStream generates a plan incrementally, phase by phase, streaming each to outCh.
-//
-// Expected:
-//   - ctx is a valid context for cancellation.
-//   - streamer provides streaming access to the LLM.
-//   - agentID identifies the planner agent.
-//   - message is the base planning prompt.
-//   - outCh is the channel to forward streamed chunks to.
-//
-// Returns:
-//   - The assembled full plan from all phases.
-//   - An error if any phase fails or context is cancelled.
-//
-// Side effects:
-//   - Emits harness_phase_complete events after each phase completes.
-//   - Forwards each phase's content chunks to outCh in real-time.
-func (h *PlanHarness) runIncrementalStream(
-	ctx context.Context,
-	streamer Streamer,
-	agentID string,
-	message string,
-	outCh chan<- provider.StreamChunk,
-) (string, error) {
-	if h.incremental == nil {
-		return "", errors.New("incremental generator not configured")
-	}
-
-	maxRetries := h.incremental.MaxRetries
-	if maxRetries == 0 {
-		maxRetries = 3
-	}
-
-	var allPhaseOutputs []string
-	for _, phase := range AllPhases {
-		phaseOutput, err := h.streamPhaseWithRetry(struct {
-			ctx        context.Context
-			streamer   Streamer
-			agentID    string
-			message    string
-			phase      GenerationPhase
-			maxRetries int
-			outCh      chan<- provider.StreamChunk
-		}{ctx, streamer, agentID, message, phase, maxRetries, outCh})
-		if err != nil {
-			return "", err
-		}
-
-		allPhaseOutputs = append(allPhaseOutputs, phaseOutput)
-
-		if !trySend(ctx, outCh, provider.StreamChunk{
-			EventType: "harness_phase_complete",
-			Content:   fmt.Sprintf(`{"phase":%q}`, phase),
-		}) {
-			return "", ctx.Err()
-		}
-	}
-
-	return strings.Join(allPhaseOutputs, "\n\n"), nil
-}
-
-// streamPhaseWithRetry streams a single phase with retry logic.
-//
-// Expected:
-//   - args contains all required parameters for streaming: context, streamer, agentID,
-//     the base message, the generation phase, max retries, and the output channel.
-//
-// Returns:
-//   - The phase output string.
-//   - An error if the phase fails after maxRetries or context is cancelled.
-//
-// Side effects:
-//   - Forwards each chunk to outCh in real-time.
-func (h *PlanHarness) streamPhaseWithRetry(args struct {
-	ctx        context.Context
-	streamer   Streamer
-	agentID    string
-	message    string
-	phase      GenerationPhase
-	maxRetries int
-	outCh      chan<- provider.StreamChunk
-}) (string, error) {
-	phasePrompt := buildPhasePrompt(args.message, args.phase)
-
-	for attempt := 1; attempt <= args.maxRetries; attempt++ {
-		if args.ctx.Err() != nil {
-			return "", args.ctx.Err()
-		}
-
-		ch, err := args.streamer.Stream(args.ctx, args.agentID, phasePrompt)
-		if err != nil {
-			return "", err
-		}
-
-		phaseOutput, err := h.accumulatePhaseStream(args.ctx, ch, args.outCh)
-		if err != nil {
-			return "", err
-		}
-
-		if phaseOutput != "" {
-			return phaseOutput, nil
-		}
-	}
-
-	return "", fmt.Errorf("phase %s produced empty output after %d attempts", args.phase, args.maxRetries)
-}
-
-// accumulatePhaseStream reads from a chunk channel, forwards to outCh, and returns accumulated text.
-//
-// Expected:
-//   - ctx is a valid context for cancellation.
-//   - chunks is the channel of stream chunks from the LLM.
-//   - outCh is the channel to forward chunks to.
-//
-// Returns:
-//   - The accumulated text from all chunks.
-//   - An error if context is cancelled.
-//
-// Side effects:
-//   - Forwards each chunk to outCh.
-func (h *PlanHarness) accumulatePhaseStream(
-	ctx context.Context,
-	chunks <-chan provider.StreamChunk,
-	outCh chan<- provider.StreamChunk,
-) (string, error) {
-	var builder strings.Builder
-
-	for chunk := range chunks {
-		select {
-		case outCh <- chunk:
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-		builder.WriteString(chunk.Content)
-	}
-
-	return strings.TrimSpace(builder.String()), nil
 }
 
 // forwardAndAccumulate reads from an inner chunk channel, forwarding to outCh and accumulating text.
@@ -444,7 +278,7 @@ func (h *PlanHarness) accumulatePhaseStream(
 //
 // Side effects:
 //   - Forwards non-Done chunks to outCh.
-func (h *PlanHarness) forwardAndAccumulate(
+func (h *Harness) forwardAndAccumulate(
 	ctx context.Context,
 	chunks <-chan provider.StreamChunk,
 	outCh chan<- provider.StreamChunk,
@@ -545,7 +379,7 @@ func processStreamChunk(
 //
 // Side effects:
 //   - Streams responses from the LLM; may retry up to maxRetries times.
-func (h *PlanHarness) Evaluate(
+func (h *Harness) Evaluate(
 	ctx context.Context,
 	streamer Streamer,
 	agentID string,
@@ -559,21 +393,9 @@ func (h *PlanHarness) Evaluate(
 	currentMessage := message
 
 	for attempt := 1; attempt <= h.maxRetries; attempt++ {
-		var planText string
-		var err error
-
-		// Use incremental generation for first attempt if configured
-		if attempt == 1 && h.incremental != nil {
-			result, incErr := h.incremental.Generate(ctx, agentID, message)
-			if incErr != nil {
-				return nil, incErr
-			}
-			planText = result.FullPlan
-		} else {
-			planText, err = streamPlan(ctx, streamer, aggregator, agentID, currentMessage)
-			if err != nil {
-				return nil, err
-			}
+		planText, err := streamPlan(ctx, streamer, aggregator, agentID, currentMessage)
+		if err != nil {
+			return nil, err
 		}
 
 		phase := hook.DetectPhase(planText)
@@ -604,7 +426,7 @@ func (h *PlanHarness) Evaluate(
 //
 // Side effects:
 //   - May send a chat request to the critic provider.
-func (h *PlanHarness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*EvaluationResult, string) {
+func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*EvaluationResult, string) {
 	validation := h.validatePlan(planText)
 	if validation.Valid {
 		return h.handleValidPlan(ctx, planText, validation, attempt)
@@ -634,7 +456,7 @@ func (h *PlanHarness) evaluateAttempt(ctx context.Context, planText string, atte
 //
 // Side effects:
 //   - May send a chat request to the critic provider.
-func (h *PlanHarness) handleValidPlan(
+func (h *Harness) handleValidPlan(
 	ctx context.Context, planText string, validation *ValidationResult, attempt int,
 ) (*EvaluationResult, string) {
 	criticFeedback := h.runCritic(ctx, planText, validation)
@@ -664,7 +486,7 @@ func (h *PlanHarness) handleValidPlan(
 //
 // Side effects:
 //   - None.
-func (h *PlanHarness) validatePlan(planText string) *ValidationResult {
+func (h *Harness) validatePlan(planText string) *ValidationResult {
 	schemaResult, err := h.schemaValidator.Validate(planText)
 	if err != nil {
 		return schemaResult
@@ -695,7 +517,7 @@ func (h *PlanHarness) validatePlan(planText string) *ValidationResult {
 //
 // Side effects:
 //   - Sends a chat request to the critic provider when critic is configured and enabled.
-func (h *PlanHarness) runCritic(ctx context.Context, planText string, validation *ValidationResult) string {
+func (h *Harness) runCritic(ctx context.Context, planText string, validation *ValidationResult) string {
 	if h.critic == nil || h.criticProvider == nil {
 		return ""
 	}
@@ -731,7 +553,7 @@ func (h *PlanHarness) runCritic(ctx context.Context, planText string, validation
 //
 // Side effects:
 //   - Emits harness_critic_feedback and slog validation events via outCh.
-func (h *PlanHarness) evaluateStreamAttempt(
+func (h *Harness) evaluateStreamAttempt(
 	ctx context.Context, planText string, attempt int, outCh chan<- provider.StreamChunk,
 ) (*EvaluationResult, string) {
 	validation := h.validatePlan(planText)
@@ -770,7 +592,7 @@ func (h *PlanHarness) evaluateStreamAttempt(
 //
 // Side effects:
 //   - Emits harness_critic_feedback via outCh when the critic runs.
-func (h *PlanHarness) handleValidPlanStream(
+func (h *Harness) handleValidPlanStream(
 	ctx context.Context, planText string, validation *ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
 ) (*EvaluationResult, string) {
 	criticFeedback := h.runCriticStream(ctx, planText, validation, outCh)
@@ -804,7 +626,7 @@ func (h *PlanHarness) handleValidPlanStream(
 // Side effects:
 //   - Sends a chat request to the critic provider when configured.
 //   - Emits harness_critic_feedback to outCh on successful critic review.
-func (h *PlanHarness) runCriticStream(
+func (h *Harness) runCriticStream(
 	ctx context.Context, planText string, validation *ValidationResult, outCh chan<- provider.StreamChunk,
 ) string {
 	if h.critic == nil || h.criticProvider == nil {
@@ -845,7 +667,7 @@ func (h *PlanHarness) runCriticStream(
 //
 // Side effects:
 //   - Spawns goroutines to generate plan variants when voter triggers.
-func (h *PlanHarness) applyVoter(
+func (h *Harness) applyVoter(
 	ctx context.Context, streamer Streamer, agentID string, message string, result *EvaluationResult,
 ) *EvaluationResult {
 	if h.voter == nil {

@@ -282,8 +282,6 @@ func (t *Text) Render() string {
 //
 // Side effects:
 //   - None.
-//
-//nolint:gocyclo,cyclop,revive // Vendored from KaRiya; complexity acceptable for style building
 func (t *Text) buildStyle() lipgloss.Style {
 	style := lipgloss.NewStyle()
 

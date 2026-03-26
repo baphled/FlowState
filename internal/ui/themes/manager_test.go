@@ -1,4 +1,3 @@
-//nolint:errcheck // Test file - error handling for test setup is not relevant.
 package themes_test
 
 import (

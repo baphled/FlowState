@@ -4,5 +4,5 @@
 //   - Streamer: the producer interface satisfied by engine.Engine and HarnessStreamer
 //   - StreamConsumer: the consumer strategy interface for CLI, HTTP, and TUI adapters
 //   - Run: the coordinator that drives a Streamer into a StreamConsumer
-//   - HarnessStreamer: a decorator that routes planner agent requests through PlanHarness
+//   - HarnessStreamer: a decorator that routes planner agent requests through Harness
 package streaming

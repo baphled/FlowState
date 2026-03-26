@@ -35,7 +35,7 @@ func (m *integrationMockStreamer) Stream(_ context.Context, _, _ string) (<-chan
 
 var _ = Describe("Integration", Label("integration"), func() {
 	var (
-		harness     *plan.PlanHarness
+		harness     *plan.Harness
 		ctx         context.Context
 		projectRoot string
 	)
@@ -44,7 +44,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 		cwd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred())
 		projectRoot = filepath.Join(cwd, "..", "..")
-		harness = plan.NewPlanHarness(projectRoot)
+		harness = plan.NewHarness(projectRoot)
 		ctx = context.Background()
 	})
 
@@ -128,7 +128,7 @@ func BenchmarkHarnessOverhead(b *testing.B) {
 		b.Fatal(err)
 	}
 	projectRoot := filepath.Join(cwd, "..", "..")
-	harness := plan.NewPlanHarness(projectRoot)
+	harness := plan.NewHarness(projectRoot)
 	data, err := os.ReadFile("testdata/valid_plan.md")
 	if err != nil {
 		b.Fatal(err)

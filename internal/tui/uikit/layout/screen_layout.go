@@ -306,8 +306,6 @@ func (sl *ScreenLayout) WithTheme(theme themes.Theme) *ScreenLayout {
 //
 // Side effects:
 //   - May mutate sl.Logo width via SetWidth.
-//
-//nolint:nestif // Vendored from KaRiya; complexity acceptable for layout logic
 func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 	var parts []string
 

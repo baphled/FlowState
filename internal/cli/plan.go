@@ -54,7 +54,7 @@ func newPlanListCmd(getApp func() *app.App) *cobra.Command {
 			a := getApp()
 			planDir := filepath.Join(a.Config.DataDir, "plans")
 
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			if err != nil {
 				return fmt.Errorf("creating plan store: %w", err)
 			}
@@ -123,7 +123,7 @@ func newPlanSelectCmd(getApp func() *app.App) *cobra.Command {
 func displayPlan(cmd *cobra.Command, a *app.App, planID string) error {
 	planDir := filepath.Join(a.Config.DataDir, "plans")
 
-	store, err := plan.NewPlanStore(planDir)
+	store, err := plan.NewStore(planDir)
 	if err != nil {
 		return fmt.Errorf("creating plan store: %w", err)
 	}
@@ -293,7 +293,7 @@ func newPlanDeleteCmd(getApp func() *app.App) *cobra.Command {
 			planDir := filepath.Join(a.Config.DataDir, "plans")
 			planID := args[0]
 
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			if err != nil {
 				return fmt.Errorf("creating plan store: %w", err)
 			}

@@ -25,15 +25,15 @@ type File struct {
 	Status               string         `json:"status" yaml:"status"`
 	CreatedAt            time.Time      `json:"created_at" yaml:"created_at"`
 	Tasks                []Task         `json:"tasks" yaml:"tasks"`
+	TLDR                 string         `json:"tldr,omitempty" yaml:"tldr,omitempty"`
+	Context              SourceContext  `json:"context" yaml:"context"`
+	WorkObjectives       WorkObjectives `json:"work_objectives" yaml:"work_objectives"`
+	VerificationStrategy string         `json:"verification_strategy,omitempty" yaml:"verification_strategy,omitempty"`
+	Reviews              []ReviewResult `json:"reviews,omitempty" yaml:"reviews,omitempty"`
 	ValidationStatus     string         `json:"validation_status,omitempty" yaml:"validation_status,omitempty"`
 	AttemptCount         int            `json:"attempt_count,omitempty" yaml:"attempt_count,omitempty"`
 	Score                float64        `json:"score,omitempty" yaml:"score,omitempty"`
 	ValidationErrors     []string       `json:"validation_errors,omitempty" yaml:"validation_errors,omitempty"`
-	TLDR                 string         `json:"tldr,omitempty" yaml:"tldr,omitempty"`
-	Context              Context        `json:"context,omitempty" yaml:"context,omitempty"`
-	WorkObjectives       WorkObjectives `json:"work_objectives,omitempty" yaml:"work_objectives,omitempty"`
-	VerificationStrategy string         `json:"verification_strategy,omitempty" yaml:"verification_strategy,omitempty"`
-	Reviews              []ReviewResult `json:"reviews,omitempty" yaml:"reviews,omitempty"`
 }
 
 // Task represents a single task within a plan.
@@ -58,47 +58,27 @@ type Task struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria" yaml:"acceptance_criteria"`
 	Skills             []string `json:"skills" yaml:"skills"`
 	Category           string   `json:"category" yaml:"category"`
+	FileChanges        []string `json:"file_changes,omitempty" yaml:"file_changes,omitempty"`
+	Evidence           string   `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 	Dependencies       []string `json:"dependencies,omitempty" yaml:"dependencies,omitempty"`
 	EstimatedEffort    string   `json:"estimated_effort,omitempty" yaml:"estimated_effort,omitempty"`
 	Wave               int      `json:"wave,omitempty" yaml:"wave,omitempty"`
-	FileChanges        []string `json:"file_changes,omitempty" yaml:"file_changes,omitempty"`
-	Evidence           string   `json:"evidence,omitempty" yaml:"evidence,omitempty"`
 }
 
-// Context provides additional context about the origin and background of a plan.
+// SourceContext captures the source material that shaped a plan.
 //
-// This struct captures information about where the plan came from, including
-// the original request that triggered its creation, any interview or discussion
-// summaries, and research findings that informed the plan's development.
-//
-// Expected:
-//   - All fields optional (zero values = valid)
-//
-// Returns:
-//   - (nothing; type definition only)
-//
-// Side effects:
-//   - None.
-type Context struct {
+// It groups the original request, interview summary, and research findings so
+// the plan body can preserve the reasoning behind the work.
+type SourceContext struct {
 	OriginalRequest  string `json:"original_request,omitempty" yaml:"original_request,omitempty"`
 	InterviewSummary string `json:"interview_summary,omitempty" yaml:"interview_summary,omitempty"`
 	ResearchFindings string `json:"research_findings,omitempty" yaml:"research_findings,omitempty"`
 }
 
-// WorkObjectives defines the goals, deliverables, and acceptance criteria for a plan.
+// WorkObjectives captures the desired outcome and scope for a plan.
 //
-// This struct captures the core objective being pursued, what deliverables are
-// expected, the definition of done for the work, and any explicit constraints
-// about what must or must not be included.
-//
-// Expected:
-//   - All fields optional (zero values = valid)
-//
-// Returns:
-//   - (nothing; type definition only)
-//
-// Side effects:
-//   - None.
+// It records the core objective alongside the key deliverables, completion
+// criteria, and explicit scope boundaries.
 type WorkObjectives struct {
 	CoreObjective    string   `json:"core_objective,omitempty" yaml:"core_objective,omitempty"`
 	Deliverables     []string `json:"deliverables,omitempty" yaml:"deliverables,omitempty"`
@@ -107,26 +87,15 @@ type WorkObjectives struct {
 	MustNotHave      []string `json:"must_not_have,omitempty" yaml:"must_not_have,omitempty"`
 }
 
-// ReviewResult represents the outcome of a plan review.
+// ReviewResult captures the outcome of a plan review step.
 //
-// This struct captures who performed the review, the verdict reached, the
-// reviewer's confidence level, any issues identified, and suggestions for
-// improvement.
-//
-// Expected:
-//   - All fields optional (zero values = valid)
-//
-// Returns:
-//   - (nothing; type definition only)
-//
-// Side effects:
-//   - None.
+// It records the verdict, reviewer confidence, and any blocking issues or
+// suggestions that arose during assessment.
 type ReviewResult struct {
-	Reviewer    string   `json:"reviewer" yaml:"reviewer"`
-	Verdict     string   `json:"verdict" yaml:"verdict"`
-	Confidence  float64  `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	Issues      []string `json:"issues,omitempty" yaml:"issues,omitempty"`
-	Suggestions []string `json:"suggestions,omitempty" yaml:"suggestions,omitempty"`
+	Verdict        string   `json:"verdict,omitempty" yaml:"verdict,omitempty"`
+	Confidence     float64  `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	BlockingIssues []string `json:"blocking_issues,omitempty" yaml:"blocking_issues,omitempty"`
+	Suggestions    []string `json:"suggestions,omitempty" yaml:"suggestions,omitempty"`
 }
 
 // Frontmatter represents the YAML frontmatter of a plan markdown file.
@@ -143,15 +112,13 @@ type ReviewResult struct {
 // Side effects:
 //   - None.
 type Frontmatter struct {
-	ID                   string    `yaml:"id"`
-	Title                string    `yaml:"title"`
-	Description          string    `yaml:"description"`
-	Status               string    `yaml:"status"`
-	CreatedAt            time.Time `yaml:"created_at"`
-	ValidationStatus     string    `yaml:"validation_status,omitempty"`
-	AttemptCount         int       `yaml:"attempt_count,omitempty"`
-	Score                float64   `yaml:"score,omitempty"`
-	ValidationErrors     []string  `yaml:"validation_errors,omitempty"`
-	TLDR                 string    `yaml:"tldr,omitempty"`
-	VerificationStrategy string    `yaml:"verification_strategy,omitempty"`
+	ID               string    `yaml:"id"`
+	Title            string    `yaml:"title"`
+	Description      string    `yaml:"description"`
+	Status           string    `yaml:"status"`
+	CreatedAt        time.Time `yaml:"created_at"`
+	ValidationStatus string    `yaml:"validation_status,omitempty"`
+	AttemptCount     int       `yaml:"attempt_count,omitempty"`
+	Score            float64   `yaml:"score,omitempty"`
+	ValidationErrors []string  `yaml:"validation_errors,omitempty"`
 }

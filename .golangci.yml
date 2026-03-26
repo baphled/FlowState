@@ -410,6 +410,48 @@ linters:
           - gocyclo
           - gocognit
           - errcheck
+          - nilerr
+
+      # G204: Hook context injection builds commands from config paths
+      - path: 'internal/hook/context_injection\.go'
+        linters:
+          - gosec
+        text: 'G204'
+
+      # G204: MCP manager executes configured MCP server commands
+      - path: 'internal/mcp/manager\.go'
+        linters:
+          - gosec
+        text: 'G204'
+
+      # Embedding errors are non-fatal warm-up calls
+      - path: 'internal/plan/embedding_grounding\.go'
+        linters:
+          - errcheck
+        text: 'Embed'
+
+      # Vendored UIKit from KaRiya
+      - path: 'internal/tui/uikit/'
+        linters:
+          - funlen
+          - nestif
+          - gocyclo
+          - gocognit
+          - cyclop
+          - revive
+
+      # Vendored themes from KaRiya
+      - path: 'internal/ui/themes/'
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - interfacebloat
+
+      # go/analysis framework requires (interface{}, error) return
+      - path: 'tools/analyzers/'
+        linters:
+          - nilnil
 
       # Non-inherited context is OK
       - linters:

@@ -15,7 +15,7 @@ import (
 
 // HarnessStepDefinitions holds state for harness BDD scenarios.
 type HarnessStepDefinitions struct {
-	harness          *plan.PlanHarness
+	harness          *plan.Harness
 	evaluationResult *plan.EvaluationResult
 	validationResult *plan.ValidationResult
 	projectRoot      string
@@ -70,7 +70,7 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 			return bddCtx, err
 		}
 		h.projectRoot = filepath.Join(cwd, "..", "..")
-		h.harness = plan.NewPlanHarness(h.projectRoot)
+		h.harness = plan.NewHarness(h.projectRoot)
 		h.evaluationResult = nil
 		h.validationResult = nil
 		h.planText = ""

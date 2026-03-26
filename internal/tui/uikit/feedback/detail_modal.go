@@ -179,8 +179,6 @@ func (m *DetailModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 //
 // Side effects:
 //   - None.
-//
-//nolint:funlen // Vendored from KaRiya; complexity acceptable for modal rendering
 func (m *DetailModal) View() string {
 	if !m.visible {
 		return ""

@@ -11,8 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/plan"
 )
 
-var _ = Describe("PlanStore", func() {
-	var store *plan.PlanStore
+var _ = Describe("Store", func() {
+	var store *plan.Store
 	var tmpDir string
 
 	BeforeEach(func() {
@@ -20,7 +20,7 @@ var _ = Describe("PlanStore", func() {
 		tmpDir, err = os.MkdirTemp("", "plan-store-test-*")
 		Expect(err).NotTo(HaveOccurred())
 
-		store, err = plan.NewPlanStore(tmpDir)
+		store, err = plan.NewStore(tmpDir)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -30,16 +30,16 @@ var _ = Describe("PlanStore", func() {
 		}
 	})
 
-	Describe("NewPlanStore", func() {
+	Describe("NewStore", func() {
 		It("creates a new store pointing to the directory", func() {
-			testStore, err := plan.NewPlanStore(tmpDir)
+			testStore, err := plan.NewStore(tmpDir)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(testStore).NotTo(BeNil())
 		})
 
 		It("creates the directory if it does not exist", func() {
 			newDir := filepath.Join(tmpDir, "nested", "dir")
-			_, err := plan.NewPlanStore(newDir)
+			_, err := plan.NewStore(newDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			info, err := os.Stat(newDir)
@@ -232,7 +232,7 @@ var _ = Describe("PlanStore", func() {
 				Status:      "draft",
 				CreatedAt:   now,
 				TLDR:        "Short summary of the plan",
-				Context: plan.PlanContext{
+				Context: plan.SourceContext{
 					OriginalRequest:  "Build a durable plan store",
 					InterviewSummary: "Need markdown sections preserved",
 					ResearchFindings: "Frontmatter must remain unchanged",
@@ -290,7 +290,7 @@ var _ = Describe("PlanStore", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(retrieved.TLDR).To(Equal(""))
-			Expect(retrieved.Context).To(Equal(plan.PlanContext{}))
+			Expect(retrieved.Context).To(Equal(plan.SourceContext{}))
 			Expect(retrieved.WorkObjectives).To(Equal(plan.WorkObjectives{}))
 			Expect(retrieved.VerificationStrategy).To(Equal(""))
 			Expect(retrieved.Reviews).To(BeEmpty())
@@ -314,7 +314,7 @@ var _ = Describe("PlanStore", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(retrieved.TLDR).To(Equal(""))
-			Expect(retrieved.Context).To(Equal(plan.PlanContext{}))
+			Expect(retrieved.Context).To(Equal(plan.SourceContext{}))
 			Expect(retrieved.WorkObjectives).To(Equal(plan.WorkObjectives{}))
 			Expect(retrieved.VerificationStrategy).To(Equal(""))
 			Expect(retrieved.Reviews).To(BeEmpty())

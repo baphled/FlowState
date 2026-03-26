@@ -120,7 +120,7 @@ type StepDefinitions struct {
 	mockShell        *BDDMockShell
 
 	// Plan management fields
-	planStore      *plan.PlanStore
+	planStore      *plan.Store
 	planListOutput []plan.Summary
 	selectedPlan   *plan.File
 
@@ -4758,7 +4758,7 @@ func (s *StepDefinitions) thePlanStoreIsEmpty() error {
 		return fmt.Errorf("creating temp directory: %w", err)
 	}
 	var storeErr error
-	s.planStore, storeErr = plan.NewPlanStore(s.tempDir)
+	s.planStore, storeErr = plan.NewStore(s.tempDir)
 	if storeErr != nil {
 		return fmt.Errorf("creating plan store: %w", storeErr)
 	}
@@ -4838,7 +4838,7 @@ func (s *StepDefinitions) iSelectPlan(id string) error {
 	retrievedPlan, err := s.planStore.Get(id)
 	if err != nil {
 		s.lastError = err
-		return nil //nolint:nilerr // intentional: capture error for assertion in next step
+		return nil
 	}
 	s.selectedPlan = retrievedPlan
 	s.lastError = nil
@@ -4857,7 +4857,7 @@ func (s *StepDefinitions) iDeletePlan(id string) error {
 	err := s.planStore.Delete(id)
 	if err != nil {
 		s.lastError = err
-		return nil //nolint:nilerr // intentional: capture error for assertion in next step
+		return nil
 	}
 	s.lastError = nil
 	return nil

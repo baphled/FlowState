@@ -66,7 +66,7 @@ func (g *EmbeddingGrounder) InjectContext(
 		if err != nil {
 			continue
 		}
-		_, _ = embedProvider.Embed(ctx, provider.EmbedRequest{Input: string(b)}) //nolint:errcheck // embedding errors are non-fatal
+		_, _ = embedProvider.Embed(ctx, provider.EmbedRequest{Input: string(b)})
 		if strings.Contains(string(b), query) {
 			return "### Relevant Code\n" + string(b), nil
 		}

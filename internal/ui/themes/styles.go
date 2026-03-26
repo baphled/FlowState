@@ -81,8 +81,6 @@ type StyleSet struct {
 //
 // Side effects:
 //   - None.
-//
-//nolint:funlen // Vendored from KaRiya; complexity acceptable for style generation
 func GenerateStyles(palette *ColorPalette) *StyleSet {
 	if palette == nil {
 		return &StyleSet{}

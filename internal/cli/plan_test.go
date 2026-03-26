@@ -55,7 +55,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("prints table headers when plans exist", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = store.Create(plan.File{
@@ -77,7 +77,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("lists all plan summaries", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, title := range []string{"Plan One", "Plan Two"} {
@@ -116,7 +116,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("displays full plan content", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			planFile := plan.File{
@@ -146,7 +146,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("displays multiple tasks with descriptions", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			planFile := plan.File{
@@ -189,7 +189,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("displays plan without description", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			planFile := plan.File{
@@ -226,7 +226,7 @@ var _ = Describe("Plan Command", func() {
 		})
 
 		It("deletes plan and prints confirmation", func() {
-			store, err := plan.NewPlanStore(planDir)
+			store, err := plan.NewStore(planDir)
 			Expect(err).NotTo(HaveOccurred())
 
 			err = store.Create(plan.File{

@@ -72,7 +72,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 	checkPackageDoc(pass, hasDocGo)
-	return nil, nil //nolint:nilnil // go/analysis framework requires (interface{}, error) return
+	return nil, nil
 }
 
 // checkFuncDecl validates documentation for a function or method declaration.

@@ -188,8 +188,6 @@ func (mc *ModalContainer) WithScrollHint(show bool) *ModalContainer {
 //
 // Side effects:
 //   - None.
-//
-//nolint:funlen // Vendored from KaRiya; complexity acceptable for modal rendering
 func (mc *ModalContainer) Render() string {
 	theme := mc.getTheme()
 	var parts []string

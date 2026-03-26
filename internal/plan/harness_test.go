@@ -49,15 +49,15 @@ func (m *chunkMockStreamer) Stream(_ context.Context, _, _ string) (<-chan provi
 	return ch, nil
 }
 
-var _ = Describe("PlanHarness", func() {
+var _ = Describe("Harness", func() {
 	var (
-		harness     *plan.PlanHarness
+		harness     *plan.Harness
 		projectRoot string
 	)
 
 	BeforeEach(func() {
 		projectRoot = projectRootFromWorkingDir()
-		harness = plan.NewPlanHarness(projectRoot)
+		harness = plan.NewHarness(projectRoot)
 	})
 
 	It("returns a valid result on the first attempt", func() {
@@ -115,13 +115,13 @@ var _ = Describe("PlanHarness", func() {
 
 var _ = Describe("StreamEvaluate", func() {
 	var (
-		harness     *plan.PlanHarness
+		harness     *plan.Harness
 		projectRoot string
 	)
 
 	BeforeEach(func() {
 		projectRoot = projectRootFromWorkingDir()
-		harness = plan.NewPlanHarness(projectRoot)
+		harness = plan.NewHarness(projectRoot)
 	})
 
 	Context("when streaming a valid plan", func() {
@@ -304,7 +304,7 @@ var _ = Describe("StreamEvaluate", func() {
 			projectRoot := projectRootFromWorkingDir()
 			criticProv := &mockChatProvider{response: validCriticResponse()}
 			critic := newTestCritic(true)
-			harnessWithCritic := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
+			harnessWithCritic := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv))
 
 			validPlan := loadValidPlan()
 			chunks := []provider.StreamChunk{
@@ -326,7 +326,7 @@ var _ = Describe("StreamEvaluate", func() {
 			projectRoot := projectRootFromWorkingDir()
 			criticProv := &mockChatProvider{response: validCriticResponse()}
 			critic := newTestCritic(true)
-			harnessWithCritic := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
+			harnessWithCritic := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv))
 
 			validPlan := loadValidPlan()
 			chunks := []provider.StreamChunk{
@@ -381,7 +381,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 
 	DescribeTable("harness events across retry scenarios",
 		func(buildStreamer func() *chunkMockStreamer, expected eventExpectation) {
-			harness := plan.NewPlanHarness(projectRoot)
+			harness := plan.NewHarness(projectRoot)
 			streamer := buildStreamer()
 
 			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
@@ -675,9 +675,9 @@ func filterEventChunks(chunks []provider.StreamChunk, eventType string) []provid
 	return filtered
 }
 
-var _ = Describe("PlanHarness with ConsistencyVoter", func() {
+var _ = Describe("Harness with ConsistencyVoter", func() {
 	var (
-		harness     *plan.PlanHarness
+		harness     *plan.Harness
 		projectRoot string
 	)
 
@@ -687,7 +687,7 @@ var _ = Describe("PlanHarness with ConsistencyVoter", func() {
 
 	Context("when voter is not configured (nil)", func() {
 		It("behaves identically to current behavior in Evaluate", func() {
-			harness = plan.NewPlanHarness(projectRoot)
+			harness = plan.NewHarness(projectRoot)
 			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 			Expect(err).NotTo(HaveOccurred())
@@ -696,7 +696,7 @@ var _ = Describe("PlanHarness with ConsistencyVoter", func() {
 		})
 
 		It("behaves identically to current behavior in StreamEvaluate", func() {
-			harness = plan.NewPlanHarness(projectRoot)
+			harness = plan.NewHarness(projectRoot)
 			validPlan := loadValidPlan()
 			chunks := []provider.StreamChunk{
 				{Content: validPlan},
@@ -715,7 +715,7 @@ var _ = Describe("PlanHarness with ConsistencyVoter", func() {
 		It("does not trigger voting in Evaluate", func() {
 			voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.5}
 			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
-			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			harness = plan.NewHarness(projectRoot, plan.WithVoter(voter))
 			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 			Expect(err).NotTo(HaveOccurred())
@@ -726,7 +726,7 @@ var _ = Describe("PlanHarness with ConsistencyVoter", func() {
 		It("does not trigger voting in StreamEvaluate", func() {
 			voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.5}
 			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
-			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			harness = plan.NewHarness(projectRoot, plan.WithVoter(voter))
 			validPlan := loadValidPlan()
 			chunks := []provider.StreamChunk{
 				{Content: validPlan},
@@ -745,7 +745,7 @@ var _ = Describe("PlanHarness with ConsistencyVoter", func() {
 		It("still produces valid result when voter is enabled but score above threshold", func() {
 			voterCfg := plan.VoterConfig{Enabled: true, Variants: 2, Threshold: 0.95}
 			voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
-			harness = plan.NewPlanHarness(projectRoot, plan.WithVoter(voter))
+			harness = plan.NewHarness(projectRoot, plan.WithVoter(voter))
 			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 			Expect(err).NotTo(HaveOccurred())
