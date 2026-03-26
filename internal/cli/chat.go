@@ -20,6 +20,7 @@ type ChatOptions struct {
 	Message string
 	Model   string
 	Session string
+	Output  string
 }
 
 // newChatCmd creates the chat command for interactive chat sessions.
@@ -50,6 +51,7 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.Message, "message", "", "Initial message to send")
 	flags.StringVar(&opts.Model, "model", "", "Model to use for the chat session")
 	flags.StringVar(&opts.Session, "session", "", "Session ID to resume")
+	flags.StringVar(&opts.Output, "output", "text", "Output format: text or json")
 
 	return cmd
 }
@@ -106,7 +108,7 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 
-	response, err := streamChatResponse(application, agentName, opts.Message)
+	response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, io.Discard)
 	if err != nil {
 		return err
 	}
@@ -200,21 +202,68 @@ func loadSessionIfRequested(application *app.App, session string) {
 //   - application is a non-nil App instance with a configured streamer.
 //   - agentName is a non-empty string.
 //   - message is a non-empty string.
+//   - outputFormat is either "text" or "json".
+//   - writer is a non-nil io.Writer for output.
 //
 // Returns:
 //   - The complete response string and nil on success, or empty string and error on failure.
 //
 // Side effects:
 //   - Streams response chunks from the streamer.
-func streamChatResponse(application *app.App, agentName string, message string) (string, error) {
-	consumer := NewWriterConsumer(io.Discard, true)
+func streamChatResponse(application *app.App, agentName string, message string, outputFormat string, writer io.Writer) (string, error) {
+	var consumer streaming.StreamConsumer
+	if outputFormat == "json" {
+		consumer = NewJSONConsumer(writer)
+	} else {
+		consumer = NewWriterConsumer(writer, true)
+	}
 	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, message); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
-	if consumer.Err() != nil {
-		return "", fmt.Errorf("stream error: %w", consumer.Err())
+	if err := getConsumerError(consumer); err != nil {
+		return "", fmt.Errorf("stream error: %w", err)
 	}
-	return consumer.Response(), nil
+	return getConsumerResponse(consumer), nil
+}
+
+// getConsumerError retrieves the error from a consumer using type assertion.
+//
+// Expected:
+//   - consumer is a StreamConsumer implementation.
+//
+// Returns:
+//   - The error from the consumer, or nil if the consumer doesn't support errors.
+//
+// Side effects:
+//   - None.
+func getConsumerError(consumer streaming.StreamConsumer) error {
+	type errorGetter interface {
+		Err() error
+	}
+	if eg, ok := consumer.(errorGetter); ok {
+		return eg.Err()
+	}
+	return nil
+}
+
+// getConsumerResponse retrieves the response from a consumer using type assertion.
+//
+// Expected:
+//   - consumer is a StreamConsumer implementation.
+//
+// Returns:
+//   - The response string from the consumer, or empty string if not supported.
+//
+// Side effects:
+//   - None.
+func getConsumerResponse(consumer streaming.StreamConsumer) string {
+	type responseGetter interface {
+		Response() string
+	}
+	if rg, ok := consumer.(responseGetter); ok {
+		return rg.Response()
+	}
+	return ""
 }
 
 // saveSessionIfAvailable saves the current session if the session store is available.
