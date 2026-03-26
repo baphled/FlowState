@@ -1,0 +1,365 @@
+package session_test
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+)
+
+var _ = Describe("Manager", func() {
+	var (
+		mgr        *session.Manager
+		mockStream *mockStreamer
+	)
+
+	BeforeEach(func() {
+		mockStream = newMockStreamer()
+		mgr = session.NewManager(mockStream)
+	})
+
+	Describe("CreateSession", func() {
+		Context("with a valid agent ID", func() {
+			It("returns a new session with a valid UUID", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess).NotTo(BeNil())
+				Expect(sess.ID).NotTo(BeEmpty())
+				Expect(len(sess.ID)).To(BeNumerically(">", 10))
+			})
+
+			It("sets the agent ID on the session", func() {
+				sess, err := mgr.CreateSession("my-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.AgentID).To(Equal("my-agent"))
+			})
+
+			It("sets the status to active", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.Status).To(Equal("active"))
+			})
+
+			It("creates an isolated coordination store for the session", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.CoordinationStore).NotTo(BeNil())
+			})
+
+			It("initialises an empty messages slice", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.Messages).To(BeEmpty())
+			})
+
+			It("sets created and updated timestamps", func() {
+				before := time.Now().Add(-time.Second)
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.CreatedAt).To(BeTemporally(">=", before))
+				Expect(sess.UpdatedAt).To(BeTemporally(">=", before))
+			})
+		})
+	})
+
+	Describe("GetSession", func() {
+		Context("when the session exists", func() {
+			It("returns the session", func() {
+				created, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := mgr.GetSession(created.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.ID).To(Equal(created.ID))
+				Expect(retrieved.AgentID).To(Equal(created.AgentID))
+			})
+		})
+
+		Context("when the session does not exist", func() {
+			It("returns an error", func() {
+				_, err := mgr.GetSession("nonexistent-id")
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("ListSessions", func() {
+		Context("when no sessions exist", func() {
+			It("returns an empty slice", func() {
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(BeEmpty())
+			})
+		})
+
+		Context("when sessions exist", func() {
+			It("returns all session summaries", func() {
+				_, err := mgr.CreateSession("agent-a")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = mgr.CreateSession("agent-b")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(2))
+			})
+
+			It("includes agent ID and status in summaries", func() {
+				_, err := mgr.CreateSession("my-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].AgentID).To(Equal("my-agent"))
+				Expect(summaries[0].Status).To(Equal("active"))
+			})
+
+			It("includes message count in summaries", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				ctx := context.Background()
+				mockStream.addChunk(provider.StreamChunk{Content: "Hello"})
+				_, err = mgr.SendMessage(ctx, sess.ID, "Hi")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].MessageCount).To(Equal(1))
+			})
+		})
+	})
+
+	Describe("SendMessage", func() {
+		var (
+			ctx  context.Context
+			sess *session.Session
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			var err error
+			sess, err = mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("when the session exists", func() {
+			It("returns a channel of stream chunks", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "Response"})
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ch).NotTo(BeNil())
+			})
+
+			It("calls the streamer with the correct agent ID", func() {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "Test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mockStream.lastAgentID).To(Equal("test-agent"))
+			})
+
+			It("adds the message to the session history", func() {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "User message")
+				Expect(err).NotTo(HaveOccurred())
+
+				sess, err = mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.Messages).To(HaveLen(1))
+				Expect(sess.Messages[0].Role).To(Equal("user"))
+				Expect(sess.Messages[0].Content).To(Equal("User message"))
+			})
+
+			It("receives chunks from the streamer channel", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "First"})
+				mockStream.addChunk(provider.StreamChunk{Content: "Second"})
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					if chunk.Content != "" {
+						contents = append(contents, chunk.Content)
+					}
+				}
+				Expect(contents).To(ConsistOf("First", "Second"))
+			})
+		})
+
+		Context("when the session does not exist", func() {
+			It("returns an error", func() {
+				_, err := mgr.SendMessage(ctx, "nonexistent", "Hello")
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("CloseSession", func() {
+		Context("when the session exists", func() {
+			It("marks the session as completed", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = mgr.CloseSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+
+				sess, err = mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.Status).To(Equal("completed"))
+			})
+
+			It("updates the session timestamp", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				originalTime := sess.UpdatedAt
+
+				time.Sleep(time.Millisecond)
+				err = mgr.CloseSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+
+				sess, err = mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.UpdatedAt).To(BeTemporally(">", originalTime))
+			})
+		})
+
+		Context("when the session does not exist", func() {
+			It("returns an error", func() {
+				err := mgr.CloseSession("nonexistent-id")
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("Concurrent access", func() {
+		It("handles concurrent CreateSession without races", func() {
+			var wg sync.WaitGroup
+			const goroutines = 50
+
+			wg.Add(goroutines)
+			for range goroutines {
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					_, err := mgr.CreateSession("agent")
+					Expect(err).NotTo(HaveOccurred())
+				}()
+			}
+			wg.Wait()
+
+			summaries := mgr.ListSessions()
+			Expect(summaries).To(HaveLen(goroutines))
+		})
+
+		It("handles concurrent GetSession without races", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			var wg sync.WaitGroup
+			const goroutines = 50
+
+			wg.Add(goroutines)
+			for range goroutines {
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					_, err := mgr.GetSession(sess.ID)
+					Expect(err).NotTo(HaveOccurred())
+				}()
+			}
+			wg.Wait()
+		})
+
+		It("handles concurrent CreateSession and SendMessage without races", func() {
+			var wg sync.WaitGroup
+			const goroutines = 25
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			wg.Add(goroutines)
+			for range goroutines {
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					_, err := mgr.CreateSession("new-agent")
+					Expect(err).NotTo(HaveOccurred())
+
+					mockStream.addChunk(provider.StreamChunk{Done: true})
+					_, err = mgr.SendMessage(context.Background(), sess.ID, "test")
+					Expect(err).NotTo(HaveOccurred())
+				}()
+			}
+			wg.Wait()
+		})
+	})
+
+	Describe("Isolation", func() {
+		It("each session has its own coordination store", func() {
+			sess1, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			sess2, err := mgr.CreateSession("agent-b")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(sess1.CoordinationStore).NotTo(BeIdenticalTo(sess2.CoordinationStore))
+		})
+
+		It("coordination stores are independent", func() {
+			sess1, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			sess2, err := mgr.CreateSession("agent-b")
+			Expect(err).NotTo(HaveOccurred())
+
+			err = sess1.CoordinationStore.Set("key", []byte("value-a"))
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sess2.CoordinationStore.Get("key")
+			Expect(err).To(HaveOccurred())
+		})
+	})
+})
+
+type mockStreamer struct {
+	mu          sync.Mutex
+	chunks      []provider.StreamChunk
+	lastAgentID string
+	lastMessage string
+}
+
+func newMockStreamer() *mockStreamer {
+	return &mockStreamer{
+		chunks: make([]provider.StreamChunk, 0),
+	}
+}
+
+func (m *mockStreamer) addChunk(chunk provider.StreamChunk) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chunks = append(m.chunks, chunk)
+}
+
+func (m *mockStreamer) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
+	m.mu.Lock()
+	m.lastAgentID = agentID
+	m.lastMessage = message
+	chunks := make([]provider.StreamChunk, len(m.chunks))
+	copy(chunks, m.chunks)
+	m.chunks = nil
+	m.mu.Unlock()
+
+	ch := make(chan provider.StreamChunk, len(chunks))
+	for _, c := range chunks {
+		ch <- c
+	}
+	close(ch)
+
+	return ch, nil
+}
