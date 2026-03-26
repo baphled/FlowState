@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
@@ -304,8 +305,11 @@ func TestCreateDelegateEngine_ReturnsIsolatedEngine(t *testing.T) {
 	providerReg.Register(ollamaProvider)
 	app.providerRegistry = providerReg
 
+	// And: A coordination store for testing
+	coordinationStore := coordination.NewMemoryStore()
+
 	// When: We create a delegate engine for the target
-	delegateEngine := app.createDelegateEngine(explorerManifest)
+	delegateEngine := app.createDelegateEngine(explorerManifest, coordinationStore)
 
 	// Then: The engine should have the target's manifest
 	require.NotNil(t, delegateEngine, "delegate engine should be created")

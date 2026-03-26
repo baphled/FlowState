@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,12 +35,15 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
+	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	"github.com/baphled/flowstate/internal/tool/read"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
 	"github.com/baphled/flowstate/internal/tracer"
+
+	"github.com/baphled/flowstate/internal/plan"
 )
 
 // App is the main application container holding all initialized components.
@@ -56,6 +61,7 @@ type App struct {
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
 	metricsRegistry  *prometheus.Registry
+	PlanStore        *plan.PlanStore
 }
 
 // New creates a new App instance with all components initialised.
@@ -117,6 +123,15 @@ func New(cfg *config.AppConfig) (*App, error) {
 		ollamaProvider:   ollamaProvider,
 		metricsRegistry:  runtime.metricsRegistry,
 	}
+
+	planDir := filepath.Join(cfg.DataDir, "plans")
+	planStore, err := plan.NewPlanStore(planDir)
+	if err != nil {
+		log.Printf("warning: creating plan store: %v", err)
+	} else {
+		app.PlanStore = planStore
+	}
+
 	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
 	return app, nil
 }
@@ -274,12 +289,16 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		if !ok {
 			continue
 		}
-		targetEngine := a.createDelegateEngine(*targetManifest)
+		targetEngine := a.createDelegateEngine(*targetManifest, coordinationStore)
 		engines[targetID] = targetEngine
 	}
 	eng.AddTool(engine.NewDelegateToolWithBackground(
 		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
 	))
+
+	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
+		eng.AddTool(coordinationtool.New(coordinationStore))
+	}
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.
@@ -288,6 +307,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 //
 // Expected:
 //   - manifest is the target agent's manifest with model preferences and capabilities.
+//   - store is the shared coordination store for cross-agent communication.
 //
 // Returns:
 //   - An Engine instance configured for the target agent.
@@ -295,35 +315,107 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 //
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
-func (a *App) createDelegateEngine(manifest agent.Manifest) *engine.Engine {
+func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
 	eng := engine.New(engine.Config{
 		Registry:      a.providerRegistry,
 		AgentRegistry: a.Registry,
 		Manifest:      manifest,
-		Tools:         a.buildToolsForManifest(manifest),
+		Tools:         a.buildToolsForManifestWithStore(manifest, store),
 	})
 	return eng
 }
 
-// buildToolsForManifest returns the tools available to an agent based on its
-// manifest capabilities. Currently returns the core tools; in the future this
-// could filter based on manifest.Capabilities.Tools.
+// buildToolsForManifestWithStore returns the tools available to an agent based on its
+// manifest capabilities, including the CoordinationTool when required.
 //
 // Expected:
 //   - manifest is the agent's manifest with capabilities.
+//   - store is the coordination store to use for the CoordinationTool.
 //
 // Returns:
 //   - A slice of tools available to the agent.
 //
 // Side effects:
 //   - None.
-func (a *App) buildToolsForManifest(_ agent.Manifest) []tool.Tool {
-	return []tool.Tool{
+func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coordination.Store) []tool.Tool {
+	tools := []tool.Tool{
 		bash.New(),
 		read.New(),
 		write.New(),
 		web.New(),
 	}
+
+	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
+		tools = append(tools, coordinationtool.New(store))
+	}
+
+	return tools
+}
+
+// hasCoordinationTool checks if the manifest has coordination_store in its tools list.
+//
+// Expected:
+//   - tools is the list of tool names from the manifest.
+//
+// Returns:
+//   - true if "coordination_store" is in the list, false otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) hasCoordinationTool(tools []string) bool {
+	for _, t := range tools {
+		if t == "coordination_store" {
+			return true
+		}
+	}
+	return false
+}
+
+// PersistApprovedPlan retrieves an approved plan from the coordination store and
+// saves it to the PlanStore. This is called after the reviewer approves a plan.
+//
+// Expected:
+//   - chainID is the delegation chain identifier.
+//   - coordinationStore contains the plan at "{chainID}/plan" and review at "{chainID}/review".
+//
+// Returns:
+//   - error if the plan cannot be retrieved or saved.
+//
+// Side effects:
+//   - Writes plan file to the PlanStore directory.
+func (a *App) PersistApprovedPlan(chainID string, coordinationStore coordination.Store) error {
+	if a.PlanStore == nil {
+		return errors.New("plan store not configured")
+	}
+
+	reviewData, err := coordinationStore.Get(chainID + "/review")
+	if err != nil {
+		return fmt.Errorf("getting review: %w", err)
+	}
+
+	reviewStr := string(reviewData)
+	if !strings.Contains(reviewStr, "APPROVE") {
+		return errors.New("plan not approved")
+	}
+
+	planData, err := coordinationStore.Get(chainID + "/plan")
+	if err != nil {
+		return fmt.Errorf("getting plan: %w", err)
+	}
+
+	planFile := plan.File{
+		ID:        chainID,
+		Title:     "Plan " + chainID,
+		Status:    "approved",
+		CreatedAt: time.Now(),
+		TLDR:      string(planData),
+	}
+
+	if err := a.PlanStore.Create(planFile); err != nil {
+		return fmt.Errorf("persisting plan: %w", err)
+	}
+
+	return nil
 }
 
 // buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
