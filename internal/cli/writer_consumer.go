@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // WriterConsumer implements streaming.StreamConsumer for CLI output.
 type WriterConsumer struct {
 	w        io.Writer
 	silent   bool
+	jsonMode bool
 	response strings.Builder
 	err      error
 }
@@ -130,5 +134,98 @@ func (c *WriterConsumer) WriteToolResult(content string) {
 func (c *WriterConsumer) WriteHarnessRetry(content string) {
 	if !c.silent {
 		fmt.Fprintf(c.w, "\n🔄 %s\n\n", content)
+	}
+}
+
+// WithJSONMode returns the consumer configured to emit JSON lines instead of human-readable text.
+//
+// Returns:
+//   - The same WriterConsumer with JSON mode enabled, for chaining.
+//
+// Side effects:
+//   - Mutates the jsonMode flag on the receiver.
+func (c *WriterConsumer) WithJSONMode() *WriterConsumer {
+	c.jsonMode = true
+	return c
+}
+
+// WriteDelegation delivers a delegation status event to the consumer.
+//
+// Expected:
+//   - event contains the delegation metadata including target agent and status.
+//
+// Returns:
+//   - nil on success, or an error if writing to the underlying writer fails.
+//
+// Side effects:
+//   - Writes formatted delegation status to the writer unless silent is true.
+//   - In JSON mode, emits the event as a single JSON line.
+func (c *WriterConsumer) WriteDelegation(event streaming.DelegationEvent) error {
+	if c.silent {
+		return nil
+	}
+	if c.jsonMode {
+		return c.writeDelegationJSON(event)
+	}
+	return c.writeDelegationText(event)
+}
+
+// writeDelegationJSON emits a delegation event as a JSON line.
+//
+// Expected:
+//   - event contains the delegation metadata to serialise.
+//
+// Returns:
+//   - nil on success, or an error if marshaling or writing fails.
+//
+// Side effects:
+//   - Writes a single JSON line to the underlying writer.
+func (c *WriterConsumer) writeDelegationJSON(event streaming.DelegationEvent) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshalling delegation event: %w", err)
+	}
+	_, err = fmt.Fprintf(c.w, "%s\n", data)
+	return err
+}
+
+// writeDelegationText emits a delegation event as human-readable text.
+//
+// Expected:
+//   - event contains the delegation metadata to format.
+//
+// Returns:
+//   - nil on success, or an error if writing fails.
+//
+// Side effects:
+//   - Writes formatted delegation text to the underlying writer.
+func (c *WriterConsumer) writeDelegationText(event streaming.DelegationEvent) error {
+	line := formatDelegationText(event)
+	_, err := fmt.Fprint(c.w, line)
+	return err
+}
+
+// formatDelegationText returns the formatted text for a delegation event.
+//
+// Expected:
+//   - event contains the delegation metadata and status.
+//
+// Returns:
+//   - A human-readable delegation status line with a trailing newline.
+//
+// Side effects:
+//   - None.
+func formatDelegationText(event streaming.DelegationEvent) string {
+	switch event.Status {
+	case "started":
+		return fmt.Sprintf("⟶ Delegating to %s (%s via %s): %s\n",
+			event.TargetAgent, event.ModelName, event.ProviderName, event.Description)
+	case "completed":
+		return fmt.Sprintf("✓ Delegation to %s completed (%d tool calls)\n",
+			event.TargetAgent, event.ToolCalls)
+	case "failed":
+		return fmt.Sprintf("✗ Delegation to %s failed\n", event.TargetAgent)
+	default:
+		return fmt.Sprintf("⟶ Delegation to %s: %s\n", event.TargetAgent, event.Status)
 	}
 }

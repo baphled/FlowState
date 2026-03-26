@@ -8,7 +8,10 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/api"
+	"github.com/baphled/flowstate/internal/streaming"
 )
+
+var _ streaming.DelegationConsumer = (*api.SSEConsumer)(nil)
 
 var _ = Describe("SSEConsumer", func() {
 	var recorder *httptest.ResponseRecorder
@@ -184,6 +187,45 @@ var _ = Describe("SSEConsumer", func() {
 
 			consumer.WriteToolResult("result data")
 
+			Expect(recorder.Flushed).To(BeTrue())
+		})
+	})
+
+	Describe("WriteDelegation", func() {
+		It("writes JSON delegation event as an SSE data line", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			err := consumer.WriteDelegation(streaming.DelegationEvent{
+				SourceAgent:  "coordinator",
+				TargetAgent:  "plan-writer",
+				Status:       "started",
+				ModelName:    "claude-sonnet-4",
+				ProviderName: "anthropic",
+				Description:  "Generating plan...",
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			body := recorder.Body.String()
+			Expect(body).To(ContainSubstring(`"type":"delegation"`))
+			Expect(body).To(ContainSubstring(`"source_agent":"coordinator"`))
+			Expect(body).To(ContainSubstring(`"target_agent":"plan-writer"`))
+			Expect(body).To(ContainSubstring(`"status":"started"`))
+			Expect(body).To(ContainSubstring(`"model_name":"claude-sonnet-4"`))
+			Expect(body).To(ContainSubstring(`"description":"Generating plan..."`))
+			Expect(body).To(HavePrefix("data: "))
+		})
+
+		It("flushes after writing", func() {
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			err := consumer.WriteDelegation(streaming.DelegationEvent{
+				TargetAgent: "plan-writer",
+				Status:      "started",
+			})
+
+			Expect(err).NotTo(HaveOccurred())
 			Expect(recorder.Flushed).To(BeTrue())
 		})
 	})

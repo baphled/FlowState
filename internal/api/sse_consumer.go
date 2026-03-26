@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // SSEConsumer implements streaming.StreamConsumer for server-sent event responses.
@@ -142,4 +144,20 @@ func (c *SSEConsumer) WriteComplete(content string) {
 //   - Flushes the response buffer.
 func (c *SSEConsumer) WriteCriticFeedback(content string) {
 	writeSSECriticFeedback(c.w, c.flusher, content)
+}
+
+// WriteDelegation writes a JSON-encoded delegation event as a server-sent event.
+//
+// Expected:
+//   - event contains delegation metadata including source/target agents and status.
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded delegation event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteDelegation(event streaming.DelegationEvent) error {
+	writeSSEDelegation(c.w, c.flusher, event)
+	return nil
 }
