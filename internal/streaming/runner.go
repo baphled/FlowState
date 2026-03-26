@@ -41,6 +41,9 @@ func Run(ctx context.Context, s Streamer, c StreamConsumer, agentID, message str
 		if dispatchHarnessEvent(c, chunk) {
 			continue
 		}
+		if deliverDelegationEvent(c, chunk.DelegationInfo) {
+			continue
+		}
 		deliverToolCall(c, chunk.ToolCall)
 		deliverToolResult(c, chunk.ToolResult)
 		if chunk.Content != "" && writeErr == nil {
@@ -131,4 +134,39 @@ func deliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
 		return
 	}
 	trc.WriteToolResult(result.Content)
+}
+
+// deliverDelegationEvent converts a DelegationInfo into a DelegationEvent and delivers
+// it to the consumer if supported. Returns true when the chunk carried delegation info
+// (regardless of consumer support) so the caller can skip normal content delivery.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - info may be nil.
+//
+// Returns:
+//   - true if info was non-nil (chunk consumed as delegation event).
+//   - false if info was nil (chunk should continue normal processing).
+//
+// Side effects:
+//   - If info is non-nil and c implements DelegationConsumer, calls c.WriteDelegation.
+func deliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) bool {
+	if info == nil {
+		return false
+	}
+	dc, ok := c.(DelegationConsumer)
+	if !ok {
+		return true
+	}
+	if err := dc.WriteDelegation(DelegationEvent{
+		SourceAgent:  info.SourceAgent,
+		TargetAgent:  info.TargetAgent,
+		Status:       info.Status,
+		ModelName:    info.ModelName,
+		ProviderName: info.ProviderName,
+		Description:  info.Description,
+	}); err != nil {
+		c.WriteError(err)
+	}
+	return true
 }

@@ -457,7 +457,7 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
-		toolResult, err := e.executeToolCall(ctx, toolCall)
+		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), toolCall)
 		if err != nil {
 			outChan <- provider.StreamChunk{Error: err, Done: true}
 			return

@@ -205,7 +205,7 @@ func wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
 	for _, targetID := range manifest.Delegation.DelegationTable {
 		engines[targetID] = eng
 	}
-	eng.AddTool(engine.NewDelegateTool(engines, manifest.Delegation))
+	eng.AddTool(engine.NewDelegateTool(engines, manifest.Delegation, manifest.ID))
 }
 
 // buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
