@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/delegation"
+	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -62,11 +63,12 @@ func streamOutputFromContext(ctx context.Context) (chan<- provider.StreamChunk, 
 
 // DelegateTool enables an engine to delegate tasks to other agents.
 type DelegateTool struct {
-	engines           map[string]*Engine
-	delegation        agent.Delegation
-	sourceAgentID     string
-	backgroundManager *BackgroundTaskManager
-	coordinationStore coordination.Store
+	engines            map[string]*Engine
+	delegation         agent.Delegation
+	sourceAgentID      string
+	backgroundManager  *BackgroundTaskManager
+	coordinationStore  coordination.Store
+	embeddingDiscovery *discovery.EmbeddingDiscovery
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -134,6 +136,17 @@ func NewDelegateToolWithBackground(
 		backgroundManager: backgroundManager,
 		coordinationStore: coordinationStore,
 	}
+}
+
+// SetEmbeddingDiscovery sets the embedding-based discovery for agent matching.
+//
+// Expected:
+//   - ed is a non-nil EmbeddingDiscovery instance.
+//
+// Side effects:
+//   - Sets the embeddingDiscovery field for use in target resolution.
+func (d *DelegateTool) SetEmbeddingDiscovery(ed *discovery.EmbeddingDiscovery) {
+	d.embeddingDiscovery = ed
 }
 
 // Name returns the tool name.
@@ -210,7 +223,7 @@ func (d *DelegateTool) Schema() tool.Schema {
 //   - Streams a request to the target agent's engine.
 //   - Emits DelegationInfo stream chunks when an output channel is available in ctx.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
-	target, runAsync, err := d.resolveTargetWithOptions(input)
+	target, runAsync, err := d.resolveTargetWithOptions(ctx, input)
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -382,6 +395,7 @@ func (d *DelegateTool) executeBackgroundTask(
 // resolveTargetWithOptions validates input and resolves the target with async options.
 //
 // Expected:
+//   - ctx is a valid context for the discovery operation.
 //   - input contains task_type, message, run_in_background, and optional handoff arguments.
 //
 // Returns:
@@ -391,7 +405,7 @@ func (d *DelegateTool) executeBackgroundTask(
 //
 // Side effects:
 //   - None.
-func (d *DelegateTool) resolveTargetWithOptions(input tool.Input) (delegationTarget, bool, error) {
+func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, input tool.Input) (delegationTarget, bool, error) {
 	if !d.delegation.CanDelegate {
 		return delegationTarget{}, false, errDelegationNotAllowed
 	}
@@ -420,21 +434,21 @@ func (d *DelegateTool) resolveTargetWithOptions(input tool.Input) (delegationTar
 		handoff = h
 	}
 
-	targetAgentID, ok := d.delegation.DelegationTable[taskType]
-	if !ok {
-		return delegationTarget{}, false, fmt.Errorf("no agent configured for task type: %s", taskType)
-	}
-
-	targetEngine, ok := d.engines[targetAgentID]
-	if !ok {
-		return delegationTarget{}, false, fmt.Errorf("target agent engine not available: %s", targetAgentID)
-	}
-
 	var chainID string
 	if handoff != nil {
 		chainID = handoff.ChainID
 	} else {
 		chainID = newDelegationChainID()
+	}
+
+	targetAgentID, err := d.resolveWithDiscovery(ctx, taskType, message)
+	if err != nil {
+		return delegationTarget{}, false, err
+	}
+
+	targetEngine, ok := d.engines[targetAgentID]
+	if !ok {
+		return delegationTarget{}, false, fmt.Errorf("target agent engine not available: %s", targetAgentID)
 	}
 
 	return delegationTarget{
@@ -444,6 +458,38 @@ func (d *DelegateTool) resolveTargetWithOptions(input tool.Input) (delegationTar
 		handoff: handoff,
 		chainID: chainID,
 	}, runAsync, nil
+}
+
+// resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery,
+// falling back to the delegation table if confidence is below threshold or discovery is unavailable.
+//
+// Expected:
+//   - ctx is a valid context for the embedding operation.
+//   - taskType is the delegation task type key.
+//   - message is the delegation message for embedding.
+//
+// Returns:
+//   - The resolved target agent ID.
+//   - An error if resolution fails.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveWithDiscovery(ctx context.Context, taskType, message string) (string, error) {
+	if d.embeddingDiscovery != nil {
+		matches, err := d.embeddingDiscovery.Match(ctx, taskType+" "+message)
+		if err == nil && len(matches) > 0 && matches[0].Confidence >= 0.7 {
+			if _, ok := d.engines[matches[0].AgentID]; ok {
+				return matches[0].AgentID, nil
+			}
+		}
+	}
+
+	targetAgentID, ok := d.delegation.DelegationTable[taskType]
+	if !ok {
+		return "", fmt.Errorf("no agent configured for task type: %s", taskType)
+	}
+
+	return targetAgentID, nil
 }
 
 // parseHandoff parses a handoff argument into a delegation.Handoff struct.
