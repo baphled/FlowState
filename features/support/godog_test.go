@@ -51,5 +51,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSessionVisibilitySteps(ctx, si)
 	sto := &StreamingToolOutputSteps{}
 	RegisterStreamingToolOutputSteps(ctx, sto)
+	// Planning steps are in the same package
+	RegisterPlanningSteps(ctx)
 	s.RegisterSteps(ctx)
 }
