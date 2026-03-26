@@ -279,6 +279,8 @@ func (d *DelegateTool) executeSync(
 	}
 
 	completedAt := time.Now().UTC()
+	baseInfo.ModelName = target.engine.LastModel()
+	baseInfo.ProviderName = target.engine.LastProvider()
 	baseInfo.ToolCalls = result.toolCalls
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
@@ -367,6 +369,8 @@ func (d *DelegateTool) executeBackgroundTask(
 	}
 
 	completedAt := time.Now().UTC()
+	baseInfo.ModelName = target.engine.LastModel()
+	baseInfo.ProviderName = target.engine.LastProvider()
 	baseInfo.ToolCalls = result.toolCalls
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt

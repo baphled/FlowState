@@ -634,6 +634,73 @@ var _ = Describe("Delegation", func() {
 				Expect(started.TargetAgent).To(Equal("qa-agent"))
 			})
 		})
+
+		Describe("delegation model selection", func() {
+			It("uses the target agent's model preferences, not the coordinator's", func() {
+				coordinatorProvider := &mockProvider{
+					name:         "anthropic",
+					streamChunks: []provider.StreamChunk{{Content: "wrong", Done: true}},
+					models:       []provider.Model{{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000}},
+				}
+				targetProvider := &mockProvider{
+					name:         "ollama",
+					streamChunks: []provider.StreamChunk{{Content: "target response", Done: true}},
+					models:       []provider.Model{{ID: "llama3.2", Provider: "ollama", ContextLength: 128000}},
+				}
+
+				provReg := provider.NewRegistry()
+				provReg.Register(coordinatorProvider)
+				provReg.Register(targetProvider)
+
+				coordinatorManifest := agent.Manifest{
+					ID: "coordinator",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"anthropic": {{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+					},
+					Delegation: agent.Delegation{
+						CanDelegate:     true,
+						DelegationTable: map[string]string{"writing": "writer"},
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				writerManifest := agent.Manifest{
+					ID: "writer",
+					ModelPreferences: map[string][]agent.ModelPref{
+						"ollama": {{Provider: "ollama", Model: "llama3.2"}},
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				writerEngine := engine.New(engine.Config{
+					Registry: provReg,
+					Manifest: writerManifest,
+				})
+
+				engines := map[string]*engine.Engine{"writer": writerEngine}
+				delegation := coordinatorManifest.Delegation
+				delegateTool := engine.NewDelegateTool(engines, delegation, "coordinator")
+
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "writing",
+						"message":   "Write the plan",
+					},
+				}
+
+				result, err := delegateTool.Execute(context.Background(), input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(Equal("target response"))
+
+				Expect(targetProvider.capturedRequest).NotTo(BeNil())
+				Expect(targetProvider.capturedRequest.Model).To(Equal("llama3.2"))
+
+				Expect(coordinatorProvider.capturedRequest).To(BeNil())
+
+				Expect(writerEngine.LastModel()).To(Equal("llama3.2"))
+				Expect(writerEngine.LastProvider()).To(Equal("ollama"))
+			})
+		})
 	})
 
 })
