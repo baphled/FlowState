@@ -12,6 +12,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 )
@@ -24,12 +25,26 @@ type Streamer interface {
 
 // Server provides HTTP endpoints for the FlowState platform.
 type Server struct {
-	streamer  Streamer
-	registry  *agent.Registry
-	discovery *discovery.AgentDiscovery
-	skills    []skill.Skill
-	sessions  *ctxstore.FileSessionStore
-	mux       *http.ServeMux
+	streamer       Streamer
+	registry       *agent.Registry
+	discovery      *discovery.AgentDiscovery
+	skills         []skill.Skill
+	sessions       *ctxstore.FileSessionStore
+	sessionManager *session.Manager
+	mux            *http.ServeMux
+}
+
+// ServerOption configures an optional Server dependency.
+type ServerOption func(*Server)
+
+// WithSessionManager sets the session manager for session-scoped API routes.
+func WithSessionManager(mgr *session.Manager) ServerOption {
+	return func(s *Server) { s.sessionManager = mgr }
+}
+
+// WithSessions sets the session store for session API routes.
+func WithSessions(store *ctxstore.FileSessionStore) ServerOption {
+	return func(s *Server) { s.sessions = store }
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -51,15 +66,17 @@ func NewServer(
 	registry *agent.Registry,
 	disc *discovery.AgentDiscovery,
 	skills []skill.Skill,
-	sessions *ctxstore.FileSessionStore,
+	opts ...ServerOption,
 ) *Server {
 	s := &Server{
 		streamer:  streamer,
 		registry:  registry,
 		discovery: disc,
 		skills:    skills,
-		sessions:  sessions,
 		mux:       http.NewServeMux(),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.setupRoutes()
 	return s
@@ -89,6 +106,13 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	s.mux.HandleFunc("GET /", s.handleIndex)
+
+	// Session-scoped v1 API routes
+	s.mux.HandleFunc("POST /api/v1/sessions", s.handleCreateSession)
+	s.mux.HandleFunc("GET /api/v1/sessions", s.handleListV1Sessions)
+	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.
@@ -198,6 +222,83 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 //   - Writes HTTP 200 response with JSON-encoded skills list.
 func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.skills)
+}
+
+// handleCreateSession creates a new session and returns its summary.
+func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	type reqBody struct {
+		AgentID string `json:"agent_id"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentID == "" {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	sess, err := s.sessionManager.CreateSession(req.AgentID)
+	if err != nil {
+		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, sess)
+}
+
+// handleListV1Sessions lists all sessions as summaries.
+func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
+	summaries := s.sessionManager.ListSessions()
+	if summaries == nil {
+		summaries = []*session.Summary{}
+	}
+	writeJSON(w, summaries)
+}
+
+// handleSessionMessage appends a message to a session and returns the updated session.
+func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	type reqBody struct {
+		Content string `json:"content"`
+	}
+	var req reqBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	// Use SendMessage to append and stream response (MVP: just append, ignore stream)
+	_, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	sess, err := s.sessionManager.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, sess)
+}
+
+// handleSessionStream streams session events as SSE, supporting verbosity param.
+func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	verbosity := r.URL.Query().Get("verbosity")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	sess, err := s.sessionManager.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	for _, msg := range sess.Messages {
+		if verbosity == "full" || msg.Role == "assistant" {
+			writeSSEContent(w, flusher, msg.Content)
+		}
+	}
+	writeSSEDone(w, flusher)
 }
 
 // handleListSessions writes all available sessions as JSON to the response.

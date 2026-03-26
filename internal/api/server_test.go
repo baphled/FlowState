@@ -98,7 +98,7 @@ var _ = Describe("Server", func() {
 			{Name: "skill-two", Description: "Second skill"},
 		}
 
-		server = api.NewServer(streamer, registry, disc, skills, nil)
+		server = api.NewServer(streamer, registry, disc, skills)
 	})
 
 	Describe("GET /api/agents", func() {

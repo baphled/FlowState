@@ -44,6 +44,7 @@ import (
 	"github.com/baphled/flowstate/internal/tracer"
 
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 // App is the main application container holding all initialized components.
@@ -195,7 +196,15 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
-	apiServer := api.NewServer(streamer, params.agentRegistry, disc, params.skills, params.sessionStore)
+	sessionMgr := session.NewManager(streamer)
+	apiServer := api.NewServer(
+		streamer,
+		params.agentRegistry,
+		disc,
+		params.skills,
+		api.WithSessions(params.sessionStore),
+		api.WithSessionManager(sessionMgr),
+	)
 	return &runtimeComponents{
 		engine:          eng,
 		discovery:       disc,
