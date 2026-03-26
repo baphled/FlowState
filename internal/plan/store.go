@@ -94,15 +94,17 @@ func (s *PlanStore) Create(f File) error {
 	filePath := filepath.Join(s.dataDir, f.ID+".md")
 
 	fm := Frontmatter{
-		ID:               f.ID,
-		Title:            f.Title,
-		Description:      f.Description,
-		Status:           f.Status,
-		CreatedAt:        f.CreatedAt,
-		ValidationStatus: f.ValidationStatus,
-		AttemptCount:     f.AttemptCount,
-		Score:            f.Score,
-		ValidationErrors: f.ValidationErrors,
+		ID:                   f.ID,
+		Title:                f.Title,
+		Description:          f.Description,
+		Status:               f.Status,
+		CreatedAt:            f.CreatedAt,
+		ValidationStatus:     f.ValidationStatus,
+		AttemptCount:         f.AttemptCount,
+		Score:                f.Score,
+		ValidationErrors:     f.ValidationErrors,
+		TLDR:                 f.TLDR,
+		VerificationStrategy: f.VerificationStrategy,
 	}
 
 	frontmatterBytes, err := yaml.Marshal(fm)
@@ -114,6 +116,8 @@ func (s *PlanStore) Create(f File) error {
 	body.WriteString("---\n")
 	body.Write(frontmatterBytes)
 	body.WriteString("---\n\n")
+
+	writePlanSections(&body, f)
 
 	writeTasksToMarkdown(&body, f.Tasks)
 
@@ -212,19 +216,29 @@ func (s *PlanStore) Get(id string) (*File, error) {
 		return nil, fmt.Errorf("parsing frontmatter: %w", err)
 	}
 
-	tasks := parseTasksFromMarkdown(parts[2])
+	body := parts[2]
+
+	planSections, taskMarkdown := splitPlanSectionsAndTasks(body)
+	ctx, wo, reviews := parsePlanSections(planSections)
+
+	tasks := parseTasksFromMarkdown(taskMarkdown)
 
 	return &File{
-		ID:               fm.ID,
-		Title:            fm.Title,
-		Description:      fm.Description,
-		Status:           fm.Status,
-		CreatedAt:        fm.CreatedAt,
-		Tasks:            tasks,
-		ValidationStatus: fm.ValidationStatus,
-		AttemptCount:     fm.AttemptCount,
-		Score:            fm.Score,
-		ValidationErrors: fm.ValidationErrors,
+		ID:                   fm.ID,
+		Title:                fm.Title,
+		Description:          fm.Description,
+		Status:               fm.Status,
+		CreatedAt:            fm.CreatedAt,
+		Tasks:                tasks,
+		ValidationStatus:     fm.ValidationStatus,
+		AttemptCount:         fm.AttemptCount,
+		Score:                fm.Score,
+		ValidationErrors:     fm.ValidationErrors,
+		TLDR:                 fm.TLDR,
+		VerificationStrategy: fm.VerificationStrategy,
+		Context:              ctx,
+		WorkObjectives:       wo,
+		Reviews:              reviews,
 	}, nil
 }
 
@@ -269,6 +283,8 @@ func (s *PlanStore) Delete(id string) error {
 //
 // Side effects:
 //   - None.
+//
+//nolint:gocognit,revive,funlen // Cognitive complexity is inherent to the parsing logic
 func parseTasksFromMarkdown(markdown string) []Task {
 	if strings.TrimSpace(markdown) == "" {
 		return []Task{}
@@ -316,6 +332,16 @@ func parseTasksFromMarkdown(markdown string) []Task {
 
 		if isWaveLine(line) {
 			parseWave(line, currentTask)
+			continue
+		}
+
+		if isFileChangesLine(line) {
+			i = parseFileChanges(lines, i, currentTask)
+			continue
+		}
+
+		if isEvidenceLine(line) {
+			parseEvidence(line, currentTask)
 			continue
 		}
 
@@ -488,6 +514,8 @@ func appendDescription(line string, task *Task) {
 //
 // Side effects:
 //   - Writes task markdown to body.
+//
+//nolint:gocognit,revive // Cognitive complexity is inherent to the writing logic
 func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
 	for i := range tasks {
 		task := &tasks[i]
@@ -518,6 +546,18 @@ func writeTasksToMarkdown(body *strings.Builder, tasks []Task) {
 
 		if task.Wave > 0 {
 			fmt.Fprintf(body, "**Wave**: %d\n\n", task.Wave)
+		}
+
+		if len(task.FileChanges) > 0 {
+			body.WriteString("**File Changes**:\n")
+			for _, fc := range task.FileChanges {
+				fmt.Fprintf(body, "- %s\n", fc)
+			}
+			body.WriteString("\n")
+		}
+
+		if task.Evidence != "" {
+			fmt.Fprintf(body, "**Evidence**: %s\n\n", task.Evidence)
 		}
 	}
 }
@@ -621,4 +661,351 @@ func parseWave(line string, task *Task) {
 			task.Wave = wave
 		}
 	}
+}
+
+// isFileChangesLine checks if a line is the file changes line.
+//
+// Expected:
+//   - line is a single line of text (no newlines).
+//
+// Returns:
+//   - true if line starts with "**File Changes**:", false otherwise.
+//
+// Side effects:
+//   - None.
+func isFileChangesLine(line string) bool {
+	return strings.HasPrefix(line, "**File Changes**:")
+}
+
+// parseFileChanges extracts file changes from a file changes section.
+//
+// Expected:
+//   - startIdx points to the file changes header.
+//   - task is non-nil.
+//
+// Returns:
+//   - updated line index for the outer loop to continue from.
+//
+// Side effects:
+//   - Modifies task.FileChanges to include parsed file paths.
+func parseFileChanges(lines []string, startIdx int, task *Task) int {
+	i := startIdx + 1
+	for i < len(lines) {
+		line := lines[i]
+		if strings.HasPrefix(line, "- ") {
+			fc := strings.TrimPrefix(line, "- ")
+			task.FileChanges = append(task.FileChanges, strings.TrimSpace(fc))
+			i++
+		} else if shouldStopCriteriaParsing(line) {
+			break
+		} else {
+			i++
+		}
+	}
+	return i - 1
+}
+
+// isEvidenceLine checks if a line is the evidence line.
+//
+// Expected:
+//   - line is a single line of text (no newlines).
+//
+// Returns:
+//   - true if line starts with "**Evidence**:", false otherwise.
+//
+// Side effects:
+//   - None.
+func isEvidenceLine(line string) bool {
+	return strings.HasPrefix(line, "**Evidence**:")
+}
+
+// parseEvidence extracts evidence from a line and sets it on the task.
+//
+// Expected:
+//   - line starts with "**Evidence**:" (checked by caller).
+//   - task is non-nil.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Modifies task.Evidence to the parsed value.
+func parseEvidence(line string, task *Task) {
+	evidenceStr := strings.TrimPrefix(line, "**Evidence**: ")
+	task.Evidence = strings.TrimSpace(evidenceStr)
+}
+
+// writePlanSections writes the OMO-style plan sections to the markdown body.
+//
+// Expected:
+//   - body is a non-nil strings.Builder.
+//   - f contains the plan with optional sections.
+//
+// Returns:
+//   - (nothing; type void).
+//
+// Side effects:
+//   - Writes section markdown to body.
+//
+//nolint:gocognit,nestif,gocyclo,revive,funlen // Necessary complexity for handling multiple section types
+func writePlanSections(body *strings.Builder, f File) {
+	hasContext := f.Context.OriginalRequest != "" || f.Context.InterviewSummary != "" || f.Context.ResearchFindings != ""
+	hasWorkObjectives := f.WorkObjectives.CoreObjective != "" || len(f.WorkObjectives.Deliverables) > 0 ||
+		len(f.WorkObjectives.DefinitionOfDone) > 0 || len(f.WorkObjectives.MustHave) > 0 || len(f.WorkObjectives.MustNotHave) > 0
+	hasReviews := len(f.Reviews) > 0
+
+	if !hasContext && !hasWorkObjectives && !hasReviews {
+		return
+	}
+
+	if hasContext {
+		body.WriteString("## Context\n\n")
+		if f.Context.OriginalRequest != "" {
+			fmt.Fprintf(body, "**Original Request**: %s\n\n", f.Context.OriginalRequest)
+		}
+		if f.Context.InterviewSummary != "" {
+			fmt.Fprintf(body, "**Interview Summary**: %s\n\n", f.Context.InterviewSummary)
+		}
+		if f.Context.ResearchFindings != "" {
+			fmt.Fprintf(body, "**Research Findings**: %s\n\n", f.Context.ResearchFindings)
+		}
+	}
+
+	if hasWorkObjectives {
+		body.WriteString("## Work Objectives\n\n")
+		if f.WorkObjectives.CoreObjective != "" {
+			fmt.Fprintf(body, "**Core Objective**: %s\n\n", f.WorkObjectives.CoreObjective)
+		}
+		if len(f.WorkObjectives.Deliverables) > 0 {
+			body.WriteString("**Deliverables**:\n")
+			for _, d := range f.WorkObjectives.Deliverables {
+				fmt.Fprintf(body, "- %s\n", d)
+			}
+			body.WriteString("\n")
+		}
+		if len(f.WorkObjectives.DefinitionOfDone) > 0 {
+			body.WriteString("**Definition of Done**:\n")
+			for _, d := range f.WorkObjectives.DefinitionOfDone {
+				fmt.Fprintf(body, "- %s\n", d)
+			}
+			body.WriteString("\n")
+		}
+		if len(f.WorkObjectives.MustHave) > 0 {
+			body.WriteString("**Must Have**:\n")
+			for _, m := range f.WorkObjectives.MustHave {
+				fmt.Fprintf(body, "- %s\n", m)
+			}
+			body.WriteString("\n")
+		}
+		if len(f.WorkObjectives.MustNotHave) > 0 {
+			body.WriteString("**Must Not Have**:\n")
+			for _, m := range f.WorkObjectives.MustNotHave {
+				fmt.Fprintf(body, "- %s\n", m)
+			}
+			body.WriteString("\n")
+		}
+	}
+
+	if hasReviews {
+		body.WriteString("## Reviews\n\n")
+		for _, r := range f.Reviews {
+			if r.Reviewer != "" {
+				fmt.Fprintf(body, "**Reviewer**: %s\n\n", r.Reviewer)
+			}
+			if r.Verdict != "" {
+				fmt.Fprintf(body, "**Verdict**: %s\n\n", r.Verdict)
+			}
+			if r.Confidence > 0 {
+				fmt.Fprintf(body, "**Confidence**: %.2f\n\n", r.Confidence)
+			}
+			if len(r.Issues) > 0 {
+				body.WriteString("**Issues**:\n")
+				for _, i := range r.Issues {
+					fmt.Fprintf(body, "- %s\n", i)
+				}
+				body.WriteString("\n")
+			}
+			if len(r.Suggestions) > 0 {
+				body.WriteString("**Suggestions**:\n")
+				for _, s := range r.Suggestions {
+					fmt.Fprintf(body, "- %s\n", s)
+				}
+				body.WriteString("\n")
+			}
+		}
+	}
+}
+
+// splitPlanSectionsAndTasks separates the plan sections from the tasks section.
+//
+// Expected:
+//   - markdown is the content after the frontmatter delimiter.
+//
+// Returns:
+//   - planSections: content before ## Tasks
+//   - taskMarkdown: content starting from ## Tasks (or empty if no tasks)
+//
+// Side effects:
+//   - None.
+func splitPlanSectionsAndTasks(markdown string) (string, string) {
+	lines := strings.Split(markdown, "\n")
+
+	for i, line := range lines {
+		if strings.HasPrefix(line, "## ") && strings.TrimPrefix(line, "## ") != "Context" &&
+			strings.TrimPrefix(line, "## ") != "Work Objectives" && strings.TrimPrefix(line, "## ") != "Reviews" {
+			planSections := strings.Join(lines[:i], "\n")
+			taskMarkdown := strings.Join(lines[i:], "\n")
+			return planSections, taskMarkdown
+		}
+	}
+
+	return markdown, ""
+}
+
+// parsePlanSections extracts OMO-style plan sections from the markdown body.
+//
+// Expected:
+//   - markdown is the content after the frontmatter delimiter.
+//   - May contain Context, Work Objectives, Reviews sections before ## Tasks.
+//
+// Returns:
+//   - Context, WorkObjectives, Reviews extracted from markdown.
+//
+// Side effects:
+//   - None.
+//
+//nolint:gocognit,nestif,gocyclo,revive,funlen // Necessary complexity for parsing multiple section types
+func parsePlanSections(markdown string) (Context, WorkObjectives, []ReviewResult) {
+	var ctx Context
+	var wo WorkObjectives
+	var reviews []ReviewResult
+
+	if strings.TrimSpace(markdown) == "" {
+		return ctx, wo, reviews
+	}
+
+	lines := strings.Split(markdown, "\n")
+
+	var currentSection string
+	var currentReview *ReviewResult
+
+	//nolint:revive // Required to allow modifying loop variable in parseBulletList
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+
+		if strings.HasPrefix(line, "## Context") {
+			currentSection = "context"
+			continue
+		}
+
+		if strings.HasPrefix(line, "## Work Objectives") {
+			currentSection = "workObjectives"
+			continue
+		}
+
+		if strings.HasPrefix(line, "## Reviews") {
+			currentSection = "reviews"
+			continue
+		}
+
+		if strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "## Context") &&
+			!strings.HasPrefix(line, "## Work Objectives") && !strings.HasPrefix(line, "## Reviews") {
+			break
+		}
+
+		switch currentSection {
+		case "context":
+			if strings.HasPrefix(line, "**Original Request**:") {
+				ctx.OriginalRequest = strings.TrimPrefix(line, "**Original Request**: ")
+			}
+			if strings.HasPrefix(line, "**Interview Summary**:") {
+				ctx.InterviewSummary = strings.TrimPrefix(line, "**Interview Summary**: ")
+			}
+			if strings.HasPrefix(line, "**Research Findings**:") {
+				ctx.ResearchFindings = strings.TrimPrefix(line, "**Research Findings**: ")
+			}
+
+		case "workObjectives":
+			if strings.HasPrefix(line, "**Core Objective**:") {
+				wo.CoreObjective = strings.TrimPrefix(line, "**Core Objective**: ")
+			}
+			if strings.HasPrefix(line, "**Deliverables**:") {
+				wo.Deliverables, i = parseBulletList(lines, i)
+			}
+			if strings.HasPrefix(line, "**Definition of Done**:") {
+				wo.DefinitionOfDone, i = parseBulletList(lines, i)
+			}
+			if strings.HasPrefix(line, "**Must Have**:") {
+				wo.MustHave, i = parseBulletList(lines, i)
+			}
+			if strings.HasPrefix(line, "**Must Not Have**:") {
+				wo.MustNotHave, i = parseBulletList(lines, i)
+			}
+
+		case "reviews":
+			if strings.HasPrefix(line, "**Reviewer**:") {
+				if currentReview != nil {
+					reviews = append(reviews, *currentReview)
+				}
+				currentReview = &ReviewResult{
+					Reviewer: strings.TrimPrefix(line, "**Reviewer**: "),
+				}
+			}
+			if currentReview != nil {
+				if strings.HasPrefix(line, "**Verdict**:") {
+					currentReview.Verdict = strings.TrimPrefix(line, "**Verdict**: ")
+				}
+				if strings.HasPrefix(line, "**Confidence**:") {
+					confStr := strings.TrimPrefix(line, "**Confidence**: ")
+					if conf, err := strconv.ParseFloat(confStr, 64); err == nil {
+						currentReview.Confidence = conf
+					}
+				}
+				if strings.HasPrefix(line, "**Issues**:") {
+					currentReview.Issues, i = parseBulletList(lines, i)
+				}
+				if strings.HasPrefix(line, "**Suggestions**:") {
+					currentReview.Suggestions, i = parseBulletList(lines, i)
+				}
+			}
+		}
+	}
+
+	if currentReview != nil {
+		reviews = append(reviews, *currentReview)
+	}
+
+	return ctx, wo, reviews
+}
+
+// parseBulletList parses bullet list items from subsequent lines.
+//
+// Expected:
+//   - lines is the full markdown lines.
+//   - startIdx points to the line with the bullet list header.
+//
+// Returns:
+//   - slice of bullet item strings.
+//   - updated index to continue parsing from.
+//
+// Side effects:
+//   - None.
+func parseBulletList(lines []string, startIdx int) ([]string, int) {
+	var items []string
+	i := startIdx + 1
+
+	for i < len(lines) {
+		line := lines[i]
+		if strings.HasPrefix(line, "- ") {
+			items = append(items, strings.TrimPrefix(line, "- "))
+			i++
+		} else if strings.TrimSpace(line) == "" {
+			i++
+			continue
+		} else {
+			break
+		}
+	}
+
+	return items, i - 1
 }
