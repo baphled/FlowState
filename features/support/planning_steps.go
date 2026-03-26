@@ -7,9 +7,13 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/delegation"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // PlanningStepDefinitions holds state for planning loop BDD scenarios.
@@ -19,6 +23,7 @@ type PlanningStepDefinitions struct {
 	circuitBreaker    *delegation.CircuitBreaker
 	delegationEvents  []streaming.DelegationEvent
 	requirements      string
+	delegateTool      *engine.DelegateTool
 }
 
 // RegisterPlanningSteps registers all planning-loop-related BDD step definitions.
@@ -37,6 +42,7 @@ func RegisterPlanningSteps(ctx *godog.ScenarioContext) {
 		p.circuitBreaker = nil
 		p.delegationEvents = nil
 		p.requirements = ""
+		p.delegateTool = nil
 		return bddCtx, nil
 	})
 
@@ -64,31 +70,246 @@ func RegisterPlanningSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the event should contain a description$`, p.theEventShouldContainADescription)
 }
 
-// aPlanningCoordinatorAgentIsConfigured confirms the coordinator agent setup is valid.
-//
-// Expected:
-//   - The planning coordinator scenario is initialised.
+// planningMockProvider is a minimal provider.Provider implementation for planning BDD tests.
+type planningMockProvider struct {
+	agentName string
+}
+
+// Name returns the provider name for the planning mock.
 //
 // Returns:
-//   - nil when the coordinator configuration is acceptable.
+//   - The string "mock-planning".
 //
 // Side effects:
 //   - None.
+func (p *planningMockProvider) Name() string { return "mock-planning" }
+
+// Stream returns a single content chunk and closes the channel.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req is a valid ChatRequest.
+//
+// Returns:
+//   - A channel of StreamChunk values containing one content chunk.
+//   - nil error always.
+//
+// Side effects:
+//   - Spawns a goroutine to send chunks on the returned channel.
+func (p *planningMockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(ch)
+		ch <- provider.StreamChunk{Content: p.agentName + " response", Done: true}
+	}()
+	return ch, nil
+}
+
+// Chat returns a single mock assistant message.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req is a valid ChatRequest.
+//
+// Returns:
+//   - A ChatResponse containing the mock agent name as the response content.
+//   - nil error always.
+//
+// Side effects:
+//   - None.
+func (p *planningMockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{
+		Message: provider.Message{Role: "assistant", Content: p.agentName + " response"},
+	}, nil
+}
+
+// Embed returns a nil embedding slice (unused in planning tests).
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req is a valid EmbedRequest.
+//
+// Returns:
+//   - nil slice and nil error always.
+//
+// Side effects:
+//   - None.
+func (p *planningMockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+// Models returns the single mock model available to planning agents.
+//
+// Returns:
+//   - A slice containing one model entry for "llama3.2" on "mock-planning".
+//   - nil error always.
+//
+// Side effects:
+//   - None.
+func (p *planningMockProvider) Models() ([]provider.Model, error) {
+	return []provider.Model{{ID: "llama3.2", Provider: "mock-planning", ContextLength: 8192}}, nil
+}
+
+// buildPlanningDelegateTool creates a DelegateTool wired with plan-writer and plan-reviewer engines.
+//
+// Returns:
+//   - A configured DelegateTool with plan-writing and plan-review delegation entries.
+//
+// Side effects:
+//   - Allocates provider registry, engine, and delegation tool instances.
+func buildPlanningDelegateTool() *engine.DelegateTool {
+	reg := provider.NewRegistry()
+	reg.Register(&planningMockProvider{agentName: "plan-writer"})
+
+	writerManifest := agent.Manifest{
+		ID:   "plan-writer",
+		Name: "Plan Writer Agent",
+		ModelPreferences: map[string][]agent.ModelPref{
+			"mock-planning": {{Provider: "mock-planning", Model: "llama3.2"}},
+		},
+		Instructions:      agent.Instructions{SystemPrompt: "You are a plan writer."},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+	reviewerManifest := agent.Manifest{
+		ID:   "plan-reviewer",
+		Name: "Plan Reviewer Agent",
+		ModelPreferences: map[string][]agent.ModelPref{
+			"mock-planning": {{Provider: "mock-planning", Model: "llama3.2"}},
+		},
+		Instructions:      agent.Instructions{SystemPrompt: "You are a plan reviewer."},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	writerEngine := engine.New(engine.Config{
+		Registry: reg,
+		Manifest: writerManifest,
+	})
+	reviewerEngine := engine.New(engine.Config{
+		Registry: reg,
+		Manifest: reviewerManifest,
+	})
+
+	engines := map[string]*engine.Engine{
+		"plan-writer":   writerEngine,
+		"plan-reviewer": reviewerEngine,
+	}
+
+	delegationConfig := agent.Delegation{
+		CanDelegate: true,
+		DelegationTable: map[string]string{
+			"plan-writing": "plan-writer",
+			"plan-review":  "plan-reviewer",
+		},
+	}
+
+	return engine.NewDelegateTool(engines, delegationConfig, "planning-coordinator")
+}
+
+// delegateAndCollect calls Execute on the delegateTool and collects emitted DelegationEvents.
+//
+// Expected:
+//   - ctx is a valid context for the delegation.
+//   - dt is a configured DelegateTool with at least one valid engine route.
+//   - taskType identifies a valid delegation table entry.
+//   - message is the instruction to send to the target agent.
+//
+// Returns:
+//   - A slice of DelegationEvent values emitted during the delegation.
+//   - An error if Execute fails.
+//
+// Side effects:
+//   - Calls the target engine's Stream method via DelegateTool.Execute.
+func delegateAndCollect(ctx context.Context, dt *engine.DelegateTool, taskType, message string) ([]streaming.DelegationEvent, error) {
+	outChan := make(chan provider.StreamChunk, 16)
+	streamCtx := engine.WithStreamOutput(ctx, outChan)
+
+	input := tool.Input{
+		Name: "delegate",
+		Arguments: map[string]interface{}{
+			"task_type": taskType,
+			"message":   message,
+		},
+	}
+
+	_, err := dt.Execute(streamCtx, input)
+	close(outChan)
+
+	var events []streaming.DelegationEvent
+	for chunk := range outChan {
+		if chunk.DelegationInfo == nil {
+			continue
+		}
+		info := chunk.DelegationInfo
+		events = append(events, streaming.DelegationEvent{
+			SourceAgent:  info.SourceAgent,
+			TargetAgent:  info.TargetAgent,
+			ChainID:      info.ChainID,
+			Status:       info.Status,
+			ModelName:    info.ModelName,
+			ProviderName: info.ProviderName,
+			Description:  info.Description,
+			ToolCalls:    info.ToolCalls,
+			LastTool:     info.LastTool,
+			StartedAt:    info.StartedAt,
+			CompletedAt:  info.CompletedAt,
+		})
+	}
+
+	return events, err
+}
+
+// aPlanningCoordinatorAgentIsConfigured initialises a real DelegateTool with mock sub-agent engines.
+//
+// Expected:
+//   - No prior state is required.
+//
+// Returns:
+//   - nil after setting up the planning DelegateTool.
+//
+// Side effects:
+//   - Assigns a configured DelegateTool to p.delegateTool.
 func (p *PlanningStepDefinitions) aPlanningCoordinatorAgentIsConfigured(_ context.Context) error {
+	p.delegateTool = buildPlanningDelegateTool()
 	return nil
 }
 
-// theDelegationTableMapsToWriterAndReviewerAgents confirms the delegation table wiring.
+// theDelegationTableMapsToWriterAndReviewerAgents verifies the delegation table routes to both agents.
 //
 // Expected:
-//   - The planning delegation mapping is available.
+//   - p.delegateTool has been initialised.
 //
 // Returns:
-//   - nil when the writer and reviewer agents are mapped correctly.
+//   - nil when both plan-writer and plan-reviewer can be delegated to.
 //
 // Side effects:
-//   - None.
-func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgents(_ context.Context) error {
+//   - Makes test delegations to verify routing.
+func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgents(ctx context.Context) error {
+	if p.delegateTool == nil {
+		return errors.New("delegate tool not initialised")
+	}
+
+	writerInput := tool.Input{
+		Name: "delegate",
+		Arguments: map[string]interface{}{
+			"task_type": "plan-writing",
+			"message":   "verify writer routing",
+		},
+	}
+	if _, err := p.delegateTool.Execute(ctx, writerInput); err != nil {
+		return fmt.Errorf("delegation table missing plan-writer entry: %w", err)
+	}
+
+	reviewerInput := tool.Input{
+		Name: "delegate",
+		Arguments: map[string]interface{}{
+			"task_type": "plan-review",
+			"message":   "verify reviewer routing",
+		},
+	}
+	if _, err := p.delegateTool.Execute(ctx, reviewerInput); err != nil {
+		return fmt.Errorf("delegation table missing plan-reviewer entry: %w", err)
+	}
+
 	return nil
 }
 
@@ -107,27 +328,29 @@ func (p *PlanningStepDefinitions) theCoordinatorReceivesAPlanningRequest(_ conte
 	return nil
 }
 
-// itShouldDelegateToThePlanWriterAgent appends a writer delegation event.
+// itShouldDelegateToThePlanWriterAgent calls DelegateTool.Execute and collects the emitted DelegationEvent.
 //
 // Expected:
-//   - The coordinator is ready to delegate to the plan writer.
+//   - p.delegateTool is configured with a plan-writer route.
 //
 // Returns:
-//   - nil after adding the delegation event to the local history.
+//   - nil when a DelegationEvent targeting plan-writer is emitted.
 //
 // Side effects:
-//   - Appends a delegation event.
-func (p *PlanningStepDefinitions) itShouldDelegateToThePlanWriterAgent(_ context.Context) error {
-	event := streaming.DelegationEvent{
-		SourceAgent:  "planning-coordinator",
-		TargetAgent:  "plan-writer",
-		ChainID:      p.chainID,
-		Status:       "started",
-		ModelName:    "llama3.2",
-		ProviderName: "ollama",
-		Description:  "Delegating to plan-writer for plan generation",
+//   - Appends collected delegation events to p.delegationEvents.
+func (p *PlanningStepDefinitions) itShouldDelegateToThePlanWriterAgent(ctx context.Context) error {
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writing", "Generate a plan for the requirements")
+	if err != nil {
+		return fmt.Errorf("delegation to plan-writer failed: %w", err)
 	}
-	p.delegationEvents = append(p.delegationEvents, event)
+	for i := range events {
+		if events[i].TargetAgent == "plan-writer" {
+			p.delegationEvents = append(p.delegationEvents, events[i])
+		}
+	}
+	if len(p.delegationEvents) == 0 {
+		return errors.New("no DelegationEvent emitted targeting plan-writer")
+	}
 	return nil
 }
 
@@ -153,7 +376,7 @@ func (p *PlanningStepDefinitions) aDelegationEventWithStatusShouldBeEmitted(_ co
 	return errors.New("no delegation event with status " + status + " found")
 }
 
-// theDelegationShouldCompleteWithStatus updates the latest delegation event status.
+// theDelegationShouldCompleteWithStatus checks the latest delegation event status.
 //
 // Expected:
 //   - At least one delegation event exists.
@@ -162,14 +385,12 @@ func (p *PlanningStepDefinitions) aDelegationEventWithStatusShouldBeEmitted(_ co
 //   - nil when the last delegation event matches the requested status.
 //
 // Side effects:
-//   - Updates the latest delegation event status in memory.
+//   - None.
 func (p *PlanningStepDefinitions) theDelegationShouldCompleteWithStatus(_ context.Context, status string) error {
 	if len(p.delegationEvents) == 0 {
 		return errors.New("no delegation events emitted")
 	}
 	event := p.delegationEvents[len(p.delegationEvents)-1]
-	event.Status = status
-	p.delegationEvents[len(p.delegationEvents)-1] = event
 	if event.Status != status {
 		return errors.New("expected status " + status + ", got " + event.Status)
 	}
@@ -193,27 +414,29 @@ func (p *PlanningStepDefinitions) thePlanWriterHasGeneratedAPlan(_ context.Conte
 	return nil
 }
 
-// theCoordinatorDelegatesToThePlanReviewer appends a reviewer delegation event.
+// theCoordinatorDelegatesToThePlanReviewer calls DelegateTool.Execute targeting the plan-reviewer.
 //
 // Expected:
-//   - The plan reviewer delegation step runs.
+//   - p.delegateTool is configured with a plan-reviewer route.
 //
 // Returns:
-//   - nil after adding the reviewer delegation event.
+//   - nil when a DelegationEvent targeting plan-reviewer is emitted.
 //
 // Side effects:
-//   - Appends a delegation event.
-func (p *PlanningStepDefinitions) theCoordinatorDelegatesToThePlanReviewer(_ context.Context) error {
-	event := streaming.DelegationEvent{
-		SourceAgent:  "planning-coordinator",
-		TargetAgent:  "plan-reviewer",
-		ChainID:      p.chainID,
-		Status:       "started",
-		ModelName:    "llama3.2",
-		ProviderName: "ollama",
-		Description:  "Delegating to plan-reviewer for plan validation",
+//   - Appends collected delegation events to p.delegationEvents.
+func (p *PlanningStepDefinitions) theCoordinatorDelegatesToThePlanReviewer(ctx context.Context) error {
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-review", "Review the generated plan")
+	if err != nil {
+		return fmt.Errorf("delegation to plan-reviewer failed: %w", err)
 	}
-	p.delegationEvents = append(p.delegationEvents, event)
+	for i := range events {
+		if events[i].TargetAgent == "plan-reviewer" {
+			p.delegationEvents = append(p.delegationEvents, events[i])
+		}
+	}
+	if len(p.delegationEvents) == 0 {
+		return errors.New("no DelegationEvent emitted targeting plan-reviewer")
+	}
 	return nil
 }
 
@@ -404,27 +627,25 @@ func (p *PlanningStepDefinitions) theWriterShouldReceiveTheCoordinatorsRequireme
 	return nil
 }
 
-// aDelegationStarts appends a started delegation event.
+// aDelegationStarts calls DelegateTool.Execute and captures the first emitted DelegationEvent.
 //
 // Expected:
-//   - The planning delegation flow has started.
+//   - p.delegateTool is configured with at least one valid route.
 //
 // Returns:
-//   - nil after recording the started delegation event.
+//   - nil after capturing the first delegation event from a real Execute call.
 //
 // Side effects:
-//   - Appends a delegation event.
-func (p *PlanningStepDefinitions) aDelegationStarts(_ context.Context) error {
-	event := streaming.DelegationEvent{
-		SourceAgent:  "planning-coordinator",
-		TargetAgent:  "plan-writer",
-		ChainID:      "test-chain",
-		Status:       "started",
-		ModelName:    "llama3.2",
-		ProviderName: "ollama",
-		Description:  "Starting delegation to plan-writer",
+//   - Appends the first emitted delegation event to p.delegationEvents.
+func (p *PlanningStepDefinitions) aDelegationStarts(ctx context.Context) error {
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writing", "Starting delegation to plan-writer")
+	if err != nil {
+		return fmt.Errorf("delegation failed: %w", err)
 	}
-	p.delegationEvents = append(p.delegationEvents, event)
+	if len(events) == 0 {
+		return errors.New("no delegation events emitted")
+	}
+	p.delegationEvents = append(p.delegationEvents, events[0])
 	return nil
 }
 
