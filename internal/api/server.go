@@ -1,4 +1,3 @@
-// Package api provides the HTTP API server with SSE streaming support.
 package api
 
 import (
@@ -124,8 +123,6 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	s.mux.HandleFunc("GET /", s.handleIndex)
-
-	// Session-scoped v1 API routes
 	s.mux.HandleFunc("POST /api/v1/sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /api/v1/sessions", s.handleListV1Sessions)
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
@@ -301,7 +298,6 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	// Use SendMessage to append and stream response (MVP: just append, ignore stream)
 	_, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)

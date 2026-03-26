@@ -1,4 +1,3 @@
-// Package engine provides the AI agent execution engine.
 package engine
 
 import (

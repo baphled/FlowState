@@ -1,4 +1,3 @@
-// Package engine provides the AI agent execution engine.
 package engine
 
 import (
@@ -575,7 +574,8 @@ func newDelegationChainID() string {
 //   - base contains the delegation metadata to reuse for the emitted chunk.
 //
 // Side effects:
-//   - Sends a delegation update to the output channel when streaming output is enabled.
+//   - Attempts a non-blocking send to the output channel; drops the event when
+//     the channel is full to prevent background goroutines from stalling.
 func (d *DelegateTool) emitDelegationEvent(
 	outChan chan<- provider.StreamChunk, hasOutput bool,
 	base provider.DelegationInfo, status string,
@@ -585,7 +585,10 @@ func (d *DelegateTool) emitDelegationEvent(
 	}
 	info := base
 	info.Status = status
-	outChan <- provider.StreamChunk{DelegationInfo: &info}
+	select {
+	case outChan <- provider.StreamChunk{DelegationInfo: &info}:
+	default:
+	}
 }
 
 // ptrTime returns a pointer to the supplied time.

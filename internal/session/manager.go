@@ -15,6 +15,18 @@ import (
 // ErrSessionNotFound is returned when a requested session does not exist.
 var ErrSessionNotFound = errors.New("session not found")
 
+// Status represents the lifecycle state of a session.
+type Status string
+
+const (
+	// StatusActive indicates the session is currently running.
+	StatusActive Status = "active"
+	// StatusCompleted indicates the session finished successfully.
+	StatusCompleted Status = "completed"
+	// StatusFailed indicates the session ended with an error.
+	StatusFailed Status = "failed"
+)
+
 // Message represents a single message in a session's conversation history.
 type Message struct {
 	ID        string    `json:"id"`
@@ -84,7 +96,7 @@ func (m *Manager) CreateSession(agentID string) (*Session, error) {
 	sess := &Session{
 		ID:                uuid.New().String(),
 		AgentID:           agentID,
-		Status:            "active",
+		Status:            string(StatusActive),
 		CoordinationStore: coordination.NewMemoryStore(),
 		Messages:          make([]Message, 0),
 		CreatedAt:         now,
@@ -200,7 +212,7 @@ func (m *Manager) CloseSession(sessionID string) error {
 		return ErrSessionNotFound
 	}
 
-	sess.Status = "completed"
+	sess.Status = string(StatusCompleted)
 	sess.UpdatedAt = time.Now()
 
 	return nil

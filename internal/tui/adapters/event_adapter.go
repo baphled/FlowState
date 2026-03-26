@@ -45,7 +45,7 @@ func EventToMsg(event streaming.Event) tea.Msg {
 		return chat.StreamChunkMsg{
 			EventType: streaming.EventTypeStatusTransition,
 			DelegationInfo: &provider.DelegationInfo{
-				SourceAgent: e.AgentID, // AgentID is the subject of transition
+				SourceAgent: e.AgentID,
 				TargetAgent: e.AgentID,
 				Status:      e.To,
 				Description: fmt.Sprintf("Transitioning from %s to %s", e.From, e.To),

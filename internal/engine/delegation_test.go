@@ -635,6 +635,63 @@ var _ = Describe("Delegation", func() {
 			})
 		})
 
+		Describe("emitDelegationEvent non-blocking send", func() {
+			It("background task completes even when outChan consumer is slow", func() {
+				qaProvider := &mockProvider{
+					name: "qa-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "nb response", Done: true},
+					},
+				}
+
+				qaManifest := agent.Manifest{
+					ID:                "qa-agent",
+					Name:              "QA Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				qaEngine := engine.New(engine.Config{
+					ChatProvider: qaProvider,
+					Manifest:     qaManifest,
+				})
+
+				nbEngines := map[string]*engine.Engine{"qa-agent": qaEngine}
+				nbDelegation := agent.Delegation{
+					CanDelegate:     true,
+					DelegationTable: map[string]string{"testing": "qa-agent"},
+				}
+
+				nbBgManager := engine.NewBackgroundTaskManager()
+				delegateTool := engine.NewDelegateToolWithBackground(
+					nbEngines, nbDelegation, "orchestrator", nbBgManager, nil,
+				)
+
+				fullChan := make(chan provider.StreamChunk, 1)
+				ctx := engine.WithStreamOutput(context.Background(), fullChan)
+
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":         "testing",
+						"message":           "Run tests async",
+						"run_in_background": true,
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() string {
+					tasks := nbBgManager.List()
+					if len(tasks) == 0 {
+						return ""
+					}
+					return tasks[0].Status.Load()
+				}, "3s", "50ms").Should(Equal("completed"))
+			})
+		})
+
 		Describe("delegation model selection", func() {
 			It("uses the target agent's model preferences, not the coordinator's", func() {
 				coordinatorProvider := &mockProvider{

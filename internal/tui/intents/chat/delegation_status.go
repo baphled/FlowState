@@ -44,13 +44,6 @@ func NewDelegationStatusComponent(t theme.Theme) *DelegationStatusComponent {
 func (c *DelegationStatusComponent) Update(msg tea.Msg) {
 	if c.widget != nil {
 		if tick, ok := msg.(SpinnerTickMsg); ok {
-			// In a real implementation, we'd cast to int if SpinnerTickMsg carried value,
-			// or just increment. Here we assume the intent manages the tick frame.
-			// But the widget expects SetFrame to be called externally or handled here.
-			// Since SpinnerTickMsg is empty struct in intent.go, we can't get frame from it easily
-			// without state. But wait, the Intent passes tickFrame to View.
-			// Let's assume the Intent calls SetFrame on this component or we handle it here.
-			// For simplicity, let's just say Update handles data updates.
 			_ = tick
 		}
 	}

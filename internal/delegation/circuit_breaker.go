@@ -1,8 +1,3 @@
-// Package delegation provides coordination primitives for agent handoff and rejection handling.
-//
-// This package handles:
-//   - Agent handoff metadata and validation
-//   - Circuit breaker pattern for reject-regenerate loops
 package delegation
 
 import (
