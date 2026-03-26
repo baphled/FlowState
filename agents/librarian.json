@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "id": "librarian",
+  "name": "Reference Librarian",
+  "complexity": "medium",
+  "capabilities": {
+    "tools": [
+      "web",
+      "bash",
+      "file",
+      "coordination_store"
+    ],
+    "skills": [
+      "research",
+      "critical-thinking"
+    ],
+    "always_active_skills": [
+      "pre-action",
+      "memory-keeper"
+    ],
+    "mcp_servers": []
+  },
+  "delegation": {
+    "can_delegate": false
+  },
+  "instructions": {
+    "structured_prompt_file": "librarian"
+  },
+  "metadata": {
+    "when_to_use": "When searching official docs, library best practices, and external references"
+  }
+}

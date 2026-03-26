@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0.0",
+  "id": "explorer",
+  "name": "Codebase Explorer",
+  "complexity": "medium",
+  "model_preferences": {
+    "anthropic": [
+      {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6"
+      }
+    ],
+    "ollama": [
+      {
+        "provider": "ollama",
+        "model": "llama3.2"
+      }
+    ]
+  },
+  "capabilities": {
+    "tools": [
+      "bash",
+      "file",
+      "coordination_store"
+    ],
+    "skills": [
+      "research",
+      "code-reading",
+      "critical-thinking"
+    ],
+    "always_active_skills": [
+      "pre-action",
+      "memory-keeper"
+    ],
+    "mcp_servers": []
+  },
+  "context_management": {
+    "max_recursion_depth": 2,
+    "summary_tier": "medium",
+    "sliding_window_size": 10,
+    "compaction_threshold": 0.75,
+    "embedding_model": "nomic-embed-text"
+  },
+  "delegation": {
+    "can_delegate": false,
+    "delegation_table": {}
+  },
+  "hooks": {
+    "before": [],
+    "after": []
+  },
+  "instructions": {
+    "system_prompt": "You are the Codebase Explorer.",
+    "structured_prompt_file": "explorer"
+  },
+  "metadata": {
+    "role": "Codebase Investigator",
+    "goal": "Search local code for patterns, structures, and conventions",
+    "when_to_use": "When investigating codebase structure, patterns, and conventions"
+  }
+}
