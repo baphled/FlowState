@@ -53,6 +53,7 @@ type App struct {
 	Streamer         streaming.Streamer
 	mcpClient        mcpclient.Client
 	providerRegistry *provider.Registry
+	ollamaProvider   *ollama.Provider
 	metricsRegistry  *prometheus.Registry
 }
 
@@ -77,7 +78,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: agents seeded to %q", cfg.AgentDir)
 	}
 
-	providerRegistry, ollamaProvider := registerProviders(cfg)
+	providerRegistry, ollamaProvider := setupProviders(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
@@ -85,52 +86,38 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	metricsReg, tracedProvider, err := buildTracedProvider(providerRegistry, cfg.Providers.Default)
-	if err != nil {
-		return nil, err
-	}
-	contextStore, err := createContextStore(cfg)
-	if err != nil {
-		return nil, err
-	}
-	mcpMgr := mcpclient.NewManager()
-	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir))
-	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
-	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
-	toolRegistry, permHandler := buildToolsSetup(appTools)
-	eng := createEngine(engineParams{
-		defaultProvider:    tracedProvider,
-		ollamaProvider:     ollamaProvider,
+	runtime, err := setupEngine(setupEngineParams{
+		cfg:                cfg,
 		providerRegistry:   providerRegistry,
+		ollamaProvider:     ollamaProvider,
 		agentRegistry:      agentRegistry,
 		defaultManifest:    defaultManifest,
 		alwaysActiveSkills: alwaysActiveSkills,
-		contextStore:       contextStore,
+		skills:             skills,
+		sessionStore:       sessionStore,
 		learningStore:      learningStore,
-		appTools:           appTools,
-		toolRegistry:       toolRegistry,
-		permissionHandler:  permHandler,
-		agentsFileLoader:   buildAgentsFileLoader(),
-		tokenCounter:       ctxstore.NewTiktokenCounter(),
 	})
-	disc := createDiscovery(agentRegistry)
-	streamer := createHarnessStreamer(eng, agentRegistry, cfg.Harness, tracedProvider)
-	apiServer := api.NewServer(streamer, agentRegistry, disc, skills, sessionStore)
+	if err != nil {
+		return nil, err
+	}
 
-	return &App{
+	app := &App{
 		Config:           cfg,
 		Registry:         agentRegistry,
 		Skills:           skills,
-		Engine:           eng,
-		Discovery:        disc,
+		Engine:           runtime.engine,
+		Discovery:        runtime.discovery,
 		Sessions:         sessionStore,
 		Learning:         learningStore,
-		API:              apiServer,
-		Streamer:         streamer,
-		mcpClient:        mcpMgr,
+		API:              runtime.apiServer,
+		Streamer:         runtime.streamer,
+		mcpClient:        runtime.mcpManager,
 		providerRegistry: providerRegistry,
-		metricsRegistry:  metricsReg,
-	}, nil
+		ollamaProvider:   ollamaProvider,
+		metricsRegistry:  runtime.metricsRegistry,
+	}
+	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
+	return app, nil
 }
 
 // engineParams holds parameters for engine creation.
@@ -150,6 +137,82 @@ type engineParams struct {
 	tokenCounter       ctxstore.TokenCounter
 }
 
+// setupEngine initialises the engine and the immediate runtime dependencies.
+//
+// Expected:
+//   - params contains all required configuration and dependency references.
+//
+// Returns:
+//   - A runtime bundle containing the engine, discovery, streamer, API server, and metrics registry.
+//   - An error if any component fails to initialise.
+//
+// Side effects:
+//   - Creates the MCP manager, tool registry, engine, discovery, streamer, and API server.
+func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
+	metricsReg, tracedProvider, err := buildTracedProvider(params.providerRegistry, params.cfg.Providers.Default)
+	if err != nil {
+		return nil, err
+	}
+	contextStore, err := createContextStore(params.cfg)
+	if err != nil {
+		return nil, err
+	}
+	mcpMgr := mcpclient.NewManager()
+	appTools := buildTools(skill.NewFileSkillLoader(params.cfg.SkillDir))
+	allServers := mergeMCPServers(params.cfg.MCPServers, config.DiscoverMCPServers())
+	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
+	toolRegistry, permHandler := buildToolsSetup(appTools)
+	eng := createEngine(engineParams{
+		defaultProvider:    tracedProvider,
+		ollamaProvider:     params.ollamaProvider,
+		providerRegistry:   params.providerRegistry,
+		agentRegistry:      params.agentRegistry,
+		defaultManifest:    params.defaultManifest,
+		alwaysActiveSkills: params.alwaysActiveSkills,
+		contextStore:       contextStore,
+		learningStore:      params.learningStore,
+		appTools:           appTools,
+		toolRegistry:       toolRegistry,
+		permissionHandler:  permHandler,
+		agentsFileLoader:   buildAgentsFileLoader(),
+		tokenCounter:       ctxstore.NewTiktokenCounter(),
+	})
+	disc := createDiscovery(params.agentRegistry)
+	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
+	apiServer := api.NewServer(streamer, params.agentRegistry, disc, params.skills, params.sessionStore)
+	return &runtimeComponents{
+		engine:          eng,
+		discovery:       disc,
+		streamer:        streamer,
+		apiServer:       apiServer,
+		metricsRegistry: metricsReg,
+		mcpManager:      mcpMgr,
+	}, nil
+}
+
+// setupEngineParams groups the inputs required to initialise the application runtime.
+type setupEngineParams struct {
+	cfg                *config.AppConfig
+	providerRegistry   *provider.Registry
+	ollamaProvider     *ollama.Provider
+	agentRegistry      *agent.Registry
+	defaultManifest    agent.Manifest
+	alwaysActiveSkills []skill.Skill
+	skills             []skill.Skill
+	sessionStore       *ctxstore.FileSessionStore
+	learningStore      *learning.JSONFileStore
+}
+
+// runtimeComponents groups the runtime values created during engine setup.
+type runtimeComponents struct {
+	engine          *engine.Engine
+	discovery       *discovery.AgentDiscovery
+	streamer        streaming.Streamer
+	apiServer       *api.Server
+	metricsRegistry *prometheus.Registry
+	mcpManager      mcpclient.Client
+}
+
 // createEngine initialises the engine with live manifest getter for hook chain.
 //
 // Expected:
@@ -160,7 +223,6 @@ type engineParams struct {
 //
 // Side effects:
 //   - Creates engine and connects MCP servers.
-//   - Adds DelegateTool when the default manifest has can_delegate enabled.
 func createEngine(params engineParams) *engine.Engine {
 	var eng *engine.Engine
 	hookChain := buildHookChain(params.learningStore, func() agent.Manifest {
@@ -184,12 +246,12 @@ func createEngine(params engineParams) *engine.Engine {
 		AgentsFileLoader:  params.agentsFileLoader,
 		TokenCounter:      params.tokenCounter,
 	})
-	wireDelegateToolIfEnabled(eng, params.defaultManifest)
 	return eng
 }
 
 // wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
-// manifest permits delegation.
+// manifest permits delegation. Each target agent gets its own isolated engine
+// instance to prevent state corruption during delegation.
 //
 // Expected:
 //   - eng is a fully initialised Engine.
@@ -197,15 +259,65 @@ func createEngine(params engineParams) *engine.Engine {
 //
 // Side effects:
 //   - Appends a DelegateTool to the engine's tool set when can_delegate is true.
-func wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
+//   - Creates isolated engine instances for each delegation target.
+func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
 	if !manifest.Delegation.CanDelegate {
 		return
 	}
 	engines := make(map[string]*engine.Engine, len(manifest.Delegation.DelegationTable))
 	for _, targetID := range manifest.Delegation.DelegationTable {
-		engines[targetID] = eng
+		targetManifest, ok := a.Registry.Get(targetID)
+		if !ok {
+			continue
+		}
+		targetEngine := a.createDelegateEngine(*targetManifest)
+		engines[targetID] = targetEngine
 	}
 	eng.AddTool(engine.NewDelegateTool(engines, manifest.Delegation, manifest.ID))
+}
+
+// createDelegateEngine creates an isolated engine instance for a delegation target.
+// This ensures that when a coordinator delegates to another agent, the target's
+// manifest and state do not corrupt the coordinator's state.
+//
+// Expected:
+//   - manifest is the target agent's manifest with model preferences and capabilities.
+//
+// Returns:
+//   - An Engine instance configured for the target agent.
+//   - The engine does NOT have a delegate tool (prevents recursive delegation).
+//
+// Side effects:
+//   - Creates a new engine with the target's manifest, providers, and tools.
+func (a *App) createDelegateEngine(manifest agent.Manifest) *engine.Engine {
+	eng := engine.New(engine.Config{
+		Registry:      a.providerRegistry,
+		AgentRegistry: a.Registry,
+		Manifest:      manifest,
+		Tools:         a.buildToolsForManifest(manifest),
+	})
+	return eng
+}
+
+// buildToolsForManifest returns the tools available to an agent based on its
+// manifest capabilities. Currently returns the core tools; in the future this
+// could filter based on manifest.Capabilities.Tools.
+//
+// Expected:
+//   - manifest is the agent's manifest with capabilities.
+//
+// Returns:
+//   - A slice of tools available to the agent.
+//
+// Side effects:
+//   - None.
+func (a *App) buildToolsForManifest(_ agent.Manifest) []tool.Tool {
+	return []tool.Tool{
+		bash.New(),
+		read.New(),
+		write.New(),
+		web.New(),
+	}
 }
 
 // buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
@@ -597,7 +709,7 @@ func buildTracedProvider(
 	return metricsReg, tracer.NewTracingProvider(defaultProvider, recorder), nil
 }
 
-// registerProviders initialises and registers all configured LLM providers.
+// setupProviders initialises and registers all configured LLM providers.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with provider configuration.
@@ -609,7 +721,7 @@ func buildTracedProvider(
 // Side effects:
 //   - Reads OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables.
 //   - Registers providers with the registry if initialisation succeeds.
-func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
+func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	providerRegistry := provider.NewRegistry()
 
 	homeDir, err := os.UserHomeDir()
@@ -668,7 +780,7 @@ func registerProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provi
 // Side effects:
 //   - Initialises provider instances and registers them in the registry.
 func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
-	return registerProviders(cfg)
+	return setupProviders(cfg)
 }
 
 // BuildHookChainForTest is a test helper that exposes buildHookChain for testing.
