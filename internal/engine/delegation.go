@@ -22,7 +22,10 @@ var (
 	errMessageMustBeString    = errors.New("message must be a string")
 	errHandoffMustBeObject    = errors.New("handoff must be an object")
 	errBackgroundModeDisabled = errors.New("background mode disabled: no background manager configured")
+	errCircuitBreakerOpen     = errors.New("circuit breaker open: too many delegation failures")
 )
+
+const maxDelegationFailures = 3
 
 // streamOutputKeyType identifies the context key used for streaming output.
 type streamOutputKeyType struct{}
@@ -68,6 +71,7 @@ type DelegateTool struct {
 	backgroundManager  *BackgroundTaskManager
 	coordinationStore  coordination.Store
 	embeddingDiscovery *discovery.EmbeddingDiscovery
+	circuitBreaker     *delegation.CircuitBreaker
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -101,9 +105,10 @@ type delegationResult struct {
 //   - None.
 func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegation, sourceAgentID string) *DelegateTool {
 	return &DelegateTool{
-		engines:       engines,
-		delegation:    delegationConfig,
-		sourceAgentID: sourceAgentID,
+		engines:        engines,
+		delegation:     delegationConfig,
+		sourceAgentID:  sourceAgentID,
+		circuitBreaker: delegation.NewCircuitBreaker(maxDelegationFailures),
 	}
 }
 
@@ -134,6 +139,7 @@ func NewDelegateToolWithBackground(
 		sourceAgentID:     sourceAgentID,
 		backgroundManager: backgroundManager,
 		coordinationStore: coordinationStore,
+		circuitBreaker:    delegation.NewCircuitBreaker(maxDelegationFailures),
 	}
 }
 
@@ -222,6 +228,10 @@ func (d *DelegateTool) Schema() tool.Schema {
 //   - Streams a request to the target agent's engine.
 //   - Emits DelegationInfo stream chunks when an output channel is available in ctx.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	if !d.circuitBreaker.Allow() {
+		return tool.Result{}, errCircuitBreakerOpen
+	}
+
 	target, runAsync, err := d.resolveTargetWithOptions(ctx, input)
 	if err != nil {
 		return tool.Result{}, err
@@ -274,6 +284,7 @@ func (d *DelegateTool) executeSync(
 
 	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
 	if err != nil {
+		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
@@ -282,6 +293,7 @@ func (d *DelegateTool) executeSync(
 
 	result, err := d.collectDelegationResult(chunks)
 	if err != nil {
+		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
 		baseInfo.ToolCalls = result.toolCalls
 		baseInfo.LastTool = result.lastTool
@@ -290,6 +302,7 @@ func (d *DelegateTool) executeSync(
 		return tool.Result{}, err
 	}
 
+	d.circuitBreaker.RecordSuccess()
 	completedAt := time.Now().UTC()
 	baseInfo.ModelName = target.engine.LastModel()
 	baseInfo.ProviderName = target.engine.LastProvider()
@@ -364,6 +377,7 @@ func (d *DelegateTool) executeBackgroundTask(
 ) (string, error) {
 	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
 	if err != nil {
+		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
@@ -372,6 +386,7 @@ func (d *DelegateTool) executeBackgroundTask(
 
 	result, err := d.collectDelegationResult(chunks)
 	if err != nil {
+		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
 		baseInfo.ToolCalls = result.toolCalls
 		baseInfo.LastTool = result.lastTool
@@ -380,6 +395,7 @@ func (d *DelegateTool) executeBackgroundTask(
 		return "", err
 	}
 
+	d.circuitBreaker.RecordSuccess()
 	completedAt := time.Now().UTC()
 	baseInfo.ModelName = target.engine.LastModel()
 	baseInfo.ProviderName = target.engine.LastProvider()
@@ -662,4 +678,26 @@ func (d *DelegateTool) BackgroundManager() *BackgroundTaskManager {
 //   - None.
 func (d *DelegateTool) CoordinationStore() coordination.Store {
 	return d.coordinationStore
+}
+
+// HasEmbeddingDiscovery reports whether an embedding discovery has been wired.
+//
+// Returns:
+//   - true when SetEmbeddingDiscovery has been called with a non-nil value.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) HasEmbeddingDiscovery() bool {
+	return d.embeddingDiscovery != nil
+}
+
+// CircuitBreaker returns the circuit breaker protecting the delegation flow.
+//
+// Returns:
+//   - The CircuitBreaker instance used by this tool.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) CircuitBreaker() *delegation.CircuitBreaker {
+	return d.circuitBreaker
 }

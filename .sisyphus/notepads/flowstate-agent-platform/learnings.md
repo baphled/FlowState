@@ -230,3 +230,209 @@ AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.t
 - Uses `git clone --depth 1` for shallow clone
 - Clones to temp dir, processes, then removes temp dir (defer cleanup)
 - Reuses existing `extractFrontmatter()` and YAML parsing from loader.go
+
+## 2026-03-26 Session: T21 - Fix build errors and add embedding tests
+
+### Build Errors Fixed
+
+1. **resolveTargetWithOptions incomplete (errors 1&2)**: Missing `resolveWithDiscovery` call before constructing `delegationTarget`. Fix: wire the call between chainID assignment and the return statement.
+
+2. **Unexported field access (error 3)**: `d.embeddingDiscovery.embedder` — the `embedder` field is unexported. The `Match()` method handles nil embedder internally (returns empty). Fix: check only `d.embeddingDiscovery != nil`.
+
+3. **Cosine similarity bug (error 4)**: Formula was `dot / (normA * normB)` — missing `math.Sqrt()`. Correct formula: `dot / (math.Sqrt(normA) * math.Sqrt(normB))`.
+
+4. **Godoc missing (error 5)**: `CosineSimilarity` lacked Expected/Returns/Side effects sections.
+
+### Linter Issues Encountered After First Fix
+
+- `contextcheck`: `resolveTargetWithOptions` called `context.Background()` internally via `resolveWithDiscovery`. Fix: propagate `ctx` from `Execute` → `resolveTargetWithOptions(ctx, input)` → `resolveWithDiscovery(ctx, taskType, message)`.
+- `nilerr`: `Match()` swallowed embed errors. Fix: return wrapped error.
+- `revive: public interface method not commented`: `EmbeddingProvider.Embed` needed godoc.
+- `revive: import-shadowing`: Parameter named `discovery` shadowed the `discovery` package import. Fix: rename to `ed`.
+- `unparam: always false bool return`: `resolveWithDiscovery` returned `(string, bool, error)` but bool was always `false`. Fix: remove bool from return signature.
+
+### Pattern: LSP shows workspace-context errors
+
+The LSP in this worktree shows many errors from the agent-platform workspace (different module). Always verify with `go build ./...` rather than trusting LSP diagnostic output. The LSP errors for `internal/agent`, `internal/discovery` etc. were all false positives.
+
+### Tests Created
+
+- `internal/discovery/embedding_test.go` — Ginkgo v2 specs for `EmbeddingDiscovery.Match` and `CosineSimilarity`
+- Mock embedder pattern: `fixedEmbedder` struct with `map[string][]float64` for deterministic vectors
+- `suite_test.go` already existed; no need to recreate it
+
+## 2026-03-26 Session: T22 — KB Documentation (Deterministic Planning Loop)
+
+### KB Notes Written
+
+Six permanent reference notes created at:
+`/home/baphled/vaults/baphled/1. Projects/FlowState/deterministic-planning-loop/`
+
+| File | Content |
+|------|---------|
+| `PLANNING_LOOP.md` | 3-role loop (coordinator→writer→reviewer), circuit breaker, Mermaid sequence diagram |
+| `CREATING_AGENTS.md` | Manifest schema, capability_description ML discovery, delegation_table registration |
+| `DELEGATION.md` | Handoff struct, DelegateTool, wireDelegateToolIfEnabled, createDelegateEngine, resolveWithDiscovery |
+| `EVENTS.md` | All 7 event types with JSON examples, harness_retry, SSE/curl consumption |
+| `EXECUTOR.md` | Expanded plan format (plan.File, PlanContext, WorkObjectives, Task), PlanHarness retries |
+| `RESEARCH_AGENTS.md` | Explorer/Librarian/Analyst scopes, Coordination Store key schema, custom agent guide |
+
+### Key Facts Confirmed from Source
+
+- `PlanHarness.maxRetries` = **3** (hardcoded in `NewPlanHarness()` — `internal/plan/harness.go:104`)
+- `CircuitBreaker` states: `closed → open → half_open`; default `maxFailures` passed by caller
+- `ChainID` format: `chain-{time.Now().UTC().UnixNano()}`
+- Coordination Store key pattern: `{chainID}/{purpose}`
+- `plan-writer` has `harness_enabled: true`; all other agents have it `false`
+- ML discovery threshold: confidence **≥ 0.70** (`resolveWithDiscovery`)
+- `wireDelegateToolIfEnabled` and `createDelegateEngine` live in `internal/app/app.go` (not `internal/engine/`)
+- Task has `Wave int` field for parallel task batching across waves
+
+### Conventions Used
+
+- British English throughout (recognise, synthesise, behaviour, etc.)
+- Obsidian YAML frontmatter with ISO 8601 `created:` dates
+- `[[wikilinks]]` cross-linking all 6 notes to each other
+- Mermaid sequence diagrams in PLANNING_LOOP and RESEARCH_AGENTS
+- Added /docblocks and /.tmp to .gitignore to keep build/session artefacts out of version control.
+
+## F4 Scope Fidelity v2 Re-Verification (2026-03-26)
+
+- The `docblocks` binary and `.tmp` session file fix (commit 05b7a84) was confirmed clean via `git ls-files`.
+- `internal/server/server.go` does not exist — server binding logic is in `internal/cli/serve.go` (defaults to localhost).
+- `internal/api/server.go` is the HTTP handler (routes), not the listener.
+- LSP diagnostics show false positives across `streaming/`, `session/`, `api/` — ignore them; `go build` and `make check` are authoritative.
+- `tmp/nvim.baphled/*` and `internal/oauth/github.go.orig` are pre-existing tracked artefacts not introduced by this feature branch.
+- `make check` exits 0 with 82.0% coverage (7359/8974 statements), zero failures across 60+ packages.
+
+## F3 QA: JSON Consumer Architecture Pattern
+
+**Date**: 2026-03-26
+**Context**: Debugging why `--output json` produced plain text
+
+### Pattern: Consumer-Writer Separation
+
+FlowState uses a StreamConsumer interface pattern where the consumer encapsulates
+the output format. BUT `runSingleMessageChat` always passes `io.Discard` to the consumer:
+
+```go
+// chat.go line 111 — WRONG
+response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, io.Discard)
+// chat.go line 118 — writes plain text regardless
+_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response)
+```
+
+The design intent is clear (JSONConsumer writes JSON events, WriterConsumer writes text),
+but the wire-up is broken. The consumer's writer should be cmd.OutOrStdout() for JSON mode.
+
+### Lesson
+
+When reviewing CLI commands with multiple output modes, always trace the writer
+from command.OutOrStdout() through to the actual consumer. io.Discard is a common
+placeholder that survives refactoring and silently breaks output.
+
+## F3 QA: SSE Infrastructure Is Correct
+
+**Date**: 2026-03-26
+
+The SSE server (`flowstate serve`) correctly:
+- Sets Content-Type: text/event-stream
+- Sets Cache-Control: no-cache  
+- Sets Connection: keep-alive
+- Uses Transfer-Encoding: chunked
+- Prefixes all events with `data:` on their own lines
+- Binds to localhost only (security requirement)
+
+The infrastructure is sound. SSE events would appear if LLM credentials were present.
+
+## F3 QA: Streaming Event Type Name Convention
+
+**Date**: 2026-03-26
+
+The streaming package (internal/streaming/events.go) defines event types as snake_case strings:
+- "text_chunk", "tool_call", "delegation", "coordination_store"
+- "status_transition", "plan_artifact", "review_verdict"
+
+The Go struct names are PascalCase (TextChunkEvent, DelegationEvent, etc.)
+Do NOT confuse struct names with JSON type discriminator values.
+
+## F3 v2 QA: io.Discard Fix Confirmed — NDJSON Events Flow to Stdout
+
+**Date**: 2026-03-26
+**Context**: Re-verification after commit 0febcc7 fix
+
+### Fix Pattern
+
+The fix in `internal/cli/chat.go` follows a clean idiom:
+```go
+writer := io.Discard       // default: text mode discards consumer output
+if opts.Output == "json" {
+    writer = cmd.OutOrStdout()  // json mode: route consumer output to stdout
+}
+response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, writer)
+...
+if opts.Output == "json" {
+    return nil  // early return: no plain-text write in json mode
+}
+_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response)
+```
+
+This cleanly separates text mode (consumer buffered, final response written) from
+json mode (consumer events streamed directly to stdout, no final write).
+
+### Evidence
+
+With `--output json`, the binary produces NDJSON events:
+- `{"content":"...","type":"chunk"}` — LLM text chunks
+- `{"name":"...","type":"tool_call"}` — tool invocations  
+- `{"content":"...","type":"tool_result"}` — tool results
+- `{"type":"done"}` — completion sentinel
+- `{"type":"delegation","source":"...","target":"...","status":"..."}` — delegation events
+
+15 events observed in a single executor run.
+
+## F3 v2 QA: Session API Field Names Now Lowercase
+
+**Date**: 2026-03-26
+
+After commit 0febcc7 (also fixes session json tags), the session API correctly
+returns lowercase JSON fields:
+- `id` (was `ID`)
+- `agent_id` (was `AgentID`)
+- `status` (was `Status`)
+- `created_at` (was `CreatedAt`)
+
+Verified with: python3 check for `'id' in d and 'agent_id' in d` → `True True`
+
+## Code Review: deterministic-planning-loop (2026-03-26)
+
+### Pattern: Non-doc.go files with package-level comments
+- `circuit_breaker.go`, `background.go`, `delegation.go`, `server.go` all had duplicate package comments alongside their `doc.go` counterparts
+- Go convention: only `doc.go` should carry the package-level `// Package …` comment
+- Other files in the same package should NOT repeat or add package comments
+
+### Pattern: Thought-process comments inside function bodies
+- `delegation_status.go:47–54` contained 7 lines of implementation uncertainty comments inside `Update()` — classic violation of the no-comments-in-function-bodies rule
+- These are easier to miss when they occur inside nested conditionals
+
+### Pattern: Status string literals vs typed constants
+- `session/manager.go` and `engine/background.go` both used bare string literals for state machines
+- `"active"`, `"completed"`, `"running"`, `"pending"`, `"failed"`, `"cancelled"` scattered across files
+- Should be typed constants (e.g. `type SessionStatus string; const SessionStatusActive SessionStatus = "active"`)
+
+### Pattern: Sentinel error anti-pattern
+- `background.go` initialised sentinel errors via wrapper functions (`errTaskNotFoundFn()`)
+- Idiomatic Go: just `errors.New(...)` directly in var block
+- Wrapper functions add complexity without benefit
+
+### Pattern: Magic float64 constant
+- `delegation.go:480` used `0.7` as a confidence threshold without naming it
+- `const minEmbeddingConfidence = 0.7` would make intent clear
+
+### What passed cleanly:
+- Architecture boundaries: no TUI in engine/session/coordination layers
+- No nolint, TODO, FIXME, HACK
+- Consistent error wrapping with %w
+- Proper sync.RWMutex usage throughout
+- golang.org/x/text/cases used (not deprecated strings.Title)
+- io.Discard fix in chat.go correctly applied

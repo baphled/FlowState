@@ -692,6 +692,94 @@ var _ = Describe("Delegation", func() {
 			})
 		})
 
+		Describe("circuit breaker integration", func() {
+			It("returns error when circuit is open after max failures", func() {
+				failProvider := &mockProvider{
+					name:      "fail-provider",
+					streamErr: errors.New("always fails"),
+				}
+
+				failManifest := agent.Manifest{
+					ID:                "fail-agent",
+					Name:              "Fail Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "fail"},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				failEngine := engine.New(engine.Config{
+					ChatProvider: failProvider,
+					Manifest:     failManifest,
+				})
+
+				cbEngines := map[string]*engine.Engine{"fail-agent": failEngine}
+				cbDelegation := agent.Delegation{
+					CanDelegate:     true,
+					DelegationTable: map[string]string{"testing": "fail-agent"},
+				}
+
+				delegateTool := engine.NewDelegateTool(cbEngines, cbDelegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "run tests",
+					},
+				}
+
+				for range 3 {
+					_, _ = delegateTool.Execute(ctx, input)
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("circuit breaker open"))
+			})
+
+			It("records success on completed delegation", func() {
+				successProvider := &mockProvider{
+					name: "success-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "success", Done: true},
+					},
+				}
+
+				successManifest := agent.Manifest{
+					ID:                "success-agent",
+					Name:              "Success Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "succeed"},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				successEngine := engine.New(engine.Config{
+					ChatProvider: successProvider,
+					Manifest:     successManifest,
+				})
+
+				cbEngines := map[string]*engine.Engine{"success-agent": successEngine}
+				cbDelegation := agent.Delegation{
+					CanDelegate:     true,
+					DelegationTable: map[string]string{"testing": "success-agent"},
+				}
+
+				delegateTool := engine.NewDelegateTool(cbEngines, cbDelegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "run tests",
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(delegateTool.CircuitBreaker().Failures()).To(Equal(0))
+			})
+		})
+
 		Describe("delegation model selection", func() {
 			It("uses the target agent's model preferences, not the coordinator's", func() {
 				coordinatorProvider := &mockProvider{

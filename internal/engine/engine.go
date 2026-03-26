@@ -921,3 +921,19 @@ func (e *Engine) HasTool(name string) bool {
 func (e *Engine) AddTool(t tool.Tool) {
 	e.tools = append(e.tools, t)
 }
+
+// GetDelegateTool returns the DelegateTool from the engine's tool set, if present.
+//
+// Returns:
+//   - The DelegateTool and true when registered, or nil and false otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
+	for _, t := range e.tools {
+		if dt, ok := t.(*DelegateTool); ok {
+			return dt, true
+		}
+	}
+	return nil, false
+}

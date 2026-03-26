@@ -199,6 +199,26 @@ func (m *BackgroundTaskManager) List() []*BackgroundTask {
 	return tasks
 }
 
+// EvictCompleted removes all terminal-state tasks (completed, failed, cancelled)
+// from the internal task map. Running and pending tasks are not affected.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Deletes terminal tasks from the tasks map under write lock.
+func (m *BackgroundTaskManager) EvictCompleted() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for id, task := range m.tasks {
+		status := task.Status.Load()
+		if status == "completed" || status == "failed" || status == "cancelled" {
+			delete(m.tasks, id)
+		}
+	}
+}
+
 // ActiveCount returns the number of tasks currently in pending or running state.
 //
 // Returns:

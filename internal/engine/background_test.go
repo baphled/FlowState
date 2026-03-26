@@ -256,6 +256,58 @@ var _ = Describe("BackgroundTaskManager", func() {
 		})
 	})
 
+	Describe("EvictCompleted", func() {
+		Context("when completed tasks exist", func() {
+			It("removes terminal tasks from the map", func() {
+				ctx := context.Background()
+				manager.Launch(ctx, "evict-done", "agent-1", "evict test", func(ctx context.Context) (string, error) {
+					return "result", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("evict-done")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				Expect(manager.List()).To(HaveLen(1))
+
+				manager.EvictCompleted()
+
+				Expect(manager.List()).To(BeEmpty())
+				_, found := manager.Get("evict-done")
+				Expect(found).To(BeFalse())
+			})
+		})
+
+		Context("when running tasks exist alongside completed ones", func() {
+			It("only removes terminal tasks", func() {
+				ctx := context.Background()
+				slow := make(chan struct{})
+				manager.Launch(ctx, "evict-running", "agent-1", "running task", func(ctx context.Context) (string, error) {
+					<-slow
+					return "done", nil
+				})
+				manager.Launch(ctx, "evict-finished", "agent-1", "finished task", func(ctx context.Context) (string, error) {
+					return "done", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("evict-finished")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				manager.EvictCompleted()
+
+				_, runningFound := manager.Get("evict-running")
+				Expect(runningFound).To(BeTrue())
+				_, finishedFound := manager.Get("evict-finished")
+				Expect(finishedFound).To(BeFalse())
+
+				close(slow)
+			})
+		})
+	})
+
 	Describe("ActiveCount", func() {
 		Context("with running tasks", func() {
 			It("counts only running tasks", func() {

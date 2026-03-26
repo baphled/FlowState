@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
@@ -25,6 +26,7 @@ type AgentMatch struct {
 
 // EmbeddingDiscovery provides agent discovery using embedding-based cosine similarity.
 type EmbeddingDiscovery struct {
+	mu        sync.RWMutex
 	registry  *agent.Registry
 	embedder  EmbeddingProvider
 	agentVecs map[string][]float64
@@ -66,6 +68,7 @@ func (ed *EmbeddingDiscovery) IndexAgents(ctx context.Context) error {
 		return nil
 	}
 
+	vecs := make(map[string][]float64, len(manifests))
 	for _, m := range manifests {
 		capDesc := m.Capabilities.CapabilityDescription
 		if capDesc == "" {
@@ -79,9 +82,12 @@ func (ed *EmbeddingDiscovery) IndexAgents(ctx context.Context) error {
 			continue
 		}
 
-		ed.agentVecs[m.ID] = vec
+		vecs[m.ID] = vec
 	}
 
+	ed.mu.Lock()
+	defer ed.mu.Unlock()
+	ed.agentVecs = vecs
 	return nil
 }
 
@@ -109,12 +115,16 @@ func (ed *EmbeddingDiscovery) Match(ctx context.Context, taskDescription string)
 		return []AgentMatch{}, fmt.Errorf("embedding task description: %w", err)
 	}
 
-	if len(ed.agentVecs) == 0 {
+	ed.mu.RLock()
+	vecs := ed.agentVecs
+	ed.mu.RUnlock()
+
+	if len(vecs) == 0 {
 		return []AgentMatch{}, nil
 	}
 
 	var matches []AgentMatch
-	for agentID, agentVec := range ed.agentVecs {
+	for agentID, agentVec := range vecs {
 		score := CosineSimilarity(taskVec, agentVec)
 		if score > 0 {
 			matches = append(matches, AgentMatch{

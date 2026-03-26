@@ -321,6 +321,28 @@ var _ = Describe("StreamEvaluate", func() {
 			Expect(criticChunks).To(HaveLen(1))
 			Expect(criticChunks[0].Content).To(ContainSubstring(`"verdict"`))
 		})
+
+		It("emits review_verdict event when critic returns verdict", func() {
+			projectRoot := projectRootFromWorkingDir()
+			criticProv := &mockChatProvider{response: validCriticResponse()}
+			critic := newTestCritic(true)
+			harnessWithCritic := plan.NewPlanHarness(projectRoot, plan.WithCritic(critic, criticProv))
+
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+
+			outCh, err := harnessWithCritic.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			verdictChunks := filterEventChunks(received, "review_verdict")
+			Expect(verdictChunks).To(HaveLen(1))
+			Expect(verdictChunks[0].Content).To(ContainSubstring(`"verdict"`))
+		})
 	})
 })
 

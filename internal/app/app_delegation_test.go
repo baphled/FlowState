@@ -319,6 +319,55 @@ func TestCreateDelegateEngine_ReturnsIsolatedEngine(t *testing.T) {
 	assert.Equal(t, "Explorer Agent", manifest.Name)
 }
 
+// TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery verifies that embedding-based
+// routing is activated when an Ollama provider is available during app setup.
+func TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery(t *testing.T) {
+	app := &App{
+		Registry: agent.NewRegistry(),
+	}
+
+	coordinatorManifest := agent.Manifest{
+		ID:   "coordinator",
+		Name: "Coordinator",
+		Delegation: agent.Delegation{
+			CanDelegate: true,
+			DelegationTable: map[string]string{
+				"explore": "explorer",
+			},
+		},
+	}
+
+	explorerManifest := agent.Manifest{
+		ID:   "explorer",
+		Name: "Explorer",
+		Capabilities: agent.Capabilities{
+			CapabilityDescription: "explores and investigates systems",
+		},
+	}
+
+	app.Registry.Register(&coordinatorManifest)
+	app.Registry.Register(&explorerManifest)
+
+	providerReg := provider.NewRegistry()
+	embedProvider := &mockProvider{name: "ollama"}
+	providerReg.Register(embedProvider)
+	app.providerRegistry = providerReg
+	app.ollamaProvider = nil
+
+	coordinatorEngine := engine.New(engine.Config{
+		Manifest:      coordinatorManifest,
+		AgentRegistry: app.Registry,
+		Registry:      providerReg,
+	})
+
+	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+
+	require.True(t, coordinatorEngine.HasTool("delegate"))
+	delegateTool, found := coordinatorEngine.GetDelegateTool()
+	require.True(t, found)
+	assert.True(t, delegateTool.HasEmbeddingDiscovery())
+}
+
 // findDelegateTool extracts the DelegateTool from an engine for testing.
 // Since we can't access private fields, we verify through behavior:
 // - The delegate tool should exist (HasTool returns true)

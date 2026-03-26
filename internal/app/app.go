@@ -301,9 +301,17 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		targetEngine := a.createDelegateEngine(*targetManifest, coordinationStore)
 		engines[targetID] = targetEngine
 	}
-	eng.AddTool(engine.NewDelegateToolWithBackground(
+
+	delegateTool := engine.NewDelegateToolWithBackground(
 		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
-	))
+	)
+
+	if embedder := a.resolveEmbedder(); embedder != nil {
+		ed := discovery.NewEmbeddingDiscovery(a.Registry, embedder)
+		delegateTool.SetEmbeddingDiscovery(ed)
+	}
+
+	eng.AddTool(delegateTool)
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		eng.AddTool(coordinationtool.New(coordinationStore))
@@ -1045,6 +1053,34 @@ type TestConfig struct {
 	SessionsDir string
 	DataDir     string
 	MCPClient   mcpclient.Client
+}
+
+// resolveEmbedder returns the best available embedding provider for discovery.
+// The Ollama provider is preferred as it runs locally; otherwise, the first
+// registered provider from the registry is used.
+//
+// Returns:
+//   - A discovery.EmbeddingProvider when any provider is available.
+//   - nil if no provider is available.
+//
+// Side effects:
+//   - None.
+func (a *App) resolveEmbedder() discovery.EmbeddingProvider {
+	if a.ollamaProvider != nil {
+		return a.ollamaProvider
+	}
+	if a.providerRegistry == nil {
+		return nil
+	}
+	names := a.providerRegistry.List()
+	if len(names) == 0 {
+		return nil
+	}
+	p, err := a.providerRegistry.Get(names[0])
+	if err != nil {
+		return nil
+	}
+	return p
 }
 
 // NewForTest creates an App instance for testing with minimal dependencies.

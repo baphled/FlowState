@@ -3,6 +3,7 @@ package discovery_test
 import (
 	"context"
 	"math"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -122,6 +123,43 @@ var _ = Describe("EmbeddingDiscovery", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(matches).NotTo(BeEmpty())
 				Expect(matches[0].Confidence).To(BeNumerically("<", 0.7))
+			})
+		})
+	})
+
+	Describe("concurrent access", func() {
+		Context("when IndexAgents and Match are called concurrently", func() {
+			It("does not race on agentVecs", func() {
+				reg := agent.NewRegistry()
+				reg.Register(&agent.Manifest{
+					ID:   "concurrent-agent",
+					Name: "Concurrent Agent",
+					Capabilities: agent.Capabilities{
+						CapabilityDescription: "writes Go code and implements features",
+					},
+				})
+
+				em := &fixedEmbedder{
+					vectors: map[string][]float64{
+						"writes Go code and implements features": {1, 0, 0},
+						"write Go code":                          {1, 0, 0},
+					},
+				}
+				ed := discovery.NewEmbeddingDiscovery(reg, em)
+
+				var wg sync.WaitGroup
+				for range 10 {
+					wg.Add(2)
+					go func() {
+						defer wg.Done()
+						_ = ed.IndexAgents(context.Background())
+					}()
+					go func() {
+						defer wg.Done()
+						_, _ = ed.Match(context.Background(), "write Go code")
+					}()
+				}
+				wg.Wait()
 			})
 		})
 	})

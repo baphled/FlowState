@@ -878,12 +878,17 @@ func emitCriticFeedback(ctx context.Context, outCh chan<- provider.StreamChunk, 
 	if err != nil {
 		issuesJSON = []byte("[]")
 	}
+	payload := fmt.Sprintf(
+		`{"verdict":%q,"confidence":%g,"issues":%s}`,
+		result.Verdict, result.Confidence, issuesJSON,
+	)
 	trySend(ctx, outCh, provider.StreamChunk{
 		EventType: "harness_critic_feedback",
-		Content: fmt.Sprintf(
-			`{"verdict":%q,"confidence":%g,"issues":%s}`,
-			result.Verdict, result.Confidence, issuesJSON,
-		),
+		Content:   payload,
+	})
+	trySend(ctx, outCh, provider.StreamChunk{
+		EventType: "review_verdict",
+		Content:   payload,
 	})
 }
 
