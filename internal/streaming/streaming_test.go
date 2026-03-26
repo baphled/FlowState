@@ -855,19 +855,25 @@ var _ = Describe("Streaming", func() {
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent:  "orchestrator",
 						TargetAgent:  "qa-agent",
+						ChainID:      "chain-1",
 						Status:       "started",
 						ModelName:    "claude-sonnet-4",
 						ProviderName: "anthropic",
 						Description:  "Run tests",
+						ToolCalls:    2,
+						LastTool:     "delegate",
 					}},
 					{Content: "delegation output"},
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent:  "orchestrator",
 						TargetAgent:  "qa-agent",
+						ChainID:      "chain-1",
 						Status:       "completed",
 						ModelName:    "claude-sonnet-4",
 						ProviderName: "anthropic",
 						Description:  "Run tests",
+						ToolCalls:    2,
+						LastTool:     "delegate",
 					}},
 					{Done: true},
 				}
@@ -882,11 +888,17 @@ var _ = Describe("Streaming", func() {
 				Expect(consumer.delegations[0].Status).To(Equal("started"))
 				Expect(consumer.delegations[0].SourceAgent).To(Equal("orchestrator"))
 				Expect(consumer.delegations[0].TargetAgent).To(Equal("qa-agent"))
+				Expect(consumer.delegations[0].ChainID).To(Equal("chain-1"))
 				Expect(consumer.delegations[0].ModelName).To(Equal("claude-sonnet-4"))
 				Expect(consumer.delegations[0].ProviderName).To(Equal("anthropic"))
 				Expect(consumer.delegations[0].Description).To(Equal("Run tests"))
+				Expect(consumer.delegations[0].ToolCalls).To(Equal(2))
+				Expect(consumer.delegations[0].LastTool).To(Equal("delegate"))
 
 				Expect(consumer.delegations[1].Status).To(Equal("completed"))
+				Expect(consumer.delegations[1].ChainID).To(Equal("chain-1"))
+				Expect(consumer.delegations[1].ToolCalls).To(Equal(2))
+				Expect(consumer.delegations[1].LastTool).To(Equal("delegate"))
 			})
 
 			It("does not deliver DelegationInfo as regular content", func() {
@@ -905,6 +917,7 @@ var _ = Describe("Streaming", func() {
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent: "src",
 						TargetAgent: "tgt",
+						ChainID:     "chain-2",
 						Status:      "started",
 					}},
 					{Content: "after"},
@@ -923,11 +936,13 @@ var _ = Describe("Streaming", func() {
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent: "orchestrator",
 						TargetAgent: "qa-agent",
+						ChainID:     "chain-3",
 						Status:      "started",
 					}},
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent: "orchestrator",
 						TargetAgent: "qa-agent",
+						ChainID:     "chain-3",
 						Status:      "failed",
 					}},
 					{Done: true},

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"time"
 )
 
 // Message represents a chat message between user and assistant.
@@ -15,7 +16,7 @@ type Message struct {
 type ToolCall struct {
 	ID        string
 	Name      string
-	Arguments map[string]interface{}
+	Arguments map[string]any
 }
 
 // ToolResultInfo carries tool execution output in a stream chunk.
@@ -41,7 +42,7 @@ type Tool struct {
 // ToolSchema describes the input schema for a tool.
 type ToolSchema struct {
 	Type       string
-	Properties map[string]interface{}
+	Properties map[string]any
 	Required   []string
 }
 
@@ -62,12 +63,17 @@ type Usage struct {
 // The TUI reads raw StreamChunk values from a channel, so this field
 // is the delivery mechanism for delegation status updates.
 type DelegationInfo struct {
-	SourceAgent  string `json:"source_agent"`
-	TargetAgent  string `json:"target_agent"`
-	Status       string `json:"status"`
-	ModelName    string `json:"model_name"`
-	ProviderName string `json:"provider_name"`
-	Description  string `json:"description"`
+	SourceAgent  string     `json:"source_agent"`
+	TargetAgent  string     `json:"target_agent"`
+	ChainID      string     `json:"chain_id,omitempty"`
+	ToolCalls    int        `json:"tool_calls,omitempty"`
+	LastTool     string     `json:"last_tool,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
+	Status       string     `json:"status"`
+	ModelName    string     `json:"model_name"`
+	ProviderName string     `json:"provider_name"`
+	Description  string     `json:"description"`
 }
 
 // StreamChunk represents a single chunk of a streaming response.

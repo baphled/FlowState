@@ -161,10 +161,15 @@ func deliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) boo
 	if err := dc.WriteDelegation(DelegationEvent{
 		SourceAgent:  info.SourceAgent,
 		TargetAgent:  info.TargetAgent,
+		ChainID:      info.ChainID,
 		Status:       info.Status,
 		ModelName:    info.ModelName,
 		ProviderName: info.ProviderName,
 		Description:  info.Description,
+		ToolCalls:    info.ToolCalls,
+		LastTool:     info.LastTool,
+		StartedAt:    info.StartedAt,
+		CompletedAt:  info.CompletedAt,
 	}); err != nil {
 		c.WriteError(err)
 	}

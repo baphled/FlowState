@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -329,6 +330,7 @@ var _ = Describe("Delegation", func() {
 			It("emits started and completed DelegationInfo chunks", func() {
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
 				ctx := engine.WithStreamOutput(context.Background(), outChan)
+				startedBefore := time.Now().UTC()
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
@@ -338,6 +340,7 @@ var _ = Describe("Delegation", func() {
 				}
 
 				result, err := delegateTool.Execute(ctx, input)
+				completedAfter := time.Now().UTC()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Output).To(ContainSubstring("delegated output"))
 
@@ -356,11 +359,24 @@ var _ = Describe("Delegation", func() {
 				Expect(started.SourceAgent).To(Equal("orchestrator"))
 				Expect(started.TargetAgent).To(Equal("qa-agent"))
 				Expect(started.Description).To(Equal("Run the tests"))
+				Expect(started.ChainID).NotTo(BeEmpty())
+				Expect(started.ToolCalls).To(Equal(0))
+				Expect(started.LastTool).To(BeEmpty())
+				Expect(started.StartedAt).NotTo(BeNil())
+				Expect(*started.StartedAt).To(BeTemporally(">=", startedBefore))
+				Expect(*started.StartedAt).To(BeTemporally("<=", completedAfter))
+				Expect(started.CompletedAt).To(BeNil())
 
 				completed := delegationChunks[1].DelegationInfo
 				Expect(completed.Status).To(Equal("completed"))
 				Expect(completed.SourceAgent).To(Equal("orchestrator"))
 				Expect(completed.TargetAgent).To(Equal("qa-agent"))
+				Expect(completed.ChainID).To(Equal(started.ChainID))
+				Expect(completed.ToolCalls).To(Equal(1))
+				Expect(completed.LastTool).To(BeEmpty())
+				Expect(completed.StartedAt).NotTo(BeNil())
+				Expect(completed.CompletedAt).NotTo(BeNil())
+				Expect(*completed.CompletedAt).To(BeTemporally(">=", *started.StartedAt))
 			})
 
 			It("emits failed DelegationInfo when target engine stream errors", func() {
@@ -410,11 +426,19 @@ var _ = Describe("Delegation", func() {
 
 				started := delegationChunks[0].DelegationInfo
 				Expect(started.Status).To(Equal("started"))
+				Expect(started.ChainID).NotTo(BeEmpty())
+				Expect(started.StartedAt).NotTo(BeNil())
+				Expect(started.CompletedAt).To(BeNil())
 
 				failed := delegationChunks[1].DelegationInfo
 				Expect(failed.Status).To(Equal("failed"))
 				Expect(failed.SourceAgent).To(Equal("orchestrator"))
 				Expect(failed.TargetAgent).To(Equal("qa-agent"))
+				Expect(failed.ChainID).To(Equal(started.ChainID))
+				Expect(failed.ToolCalls).To(Equal(0))
+				Expect(failed.LastTool).To(BeEmpty())
+				Expect(failed.StartedAt).NotTo(BeNil())
+				Expect(failed.CompletedAt).NotTo(BeNil())
 			})
 
 			It("works without context output channel", func() {

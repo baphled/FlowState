@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
@@ -59,6 +60,20 @@ type DelegateTool struct {
 	engines       map[string]*Engine
 	delegation    agent.Delegation
 	sourceAgentID string
+}
+
+// delegationTarget carries the resolved agent, engine, and message for delegation.
+type delegationTarget struct {
+	agentID string
+	engine  *Engine
+	message string
+}
+
+// delegationResult carries the aggregated response and stream metadata from delegation.
+type delegationResult struct {
+	response  string
+	toolCalls int
+	lastTool  string
 }
 
 // NewDelegateTool creates a new delegation tool for the given engines, delegation configuration,
@@ -144,59 +159,132 @@ func (d *DelegateTool) Schema() tool.Schema {
 //   - Streams a request to the target agent's engine.
 //   - Emits DelegationInfo stream chunks when an output channel is available in ctx.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
-	if !d.delegation.CanDelegate {
-		return tool.Result{}, errDelegationNotAllowed
-	}
-
-	taskType, ok := input.Arguments["task_type"].(string)
-	if !ok {
-		return tool.Result{}, errTaskTypeMustBeString
-	}
-
-	message, ok := input.Arguments["message"].(string)
-	if !ok {
-		return tool.Result{}, errMessageMustBeString
-	}
-
-	targetAgentID, ok := d.delegation.DelegationTable[taskType]
-	if !ok {
-		return tool.Result{}, fmt.Errorf("no agent configured for task type: %s", taskType)
-	}
-
-	targetEngine, ok := d.engines[targetAgentID]
-	if !ok {
-		return tool.Result{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
+	target, err := d.resolveTarget(input)
+	if err != nil {
+		return tool.Result{}, err
 	}
 
 	outChan, hasOutput := streamOutputFromContext(ctx)
 	baseInfo := provider.DelegationInfo{
 		SourceAgent:  d.sourceAgentID,
-		TargetAgent:  targetAgentID,
-		ModelName:    targetEngine.LastModel(),
-		ProviderName: targetEngine.LastProvider(),
-		Description:  message,
+		TargetAgent:  target.agentID,
+		ChainID:      newDelegationChainID(),
+		ModelName:    target.engine.LastModel(),
+		ProviderName: target.engine.LastProvider(),
+		Description:  target.message,
+		StartedAt:    ptrTime(time.Now().UTC()),
 	}
 
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
-	chunks, err := targetEngine.Stream(ctx, targetAgentID, message)
+	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
 	if err != nil {
+		completedAt := time.Now().UTC()
+		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
 	}
 
+	result, err := d.collectDelegationResult(chunks)
+	if err != nil {
+		completedAt := time.Now().UTC()
+		baseInfo.ToolCalls = result.toolCalls
+		baseInfo.LastTool = result.lastTool
+		baseInfo.CompletedAt = &completedAt
+		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		return tool.Result{}, err
+	}
+
+	completedAt := time.Now().UTC()
+	baseInfo.ToolCalls = result.toolCalls
+	baseInfo.LastTool = result.lastTool
+	baseInfo.CompletedAt = &completedAt
+	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
+
+	return tool.Result{Output: result.response}, nil
+}
+
+// resolveTarget validates the input and resolves the target engine for delegation.
+//
+// Expected:
+//   - input contains string task_type and message arguments.
+//
+// Returns:
+//   - The resolved target agent ID.
+//   - The target engine for the delegated task.
+//   - The delegation message.
+//   - An error if delegation is disabled, inputs are invalid, or no target exists.
+//
+// Side effects:
+//   - Reads the delegation configuration and agent engine map.
+func (d *DelegateTool) resolveTarget(input tool.Input) (delegationTarget, error) {
+	if !d.delegation.CanDelegate {
+		return delegationTarget{}, errDelegationNotAllowed
+	}
+
+	taskType, ok := input.Arguments["task_type"].(string)
+	if !ok {
+		return delegationTarget{}, errTaskTypeMustBeString
+	}
+
+	message, ok := input.Arguments["message"].(string)
+	if !ok {
+		return delegationTarget{}, errMessageMustBeString
+	}
+
+	targetAgentID, ok := d.delegation.DelegationTable[taskType]
+	if !ok {
+		return delegationTarget{}, fmt.Errorf("no agent configured for task type: %s", taskType)
+	}
+
+	targetEngine, ok := d.engines[targetAgentID]
+	if !ok {
+		return delegationTarget{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
+	}
+
+	return delegationTarget{agentID: targetAgentID, engine: targetEngine, message: message}, nil
+}
+
+// collectDelegationResult aggregates streamed chunks from the delegated agent.
+//
+// Expected:
+//   - chunks is the stream returned by the target engine.
+//
+// Returns:
+//   - The concatenated response text.
+//   - The number of chunks observed.
+//   - The most recent tool name seen in the stream.
+//   - An error if the stream yields a chunk error.
+//
+// Side effects:
+//   - Reads from the streamed chunk channel until it closes or returns an error.
+func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChunk) (delegationResult, error) {
 	var response strings.Builder
+	toolCalls := 0
+	lastTool := ""
 	for chunk := range chunks {
+		toolCalls++
+		if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
+			lastTool = chunk.ToolCall.Name
+		}
 		if chunk.Error != nil {
-			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-			return tool.Result{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
+			return delegationResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
 		}
 		response.WriteString(chunk.Content)
 	}
 
-	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
+	return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool}, nil
+}
 
-	return tool.Result{Output: response.String()}, nil
+// newDelegationChainID returns a unique identifier for a delegation chain.
+//
+// Returns:
+//   - A chain identifier string derived from the current UTC time.
+//
+// Side effects:
+//   - Reads the current clock to ensure uniqueness.
+func newDelegationChainID() string {
+	return fmt.Sprintf("chain-%d", time.Now().UTC().UnixNano())
 }
 
 // emitDelegationEvent sends a DelegationInfo chunk to the output channel when available.
@@ -217,6 +305,20 @@ func (d *DelegateTool) emitDelegationEvent(
 	info := base
 	info.Status = status
 	outChan <- provider.StreamChunk{DelegationInfo: &info}
+}
+
+// ptrTime returns a pointer to the supplied time.
+//
+// Expected:
+//   - t is a valid time value to reference.
+//
+// Returns:
+//   - A pointer to t.
+//
+// Side effects:
+//   - None.
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }
 
 // DelegateToAgent sends a message to a sub-agent and streams the response.
