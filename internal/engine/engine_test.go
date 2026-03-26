@@ -701,8 +701,8 @@ var _ = Describe("Engine", func() {
 			tokenCounter := ctxstore.NewTiktokenCounter()
 
 			testManifest := agent.Manifest{
-				ID:   "placeholder",
-				Name: "Placeholder Agent",
+				ID:   "default-assistant",
+				Name: "Default Assistant Agent",
 				Instructions: agent.Instructions{
 					SystemPrompt: "Short inline prompt.",
 				},
@@ -720,7 +720,7 @@ var _ = Describe("Engine", func() {
 			})
 
 			ctx := context.Background()
-			chunks, err := eng.Stream(ctx, "placeholder", "test message")
+			chunks, err := eng.Stream(ctx, "default-assistant", "test message")
 			Expect(err).NotTo(HaveOccurred())
 
 			for v := range chunks {
@@ -733,7 +733,7 @@ var _ = Describe("Engine", func() {
 			systemMessage := chatProvider.capturedRequest.Messages[0]
 			Expect(systemMessage.Role).To(Equal("system"))
 
-			Expect(systemMessage.Content).To(ContainSubstring("placeholder"))
+			Expect(systemMessage.Content).To(ContainSubstring("general-purpose AI assistant"))
 			Expect(systemMessage.Content).NotTo(ContainSubstring("Short inline prompt."))
 		})
 	})

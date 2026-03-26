@@ -9,11 +9,11 @@ import (
 
 var _ = Describe("Embed", func() {
 	Describe("GetPrompt", func() {
-		It("returns the placeholder prompt content", func() {
-			content, err := prompt.GetPrompt("placeholder")
+		It("returns the default-assistant prompt content", func() {
+			content, err := prompt.GetPrompt("default-assistant")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(content).NotTo(BeEmpty())
-			Expect(content).To(ContainSubstring("placeholder"))
+			Expect(content).To(ContainSubstring("general-purpose AI assistant"))
 		})
 
 		It("returns an error for nonexistent prompt", func() {
@@ -24,8 +24,8 @@ var _ = Describe("Embed", func() {
 	})
 
 	Describe("HasPrompt", func() {
-		It("returns true for placeholder prompt", func() {
-			Expect(prompt.HasPrompt("placeholder")).To(BeTrue())
+		It("returns true for default-assistant prompt", func() {
+			Expect(prompt.HasPrompt("default-assistant")).To(BeTrue())
 		})
 
 		It("returns false for nonexistent prompt", func() {
@@ -34,9 +34,9 @@ var _ = Describe("Embed", func() {
 	})
 
 	Describe("ListPrompts", func() {
-		It("returns a slice containing placeholder", func() {
+		It("returns a slice containing default-assistant", func() {
 			prompts := prompt.ListPrompts()
-			Expect(prompts).To(ContainElement("placeholder"))
+			Expect(prompts).To(ContainElement("default-assistant"))
 		})
 
 		It("returns a non-empty slice", func() {
