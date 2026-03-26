@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -142,7 +143,7 @@ var _ = Describe("Delegation", func() {
 
 	Describe("DelegateTool", func() {
 		It("implements Tool interface", func() {
-			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{})
+			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{}, "source")
 
 			var _ tool.Tool = delegateTool
 			Expect(delegateTool.Name()).To(Equal("delegate"))
@@ -150,7 +151,7 @@ var _ = Describe("Delegation", func() {
 		})
 
 		It("returns correct schema with task_type and message parameters", func() {
-			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{})
+			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{}, "source")
 
 			schema := delegateTool.Schema()
 
@@ -192,7 +193,7 @@ var _ = Describe("Delegation", func() {
 					},
 				}
 
-				delegateTool := engine.NewDelegateTool(engines, delegation)
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
 
 				ctx := context.Background()
 				input := tool.Input{
@@ -215,7 +216,7 @@ var _ = Describe("Delegation", func() {
 					CanDelegate: false,
 				}
 
-				delegateTool := engine.NewDelegateTool(nil, delegation)
+				delegateTool := engine.NewDelegateTool(nil, delegation, "source")
 
 				ctx := context.Background()
 				input := tool.Input{
@@ -238,7 +239,7 @@ var _ = Describe("Delegation", func() {
 					DelegationTable: map[string]string{},
 				}
 
-				delegateTool := engine.NewDelegateTool(nil, delegation)
+				delegateTool := engine.NewDelegateTool(nil, delegation, "source")
 
 				ctx := context.Background()
 				input := tool.Input{
@@ -265,7 +266,7 @@ var _ = Describe("Delegation", func() {
 					},
 				}
 
-				delegateTool := engine.NewDelegateTool(engines, delegation)
+				delegateTool := engine.NewDelegateTool(engines, delegation, "source")
 
 				ctx := context.Background()
 				input := tool.Input{
@@ -280,6 +281,156 @@ var _ = Describe("Delegation", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("target agent engine not available"))
+			})
+		})
+
+		Context("when emitting delegation events", func() {
+			var (
+				qaEngine   *engine.Engine
+				engines    map[string]*engine.Engine
+				delegation agent.Delegation
+				outChan    chan provider.StreamChunk
+			)
+
+			BeforeEach(func() {
+				qaProvider := &mockProvider{
+					name: "qa-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "delegated output", Done: true},
+					},
+				}
+
+				qaManifest := agent.Manifest{
+					ID:                "qa-agent",
+					Name:              "QA Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				qaEngine = engine.New(engine.Config{
+					ChatProvider: qaProvider,
+					Manifest:     qaManifest,
+				})
+
+				engines = map[string]*engine.Engine{
+					"qa-agent": qaEngine,
+				}
+
+				delegation = agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"testing": "qa-agent",
+					},
+				}
+
+				outChan = make(chan provider.StreamChunk, 16)
+			})
+
+			It("emits started and completed DelegationInfo chunks", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				ctx := engine.WithStreamOutput(context.Background(), outChan)
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("delegated output"))
+
+				close(outChan)
+				var delegationChunks []provider.StreamChunk
+				for chunk := range outChan {
+					if chunk.DelegationInfo != nil {
+						delegationChunks = append(delegationChunks, chunk)
+					}
+				}
+
+				Expect(delegationChunks).To(HaveLen(2))
+
+				started := delegationChunks[0].DelegationInfo
+				Expect(started.Status).To(Equal("started"))
+				Expect(started.SourceAgent).To(Equal("orchestrator"))
+				Expect(started.TargetAgent).To(Equal("qa-agent"))
+				Expect(started.Description).To(Equal("Run the tests"))
+
+				completed := delegationChunks[1].DelegationInfo
+				Expect(completed.Status).To(Equal("completed"))
+				Expect(completed.SourceAgent).To(Equal("orchestrator"))
+				Expect(completed.TargetAgent).To(Equal("qa-agent"))
+			})
+
+			It("emits failed DelegationInfo when target engine stream errors", func() {
+				failProvider := &mockProvider{
+					name:      "fail-provider",
+					streamErr: errors.New("stream broke"),
+				}
+
+				failManifest := agent.Manifest{
+					ID:                "fail-agent",
+					Name:              "Fail Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "fail"},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				failEngine := engine.New(engine.Config{
+					ChatProvider: failProvider,
+					Manifest:     failManifest,
+				})
+
+				failEngines := map[string]*engine.Engine{
+					"qa-agent": failEngine,
+				}
+
+				delegateTool := engine.NewDelegateTool(failEngines, delegation, "orchestrator")
+				ctx := engine.WithStreamOutput(context.Background(), outChan)
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run the tests",
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+
+				close(outChan)
+				var delegationChunks []provider.StreamChunk
+				for chunk := range outChan {
+					if chunk.DelegationInfo != nil {
+						delegationChunks = append(delegationChunks, chunk)
+					}
+				}
+
+				Expect(delegationChunks).To(HaveLen(2))
+
+				started := delegationChunks[0].DelegationInfo
+				Expect(started.Status).To(Equal("started"))
+
+				failed := delegationChunks[1].DelegationInfo
+				Expect(failed.Status).To(Equal("failed"))
+				Expect(failed.SourceAgent).To(Equal("orchestrator"))
+				Expect(failed.TargetAgent).To(Equal("qa-agent"))
+			})
+
+			It("works without context output channel", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("delegated output"))
 			})
 		})
 	})

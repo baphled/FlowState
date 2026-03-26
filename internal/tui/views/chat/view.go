@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
@@ -28,6 +29,8 @@ type View struct {
 	renderFunc     func(string, int) string
 	toolCallName   string
 	toolCallStatus string
+	delegationInfo *provider.DelegationInfo
+	tickFrame      int
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -291,6 +294,55 @@ func (v *View) RenderContent(width int) string {
 	return sb.String()
 }
 
+// SetTickFrame updates the current animation frame for spinners.
+//
+// Expected:
+//   - frame is the current spinner frame.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Updates the tick frame used by spinner rendering.
+func (v *View) SetTickFrame(frame int) {
+	v.tickFrame = frame
+}
+
+// HandleDelegation updates the delegation status.
+//
+// Expected:
+//   - info is nil or contains the current delegation state.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Updates the delegation display state.
+//   - May append a system message when delegation completes or fails.
+func (v *View) HandleDelegation(info *provider.DelegationInfo) {
+	if info == nil {
+		return
+	}
+
+	switch info.Status {
+	case "completed", "failed":
+		// Clear active delegation display
+		v.delegationInfo = nil
+
+		// Add completion/failure summary as a system message
+		// Note: The caller might also want to display the result content separately if any
+		widget := NewDelegationStatusWidget(info, v.Theme())
+		v.AddMessage(Message{
+			Role:    "system",
+			Content: widget.Render(),
+		})
+	default:
+		// Active delegation
+		v.delegationInfo = info
+		v.streaming = true // Consider delegation as streaming/active
+	}
+}
+
 // appendStreamingContent adds the current streaming response to the rendered view.
 //
 // Expected:
@@ -304,9 +356,17 @@ func (v *View) RenderContent(width int) string {
 // Side effects:
 //   - Writes streaming tool call and assistant content into sb when streaming is active.
 func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width int) {
-	if !v.streaming {
+	if !v.streaming && v.delegationInfo == nil {
 		return
 	}
+
+	if v.delegationInfo != nil {
+		widget := NewDelegationStatusWidget(v.delegationInfo, th)
+		widget.SetFrame(v.tickFrame)
+		sb.WriteString(widget.Render())
+		sb.WriteString("\n")
+	}
+
 	if v.toolCallName != "" && v.toolCallStatus != "" {
 		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
 		sb.WriteString(tcw.Render())

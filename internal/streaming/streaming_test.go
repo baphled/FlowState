@@ -111,6 +111,33 @@ func (m *mockHarness) StreamEvaluate(
 	return streaming.PlanResultToChannel(m.result), nil
 }
 
+type mockDelegationConsumer struct {
+	chunks      []string
+	errors      []error
+	delegations []streaming.DelegationEvent
+	doneCount   int
+	writeErr    error
+	delegateErr error
+}
+
+func (m *mockDelegationConsumer) WriteChunk(content string) error {
+	m.chunks = append(m.chunks, content)
+	return m.writeErr
+}
+
+func (m *mockDelegationConsumer) WriteError(err error) {
+	m.errors = append(m.errors, err)
+}
+
+func (m *mockDelegationConsumer) Done() {
+	m.doneCount++
+}
+
+func (m *mockDelegationConsumer) WriteDelegation(event streaming.DelegationEvent) error {
+	m.delegations = append(m.delegations, event)
+	return m.delegateErr
+}
+
 type mockHarnessConsumer struct {
 	chunks          []string
 	toolCalls       []string
@@ -808,6 +835,109 @@ var _ = Describe("Streaming", func() {
 			Expect(chunks).To(HaveLen(2))
 			Expect(chunks[0].Content).To(BeEmpty())
 			Expect(chunks[1].Done).To(BeTrue())
+		})
+	})
+
+	Describe("Run with DelegationInfo chunks", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+		})
+
+		Context("when the stream contains a DelegationInfo chunk", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{DelegationInfo: &provider.DelegationInfo{
+						SourceAgent:  "orchestrator",
+						TargetAgent:  "qa-agent",
+						Status:       "started",
+						ModelName:    "claude-sonnet-4",
+						ProviderName: "anthropic",
+						Description:  "Run tests",
+					}},
+					{Content: "delegation output"},
+					{DelegationInfo: &provider.DelegationInfo{
+						SourceAgent:  "orchestrator",
+						TargetAgent:  "qa-agent",
+						Status:       "completed",
+						ModelName:    "claude-sonnet-4",
+						ProviderName: "anthropic",
+						Description:  "Run tests",
+					}},
+					{Done: true},
+				}
+			})
+
+			It("calls WriteDelegation on DelegationConsumer implementations", func() {
+				consumer := &mockDelegationConsumer{}
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.delegations).To(HaveLen(2))
+
+				Expect(consumer.delegations[0].Status).To(Equal("started"))
+				Expect(consumer.delegations[0].SourceAgent).To(Equal("orchestrator"))
+				Expect(consumer.delegations[0].TargetAgent).To(Equal("qa-agent"))
+				Expect(consumer.delegations[0].ModelName).To(Equal("claude-sonnet-4"))
+				Expect(consumer.delegations[0].ProviderName).To(Equal("anthropic"))
+				Expect(consumer.delegations[0].Description).To(Equal("Run tests"))
+
+				Expect(consumer.delegations[1].Status).To(Equal("completed"))
+			})
+
+			It("does not deliver DelegationInfo as regular content", func() {
+				consumer := &mockDelegationConsumer{}
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(Equal([]string{"delegation output"}))
+			})
+		})
+
+		Context("when the consumer does not implement DelegationConsumer", func() {
+			It("silently skips DelegationInfo chunks", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{DelegationInfo: &provider.DelegationInfo{
+						SourceAgent: "src",
+						TargetAgent: "tgt",
+						Status:      "started",
+					}},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+
+		Context("when a DelegationInfo chunk has status failed", func() {
+			It("delivers the failed event to the consumer", func() {
+				consumer := &mockDelegationConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{DelegationInfo: &provider.DelegationInfo{
+						SourceAgent: "orchestrator",
+						TargetAgent: "qa-agent",
+						Status:      "started",
+					}},
+					{DelegationInfo: &provider.DelegationInfo{
+						SourceAgent: "orchestrator",
+						TargetAgent: "qa-agent",
+						Status:      "failed",
+					}},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.delegations).To(HaveLen(2))
+				Expect(consumer.delegations[0].Status).To(Equal("started"))
+				Expect(consumer.delegations[1].Status).To(Equal("failed"))
+			})
 		})
 	})
 })

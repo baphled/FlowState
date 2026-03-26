@@ -34,15 +34,16 @@ import (
 // to handle special events such as "harness_retry" without modifying the
 // standard chunk processing pipeline.
 type StreamChunkMsg struct {
-	Content      string
-	Error        error
-	Done         bool
-	EventType    string
-	ToolCallName string
-	ToolStatus   string
-	ToolResult   string
-	ToolIsError  bool
-	Next         tea.Cmd
+	Content        string
+	Error          error
+	Done           bool
+	EventType      string
+	ToolCallName   string
+	ToolStatus     string
+	ToolResult     string
+	ToolIsError    bool
+	DelegationInfo *provider.DelegationInfo
+	Next           tea.Cmd
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -250,6 +251,7 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case SpinnerTickMsg:
 		if i.view.IsStreaming() {
 			i.tickFrame++
+			i.view.SetTickFrame(i.tickFrame)
 		}
 		if i.loadingModal != nil {
 			i.loadingModal.AdvanceSpinner()
@@ -431,6 +433,10 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 			role = "tool_error"
 		}
 		i.view.AddMessage(chat.Message{Role: role, Content: msg.ToolResult})
+	}
+
+	if msg.DelegationInfo != nil {
+		i.view.HandleDelegation(msg.DelegationInfo)
 	}
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
@@ -690,12 +696,13 @@ func (i *Intent) readNextChunk() tea.Msg {
 	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
-		Content:      chunk.Content,
-		Error:        chunk.Error,
-		Done:         chunk.Done,
-		EventType:    chunk.EventType,
-		ToolCallName: toolCallName,
-		ToolStatus:   toolStatus,
+		Content:        chunk.Content,
+		Error:          chunk.Error,
+		Done:           chunk.Done,
+		EventType:      chunk.EventType,
+		ToolCallName:   toolCallName,
+		ToolStatus:     toolStatus,
+		DelegationInfo: chunk.DelegationInfo,
 	}
 
 	if chunk.ToolResult != nil {
@@ -747,12 +754,13 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
-		Content:      chunk.Content,
-		Error:        chunk.Error,
-		Done:         chunk.Done,
-		EventType:    chunk.EventType,
-		ToolCallName: toolCallName,
-		ToolStatus:   toolStatus,
+		Content:        chunk.Content,
+		Error:          chunk.Error,
+		Done:           chunk.Done,
+		EventType:      chunk.EventType,
+		ToolCallName:   toolCallName,
+		ToolStatus:     toolStatus,
+		DelegationInfo: chunk.DelegationInfo,
 	}
 
 	if chunk.ToolResult != nil {

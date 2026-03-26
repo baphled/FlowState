@@ -470,6 +470,23 @@ func writeSSECriticFeedback(w http.ResponseWriter, flusher http.Flusher, content
 	writeSSE(w, flusher, string(jsonData))
 }
 
+// writeSSEDelegation marshals a delegation event as JSON and writes it as a server-sent event.
+//
+// Expected:
+//   - event contains delegation metadata.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded delegation event to response.
+//   - Flushes response buffer.
+func writeSSEDelegation(w http.ResponseWriter, flusher http.Flusher, event streaming.DelegationEvent) {
+	jsonData, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
 // writeSSE writes a server-sent event data line and flushes the response buffer.
 //
 // Expected:
