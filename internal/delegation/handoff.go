@@ -21,6 +21,15 @@ type Handoff struct {
 }
 
 // NewHandoff creates a new handoff with the supplied delegation metadata.
+//
+// Expected:
+//   - h contains the delegation metadata to copy.
+//
+// Returns:
+//   - A new Handoff with the supplied field values.
+//
+// Side effects:
+//   - None.
 func NewHandoff(h Handoff) *Handoff {
 	return &Handoff{
 		SourceAgent: h.SourceAgent,
@@ -34,6 +43,16 @@ func NewHandoff(h Handoff) *Handoff {
 }
 
 // Validate checks the required delegation metadata fields.
+//
+// Expected:
+//   - h contains delegation metadata to validate.
+//
+// Returns:
+//   - nil when required fields are present.
+//   - An error when a required field is empty.
+//
+// Side effects:
+//   - None.
 func (h Handoff) Validate() error {
 	if h.SourceAgent == "" {
 		return errors.New("source agent must not be empty")

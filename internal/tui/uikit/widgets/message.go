@@ -75,7 +75,7 @@ func (w *MessageWidget) Render(width int) string {
 
 		content := w.content
 		if w.renderFunc != nil {
-			content = w.renderFunc(content, width)
+			content = w.renderFunc(content, width-2)
 		}
 
 		contentStyle := lipgloss.NewStyle().

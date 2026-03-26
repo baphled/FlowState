@@ -286,19 +286,40 @@ func (v *View) RenderContent(width int) string {
 		sb.WriteString("\n\n")
 	}
 
-	if v.streaming {
-		if v.toolCallName != "" && v.toolCallStatus != "" {
-			tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
-			sb.WriteString(tcw.Render())
-			sb.WriteString("\n")
-		}
-		if v.response != "" {
-			sb.WriteString(v.response)
-			sb.WriteString("\n")
-		}
-	}
+	v.appendStreamingContent(&sb, th, width)
 
 	return sb.String()
+}
+
+// appendStreamingContent adds the current streaming response to the rendered view.
+//
+// Expected:
+//   - sb is ready for appended content.
+//   - th is the active theme.
+//   - width is the render width.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Writes streaming tool call and assistant content into sb when streaming is active.
+func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width int) {
+	if !v.streaming {
+		return
+	}
+	if v.toolCallName != "" && v.toolCallStatus != "" {
+		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
+		sb.WriteString(tcw.Render())
+		sb.WriteString("\n")
+	}
+	if v.response != "" {
+		mw := widgets.NewMessageWidget("assistant", v.response, th)
+		if v.renderFunc != nil {
+			mw.SetMarkdownRenderer(v.renderFunc)
+		}
+		sb.WriteString(mw.Render(width))
+		sb.WriteString("\n")
+	}
 }
 
 // ResultSend represents the result of sending a chat message.

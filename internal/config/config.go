@@ -70,10 +70,11 @@ type MCPServerConfig struct {
 // Each field controls an optional layer of the harness. By default,
 // the harness is enabled but the critic and voting are disabled.
 type HarnessConfig struct {
-	Enabled       bool   `json:"enabled" yaml:"enabled"`
-	ProjectRoot   string `json:"project_root" yaml:"project_root"`
-	CriticEnabled bool   `json:"critic_enabled" yaml:"critic_enabled"`
-	VotingEnabled bool   `json:"voting_enabled" yaml:"voting_enabled"`
+	Enabled            bool   `json:"enabled" yaml:"enabled"`
+	ProjectRoot        string `json:"project_root" yaml:"project_root"`
+	CriticEnabled      bool   `json:"critic_enabled" yaml:"critic_enabled"`
+	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
+	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
 }
 
 // Dir returns the configuration directory path.
@@ -161,9 +162,10 @@ func DefaultConfig() *AppConfig {
 			"agent-discovery",
 		},
 		Harness: HarnessConfig{
-			Enabled:       true,
-			CriticEnabled: false,
-			VotingEnabled: false,
+			Enabled:            true,
+			CriticEnabled:      false,
+			VotingEnabled:      false,
+			IncrementalEnabled: false,
 		},
 	}
 }

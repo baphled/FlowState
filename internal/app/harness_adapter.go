@@ -110,6 +110,11 @@ func createHarnessStreamer(
 		opts = append(opts, plan.WithVoter(voter))
 	}
 
+	if cfg.IncrementalEnabled {
+		incrementalGen := &plan.IncrementalGenerator{Streamer: inner, MaxRetries: 3}
+		opts = append(opts, plan.WithIncremental(incrementalGen))
+	}
+
 	harness := plan.NewPlanHarness(projectRoot, opts...)
 	return streaming.NewHarnessStreamer(inner, &harnessAdapter{harness: harness}, registry)
 }

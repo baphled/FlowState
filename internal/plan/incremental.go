@@ -10,6 +10,8 @@ import (
 type GenerationPhase string
 
 const (
+	// PhaseFrontmatter is the YAML frontmatter generation phase.
+	PhaseFrontmatter GenerationPhase = "Frontmatter"
 	// PhaseRationale is the rationale generation phase.
 	PhaseRationale GenerationPhase = "Rationale"
 	// PhaseTasks is the tasks generation phase.
@@ -24,6 +26,7 @@ const (
 
 // AllPhases is the ordered list of all generation phases.
 var AllPhases = []GenerationPhase{
+	PhaseFrontmatter,
 	PhaseRationale,
 	PhaseTasks,
 	PhaseWaves,
@@ -74,7 +77,7 @@ func (g *IncrementalGenerator) Generate(ctx context.Context, agentID, baseMessag
 
 	var results []PhaseResult
 	for _, phase := range AllPhases {
-		prompt := baseMessage + "\n\nGenerate ONLY the " + string(phase) + " section of the plan."
+		prompt := buildPhasePrompt(baseMessage, phase)
 
 		var output string
 		for attempt := 1; attempt <= maxRetries; attempt++ {
@@ -114,4 +117,22 @@ func (g *IncrementalGenerator) Generate(ctx context.Context, agentID, baseMessag
 		PhaseResults: results,
 		FullPlan:     strings.Join(outputs, "\n\n"),
 	}, nil
+}
+
+// buildPhasePrompt generates the appropriate prompt for a given generation phase.
+//
+// Expected:
+//   - baseMessage is the original planning prompt.
+//   - phase is a GenerationPhase constant.
+//
+// Returns:
+//   - A prompt string instructing the LLM to generate only that phase's section.
+//
+// Side effects:
+//   - None.
+func buildPhasePrompt(baseMessage string, phase GenerationPhase) string {
+	if phase == PhaseFrontmatter {
+		return baseMessage + "\n\nGenerate ONLY the YAML frontmatter section of the plan (---\\nid: ...\\ntitle: ...\\n---)"
+	}
+	return baseMessage + "\n\nGenerate ONLY the " + string(phase) + " section of the plan."
 }

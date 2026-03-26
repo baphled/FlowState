@@ -74,6 +74,22 @@ func WithVoter(voter *ConsistencyVoter) HarnessOption {
 	}
 }
 
+// WithIncremental attaches an IncrementalGenerator to the harness for phase-by-phase streaming.
+//
+// Expected:
+//   - gen is a configured IncrementalGenerator (may be nil to disable incremental mode).
+//
+// Returns:
+//   - A HarnessOption that sets the incremental field.
+//
+// Side effects:
+//   - None.
+func WithIncremental(gen *IncrementalGenerator) HarnessOption {
+	return func(h *PlanHarness) {
+		h.incremental = gen
+	}
+}
+
 // PlanHarness wraps a Streamer with validate-retry logic and optional LLM critic.
 //
 //nolint:revive // PlanHarness name is intentional for plan-specific workflows.
@@ -86,6 +102,7 @@ type PlanHarness struct {
 	critic             *LLMCritic
 	criticProvider     provider.Provider
 	voter              *ConsistencyVoter
+	incremental        *IncrementalGenerator
 }
 
 // NewPlanHarness creates a PlanHarness with validators, retry settings, and optional configuration.
@@ -197,7 +214,16 @@ func (h *PlanHarness) runStreamEvaluation(
 			Content:   fmt.Sprintf(`{"attempt":%d,"maxRetries":%d}`, attempt, h.maxRetries),
 		})
 
-		planText, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
+		var planText string
+		var err error
+
+		// Use incremental generation for first attempt only if configured
+		if attempt == 1 && h.incremental != nil {
+			planText, err = h.runIncrementalStream(ctx, streamer, agentID, currentMessage, outCh)
+		} else {
+			planText, err = h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
+		}
+
 		if err != nil {
 			trySend(ctx, outCh, provider.StreamChunk{Error: err})
 			return
@@ -264,6 +290,144 @@ func (h *PlanHarness) streamAttempt(
 	}
 
 	return h.forwardAndAccumulate(ctx, chunks, outCh)
+}
+
+// runIncrementalStream generates a plan incrementally, phase by phase, streaming each to outCh.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - streamer provides streaming access to the LLM.
+//   - agentID identifies the planner agent.
+//   - message is the base planning prompt.
+//   - outCh is the channel to forward streamed chunks to.
+//
+// Returns:
+//   - The assembled full plan from all phases.
+//   - An error if any phase fails or context is cancelled.
+//
+// Side effects:
+//   - Emits harness_phase_complete events after each phase completes.
+//   - Forwards each phase's content chunks to outCh in real-time.
+func (h *PlanHarness) runIncrementalStream(
+	ctx context.Context,
+	streamer Streamer,
+	agentID string,
+	message string,
+	outCh chan<- provider.StreamChunk,
+) (string, error) {
+	if h.incremental == nil {
+		return "", errors.New("incremental generator not configured")
+	}
+
+	maxRetries := h.incremental.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+
+	var allPhaseOutputs []string
+	for _, phase := range AllPhases {
+		phaseOutput, err := h.streamPhaseWithRetry(struct {
+			ctx        context.Context
+			streamer   Streamer
+			agentID    string
+			message    string
+			phase      GenerationPhase
+			maxRetries int
+			outCh      chan<- provider.StreamChunk
+		}{ctx, streamer, agentID, message, phase, maxRetries, outCh})
+		if err != nil {
+			return "", err
+		}
+
+		allPhaseOutputs = append(allPhaseOutputs, phaseOutput)
+
+		if !trySend(ctx, outCh, provider.StreamChunk{
+			EventType: "harness_phase_complete",
+			Content:   fmt.Sprintf(`{"phase":%q}`, phase),
+		}) {
+			return "", ctx.Err()
+		}
+	}
+
+	return strings.Join(allPhaseOutputs, "\n\n"), nil
+}
+
+// streamPhaseWithRetry streams a single phase with retry logic.
+//
+// Expected:
+//   - args contains all required parameters for streaming: context, streamer, agentID,
+//     the base message, the generation phase, max retries, and the output channel.
+//
+// Returns:
+//   - The phase output string.
+//   - An error if the phase fails after maxRetries or context is cancelled.
+//
+// Side effects:
+//   - Forwards each chunk to outCh in real-time.
+func (h *PlanHarness) streamPhaseWithRetry(args struct {
+	ctx        context.Context
+	streamer   Streamer
+	agentID    string
+	message    string
+	phase      GenerationPhase
+	maxRetries int
+	outCh      chan<- provider.StreamChunk
+}) (string, error) {
+	phasePrompt := buildPhasePrompt(args.message, args.phase)
+
+	for attempt := 1; attempt <= args.maxRetries; attempt++ {
+		if args.ctx.Err() != nil {
+			return "", args.ctx.Err()
+		}
+
+		ch, err := args.streamer.Stream(args.ctx, args.agentID, phasePrompt)
+		if err != nil {
+			return "", err
+		}
+
+		phaseOutput, err := h.accumulatePhaseStream(args.ctx, ch, args.outCh)
+		if err != nil {
+			return "", err
+		}
+
+		if phaseOutput != "" {
+			return phaseOutput, nil
+		}
+	}
+
+	return "", fmt.Errorf("phase %s produced empty output after %d attempts", args.phase, args.maxRetries)
+}
+
+// accumulatePhaseStream reads from a chunk channel, forwards to outCh, and returns accumulated text.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - chunks is the channel of stream chunks from the LLM.
+//   - outCh is the channel to forward chunks to.
+//
+// Returns:
+//   - The accumulated text from all chunks.
+//   - An error if context is cancelled.
+//
+// Side effects:
+//   - Forwards each chunk to outCh.
+func (h *PlanHarness) accumulatePhaseStream(
+	ctx context.Context,
+	chunks <-chan provider.StreamChunk,
+	outCh chan<- provider.StreamChunk,
+) (string, error) {
+	var builder strings.Builder
+
+	for chunk := range chunks {
+		select {
+		case outCh <- chunk:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		builder.WriteString(chunk.Content)
+	}
+
+	return strings.TrimSpace(builder.String()), nil
 }
 
 // forwardAndAccumulate reads from an inner chunk channel, forwarding to outCh and accumulating text.
@@ -394,9 +558,21 @@ func (h *PlanHarness) Evaluate(
 	currentMessage := message
 
 	for attempt := 1; attempt <= h.maxRetries; attempt++ {
-		planText, err := streamPlan(ctx, streamer, aggregator, agentID, currentMessage)
-		if err != nil {
-			return nil, err
+		var planText string
+		var err error
+
+		// Use incremental generation for first attempt if configured
+		if attempt == 1 && h.incremental != nil {
+			result, incErr := h.incremental.Generate(ctx, agentID, message)
+			if incErr != nil {
+				return nil, incErr
+			}
+			planText = result.FullPlan
+		} else {
+			planText, err = streamPlan(ctx, streamer, aggregator, agentID, currentMessage)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		phase := hook.DetectPhase(planText)

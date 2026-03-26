@@ -173,4 +173,36 @@ var _ = Describe("Harness wiring", func() {
 			})
 		})
 	})
+
+	Describe("createHarnessStreamer with incremental configuration", func() {
+		Context("when IncrementalEnabled is false (default)", func() {
+			It("creates streamer without incremental generator", func() {
+				cfg := config.HarnessConfig{
+					Enabled:            true,
+					IncrementalEnabled: false,
+					ProjectRoot:        tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+			})
+		})
+
+		Context("when IncrementalEnabled is true", func() {
+			It("creates streamer with incremental generator configured", func() {
+				cfg := config.HarnessConfig{
+					Enabled:            true,
+					IncrementalEnabled: true,
+					ProjectRoot:        tempDir,
+				}
+
+				registry := agent.NewRegistry()
+				streamer := app.CreateHarnessStreamerForTest(nil, registry, cfg, nil)
+
+				Expect(streamer).NotTo(BeNil())
+			})
+		})
+	})
 })

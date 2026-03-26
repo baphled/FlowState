@@ -1,6 +1,8 @@
 package widgets_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -185,5 +187,62 @@ var _ = Describe("MessageWidget", func() {
 				Expect(output).To(ContainSubstring("plain text"))
 			})
 		})
+
+		Context("width constraint", func() {
+			It("does not exceed width with PaddingLeft after markdown wrapping", func() {
+				longContent := "This is a very long paragraph that should be wrapped by the markdown renderer at a specific width. " +
+					"We need content that will produce lines close to the requested width when wrapped. " +
+					"The renderer should wrap at width-2, then PaddingLeft(2) adds 2 chars, keeping total within width."
+
+				w := widgets.NewMessageWidget("assistant", longContent, th)
+				w.SetMarkdownRenderer(func(content string, width int) string {
+					lines := strings.Split(content, "\n")
+					var wrapped []string
+					for _, line := range lines {
+						if len(line) > width {
+							for len(line) > width {
+								wrapped = append(wrapped, line[:width])
+								line = line[width:]
+							}
+							if line != "" {
+								wrapped = append(wrapped, line)
+							}
+						} else {
+							wrapped = append(wrapped, line)
+						}
+					}
+					return strings.Join(wrapped, "\n")
+				})
+
+				output := w.Render(80)
+				stripped := stripANSI(output)
+				lines := strings.Split(stripped, "\n")
+
+				for i, line := range lines {
+					Expect(len(line)).To(BeNumerically("<=", 80),
+						"line %d exceeds 80 chars: length=%d content=%q", i+1, len(line), line)
+				}
+			})
+		})
 	})
 })
+
+// stripANSI removes ANSI escape codes from a string.
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if r == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}
