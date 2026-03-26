@@ -74,6 +74,8 @@ func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 		result.Score -= 0.4
 	}
 
+	v.validateExpandedFields(parts[1], result)
+
 	if result.Score < 0.0 {
 		result.Score = 0.0
 	}
@@ -85,4 +87,44 @@ func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 		return result, fmt.Errorf("%s", strings.Join(result.Errors, "; "))
 	}
 	return result, nil
+}
+
+// validateExpandedFields checks the expanded plan sections added in T1.
+// These fields are optional for backward compatibility but generate warnings
+// when producing plans for harness_enabled agents.
+//
+// Expected:
+//   - yamlContent is the YAML frontmatter content.
+//   - result is the ValidationResult to append warnings to.
+//
+// Returns:
+//   - (nothing; modifies result in place)
+//
+// Side effects:
+//   - Appends warnings to result.Warnings for missing optional fields.
+func (v *SchemaValidator) validateExpandedFields(yamlContent string, result *ValidationResult) {
+	var file File
+	if err := yaml.Unmarshal([]byte(yamlContent), &file); err != nil {
+		return
+	}
+
+	if strings.TrimSpace(file.TLDR) == "" {
+		result.Warnings = append(result.Warnings, "plan missing TL;DR section")
+	}
+
+	if strings.TrimSpace(file.Context.OriginalRequest) == "" {
+		result.Warnings = append(result.Warnings, "plan missing Context.OriginalRequest")
+	}
+
+	if strings.TrimSpace(file.WorkObjectives.CoreObjective) == "" {
+		result.Warnings = append(result.Warnings, "plan missing WorkObjectives.CoreObjective")
+	}
+
+	if len(file.WorkObjectives.Deliverables) == 0 {
+		result.Warnings = append(result.Warnings, "plan missing WorkObjectives.Deliverables")
+	}
+
+	if strings.TrimSpace(file.VerificationStrategy) == "" {
+		result.Warnings = append(result.Warnings, "plan missing VerificationStrategy")
+	}
 }
