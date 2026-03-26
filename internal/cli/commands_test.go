@@ -386,6 +386,19 @@ var _ = Describe("CLI Commands", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("streaming response"))
 			})
+
+			It("writes JSON events to stdout when --output json is used", func() {
+				testApp := createRunTestApp([]provider.StreamChunk{
+					{Content: "hello"},
+					{Content: " json", Done: true},
+				}, nil)
+				err := cmd(testApp, "chat", "--message", "Hello", "--agent", "tester", "--output", "json")
+				Expect(err).NotTo(HaveOccurred())
+				output := out.String()
+				Expect(output).To(ContainSubstring(`"type":"chunk"`))
+				Expect(output).To(ContainSubstring(`"type":"done"`))
+				Expect(output).NotTo(ContainSubstring("Response:"))
+			})
 		})
 
 		Context("with --help flag", func() {

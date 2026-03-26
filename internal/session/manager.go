@@ -17,32 +17,32 @@ var ErrSessionNotFound = errors.New("session not found")
 
 // Message represents a single message in a session's conversation history.
 type Message struct {
-	ID        string
-	Role      string
-	Content   string
-	AgentID   string
-	Timestamp time.Time
+	ID        string    `json:"id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	AgentID   string    `json:"agent_id"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // Session represents a planning session with conversation history,
 // coordination store, and delegation chain status.
 type Session struct {
-	ID                string
-	AgentID           string
-	Status            string
-	CoordinationStore *coordination.MemoryStore
-	Messages          []Message
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                string                    `json:"id"`
+	AgentID           string                    `json:"agent_id"`
+	Status            string                    `json:"status"`
+	CoordinationStore *coordination.MemoryStore `json:"coordination_store,omitempty"`
+	Messages          []Message                 `json:"messages"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	UpdatedAt         time.Time                 `json:"updated_at"`
 }
 
 // Summary provides a lightweight view of a session for listing.
 type Summary struct {
-	ID           string
-	AgentID      string
-	Status       string
-	CreatedAt    time.Time
-	MessageCount int
+	ID           string    `json:"id"`
+	AgentID      string    `json:"agent_id"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+	MessageCount int       `json:"message_count"`
 }
 
 // Manager handles session lifecycle and message routing.

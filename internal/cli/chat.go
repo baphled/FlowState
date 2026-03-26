@@ -108,13 +108,21 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 
-	response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, io.Discard)
+	writer := io.Discard
+	if opts.Output == "json" {
+		writer = cmd.OutOrStdout()
+	}
+
+	response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, writer)
 	if err != nil {
 		return err
 	}
 
 	saveSessionIfAvailable(cmd, application, sessionID)
 
+	if opts.Output == "json" {
+		return nil
+	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Response: %s\n", response)
 	return err
 }
