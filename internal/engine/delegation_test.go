@@ -457,5 +457,183 @@ var _ = Describe("Delegation", func() {
 				Expect(result.Output).To(ContainSubstring("delegated output"))
 			})
 		})
+
+		Describe("DelegateTool async mode", func() {
+			var (
+				qaProvider *mockProvider
+				qaEngine   *engine.Engine
+				engines    map[string]*engine.Engine
+				bgManager  *engine.BackgroundTaskManager
+				delegation agent.Delegation
+			)
+
+			BeforeEach(func() {
+				bgManager = engine.NewBackgroundTaskManager()
+
+				qaProvider = &mockProvider{
+					name: "qa-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "async response", Done: true},
+					},
+				}
+
+				qaManifest := agent.Manifest{
+					ID:                "qa-agent",
+					Name:              "QA Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				qaEngine = engine.New(engine.Config{
+					ChatProvider: qaProvider,
+					Manifest:     qaManifest,
+				})
+
+				engines = map[string]*engine.Engine{
+					"qa-agent": qaEngine,
+				}
+
+				delegation = agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"testing": "qa-agent",
+					},
+				}
+			})
+
+			It("returns task ID immediately when run_in_background is true", func() {
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":         "testing",
+						"message":           "Run tests async",
+						"run_in_background": true,
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(MatchRegexp(`"task_id":\s*"task-qa-agent-\d+"`))
+				Expect(result.Output).To(ContainSubstring(`"status": "running"`))
+			})
+
+			It("tracks background task in manager", func() {
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":         "testing",
+						"message":           "Run tests async",
+						"run_in_background": true,
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() int {
+					return bgManager.ActiveCount()
+				}).Should(BeNumerically(">=", 1))
+
+				tasks := bgManager.List()
+				Expect(tasks).To(HaveLen(1))
+				Expect(tasks[0].AgentID).To(Equal("qa-agent"))
+
+				Eventually(func() string {
+					return bgManager.List()[0].Status.Load()
+				}).Should(Equal("completed"))
+			})
+
+			It("updates task status to completed when done", func() {
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":         "testing",
+						"message":           "Run tests async",
+						"run_in_background": true,
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring(`"status": "running"`))
+
+				time.Sleep(100 * time.Millisecond)
+
+				tasks := bgManager.List()
+				Expect(tasks).To(HaveLen(1))
+				Expect(tasks[0].Status.Load()).To(Equal("completed"))
+				Expect(tasks[0].Result).To(ContainSubstring("async response"))
+			})
+
+			It("returns error when background mode disabled", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":         "testing",
+						"message":           "Run tests async",
+						"run_in_background": true,
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("background mode disabled"))
+			})
+
+			It("supports handoff parameter with ChainID", func() {
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+				outChan := make(chan provider.StreamChunk, 16)
+				ctx := engine.WithStreamOutput(context.Background(), outChan)
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests with handoff",
+						"handoff": map[string]interface{}{
+							"source_agent": "orchestrator",
+							"target_agent": "qa-agent",
+							"chain_id":     "chain-test-123",
+							"task_type":    "testing",
+						},
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("async response"))
+
+				close(outChan)
+				var delegationChunks []provider.StreamChunk
+				for chunk := range outChan {
+					if chunk.DelegationInfo != nil {
+						delegationChunks = append(delegationChunks, chunk)
+					}
+				}
+
+				Expect(delegationChunks).To(HaveLen(2))
+				started := delegationChunks[0].DelegationInfo
+				Expect(started.ChainID).To(Equal("chain-test-123"))
+				Expect(started.SourceAgent).To(Equal("orchestrator"))
+				Expect(started.TargetAgent).To(Equal("qa-agent"))
+			})
+		})
 	})
+
 })

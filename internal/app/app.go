@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/config"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/hook"
@@ -264,6 +265,9 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	if !manifest.Delegation.CanDelegate {
 		return
 	}
+	bgManager := engine.NewBackgroundTaskManager()
+	coordinationStore := coordination.NewMemoryStore()
+
 	engines := make(map[string]*engine.Engine, len(manifest.Delegation.DelegationTable))
 	for _, targetID := range manifest.Delegation.DelegationTable {
 		targetManifest, ok := a.Registry.Get(targetID)
@@ -273,7 +277,9 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		targetEngine := a.createDelegateEngine(*targetManifest)
 		engines[targetID] = targetEngine
 	}
-	eng.AddTool(engine.NewDelegateTool(engines, manifest.Delegation, manifest.ID))
+	eng.AddTool(engine.NewDelegateToolWithBackground(
+		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
+	))
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.
