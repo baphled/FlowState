@@ -546,6 +546,83 @@ When to use: Testing purposes
 			})
 		})
 
+		Context("when default agent has can_delegate true", func() {
+			It("includes delegate tool in engine", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-delegate")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				delegatingAgent := `{
+					"id": "delegator",
+					"name": "Delegating Agent",
+					"delegation": {
+						"can_delegate": true,
+						"delegation_table": {
+							"testing": "qa-agent"
+						}
+					}
+				}`
+				Expect(os.WriteFile(
+					filepath.Join(agentsDir, "delegator.json"),
+					[]byte(delegatingAgent), 0o600,
+				)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.DefaultAgent = "delegator"
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application.Engine).NotTo(BeNil())
+				Expect(application.Engine.HasTool("delegate")).To(BeTrue())
+			})
+		})
+
+		Context("when default agent has can_delegate false", func() {
+			It("does not include delegate tool in engine", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-no-delegate")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				nonDelegatingAgent := `{
+					"id": "worker",
+					"name": "Worker Agent",
+					"delegation": {
+						"can_delegate": false
+					}
+				}`
+				Expect(os.WriteFile(
+					filepath.Join(agentsDir, "worker.json"),
+					[]byte(nonDelegatingAgent), 0o600,
+				)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.DefaultAgent = "worker"
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application.Engine).NotTo(BeNil())
+				Expect(application.Engine.HasTool("delegate")).To(BeFalse())
+			})
+		})
+
 		Context("when default provider is not registered", func() {
 			It("returns an error", func() {
 				os.Unsetenv("OPENAI_API_KEY")

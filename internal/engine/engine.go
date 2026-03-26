@@ -888,3 +888,36 @@ func (e *Engine) ModelContextLimit() int {
 	}
 	return e.tokenCounter.ModelLimit(e.LastModel())
 }
+
+// HasTool reports whether the engine has a tool with the given name.
+//
+// Expected:
+//   - name is the tool name to look up.
+//
+// Returns:
+//   - true if a tool matching name is registered, false otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) HasTool(name string) bool {
+	for _, t := range e.tools {
+		if t.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AddTool appends a tool to the engine's tool set.
+//
+// Expected:
+//   - t is a non-nil tool implementing the tool.Tool interface.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Modifies the engine's internal tools slice.
+func (e *Engine) AddTool(t tool.Tool) {
+	e.tools = append(e.tools, t)
+}

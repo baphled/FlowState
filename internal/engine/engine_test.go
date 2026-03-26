@@ -1125,4 +1125,70 @@ var _ = Describe("Engine", func() {
 			})
 		})
 	})
+
+	Describe("HasTool", func() {
+		It("returns false when no tools are configured", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "test"},
+				Manifest:     agent.Manifest{ID: "test"},
+			})
+
+			Expect(eng.HasTool("delegate")).To(BeFalse())
+		})
+
+		It("returns true when tool is present", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "test"},
+				Manifest:     agent.Manifest{ID: "test"},
+				Tools: []tool.Tool{
+					&mockTool{name: "bash"},
+					&mockTool{name: "delegate"},
+				},
+			})
+
+			Expect(eng.HasTool("delegate")).To(BeTrue())
+		})
+
+		It("returns false when tool is not present", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "test"},
+				Manifest:     agent.Manifest{ID: "test"},
+				Tools: []tool.Tool{
+					&mockTool{name: "bash"},
+				},
+			})
+
+			Expect(eng.HasTool("delegate")).To(BeFalse())
+		})
+	})
+
+	Describe("AddTool", func() {
+		It("adds a tool to the engine", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "test"},
+				Manifest:     agent.Manifest{ID: "test"},
+			})
+
+			Expect(eng.HasTool("delegate")).To(BeFalse())
+
+			eng.AddTool(&mockTool{name: "delegate"})
+
+			Expect(eng.HasTool("delegate")).To(BeTrue())
+		})
+
+		It("does not duplicate existing tools", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "test"},
+				Manifest:     agent.Manifest{ID: "test"},
+				Tools: []tool.Tool{
+					&mockTool{name: "bash"},
+				},
+			})
+
+			eng.AddTool(&mockTool{name: "read"})
+
+			Expect(eng.HasTool("bash")).To(BeTrue())
+			Expect(eng.HasTool("read")).To(BeTrue())
+		})
+	})
 })

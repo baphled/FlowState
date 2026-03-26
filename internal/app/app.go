@@ -160,6 +160,7 @@ type engineParams struct {
 //
 // Side effects:
 //   - Creates engine and connects MCP servers.
+//   - Adds DelegateTool when the default manifest has can_delegate enabled.
 func createEngine(params engineParams) *engine.Engine {
 	var eng *engine.Engine
 	hookChain := buildHookChain(params.learningStore, func() agent.Manifest {
@@ -183,7 +184,28 @@ func createEngine(params engineParams) *engine.Engine {
 		AgentsFileLoader:  params.agentsFileLoader,
 		TokenCounter:      params.tokenCounter,
 	})
+	wireDelegateToolIfEnabled(eng, params.defaultManifest)
 	return eng
+}
+
+// wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
+// manifest permits delegation.
+//
+// Expected:
+//   - eng is a fully initialised Engine.
+//   - manifest is the agent manifest to inspect for delegation configuration.
+//
+// Side effects:
+//   - Appends a DelegateTool to the engine's tool set when can_delegate is true.
+func wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
+	if !manifest.Delegation.CanDelegate {
+		return
+	}
+	engines := make(map[string]*engine.Engine, len(manifest.Delegation.DelegationTable))
+	for _, targetID := range manifest.Delegation.DelegationTable {
+		engines[targetID] = eng
+	}
+	eng.AddTool(engine.NewDelegateTool(engines, manifest.Delegation))
 }
 
 // buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
@@ -282,6 +304,9 @@ func (a *App) ListModels() ([]provider.Model, error) {
 //
 // Expected:
 //   - registry is a valid provider.Registry.
+//
+// Returns:
+//   - None.
 //
 // Side effects:
 //   - Updates the app's provider registry reference.
