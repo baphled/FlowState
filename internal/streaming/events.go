@@ -100,12 +100,20 @@ func (e ToolCallEvent) MarshalJSON() ([]byte, error) {
 	return marshalWithType(e.Type(), alias(e))
 }
 
-// DelegationEvent represents a delegation action between agents.
+// DelegationEvent represents a delegation action between agents, including
+// visibility metadata such as the model, provider, and progress indicators.
 type DelegationEvent struct {
-	SourceAgent string `json:"sourceAgent"`
-	TargetAgent string `json:"targetAgent"`
-	ChainID     string `json:"chainId"`
-	Status      string `json:"status"`
+	SourceAgent  string     `json:"source_agent"`
+	TargetAgent  string     `json:"target_agent"`
+	ChainID      string     `json:"chain_id"`
+	Status       string     `json:"status"`
+	ModelName    string     `json:"model_name"`
+	ProviderName string     `json:"provider_name"`
+	Description  string     `json:"description"`
+	ToolCalls    int        `json:"tool_calls"`
+	LastTool     string     `json:"last_tool"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }
 
 // Type returns the event type identifier for delegation events.

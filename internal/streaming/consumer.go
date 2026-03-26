@@ -24,6 +24,13 @@ type ToolResultConsumer interface {
 	WriteToolResult(content string)
 }
 
+// DelegationConsumer is an optional interface that StreamConsumer implementations
+// may satisfy to receive delegation status updates.
+type DelegationConsumer interface {
+	// WriteDelegation delivers a delegation status event to the consumer.
+	WriteDelegation(event DelegationEvent) error
+}
+
 // HarnessEventConsumer is an optional interface for consumers that support harness event visibility.
 // Consumers may implement this interface to receive notifications about harness lifecycle events.
 type HarnessEventConsumer interface {

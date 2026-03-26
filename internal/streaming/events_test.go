@@ -11,6 +11,15 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
+type spyDelegationConsumer struct {
+	delegations []streaming.DelegationEvent
+}
+
+func (s *spyDelegationConsumer) WriteDelegation(event streaming.DelegationEvent) error {
+	s.delegations = append(s.delegations, event)
+	return nil
+}
+
 type spyEventConsumer struct {
 	events []streaming.Event
 	chunks []string
@@ -175,6 +184,114 @@ var _ = Describe("Events", func() {
 			_, err := streaming.UnmarshalEvent(data)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("unknown_event"))
+		})
+	})
+
+	Describe("DelegationEvent enriched fields", func() {
+		It("serialises all new fields with snake_case JSON keys", func() {
+			now := time.Now().UTC().Truncate(time.Second)
+			event := streaming.DelegationEvent{
+				SourceAgent:  "orchestrator",
+				TargetAgent:  "worker",
+				ChainID:      "chain-1",
+				Status:       "running",
+				ModelName:    "claude-opus-4-6",
+				ProviderName: "anthropic",
+				Description:  "investigating codebase",
+				ToolCalls:    5,
+				LastTool:     "bash",
+				StartedAt:    &now,
+				CompletedAt:  &now,
+			}
+
+			data, err := streaming.MarshalEvent(event)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			Expect(json.Unmarshal(data, &raw)).To(Succeed())
+
+			Expect(raw).To(HaveKey("source_agent"))
+			Expect(raw).To(HaveKey("target_agent"))
+			Expect(raw).To(HaveKey("chain_id"))
+			Expect(raw).To(HaveKey("status"))
+			Expect(raw).To(HaveKey("model_name"))
+			Expect(raw).To(HaveKey("provider_name"))
+			Expect(raw).To(HaveKey("description"))
+			Expect(raw).To(HaveKey("tool_calls"))
+			Expect(raw).To(HaveKey("last_tool"))
+			Expect(raw).To(HaveKey("started_at"))
+			Expect(raw).To(HaveKey("completed_at"))
+
+			Expect(raw).NotTo(HaveKey("sourceAgent"))
+			Expect(raw).NotTo(HaveKey("targetAgent"))
+			Expect(raw).NotTo(HaveKey("chainId"))
+		})
+
+		It("omits StartedAt and CompletedAt when nil", func() {
+			event := streaming.DelegationEvent{
+				SourceAgent:  "orchestrator",
+				TargetAgent:  "worker",
+				ChainID:      "chain-1",
+				Status:       "pending",
+				ModelName:    "claude-opus-4-6",
+				ProviderName: "anthropic",
+				Description:  "planning next step",
+			}
+
+			data, err := streaming.MarshalEvent(event)
+			Expect(err).NotTo(HaveOccurred())
+
+			var raw map[string]interface{}
+			Expect(json.Unmarshal(data, &raw)).To(Succeed())
+
+			Expect(raw).NotTo(HaveKey("started_at"))
+			Expect(raw).NotTo(HaveKey("completed_at"))
+			Expect(raw).To(HaveKey("source_agent"))
+			Expect(raw).To(HaveKey("model_name"))
+		})
+
+		It("round-trips DelegationEvent with all enriched fields", func() {
+			now := time.Now().UTC().Truncate(time.Second)
+			original := streaming.DelegationEvent{
+				SourceAgent:  "orchestrator",
+				TargetAgent:  "worker",
+				ChainID:      "chain-1",
+				Status:       "completed",
+				ModelName:    "claude-opus-4-6",
+				ProviderName: "anthropic",
+				Description:  "code review",
+				ToolCalls:    12,
+				LastTool:     "grep",
+				StartedAt:    &now,
+				CompletedAt:  &now,
+			}
+
+			data, err := streaming.MarshalEvent(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			restored, err := streaming.UnmarshalEvent(data)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restored).To(Equal(original))
+		})
+	})
+
+	Describe("DelegationConsumer", func() {
+		It("is satisfiable by a concrete type", func() {
+			var _ streaming.DelegationConsumer = (*spyDelegationConsumer)(nil)
+		})
+
+		It("accepts a DelegationEvent via WriteDelegation", func() {
+			spy := &spyDelegationConsumer{}
+			var consumer streaming.DelegationConsumer = spy
+
+			event := streaming.DelegationEvent{
+				SourceAgent: "orchestrator",
+				TargetAgent: "worker",
+				Status:      "running",
+			}
+			Expect(consumer.WriteDelegation(event)).To(Succeed())
+			Expect(spy.delegations).To(HaveLen(1))
+			Expect(spy.delegations[0].SourceAgent).To(Equal("orchestrator"))
 		})
 	})
 })
