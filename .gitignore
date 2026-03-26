@@ -1,5 +1,6 @@
 # Binaries
 /flowstate
+/docblocks
 /bin/
 *.exe
 *.exe~
@@ -44,6 +45,7 @@ build/
 # Debug
 __debug_bin*
 debug.log
+/.tmp
 
 # Test artifacts
 test-results/
