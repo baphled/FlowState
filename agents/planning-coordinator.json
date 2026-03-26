@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0.0",
+  "id": "planning-coordinator",
+  "name": "Planning Coordinator",
+  "complexity": "deep",
+  "model_preferences": {
+    "ollama": [
+      {
+        "provider": "ollama",
+        "model": "llama3.2"
+      }
+    ],
+    "anthropic": [
+      {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6"
+      }
+    ],
+    "openai": [
+      {
+        "provider": "openai",
+        "model": "gpt-4o"
+      }
+    ]
+  },
+  "capabilities": {
+    "tools": [
+      "delegate",
+      "coordination_store"
+    ],
+    "skills": [
+      "scope-management",
+      "systems-thinker",
+      "estimation"
+    ],
+    "always_active_skills": [
+      "pre-action",
+      "memory-keeper"
+    ],
+    "mcp_servers": []
+  },
+  "context_management": {
+    "max_recursion_depth": 3,
+    "summary_tier": "deep",
+    "sliding_window_size": 15,
+    "compaction_threshold": 0.75,
+    "embedding_model": "nomic-embed-text"
+  },
+  "delegation": {
+    "can_delegate": true,
+    "delegation_table": {
+      "explorer": "explorer",
+      "librarian": "librarian",
+      "analyst": "analyst",
+      "plan-writer": "plan-writer",
+      "plan-reviewer": "plan-reviewer"
+    }
+  },
+  "hooks": {
+    "before": [],
+    "after": []
+  },
+  "instructions": {
+    "system_prompt": "You are the FlowState Planning Coordinator.",
+    "structured_prompt_file": "planning-coordinator"
+  },
+  "metadata": {
+    "role": "Planning Coordinator",
+    "goal": "Orchestrate the deterministic planning loop through delegation",
+    "when_to_use": "When a complex task requires structured requirement gathering, evidence-backed analysis, and reviewed plan generation"
+  }
+}
