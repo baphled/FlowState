@@ -1,38 +1,89 @@
 package provider
 
 import (
-	"testing"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestToolResultInfo(t *testing.T) {
-	info := &ToolResultInfo{
-		Content: "output",
-		IsError: false,
-	}
-
-	if info.Content != "output" {
-		t.Errorf("expected Content to be 'output', got %q", info.Content)
-	}
-	if info.IsError != false {
-		t.Errorf("expected IsError to be false, got %v", info.IsError)
-	}
-}
-
-func TestStreamChunkWithToolResult(t *testing.T) {
-	chunk := StreamChunk{
-		Content:   "test",
-		Done:      false,
-		EventType: "tool_result",
-		ToolResult: &ToolResultInfo{
-			Content: "tool output",
+var _ = Describe("ToolResultInfo", func() {
+	It("stores content and error state", func() {
+		info := &ToolResultInfo{
+			Content: "output",
 			IsError: false,
-		},
-	}
+		}
 
-	if chunk.ToolResult == nil {
-		t.Fatal("expected ToolResult to be non-nil")
-	}
-	if chunk.ToolResult.Content != "tool output" {
-		t.Errorf("expected ToolResult.Content to be 'tool output', got %q", chunk.ToolResult.Content)
-	}
-}
+		Expect(info.Content).To(Equal("output"))
+		Expect(info.IsError).To(BeFalse())
+	})
+})
+
+var _ = Describe("StreamChunk with tool result", func() {
+	It("stores the tool result details", func() {
+		chunk := StreamChunk{
+			Content:   "test",
+			Done:      false,
+			EventType: "tool_result",
+			ToolResult: &ToolResultInfo{
+				Content: "tool output",
+				IsError: false,
+			},
+		}
+
+		Expect(chunk.ToolResult).NotTo(BeNil())
+		Expect(chunk.ToolResult.Content).To(Equal("tool output"))
+	})
+})
+
+var _ = Describe("DelegationInfo", func() {
+	It("stores delegation metadata", func() {
+		info := &DelegationInfo{
+			SourceAgent:  "planning-coordinator",
+			TargetAgent:  "explorer",
+			Status:       "started",
+			ModelName:    "claude-sonnet-4-6",
+			ProviderName: "anthropic",
+			Description:  "Exploring codebase for requirements",
+		}
+
+		Expect(info.SourceAgent).To(Equal("planning-coordinator"))
+		Expect(info.TargetAgent).To(Equal("explorer"))
+		Expect(info.Status).To(Equal("started"))
+		Expect(info.ModelName).To(Equal("claude-sonnet-4-6"))
+		Expect(info.ProviderName).To(Equal("anthropic"))
+		Expect(info.Description).To(Equal("Exploring codebase for requirements"))
+	})
+})
+
+var _ = Describe("StreamChunk with delegation info", func() {
+	It("stores the delegation details", func() {
+		chunk := StreamChunk{
+			Content:   "",
+			Done:      false,
+			EventType: "delegation",
+			DelegationInfo: &DelegationInfo{
+				SourceAgent:  "planning-coordinator",
+				TargetAgent:  "plan-writer",
+				Status:       "started",
+				ModelName:    "claude-sonnet-4-6",
+				ProviderName: "anthropic",
+				Description:  "Writing plan",
+			},
+		}
+
+		Expect(chunk.DelegationInfo).NotTo(BeNil())
+		Expect(chunk.DelegationInfo.SourceAgent).To(Equal("planning-coordinator"))
+		Expect(chunk.DelegationInfo.TargetAgent).To(Equal("plan-writer"))
+		Expect(chunk.DelegationInfo.Status).To(Equal("started"))
+	})
+})
+
+var _ = Describe("StreamChunk delegation info", func() {
+	It("is nil by default", func() {
+		chunk := StreamChunk{
+			Content: "hello",
+			Done:    false,
+		}
+
+		Expect(chunk.DelegationInfo).To(BeNil())
+	})
+})

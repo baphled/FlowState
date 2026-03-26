@@ -58,14 +58,27 @@ type Usage struct {
 	TotalTokens      int
 }
 
+// DelegationInfo carries delegation event metadata in a stream chunk.
+// The TUI reads raw StreamChunk values from a channel, so this field
+// is the delivery mechanism for delegation status updates.
+type DelegationInfo struct {
+	SourceAgent  string `json:"source_agent"`
+	TargetAgent  string `json:"target_agent"`
+	Status       string `json:"status"`
+	ModelName    string `json:"model_name"`
+	ProviderName string `json:"provider_name"`
+	Description  string `json:"description"`
+}
+
 // StreamChunk represents a single chunk of a streaming response.
 type StreamChunk struct {
-	Content    string
-	Done       bool
-	Error      error
-	EventType  string
-	ToolCall   *ToolCall
-	ToolResult *ToolResultInfo
+	Content        string
+	Done           bool
+	Error          error
+	EventType      string
+	ToolCall       *ToolCall
+	ToolResult     *ToolResultInfo
+	DelegationInfo *DelegationInfo `json:"delegation_info,omitempty"`
 }
 
 // EmbedRequest contains the parameters for an embedding request.
