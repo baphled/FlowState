@@ -330,6 +330,7 @@ func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.S
 		AgentRegistry: a.Registry,
 		Manifest:      manifest,
 		Tools:         a.buildToolsForManifestWithStore(manifest, store),
+		HookChain:     buildDelegateHookChain(manifest),
 	})
 	return eng
 }
@@ -785,6 +786,34 @@ func buildHookChain(
 		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
 	}
 	hooks = append(hooks, tracer.Hook())
+	return hook.NewChain(hooks...)
+}
+
+// buildDelegateHookChain constructs a minimal hook chain for delegation target engines.
+// It includes skill auto-loading and, when the target has harness_enabled, phase detection
+// and context injection. Logging and learning hooks are omitted to keep delegate engines lightweight.
+//
+// Expected:
+//   - manifest is the agent manifest for the delegation target.
+//
+// Returns:
+//   - A minimal hook.Chain for delegation target engines.
+//
+// Side effects:
+//   - None.
+func buildDelegateHookChain(manifest agent.Manifest) *hook.Chain {
+	cfg := hook.DefaultSkillAutoLoaderConfig()
+	manifestGetter := func() agent.Manifest { return manifest }
+	hooks := []hook.Hook{
+		hook.SkillAutoLoaderHook(cfg, manifestGetter),
+	}
+	if manifest.HarnessEnabled {
+		projectRoot, err := os.Getwd()
+		if err != nil {
+			projectRoot = "."
+		}
+		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
+	}
 	return hook.NewChain(hooks...)
 }
 
