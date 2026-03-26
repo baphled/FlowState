@@ -30,11 +30,26 @@ type Server struct {
 	skills         []skill.Skill
 	sessions       *ctxstore.FileSessionStore
 	sessionManager *session.Manager
+	sessionBroker  *SessionBroker
 	mux            *http.ServeMux
 }
 
 // ServerOption configures an optional Server dependency.
 type ServerOption func(*Server)
+
+// WithSessionBroker sets the session broker for live event streaming.
+//
+// Expected:
+//   - A valid session broker is provided.
+//
+// Returns:
+//   - A ServerOption that installs the provided session broker.
+//
+// Side effects:
+//   - None.
+func WithSessionBroker(broker *SessionBroker) ServerOption {
+	return func(s *Server) { s.sessionBroker = broker }
+}
 
 // WithSessionManager sets the session manager for session-scoped API routes.
 //
@@ -287,6 +302,7 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 //
 // Side effects:
 //   - Appends a message to the session.
+//   - Publishes stream chunks to the session broker if configured.
 //   - Writes the updated session as JSON.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -298,10 +314,13 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	_, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
+	chunks, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
+	}
+	if s.sessionBroker != nil && chunks != nil {
+		go s.sessionBroker.Publish(id, chunks)
 	}
 	sess, err := s.sessionManager.GetSession(id)
 	if err != nil {
@@ -315,9 +334,12 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 //
 // Expected:
 //   - Request path parameter "id" contains the session identifier.
+//   - If a session broker is configured, subscribes to live events and forwards them.
+//   - Otherwise, replays session history and closes.
 //
 // Side effects:
 //   - Writes server-sent events to the response.
+//   - Blocks until the broker closes the subscription or the client disconnects.
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	verbosity := r.URL.Query().Get("verbosity")
@@ -339,7 +361,33 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 			writeSSEContent(w, flusher, msg.Content)
 		}
 	}
-	writeSSEDone(w, flusher)
+	if s.sessionBroker == nil {
+		writeSSEDone(w, flusher)
+		return
+	}
+	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
+	defer unsubscribe()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case chunk, ok := <-liveCh:
+			if !ok {
+				writeSSEDone(w, flusher)
+				return
+			}
+			if chunk.Error != nil {
+				writeSSEError(w, flusher, chunk.Error.Error())
+				continue
+			}
+			if chunk.Done {
+				writeSSEDone(w, flusher)
+				return
+			}
+			writeSSEContent(w, flusher, chunk.Content)
+		}
+	}
 }
 
 // handleListSessions writes all available sessions as JSON to the response.

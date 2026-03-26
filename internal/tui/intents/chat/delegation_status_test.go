@@ -52,4 +52,16 @@ var _ = Describe("DelegationStatusComponent", func() {
 		c.SetInfo(nil)
 		Expect(c.View()).To(BeEmpty())
 	})
+
+	It("advances the spinner frame on SpinnerTickMsg", func() {
+		c.SetInfo(info)
+		c.Update(chat.SpinnerTickMsg{})
+		rendered := c.View()
+		Expect(rendered).To(ContainSubstring("⠙"))
+	})
+
+	It("does not advance frame without a widget", func() {
+		c.Update(chat.SpinnerTickMsg{})
+		Expect(c.View()).To(BeEmpty())
+	})
 })

@@ -344,6 +344,25 @@ var _ = Describe("StreamEvaluate", func() {
 			Expect(verdictChunks[0].Content).To(ContainSubstring(`"verdict"`))
 		})
 	})
+
+	Context("when the plan passes validation", func() {
+		It("emits plan_artifact event with plan content", func() {
+			validPlan := loadValidPlan()
+			chunks := []provider.StreamChunk{
+				{Content: validPlan},
+				{Done: true},
+			}
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{chunks}}
+
+			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			artifactChunks := filterEventChunks(received, "plan_artifact")
+			Expect(artifactChunks).To(HaveLen(1))
+			Expect(artifactChunks[0].Content).NotTo(BeEmpty())
+		})
+	})
 })
 
 var _ = Describe("StreamEvaluate event matrix", func() {

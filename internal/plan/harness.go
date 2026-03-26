@@ -239,6 +239,7 @@ func (h *PlanHarness) runStreamEvaluation(
 		result, feedback := h.evaluateStreamAttempt(ctx, planText, attempt, outCh)
 		if result != nil {
 			result = h.applyVoter(ctx, streamer, agentID, currentMessage, result)
+			emitPlanArtifact(ctx, outCh, result)
 			emitHarnessComplete(ctx, outCh, result)
 			trySend(ctx, outCh, provider.StreamChunk{Done: true})
 			return
@@ -862,6 +863,22 @@ func (h *PlanHarness) applyVoter(
 	result.PlanText = voteResult.BestPlan
 	result.FinalScore = voteResult.BestScore
 	return result
+}
+
+// emitPlanArtifact sends a plan_artifact event to outCh with the approved plan content.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - outCh is the channel for emitting observability events.
+//   - result is a non-nil EvaluationResult with a valid plan.
+//
+// Side effects:
+//   - Sends a plan_artifact StreamChunk to outCh.
+func emitPlanArtifact(ctx context.Context, outCh chan<- provider.StreamChunk, result *EvaluationResult) {
+	trySend(ctx, outCh, provider.StreamChunk{
+		EventType: "plan_artifact",
+		Content:   result.PlanText,
+	})
 }
 
 // emitCriticFeedback sends a harness_critic_feedback event to outCh with the critic verdict.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 )
 
@@ -295,6 +297,95 @@ var _ = Describe("Server", func() {
 			Expect(recorder.Body.String()).To(ContainSubstring("<!DOCTYPE html>"))
 			Expect(recorder.Body.String()).To(ContainSubstring("<textarea"))
 		})
+	})
+})
+
+var _ = Describe("Session stream live events", func() {
+	var (
+		broker     *api.SessionBroker
+		mgr        *session.Manager
+		srv        *api.Server
+		httpServer *httptest.Server
+	)
+
+	BeforeEach(func() {
+		broker = api.NewSessionBroker()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "hi", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(broker),
+		)
+		httpServer = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		httpServer.Close()
+	})
+
+	It("forwards live chunks from broker to SSE subscriber", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{Content: "live-chunk"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var events []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						events = append(events, strings.TrimPrefix(line, "data: "))
+					}
+					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- events
+		}()
+
+		var events []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
+
+		Expect(events).To(ContainElement(ContainSubstring("live-chunk")))
+		Expect(events).To(ContainElement("[DONE]"))
 	})
 })
 

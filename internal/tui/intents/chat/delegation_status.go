@@ -10,9 +10,10 @@ import (
 // DelegationStatusComponent wraps the DelegationStatusWidget to manage state
 // and render the current delegation progress.
 type DelegationStatusComponent struct {
-	info   *provider.DelegationInfo
-	widget *chatview.DelegationStatusWidget
-	theme  theme.Theme
+	info      *provider.DelegationInfo
+	widget    *chatview.DelegationStatusWidget
+	theme     theme.Theme
+	tickFrame int
 }
 
 // NewDelegationStatusComponent creates a new delegation status component.
@@ -43,8 +44,9 @@ func NewDelegationStatusComponent(t theme.Theme) *DelegationStatusComponent {
 //   - May update the underlying widget when animation messages arrive.
 func (c *DelegationStatusComponent) Update(msg tea.Msg) {
 	if c.widget != nil {
-		if tick, ok := msg.(SpinnerTickMsg); ok {
-			_ = tick
+		if _, ok := msg.(SpinnerTickMsg); ok {
+			c.tickFrame++
+			c.widget.SetFrame(c.tickFrame)
 		}
 	}
 }
