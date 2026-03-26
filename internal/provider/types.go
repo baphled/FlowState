@@ -16,7 +16,7 @@ type Message struct {
 type ToolCall struct {
 	ID        string
 	Name      string
-	Arguments map[string]any
+	Arguments map[string]interface{}
 }
 
 // ToolResultInfo carries tool execution output in a stream chunk.
@@ -42,7 +42,7 @@ type Tool struct {
 // ToolSchema describes the input schema for a tool.
 type ToolSchema struct {
 	Type       string
-	Properties map[string]any
+	Properties map[string]interface{}
 	Required   []string
 }
 
@@ -60,8 +60,6 @@ type Usage struct {
 }
 
 // DelegationInfo carries delegation event metadata in a stream chunk.
-// The TUI reads raw StreamChunk values from a channel, so this field
-// is the delivery mechanism for delegation status updates.
 type DelegationInfo struct {
 	SourceAgent  string     `json:"source_agent"`
 	TargetAgent  string     `json:"target_agent"`
@@ -84,7 +82,7 @@ type StreamChunk struct {
 	EventType      string
 	ToolCall       *ToolCall
 	ToolResult     *ToolResultInfo
-	DelegationInfo *DelegationInfo `json:"delegation_info,omitempty"`
+	DelegationInfo *DelegationInfo
 }
 
 // EmbedRequest contains the parameters for an embedding request.

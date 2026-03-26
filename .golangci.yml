@@ -308,6 +308,7 @@ linters:
             - $gostd
             - github.com/baphled/flowstate
             - github.com/charmbracelet
+            - github.com/coder/websocket
             - github.com/google/uuid
             - github.com/onsi/ginkgo/v2
             - github.com/onsi/gomega
@@ -326,6 +327,7 @@ linters:
             - github.com/modelcontextprotocol/go-sdk
             - github.com/prometheus/client_golang
             - github.com/prometheus/client_model
+            - golang.org/x/text
             - golang.org/x/tools
             - golang.org/x/tools/go/analysis
             - golang.org/x/tools/go/analysis/singlechecker

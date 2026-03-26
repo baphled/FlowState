@@ -38,11 +38,29 @@ type Server struct {
 type ServerOption func(*Server)
 
 // WithSessionManager sets the session manager for session-scoped API routes.
+//
+// Expected:
+//   - A valid session manager is provided.
+//
+// Returns:
+//   - A ServerOption that installs the provided session manager.
+//
+// Side effects:
+//   - None.
 func WithSessionManager(mgr *session.Manager) ServerOption {
 	return func(s *Server) { s.sessionManager = mgr }
 }
 
 // WithSessions sets the session store for session API routes.
+//
+// Expected:
+//   - A valid session store is provided.
+//
+// Returns:
+//   - A ServerOption that installs the provided session store.
+//
+// Side effects:
+//   - None.
 func WithSessions(store *ctxstore.FileSessionStore) ServerOption {
 	return func(s *Server) { s.sessions = store }
 }
@@ -225,6 +243,13 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleCreateSession creates a new session and returns its summary.
+//
+// Expected:
+//   - Request body may include agent_id.
+//
+// Side effects:
+//   - Creates a session through the session manager.
+//   - Writes a JSON session summary response.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	type reqBody struct {
 		AgentID string `json:"agent_id"`
@@ -243,6 +268,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListV1Sessions lists all sessions as summaries.
+//
+// Expected:
+//   - A session manager is configured.
+//
+// Side effects:
+//   - Writes a JSON array of session summaries.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	summaries := s.sessionManager.ListSessions()
 	if summaries == nil {
@@ -252,6 +283,14 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSessionMessage appends a message to a session and returns the updated session.
+//
+// Expected:
+//   - Request path parameter "id" contains the session identifier.
+//   - Request body contains non-empty content.
+//
+// Side effects:
+//   - Appends a message to the session.
+//   - Writes the updated session as JSON.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	type reqBody struct {
@@ -277,6 +316,12 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSessionStream streams session events as SSE, supporting verbosity param.
+//
+// Expected:
+//   - Request path parameter "id" contains the session identifier.
+//
+// Side effects:
+//   - Writes server-sent events to the response.
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	verbosity := r.URL.Query().Get("verbosity")

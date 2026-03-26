@@ -68,7 +68,9 @@ func (c *JSONConsumer) WriteError(err error) {
 //   - Writes a JSON line to the writer.
 func (c *JSONConsumer) Done() {
 	event := map[string]string{"type": "done"}
-	_ = c.writeEvent(event)
+	if err := c.writeEvent(event); err != nil {
+		c.err = err
+	}
 }
 
 // Response returns the accumulated response content.
@@ -102,7 +104,9 @@ func (c *JSONConsumer) Err() error {
 //   - Writes a JSON line to the writer.
 func (c *JSONConsumer) WriteToolCall(name string) {
 	event := map[string]string{"type": "tool_call", "name": name}
-	_ = c.writeEvent(event)
+	if err := c.writeEvent(event); err != nil {
+		c.err = err
+	}
 }
 
 // WriteToolResult writes a JSON-encoded tool result event.
@@ -114,7 +118,9 @@ func (c *JSONConsumer) WriteToolCall(name string) {
 //   - Writes a JSON line to the writer.
 func (c *JSONConsumer) WriteToolResult(content string) {
 	event := map[string]string{"type": "tool_result", "content": content}
-	_ = c.writeEvent(event)
+	if err := c.writeEvent(event); err != nil {
+		c.err = err
+	}
 }
 
 // WriteDelegation writes a JSON-encoded delegation event.

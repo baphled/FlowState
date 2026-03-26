@@ -31,8 +31,9 @@ var _ = Describe("DelegationStatusWidget", func() {
 		widget := chat.NewDelegationStatusWidget(info, th)
 		rendered := widget.Render()
 
-		Expect(rendered).To(ContainSubstring("Delegating to planner"))
-		Expect(rendered).To(ContainSubstring("claude-3-opus via anthropic"))
+		Expect(rendered).To(ContainSubstring("Delegation: planner"))
+		Expect(rendered).To(ContainSubstring("claude-3-opus/anthropic"))
+		Expect(rendered).To(ContainSubstring("running"))
 		Expect(rendered).To(ContainSubstring("Building a plan..."))
 		// Spinner frame 0 is ⠋
 		Expect(rendered).To(ContainSubstring("⠋"))
@@ -45,7 +46,8 @@ var _ = Describe("DelegationStatusWidget", func() {
 		widget := chat.NewDelegationStatusWidget(info, th)
 		rendered := widget.Render()
 
-		Expect(rendered).To(ContainSubstring("Delegation to planner completed"))
+		Expect(rendered).To(ContainSubstring("Delegation: planner"))
+		Expect(rendered).To(ContainSubstring("completed"))
 		Expect(rendered).To(ContainSubstring("Plan created"))
 		Expect(rendered).To(ContainSubstring("✓"))
 	})
@@ -57,7 +59,8 @@ var _ = Describe("DelegationStatusWidget", func() {
 		widget := chat.NewDelegationStatusWidget(info, th)
 		rendered := widget.Render()
 
-		Expect(rendered).To(ContainSubstring("Delegation to planner failed"))
+		Expect(rendered).To(ContainSubstring("Delegation: planner"))
+		Expect(rendered).To(ContainSubstring("failed"))
 		Expect(rendered).To(ContainSubstring("✗"))
 	})
 
