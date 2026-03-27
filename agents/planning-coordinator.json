@@ -35,7 +35,11 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "skill-discovery",
+      "parallel-execution",
+      "scope-management"
     ],
     "mcp_servers": [],
     "capability_description": "Orchestrates complex multi-step tasks by delegating to specialist agents including explorer, librarian, analyst, plan-writer, and plan-reviewer"

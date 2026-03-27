@@ -29,10 +29,16 @@
       "file",
       "web"
     ],
-    "skills": [],
+    "skills": [
+      "task-tracker",
+      "parallel-execution"
+    ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "task-tracker",
+      "parallel-execution"
     ],
     "mcp_servers": []
   },

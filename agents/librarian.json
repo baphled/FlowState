@@ -36,7 +36,10 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "research",
+      "critical-thinking"
     ],
     "mcp_servers": [],
     "capability_description": "Searches official documentation, library best practices, and external references for accurate technical information"

@@ -36,7 +36,11 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "critical-thinking",
+      "epistemic-rigor",
+      "systems-thinker"
     ],
     "mcp_servers": [],
     "capability_description": "Synthesises research findings into structured evidence dossiers with critical analysis and system-level thinking"

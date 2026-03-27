@@ -42,7 +42,11 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "assumption-tracker",
+      "scope-management",
+      "estimation"
     ],
     "mcp_servers": [],
     "capability_description": "Generates structured, executable plans from coordinated evidence and requirements with detailed implementation steps"

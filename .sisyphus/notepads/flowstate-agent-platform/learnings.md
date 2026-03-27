@@ -436,3 +436,73 @@ Verified with: python3 check for `'id' in d and 'agent_id' in d` → `True True`
 - Proper sync.RWMutex usage throughout
 - golang.org/x/text/cases used (not deprecated strings.Title)
 - io.Discard fix in chat.go correctly applied
+
+## todowrite Tool Implementation (2026-03-27)
+
+### Pattern: Session-Scoped Tool via Context
+- Session ID injected into context in `session/manager.go` `SendMessage()` via `context.WithValue(ctx, todo.SessionIDKey{}, sessionID)`
+- Tool retrieves it via `ctx.Value(SessionIDKey{}).(string)` — returns error if missing
+- `SessionIDKey` struct defined in tool package, not session package (avoids import cycle)
+
+### Naming Convention
+- `revive` lint rule `exported.sayRepetitiveInsteadOfStutters` fires for `TodoItem` in `todo` package
+- Correct name: `Item` (consumers use `todo.Item`, not `todo.TodoItem`)
+- Same pattern applies to any package where type name would duplicate package name
+
+### Docblock Requirements (check-docblocks)
+- Every exported AND unexported function needs: `Expected:`, `Returns:`, `Side effects:` sections
+- Format from bash/coordination tool pattern — mandatory in this project
+- Private functions also need these sections
+
+### fatcontext Lint Rule
+- `ctx = context.WithValue(context.Background(), ...)` in `BeforeEach` triggers fatcontext
+- Fix: use package-level helper function `sessionCtx()` that returns the context — no outer var assignment
+- Or use local `ctx := sessionCtx()` in each `It` block directly
+
+### errcheck with type assertions
+- `check-type-assertions: true` means `v, _ := m[key].(string)` is flagged
+- Fix: `v, ok := m[key].(string); if !ok { return "" }`
+
+### Boy Scout Rule Applied
+- Fixed pre-existing `gocritic rangeValCopy` in `cli/chat.go`, `cli/run.go`, `tui/intents/chat/intent.go`
+- Pattern: `for _, s := range loadedSkills` → `for i := range loadedSkills { loadedSkills[i].Name }`
+
+## Todo Integration Pattern (2026-03-27)
+
+### TodoStore Promotion Pattern
+- `buildTools()` should accept dependencies rather than create them internally — this enables the caller (App) to hold a reference to the store
+- `runtimeComponents` struct needs a `todoStore` field to thread the store from `setupEngine()` back up to `New()`
+- `App` struct gains a `TodoStore *todo.MemoryStore` public field for external access
+
+### API ServerOption Pattern
+- `WithTodoStore(store todo.Store) ServerOption` follows the same functional options pattern as `WithSessions`, `WithSessionManager`, `WithSessionBroker`
+- Use the **interface** type `todo.Store` (not `*todo.MemoryStore`) in the Server struct for testability
+- Handler returns empty `[]todo.Item{}` (not nil) when store is nil — tests for this
+
+### TUI Tool Result Rendering Pattern
+- Extract `toolResultMessage()` helper when `handleStreamChunk` is approaching cyclomatic complexity limit
+- `"todo_update"` role must be added to BOTH the `Render()` switch case list AND `renderToolMessage()` switch
+- Avoid importing `internal/tool/todo` from TUI layers — use a local `todoItem` struct for JSON decoding
+- `FormatTodoList` is a pure function (inputs in, styled string out) — trivially testable
+
+### Docblock Requirements
+- All functions (exported AND unexported) in FlowState require `Expected:`, `Returns:`, and `Side effects:` sections
+- The `check-docblocks` linter enforces this — commit will be blocked without them
+
+### Commit Scope Allowed Values
+- `todo` is NOT in the allowed scopes — use `tui` for TUI/API integration work
+- Allowed scopes: agent, api, cli, config, context, core, deps, discovery, docs, hook, learning, mcp, prompt, provider, release, skill, test, tool, tui, wave1a, wave1b, wave2, wave3, workflow
+
+## Architecture Review Fix — todowrite integration (2026-03-27)
+
+### Patterns
+- `SessionIDKey` (context keys) belong to the layer that injects them (`session`), not the layer that consumes them (`tool/todo`)
+- revive linter enforces non-repetitive naming: `session.SessionIDKey` → flagged as repetitive; correct form is `session.IDKey`
+- `export_test.go` (package non-`_test`) uses concrete type aliases from already-imported packages; the view import was already present as `chatview`
+- `App` struct fields and function parameters that accept a store should use the interface type (`todo.Store`), not the concrete type (`*todo.MemoryStore`)
+
+### Commit scope rules
+- Allowed scopes include `tool`, `tui`, `session` etc.; `todo` is not a valid scope
+
+### Linter
+- `revive` exported type name check: if a type is in package `session`, avoid prefixing the name with `Session` (use `IDKey` not `SessionIDKey`)

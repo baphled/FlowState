@@ -30,7 +30,11 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "research",
+      "critical-thinking",
+      "investigation"
     ],
     "mcp_servers": [],
     "capability_description": "Explores codebase to find patterns, structures, conventions, and understand existing code organisation"

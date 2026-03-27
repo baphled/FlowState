@@ -30,6 +30,7 @@ type Engine struct {
 	failbackChain     *provider.FailbackChain
 	manifest          agent.Manifest
 	tools             []tool.Tool
+	skills            []skill.Skill
 	store             *recall.FileContextStore
 	chainStore        recall.ChainContextStore
 	windowBuilder     *ctxstore.WindowBuilder
@@ -99,6 +100,7 @@ func New(cfg Config) *Engine {
 		failbackChain:     failbackChain,
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
+		skills:            cfg.Skills,
 		store:             cfg.Store,
 		chainStore:        cfg.ChainStore,
 		windowBuilder:     windowBuilder,
@@ -862,15 +864,15 @@ func (e *Engine) ContextStore() *recall.FileContextStore {
 	return e.store
 }
 
-// LoadedSkills returns the always-active skills from the current manifest.
+// LoadedSkills returns the skills stored when the engine was created.
 //
 // Returns:
-//   - A slice of skill names that are always active for this agent, or nil if none are configured.
+//   - The slice of skill.Skill values assigned from cfg.Skills, or nil if none were provided.
 //
 // Side effects:
 //   - None.
-func (e *Engine) LoadedSkills() []string {
-	return e.Manifest().Capabilities.AlwaysActiveSkills
+func (e *Engine) LoadedSkills() []skill.Skill {
+	return e.skills
 }
 
 // LastContextResult returns the most recent context window build result.

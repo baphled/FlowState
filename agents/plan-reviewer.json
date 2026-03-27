@@ -36,7 +36,10 @@
     ],
     "always_active_skills": [
       "pre-action",
-      "memory-keeper"
+      "memory-keeper",
+      "discipline",
+      "critical-thinking",
+      "epistemic-rigor"
     ],
     "mcp_servers": [],
     "capability_description": "Reviews and validates generated plans for feasibility, completeness, risk assessment, and quality gate before execution"

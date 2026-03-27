@@ -918,27 +918,22 @@ var _ = Describe("Engine", func() {
 	})
 
 	Describe("LoadedSkills", func() {
-		It("returns AlwaysActiveSkills from the manifest", func() {
-			eng := engine.New(engine.Config{
-				Manifest: agent.Manifest{
-					ID: "test-agent",
-					Capabilities: agent.Capabilities{
-						AlwaysActiveSkills: []string{"pre-action", "memory-keeper"},
-					},
-				},
-			})
-			Expect(eng.LoadedSkills()).To(Equal([]string{"pre-action", "memory-keeper"}))
+		It("returns the skills passed via cfg.Skills", func() {
+			cfg := engine.Config{
+				Manifest: agent.Manifest{ID: "test-agent"},
+				Skills:   skills,
+			}
+
+			eng := engine.New(cfg)
+
+			Expect(eng.LoadedSkills()).To(Equal(skills))
 		})
 
-		It("returns nil when AlwaysActiveSkills is empty", func() {
+		It("returns nil when no skills are provided", func() {
 			eng := engine.New(engine.Config{
-				Manifest: agent.Manifest{
-					ID: "test-agent",
-					Capabilities: agent.Capabilities{
-						AlwaysActiveSkills: nil,
-					},
-				},
+				Manifest: agent.Manifest{ID: "test-agent"},
 			})
+
 			Expect(eng.LoadedSkills()).To(BeNil())
 		})
 	})
