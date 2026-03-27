@@ -84,37 +84,67 @@ func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 	tc.WriteToolCall(name)
 }
 
-// dispatchHarnessEvent checks whether the chunk is a harness lifecycle event and delivers it
-// to the consumer if supported. Returns true if the chunk was a harness event and was consumed.
+// dispatchHarnessEvent checks whether the chunk is a harness lifecycle event or typed plan event
+// and delivers it to the consumer if supported. Returns true if the chunk was handled.
 //
 // Expected:
 //   - c is a non-nil StreamConsumer.
 //   - chunk is the current stream chunk to inspect.
 //
 // Returns:
-//   - true if the chunk carried a harness event type (regardless of consumer support).
-//   - false if the chunk is not a harness event.
+//   - true if the chunk carried a harness or typed plan event type (regardless of consumer support).
+//   - false if the chunk is not a recognised event type.
 //
 // Side effects:
-//   - If c implements HarnessEventConsumer, calls the corresponding method for the event type.
+//   - If c implements HarnessEventConsumer, calls the corresponding method for harness event types.
+//   - If c implements EventConsumer, calls WriteEvent for plan_artifact, review_verdict, and
+//     status_transition event types.
 func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
-	var fn func(HarnessEventConsumer)
+	var harnessFunc func(HarnessEventConsumer)
 	switch chunk.EventType {
 	case "harness_retry":
-		fn = func(h HarnessEventConsumer) { h.WriteHarnessRetry(chunk.Content) }
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteHarnessRetry(chunk.Content) }
 	case "harness_attempt_start":
-		fn = func(h HarnessEventConsumer) { h.WriteAttemptStart(chunk.Content) }
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteAttemptStart(chunk.Content) }
 	case "harness_complete":
-		fn = func(h HarnessEventConsumer) { h.WriteComplete(chunk.Content) }
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteComplete(chunk.Content) }
 	case "harness_critic_feedback":
-		fn = func(h HarnessEventConsumer) { h.WriteCriticFeedback(chunk.Content) }
+		harnessFunc = func(h HarnessEventConsumer) { h.WriteCriticFeedback(chunk.Content) }
+	case "plan_artifact":
+		deliverTypedEvent(c, PlanArtifactEvent{Content: chunk.Content})
+		return true
+	case "review_verdict":
+		deliverTypedEvent(c, ReviewVerdictEvent{})
+		return true
+	case "status_transition":
+		deliverTypedEvent(c, StatusTransitionEvent{})
+		return true
 	default:
 		return false
 	}
 	if hc, ok := c.(HarnessEventConsumer); ok {
-		fn(hc)
+		harnessFunc(hc)
 	}
 	return true
+}
+
+// deliverTypedEvent delivers a typed Event to the consumer if it implements EventConsumer.
+//
+// Expected:
+//   - c is a non-nil StreamConsumer.
+//   - event is a non-nil Event implementation.
+//
+// Side effects:
+//   - If c implements EventConsumer, calls WriteEvent with the event.
+//   - Errors from WriteEvent are forwarded to c.WriteError.
+func deliverTypedEvent(c StreamConsumer, event Event) {
+	ec, ok := c.(EventConsumer)
+	if !ok {
+		return
+	}
+	if err := ec.WriteEvent(event); err != nil {
+		c.WriteError(err)
+	}
 }
 
 // deliverToolResult delivers the tool result to the consumer.

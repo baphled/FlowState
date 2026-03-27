@@ -111,6 +111,33 @@ func (m *mockHarness) StreamEvaluate(
 	return streaming.PlanResultToChannel(m.result), nil
 }
 
+type mockEventConsumer struct {
+	chunks    []string
+	errors    []error
+	events    []streaming.Event
+	doneCount int
+	writeErr  error
+	eventErr  error
+}
+
+func (m *mockEventConsumer) WriteChunk(content string) error {
+	m.chunks = append(m.chunks, content)
+	return m.writeErr
+}
+
+func (m *mockEventConsumer) WriteError(err error) {
+	m.errors = append(m.errors, err)
+}
+
+func (m *mockEventConsumer) Done() {
+	m.doneCount++
+}
+
+func (m *mockEventConsumer) WriteEvent(event streaming.Event) error {
+	m.events = append(m.events, event)
+	return m.eventErr
+}
+
 type mockDelegationConsumer struct {
 	chunks      []string
 	errors      []error
@@ -796,6 +823,166 @@ var _ = Describe("Streaming", func() {
 				Expect(consumer.retryContent).To(Equal([]string{"retrying"}))
 				Expect(consumer.completes).To(Equal([]string{"passed"}))
 				Expect(consumer.chunks).To(Equal([]string{"draft ", "final plan"}))
+			})
+		})
+	})
+
+	Describe("Run with plan_artifact events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockEventConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockEventConsumer{}
+		})
+
+		Context("when the stream contains a plan_artifact event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "plan_artifact", Content: "# My Plan\nDo the work."},
+					{Done: true},
+				}
+			})
+
+			It("delivers a PlanArtifactEvent via WriteEvent to EventConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.events).To(HaveLen(1))
+				evt, ok := consumer.events[0].(streaming.PlanArtifactEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Content).To(Equal("# My Plan\nDo the work."))
+				Expect(evt.Type()).To(Equal("plan_artifact"))
+			})
+
+			It("does not deliver plan_artifact content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(BeEmpty())
+			})
+		})
+
+		Context("when the consumer does not implement EventConsumer", func() {
+			It("silently skips plan_artifact events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "plan_artifact", Content: "plan content"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "create a plan")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+	})
+
+	Describe("Run with review_verdict events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockEventConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockEventConsumer{}
+		})
+
+		Context("when the stream contains a review_verdict event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "review_verdict", Content: `{"verdict":"pass","confidence":0.9,"issues":[]}`},
+					{Done: true},
+				}
+			})
+
+			It("delivers a ReviewVerdictEvent via WriteEvent to EventConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "reviewer", "review this")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.events).To(HaveLen(1))
+				evt, ok := consumer.events[0].(streaming.ReviewVerdictEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Type()).To(Equal("review_verdict"))
+			})
+
+			It("does not deliver review_verdict content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "reviewer", "review this")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(BeEmpty())
+			})
+		})
+
+		Context("when the consumer does not implement EventConsumer", func() {
+			It("silently skips review_verdict events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "review_verdict", Content: "verdict content"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "reviewer", "review this")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
+			})
+		})
+	})
+
+	Describe("Run with status_transition events", func() {
+		var (
+			ctx      context.Context
+			streamer *mockStreamer
+			consumer *mockEventConsumer
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			streamer = &mockStreamer{}
+			consumer = &mockEventConsumer{}
+		})
+
+		Context("when the stream contains a status_transition event", func() {
+			BeforeEach(func() {
+				streamer.chunks = []provider.StreamChunk{
+					{EventType: "status_transition", Content: `{"from":"interview","to":"generation","agentId":"planner"}`},
+					{Done: true},
+				}
+			})
+
+			It("delivers a StatusTransitionEvent via WriteEvent to EventConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "plan it")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.events).To(HaveLen(1))
+				evt, ok := consumer.events[0].(streaming.StatusTransitionEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Type()).To(Equal("status_transition"))
+			})
+
+			It("does not deliver status_transition content as a regular chunk", func() {
+				err := streaming.Run(ctx, streamer, consumer, "planner", "plan it")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.chunks).To(BeEmpty())
+			})
+		})
+
+		Context("when the consumer does not implement EventConsumer", func() {
+			It("silently skips status_transition events", func() {
+				plainConsumer := &mockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{Content: "before "},
+					{EventType: "status_transition", Content: "transition content"},
+					{Content: "after"},
+					{Done: true},
+				}
+				err := streaming.Run(ctx, streamer, plainConsumer, "planner", "plan it")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(plainConsumer.chunks).To(Equal([]string{"before ", "after"}))
 			})
 		})
 	})

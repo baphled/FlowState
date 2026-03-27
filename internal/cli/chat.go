@@ -16,11 +16,12 @@ import (
 
 // ChatOptions holds configuration for the chat command.
 type ChatOptions struct {
-	Agent   string
-	Message string
-	Model   string
-	Session string
-	Output  string
+	Agent     string
+	Message   string
+	Model     string
+	Session   string
+	Output    string
+	Verbosity string
 }
 
 // newChatCmd creates the chat command for interactive chat sessions.
@@ -52,6 +53,7 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.Model, "model", "", "Model to use for the chat session")
 	flags.StringVar(&opts.Session, "session", "", "Session ID to resume")
 	flags.StringVar(&opts.Output, "output", "text", "Output format: text or json")
+	flags.StringVar(&opts.Verbosity, "verbosity", "standard", "Verbosity level: minimal, standard, or verbose")
 
 	return cmd
 }
@@ -113,7 +115,8 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		writer = cmd.OutOrStdout()
 	}
 
-	response, err := streamChatResponse(application, agentName, opts.Message, opts.Output, writer)
+	chatOpts := chatStreamOptions{outputFormat: opts.Output, verbosity: opts.Verbosity}
+	response, err := streamChatResponse(application, agentName, opts.Message, chatOpts, writer)
 	if err != nil {
 		return err
 	}
@@ -204,13 +207,19 @@ func loadSessionIfRequested(application *app.App, session string) {
 	}
 }
 
+// chatStreamOptions holds options for streamChatResponse.
+type chatStreamOptions struct {
+	outputFormat string
+	verbosity    string
+}
+
 // streamChatResponse streams a response from the streamer and returns the complete message.
 //
 // Expected:
 //   - application is a non-nil App instance with a configured streamer.
 //   - agentName is a non-empty string.
 //   - message is a non-empty string.
-//   - outputFormat is either "text" or "json".
+//   - opts specifies output format and verbosity.
 //   - writer is a non-nil io.Writer for output.
 //
 // Returns:
@@ -218,20 +227,45 @@ func loadSessionIfRequested(application *app.App, session string) {
 //
 // Side effects:
 //   - Streams response chunks from the streamer.
-func streamChatResponse(application *app.App, agentName string, message string, outputFormat string, writer io.Writer) (string, error) {
-	var consumer streaming.StreamConsumer
-	if outputFormat == "json" {
-		consumer = NewJSONConsumer(writer)
+func streamChatResponse(
+	application *app.App, agentName string, message string, opts chatStreamOptions, writer io.Writer,
+) (string, error) {
+	var inner streaming.StreamConsumer
+	if opts.outputFormat == "json" {
+		inner = NewJSONConsumer(writer)
 	} else {
-		consumer = NewWriterConsumer(writer, true)
+		inner = NewWriterConsumer(writer, true)
 	}
+	consumer := streaming.NewVerbosityFilter(inner, parseCLIVerbosityLevel(opts.verbosity))
 	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, message); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
-	if err := getConsumerError(consumer); err != nil {
+	if err := getConsumerError(inner); err != nil {
 		return "", fmt.Errorf("stream error: %w", err)
 	}
-	return getConsumerResponse(consumer), nil
+	return getConsumerResponse(inner), nil
+}
+
+// parseCLIVerbosityLevel converts a verbosity string to a streaming.VerbosityLevel.
+// Unrecognised values default to Standard.
+//
+// Expected:
+//   - s is a verbosity level string: "minimal", "standard", or "verbose".
+//
+// Returns:
+//   - The corresponding streaming.VerbosityLevel.
+//
+// Side effects:
+//   - None.
+func parseCLIVerbosityLevel(s string) streaming.VerbosityLevel {
+	switch s {
+	case "minimal":
+		return streaming.Minimal
+	case "verbose":
+		return streaming.Verbose
+	default:
+		return streaming.Standard
+	}
 }
 
 // getConsumerError retrieves the error from a consumer using type assertion.

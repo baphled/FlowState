@@ -161,3 +161,24 @@ func (c *SSEConsumer) WriteDelegation(event streaming.DelegationEvent) error {
 	writeSSEDelegation(c.w, c.flusher, event)
 	return nil
 }
+
+// WriteEvent writes a typed streaming event as a JSON-encoded server-sent event.
+//
+// Expected:
+//   - event is a non-nil Event implementation.
+//
+// Returns:
+//   - nil on success.
+//   - An error if JSON marshalling fails.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded event to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteEvent(event streaming.Event) error {
+	data, err := streaming.MarshalEvent(event)
+	if err != nil {
+		return err
+	}
+	writeSSE(c.w, c.flusher, string(data))
+	return nil
+}

@@ -114,15 +114,36 @@ func NewServer(
 	return s
 }
 
-// Handler returns the HTTP handler for this server.
+// Handler returns the HTTP handler for this server, wrapped with security headers middleware.
 //
 // Returns:
-//   - The http.Handler that serves all API routes.
+//   - The http.Handler that serves all API routes, with security headers applied.
 //
 // Side effects:
 //   - None.
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return securityHeaders(s.mux)
+}
+
+// securityHeaders returns a middleware that adds defensive HTTP security headers to every response.
+//
+// Expected:
+//   - next is a non-nil http.Handler.
+//
+// Returns:
+//   - An http.Handler that sets security headers then delegates to next.
+//
+// Side effects:
+//   - Adds X-Content-Type-Options, X-Frame-Options, Content-Security-Policy,
+//     and X-XSS-Protection headers to every response.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // setupRoutes registers all HTTP route handlers on the server's mux.
@@ -130,6 +151,7 @@ func (s *Server) Handler() http.Handler {
 // Side effects:
 //   - Registers GET /api/agents, GET /api/agents/{id}, POST /api/chat,
 //     GET /api/discover, GET /api/skills, GET /api/sessions, and GET / routes.
+//   - Wraps the mux with security headers middleware.
 func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
@@ -199,6 +221,7 @@ type sseError struct {
 // Expected:
 //   - Request body contains JSON-encoded chatRequest with agent_id and message.
 //   - ResponseWriter supports HTTP flushing for streaming.
+//   - Optional query parameter "verbosity" accepts "minimal", "standard", or "verbose".
 //
 // Side effects:
 //   - Writes HTTP 200 with Content-Type text/event-stream.
@@ -206,6 +229,7 @@ type sseError struct {
 //   - Writes HTTP 400 if request body is invalid JSON.
 //   - Writes HTTP 500 if streaming is not supported.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -216,11 +240,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	consumer, ok := NewSSEConsumer(w)
+	sseConsumer, ok := NewSSEConsumer(w)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+
+	verbosityParam := r.URL.Query().Get("verbosity")
+	consumer := streaming.NewVerbosityFilter(sseConsumer, parseVerbosityLevel(verbosityParam))
 
 	if err := streaming.Run(r.Context(), s.streamer, consumer, req.AgentID, req.Message); err != nil {
 		log.Printf("[api] chat stream error: %v", err)
@@ -263,6 +290,7 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 //   - Creates a session through the session manager.
 //   - Writes a JSON session summary response.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	type reqBody struct {
 		AgentID string `json:"agent_id"`
 	}
@@ -305,6 +333,7 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 //   - Publishes stream chunks to the session broker if configured.
 //   - Writes the updated session as JSON.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	type reqBody struct {
 		Content string `json:"content"`
@@ -658,6 +687,28 @@ func writeSSECriticFeedback(w http.ResponseWriter, flusher http.Flusher, content
 		return
 	}
 	writeSSE(w, flusher, string(jsonData))
+}
+
+// parseVerbosityLevel converts a verbosity query parameter string to a streaming.VerbosityLevel.
+// Unrecognised values default to Standard.
+//
+// Expected:
+//   - s is the raw query parameter value from the request.
+//
+// Returns:
+//   - The corresponding VerbosityLevel, or Standard for unknown values.
+//
+// Side effects:
+//   - None.
+func parseVerbosityLevel(s string) streaming.VerbosityLevel {
+	switch s {
+	case "minimal":
+		return streaming.Minimal
+	case "verbose":
+		return streaming.Verbose
+	default:
+		return streaming.Standard
+	}
 }
 
 // writeSSEDelegation marshals a delegation event as JSON and writes it as a server-sent event.
