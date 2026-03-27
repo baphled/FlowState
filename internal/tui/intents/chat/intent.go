@@ -256,7 +256,10 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		if i.loadingModal != nil {
 			i.loadingModal.AdvanceSpinner()
 		}
-		return tickSpinner()
+		if i.view.IsStreaming() || i.loadingModal != nil {
+			return tickSpinner()
+		}
+		return nil
 	case sessionbrowser.SessionSelectedMsg:
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
@@ -425,6 +428,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 			content = strings.TrimPrefix(i.activeToolCall, "skill:")
 			committedSkill = true
 		}
+		i.view.FlushPartialResponse()
 		i.view.AddMessage(chat.Message{Role: role, Content: content})
 		i.activeToolCall = ""
 	}
@@ -443,12 +447,8 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	if msg.Done && i.engine != nil {
 		contextResult := i.engine.LastContextResult()
 		i.tokenCount = contextResult.TokensUsed
-	} else {
-		tokens := i.tokenCounter.Count(msg.Content)
-		i.tokenCount += tokens
+		i.syncStatusBar()
 	}
-
-	i.syncStatusBar()
 }
 
 // handleStreamChunkMsg processes a StreamChunkMsg and returns the appropriate tea.Cmd.
@@ -498,6 +498,7 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 //   - Resets the streaming buffer via StartStreaming.
 //   - Refreshes the viewport to reflect new messages.
 func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
+	i.activeToolCall = ""
 	if partial := i.view.Response(); partial != "" {
 		i.view.AddMessage(chat.Message{Role: "assistant", Content: partial})
 	}
@@ -1191,7 +1192,7 @@ func (i *Intent) switchToSession(sessionID string) tea.Cmd {
 	i.sessionID = sessionID
 	i.loadingModal = feedback.NewLoadingModal("Loading session\u2026", false)
 	i.syncStatusBar()
-	return i.loadSessionAsync(sessionID)
+	return tea.Batch(tickSpinner(), i.loadSessionAsync(sessionID))
 }
 
 // loadSessionAsync returns a command that loads a session from disk.
@@ -1557,7 +1558,7 @@ func (i *Intent) Height() int {
 	return i.height
 }
 
-// TokenCount returns the approximate token count accumulated during streaming.
+// TokenCount returns the authoritative token count set when streaming completes.
 //
 // Returns:
 //   - The current token count.

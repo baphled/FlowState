@@ -152,4 +152,84 @@ var _ = Describe("ChatView", func() {
 			Expect(content).To(ContainSubstring("complete"))
 		})
 	})
+
+	Describe("Message ordering", func() {
+		BeforeEach(func() {
+			view.SetMarkdownRenderer(func(c string, _ int) string { return c })
+		})
+
+		Describe("FlushPartialResponse", func() {
+			It("commits accumulated response text as an assistant message", func() {
+				view.SetStreaming(true, "partial text")
+				view.FlushPartialResponse()
+
+				msgs := view.Messages()
+				Expect(msgs).To(HaveLen(1))
+				Expect(msgs[0].Role).To(Equal("assistant"))
+				Expect(msgs[0].Content).To(Equal("partial text"))
+			})
+
+			It("is a no-op when response is empty", func() {
+				view.SetStreaming(true, "")
+				view.FlushPartialResponse()
+
+				Expect(view.Messages()).To(BeEmpty())
+			})
+
+			It("clears the partial response after flushing", func() {
+				view.SetStreaming(true, "text to flush")
+				view.FlushPartialResponse()
+
+				Expect(view.Response()).To(BeEmpty())
+			})
+
+			It("preserves streaming state after flush", func() {
+				view.SetStreaming(true, "in flight")
+				view.FlushPartialResponse()
+
+				Expect(view.IsStreaming()).To(BeTrue())
+			})
+		})
+
+		Describe("committed tool_call appears after response text in rendered output", func() {
+			It("places flushed response before tool_call message in messages slice", func() {
+				view.SetStreaming(true, "text before tool call")
+				view.FlushPartialResponse()
+				view.AddMessage(chat.Message{Role: "tool_call", Content: "bash"})
+
+				msgs := view.Messages()
+				Expect(msgs).To(HaveLen(2))
+				Expect(msgs[0].Role).To(Equal("assistant"))
+				Expect(msgs[1].Role).To(Equal("tool_call"))
+			})
+
+			It("renders committed response text before tool_call in output", func() {
+				view.SetStreaming(true, "text before tool call")
+				view.FlushPartialResponse()
+				view.AddMessage(chat.Message{Role: "tool_call", Content: "bash"})
+
+				content := view.RenderContent(80)
+
+				textPos := strings.Index(content, "text before tool call")
+				toolCallPos := strings.Index(content, "bash")
+
+				Expect(textPos).To(BeNumerically(">=", 0), "response text should appear")
+				Expect(toolCallPos).To(BeNumerically(">=", 0), "tool call should appear")
+				Expect(textPos).To(BeNumerically("<", toolCallPos), "response text before tool call")
+			})
+		})
+
+		Describe("delegation completion message ordering", func() {
+			It("places flushed response before delegation completion in messages slice", func() {
+				view.SetStreaming(true, "thinking about delegation")
+				view.FlushPartialResponse()
+				view.AddMessage(chat.Message{Role: "system", Content: "delegation done"})
+
+				msgs := view.Messages()
+				Expect(msgs).To(HaveLen(2))
+				Expect(msgs[0].Role).To(Equal("assistant"))
+				Expect(msgs[1].Role).To(Equal("system"))
+			})
+		})
+	})
 })

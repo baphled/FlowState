@@ -10,10 +10,15 @@ import (
 
 // DelegationStatusWidget displays the current status of agent delegation.
 type DelegationStatusWidget struct {
-	info   *provider.DelegationInfo
-	theme  theme.Theme
-	frame  int
-	frames []string
+	info        *provider.DelegationInfo
+	theme       theme.Theme
+	frame       int
+	frames      []string
+	dimStyle    lipgloss.Style
+	activeStyle lipgloss.Style
+	statusStyle lipgloss.Style
+	errorStyle  lipgloss.Style
+	stylesReady bool
 }
 
 // NewDelegationStatusWidget creates a new delegation status widget.
@@ -28,11 +33,20 @@ type DelegationStatusWidget struct {
 // Side effects:
 //   - None.
 func NewDelegationStatusWidget(info *provider.DelegationInfo, t theme.Theme) *DelegationStatusWidget {
-	return &DelegationStatusWidget{
+	w := &DelegationStatusWidget{
 		info:   info,
 		theme:  t,
 		frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 	}
+	if t != nil {
+		palette := t.Palette()
+		w.dimStyle = lipgloss.NewStyle().Foreground(palette.ForegroundDim)
+		w.activeStyle = lipgloss.NewStyle().Foreground(palette.Primary)
+		w.statusStyle = lipgloss.NewStyle().Foreground(palette.Secondary)
+		w.errorStyle = lipgloss.NewStyle().Foreground(palette.Error)
+		w.stylesReady = true
+	}
+	return w
 }
 
 // SetFrame updates the spinner frame for animation.
@@ -64,11 +78,18 @@ func (w *DelegationStatusWidget) Render() string {
 		return ""
 	}
 
-	palette := w.theme.Palette()
-	style := lipgloss.NewStyle().Foreground(palette.ForegroundDim)
-	activeStyle := lipgloss.NewStyle().Foreground(palette.Primary)
-	statusStyle := lipgloss.NewStyle().Foreground(palette.Secondary)
-	errorStyle := lipgloss.NewStyle().Foreground(palette.Error)
+	dimStyle := w.dimStyle
+	activeStyle := w.activeStyle
+	statusStyle := w.statusStyle
+	errorStyle := w.errorStyle
+
+	if !w.stylesReady && w.theme != nil {
+		palette := w.theme.Palette()
+		dimStyle = lipgloss.NewStyle().Foreground(palette.ForegroundDim)
+		activeStyle = lipgloss.NewStyle().Foreground(palette.Primary)
+		statusStyle = lipgloss.NewStyle().Foreground(palette.Secondary)
+		errorStyle = lipgloss.NewStyle().Foreground(palette.Error)
+	}
 
 	var icon string
 	var statusText string
@@ -87,14 +108,14 @@ func (w *DelegationStatusWidget) Render() string {
 
 	parts := []string{
 		activeStyle.Render(icon),
-		style.Render("Delegation:"),
+		dimStyle.Render("Delegation:"),
 		activeStyle.Render(w.info.TargetAgent),
-		style.Render("(" + w.info.ModelName + "/" + w.info.ProviderName + ")"),
+		dimStyle.Render("(" + w.info.ModelName + "/" + w.info.ProviderName + ")"),
 		"[" + statusText + "]",
 	}
 
 	if w.info.Description != "" {
-		parts = append(parts, style.Render("- "+w.info.Description))
+		parts = append(parts, dimStyle.Render("- "+w.info.Description))
 	}
 
 	return strings.Join(parts, " ")

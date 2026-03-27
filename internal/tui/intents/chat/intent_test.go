@@ -449,24 +449,24 @@ var _ = Describe("ChatIntent", func() {
 			Expect(intent.TokenCount()).To(Equal(0))
 		})
 
-		It("updates token count after stream chunks", func() {
+		It("stays at zero during streaming chunks", func() {
 			for range 5 {
-				intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+				intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			}
-			Expect(intent.TokenCount()).To(BeNumerically(">", 0))
+			Expect(intent.TokenCount()).To(Equal(0))
 		})
 
-		It("accumulates tokens across multiple chunks", func() {
-			intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+		It("does not increment token count across intermediate chunks", func() {
+			intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			first := intent.TokenCount()
-			intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+			intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			second := intent.TokenCount()
-			Expect(second).To(BeNumerically(">", first))
+			Expect(second).To(Equal(first))
 		})
 
 		It("renders token count in View after streaming", func() {
 			for range 5 {
-				intent.Update(chat.StreamChunkMsg{Content: "hello world "})
+				intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			}
 			view := intent.View()
 			Expect(view).To(ContainSubstring(fmt.Sprintf("%d", intent.TokenCount())))
@@ -1394,6 +1394,93 @@ var _ = Describe("ChatIntent", func() {
 			intent.Update(chat.StreamChunkMsg{ToolCallName: "", Content: "normal text"})
 
 			Expect(intent.ActiveToolCallForTest()).To(BeEmpty())
+		})
+	})
+
+	Describe("message ordering during streaming with tool calls", func() {
+		It("places response text before tool_call message when tool call arrives mid-stream", func() {
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Content: "I will run bash"})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "bash"})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "", Content: ""})
+
+			messages := intent.AllViewMessagesForTest()
+
+			assistantIdx := -1
+			toolCallIdx := -1
+			for idx, msg := range messages {
+				if msg.Role == "assistant" && assistantIdx == -1 {
+					assistantIdx = idx
+				}
+				if msg.Role == "tool_call" {
+					toolCallIdx = idx
+				}
+			}
+
+			Expect(assistantIdx).To(BeNumerically(">=", 0), "assistant message should be committed")
+			Expect(toolCallIdx).To(BeNumerically(">=", 0), "tool_call message should be committed")
+			Expect(assistantIdx).To(BeNumerically("<", toolCallIdx), "response text before tool_call")
+		})
+
+		It("places response text before tool_call message for skill tool calls", func() {
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Content: "Loading skill"})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "skill:pre-action"})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "", Content: ""})
+
+			messages := intent.AllViewMessagesForTest()
+
+			assistantIdx := -1
+			skillLoadIdx := -1
+			for idx, msg := range messages {
+				if msg.Role == "assistant" && assistantIdx == -1 {
+					assistantIdx = idx
+				}
+				if msg.Role == "skill_load" {
+					skillLoadIdx = idx
+				}
+			}
+
+			Expect(assistantIdx).To(BeNumerically(">=", 0), "assistant message should be committed")
+			Expect(skillLoadIdx).To(BeNumerically(">=", 0), "skill_load message should be committed")
+			Expect(assistantIdx).To(BeNumerically("<", skillLoadIdx), "response text before skill_load")
+		})
+
+		It("does not create an empty assistant message when tool call arrives with no prior text", func() {
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "bash"})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "", Content: ""})
+
+			messages := intent.AllViewMessagesForTest()
+
+			for _, msg := range messages {
+				if msg.Role == "assistant" {
+					Expect(msg.Content).NotTo(BeEmpty(), "flushed assistant message must have content")
+				}
+			}
+		})
+	})
+
+	Describe("harness retry clears activeToolCall", func() {
+		It("clears activeToolCall before restarting streaming on retry", func() {
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "bash"})
+			Expect(intent.ActiveToolCallForTest()).To(Equal("bash"))
+
+			intent.Update(chat.StreamChunkMsg{EventType: "harness_retry", Content: "Retrying..."})
+
+			Expect(intent.ActiveToolCallForTest()).To(BeEmpty())
+		})
+
+		It("does not emit a duplicate tool_call message when retry fires mid-tool-call", func() {
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "bash"})
+			intent.Update(chat.StreamChunkMsg{EventType: "harness_retry", Content: "Retrying..."})
+			intent.HandleStreamChunkForTest(chat.StreamChunkMsg{ToolCallName: "", Content: "result"})
+
+			messages := intent.AllViewMessagesForTest()
+			toolCallCount := 0
+			for _, msg := range messages {
+				if msg.Role == "tool_call" {
+					toolCallCount++
+				}
+			}
+			Expect(toolCallCount).To(Equal(0), "no tool_call message should appear after a retry that cleared the active tool call")
 		})
 	})
 })

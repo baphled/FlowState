@@ -11,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
 
+const defaultRenderWidth = 80
+
 // Message represents a chat message with a role and content.
 type Message struct {
 	Role    string
@@ -21,16 +23,19 @@ type Message struct {
 type View struct {
 	theme.Aware
 
-	width          int
-	height         int
-	messages       []Message
-	streaming      bool
-	response       string
-	renderFunc     func(string, int) string
-	toolCallName   string
-	toolCallStatus string
-	delegationInfo *provider.DelegationInfo
-	tickFrame      int
+	width             int
+	height            int
+	messages          []Message
+	streaming         bool
+	response          string
+	renderFunc        func(string, int) string
+	toolCallName      string
+	toolCallStatus    string
+	delegationInfo    *provider.DelegationInfo
+	tickFrame         int
+	cachedRenderer    *glamour.TermRenderer
+	cachedRenderWidth int
+	renderedMessages  []string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -42,9 +47,8 @@ type View struct {
 //   - None.
 func NewView() *View {
 	return &View{
-		width:      80,
-		height:     24,
-		renderFunc: renderMarkdown,
+		width:  defaultRenderWidth,
+		height: 24,
 	}
 }
 
@@ -78,6 +82,10 @@ func (v *View) Height() int {
 // Side effects:
 //   - Updates the view's width and height fields.
 func (v *View) SetDimensions(width, height int) {
+	if v.width != width {
+		v.cachedRenderer = nil
+		v.renderedMessages = nil
+	}
 	v.width = width
 	v.height = height
 }
@@ -91,6 +99,27 @@ func (v *View) SetDimensions(width, height int) {
 //   - Appends the message to the messages slice.
 func (v *View) AddMessage(msg Message) {
 	v.messages = append(v.messages, msg)
+}
+
+// FlushPartialResponse commits any accumulated streaming response text as a
+// permanent assistant message without ending the streaming session.
+//
+// This preserves chronological message ordering when a tool call arrives
+// mid-stream: the response text accumulated so far is committed before the
+// tool_call message, ensuring the rendered output matches the logical order
+// in which content was produced.
+//
+// Expected:
+//   - May be called at any time; is a no-op when response is empty.
+//
+// Side effects:
+//   - If response is non-empty, appends an assistant message and clears response.
+func (v *View) FlushPartialResponse() {
+	if v.response == "" {
+		return
+	}
+	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response})
+	v.response = ""
 }
 
 // Messages returns a copy of the view's messages slice.
@@ -226,6 +255,8 @@ func (v *View) SetToolCall(name, status string) {
 //   - Updates the renderFunc field.
 func (v *View) SetMarkdownRenderer(fn func(string, int) string) {
 	v.renderFunc = fn
+	v.cachedRenderer = nil
+	v.renderedMessages = nil
 }
 
 // SetTheme sets the theme for the chat view.
@@ -237,9 +268,37 @@ func (v *View) SetMarkdownRenderer(fn func(string, int) string) {
 //   - Updates the embedded theme.Aware with the provided theme.
 func (v *View) SetTheme(th theme.Theme) {
 	v.Aware.SetTheme(th)
+	v.cachedRenderer = nil
+	v.renderedMessages = nil
 }
 
-// renderMarkdown renders markdown content using glamour with dark theme and word wrapping.
+// termRenderer returns a cached glamour renderer for the given width, recreating it when width changes.
+//
+// Expected:
+//   - width is a positive integer representing the terminal column count.
+//
+// Returns:
+//   - A glamour.TermRenderer ready for use, or nil if creation failed.
+//
+// Side effects:
+//   - Creates and caches a new renderer when width changes.
+func (v *View) termRenderer(width int) *glamour.TermRenderer {
+	if v.cachedRenderer != nil && v.cachedRenderWidth == width {
+		return v.cachedRenderer
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStylePath("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil
+	}
+	v.cachedRenderer = r
+	v.cachedRenderWidth = width
+	return r
+}
+
+// renderMarkdown renders markdown content using the cached glamour renderer.
 //
 // Expected:
 //   - content is markdown text.
@@ -249,13 +308,10 @@ func (v *View) SetTheme(th theme.Theme) {
 //   - Rendered markdown as a string, or original content if rendering fails.
 //
 // Side effects:
-//   - None.
-func renderMarkdown(content string, width int) string {
-	r, err := glamour.NewTermRenderer(
-		glamour.WithStylePath("dark"),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
+//   - May create and cache a new renderer when width changes.
+func (v *View) renderMarkdown(content string, width int) string {
+	r := v.termRenderer(width)
+	if r == nil {
 		return content
 	}
 	out, err := r.Render(content)
@@ -276,22 +332,57 @@ func renderMarkdown(content string, width int) string {
 // Side effects:
 //   - None.
 func (v *View) RenderContent(width int) string {
-	var sb strings.Builder
-
 	th := v.Theme()
 
-	for _, msg := range v.messages {
-		mw := widgets.NewMessageWidget(msg.Role, msg.Content, th)
-		if v.renderFunc != nil {
-			mw.SetMarkdownRenderer(v.renderFunc)
-		}
-		sb.WriteString(mw.Render(width))
+	msgCount := len(v.messages)
+	if cap(v.renderedMessages) < msgCount {
+		extended := make([]string, len(v.renderedMessages), msgCount+8)
+		copy(extended, v.renderedMessages)
+		v.renderedMessages = extended
+	}
+
+	for idx := len(v.renderedMessages); idx < msgCount; idx++ {
+		v.renderedMessages = append(v.renderedMessages, v.renderMessage(v.messages[idx], th, width))
+	}
+
+	if v.streaming && msgCount > 0 && len(v.renderedMessages) == msgCount {
+		v.renderedMessages[msgCount-1] = v.renderMessage(v.messages[msgCount-1], th, width)
+	}
+
+	estimatedSize := msgCount * 256
+	var sb strings.Builder
+	sb.Grow(estimatedSize)
+
+	for _, rendered := range v.renderedMessages {
+		sb.WriteString(rendered)
 		sb.WriteString("\n\n")
 	}
 
 	v.appendStreamingContent(&sb, th, width)
 
 	return sb.String()
+}
+
+// renderMessage renders a single message using the configured renderer.
+//
+// Expected:
+//   - msg is a valid Message with Role and Content.
+//   - th is the active theme (may be nil).
+//   - width is the render width in columns.
+//
+// Returns:
+//   - The rendered message string.
+//
+// Side effects:
+//   - None.
+func (v *View) renderMessage(msg Message, th theme.Theme, width int) string {
+	mw := widgets.NewMessageWidget(msg.Role, msg.Content, th)
+	if v.renderFunc != nil {
+		mw.SetMarkdownRenderer(v.renderFunc)
+	} else {
+		mw.SetMarkdownRenderer(v.renderMarkdown)
+	}
+	return mw.Render(width)
 }
 
 // SetTickFrame updates the current animation frame for spinners.
@@ -326,11 +417,8 @@ func (v *View) HandleDelegation(info *provider.DelegationInfo) {
 
 	switch info.Status {
 	case "completed", "failed":
-		// Clear active delegation display
 		v.delegationInfo = nil
-
-		// Add completion/failure summary as a system message
-		// Note: The caller might also want to display the result content separately if any
+		v.FlushPartialResponse()
 		widget := NewDelegationStatusWidget(info, v.Theme())
 		v.AddMessage(Message{
 			Role:    "system",
@@ -371,6 +459,8 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 		mw := widgets.NewMessageWidget("assistant", v.response, th)
 		if v.renderFunc != nil {
 			mw.SetMarkdownRenderer(v.renderFunc)
+		} else {
+			mw.SetMarkdownRenderer(v.renderMarkdown)
 		}
 		sb.WriteString(mw.Render(width))
 		sb.WriteString("\n")
