@@ -57,8 +57,7 @@ func NewEmbeddingDiscovery(registry *agent.Registry, embedder EmbeddingProvider)
 //   - ctx is a valid context for the embedding operation.
 //
 // Returns:
-//   - nil on success.
-//   - An error if embedding fails for any agent.
+//   - Always nil; per-agent embedding errors are silently skipped in best-effort indexing.
 //
 // Side effects:
 //   - Populates the internal agentVecs map with embedding vectors.
