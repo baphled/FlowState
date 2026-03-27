@@ -62,7 +62,7 @@ var _ = Describe("Config Generator", func() {
 		Context("when delegation table contains plan-reviewer", func() {
 			It("returns CriticEnabled as false", func() {
 				manifest := agent.Manifest{
-					ID: "planning-coordinator",
+					ID: "planner",
 					Delegation: agent.Delegation{
 						CanDelegate: true,
 						DelegationTable: map[string]string{

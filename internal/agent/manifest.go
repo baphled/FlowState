@@ -14,6 +14,12 @@ type Manifest struct {
 	Hooks             Hooks                  `json:"hooks" yaml:"hooks"`
 	Instructions      Instructions           `json:"instructions" yaml:"instructions"`
 	HarnessEnabled    bool                   `json:"harness_enabled" yaml:"harness_enabled"`
+	// Harness defines fine-grained output validation and quality layers for this agent.
+	// When present, it takes precedence over the legacy HarnessEnabled boolean.
+	Harness *HarnessConfig `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Loop defines the delegation loop for coordinator agents.
+	// When present, the agent operates in review-cycle mode rather than single-shot mode.
+	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`
 }
 
 // ModelPref specifies a preferred model for a provider.
@@ -51,6 +57,26 @@ type ContextManagement struct {
 type Delegation struct {
 	CanDelegate     bool              `json:"can_delegate" yaml:"can_delegate"`
 	DelegationTable map[string]string `json:"delegation_table" yaml:"delegation_table"`
+}
+
+// HarnessConfig defines the output validation and quality layers for an agent.
+// When nil, the legacy HarnessEnabled boolean is used as a fallback.
+type HarnessConfig struct {
+	Enabled       bool     `json:"enabled" yaml:"enabled"`
+	Validators    []string `json:"validators,omitempty" yaml:"validators,omitempty"`
+	CriticEnabled bool     `json:"critic_enabled" yaml:"critic_enabled"`
+	VotingEnabled bool     `json:"voting_enabled" yaml:"voting_enabled"`
+	MaxAttempts   int      `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+}
+
+// LoopConfig defines the delegation loop for coordinator agents.
+// When nil, the agent operates in single-shot mode without a review cycle.
+type LoopConfig struct {
+	Enabled     bool              `json:"enabled" yaml:"enabled"`
+	Writer      string            `json:"writer,omitempty" yaml:"writer,omitempty"`
+	Reviewer    string            `json:"reviewer,omitempty" yaml:"reviewer,omitempty"`
+	MaxAttempts int               `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+	Roles       map[string]string `json:"roles,omitempty" yaml:"roles,omitempty"`
 }
 
 // Hooks defines pre and post execution hooks for an agent.

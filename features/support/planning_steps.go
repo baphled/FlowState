@@ -46,7 +46,7 @@ func RegisterPlanningSteps(ctx *godog.ScenarioContext) {
 		return bddCtx, nil
 	})
 
-	ctx.Step(`^a planning coordinator agent is configured$`, p.aPlanningCoordinatorAgentIsConfigured)
+	ctx.Step(`^a planner agent is configured$`, p.aPlannerAgentIsConfigured)
 	ctx.Step(`^the delegation table maps to writer and reviewer agents$`, p.theDelegationTableMapsToWriterAndReviewerAgents)
 	ctx.Step(`^the coordinator receives a planning request$`, p.theCoordinatorReceivesAPlanningRequest)
 	ctx.Step(`^it should delegate to the plan-writer agent$`, p.itShouldDelegateToThePlanWriterAgent)
@@ -202,7 +202,7 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 		},
 	}
 
-	return engine.NewDelegateTool(engines, delegationConfig, "planning-coordinator")
+	return engine.NewDelegateTool(engines, delegationConfig, "planner")
 }
 
 // delegateAndCollect calls Execute on the delegateTool and collects emitted DelegationEvents.
@@ -258,7 +258,7 @@ func delegateAndCollect(ctx context.Context, dt *engine.DelegateTool, taskType, 
 	return events, err
 }
 
-// aPlanningCoordinatorAgentIsConfigured initialises a real DelegateTool with mock sub-agent engines.
+// aPlannerAgentIsConfigured initialises a real DelegateTool with mock sub-agent engines.
 //
 // Expected:
 //   - No prior state is required.
@@ -268,7 +268,7 @@ func delegateAndCollect(ctx context.Context, dt *engine.DelegateTool, taskType, 
 //
 // Side effects:
 //   - Assigns a configured DelegateTool to p.delegateTool.
-func (p *PlanningStepDefinitions) aPlanningCoordinatorAgentIsConfigured(_ context.Context) error {
+func (p *PlanningStepDefinitions) aPlannerAgentIsConfigured(_ context.Context) error {
 	p.delegateTool = buildPlanningDelegateTool()
 	return nil
 }

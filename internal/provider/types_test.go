@@ -42,7 +42,7 @@ var _ = Describe("DelegationInfo", func() {
 		completedAt := startedAt.Add(2 * time.Second)
 
 		info := &DelegationInfo{
-			SourceAgent:  "planning-coordinator",
+			SourceAgent:  "planner",
 			TargetAgent:  "explorer",
 			ChainID:      "chain-1",
 			ToolCalls:    3,
@@ -55,7 +55,7 @@ var _ = Describe("DelegationInfo", func() {
 			Description:  "Exploring codebase for requirements",
 		}
 
-		Expect(info.SourceAgent).To(Equal("planning-coordinator"))
+		Expect(info.SourceAgent).To(Equal("planner"))
 		Expect(info.TargetAgent).To(Equal("explorer"))
 		Expect(info.ChainID).To(Equal("chain-1"))
 		Expect(info.ToolCalls).To(Equal(3))
@@ -76,7 +76,7 @@ var _ = Describe("StreamChunk with delegation info", func() {
 			Done:      false,
 			EventType: "delegation",
 			DelegationInfo: &DelegationInfo{
-				SourceAgent:  "planning-coordinator",
+				SourceAgent:  "planner",
 				TargetAgent:  "plan-writer",
 				ChainID:      "chain-2",
 				ToolCalls:    1,
@@ -89,7 +89,7 @@ var _ = Describe("StreamChunk with delegation info", func() {
 		}
 
 		Expect(chunk.DelegationInfo).NotTo(BeNil())
-		Expect(chunk.DelegationInfo.SourceAgent).To(Equal("planning-coordinator"))
+		Expect(chunk.DelegationInfo.SourceAgent).To(Equal("planner"))
 		Expect(chunk.DelegationInfo.TargetAgent).To(Equal("plan-writer"))
 		Expect(chunk.DelegationInfo.ChainID).To(Equal("chain-2"))
 		Expect(chunk.DelegationInfo.ToolCalls).To(Equal(1))

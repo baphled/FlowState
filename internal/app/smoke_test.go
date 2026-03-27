@@ -148,8 +148,8 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 	}
 
 	coordManifest := agent.Manifest{
-		ID:         "planning-coordinator",
-		Name:       "Planning Coordinator",
+		ID:         "planner",
+		Name:       "Planner",
 		Complexity: "deep",
 		ModelPreferences: map[string][]agent.ModelPref{
 			"deep": {{Provider: "scripted", Model: "test-model"}},
@@ -198,7 +198,7 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 		ChatProvider: coordProvider,
 		Manifest:     coordManifest,
 	})
-	engines["planning-coordinator"] = coordEngine
+	engines["planner"] = coordEngine
 
 	writerEngine := engine.New(engine.Config{
 		ChatProvider: writerProvider,
@@ -249,13 +249,13 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 	Describe("full delegation flow via CLI path", func() {
 		It("completes delegation cycle with coordinator -> writer -> reviewer", func() {
 			// Create coordinator engine with full delegation wiring
-			coordEng := engines["planning-coordinator"]
+			coordEng := engines["planner"]
 			Expect(coordEng).NotTo(BeNil())
 
 			// Engine implements streaming.Streamer interface
 			consumer := &captureDelegationConsumer{}
 
-			err := streaming.Run(context.Background(), coordEng, consumer, "planning-coordinator", "plan a REST API")
+			err := streaming.Run(context.Background(), coordEng, consumer, "planner", "plan a REST API")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(consumer.done).To(BeTrue())
 
@@ -264,11 +264,11 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 		})
 
 		It("stores plan in coordination store after delegation", func() {
-			coordEng := engines["planning-coordinator"]
+			coordEng := engines["planner"]
 			Expect(coordEng).NotTo(BeNil())
 
 			consumer := &captureDelegationConsumer{}
-			_ = streaming.Run(context.Background(), coordEng, consumer, "planning-coordinator", "plan a REST API")
+			_ = streaming.Run(context.Background(), coordEng, consumer, "planner", "plan a REST API")
 
 			// Coordination store should have keys from the delegation
 			keys, err := coordStore.List("")
@@ -285,7 +285,7 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 		)
 
 		BeforeEach(func() {
-			coordEng := engines["planning-coordinator"]
+			coordEng := engines["planner"]
 			streamer = coordEng
 			testAPI := createTestAPI(streamer, registry)
 			apiServer = httptest.NewServer(testAPI.Handler())
@@ -297,7 +297,7 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 
 		It("creates session via API", func() {
 			// Create session
-			createReq, err := http.NewRequest("POST", apiServer.URL+"/api/v1/sessions", strings.NewReader(`{"agent_id":"planning-coordinator"}`))
+			createReq, err := http.NewRequest("POST", apiServer.URL+"/api/v1/sessions", strings.NewReader(`{"agent_id":"planner"}`))
 			Expect(err).NotTo(HaveOccurred())
 			createReq.Header.Set("Content-Type", "application/json")
 
@@ -310,12 +310,12 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 			createResp.Body.Close()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sess.ID).NotTo(BeEmpty())
-			Expect(sess.AgentID).To(Equal("planning-coordinator"))
+			Expect(sess.AgentID).To(Equal("planner"))
 		})
 
 		It("lists sessions via API", func() {
 			// Create session first
-			createReq, err := http.NewRequest("POST", apiServer.URL+"/api/v1/sessions", strings.NewReader(`{"agent_id":"planning-coordinator"}`))
+			createReq, err := http.NewRequest("POST", apiServer.URL+"/api/v1/sessions", strings.NewReader(`{"agent_id":"planner"}`))
 			Expect(err).NotTo(HaveOccurred())
 			createReq.Header.Set("Content-Type", "application/json")
 

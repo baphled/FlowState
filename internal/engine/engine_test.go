@@ -210,7 +210,7 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("FlowState Strategic Planner"))
+				Expect(prompt).To(ContainSubstring("FlowState Planner"))
 				Expect(prompt).NotTo(ContainSubstring("Legacy fallback prompt"))
 			})
 		})

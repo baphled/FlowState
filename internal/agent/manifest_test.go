@@ -1,6 +1,8 @@
 package agent_test
 
 import (
+	"encoding/json"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -72,6 +74,95 @@ var _ = Describe("Manifest", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("id"))
+		})
+	})
+})
+
+var _ = Describe("Manifest JSON deserialisation", func() {
+	Context("when JSON contains a harness block", func() {
+		It("deserialises HarnessConfig correctly", func() {
+			raw := `{
+				"id": "test-agent",
+				"name": "Test Agent",
+				"harness": {
+					"enabled": true,
+					"validators": ["schema"],
+					"max_attempts": 3
+				}
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.Harness).NotTo(BeNil())
+			Expect(m.Harness.Enabled).To(BeTrue())
+			Expect(m.Harness.Validators).To(ConsistOf("schema"))
+			Expect(m.Harness.MaxAttempts).To(Equal(3))
+		})
+	})
+
+	Context("when JSON contains a loop block", func() {
+		It("deserialises LoopConfig correctly", func() {
+			raw := `{
+				"id": "coordinator-agent",
+				"name": "Coordinator Agent",
+				"loop": {
+					"enabled": true,
+					"writer": "plan-writer",
+					"reviewer": "plan-reviewer",
+					"max_attempts": 3
+				}
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.Loop).NotTo(BeNil())
+			Expect(m.Loop.Enabled).To(BeTrue())
+			Expect(m.Loop.Writer).To(Equal("plan-writer"))
+			Expect(m.Loop.Reviewer).To(Equal("plan-reviewer"))
+			Expect(m.Loop.MaxAttempts).To(Equal(3))
+		})
+	})
+
+	Context("when JSON contains neither harness nor loop blocks", func() {
+		It("deserialises without error, with nil Harness and Loop fields", func() {
+			raw := `{
+				"id": "simple-agent",
+				"name": "Simple Agent",
+				"harness_enabled": true
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.HarnessEnabled).To(BeTrue())
+			Expect(m.Harness).To(BeNil())
+			Expect(m.Loop).To(BeNil())
+		})
+	})
+
+	Context("when JSON contains both harness_enabled and a harness block", func() {
+		It("deserialises both fields independently", func() {
+			raw := `{
+				"id": "dual-agent",
+				"name": "Dual Agent",
+				"harness_enabled": true,
+				"harness": {
+					"enabled": true,
+					"critic_enabled": true,
+					"voting_enabled": true
+				}
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.HarnessEnabled).To(BeTrue())
+			Expect(m.Harness).NotTo(BeNil())
+			Expect(m.Harness.Enabled).To(BeTrue())
+			Expect(m.Harness.CriticEnabled).To(BeTrue())
+			Expect(m.Harness.VotingEnabled).To(BeTrue())
 		})
 	})
 })

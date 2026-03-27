@@ -1,10 +1,10 @@
 @planning @smoke
 Feature: Deterministic Planning Loop
-  The planning coordinator delegates to writer and reviewer agents
+  The planner delegates to writer and reviewer agents
   in a structured loop to produce quality plans.
 
   Background:
-    Given a planning coordinator agent is configured
+    Given a planner agent is configured
     And the delegation table maps to writer and reviewer agents
 
   @delegation
