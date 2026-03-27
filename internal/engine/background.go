@@ -51,13 +51,16 @@ func (a *atomicValue) store(s string) {
 	a.v.Store(s)
 }
 
-// BackgroundTaskManager tracks parallel delegation tasks.
+const maxConcurrentTasks = 50
+
+// BackgroundTaskManager tracks parallel delegation tasks with a concurrency cap.
 type BackgroundTaskManager struct {
 	tasks map[string]*BackgroundTask
 	mu    sync.RWMutex
+	sem   chan struct{}
 }
 
-// NewBackgroundTaskManager creates a new task manager with an empty task map.
+// NewBackgroundTaskManager creates a new task manager with an empty task map and semaphore cap 50.
 //
 // Returns:
 //   - A ready-to-use BackgroundTaskManager instance.
@@ -67,6 +70,7 @@ type BackgroundTaskManager struct {
 func NewBackgroundTaskManager() *BackgroundTaskManager {
 	return &BackgroundTaskManager{
 		tasks: make(map[string]*BackgroundTask),
+		sem:   make(chan struct{}, maxConcurrentTasks),
 	}
 }
 
@@ -106,7 +110,9 @@ func (m *BackgroundTaskManager) Launch(
 	m.tasks[id] = task
 	m.mu.Unlock()
 
+	m.sem <- struct{}{}
 	go func() {
+		defer func() { <-m.sem }()
 		defer cancel()
 
 		task.Status.store("running")

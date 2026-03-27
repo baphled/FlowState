@@ -481,6 +481,8 @@ func (e *Engine) streamWithToolLoop(
 
 		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
 
+		e.evictCompletedBackgroundTasks()
+
 		var streamErr error
 		toolReq := provider.ChatRequest{
 			Messages: messages,
@@ -491,6 +493,22 @@ func (e *Engine) streamWithToolLoop(
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
+	}
+}
+
+// evictCompletedBackgroundTasks calls EvictCompleted on the delegate tool's background manager
+// if one is configured, preventing unbounded memory growth from completed task entries.
+//
+// Side effects:
+//   - Removes terminal tasks from the background task manager if a delegate tool is present.
+func (e *Engine) evictCompletedBackgroundTasks() {
+	dt, ok := e.GetDelegateTool()
+	if !ok {
+		return
+	}
+	bm := dt.BackgroundManager()
+	if bm != nil {
+		bm.EvictCompleted()
 	}
 }
 
