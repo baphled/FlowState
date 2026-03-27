@@ -267,7 +267,7 @@ func (m *Manager) CloseSession(sessionID string) error {
 	return nil
 }
 
-// SessionDepth returns the number of parent links between a session and the root.
+// Depth returns the number of parent links between a session and the root.
 // Expected:
 //   - sessions contains the parent chain for the requested session.
 //   - sessionID identifies the session whose depth should be calculated.
@@ -277,9 +277,7 @@ func (m *Manager) CloseSession(sessionID string) error {
 //
 // Side effects:
 //   - None.
-//
-//revive:disable-next-line:exported
-func SessionDepth(sessions map[string]*Session, sessionID string) int {
+func Depth(sessions map[string]*Session, sessionID string) int {
 	return sessionDepth(sessions, sessionID, make(map[string]bool))
 }
 

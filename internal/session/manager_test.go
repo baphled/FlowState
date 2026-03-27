@@ -108,9 +108,9 @@ var _ = Describe("Manager", func() {
 				},
 			}
 
-			Expect(session.SessionDepth(sessions, "root")).To(Equal(0))
-			Expect(session.SessionDepth(sessions, "child")).To(Equal(1))
-			Expect(session.SessionDepth(sessions, "grandchild")).To(Equal(2))
+			Expect(session.Depth(sessions, "root")).To(Equal(0))
+			Expect(session.Depth(sessions, "child")).To(Equal(1))
+			Expect(session.Depth(sessions, "grandchild")).To(Equal(2))
 		})
 
 		It("returns direct child sessions for a parent", func() {

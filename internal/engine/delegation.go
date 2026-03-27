@@ -601,10 +601,10 @@ func (d *DelegateTool) emitDelegationEvent(
 		return
 	}
 
-	// Recover from panic if the channel was closed by the parent context.
-	// This can happen when background tasks continue after the parent context is cancelled.
 	defer func() {
-		recover() //nolint:errcheck // panic recovery from closed channel
+		if recover() == nil {
+			return
+		}
 	}()
 
 	info := base
