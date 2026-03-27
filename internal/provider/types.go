@@ -83,6 +83,7 @@ type StreamChunk struct {
 	ToolCall       *ToolCall
 	ToolResult     *ToolResultInfo
 	DelegationInfo *DelegationInfo
+	Event          interface{}
 }
 
 // EmbedRequest contains the parameters for an embedding request.

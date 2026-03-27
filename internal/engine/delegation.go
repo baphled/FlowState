@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -553,7 +554,7 @@ func (d *DelegateTool) executeSync(
 		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
 	}
 
-	result, err := d.collectDelegationResult(chunks)
+	result, err := d.collectWithProgress(ctx, chunks, time.Now())
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
@@ -869,6 +870,98 @@ func (d *DelegateTool) emitDelegationEvent(
 	select {
 	case outChan <- provider.StreamChunk{DelegationInfo: &info}:
 	default:
+	}
+}
+
+// deliverProgressEvent sends a ProgressEvent to the parent output channel when available.
+//
+// Expected:
+//   - ctx carries the parent output channel via WithStreamOutput.
+//   - toolCalls is the current count of tool invocations.
+//   - lastTool is the name of the most recently invoked tool.
+//   - startedAt is the time delegation began.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Attempts a non-blocking send to the parent output channel.
+//   - Silently drops the event if the channel is full or absent.
+func (d *DelegateTool) deliverProgressEvent(ctx context.Context, toolCalls int, lastTool string, startedAt time.Time) {
+	outChan, ok := streamOutputFromContext(ctx)
+	if !ok {
+		return
+	}
+
+	activeDelegations := 0
+	if d.backgroundManager != nil {
+		activeDelegations = d.backgroundManager.ActiveCount()
+	}
+
+	ev := streaming.ProgressEvent{
+		ToolCallCount:     toolCalls,
+		LastTool:          lastTool,
+		ActiveDelegations: activeDelegations,
+		ElapsedTime:       time.Since(startedAt),
+	}
+
+	defer func() {
+		if recover() == nil {
+			return
+		}
+	}()
+	select {
+	case outChan <- provider.StreamChunk{Event: ev}:
+	default:
+	}
+}
+
+// collectWithProgress aggregates delegation chunks and periodically emits ProgressEvents.
+//
+// Expected:
+//   - ctx carries the parent output channel for progress delivery.
+//   - chunks is the stream channel from the child engine.
+//   - startedAt is the delegation start time.
+//
+// Returns:
+//   - A delegationResult with accumulated response, tool call count, and last tool name.
+//   - An error if any chunk carries a stream error.
+//
+// Side effects:
+//   - Emits ProgressEvents every 5 tool calls or every 5 seconds via deliverProgressEvent.
+func (d *DelegateTool) collectWithProgress(
+	ctx context.Context,
+	chunks <-chan provider.StreamChunk,
+	startedAt time.Time,
+) (delegationResult, error) {
+	var response strings.Builder
+	toolCalls := 0
+	lastTool := ""
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	const progressInterval = 5
+
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool}, nil
+			}
+			toolCalls++
+			if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
+				lastTool = chunk.ToolCall.Name
+			}
+			if chunk.Error != nil {
+				return delegationResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
+			}
+			response.WriteString(chunk.Content)
+			if toolCalls%progressInterval == 0 {
+				d.deliverProgressEvent(ctx, toolCalls, lastTool, startedAt)
+			}
+		case <-ticker.C:
+			d.deliverProgressEvent(ctx, toolCalls, lastTool, startedAt)
+		}
 	}
 }
 
