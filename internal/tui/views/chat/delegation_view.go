@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
@@ -133,4 +135,243 @@ func (w *DelegationStatusWidget) Render() string {
 //   - None.
 func (w *DelegationStatusWidget) View() string {
 	return w.Render()
+}
+
+// CollapsibleDelegationBlock displays delegation information in a collapsible format.
+// When collapsed, it shows a single-line summary with spinner and status.
+// When expanded, it displays detailed information in a multi-line block.
+type CollapsibleDelegationBlock struct {
+	info        *provider.DelegationInfo
+	theme       theme.Theme
+	expanded    bool
+	YPosition   int
+	Height      int
+	frames      []string
+	frame       int
+	dimStyle    lipgloss.Style
+	activeStyle lipgloss.Style
+	statusStyle lipgloss.Style
+	errorStyle  lipgloss.Style
+	stylesReady bool
+}
+
+// NewCollapsibleDelegationBlock creates a new collapsible delegation block.
+//
+// Expected:
+//   - info contains the delegation metadata to display.
+//   - t is a valid theme value (may be nil).
+//
+// Returns:
+//   - A block configured with the current theme and spinner frames.
+//
+// Side effects:
+//   - None.
+func NewCollapsibleDelegationBlock(info *provider.DelegationInfo, t theme.Theme) *CollapsibleDelegationBlock {
+	b := &CollapsibleDelegationBlock{
+		info:     info,
+		theme:    t,
+		expanded: false,
+		frames:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		Height:   1,
+	}
+	if t != nil {
+		palette := t.Palette()
+		b.dimStyle = lipgloss.NewStyle().Foreground(palette.ForegroundDim)
+		b.activeStyle = lipgloss.NewStyle().Foreground(palette.Primary)
+		b.statusStyle = lipgloss.NewStyle().Foreground(palette.Secondary)
+		b.errorStyle = lipgloss.NewStyle().Foreground(palette.Error)
+		b.stylesReady = true
+	}
+	return b
+}
+
+// Toggle switches between collapsed and expanded state.
+//
+// Expected:
+//   - Block is properly initialised.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Flips the expanded flag.
+func (b *CollapsibleDelegationBlock) Toggle() {
+	b.expanded = !b.expanded
+}
+
+// IsExpanded returns whether the block is in expanded state.
+//
+// Expected:
+//   - Block is properly initialised.
+//
+// Returns:
+//   - true if expanded, false if collapsed.
+//
+// Side effects:
+//   - None.
+func (b *CollapsibleDelegationBlock) IsExpanded() bool {
+	return b.expanded
+}
+
+// SetFrame updates the spinner frame for animation.
+//
+// Expected:
+//   - frame is a valid animation frame index.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the block's frame state.
+func (b *CollapsibleDelegationBlock) SetFrame(frame int) {
+	b.frame = frame
+}
+
+// SetYPosition records the vertical position of this block.
+//
+// Expected:
+//   - y is a valid terminal Y coordinate.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Stores the Y position for mouse hit detection.
+func (b *CollapsibleDelegationBlock) SetYPosition(y int) {
+	b.YPosition = y
+}
+
+// Render returns the string representation of the delegation block.
+// If collapsed, returns a single line with spinner and status.
+// If expanded, returns a multi-line detailed view with agent, model, tools, and elapsed time.
+//
+// Expected:
+//   - Block is properly initialised with delegation info.
+//
+// Returns:
+//   - Rendered block as a string. Updates Height based on line count.
+//
+// Side effects:
+//   - Updates the Height field based on newline count in output.
+func (b *CollapsibleDelegationBlock) Render() string {
+	if b.info == nil {
+		return ""
+	}
+
+	dimStyle := b.dimStyle
+	activeStyle := b.activeStyle
+	statusStyle := b.statusStyle
+	errorStyle := b.errorStyle
+
+	if !b.stylesReady && b.theme != nil {
+		palette := b.theme.Palette()
+		dimStyle = lipgloss.NewStyle().Foreground(palette.ForegroundDim)
+		activeStyle = lipgloss.NewStyle().Foreground(palette.Primary)
+		statusStyle = lipgloss.NewStyle().Foreground(palette.Secondary)
+		errorStyle = lipgloss.NewStyle().Foreground(palette.Error)
+	}
+
+	if b.expanded {
+		return b.renderExpanded(dimStyle, activeStyle, statusStyle, errorStyle)
+	}
+	return b.renderCollapsed(activeStyle, statusStyle, errorStyle)
+}
+
+// renderCollapsed renders the collapsed single-line view with spinner and status.
+//
+// Expected:
+//   - Styles are properly initialised.
+//
+// Returns:
+//   - Single-line string representation.
+//
+// Side effects:
+//   - Updates Height based on the rendered output.
+func (b *CollapsibleDelegationBlock) renderCollapsed(activeStyle, statusStyle, errorStyle lipgloss.Style) string {
+	var icon string
+	var statusText string
+
+	switch b.info.Status {
+	case "completed":
+		icon = "✓"
+		statusText = statusStyle.Render(b.info.Status)
+	case "failed":
+		icon = "✗"
+		statusText = errorStyle.Render(b.info.Status)
+	default:
+		icon = b.frames[b.frame%len(b.frames)]
+		statusText = activeStyle.Render(b.info.Status)
+	}
+
+	parts := []string{
+		activeStyle.Render(icon),
+		activeStyle.Render(b.info.TargetAgent),
+		"[" + statusText + "]",
+	}
+
+	output := strings.Join(parts, " ")
+	b.Height = strings.Count(output, "\n") + 1
+	return output
+}
+
+// renderExpanded renders the expanded multi-line view with detailed delegation information.
+//
+// Expected:
+//   - Styles are properly initialised.
+//
+// Returns:
+//   - Multi-line string representation with bordered content.
+//
+// Side effects:
+//   - Updates Height based on the rendered output.
+func (b *CollapsibleDelegationBlock) renderExpanded(dimStyle, activeStyle, statusStyle, errorStyle lipgloss.Style) string {
+	var lines []string
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("8")).
+		Padding(1)
+
+	var statusText string
+	switch b.info.Status {
+	case "completed":
+		statusText = statusStyle.Render(b.info.Status)
+	case "failed":
+		statusText = errorStyle.Render(b.info.Status)
+	default:
+		statusText = activeStyle.Render(b.info.Status)
+	}
+
+	lines = append(lines,
+		dimStyle.Render("Agent:")+"    "+activeStyle.Render(b.info.TargetAgent),
+		dimStyle.Render("Model:")+"    "+activeStyle.Render(b.info.ModelName+" / "+b.info.ProviderName),
+		dimStyle.Render("Status:")+"   "+statusText,
+	)
+
+	if b.info.ToolCalls > 0 {
+		toolInfo := fmt.Sprintf("%d calls", b.info.ToolCalls)
+		if b.info.LastTool != "" {
+			toolInfo += " (last: " + b.info.LastTool + ")"
+		}
+		lines = append(lines, dimStyle.Render("Tools:")+"    "+activeStyle.Render(toolInfo))
+	}
+
+	if b.info.StartedAt != nil {
+		elapsed := time.Since(*b.info.StartedAt).Round(time.Millisecond).String()
+		lines = append(lines, dimStyle.Render("Elapsed:")+"  "+activeStyle.Render(elapsed))
+	} else {
+		lines = append(lines, dimStyle.Render("Elapsed:")+"  "+activeStyle.Render("0s"))
+	}
+
+	if b.info.CompletedAt != nil && b.info.Description != "" {
+		lines = append(lines, dimStyle.Render("Result:")+"   "+activeStyle.Render(b.info.Description))
+	} else {
+		lines = append(lines, dimStyle.Render("Result:")+"   "+dimStyle.Render("(pending)"))
+	}
+
+	content := strings.Join(lines, "\n")
+	bordered := border.Render(content)
+
+	b.Height = strings.Count(bordered, "\n") + 1
+	return bordered
 }
