@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -64,6 +65,88 @@ var _ = Describe("Manager", func() {
 				Expect(sess.CreatedAt).To(BeTemporally(">=", before))
 				Expect(sess.UpdatedAt).To(BeTemporally(">=", before))
 			})
+		})
+	})
+
+	Describe("Session hierarchy types", func() {
+		It("exposes parent identifiers on Session", func() {
+			typ := reflect.TypeOf(session.Session{})
+			parentID, ok := typ.FieldByName("ParentID")
+			Expect(ok).To(BeTrue())
+			Expect(parentID.Tag.Get("json")).To(Equal("parent_id"))
+
+			parentSessionID, ok := typ.FieldByName("ParentSessionID")
+			Expect(ok).To(BeTrue())
+			Expect(parentSessionID.Tag.Get("json")).To(Equal("parent_session_id"))
+		})
+
+		It("exposes hierarchy methods on Manager", func() {
+			typ := reflect.TypeOf(&session.Manager{})
+			childSessions, ok := typ.MethodByName("ChildSessions")
+			Expect(ok).To(BeTrue())
+			Expect(childSessions.Type.NumIn()).To(Equal(2))
+			Expect(childSessions.Type.NumOut()).To(Equal(2))
+
+			sessionTree, ok := typ.MethodByName("SessionTree")
+			Expect(ok).To(BeTrue())
+			Expect(sessionTree.Type.NumIn()).To(Equal(2))
+			Expect(sessionTree.Type.NumOut()).To(Equal(2))
+		})
+
+		It("tracks session depth through parent links", func() {
+			sessions := map[string]*session.Session{
+				"root": {
+					ID: "root",
+				},
+				"child": {
+					ID:       "child",
+					ParentID: "root",
+				},
+				"grandchild": {
+					ID:       "grandchild",
+					ParentID: "child",
+				},
+			}
+
+			Expect(session.SessionDepth(sessions, "root")).To(Equal(0))
+			Expect(session.SessionDepth(sessions, "child")).To(Equal(1))
+			Expect(session.SessionDepth(sessions, "grandchild")).To(Equal(2))
+		})
+
+		It("returns direct child sessions for a parent", func() {
+			root, err := mgr.CreateSession("root-agent")
+			Expect(err).NotTo(HaveOccurred())
+			child, err := mgr.CreateSession("child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			grandchild, err := mgr.CreateSession("grandchild-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			child.ParentID = root.ID
+			grandchild.ParentID = child.ID
+
+			children, err := mgr.ChildSessions(root.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).To(HaveLen(1))
+			Expect(children[0].ID).To(Equal(child.ID))
+		})
+
+		It("returns a session tree rooted at the requested session", func() {
+			root, err := mgr.CreateSession("root-agent")
+			Expect(err).NotTo(HaveOccurred())
+			child, err := mgr.CreateSession("child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			grandchild, err := mgr.CreateSession("grandchild-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			child.ParentID = root.ID
+			grandchild.ParentID = child.ID
+
+			tree, err := mgr.SessionTree(root.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree).To(HaveLen(3))
+			Expect(tree[0].ID).To(Equal(root.ID))
+			Expect(tree[1].ID).To(Equal(child.ID))
+			Expect(tree[2].ID).To(Equal(grandchild.ID))
 		})
 	})
 

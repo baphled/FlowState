@@ -42,6 +42,8 @@ type Session struct {
 	ID                string                    `json:"id"`
 	AgentID           string                    `json:"agent_id"`
 	Status            string                    `json:"status"`
+	ParentID          string                    `json:"parent_id"`
+	ParentSessionID   string                    `json:"parent_session_id"`
 	CoordinationStore *coordination.MemoryStore `json:"coordination_store,omitempty"`
 	Messages          []Message                 `json:"messages"`
 	CreatedAt         time.Time                 `json:"created_at"`
@@ -157,6 +159,52 @@ func (m *Manager) ListSessions() []*Summary {
 	return summaries
 }
 
+// ChildSessions returns the direct child sessions for the given parent session identifier.
+// Expected:
+//   - parentID identifies the parent session to inspect.
+//
+// Returns:
+//   - A slice containing each direct child session.
+//   - A nil error when the lookup succeeds.
+//
+// Side effects:
+//   - Acquires a read lock while scanning the session store.
+func (m *Manager) ChildSessions(parentID string) ([]*Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	children := make([]*Session, 0)
+	for _, sess := range m.sessions {
+		if sess.ParentID == parentID || sess.ParentSessionID == parentID {
+			children = append(children, sess)
+		}
+	}
+
+	return children, nil
+}
+
+// SessionTree returns the root session and its descendants in depth-first order.
+// Expected:
+//   - rootID identifies the root session for the tree lookup.
+//
+// Returns:
+//   - A slice containing the root session followed by its descendants.
+//   - ErrSessionNotFound when the root session does not exist.
+//
+// Side effects:
+//   - Acquires a read lock while traversing the session store.
+func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	root, ok := m.sessions[rootID]
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+
+	return sessionTree(m.sessions, root, make(map[string]bool)), nil
+}
+
 // SendMessage sends a message to the session and streams the response.
 // Expected:
 //   - ctx is valid for the lifetime of the streaming request.
@@ -217,4 +265,83 @@ func (m *Manager) CloseSession(sessionID string) error {
 	sess.UpdatedAt = time.Now()
 
 	return nil
+}
+
+// SessionDepth returns the number of parent links between a session and the root.
+// Expected:
+//   - sessions contains the parent chain for the requested session.
+//   - sessionID identifies the session whose depth should be calculated.
+//
+// Returns:
+//   - The number of parent links between the session and the root.
+//
+// Side effects:
+//   - None.
+//
+//revive:disable-next-line:exported
+func SessionDepth(sessions map[string]*Session, sessionID string) int {
+	return sessionDepth(sessions, sessionID, make(map[string]bool))
+}
+
+// sessionTree walks the session map in depth-first order.
+// Expected:
+//   - sessions contains the complete in-memory session map.
+//   - root identifies the starting session for traversal.
+//
+// Returns:
+//   - A depth-first slice rooted at the provided session.
+//
+// Side effects:
+//   - None.
+func sessionTree(sessions map[string]*Session, root *Session, visited map[string]bool) []*Session {
+	if root == nil {
+		return nil
+	}
+	if visited[root.ID] {
+		return nil
+	}
+
+	visited[root.ID] = true
+	result := []*Session{root}
+	for _, sess := range sessions {
+		if sess == nil || visited[sess.ID] {
+			continue
+		}
+		if sess.ParentID == root.ID || sess.ParentSessionID == root.ID {
+			result = append(result, sessionTree(sessions, sess, visited)...)
+		}
+	}
+
+	return result
+}
+
+// sessionDepth walks the parent chain to calculate a session's depth.
+// Expected:
+//   - sessions contains the parent chain lookup data.
+//   - sessionID identifies the session to inspect.
+//
+// Returns:
+//   - The number of parent links between the session and the root.
+//
+// Side effects:
+//   - None.
+func sessionDepth(sessions map[string]*Session, sessionID string, visited map[string]bool) int {
+	sess, ok := sessions[sessionID]
+	if !ok || sess == nil {
+		return 0
+	}
+	if visited[sessionID] {
+		return 0
+	}
+
+	parentID := sess.ParentID
+	if parentID == "" {
+		parentID = sess.ParentSessionID
+	}
+	if parentID == "" {
+		return 0
+	}
+
+	visited[sessionID] = true
+	return 1 + sessionDepth(sessions, parentID, visited)
 }
