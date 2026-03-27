@@ -57,3 +57,4 @@ demos/temp_demo_env/
 
 # Editor temporary files
 tmp/
+*.orig
