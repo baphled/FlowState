@@ -590,8 +590,9 @@ func newDelegationChainID() string {
 //   - base contains the delegation metadata to reuse for the emitted chunk.
 //
 // Side effects:
-//   - Attempts a non-blocking send to the output channel; drops the event when
-//     the channel is full to prevent background goroutines from stalling.
+//   - Attempts a non-blocking send to the output channel if it's still open.
+//   - Silently drops events if the channel is full or closed (common when parent context is cancelled).
+//   - Recovers from panic if the channel was closed by the parent context.
 func (d *DelegateTool) emitDelegationEvent(
 	outChan chan<- provider.StreamChunk, hasOutput bool,
 	base provider.DelegationInfo, status string,
@@ -599,6 +600,13 @@ func (d *DelegateTool) emitDelegationEvent(
 	if !hasOutput {
 		return
 	}
+
+	// Recover from panic if the channel was closed by the parent context.
+	// This can happen when background tasks continue after the parent context is cancelled.
+	defer func() {
+		recover() //nolint:errcheck // panic recovery from closed channel
+	}()
+
 	info := base
 	info.Status = status
 	select {

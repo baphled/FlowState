@@ -91,7 +91,7 @@ if err == nil {
 ---
 
 ### 2. Agent Manifests Default to Unavailable Provider
-**Location:** `agents/general.json`
+**Location:** `internal/app/agents/`
 
 **Problem:** The `general` agent's "standard" complexity uses OpenAI, not Ollama.
 
@@ -253,7 +253,7 @@ Several packages below target: agent (38%), CLI (64%), skill (66%).
 ## Recommended Fix Order
 
 1. **P0-1:** Register OpenAI/Anthropic providers when env vars set
-2. **P0-2:** Update `agents/general.json` to use Ollama as fallback
+2. **P0-2:** Update `internal/app/agents/` manifests to use Ollama as fallback
 3. **P0-3:** Pass Tools to Engine config
 4. **P0-4:** Fix TUI sendMessage to properly send chunks
 5. **P0-5:** Wire `--session` flag to load sessions

@@ -86,7 +86,7 @@ The architecture demonstrates a complete AI agent platform with agent discovery,
 | Gap | Before | After | Evidence |
 |-----|--------|-------|----------|
 | Provider registration | Only Ollama hardcoded | OpenAI + Anthropic registered from env vars | `internal/app/app.go` reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` |
-| Agent manifests | Hardcoded model names | Prefer Ollama with cloud fallback | `agents/*.yaml` updated with `ollama/llama3.2` primary |
+| Agent manifests | Hardcoded model names | Prefer Ollama with cloud fallback | `internal/app/agents/*.json` updated with `ollama/llama3.2` primary |
 | Tools wired | Tools existed but not passed to Engine | bash/file/web tools injected via Engine config | `app.New()` constructs toolset |
 | TUI sendMessage | Goroutine swallowed streaming chunks | Fixed Bubble Tea command chaining | `tui/chat.go` returns proper `tea.Cmd` |
 | Session flag | `--session` flag not wired | `--session` loads/saves sessions in CLI chat | `cli/chat.go` uses SessionStore |

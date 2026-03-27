@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -267,6 +268,129 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 	return nil, nil
 }
 
+// buildDelegationTableSection constructs a markdown delegation table section.
+//
+// If the delegation table is nil or empty, returns an empty string.
+// Otherwise, returns a formatted markdown section with the agent targets
+// sorted alphabetically by key.
+//
+// Expected:
+//   - delegationTable is a map of agent target names to task_type values.
+//
+// Returns:
+//   - A markdown-formatted delegation table section, or empty string if no delegations.
+//
+// Side effects:
+//   - None.
+func buildDelegationTableSection(delegationTable map[string]string) string {
+	if len(delegationTable) == 0 {
+		return ""
+	}
+
+	// Extract keys and sort alphabetically
+	keys := make([]string, 0, len(delegationTable))
+	for k := range delegationTable {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	// Build markdown table
+	var sb strings.Builder
+	sb.WriteString("## Delegation Targets\n\n")
+	sb.WriteString("When delegating, use these exact task_type values:\n\n")
+	sb.WriteString("| Delegation Target | task_type |\n")
+	sb.WriteString("|---|---|\n")
+
+	for _, target := range keys {
+		taskType := delegationTable[target]
+		sb.WriteString("| ")
+		sb.WriteString(target)
+		sb.WriteString(" | `")
+		sb.WriteString(taskType)
+		sb.WriteString("` |\n")
+	}
+
+	return sb.String()
+}
+
+// buildDynamicDelegationTable constructs a markdown delegation table from prompt frontmatter and agent registry.
+//
+// This method:
+// 1. Reads the prompt's YAML frontmatter to extract delegation_allowlist
+// 2. Queries the agent registry for all available agents
+// 3. Filters to only agents in the allowlist
+// 4. Returns a formatted markdown table, sorted alphabetically
+//
+// If no frontmatter is found, no allowlist is configured, or no agents match: returns empty string.
+//
+// Returns:
+//   - A markdown-formatted delegation table section, or empty string if delegation is not applicable.
+//
+// Side effects:
+//   - None (read-only).
+func (e *Engine) buildDynamicDelegationTable() string {
+	// Get prompt with metadata
+	promptContent, err := prompt.GetPromptWithMetadata(e.manifest.ID)
+	if err != nil || promptContent == nil || promptContent.Metadata == nil {
+		return ""
+	}
+
+	// Check if allowlist is configured
+	allowlist := promptContent.Metadata.DelegationAllowlist
+	if len(allowlist) == 0 {
+		return ""
+	}
+
+	// Query agent registry for all available agents
+	if e.agentRegistry == nil {
+		return ""
+	}
+
+	availableAgents := e.agentRegistry.List()
+	if len(availableAgents) == 0 {
+		return ""
+	}
+
+	// Build a map of available agent IDs for quick lookup
+	availableByID := make(map[string]*agent.Manifest)
+	for _, a := range availableAgents {
+		availableByID[a.ID] = a
+	}
+
+	// Filter to only agents in allowlist that are available
+	var delegationAgents []string
+	for _, agentID := range allowlist {
+		if _, exists := availableByID[agentID]; exists {
+			delegationAgents = append(delegationAgents, agentID)
+		}
+	}
+
+	if len(delegationAgents) == 0 {
+		return ""
+	}
+
+	// Sort alphabetically
+	slices.Sort(delegationAgents)
+
+	// Build markdown table
+	var sb strings.Builder
+	sb.WriteString("## Available Delegation Targets\n\n")
+	sb.WriteString("You can delegate tasks to the following agents:\n\n")
+	sb.WriteString("| Agent ID | Agent Name |\n")
+	sb.WriteString("|---|---|\n")
+
+	for _, agentID := range delegationAgents {
+		agentManifest := availableByID[agentID]
+		sb.WriteString("| `")
+		sb.WriteString(agentID)
+		sb.WriteString("` | ")
+		sb.WriteString(agentManifest.Name)
+		sb.WriteString(" |\n")
+	}
+
+	return sb.String()
+}
+
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // Returns:
@@ -280,9 +404,9 @@ func (e *Engine) BuildSystemPrompt() string {
 
 	var base string
 	if prompt.HasPrompt(e.manifest.ID) {
-		embeddedPrompt, err := prompt.GetPrompt(e.manifest.ID)
+		promptContent, err := prompt.GetPromptWithMetadata(e.manifest.ID)
 		if err == nil {
-			base = embeddedPrompt
+			base = promptContent.Body
 		} else {
 			base = e.manifest.Instructions.SystemPrompt
 		}
@@ -293,6 +417,18 @@ func (e *Engine) BuildSystemPrompt() string {
 	if e.agentsFileLoader != nil {
 		for _, f := range e.agentsFileLoader.LoadFiles() {
 			base = base + "\n\nInstructions from: " + f.Path + "\n" + f.Content
+		}
+	}
+
+	// Inject delegation table if agent can delegate
+	if e.manifest.Delegation.CanDelegate {
+		// Try dynamic delegation from frontmatter + agent registry first
+		dynamicTable := e.buildDynamicDelegationTable()
+		if dynamicTable != "" {
+			base = base + "\n\n" + dynamicTable
+		} else if len(e.manifest.Delegation.DelegationTable) > 0 {
+			// Fall back to static delegation table from manifest (backwards compatibility)
+			base = base + "\n\n" + buildDelegationTableSection(e.manifest.Delegation.DelegationTable)
 		}
 	}
 

@@ -153,7 +153,7 @@ var _ = Describe("EmbeddedAgentsFS", func() {
 			Expect(string(executorContent)).To(ContainSubstring(`"id"`))
 		})
 
-		It("can seed both manifests on first run", func() {
+		It("can seed all manifests on first run", func() {
 			destDir, err := os.MkdirTemp("", "embedded-seed-test")
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { os.RemoveAll(destDir) })
@@ -165,7 +165,7 @@ var _ = Describe("EmbeddedAgentsFS", func() {
 
 			entries, err := os.ReadDir(destDir)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(2))
+			Expect(entries).To(HaveLen(7))
 
 			plannerContent, err := os.ReadFile(filepath.Join(destDir, "planner.json"))
 			Expect(err).NotTo(HaveOccurred())
