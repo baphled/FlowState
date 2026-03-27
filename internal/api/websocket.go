@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/coder/websocket"
 )
 
@@ -14,11 +15,46 @@ type wsIncomingMsg struct {
 	Content string `json:"content"`
 }
 
-// wsChunkMsg represents a response chunk sent to a WebSocket client.
-type wsChunkMsg struct {
-	Content string `json:"content,omitempty"`
-	Done    bool   `json:"done,omitempty"`
-	Error   string `json:"error,omitempty"`
+// BuildWSChunkMsg converts a provider.StreamChunk to a WSChunkMsg.
+//
+// Expected:
+//   - chunk is a valid StreamChunk.
+//
+// Returns:
+//   - A WSChunkMsg with fields populated from the chunk.
+//
+// Side effects:
+//   - None.
+func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
+	msg := WSChunkMsg{
+		Content: chunk.Content,
+		Done:    chunk.Done,
+	}
+	if chunk.Error != nil {
+		msg.Error = chunk.Error.Error()
+	}
+	if chunk.DelegationInfo != nil {
+		msg.Delegation = chunk.DelegationInfo
+	}
+	if chunk.ToolCall != nil {
+		msg.ToolCall = chunk.ToolCall
+	}
+	if chunk.Event != nil {
+		if progressEvent, ok := chunk.Event.(streaming.ProgressEvent); ok {
+			msg.Progress = &progressEvent
+		}
+	}
+	return msg
+}
+
+// WSChunkMsg represents a response chunk sent to a WebSocket client.
+type WSChunkMsg struct {
+	Content    string                   `json:"content,omitempty"`
+	Done       bool                     `json:"done,omitempty"`
+	Error      string                   `json:"error,omitempty"`
+	Delegation *provider.DelegationInfo `json:"delegation,omitempty"`
+	ToolCall   *provider.ToolCall       `json:"tool_call,omitempty"`
+	Progress   *streaming.ProgressEvent `json:"progress,omitempty"`
 }
 
 // handleSessionWebSocket upgrades the connection to WebSocket, validates the session,
@@ -120,10 +156,7 @@ func (s *Server) serveWSSession(ctx context.Context, conn *websocket.Conn, sessi
 //   - Writes JSON-encoded chunks to conn.
 func (s *Server) forwardWSChunks(ctx context.Context, conn *websocket.Conn, chunks <-chan provider.StreamChunk) bool {
 	for chunk := range chunks {
-		msg := wsChunkMsg{Content: chunk.Content, Done: chunk.Done}
-		if chunk.Error != nil {
-			msg.Error = chunk.Error.Error()
-		}
+		msg := BuildWSChunkMsg(chunk)
 		if sendErr := sendWSMsg(ctx, conn, msg); sendErr != nil {
 			return false
 		}
@@ -145,7 +178,7 @@ func (s *Server) forwardWSChunks(ctx context.Context, conn *websocket.Conn, chun
 //
 // Side effects:
 //   - Writes a JSON text frame to the WebSocket connection.
-func sendWSMsg(ctx context.Context, conn *websocket.Conn, msg wsChunkMsg) error {
+func sendWSMsg(ctx context.Context, conn *websocket.Conn, msg WSChunkMsg) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -163,5 +196,103 @@ func sendWSMsg(ctx context.Context, conn *websocket.Conn, msg wsChunkMsg) error 
 func closeWebSocket(conn *websocket.Conn) {
 	if err := conn.CloseNow(); err != nil {
 		return
+	}
+}
+
+// WSConsumer implements streaming.DelegationConsumer and streaming.DelegationProgressConsumer
+// by forwarding events as JSON over a WebSocket connection.
+type WSConsumer struct {
+	conn *websocket.Conn
+	ctx  context.Context
+}
+
+// NewWSConsumer creates a WSConsumer for sending events over a WebSocket connection.
+//
+// Expected:
+//   - ctx is a valid context for the WebSocket operations.
+//   - conn is an open WebSocket connection.
+//
+// Returns:
+//   - A configured WSConsumer.
+//
+// Side effects:
+//   - None.
+func NewWSConsumer(ctx context.Context, conn *websocket.Conn) *WSConsumer {
+	return &WSConsumer{conn: conn, ctx: ctx}
+}
+
+// WriteDelegation sends a DelegationEvent as a WebSocket message to the client.
+//
+// Expected:
+//   - ev is a valid DelegationEvent.
+//   - conn is an open WebSocket connection.
+//
+// Returns:
+//   - An error if the write fails.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteDelegation(ev streaming.DelegationEvent) error {
+	msg := c.WriteDelegationToMsg(ev)
+	return sendWSMsg(c.ctx, c.conn, msg)
+}
+
+// WriteDelegationToMsg converts a DelegationEvent to a WSChunkMsg for testing.
+//
+// Expected:
+//   - ev is a valid DelegationEvent.
+//
+// Returns:
+//   - A WSChunkMsg with the delegation field populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteDelegationToMsg(ev streaming.DelegationEvent) WSChunkMsg {
+	return WSChunkMsg{
+		Delegation: &provider.DelegationInfo{
+			SourceAgent:  ev.SourceAgent,
+			TargetAgent:  ev.TargetAgent,
+			ChainID:      ev.ChainID,
+			Status:       ev.Status,
+			ModelName:    ev.ModelName,
+			ProviderName: ev.ProviderName,
+			Description:  ev.Description,
+			ToolCalls:    ev.ToolCalls,
+			LastTool:     ev.LastTool,
+			StartedAt:    ev.StartedAt,
+			CompletedAt:  ev.CompletedAt,
+		},
+	}
+}
+
+// WriteProgress sends a ProgressEvent as a WebSocket message to the client.
+//
+// Expected:
+//   - ev is a valid ProgressEvent.
+//   - conn is an open WebSocket connection.
+//
+// Returns:
+//   - An error if the write fails.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteProgress(ev streaming.ProgressEvent) error {
+	msg := c.WriteProgressToMsg(ev)
+	return sendWSMsg(c.ctx, c.conn, msg)
+}
+
+// WriteProgressToMsg converts a ProgressEvent to a WSChunkMsg for testing.
+//
+// Expected:
+//   - ev is a valid ProgressEvent.
+//
+// Returns:
+//   - A WSChunkMsg with the progress field populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteProgressToMsg(ev streaming.ProgressEvent) WSChunkMsg {
+	return WSChunkMsg{
+		Progress: &ev,
 	}
 }
