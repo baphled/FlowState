@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
+	todo "github.com/baphled/flowstate/internal/tool/todo"
 )
 
 // Streamer abstracts the streaming producer for chat responses.
@@ -31,6 +32,7 @@ type Server struct {
 	sessions       *ctxstore.FileSessionStore
 	sessionManager *session.Manager
 	sessionBroker  *SessionBroker
+	todoStore      todo.Store
 	mux            *http.ServeMux
 }
 
@@ -77,6 +79,20 @@ func WithSessionManager(mgr *session.Manager) ServerOption {
 //   - None.
 func WithSessions(store *ctxstore.FileSessionStore) ServerOption {
 	return func(s *Server) { s.sessions = store }
+}
+
+// WithTodoStore sets the todo store for session todo routes.
+//
+// Expected:
+//   - A valid todo.Store implementation is provided.
+//
+// Returns:
+//   - A ServerOption that installs the provided todo store.
+//
+// Side effects:
+//   - None.
+func WithTodoStore(store todo.Store) ServerOption {
+	return func(s *Server) { s.todoStore = store }
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -165,6 +181,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.
@@ -357,6 +374,26 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, sess)
+}
+
+// handleSessionTodos returns the todo list for the given session as JSON.
+//
+// Expected:
+//   - Request path parameter "id" contains the session identifier.
+//
+// Returns:
+//   - HTTP 200 with a JSON array of todo.Item values.
+//   - An empty array when no store is configured or the session has no todos.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleSessionTodos(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.todoStore == nil {
+		writeJSON(w, []todo.Item{})
+		return
+	}
+	writeJSON(w, s.todoStore.Get(id))
 }
 
 // handleSessionStream streams session events as SSE, supporting verbosity param.

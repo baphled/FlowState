@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
+	todo "github.com/baphled/flowstate/internal/tool/todo"
 )
 
 type mockStreamer struct {
@@ -296,6 +297,92 @@ var _ = Describe("Server", func() {
 			Expect(recorder.Header().Get("Content-Type")).To(Equal("text/html; charset=utf-8"))
 			Expect(recorder.Body.String()).To(ContainSubstring("<!DOCTYPE html>"))
 			Expect(recorder.Body.String()).To(ContainSubstring("<textarea"))
+		})
+	})
+})
+
+var _ = Describe("GET /api/v1/sessions/{id}/todos", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			[]skill.Skill{},
+		)
+	})
+
+	Context("when no todo store is configured", func() {
+		It("returns an empty JSON array", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/sess-123/todos", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
+
+			var items []interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &items)).To(Succeed())
+			Expect(items).To(BeEmpty())
+		})
+	})
+
+	Context("when todo store is configured", func() {
+		var store *todo.MemoryStore
+
+		BeforeEach(func() {
+			store = todo.NewMemoryStore()
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			srv = api.NewServer(
+				&mockStreamer{chunks: []provider.StreamChunk{}},
+				registry,
+				disc,
+				[]skill.Skill{},
+				api.WithTodoStore(store),
+			)
+		})
+
+		Context("when session has no todos", func() {
+			It("returns an empty JSON array", func() {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/unknown-session/todos", http.NoBody)
+				srv.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+
+				var items []interface{}
+				Expect(json.Unmarshal(recorder.Body.Bytes(), &items)).To(Succeed())
+				Expect(items).To(BeEmpty())
+			})
+		})
+
+		Context("when session has stored todos", func() {
+			BeforeEach(func() {
+				Expect(store.Set("sess-abc", []todo.Item{
+					{Content: "Write tests", Status: "in_progress", Priority: "high"},
+					{Content: "Fix bug", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+			})
+
+			It("returns the stored todo items", func() {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/sess-abc/todos", http.NoBody)
+				srv.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+
+				var items []todo.Item
+				Expect(json.Unmarshal(recorder.Body.Bytes(), &items)).To(Succeed())
+				Expect(items).To(HaveLen(2))
+				Expect(items[0].Content).To(Equal("Write tests"))
+				Expect(items[0].Status).To(Equal("in_progress"))
+				Expect(items[1].Content).To(Equal("Fix bug"))
+			})
 		})
 	})
 })

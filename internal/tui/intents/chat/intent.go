@@ -431,11 +431,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	suppressResult := isReadToolCall(lastToolCall) && !msg.ToolIsError
 	if msg.ToolResult != "" && !committedSkill && !suppressResult {
-		role := "tool_result"
-		if msg.ToolIsError {
-			role = "tool_error"
-		}
-		i.view.AddMessage(chat.Message{Role: role, Content: msg.ToolResult})
+		i.view.AddMessage(toolResultMessage(lastToolCall, msg.ToolResult, msg.ToolIsError))
 	}
 
 	if msg.DelegationInfo != nil {
@@ -590,7 +586,6 @@ func (i *Intent) refreshViewport() {
 	i.view.SetDimensions(i.width, i.msgViewport.Height)
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
-	i.msgViewport.GotoBottom()
 }
 
 // detectAgentFromInput examines the message for planner or executor keywords and returns the matching agent.
@@ -1308,6 +1303,30 @@ func extractToolInfo(toolCall *provider.ToolCall) (string, string) {
 //   - None.
 func isReadToolCall(name string) bool {
 	return name == "read" || strings.HasPrefix(name, "read: ")
+}
+
+// toolResultMessage builds a chat.Message for a tool result, selecting the
+// appropriate role and formatting the content based on the tool name.
+//
+// Expected:
+//   - toolName is the name of the tool that produced the result.
+//   - result is the raw string output from the tool.
+//   - isError indicates whether the tool execution produced an error.
+//
+// Returns:
+//   - A chat.Message with role "tool_error" for errors, "todo_update" for todowrite results,
+//     or "tool_result" for all other tools.
+//
+// Side effects:
+//   - None.
+func toolResultMessage(toolName, result string, isError bool) chat.Message {
+	if isError {
+		return chat.Message{Role: "tool_error", Content: result}
+	}
+	if toolName == "todowrite" {
+		return chat.Message{Role: "todo_update", Content: widgets.FormatTodoList(result)}
+	}
+	return chat.Message{Role: "tool_result", Content: result}
 }
 
 // toolCallArgKey returns the argument key for a given tool name.

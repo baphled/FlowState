@@ -59,6 +59,7 @@ type App struct {
 	Learning         *learning.JSONFileStore
 	API              *api.Server
 	Streamer         streaming.Streamer
+	TodoStore        *todotool.MemoryStore
 	mcpClient        mcpclient.Client
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
@@ -120,6 +121,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		Learning:         learningStore,
 		API:              runtime.apiServer,
 		Streamer:         runtime.streamer,
+		TodoStore:        runtime.todoStore,
 		mcpClient:        runtime.mcpManager,
 		providerRegistry: providerRegistry,
 		ollamaProvider:   ollamaProvider,
@@ -173,7 +175,8 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	}
 	contextStore := createContextStore(params.cfg)
 	mcpMgr := mcpclient.NewManager()
-	appTools := buildTools(skill.NewFileSkillLoader(params.cfg.SkillDir))
+	todoStore := todotool.NewMemoryStore()
+	appTools := buildTools(skill.NewFileSkillLoader(params.cfg.SkillDir), todoStore)
 	allServers := mergeMCPServers(params.cfg.MCPServers, config.DiscoverMCPServers())
 	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
@@ -202,6 +205,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		params.skills,
 		api.WithSessions(params.sessionStore),
 		api.WithSessionManager(sessionMgr),
+		api.WithTodoStore(todoStore),
 	)
 	return &runtimeComponents{
 		engine:          eng,
@@ -210,6 +214,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		apiServer:       apiServer,
 		metricsRegistry: metricsReg,
 		mcpManager:      mcpMgr,
+		todoStore:       todoStore,
 	}, nil
 }
 
@@ -234,6 +239,7 @@ type runtimeComponents struct {
 	apiServer       *api.Server
 	metricsRegistry *prometheus.Registry
 	mcpManager      mcpclient.Client
+	todoStore       *todotool.MemoryStore
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -625,14 +631,14 @@ func (a *App) DisconnectAll() error {
 //
 // Expected:
 //   - skillLoader is a non-nil skill.FileSkillLoader.
+//   - todoStore is the app-level MemoryStore for persisting todo state.
 //
 // Returns:
-//   - A slice containing bash, file, web, and skill_load tools.
+//   - A slice containing bash, file, web, skill_load, and todowrite tools.
 //
 // Side effects:
 //   - Initialises new tool instances.
-func buildTools(skillLoader *skill.FileSkillLoader) []tool.Tool {
-	todoStore := todotool.NewMemoryStore()
+func buildTools(skillLoader *skill.FileSkillLoader, todoStore *todotool.MemoryStore) []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
 		read.New(),
