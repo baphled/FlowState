@@ -6,20 +6,25 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/baphled/flowstate/internal/engine"
 	"gopkg.in/yaml.v3"
 )
 
+// Config aliases AppConfig for callers that use the shorter configuration name.
+type Config = AppConfig
+
 // AppConfig holds the complete application configuration.
 type AppConfig struct {
-	Providers          ProvidersConfig   `json:"providers" yaml:"providers"`
-	AgentDir           string            `json:"agent_dir" yaml:"agent_dir"`
-	SkillDir           string            `json:"skill_dir" yaml:"skill_dir"`
-	DataDir            string            `json:"data_dir" yaml:"data_dir"`
-	LogLevel           string            `json:"log_level" yaml:"log_level"`
-	DefaultAgent       string            `json:"default_agent" yaml:"default_agent"`
-	MCPServers         []MCPServerConfig `yaml:"mcp_servers,omitempty"`
-	AlwaysActiveSkills []string          `yaml:"always_active_skills,omitempty"`
-	Harness            HarnessConfig     `json:"harness" yaml:"harness"`
+	Providers          ProvidersConfig                  `json:"providers" yaml:"providers"`
+	AgentDir           string                           `json:"agent_dir" yaml:"agent_dir"`
+	SkillDir           string                           `json:"skill_dir" yaml:"skill_dir"`
+	DataDir            string                           `json:"data_dir" yaml:"data_dir"`
+	LogLevel           string                           `json:"log_level" yaml:"log_level"`
+	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
+	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
+	MCPServers         []MCPServerConfig                `yaml:"mcp_servers,omitempty"`
+	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
+	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
 }
 
 // ProvidersConfig configures all available LLM providers.
@@ -145,11 +150,12 @@ func DefaultConfig() *AppConfig {
 				Model: "claude-sonnet-4-20250514",
 			},
 		},
-		AgentDir:     filepath.Join(dataDir, "agents"),
-		SkillDir:     filepath.Join(dataDir, "skills"),
-		DataDir:      dataDir,
-		LogLevel:     "info",
-		DefaultAgent: "executor",
+		AgentDir:        filepath.Join(dataDir, "agents"),
+		SkillDir:        filepath.Join(dataDir, "skills"),
+		DataDir:         dataDir,
+		LogLevel:        "info",
+		DefaultAgent:    "executor",
+		CategoryRouting: engine.DefaultCategoryRouting(),
 		AlwaysActiveSkills: []string{
 			"pre-action",
 			"memory-keeper",
@@ -301,6 +307,7 @@ func applyDefaults(cfg *AppConfig) {
 	if cfg.DefaultAgent == "" {
 		cfg.DefaultAgent = defaults.DefaultAgent
 	}
+	cfg.CategoryRouting = mergeCategoryRouting(defaults.CategoryRouting, cfg.CategoryRouting)
 
 	// Apply harness defaults: Enabled defaults to true unless explicitly disabled.
 	// YAML unmarshals missing bool as false, so we need to handle this carefully.
@@ -319,6 +326,28 @@ func applyDefaults(cfg *AppConfig) {
 			cfg.MCPServers[i].Enabled = true
 		}
 	}
+}
+
+// mergeCategoryRouting applies user overrides on top of the default routing map.
+//
+// Expected:
+//   - defaults contains the base category routing configuration.
+//   - overrides contains user-specified replacements.
+//
+// Returns:
+//   - A merged map with overrides applied over defaults.
+//
+// Side effects:
+//   - None.
+func mergeCategoryRouting(defaults, overrides map[string]engine.CategoryConfig) map[string]engine.CategoryConfig {
+	merged := make(map[string]engine.CategoryConfig, len(defaults))
+	for key, value := range defaults {
+		merged[key] = value
+	}
+	for key, value := range overrides {
+		merged[key] = value
+	}
+	return merged
 }
 
 // applyProviderDefaults populates missing provider configuration fields with defaults.

@@ -47,11 +47,8 @@ type InMemoryManager struct {
 
 // NewInMemoryManager creates a new in-memory toast manager.
 //
-// Expected:
-//   - None.
-//
 // Returns:
-//   - A ready-to-use in-memory toast manager.
+//   - An empty in-memory toast manager.
 //
 // Side effects:
 //   - None.
@@ -62,7 +59,7 @@ func NewInMemoryManager() *InMemoryManager {
 // Add stores a toast in the manager.
 //
 // Expected:
-//   - toast contains the notification to store.
+//   - toast contains the notification to track.
 //
 // Returns:
 //   - None.
@@ -132,6 +129,15 @@ func (m *InMemoryManager) Expired() []Toast {
 }
 
 // filter returns toasts that satisfy the provided predicate.
+//
+// Expected:
+//   - match determines whether a toast should be included.
+//
+// Returns:
+//   - The toasts that satisfy the predicate.
+//
+// Side effects:
+//   - None.
 func (m *InMemoryManager) filter(match func(Toast) bool) []Toast {
 	m.mu.Lock()
 	defer m.mu.Unlock()

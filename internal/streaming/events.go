@@ -8,13 +8,15 @@ import (
 
 // Event type constants identify each discrete event kind within the streaming pipeline.
 const (
-	EventTypeTextChunk         = "text_chunk"
-	EventTypeToolCall          = "tool_call"
-	EventTypeDelegation        = "delegation"
-	EventTypeCoordinationStore = "coordination_store"
-	EventTypeStatusTransition  = "status_transition"
-	EventTypePlanArtifact      = "plan_artifact"
-	EventTypeReviewVerdict     = "review_verdict"
+	EventTypeTextChunk              = "text_chunk"
+	EventTypeToolCall               = "tool_call"
+	EventTypeDelegation             = "delegation"
+	EventTypeProgress               = "progress"
+	EventTypeCompletionNotification = "completion_notification"
+	EventTypeCoordinationStore      = "coordination_store"
+	EventTypeStatusTransition       = "status_transition"
+	EventTypePlanArtifact           = "plan_artifact"
+	EventTypeReviewVerdict          = "review_verdict"
 )
 
 // Event represents a discrete typed occurrence within the streaming pipeline.
@@ -141,6 +143,83 @@ func (e DelegationEvent) Type() string { return EventTypeDelegation }
 //   - None.
 func (e DelegationEvent) MarshalJSON() ([]byte, error) {
 	type alias DelegationEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
+// ProgressEvent represents observable progress for a delegated task.
+type ProgressEvent struct {
+	TaskID            string        `json:"task_id"`
+	ToolCallCount     int           `json:"tool_call_count"`
+	LastTool          string        `json:"last_tool"`
+	ActiveDelegations int           `json:"active_delegations"`
+	ElapsedTime       time.Duration `json:"elapsed_time"`
+	AgentID           string        `json:"agent_id"`
+}
+
+// Type returns the event type identifier for progress events.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
+func (e ProgressEvent) Type() string { return EventTypeProgress }
+
+// MarshalJSON serialises a ProgressEvent with a type discriminator field.
+//
+// Expected:
+//   - e contains the event payload.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (e ProgressEvent) MarshalJSON() ([]byte, error) {
+	type alias ProgressEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
+// CompletionNotificationEvent represents a completion notice for a delegated task.
+type CompletionNotificationEvent struct {
+	TaskID      string        `json:"task_id"`
+	Description string        `json:"description"`
+	Agent       string        `json:"agent"`
+	Duration    time.Duration `json:"duration"`
+	Status      string        `json:"status"`
+	Result      string        `json:"result"`
+	AgentID     string        `json:"agent_id"`
+}
+
+// Type returns the event type identifier for completion notification events.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
+func (e CompletionNotificationEvent) Type() string { return EventTypeCompletionNotification }
+
+// MarshalJSON serialises a CompletionNotificationEvent with a type discriminator field.
+//
+// Expected:
+//   - e contains the event payload.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (e CompletionNotificationEvent) MarshalJSON() ([]byte, error) {
+	type alias CompletionNotificationEvent
 	return marshalWithType(e.Type(), alias(e))
 }
 
@@ -326,6 +405,10 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		return unmarshalTyped[ToolCallEvent](data)
 	case EventTypeDelegation:
 		return unmarshalTyped[DelegationEvent](data)
+	case EventTypeProgress:
+		return unmarshalTyped[ProgressEvent](data)
+	case EventTypeCompletionNotification:
+		return unmarshalTyped[CompletionNotificationEvent](data)
 	case EventTypeCoordinationStore:
 		return unmarshalTyped[CoordinationStoreEvent](data)
 	case EventTypeStatusTransition:

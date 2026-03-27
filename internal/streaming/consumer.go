@@ -31,6 +31,18 @@ type DelegationConsumer interface {
 	WriteDelegation(event DelegationEvent) error
 }
 
+// DelegationProgressConsumer is an optional interface for consumers that support progress updates.
+type DelegationProgressConsumer interface {
+	// WriteProgress delivers a delegation progress event to the consumer.
+	WriteProgress(event ProgressEvent) error
+}
+
+// NotificationConsumer is an optional interface for consumers that support completion notifications.
+type NotificationConsumer interface {
+	// WriteNotification delivers a completion notification event to the consumer.
+	WriteNotification(event CompletionNotificationEvent) error
+}
+
 // HarnessEventConsumer is an optional interface for consumers that support harness event visibility.
 // Consumers may implement this interface to receive notifications about harness lifecycle events.
 type HarnessEventConsumer interface {

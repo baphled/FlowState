@@ -17,12 +17,16 @@ import (
 )
 
 var (
-	errDelegationNotAllowed   = errors.New("delegation not allowed for this agent")
-	errTaskTypeMustBeString   = errors.New("task_type must be a string")
-	errMessageMustBeString    = errors.New("message must be a string")
-	errHandoffMustBeObject    = errors.New("handoff must be an object")
-	errBackgroundModeDisabled = errors.New("background mode disabled: no background manager configured")
-	errCircuitBreakerOpen     = errors.New("circuit breaker open: too many delegation failures")
+	errDelegationNotAllowed     = errors.New("delegation not allowed for this agent")
+	errTaskTypeMustBeString     = errors.New("task_type, category, or subagent_type must be provided")
+	errMessageMustBeString      = errors.New("message must be a string")
+	errCategoryMustBeString     = errors.New("category must be a string")
+	errSubagentTypeMustBeString = errors.New("subagent_type must be a string")
+	errSessionIDMustBeString    = errors.New("session_id must be a string")
+	errLoadSkillsMustBeArray    = errors.New("load_skills must be an array of strings")
+	errHandoffMustBeObject      = errors.New("handoff must be an object")
+	errBackgroundModeDisabled   = errors.New("background mode disabled: no background manager configured")
+	errCircuitBreakerOpen       = errors.New("circuit breaker open: too many delegation failures")
 )
 
 const maxDelegationFailures = 3
@@ -81,6 +85,18 @@ type delegationTarget struct {
 	message string
 	handoff *delegation.Handoff
 	chainID string
+}
+
+// delegationParams groups the parsed delegation input fields.
+type delegationParams struct {
+	taskType     string
+	category     string
+	subagentType string
+	message      string
+	loadSkills   []string
+	sessionID    string
+	handoff      *delegation.Handoff
+	runAsync     bool
 }
 
 // delegationResult carries the aggregated response and stream metadata from delegation.
@@ -185,9 +201,31 @@ func (d *DelegateTool) Description() string {
 // Side effects:
 //   - None.
 func (d *DelegateTool) Schema() tool.Schema {
+	categoryOptions := make([]string, 0, len(DefaultCategoryRouting()))
+	for category := range DefaultCategoryRouting() {
+		categoryOptions = append(categoryOptions, category)
+	}
+
 	schema := tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
+			"category": {
+				Type:        "string",
+				Description: "The routing category to use for model selection",
+				Enum:        categoryOptions,
+			},
+			"subagent_type": {
+				Type:        "string",
+				Description: "The specialised sub-agent type to delegate to",
+			},
+			"load_skills": {
+				Type:        "array",
+				Description: "Optional skills to load for the delegated task",
+			},
+			"session_id": {
+				Type:        "string",
+				Description: "Optional session identifier for continuation",
+			},
 			"task_type": {
 				Type:        "string",
 				Description: "The type of task to delegate (e.g., testing, coding)",
@@ -232,7 +270,16 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		return tool.Result{}, errCircuitBreakerOpen
 	}
 
-	target, runAsync, err := d.resolveTargetWithOptions(ctx, input)
+	if !d.delegation.CanDelegate {
+		return tool.Result{}, errDelegationNotAllowed
+	}
+
+	params, err := d.parseDelegationParams(input)
+	if err != nil {
+		return tool.Result{}, err
+	}
+
+	target, err := d.resolveTargetWithOptions(ctx, params)
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -253,11 +300,152 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		StartedAt:    ptrTime(time.Now().UTC()),
 	}
 
-	if runAsync {
+	if params.runAsync {
 		return d.executeAsync(ctx, target, baseInfo, outChan, hasOutput)
 	}
 
 	return d.executeSync(ctx, target, baseInfo, outChan, hasOutput)
+}
+
+// parseDelegationParams extracts delegation arguments into a typed parameter set.
+//
+// Expected:
+//   - input contains delegation arguments accepted by the schema.
+//
+// Returns:
+//   - Parsed delegation parameters.
+//   - An error if the arguments are invalid.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) parseDelegationParams(input tool.Input) (delegationParams, error) {
+	params := delegationParams{}
+	if err := populateDelegationRouting(&params, input.Arguments); err != nil {
+		return delegationParams{}, err
+	}
+	if err := populateDelegationMetadata(&params, input.Arguments, d); err != nil {
+		return delegationParams{}, err
+	}
+
+	return params, nil
+}
+
+// populateDelegationRouting copies routing fields from raw arguments into params.
+//
+// Expected:
+//   - params is a non-nil destination.
+//   - arguments contains delegation routing fields.
+//
+// Returns:
+//   - An error if a routing value has the wrong type.
+//
+// Side effects:
+//   - Writes parsed values into params.
+func populateDelegationRouting(params *delegationParams, arguments map[string]interface{}) error {
+	if raw, ok := arguments["task_type"]; ok && raw != nil {
+		taskType, ok := raw.(string)
+		if !ok {
+			return errTaskTypeMustBeString
+		}
+		params.taskType = taskType
+	}
+	if raw, ok := arguments["category"]; ok && raw != nil {
+		category, ok := raw.(string)
+		if !ok {
+			return errCategoryMustBeString
+		}
+		params.category = category
+	}
+	if raw, ok := arguments["subagent_type"]; ok && raw != nil {
+		subagentType, ok := raw.(string)
+		if !ok {
+			return errSubagentTypeMustBeString
+		}
+		params.subagentType = subagentType
+	}
+	if params.taskType == "" && params.category == "" && params.subagentType == "" {
+		return errTaskTypeMustBeString
+	}
+	return nil
+}
+
+// populateDelegationMetadata copies metadata fields from raw arguments into params.
+//
+// Expected:
+//   - params is a non-nil destination.
+//   - arguments contains delegation metadata fields.
+//   - d is the delegate tool used to parse nested handoff data.
+//
+// Returns:
+//   - An error if a metadata value has the wrong type or nested parsing fails.
+//
+// Side effects:
+//   - Writes parsed values into params.
+func populateDelegationMetadata(params *delegationParams, arguments map[string]interface{}, d *DelegateTool) error {
+	message, ok := arguments["message"].(string)
+	if !ok {
+		return errMessageMustBeString
+	}
+	params.message = message
+
+	if value, ok := arguments["run_in_background"].(bool); ok {
+		params.runAsync = value
+	}
+
+	if raw, ok := arguments["handoff"]; ok && raw != nil {
+		h, err := d.parseHandoff(raw)
+		if err != nil {
+			return fmt.Errorf("parsing handoff: %w", err)
+		}
+		params.handoff = h
+	}
+
+	if raw, ok := arguments["load_skills"]; ok && raw != nil {
+		loadSkills, err := parseLoadSkills(raw)
+		if err != nil {
+			return err
+		}
+		params.loadSkills = loadSkills
+	}
+
+	if raw, ok := arguments["session_id"]; ok && raw != nil {
+		sessionID, ok := raw.(string)
+		if !ok {
+			return errSessionIDMustBeString
+		}
+		params.sessionID = sessionID
+	}
+
+	return nil
+}
+
+// parseLoadSkills converts a raw load_skills argument into a slice of skill names.
+//
+// Expected:
+//   - value is a JSON array decoded into []interface{}.
+//
+// Returns:
+//   - A slice of skill names.
+//   - An error if the value is not an array of strings.
+//
+// Side effects:
+//   - None.
+func parseLoadSkills(value interface{}) ([]string, error) {
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil, errLoadSkillsMustBeArray
+	}
+
+	loadSkills := make([]string, 0, len(items))
+	for _, item := range items {
+		skill, ok := item.(string)
+		if !ok {
+			return nil, errLoadSkillsMustBeArray
+		}
+		loadSkills = append(loadSkills, skill)
+	}
+
+	return loadSkills, nil
 }
 
 // executeSync runs delegation synchronously, blocking until complete.
@@ -420,59 +608,46 @@ func (d *DelegateTool) executeBackgroundTask(
 //
 // Side effects:
 //   - None.
-func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, input tool.Input) (delegationTarget, bool, error) {
+func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params delegationParams) (delegationTarget, error) {
 	if !d.delegation.CanDelegate {
-		return delegationTarget{}, false, errDelegationNotAllowed
+		return delegationTarget{}, errDelegationNotAllowed
 	}
 
-	taskType, ok := input.Arguments["task_type"].(string)
-	if !ok {
-		return delegationTarget{}, false, errTaskTypeMustBeString
+	taskType := params.taskType
+	if taskType == "" {
+		taskType = params.category
 	}
-
-	message, ok := input.Arguments["message"].(string)
-	if !ok {
-		return delegationTarget{}, false, errMessageMustBeString
+	if taskType == "" {
+		taskType = params.subagentType
 	}
-
-	runAsync := false
-	if value, ok := input.Arguments["run_in_background"].(bool); ok {
-		runAsync = value
-	}
-
-	var handoff *delegation.Handoff
-	if handoffArg, ok := input.Arguments["handoff"]; ok && handoffArg != nil {
-		h, err := d.parseHandoff(handoffArg)
-		if err != nil {
-			return delegationTarget{}, false, fmt.Errorf("parsing handoff: %w", err)
-		}
-		handoff = h
+	if taskType == "" {
+		return delegationTarget{}, errTaskTypeMustBeString
 	}
 
 	var chainID string
-	if handoff != nil {
-		chainID = handoff.ChainID
+	if params.handoff != nil {
+		chainID = params.handoff.ChainID
 	} else {
 		chainID = newDelegationChainID()
 	}
 
-	targetAgentID, err := d.resolveWithDiscovery(ctx, taskType, message)
+	targetAgentID, err := d.resolveWithDiscovery(ctx, taskType, params.message)
 	if err != nil {
-		return delegationTarget{}, false, err
+		return delegationTarget{}, err
 	}
 
 	targetEngine, ok := d.engines[targetAgentID]
 	if !ok {
-		return delegationTarget{}, false, fmt.Errorf("target agent engine not available: %s", targetAgentID)
+		return delegationTarget{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
 	}
 
 	return delegationTarget{
 		agentID: targetAgentID,
 		engine:  targetEngine,
-		message: message,
-		handoff: handoff,
+		message: params.message,
+		handoff: params.handoff,
 		chainID: chainID,
-	}, runAsync, nil
+	}, nil
 }
 
 // resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery,

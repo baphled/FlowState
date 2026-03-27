@@ -45,6 +45,16 @@ func (s *spyEventConsumer) Done() {
 	s.done = true
 }
 
+func (s *spyEventConsumer) WriteProgress(event streaming.ProgressEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *spyEventConsumer) WriteNotification(event streaming.CompletionNotificationEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
 var _ = Describe("Events", func() {
 	Describe("Event types", func() {
 		DescribeTable("returns the correct type string",
@@ -54,6 +64,8 @@ var _ = Describe("Events", func() {
 			Entry("TextChunkEvent", streaming.TextChunkEvent{}, "text_chunk"),
 			Entry("ToolCallEvent", streaming.ToolCallEvent{}, "tool_call"),
 			Entry("DelegationEvent", streaming.DelegationEvent{}, "delegation"),
+			Entry("ProgressEvent", streaming.ProgressEvent{}, "progress"),
+			Entry("CompletionNotificationEvent", streaming.CompletionNotificationEvent{}, "completion_notification"),
 			Entry("CoordinationStoreEvent", streaming.CoordinationStoreEvent{}, "coordination_store"),
 			Entry("StatusTransitionEvent", streaming.StatusTransitionEvent{}, "status_transition"),
 			Entry("PlanArtifactEvent", streaming.PlanArtifactEvent{}, "plan_artifact"),
@@ -113,6 +125,41 @@ var _ = Describe("Events", func() {
 				TargetAgent: "worker",
 				ChainID:     "chain-1",
 				Status:      "started",
+			}
+			data, err := streaming.MarshalEvent(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			restored, err := streaming.UnmarshalEvent(data)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restored).To(Equal(original))
+		})
+
+		It("round-trips ProgressEvent preserving all fields", func() {
+			original := streaming.ProgressEvent{
+				TaskID:            "task-1",
+				ToolCallCount:     7,
+				LastTool:          "grep",
+				ActiveDelegations: 2,
+				ElapsedTime:       9 * time.Second,
+				AgentID:           "agent-1",
+			}
+			data, err := streaming.MarshalEvent(original)
+			Expect(err).NotTo(HaveOccurred())
+
+			restored, err := streaming.UnmarshalEvent(data)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restored).To(Equal(original))
+		})
+
+		It("round-trips CompletionNotificationEvent preserving all fields", func() {
+			original := streaming.CompletionNotificationEvent{
+				TaskID:      "task-1",
+				Description: "delegation complete",
+				Agent:       "worker",
+				Duration:    9 * time.Second,
+				Status:      "completed",
+				Result:      "ok",
+				AgentID:     "agent-1",
 			}
 			data, err := streaming.MarshalEvent(original)
 			Expect(err).NotTo(HaveOccurred())
@@ -292,6 +339,32 @@ var _ = Describe("Events", func() {
 			Expect(consumer.WriteDelegation(event)).To(Succeed())
 			Expect(spy.delegations).To(HaveLen(1))
 			Expect(spy.delegations[0].SourceAgent).To(Equal("orchestrator"))
+		})
+	})
+
+	Describe("Progress consumers", func() {
+		It("is satisfiable by a concrete type", func() {
+			var _ streaming.DelegationProgressConsumer = (*spyEventConsumer)(nil)
+		})
+
+		It("accepts a ProgressEvent via WriteProgress", func() {
+			spy := &spyEventConsumer{}
+			var consumer streaming.DelegationProgressConsumer = spy
+
+			event := streaming.ProgressEvent{TaskID: "task-1", ToolCallCount: 1, AgentID: "agent-1"}
+			Expect(consumer.WriteProgress(event)).To(Succeed())
+		})
+
+		It("is satisfiable by a concrete notification consumer", func() {
+			var _ streaming.NotificationConsumer = (*spyEventConsumer)(nil)
+		})
+
+		It("accepts a CompletionNotificationEvent via WriteNotification", func() {
+			spy := &spyEventConsumer{}
+			var consumer streaming.NotificationConsumer = spy
+
+			event := streaming.CompletionNotificationEvent{TaskID: "task-1", Agent: "worker", Status: "completed", AgentID: "agent-1"}
+			Expect(consumer.WriteNotification(event)).To(Succeed())
 		})
 	})
 })
