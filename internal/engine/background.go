@@ -120,8 +120,9 @@ func (m *BackgroundTaskManager) WithSessionManager(mgr *session.Manager) *Backgr
 //   - Calls the session manager's InjectNotification method if configured.
 func (m *BackgroundTaskManager) injectCompletionNotification(sessionID string, notification streaming.CompletionNotificationEvent) {
 	if m.sessionMgr != nil {
-		//nolint:errcheck // notification delivery is best-effort; errors are acceptable
-		m.sessionMgr.InjectNotification(sessionID, notification)
+		if err := m.sessionMgr.InjectNotification(sessionID, notification); err != nil {
+			return
+		}
 	}
 }
 
