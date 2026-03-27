@@ -338,4 +338,141 @@ var _ = Describe("BackgroundTaskManager", func() {
 			})
 		})
 	})
+
+	Describe("Per-Key Concurrency Limiting", func() {
+		Context("when tasks have the same concurrency key", func() {
+			It("limits concurrent running tasks to MaxPerKey", func() {
+				ctx := context.Background()
+
+				blockCh := make(chan struct{})
+				startedCh := make(chan struct{}, 5)
+
+				for i := range 5 {
+					taskID := "key-task-" + string(rune('0'+i))
+					manager.Launch(ctx, taskID, "anthropic", "test task", func(ctx context.Context) (string, error) {
+						startedCh <- struct{}{}
+						<-blockCh
+						return "done", nil
+					})
+				}
+
+				started := 0
+				deadline := time.Now().Add(1 * time.Second)
+				for started < 3 && time.Now().Before(deadline) {
+					select {
+					case <-startedCh:
+						started++
+					case <-time.After(100 * time.Millisecond):
+					}
+				}
+
+				Expect(started).To(Equal(3))
+
+				time.Sleep(100 * time.Millisecond)
+
+				activeCount := 0
+				allTasks := manager.List()
+				for _, t := range allTasks {
+					if t.Status.Load() == "running" {
+						activeCount++
+					}
+				}
+				Expect(activeCount).To(Equal(3))
+
+				close(blockCh)
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}).Should(Equal(0))
+			})
+		})
+
+		Context("when tasks have different concurrency keys", func() {
+			It("enforces separate limits per key", func() {
+				ctx := context.Background()
+
+				blockCh1 := make(chan struct{})
+				blockCh2 := make(chan struct{})
+				countCh := make(chan int, 100)
+
+				for i := range 3 {
+					taskID := "anthropic-task-" + string(rune('0'+i))
+					manager.Launch(ctx, taskID, "anthropic", "test task", func(ctx context.Context) (string, error) {
+						countCh <- manager.ActiveCount()
+						<-blockCh1
+						return "done", nil
+					})
+				}
+
+				for i := range 3 {
+					taskID := "openai-task-" + string(rune('0'+i))
+					manager.Launch(ctx, taskID, "openai", "test task", func(ctx context.Context) (string, error) {
+						countCh <- manager.ActiveCount()
+						<-blockCh2
+						return "done", nil
+					})
+				}
+
+				time.Sleep(500 * time.Millisecond)
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}).Should(Equal(6))
+
+				close(blockCh1)
+				close(blockCh2)
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}).Should(Equal(0))
+			})
+		})
+
+		Context("when total concurrent tasks exceed MaxTotal", func() {
+			It("enforces total concurrency limit", func() {
+				ctx := context.Background()
+
+				blockCh := make(chan struct{})
+				countCh := make(chan int, 100)
+
+				for i := range 55 {
+					taskID := "total-task-" + string(rune('0'+(i%10)))
+					manager.Launch(ctx, taskID, "provider-"+string(rune('a'+(i/20))), "test task", func(ctx context.Context) (string, error) {
+						countCh <- manager.ActiveCount()
+						<-blockCh
+						return "done", nil
+					})
+				}
+
+				time.Sleep(500 * time.Millisecond)
+
+				maxConcurrent := 0
+				for len(countCh) > 0 {
+					count := <-countCh
+					if count > maxConcurrent {
+						maxConcurrent = count
+					}
+				}
+
+				Expect(maxConcurrent).To(BeNumerically("<=", 50))
+
+				close(blockCh)
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}).Should(Equal(0))
+			})
+		})
+
+		Context("ConcurrencyKey field", func() {
+			It("is set on launched tasks", func() {
+				ctx := context.Background()
+				task := manager.Launch(ctx, "keyed-task", "my-agent", "test", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+
+				Expect(task.ConcurrencyKey).To(Equal("my-agent"))
+			})
+		})
+	})
 })

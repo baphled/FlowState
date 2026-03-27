@@ -10,15 +10,16 @@ import (
 
 // BackgroundTask represents a tracked background execution.
 type BackgroundTask struct {
-	ID          string
-	AgentID     string
-	Description string
-	Status      atomicValue
-	StartedAt   time.Time
-	CompletedAt *time.Time
-	Result      string
-	Error       error
-	cancel      context.CancelFunc
+	ID             string
+	AgentID        string
+	Description    string
+	Status         atomicValue
+	StartedAt      time.Time
+	CompletedAt    *time.Time
+	Result         string
+	Error          error
+	cancel         context.CancelFunc
+	ConcurrencyKey string
 }
 
 // atomicValue provides atomic string operations.
@@ -53,14 +54,24 @@ func (a *atomicValue) store(s string) {
 
 const maxConcurrentTasks = 50
 
-// BackgroundTaskManager tracks parallel delegation tasks with a concurrency cap.
-type BackgroundTaskManager struct {
-	tasks map[string]*BackgroundTask
-	mu    sync.RWMutex
-	sem   chan struct{}
+// ConcurrencyConfig defines per-key and total concurrency limits.
+type ConcurrencyConfig struct {
+	MaxPerKey int
+	MaxTotal  int
 }
 
-// NewBackgroundTaskManager creates a new task manager with an empty task map and semaphore cap 50.
+// BackgroundTaskManager tracks parallel delegation tasks with per-key and total concurrency limits.
+type BackgroundTaskManager struct {
+	tasks      map[string]*BackgroundTask
+	mu         sync.RWMutex
+	config     ConcurrencyConfig
+	perKeySems map[string]chan struct{}
+	totalSem   chan struct{}
+	semsMu     sync.Mutex
+}
+
+// NewBackgroundTaskManager creates a new task manager with per-key concurrency limiting.
+// Default configuration: 3 tasks per key, 50 total.
 //
 // Returns:
 //   - A ready-to-use BackgroundTaskManager instance.
@@ -70,39 +81,48 @@ type BackgroundTaskManager struct {
 func NewBackgroundTaskManager() *BackgroundTaskManager {
 	return &BackgroundTaskManager{
 		tasks: make(map[string]*BackgroundTask),
-		sem:   make(chan struct{}, maxConcurrentTasks),
+		config: ConcurrencyConfig{
+			MaxPerKey: 3,
+			MaxTotal:  maxConcurrentTasks,
+		},
+		perKeySems: make(map[string]chan struct{}),
+		totalSem:   make(chan struct{}, maxConcurrentTasks),
 	}
 }
 
 // Launch starts a background task by executing the provided function asynchronously.
 // The task is tracked by ID and its status is updated upon completion.
+// Concurrency is limited per provider+model key and across all tasks.
 //
 // Expected:
 //   - ctx is a valid context for the background operation.
 //   - id is a unique identifier for the task.
-//   - agentID identifies the agent that owns this task.
+//   - agentID identifies the agent that owns this task (used as concurrency key).
 //   - desc describes the task for tracking purposes.
 //   - fn is the function to execute asynchronously.
 //
 // Returns:
-//   - The created BackgroundTask, already marked as running.
+//   - The created BackgroundTask, already marked as pending.
 //
 // Side effects:
 //   - Spawns a goroutine to execute fn.
 //   - Updates task status to "completed", "failed", or "cancelled".
+//   - Acquires and releases per-key and total semaphores.
 func (m *BackgroundTaskManager) Launch(
 	ctx context.Context,
 	id, agentID, desc string,
 	fn func(ctx context.Context) (string, error),
 ) *BackgroundTask {
 	taskCtx, cancel := context.WithCancel(ctx)
+	concurrencyKey := agentID
 
 	task := &BackgroundTask{
-		ID:          id,
-		AgentID:     agentID,
-		Description: desc,
-		StartedAt:   time.Now().UTC(),
-		cancel:      cancel,
+		ID:             id,
+		AgentID:        agentID,
+		Description:    desc,
+		StartedAt:      time.Now().UTC(),
+		cancel:         cancel,
+		ConcurrencyKey: concurrencyKey,
 	}
 	task.Status.store("pending")
 
@@ -110,34 +130,69 @@ func (m *BackgroundTaskManager) Launch(
 	m.tasks[id] = task
 	m.mu.Unlock()
 
-	m.sem <- struct{}{}
 	go func() {
-		defer func() { <-m.sem }()
 		defer cancel()
-
-		task.Status.store("running")
-		result, err := fn(taskCtx)
-
-		completedAt := time.Now().UTC()
-
-		m.mu.Lock()
-
-		task.Result = result
-		task.CompletedAt = &completedAt
-
-		if taskCtx.Err() == context.Canceled {
-			task.Status.store("cancelled")
-		} else if err != nil {
-			task.Status.store("failed")
-			task.Error = err
-		} else {
-			task.Status.store("completed")
-		}
-
-		m.mu.Unlock()
+		m.executeTask(taskCtx, concurrencyKey, task, fn)
 	}()
 
 	return task
+}
+
+// executeTask acquires semaphores, runs the task function, and updates task status.
+//
+// Expected:
+//   - taskCtx is the task-specific context.
+//   - concurrencyKey is the per-key semaphore identifier.
+//   - task is the BackgroundTask being executed.
+//   - fn is the task function to execute.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Acquires and releases per-key and total semaphores.
+//   - Updates task status to "running", then to "completed", "failed", or "cancelled".
+func (m *BackgroundTaskManager) executeTask(
+	taskCtx context.Context,
+	concurrencyKey string,
+	task *BackgroundTask,
+	fn func(ctx context.Context) (string, error),
+) {
+	m.semsMu.Lock()
+	keySem, exists := m.perKeySems[concurrencyKey]
+	if !exists {
+		keySem = make(chan struct{}, m.config.MaxPerKey)
+		m.perKeySems[concurrencyKey] = keySem
+	}
+	m.semsMu.Unlock()
+
+	keySem <- struct{}{}
+	m.totalSem <- struct{}{}
+	defer func() {
+		<-m.totalSem
+		<-keySem
+	}()
+
+	task.Status.store("running")
+	result, err := fn(taskCtx)
+
+	completedAt := time.Now().UTC()
+
+	m.mu.Lock()
+
+	task.Result = result
+	task.CompletedAt = &completedAt
+
+	if taskCtx.Err() == context.Canceled {
+		task.Status.store("cancelled")
+	} else if err != nil {
+		task.Status.store("failed")
+		task.Error = err
+	} else {
+		task.Status.store("completed")
+	}
+
+	m.mu.Unlock()
 }
 
 // Get retrieves a task by its identifier.
