@@ -39,6 +39,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	"github.com/baphled/flowstate/internal/tool/read"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
+	todotool "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
 	"github.com/baphled/flowstate/internal/tracer"
@@ -631,12 +632,14 @@ func (a *App) DisconnectAll() error {
 // Side effects:
 //   - Initialises new tool instances.
 func buildTools(skillLoader *skill.FileSkillLoader) []tool.Tool {
+	todoStore := todotool.NewMemoryStore()
 	return []tool.Tool{
 		bash.New(),
 		read.New(),
 		write.New(),
 		web.New(),
 		skilltool.New(skillLoader),
+		todotool.New(todoStore),
 	}
 }
 

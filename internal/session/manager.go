@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/google/uuid"
 )
 
@@ -189,6 +190,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	sess.UpdatedAt = time.Now()
 	m.mu.Unlock()
 
+	ctx = context.WithValue(ctx, todo.SessionIDKey{}, sessionID)
 	return m.streamer.Stream(ctx, sess.AgentID, message)
 }
 

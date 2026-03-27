@@ -550,10 +550,15 @@ func (i *Intent) saveSession() tea.Cmd {
 	}
 	sessionStore := i.sessionStore
 	sessionID := i.sessionID
+	loadedSkills := i.engine.LoadedSkills()
+	skillNames := make([]string, 0, len(loadedSkills))
+	for i := range loadedSkills {
+		skillNames = append(skillNames, loadedSkills[i].Name)
+	}
 	meta := contextpkg.SessionMetadata{
 		AgentID:      i.agentID,
 		SystemPrompt: i.engine.BuildSystemPrompt(),
-		LoadedSkills: i.engine.LoadedSkills(),
+		LoadedSkills: skillNames,
 	}
 	return func() tea.Msg {
 		return SessionSavedMsg{Err: sessionStore.Save(sessionID, store, meta)}

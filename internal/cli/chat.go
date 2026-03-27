@@ -324,10 +324,15 @@ func saveSessionIfAvailable(cmd *cobra.Command, application *app.App, sessionID 
 	if application.Sessions != nil {
 		store := application.Engine.ContextStore()
 		if store != nil {
+			loadedSkills := application.Engine.LoadedSkills()
+			skillNames := make([]string, 0, len(loadedSkills))
+			for i := range loadedSkills {
+				skillNames = append(skillNames, loadedSkills[i].Name)
+			}
 			metadata := ctxstore.SessionMetadata{
 				AgentID:      application.Engine.Manifest().ID,
 				SystemPrompt: application.Engine.BuildSystemPrompt(),
-				LoadedSkills: application.Engine.LoadedSkills(),
+				LoadedSkills: skillNames,
 			}
 			if saveErr := application.Sessions.Save(sessionID, store, metadata); saveErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
