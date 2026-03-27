@@ -3,12 +3,14 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	delegationpkg "github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
@@ -777,6 +779,158 @@ var _ = Describe("Delegation", func() {
 				_, err := delegateTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(delegateTool.CircuitBreaker().Failures()).To(Equal(0))
+			})
+		})
+
+		Describe("spawn limits enforcement", func() {
+			var (
+				qaProvider *mockProvider
+				qaEngine   *engine.Engine
+				engines    map[string]*engine.Engine
+				delegation agent.Delegation
+			)
+
+			BeforeEach(func() {
+				qaProvider = &mockProvider{
+					name: "qa-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "delegated response", Done: true},
+					},
+				}
+
+				qaManifest := agent.Manifest{
+					ID:                "qa-agent",
+					Name:              "QA Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				qaEngine = engine.New(engine.Config{
+					ChatProvider: qaProvider,
+					Manifest:     qaManifest,
+				})
+
+				engines = map[string]*engine.Engine{
+					"qa-agent": qaEngine,
+				}
+
+				delegation = agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"testing": "qa-agent",
+					},
+				}
+			})
+
+			It("prevents delegation when depth limit is exceeded", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				limits := delegationpkg.DefaultSpawnLimits()
+				limits.MaxDepth = 3
+				delegateTool.WithSpawnLimits(limits)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests",
+						"handoff": map[string]interface{}{
+							"source_agent": "orchestrator",
+							"target_agent": "qa-agent",
+							"chain_id":     "chain-test",
+							"metadata": map[string]string{
+								"depth": "3",
+							},
+						},
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("depth limit exceeded"))
+			})
+
+			It("prevents delegation when budget limit is exceeded", func() {
+				bgManager := engine.NewBackgroundTaskManager()
+
+				delegateTool := engine.NewDelegateToolWithBackground(
+					engines, delegation, "orchestrator", bgManager, nil,
+				)
+				limits := delegationpkg.DefaultSpawnLimits()
+				limits.MaxTotalBudget = 2
+				delegateTool.WithSpawnLimits(limits)
+
+				for i := range 2 {
+					bgManager.Launch(context.Background(), fmt.Sprintf("task-%d", i), "test-agent", "test", func(ctx context.Context) (string, error) {
+						select {
+						case <-ctx.Done():
+							return "", ctx.Err()
+						case <-time.After(10 * time.Second):
+							return "done", nil
+						}
+					})
+				}
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests",
+					},
+				}
+
+				_, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("budget limit exceeded"))
+			})
+
+			It("allows delegation when within limits", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				limits := delegationpkg.DefaultSpawnLimits()
+				delegateTool.WithSpawnLimits(limits)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests",
+						"handoff": map[string]interface{}{
+							"source_agent": "orchestrator",
+							"target_agent": "qa-agent",
+							"chain_id":     "chain-test",
+							"metadata": map[string]string{
+								"depth": "2",
+							},
+						},
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("delegated response"))
+			})
+
+			It("uses default limits when WithSpawnLimits not called", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("delegated response"))
 			})
 		})
 

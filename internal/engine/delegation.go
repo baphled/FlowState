@@ -27,6 +27,8 @@ var (
 	errHandoffMustBeObject      = errors.New("handoff must be an object")
 	errBackgroundModeDisabled   = errors.New("background mode disabled: no background manager configured")
 	errCircuitBreakerOpen       = errors.New("circuit breaker open: too many delegation failures")
+	errDepthLimitExceeded       = errors.New("depth limit exceeded: maximum delegation depth reached")
+	errBudgetLimitExceeded      = errors.New("budget limit exceeded: maximum concurrent delegations reached")
 )
 
 const maxDelegationFailures = 3
@@ -76,6 +78,7 @@ type DelegateTool struct {
 	coordinationStore  coordination.Store
 	embeddingDiscovery *discovery.EmbeddingDiscovery
 	circuitBreaker     *delegation.CircuitBreaker
+	spawnLimits        delegation.SpawnLimits
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -125,6 +128,7 @@ func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegati
 		delegation:     delegationConfig,
 		sourceAgentID:  sourceAgentID,
 		circuitBreaker: delegation.NewCircuitBreaker(maxDelegationFailures),
+		spawnLimits:    delegation.DefaultSpawnLimits(),
 	}
 }
 
@@ -156,6 +160,7 @@ func NewDelegateToolWithBackground(
 		backgroundManager: backgroundManager,
 		coordinationStore: coordinationStore,
 		circuitBreaker:    delegation.NewCircuitBreaker(maxDelegationFailures),
+		spawnLimits:       delegation.DefaultSpawnLimits(),
 	}
 }
 
@@ -168,6 +173,55 @@ func NewDelegateToolWithBackground(
 //   - Sets the embeddingDiscovery field for use in target resolution.
 func (d *DelegateTool) SetEmbeddingDiscovery(ed *discovery.EmbeddingDiscovery) {
 	d.embeddingDiscovery = ed
+}
+
+// WithSpawnLimits configures spawn limits for delegation depth and budget enforcement.
+//
+// Expected:
+//   - limits is a valid SpawnLimits configuration.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Sets the spawnLimits field to enforce during Execute().
+func (d *DelegateTool) WithSpawnLimits(limits delegation.SpawnLimits) *DelegateTool {
+	d.spawnLimits = limits
+	return d
+}
+
+// checkSpawnLimits validates that delegation respects configured depth and budget limits.
+//
+// Expected:
+//   - handoff may be nil or contain depth metadata.
+//
+// Returns:
+//   - An error if depth or budget limits are exceeded, nil otherwise.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
+	depth := 0
+	if handoff != nil && handoff.Metadata != nil {
+		if depthStr, ok := handoff.Metadata["depth"]; ok {
+			var depthVal int
+			if _, err := fmt.Sscanf(depthStr, "%d", &depthVal); err == nil {
+				depth = depthVal
+			}
+		}
+	}
+
+	if d.spawnLimits.ExceedsDepth(depth) {
+		return errDepthLimitExceeded
+	}
+
+	if d.backgroundManager != nil {
+		if d.spawnLimits.ExceedsBudget(d.backgroundManager.ActiveCount()) {
+			return errBudgetLimitExceeded
+		}
+	}
+
+	return nil
 }
 
 // Name returns the tool name.
@@ -276,6 +330,10 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 
 	params, err := d.parseDelegationParams(input)
 	if err != nil {
+		return tool.Result{}, err
+	}
+
+	if err := d.checkSpawnLimits(params.handoff); err != nil {
 		return tool.Result{}, err
 	}
 
