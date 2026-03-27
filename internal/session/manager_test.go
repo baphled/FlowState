@@ -11,6 +11,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 var _ = Describe("Manager", func() {
@@ -407,6 +408,126 @@ var _ = Describe("Manager", func() {
 				}()
 			}
 			wg.Wait()
+		})
+	})
+
+	Describe("Notifications", func() {
+		Context("when injecting a notification", func() {
+			It("stores the notification for the given session", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				notification := streaming.CompletionNotificationEvent{
+					TaskID:      "task-123",
+					Description: "Test task",
+					Agent:       "worker-agent",
+					Duration:    5 * time.Second,
+					Status:      "completed",
+					Result:      "Success",
+					AgentID:     "worker-agent",
+				}
+
+				err = mgr.InjectNotification(sess.ID, notification)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("returns an error when session ID is empty", func() {
+				notification := streaming.CompletionNotificationEvent{
+					TaskID:      "task-123",
+					Description: "Test task",
+					Agent:       "worker-agent",
+					Status:      "completed",
+				}
+
+				err := mgr.InjectNotification("", notification)
+				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("when retrieving notifications", func() {
+			It("returns a single injected notification", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				notification := streaming.CompletionNotificationEvent{
+					TaskID:      "task-123",
+					Description: "Test task",
+					Agent:       "worker-agent",
+					Duration:    5 * time.Second,
+					Status:      "completed",
+					Result:      "Success",
+					AgentID:     "worker-agent",
+				}
+
+				err = mgr.InjectNotification(sess.ID, notification)
+				Expect(err).NotTo(HaveOccurred())
+
+				notifications, err := mgr.GetNotifications(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(HaveLen(1))
+				Expect(notifications[0].TaskID).To(Equal("task-123"))
+				Expect(notifications[0].Description).To(Equal("Test task"))
+			})
+
+			It("returns multiple notifications in order", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := range 3 {
+					notification := streaming.CompletionNotificationEvent{
+						TaskID:      "task-" + string(rune('0'+i)),
+						Description: "Task " + string(rune('0'+i)),
+						Agent:       "worker",
+						Status:      "completed",
+					}
+					err := mgr.InjectNotification(sess.ID, notification)
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				notifications, err := mgr.GetNotifications(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(HaveLen(3))
+				Expect(notifications[0].TaskID).To(Equal("task-0"))
+				Expect(notifications[1].TaskID).To(Equal("task-1"))
+				Expect(notifications[2].TaskID).To(Equal("task-2"))
+			})
+
+			It("returns an empty slice when no notifications exist", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				notifications, err := mgr.GetNotifications(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(BeEmpty())
+			})
+
+			It("clears notifications after retrieval", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				notification := streaming.CompletionNotificationEvent{
+					TaskID:      "task-123",
+					Description: "Test task",
+					Agent:       "worker",
+					Status:      "completed",
+				}
+
+				err = mgr.InjectNotification(sess.ID, notification)
+				Expect(err).NotTo(HaveOccurred())
+
+				notifications, err := mgr.GetNotifications(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(HaveLen(1))
+
+				notifications, err = mgr.GetNotifications(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(BeEmpty())
+			})
+
+			It("returns an error when session ID is empty on get", func() {
+				_, err := mgr.GetNotifications("")
+				Expect(err).To(HaveOccurred())
+			})
 		})
 	})
 

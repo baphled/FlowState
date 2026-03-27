@@ -6,20 +6,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // BackgroundTask represents a tracked background execution.
 type BackgroundTask struct {
-	ID             string
-	AgentID        string
-	Description    string
-	Status         atomicValue
-	StartedAt      time.Time
-	CompletedAt    *time.Time
-	Result         string
-	Error          error
-	cancel         context.CancelFunc
-	ConcurrencyKey string
+	ID              string
+	AgentID         string
+	Description     string
+	Status          atomicValue
+	StartedAt       time.Time
+	CompletedAt     *time.Time
+	Result          string
+	Error           error
+	cancel          context.CancelFunc
+	ConcurrencyKey  string
+	ParentSessionID string
 }
 
 // atomicValue provides atomic string operations.
@@ -68,6 +72,7 @@ type BackgroundTaskManager struct {
 	perKeySems map[string]chan struct{}
 	totalSem   chan struct{}
 	semsMu     sync.Mutex
+	sessionMgr *session.Manager
 }
 
 // NewBackgroundTaskManager creates a new task manager with per-key concurrency limiting.
@@ -87,6 +92,36 @@ func NewBackgroundTaskManager() *BackgroundTaskManager {
 		},
 		perKeySems: make(map[string]chan struct{}),
 		totalSem:   make(chan struct{}, maxConcurrentTasks),
+	}
+}
+
+// WithSessionManager sets the session manager for notification injection.
+// Expected:
+//   - mgr is a valid session manager or nil to disable notification injection.
+//
+// Returns:
+//   - The BackgroundTaskManager for chaining.
+//
+// Side effects:
+//   - Stores the session manager reference for later use.
+func (m *BackgroundTaskManager) WithSessionManager(mgr *session.Manager) *BackgroundTaskManager {
+	m.sessionMgr = mgr
+	return m
+}
+
+// injectCompletionNotification sends a completion notification to the parent session.
+// Errors are intentionally not checked as notification delivery is best-effort.
+//
+// Expected:
+//   - sessionID is a valid parent session identifier.
+//   - notification is a valid CompletionNotificationEvent.
+//
+// Side effects:
+//   - Calls the session manager's InjectNotification method if configured.
+func (m *BackgroundTaskManager) injectCompletionNotification(sessionID string, notification streaming.CompletionNotificationEvent) {
+	if m.sessionMgr != nil {
+		//nolint:errcheck // notification delivery is best-effort; errors are acceptable
+		m.sessionMgr.InjectNotification(sessionID, notification)
 	}
 }
 
@@ -193,6 +228,18 @@ func (m *BackgroundTaskManager) executeTask(
 	}
 
 	m.mu.Unlock()
+
+	if m.sessionMgr != nil && task.ParentSessionID != "" {
+		notification := streaming.CompletionNotificationEvent{
+			TaskID:      task.ID,
+			Description: task.Description,
+			Agent:       task.AgentID,
+			Duration:    completedAt.Sub(task.StartedAt),
+			Status:      task.Status.Load(),
+			Result:      task.Result,
+		}
+		m.injectCompletionNotification(task.ParentSessionID, notification)
+	}
 }
 
 // Get retrieves a task by its identifier.

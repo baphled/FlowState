@@ -62,9 +62,11 @@ type Summary struct {
 
 // Manager handles session lifecycle and message routing.
 type Manager struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
-	streamer streaming.Streamer
+	sessions      map[string]*Session
+	mu            sync.RWMutex
+	streamer      streaming.Streamer
+	notifications map[string][]streaming.CompletionNotificationEvent
+	notifMu       sync.Mutex
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -78,8 +80,9 @@ type Manager struct {
 //   - Allocates the manager's internal session map.
 func NewManager(streamer streaming.Streamer) *Manager {
 	return &Manager{
-		sessions: make(map[string]*Session),
-		streamer: streamer,
+		sessions:      make(map[string]*Session),
+		streamer:      streamer,
+		notifications: make(map[string][]streaming.CompletionNotificationEvent),
 	}
 }
 
@@ -336,6 +339,53 @@ func (m *Manager) CloseSession(sessionID string) error {
 	sess.UpdatedAt = time.Now()
 
 	return nil
+}
+
+// InjectNotification stores a completion notification for the given session.
+// Expected:
+//   - sessionID is non-empty.
+//   - notification is a valid CompletionNotificationEvent.
+//
+// Returns:
+//   - An error if sessionID is empty.
+//   - nil when injection succeeds.
+//
+// Side effects:
+//   - Appends notification to the in-memory notification store for sessionID.
+func (m *Manager) InjectNotification(sessionID string, notification streaming.CompletionNotificationEvent) error {
+	if sessionID == "" {
+		return errors.New("session ID must not be empty")
+	}
+
+	m.notifMu.Lock()
+	defer m.notifMu.Unlock()
+	m.notifications[sessionID] = append(m.notifications[sessionID], notification)
+	return nil
+}
+
+// GetNotifications retrieves and clears pending notifications for the given session.
+// Expected:
+//   - sessionID is non-empty.
+//
+// Returns:
+//   - A slice of pending notifications (empty slice if none exist).
+//   - An error if sessionID is empty.
+//
+// Side effects:
+//   - Clears the notification queue for sessionID after retrieval.
+func (m *Manager) GetNotifications(sessionID string) ([]streaming.CompletionNotificationEvent, error) {
+	if sessionID == "" {
+		return nil, errors.New("session ID must not be empty")
+	}
+
+	m.notifMu.Lock()
+	defer m.notifMu.Unlock()
+	notifications := m.notifications[sessionID]
+	delete(m.notifications, sessionID)
+	if notifications == nil {
+		return []streaming.CompletionNotificationEvent{}, nil
+	}
+	return notifications, nil
 }
 
 // Depth returns the number of parent links between a session and the root.
