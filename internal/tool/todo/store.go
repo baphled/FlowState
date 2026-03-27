@@ -71,5 +71,7 @@ func (s *MemoryStore) Get(sessionID string) []Item {
 	if !ok {
 		return []Item{}
 	}
-	return todos
+	result := make([]Item, len(todos))
+	copy(result, todos)
+	return result
 }

@@ -1344,6 +1344,31 @@ var _ = Describe("ChatIntent", func() {
 			Expect(messages[0].Role).To(Equal("skill_load"))
 			Expect(messages[0].Content).To(Equal("skill_load"))
 		})
+
+		It("restores todowrite tool results as todo_update role on session reload", func() {
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role:      "assistant",
+				Content:   "",
+				ToolCalls: []provider.ToolCall{{Name: "todowrite", ID: "tc-todo"}},
+			})
+			store.Append(provider.Message{Role: "tool", Content: `[{"content":"Write tests","status":"pending","priority":"high"}]`})
+
+			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			messages := sessionIntent.AllViewMessagesForTest()
+			var found bool
+			for _, msg := range messages {
+				if msg.Role == "todo_update" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "todowrite tool result should be restored as todo_update role")
+		})
 	})
 
 	Describe("activeToolCall streaming lifecycle", func() {

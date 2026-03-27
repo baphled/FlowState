@@ -232,5 +232,16 @@ var _ = Describe("MemoryStore", func() {
 			Expect(s.Get("sess-A")).To(Equal(todosA))
 			Expect(s.Get("sess-B")).To(Equal(todosB))
 		})
+
+		It("returns a defensive copy that does not corrupt stored state when mutated", func() {
+			original := []todotool.Item{{Content: "Task A", Status: "pending", Priority: "high"}}
+			Expect(s.Set("sess-1", original)).To(Succeed())
+
+			items := s.Get("sess-1")
+			items[0].Status = "cancelled"
+
+			stored := s.Get("sess-1")
+			Expect(stored[0].Status).To(Equal("pending"))
+		})
 	})
 })

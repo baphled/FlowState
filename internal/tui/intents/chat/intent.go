@@ -1376,14 +1376,11 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 				i.view.AddMessage(chat.Message{Role: role, Content: content})
 			}
 		case sm.Message.Role == "tool":
-			if isReadToolCall(lastToolCallName) && !strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:") {
+			isError := strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:")
+			if isReadToolCall(lastToolCallName) && !isError {
 				continue
 			}
-			role := "tool_result"
-			if strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:") {
-				role = "tool_error"
-			}
-			i.view.AddMessage(chat.Message{Role: role, Content: sm.Message.Content})
+			i.view.AddMessage(toolResultMessage(lastToolCallName, sm.Message.Content, isError))
 		default:
 			i.view.AddMessage(chat.Message{
 				Role:    sm.Message.Role,

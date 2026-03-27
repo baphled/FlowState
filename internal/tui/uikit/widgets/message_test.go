@@ -132,6 +132,21 @@ var _ = Describe("MessageWidget", func() {
 			})
 		})
 
+		Context("todo_update messages", func() {
+			It("includes the content in the output", func() {
+				w := widgets.NewMessageWidget("todo_update", "- [ ] Write tests\n- [x] Review PR", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("Write tests"))
+			})
+
+			It("does not include You or Assistant labels", func() {
+				w := widgets.NewMessageWidget("todo_update", "- [ ] Task one", th)
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("You"))
+				Expect(output).NotTo(ContainSubstring("Assistant"))
+			})
+		})
+
 		Context("tool_error messages", func() {
 			It("includes the cross mark emoji prefix", func() {
 				w := widgets.NewMessageWidget("tool_error", "error: something failed", th)
