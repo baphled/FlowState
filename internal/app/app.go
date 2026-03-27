@@ -315,6 +315,14 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		delegateTool.SetEmbeddingDiscovery(ed)
 	}
 
+	categoryRouting := map[string]engine.CategoryConfig{}
+	if a.Config != nil {
+		categoryRouting = a.Config.CategoryRouting
+	}
+	resolver := engine.NewCategoryResolver(categoryRouting).
+		WithModelLister(a.ListModels)
+	delegateTool.WithCategoryResolver(resolver)
+
 	eng.AddTool(delegateTool)
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
