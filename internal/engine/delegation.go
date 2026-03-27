@@ -81,15 +81,18 @@ type DelegateTool struct {
 	circuitBreaker     *delegation.CircuitBreaker
 	spawnLimits        delegation.SpawnLimits
 	skillResolver      SkillResolver
+	categoryResolver   *CategoryResolver
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
 type delegationTarget struct {
-	agentID string
-	engine  *Engine
-	message string
-	handoff *delegation.Handoff
-	chainID string
+	agentID          string
+	engine           *Engine
+	message          string
+	handoff          *delegation.Handoff
+	chainID          string
+	resolvedModel    string
+	resolvedProvider string
 }
 
 // delegationParams groups the parsed delegation input fields.
@@ -204,6 +207,21 @@ func (d *DelegateTool) WithSpawnLimits(limits delegation.SpawnLimits) *DelegateT
 //   - Sets the skillResolver field for skill injection during delegation.
 func (d *DelegateTool) WithSkillResolver(r SkillResolver) *DelegateTool {
 	d.skillResolver = r
+	return d
+}
+
+// WithCategoryResolver sets the CategoryResolver used to map category names to model config.
+//
+// Expected:
+//   - r is a non-nil CategoryResolver.
+//
+// Returns:
+//   - The DelegateTool for method chaining.
+//
+// Side effects:
+//   - Replaces any previously configured category resolver.
+func (d *DelegateTool) WithCategoryResolver(r *CategoryResolver) *DelegateTool {
+	d.categoryResolver = r
 	return d
 }
 
@@ -365,12 +383,21 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		chainID = newDelegationChainID()
 	}
 
+	modelName := target.engine.LastModel()
+	providerName := target.engine.LastProvider()
+	if target.resolvedModel != "" {
+		modelName = target.resolvedModel
+	}
+	if target.resolvedProvider != "" {
+		providerName = target.resolvedProvider
+	}
+
 	baseInfo := provider.DelegationInfo{
 		SourceAgent:  d.sourceAgentID,
 		TargetAgent:  target.agentID,
 		ChainID:      chainID,
-		ModelName:    target.engine.LastModel(),
-		ProviderName: target.engine.LastProvider(),
+		ModelName:    modelName,
+		ProviderName: providerName,
 		Description:  target.message,
 		StartedAt:    ptrTime(time.Now().UTC()),
 	}
@@ -716,6 +743,14 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
 	}
 
+	var resolvedModel, resolvedProvider string
+	if params.category != "" && d.categoryResolver != nil {
+		if cfg, resolveErr := d.categoryResolver.Resolve(params.category); resolveErr == nil {
+			resolvedModel = cfg.Model
+			resolvedProvider = cfg.Provider
+		}
+	}
+
 	if len(params.loadSkills) > 0 {
 		manifest := targetEngine.Manifest()
 		basePrompt := manifest.Instructions.SystemPrompt
@@ -725,11 +760,13 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 	}
 
 	return delegationTarget{
-		agentID: targetAgentID,
-		engine:  targetEngine,
-		message: params.message,
-		handoff: params.handoff,
-		chainID: chainID,
+		agentID:          targetAgentID,
+		engine:           targetEngine,
+		message:          params.message,
+		handoff:          params.handoff,
+		chainID:          chainID,
+		resolvedModel:    resolvedModel,
+		resolvedProvider: resolvedProvider,
 	}, nil
 }
 

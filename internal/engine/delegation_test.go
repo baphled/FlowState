@@ -1124,6 +1124,169 @@ var _ = Describe("Delegation", func() {
 				Expect(injected).To(ContainSubstring(basePrompt))
 			})
 		})
+
+		Describe("DelegateTool category routing", func() {
+			It("resolves category to model config when CategoryResolver set", func() {
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "delegated response", Done: true},
+					},
+				}
+
+				targetManifest := agent.Manifest{
+					ID:                "target-agent",
+					Name:              "Target Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are target."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				targetEngine := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     targetManifest,
+				})
+
+				engines := map[string]*engine.Engine{
+					"target-agent": targetEngine,
+				}
+
+				delegation := agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"quick": "target-agent",
+					},
+				}
+
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				categoryResolver := engine.NewCategoryResolver(nil)
+				delegateTool.WithCategoryResolver(categoryResolver)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"category": "quick",
+						"message":  "Execute quick task",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("delegated response"))
+			})
+
+			It("falls back to task_type routing when no category resolver configured", func() {
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "task type routed", Done: true},
+					},
+				}
+
+				targetManifest := agent.Manifest{
+					ID:                "target-agent",
+					Name:              "Target Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are target."},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				targetEngine := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     targetManifest,
+				})
+
+				engines := map[string]*engine.Engine{
+					"target-agent": targetEngine,
+				}
+
+				delegation := agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"testing": "target-agent",
+					},
+				}
+
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type": "testing",
+						"message":   "Run tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("task type routed"))
+			})
+
+			It("injects skills when load_skills provided", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "injected-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+				skillContent := "Injected skill content"
+				Expect(os.WriteFile(skillPath, []byte(skillContent), 0o600)).To(Succeed())
+
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "skill injection done", Done: true},
+					},
+				}
+
+				targetManifest := agent.Manifest{
+					ID:   "target-agent",
+					Name: "Target Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "Base system prompt",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				targetEngine := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     targetManifest,
+				})
+
+				engines := map[string]*engine.Engine{
+					"target-agent": targetEngine,
+				}
+
+				delegation := agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"testing": "target-agent",
+					},
+				}
+
+				skillResolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				delegateTool.WithSkillResolver(skillResolver)
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"task_type":   "testing",
+						"message":     "Run tests with skills",
+						"load_skills": []interface{}{"injected-skill"},
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("skill injection done"))
+
+				updatedManifest := targetEngine.Manifest()
+				Expect(updatedManifest.Instructions.SystemPrompt).To(ContainSubstring(skillContent))
+			})
+		})
 	})
 
 })
