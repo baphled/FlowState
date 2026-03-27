@@ -44,6 +44,7 @@ type Session struct {
 	Status            string                    `json:"status"`
 	ParentID          string                    `json:"parent_id"`
 	ParentSessionID   string                    `json:"parent_session_id"`
+	Depth             int                       `json:"depth"`
 	CoordinationStore *coordination.MemoryStore `json:"coordination_store,omitempty"`
 	Messages          []Message                 `json:"messages"`
 	CreatedAt         time.Time                 `json:"created_at"`
@@ -99,6 +100,7 @@ func (m *Manager) CreateSession(agentID string) (*Session, error) {
 		ID:                uuid.New().String(),
 		AgentID:           agentID,
 		Status:            string(StatusActive),
+		Depth:             0,
 		CoordinationStore: coordination.NewMemoryStore(),
 		Messages:          make([]Message, 0),
 		CreatedAt:         now,
@@ -111,6 +113,75 @@ func (m *Manager) CreateSession(agentID string) (*Session, error) {
 	m.sessions[sess.ID] = sess
 
 	return sess, nil
+}
+
+// CreateWithParent creates a new session as a child of the given parent session.
+// Expected:
+//   - parentID identifies an existing parent session.
+//   - agentID identifies the agent for the new session.
+//
+// Returns:
+//   - The newly created child session with ParentID and incremented Depth.
+//   - An error if the parent does not exist or session cannot be recorded.
+//
+// Side effects:
+//   - Generates a new session identifier.
+//   - Stores the session in memory.
+func (m *Manager) CreateWithParent(parentID string, agentID string) (*Session, error) {
+	m.mu.RLock()
+	parent, ok := m.sessions[parentID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	now := time.Now()
+	sess := &Session{
+		ID:                uuid.New().String(),
+		AgentID:           agentID,
+		Status:            string(StatusActive),
+		ParentID:          parentID,
+		Depth:             parent.Depth + 1,
+		CoordinationStore: coordination.NewMemoryStore(),
+		Messages:          make([]Message, 0),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	m.mu.Lock()
+	m.sessions[sess.ID] = sess
+	m.mu.Unlock()
+	return sess, nil
+}
+
+// GetRootSession walks up the parent chain to find the root session.
+// Expected:
+//   - sessionID identifies an existing session.
+//
+// Returns:
+//   - The root session at the top of the parent chain.
+//   - An error if the session or root does not exist.
+//
+// Side effects:
+//   - Acquires read locks while traversing the session store.
+func (m *Manager) GetRootSession(sessionID string) (*Session, error) {
+	m.mu.RLock()
+	sess, ok := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	for {
+		parentID := sess.ParentID
+		if parentID == "" {
+			return sess, nil
+		}
+		m.mu.RLock()
+		parent, ok := m.sessions[parentID]
+		m.mu.RUnlock()
+		if !ok {
+			return nil, ErrSessionNotFound
+		}
+		sess = parent
+	}
 }
 
 // GetSession retrieves a session by ID.

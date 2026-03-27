@@ -113,6 +113,31 @@ var _ = Describe("Manager", func() {
 			Expect(session.Depth(sessions, "grandchild")).To(Equal(2))
 		})
 
+		It("creates a child session with correct ParentID and Depth", func() {
+			parent, err := mgr.CreateSession("parent-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(parent).NotTo(BeNil())
+
+			child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child).NotTo(BeNil())
+			Expect(child.ParentID).To(Equal(parent.ID))
+			Expect(child.Depth).To(Equal(parent.Depth + 1))
+		})
+
+		It("returns the root session for any descendant", func() {
+			root, err := mgr.CreateSession("root-agent")
+			Expect(err).NotTo(HaveOccurred())
+			child, err := mgr.CreateWithParent(root.ID, "child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			grandchild, err := mgr.CreateWithParent(child.ID, "grandchild-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			foundRoot, err := mgr.GetRootSession(grandchild.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(foundRoot.ID).To(Equal(root.ID))
+		})
+
 		It("returns direct child sessions for a parent", func() {
 			root, err := mgr.CreateSession("root-agent")
 			Expect(err).NotTo(HaveOccurred())
