@@ -1,5 +1,5 @@
-// Package context provides conversation context management including storage, retrieval, and semantic search.
-package context
+// Package recall provides Recall Memory for FlowState agents.
+package recall
 
 import (
 	"context"
@@ -284,6 +284,14 @@ type SummarizeContextTool struct {
 	maxDepth int
 	counter  TokenCounter
 	model    string
+}
+
+// TokenCounter defines methods for counting tokens in text.
+type TokenCounter interface {
+	// Count returns the number of tokens in the given text.
+	Count(text string) int
+	// ModelLimit returns the token limit for the given model.
+	ModelLimit(model string) int
 }
 
 // NewSummarizeContextTool creates a new SummarizeContextTool with the given configuration.

@@ -1,4 +1,4 @@
-package context_test
+package recall_test
 
 import (
 	"os"
@@ -7,13 +7,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 var _ = Describe("FileContextStore", func() {
 	var (
-		store   *context.FileContextStore
+		store   *recall.FileContextStore
 		tempDir string
 		path    string
 	)
@@ -23,7 +23,7 @@ var _ = Describe("FileContextStore", func() {
 		tempDir, err = os.MkdirTemp("", "context-store-test")
 		Expect(err).NotTo(HaveOccurred())
 		path = filepath.Join(tempDir, "store.json")
-		store, err = context.NewFileContextStore(path, "test-model")
+		store, err = recall.NewFileContextStore(path, "test-model")
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -108,15 +108,15 @@ var _ = Describe("FileContextStore", func() {
 	Describe("CosineSimilarity", func() {
 		It("returns 1.0 for identical vectors", func() {
 			v := []float64{1.0, 2.0, 3.0}
-			score := context.CosineSimilarity(v, v)
+			score := recall.CosineSimilarity(v, v)
 			Expect(score).To(BeNumerically("~", 1.0, 0.0001))
 		})
 
 		It("returns 0 for zero-length vectors", func() {
 			zero := []float64{0.0, 0.0, 0.0}
 			v := []float64{1.0, 2.0, 3.0}
-			Expect(context.CosineSimilarity(zero, v)).To(Equal(0.0))
-			Expect(context.CosineSimilarity(v, zero)).To(Equal(0.0))
+			Expect(recall.CosineSimilarity(zero, v)).To(Equal(0.0))
+			Expect(recall.CosineSimilarity(v, zero)).To(Equal(0.0))
 		})
 	})
 
@@ -163,7 +163,7 @@ var _ = Describe("FileContextStore", func() {
 			msgID := store.GetMessageID(0)
 			store.StoreEmbedding(msgID, []float64{0.1, 0.2, 0.3}, "old-model", 3)
 
-			newStore, err := context.NewFileContextStore(path, "new-model")
+			newStore, err := recall.NewFileContextStore(path, "new-model")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(newStore.Count()).To(Equal(1))
@@ -176,30 +176,30 @@ var _ = Describe("FileContextStore", func() {
 var _ = Describe("EmptyContextStore", func() {
 	Describe("NewEmptyContextStore", func() {
 		It("returns a store with zero messages", func() {
-			store := context.NewEmptyContextStore("test-model")
+			store := recall.NewEmptyContextStore("test-model")
 			Expect(store.Count()).To(Equal(0))
 		})
 
 		It("returns a store with empty messages slice", func() {
-			store := context.NewEmptyContextStore("test-model")
+			store := recall.NewEmptyContextStore("test-model")
 			Expect(store.AllMessages()).To(BeEmpty())
 		})
 
 		It("stores the provided model name", func() {
-			store := context.NewEmptyContextStore("my-embedding-model")
+			store := recall.NewEmptyContextStore("my-embedding-model")
 			Expect(store.AllMessages()).To(BeEmpty())
 		})
 	})
 
 	Describe("Append on empty store", func() {
 		It("increases count in memory", func() {
-			store := context.NewEmptyContextStore("test-model")
+			store := recall.NewEmptyContextStore("test-model")
 			store.Append(provider.Message{Role: "user", Content: "hello"})
 			Expect(store.Count()).To(Equal(1))
 		})
 
 		It("stores message in memory without file I/O", func() {
-			store := context.NewEmptyContextStore("test-model")
+			store := recall.NewEmptyContextStore("test-model")
 			store.Append(provider.Message{Role: "user", Content: "test message"})
 			messages := store.AllMessages()
 			Expect(messages).To(HaveLen(1))
@@ -209,7 +209,7 @@ var _ = Describe("EmptyContextStore", func() {
 
 	Describe("persist on empty store", func() {
 		It("is a no-op when path is empty", func() {
-			store := context.NewEmptyContextStore("test-model")
+			store := recall.NewEmptyContextStore("test-model")
 			store.Append(provider.Message{Role: "user", Content: "test"})
 			Expect(store.Count()).To(Equal(1))
 		})

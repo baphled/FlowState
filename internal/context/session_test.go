@@ -6,6 +6,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -46,7 +47,7 @@ var _ = Describe("SessionPersistence", func() {
 
 	Describe("Save and Load round-trip", func() {
 		It("preserves messages", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -70,7 +71,7 @@ var _ = Describe("SessionPersistence", func() {
 		})
 
 		It("preserves embeddings", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -106,7 +107,7 @@ var _ = Describe("SessionPersistence", func() {
 		})
 
 		It("returns one entry after Save", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -122,7 +123,7 @@ var _ = Describe("SessionPersistence", func() {
 		})
 
 		It("returns correct MessageCount", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -142,7 +143,7 @@ var _ = Describe("SessionPersistence", func() {
 
 	Describe("Save", func() {
 		It("writes atomically (file exists after save)", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -160,7 +161,7 @@ var _ = Describe("SessionPersistence", func() {
 
 	Describe("Model mismatch", func() {
 		It("clears embeddings on Load when model differs", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"old-model",
 			)
@@ -191,7 +192,7 @@ var _ = Describe("SessionPersistence", func() {
 
 	Describe("SessionFile round-trip with SystemPrompt and LoadedSkills", func() {
 		It("preserves SystemPrompt and LoadedSkills through marshal/unmarshal", func() {
-			ctxStore, err := context.NewFileContextStore(
+			ctxStore, err := recall.NewFileContextStore(
 				filepath.Join(contextDir, "ctx.json"),
 				"text-embedding-ada-002",
 			)
@@ -240,7 +241,7 @@ var _ = Describe("SessionPersistence", func() {
 
 	Describe("GenerateTitle", func() {
 		It("returns first user message content when short", func() {
-			messages := []context.StoredMessage{
+			messages := []recall.StoredMessage{
 				{
 					ID:       "msg-1",
 					Message:  provider.Message{Role: "user", Content: "What is Go?"},
@@ -253,7 +254,7 @@ var _ = Describe("SessionPersistence", func() {
 
 		It("truncates long user message to 60 chars with ellipsis", func() {
 			longContent := "This is a very long message that exceeds sixty characters and should be truncated"
-			messages := []context.StoredMessage{
+			messages := []recall.StoredMessage{
 				{
 					ID:       "msg-1",
 					Message:  provider.Message{Role: "user", Content: longContent},
@@ -266,13 +267,13 @@ var _ = Describe("SessionPersistence", func() {
 		})
 
 		It("returns 'Untitled Session' when messages is empty", func() {
-			messages := []context.StoredMessage{}
+			messages := []recall.StoredMessage{}
 			title := context.GenerateTitle(messages)
 			Expect(title).To(Equal("Untitled Session"))
 		})
 
 		It("returns 'Untitled Session' when no user message exists", func() {
-			messages := []context.StoredMessage{
+			messages := []recall.StoredMessage{
 				{
 					ID:       "msg-1",
 					Message:  provider.Message{Role: "assistant", Content: "Hello there"},

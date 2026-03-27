@@ -1,12 +1,11 @@
-// Package context provides conversation context management and session persistence.
+// Package context provides session persistence and context window management for FlowState agents.
 //
 // This package implements:
-//   - Context stores for managing conversation history
-//   - Token budget tracking and window management
-//   - Session persistence and loading
-//   - Context query tools for searching and summarising history
+//   - Session persistence and loading (FileSessionStore, SessionStore)
+//   - Context window assembly within token budget constraints (WindowBuilder)
+//   - Token budget tracking (TokenBudget, TokenCounter)
 //
-// The context system supports semantic search over conversation history
-// using embeddings, enabling efficient retrieval of relevant context
-// within token budget constraints.
+// Recall Memory (semantic search, message store, embedding store) has been moved
+// to the internal/recall package, which implements the Recall tier of the
+// Letta/MemGPT memory taxonomy.
 package context

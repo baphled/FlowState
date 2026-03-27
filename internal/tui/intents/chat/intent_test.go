@@ -16,6 +16,7 @@ import (
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 )
@@ -942,7 +943,7 @@ var _ = Describe("ChatIntent", func() {
 			tmpDir, err := os.MkdirTemp("", "chat-save-test-*")
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { os.RemoveAll(tmpDir) })
-			ctxStore, err := contextpkg.NewFileContextStore(filepath.Join(tmpDir, "ctx.json"), "")
+			ctxStore, err := recall.NewFileContextStore(filepath.Join(tmpDir, "ctx.json"), "")
 			Expect(err).NotTo(HaveOccurred())
 			eng.SetContextStore(ctxStore)
 
@@ -1241,7 +1242,7 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		It("converts assistant messages with tool calls to tool_call messages", func() {
-			store := contextpkg.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "user", Content: "run ls"})
 			store.Append(provider.Message{
 				Role:      "assistant",
@@ -1269,7 +1270,7 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		It("converts tool role messages to tool_result messages", func() {
-			store := contextpkg.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "tool", Content: "file1.go\nfile2.go"})
 
 			sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
@@ -1284,7 +1285,7 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		It("adds one tool_call per ToolCall entry on assistant message", func() {
-			store := contextpkg.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{
 				Role:    "assistant",
 				Content: "",
@@ -1308,7 +1309,7 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		It("passes through regular messages unchanged", func() {
-			store := contextpkg.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "user", Content: "hello"})
 			store.Append(provider.Message{Role: "assistant", Content: "hi there"})
 			store.Append(provider.Message{Role: "system", Content: "system prompt"})
@@ -1326,7 +1327,7 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		It("converts skill_load tool calls to skill_load messages", func() {
-			store := contextpkg.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{
 				Role:      "assistant",
 				Content:   "",
@@ -1460,11 +1461,11 @@ func (s *stubSessionLister) List() []contextpkg.SessionInfo { return s.sessions 
 
 func (s *stubSessionLister) SetTitle(_ string, _ string) error { return nil }
 
-func (s *stubSessionLister) Load(_ string) (*contextpkg.FileContextStore, error) {
+func (s *stubSessionLister) Load(_ string) (*recall.FileContextStore, error) {
 	return nil, errors.New("stub: not implemented")
 }
 
-func (s *stubSessionLister) Save(sessionID string, _ *contextpkg.FileContextStore, meta contextpkg.SessionMetadata) error {
+func (s *stubSessionLister) Save(sessionID string, _ *recall.FileContextStore, meta contextpkg.SessionMetadata) error {
 	s.saveCalled = true
 	s.savedID = sessionID
 	s.savedMeta = meta

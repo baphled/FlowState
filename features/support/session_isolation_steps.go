@@ -10,13 +10,14 @@ import (
 
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // SessionIsolationSteps holds state for session isolation and tool call visibility BDD scenarios.
 type SessionIsolationSteps struct {
 	sessionStore    *ctxstore.FileSessionStore
-	newContextStore *ctxstore.FileContextStore
-	loadedStore     *ctxstore.FileContextStore
+	newContextStore *recall.FileContextStore
+	loadedStore     *recall.FileContextStore
 	savedSessionID  string
 	tempDir         string
 }
@@ -78,7 +79,7 @@ func (s *SessionIsolationSteps) iHaveASessionStoreWithExistingMessages() error {
 	}
 	s.sessionStore = sessionStore
 
-	store := ctxstore.NewEmptyContextStore("test-model")
+	store := recall.NewEmptyContextStore("test-model")
 	store.Append(provider.Message{Role: "user", Content: "Hello from old session"})
 	store.Append(provider.Message{Role: "assistant", Content: "Hi there!"})
 
@@ -100,7 +101,7 @@ func (s *SessionIsolationSteps) iHaveASessionStoreWithExistingMessages() error {
 // Side effects:
 //   - Sets s.newContextStore to a fresh empty context store.
 func (s *SessionIsolationSteps) iCreateANewEmptyContextStore() error {
-	s.newContextStore = ctxstore.NewEmptyContextStore("")
+	s.newContextStore = recall.NewEmptyContextStore("")
 	return nil
 }
 
@@ -150,7 +151,7 @@ func (s *SessionIsolationSteps) saveSessionWithMessages(dirPrefix, sessionID str
 	}
 	s.sessionStore = sessionStore
 
-	store := ctxstore.NewEmptyContextStore("test-model")
+	store := recall.NewEmptyContextStore("test-model")
 	for _, msg := range messages {
 		store.Append(msg)
 	}

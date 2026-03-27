@@ -29,6 +29,7 @@ import (
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/providersetup"
@@ -61,13 +62,13 @@ type StepDefinitions struct {
 
 	agentDiscovery         *discovery.AgentDiscovery
 	suggestions            []discovery.AgentSuggestion
-	contextStore           *ctxstore.FileContextStore
+	contextStore           *recall.FileContextStore
 	sessionStore           *ctxstore.FileSessionStore
 	savedSessionID         string
 	currentMeta            ctxstore.SessionMetadata
 	originalMessageCount   int
 	originalEmbeddingCount int
-	reloadedContextStore   *ctxstore.FileContextStore
+	reloadedContextStore   *recall.FileContextStore
 	tokenCounter           ctxstore.TokenCounter
 	windowBuilder          *ctxstore.WindowBuilder
 	tokenBudget            int
@@ -951,7 +952,7 @@ func (s *StepDefinitions) aGeneralAgentWithTokenContextLimit(limit int) error {
 	}
 	storePath := filepath.Join(tempDir, "context.json")
 
-	store, err := ctxstore.NewFileContextStore(storePath, "nomic-embed-text")
+	store, err := recall.NewFileContextStore(storePath, "nomic-embed-text")
 	if err != nil {
 		return err
 	}
@@ -1043,7 +1044,7 @@ func (s *StepDefinitions) iHaveAConversationAbout(topic string) error {
 		}
 		storePath := filepath.Join(tempDir, "context.json")
 
-		store, err := ctxstore.NewFileContextStore(storePath, "nomic-embed-text")
+		store, err := recall.NewFileContextStore(storePath, "nomic-embed-text")
 		if err != nil {
 			return err
 		}
@@ -1146,7 +1147,7 @@ func (s *StepDefinitions) iHaveAnActiveSessionWithMessages() error {
 	s.sessionStore = sessionStore
 
 	storePath := filepath.Join(s.tempDir, "context-store.json")
-	contextStore, err := ctxstore.NewFileContextStore(storePath, "test-model")
+	contextStore, err := recall.NewFileContextStore(storePath, "test-model")
 	if err != nil {
 		return fmt.Errorf("creating context store: %w", err)
 	}

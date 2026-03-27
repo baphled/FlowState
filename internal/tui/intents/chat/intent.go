@@ -17,6 +17,7 @@ import (
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
@@ -90,9 +91,9 @@ type SessionLister interface {
 	// SetTitle updates the title of an existing session.
 	SetTitle(sessionID string, title string) error
 	// Load retrieves a context store from a saved session.
-	Load(sessionID string) (*contextpkg.FileContextStore, error)
+	Load(sessionID string) (*recall.FileContextStore, error)
 	// Save persists the session store to disk with the provided metadata.
-	Save(sessionID string, store *contextpkg.FileContextStore, meta contextpkg.SessionMetadata) error
+	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
 // IntentConfig holds the configuration for creating a new chat Intent.
@@ -1158,7 +1159,7 @@ func (i *Intent) handleSessionResult(msg sessionbrowser.SessionSelectedMsg) tea.
 //   - Generates a new session ID, resets the chat view, and syncs the status bar.
 func (i *Intent) createNewSession() tea.Cmd {
 	i.sessionID = uuid.New().String()
-	i.engine.SetContextStore(contextpkg.NewEmptyContextStore(""))
+	i.engine.SetContextStore(recall.NewEmptyContextStore(""))
 	i.view = chat.NewView()
 	i.refreshViewport()
 	i.syncStatusBar()

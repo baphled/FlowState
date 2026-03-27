@@ -14,6 +14,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -306,7 +307,7 @@ var _ = Describe("Engine", func() {
 			defer os.RemoveAll(tempDir)
 
 			storePath := filepath.Join(tempDir, "context.json")
-			store, err := ctxstore.NewFileContextStore(storePath, "test-model")
+			store, err := recall.NewFileContextStore(storePath, "test-model")
 			Expect(err).NotTo(HaveOccurred())
 
 			tokenCounter := ctxstore.NewTiktokenCounter()
@@ -694,7 +695,7 @@ var _ = Describe("Engine", func() {
 			defer os.RemoveAll(tempDir)
 
 			storePath := filepath.Join(tempDir, "context.json")
-			store, err := ctxstore.NewFileContextStore(storePath, "test-model")
+			store, err := recall.NewFileContextStore(storePath, "test-model")
 			Expect(err).NotTo(HaveOccurred())
 
 			tokenCounter := ctxstore.NewTiktokenCounter()

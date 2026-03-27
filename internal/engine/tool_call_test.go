@@ -10,9 +10,9 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
-	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -605,7 +605,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 		Context("tool result storage", func() {
 			var (
 				tempDir string
-				store   *ctxstore.FileContextStore
+				store   *recall.FileContextStore
 			)
 
 			BeforeEach(func() {
@@ -614,7 +614,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				storePath := filepath.Join(tempDir, "context.json")
-				store, err = ctxstore.NewFileContextStore(storePath, "test-model")
+				store, err = recall.NewFileContextStore(storePath, "test-model")
 				Expect(err).NotTo(HaveOccurred())
 
 				chatProvider.sequences = [][]provider.StreamChunk{
@@ -754,7 +754,7 @@ var _ = Describe("Engine tool call context store", func() {
 		DeferCleanup(func() { os.RemoveAll(tmpDir) })
 
 		storePath := filepath.Join(tmpDir, "context.json")
-		store, err := ctxstore.NewFileContextStore(storePath, "")
+		store, err := recall.NewFileContextStore(storePath, "")
 		Expect(err).NotTo(HaveOccurred())
 
 		testTool := &executableMockTool{
@@ -849,7 +849,7 @@ var _ = Describe("Engine tool result emission", func() {
 		DeferCleanup(func() { os.RemoveAll(tmpDir) })
 
 		storePath := filepath.Join(tmpDir, "context.json")
-		store, err := ctxstore.NewFileContextStore(storePath, "")
+		store, err := recall.NewFileContextStore(storePath, "")
 		Expect(err).NotTo(HaveOccurred())
 
 		testTool := &executableMockTool{

@@ -10,6 +10,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -17,7 +18,7 @@ import (
 var _ = Describe("WindowBuilder", func() {
 	var (
 		builder *context.WindowBuilder
-		store   *context.FileContextStore
+		store   *recall.FileContextStore
 		counter context.TokenCounter
 		tempDir string
 	)
@@ -28,7 +29,7 @@ var _ = Describe("WindowBuilder", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		path := filepath.Join(tempDir, "store.json")
-		store, err = context.NewFileContextStore(path, "test-model")
+		store, err = recall.NewFileContextStore(path, "test-model")
 		Expect(err).NotTo(HaveOccurred())
 
 		counter = context.NewApproximateCounter()
@@ -258,7 +259,7 @@ var _ = Describe("WindowBuilder", func() {
 					},
 				}
 
-				semanticResults := []context.SearchResult{
+				semanticResults := []recall.SearchResult{
 					{MessageID: "semantic-1", Score: 0.9, Message: provider.Message{Role: "user", Content: "semantic result"}},
 				}
 
@@ -308,7 +309,7 @@ var _ = Describe("WindowBuilder", func() {
 					},
 				}
 
-				semanticResults := []context.SearchResult{
+				semanticResults := []recall.SearchResult{
 					{MessageID: "msg-1", Score: 0.9, Message: provider.Message{Role: "user", Content: "relevant earlier"}},
 				}
 

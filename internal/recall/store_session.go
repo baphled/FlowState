@@ -1,4 +1,4 @@
-package context
+package recall
 
 // GetStoredMessages returns a copy of all stored messages with their metadata.
 //

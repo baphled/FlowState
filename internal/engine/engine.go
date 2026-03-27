@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -29,7 +30,7 @@ type Engine struct {
 	failbackChain     *provider.FailbackChain
 	manifest          agent.Manifest
 	tools             []tool.Tool
-	store             *ctxstore.FileContextStore
+	store             *recall.FileContextStore
 	windowBuilder     *ctxstore.WindowBuilder
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
@@ -52,7 +53,7 @@ type Config struct {
 	Manifest          agent.Manifest
 	Tools             []tool.Tool
 	Skills            []skill.Skill
-	Store             *ctxstore.FileContextStore
+	Store             *recall.FileContextStore
 	TokenCounter      ctxstore.TokenCounter
 	StreamTimeout     time.Duration
 	HookChain         *hook.Chain
@@ -804,7 +805,7 @@ func (e *Engine) storeResponse(ctx context.Context, content string) {
 //
 // Side effects:
 //   - Replaces the engine's current context store reference.
-func (e *Engine) SetContextStore(store *ctxstore.FileContextStore) {
+func (e *Engine) SetContextStore(store *recall.FileContextStore) {
 	e.store = store
 }
 
@@ -815,7 +816,7 @@ func (e *Engine) SetContextStore(store *ctxstore.FileContextStore) {
 //
 // Side effects:
 //   - None.
-func (e *Engine) ContextStore() *ctxstore.FileContextStore {
+func (e *Engine) ContextStore() *recall.FileContextStore {
 	return e.store
 }
 

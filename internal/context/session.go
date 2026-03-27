@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // SessionInfo describes a saved session's metadata.
@@ -39,9 +41,9 @@ type SessionMetadata struct {
 // SessionStore defines the interface for persisting and loading sessions.
 type SessionStore interface {
 	// Save persists a context store to a session.
-	Save(sessionID string, store *FileContextStore, meta SessionMetadata) error
+	Save(sessionID string, store *recall.FileContextStore, meta SessionMetadata) error
 	// Load retrieves a context store from a saved session.
-	Load(sessionID string) (*FileContextStore, error)
+	Load(sessionID string) (*recall.FileContextStore, error)
 	// List returns metadata for all saved sessions.
 	List() []SessionInfo
 	// SetTitle updates the title of an existing session.
@@ -55,15 +57,15 @@ type FileSessionStore struct {
 
 // sessionFile represents the persisted structure of a session stored in JSON format.
 type sessionFile struct {
-	SessionID      string           `json:"session_id"`
-	Title          string           `json:"title"`
-	AgentID        string           `json:"agent_id"`
-	EmbeddingModel string           `json:"embedding_model"`
-	LastActive     time.Time        `json:"last_active"`
-	Messages       []StoredMessage  `json:"messages"`
-	Embeddings     []EmbeddingEntry `json:"embeddings"`
-	SystemPrompt   string           `json:"system_prompt"`
-	LoadedSkills   []string         `json:"loaded_skills"`
+	SessionID      string                  `json:"session_id"`
+	Title          string                  `json:"title"`
+	AgentID        string                  `json:"agent_id"`
+	EmbeddingModel string                  `json:"embedding_model"`
+	LastActive     time.Time               `json:"last_active"`
+	Messages       []recall.StoredMessage  `json:"messages"`
+	Embeddings     []recall.EmbeddingEntry `json:"embeddings"`
+	SystemPrompt   string                  `json:"system_prompt"`
+	LoadedSkills   []string                `json:"loaded_skills"`
 }
 
 // NewFileSessionStore creates a new file-based session store at the given directory.
@@ -105,7 +107,7 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 //
 // Expected:
 //   - sessionID is a non-empty string identifying the session.
-//   - store is a non-nil FileContextStore with messages to persist.
+//   - store is a non-nil recall.FileContextStore with messages to persist.
 //   - meta is the SessionMetadata to persist (may be empty).
 //
 // Returns:
@@ -113,7 +115,7 @@ func DefaultSessionStore() (*FileSessionStore, error) {
 //
 // Side effects:
 //   - Writes the session data to a JSON file in the base directory.
-func (s *FileSessionStore) Save(sessionID string, store *FileContextStore, meta SessionMetadata) error {
+func (s *FileSessionStore) Save(sessionID string, store *recall.FileContextStore, meta SessionMetadata) error {
 	title := meta.Title
 	if title == "" {
 		title = s.existingTitle(sessionID)
@@ -153,12 +155,12 @@ func (s *FileSessionStore) Save(sessionID string, store *FileContextStore, meta 
 //   - sessionID is a non-empty string matching an existing session file.
 //
 // Returns:
-//   - A FileContextStore populated with the session's messages and embeddings.
+//   - A recall.FileContextStore populated with the session's messages and embeddings.
 //   - An error if the session file cannot be read or parsed.
 //
 // Side effects:
 //   - Reads a JSON file from the base directory.
-func (s *FileSessionStore) Load(sessionID string) (*FileContextStore, error) {
+func (s *FileSessionStore) Load(sessionID string) (*recall.FileContextStore, error) {
 	return s.LoadWithModel(sessionID, "")
 }
 
@@ -169,12 +171,12 @@ func (s *FileSessionStore) Load(sessionID string) (*FileContextStore, error) {
 //   - model is the embedding model to use; if empty, the stored model is used.
 //
 // Returns:
-//   - A FileContextStore populated with the session's data.
+//   - A recall.FileContextStore populated with the session's data.
 //   - An error if the session file cannot be read or parsed.
 //
 // Side effects:
 //   - Reads a JSON file from the base directory.
-func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileContextStore, error) {
+func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*recall.FileContextStore, error) {
 	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
 
 	data, err := os.ReadFile(sessionPath)
@@ -192,14 +194,7 @@ func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*FileC
 		effectiveModel = sf.EmbeddingModel
 	}
 
-	store := &FileContextStore{
-		path:       "",
-		messages:   make([]StoredMessage, 0),
-		embeddings: make([]EmbeddingEntry, 0),
-		maxSize:    defaultMaxSize,
-		model:      effectiveModel,
-	}
-
+	store := recall.NewEmptyContextStore(effectiveModel)
 	store.LoadFromSession(sf.Messages, sf.Embeddings, sf.EmbeddingModel)
 
 	return store, nil
@@ -306,7 +301,7 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 // GenerateTitle generates a session title from the first user message in the message list.
 //
 // Expected:
-//   - messages is a slice of StoredMessage (may be empty).
+//   - messages is a slice of recall.StoredMessage (may be empty).
 //
 // Returns:
 //   - A string containing the content of the first user message, truncated to 60 characters
@@ -315,7 +310,7 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 //
 // Side effects:
 //   - None; this is a pure function.
-func GenerateTitle(messages []StoredMessage) string {
+func GenerateTitle(messages []recall.StoredMessage) string {
 	for _, msg := range messages {
 		if msg.Message.Role == "user" {
 			content := msg.Message.Content

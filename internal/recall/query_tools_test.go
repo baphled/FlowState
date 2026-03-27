@@ -1,4 +1,4 @@
-package context_test
+package recall_test
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	fscontext "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -57,7 +57,7 @@ var _ = Describe("ContextTools", func() {
 	var (
 		tempDir   string
 		storePath string
-		store     *fscontext.FileContextStore
+		store     *recall.FileContextStore
 	)
 
 	BeforeEach(func() {
@@ -66,7 +66,7 @@ var _ = Describe("ContextTools", func() {
 		Expect(err).NotTo(HaveOccurred())
 		storePath = filepath.Join(tempDir, "context.json")
 
-		store, err = fscontext.NewFileContextStore(storePath, "test-model")
+		store, err = recall.NewFileContextStore(storePath, "test-model")
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -77,14 +77,14 @@ var _ = Describe("ContextTools", func() {
 	Describe("SearchContextTool", func() {
 		var (
 			mockProv   *mockProvider
-			searchTool *fscontext.SearchContextTool
+			searchTool *recall.SearchContextTool
 		)
 
 		BeforeEach(func() {
 			mockProv = &mockProvider{
 				embedResult: []float64{0.1, 0.2, 0.3},
 			}
-			searchTool = fscontext.NewSearchContextTool(store, mockProv, 5)
+			searchTool = recall.NewSearchContextTool(store, mockProv, 5)
 		})
 
 		It("returns correct name", func() {
@@ -141,10 +141,10 @@ var _ = Describe("ContextTools", func() {
 	})
 
 	Describe("GetMessagesTool", func() {
-		var getMsgsTool *fscontext.GetMessagesTool
+		var getMsgsTool *recall.GetMessagesTool
 
 		BeforeEach(func() {
-			getMsgsTool = fscontext.NewGetMessagesTool(store)
+			getMsgsTool = recall.NewGetMessagesTool(store)
 		})
 
 		It("returns correct name", func() {
@@ -197,7 +197,7 @@ var _ = Describe("ContextTools", func() {
 		var (
 			mockProv      *mockProvider
 			mockCounter   *mockTokenCounter
-			summarizeTool *fscontext.SummarizeContextTool
+			summarizeTool *recall.SummarizeContextTool
 		)
 
 		BeforeEach(func() {
@@ -207,7 +207,7 @@ var _ = Describe("ContextTools", func() {
 				},
 			}
 			mockCounter = &mockTokenCounter{countResult: 10}
-			summarizeTool = fscontext.NewSummarizeContextTool(store, mockProv, 2, mockCounter, "test-model")
+			summarizeTool = recall.NewSummarizeContextTool(store, mockProv, 2, mockCounter, "test-model")
 		})
 
 		It("returns correct name", func() {
@@ -248,7 +248,7 @@ var _ = Describe("ContextTools", func() {
 		It("creates all three tools", func() {
 			mockProv := &mockProvider{}
 			mockCounter := &mockTokenCounter{}
-			tools := fscontext.NewContextQueryTools(store, mockProv, mockCounter, "test-model")
+			tools := recall.NewContextQueryTools(store, mockProv, mockCounter, "test-model")
 
 			Expect(tools.Search).NotTo(BeNil())
 			Expect(tools.GetMsgs).NotTo(BeNil())

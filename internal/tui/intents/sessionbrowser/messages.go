@@ -1,7 +1,7 @@
 package sessionbrowser
 
 import (
-	contextpkg "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // SessionSelectedMsg is sent when a session is selected from the browser.
@@ -13,6 +13,6 @@ type SessionSelectedMsg struct {
 // SessionLoadedMsg is sent when a session has been loaded from disk.
 type SessionLoadedMsg struct {
 	SessionID string
-	Store     *contextpkg.FileContextStore
+	Store     *recall.FileContextStore
 	Err       error
 }

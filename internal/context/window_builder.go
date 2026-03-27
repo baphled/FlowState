@@ -6,6 +6,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // BuildResult contains the outcome of building a context window.
@@ -19,7 +20,7 @@ type BuildResult struct {
 // buildOptions configures the internal context window build.
 type buildOptions struct {
 	summary         string
-	semanticResults []SearchResult
+	semanticResults []recall.SearchResult
 	logWarnings     bool
 }
 
@@ -46,7 +47,7 @@ func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 //
 // Expected:
 //   - manifest is a non-nil agent manifest with instructions and context settings.
-//   - store is a non-nil FileContextStore containing conversation messages.
+//   - store is a non-nil recall.FileContextStore containing conversation messages.
 //   - tokenBudget is the maximum number of tokens allowed in the window.
 //
 // Returns:
@@ -54,7 +55,7 @@ func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 //
 // Side effects:
 //   - None.
-func (b *WindowBuilder) Build(manifest *agent.Manifest, store *FileContextStore, tokenBudget int) BuildResult {
+func (b *WindowBuilder) Build(manifest *agent.Manifest, store *recall.FileContextStore, tokenBudget int) BuildResult {
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{})
 }
 
@@ -64,7 +65,7 @@ func (b *WindowBuilder) Build(manifest *agent.Manifest, store *FileContextStore,
 //   - ctx is a valid context.Context.
 //   - manifest is a non-nil agent manifest.
 //   - userMessage is the user's input text; may be empty.
-//   - store is a non-nil FileContextStore.
+//   - store is a non-nil recall.FileContextStore.
 //   - tokenBudget is the maximum number of tokens allowed.
 //
 // Returns:
@@ -76,7 +77,7 @@ func (b *WindowBuilder) BuildContext(
 	ctx context.Context,
 	manifest *agent.Manifest,
 	userMessage string,
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	tokenBudget int,
 ) []provider.Message {
 	_ = ctx
@@ -98,7 +99,7 @@ func (b *WindowBuilder) BuildContext(
 //   - ctx is a valid context.Context.
 //   - manifest is a non-nil agent manifest.
 //   - userMessage is the user's input text; may be empty.
-//   - store is a non-nil FileContextStore.
+//   - store is a non-nil recall.FileContextStore.
 //   - tokenBudget is the maximum number of tokens allowed.
 //
 // Returns:
@@ -110,7 +111,7 @@ func (b *WindowBuilder) BuildContextResult(
 	ctx context.Context,
 	manifest *agent.Manifest,
 	userMessage string,
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	tokenBudget int,
 ) BuildResult {
 	_ = ctx
@@ -133,7 +134,7 @@ func (b *WindowBuilder) BuildContextResult(
 //
 // Expected:
 //   - manifest is a non-nil agent manifest.
-//   - store is a non-nil FileContextStore.
+//   - store is a non-nil recall.FileContextStore.
 //   - tokenBudget is the maximum number of tokens allowed.
 //   - summary is the conversation summary text to include.
 //
@@ -144,7 +145,7 @@ func (b *WindowBuilder) BuildContextResult(
 //   - None.
 func (b *WindowBuilder) BuildWithSummary(
 	manifest *agent.Manifest,
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	tokenBudget int,
 	summary string,
 ) BuildResult {
@@ -155,9 +156,9 @@ func (b *WindowBuilder) BuildWithSummary(
 //
 // Expected:
 //   - manifest is a non-nil agent manifest.
-//   - store is a non-nil FileContextStore.
+//   - store is a non-nil recall.FileContextStore.
 //   - tokenBudget is the maximum number of tokens allowed.
-//   - semanticResults is a slice of SearchResult to include in the window.
+//   - semanticResults is a slice of recall.SearchResult to include in the window.
 //
 // Returns:
 //   - A BuildResult containing the assembled messages with semantic results.
@@ -166,9 +167,9 @@ func (b *WindowBuilder) BuildWithSummary(
 //   - None.
 func (b *WindowBuilder) BuildWithSemanticResults(
 	manifest *agent.Manifest,
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	tokenBudget int,
-	semanticResults []SearchResult,
+	semanticResults []recall.SearchResult,
 ) BuildResult {
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
 }
@@ -178,7 +179,7 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 //
 // Expected:
 //   - manifest is a non-nil agent manifest with instructions and context settings.
-//   - store is a non-nil FileContextStore containing conversation messages.
+//   - store is a non-nil recall.FileContextStore containing conversation messages.
 //   - tokenBudget is the maximum number of tokens allowed in the window.
 //   - opts contains optional summary, semantic results, and logging configuration.
 //
@@ -189,7 +190,7 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 //   - None.
 func (b *WindowBuilder) buildInternal(
 	manifest *agent.Manifest,
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	tokenBudget int,
 	opts buildOptions,
 ) BuildResult {
@@ -279,7 +280,7 @@ func (b *WindowBuilder) appendSummary(messages []provider.Message, budget *Token
 //   - messages is a slice of provider.Message to append to.
 //   - seenIDs is a map tracking message IDs already included in the window.
 //   - budget is a non-nil TokenBudget tracking token allocation.
-//   - semanticResults is a slice of SearchResult to append.
+//   - semanticResults is a slice of recall.SearchResult to append.
 //
 // Returns:
 //   - The updated message slice.
@@ -293,7 +294,7 @@ func (b *WindowBuilder) appendSemanticResults(
 	messages []provider.Message,
 	seenIDs map[string]bool,
 	budget *TokenBudget,
-	semanticResults []SearchResult,
+	semanticResults []recall.SearchResult,
 ) ([]provider.Message, map[string]bool, *TokenBudget) {
 	for _, sr := range semanticResults {
 		msgTokens := b.counter.Count(sr.Message.Content)
@@ -317,7 +318,7 @@ type messageState struct {
 // appendRecentMessages appends recent messages from the store to the context window, respecting the token budget.
 //
 // Expected:
-//   - store is a non-nil FileContextStore containing conversation messages.
+//   - store is a non-nil recall.FileContextStore containing conversation messages.
 //   - manifest is a non-nil agent manifest with context management settings.
 //   - state is a non-nil messageState tracking the current window assembly.
 //
@@ -327,7 +328,7 @@ type messageState struct {
 //   - Sets state.truncated if any message is truncated.
 //   - Skips messages already seen in the window.
 func (b *WindowBuilder) appendRecentMessages(
-	store *FileContextStore,
+	store *recall.FileContextStore,
 	manifest *agent.Manifest,
 	state *messageState,
 ) {
@@ -417,7 +418,7 @@ func (b *WindowBuilder) appendMessageWithBudget(
 // getMessageIDs retrieves the message IDs for the most recent count messages from the store.
 //
 // Expected:
-//   - store is a non-nil FileContextStore containing messages.
+//   - store is a non-nil recall.FileContextStore containing messages.
 //   - count is the number of recent message IDs to retrieve.
 //
 // Returns:
@@ -425,7 +426,7 @@ func (b *WindowBuilder) appendMessageWithBudget(
 //
 // Side effects:
 //   - None.
-func (b *WindowBuilder) getMessageIDs(store *FileContextStore, count int) []string {
+func (b *WindowBuilder) getMessageIDs(store *recall.FileContextStore, count int) []string {
 	total := store.Count()
 	start := total - count
 	if start < 0 {

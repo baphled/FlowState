@@ -12,6 +12,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -204,7 +205,7 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			testApp.Sessions = sessStore
 
-			store := ctxstore.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{
 				Role:    "user",
 				Content: "Hello session test",
@@ -230,7 +231,7 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			testApp.Sessions = sessStore
 
-			store := ctxstore.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			Expect(sessStore.Save("abcdefghijklmnop", store, ctxstore.SessionMetadata{})).To(Succeed())
 
 			out.Reset()
@@ -256,7 +257,7 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			testApp.Sessions = sessStore
 
-			store := ctxstore.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "user", Content: "hello"})
 			Expect(sessStore.Save("existing-session", store, ctxstore.SessionMetadata{
 				AgentID: "test-agent",
@@ -582,7 +583,7 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			testApp.Sessions = sessStore
 
-			store := ctxstore.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "user", Content: "old message"})
 			Expect(sessStore.Save("resume-test", store, ctxstore.SessionMetadata{
 				AgentID: "worker",
@@ -626,7 +627,7 @@ var _ = Describe("CLI Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			testApp.Sessions = sessStore
 
-			store := ctxstore.NewEmptyContextStore("")
+			store := recall.NewEmptyContextStore("")
 			store.Append(provider.Message{Role: "user", Content: "previous chat"})
 			Expect(sessStore.Save("chat-resume", store, ctxstore.SessionMetadata{
 				AgentID: "test-agent",

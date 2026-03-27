@@ -12,13 +12,14 @@ import (
 	"github.com/cucumber/godog"
 
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/recall"
 )
 
 // SessionEnrichmentSteps holds state for session enrichment BDD scenarios.
 type SessionEnrichmentSteps struct {
 	steps                *StepDefinitions
 	sessionStore         *ctxstore.FileSessionStore
-	reloadedContextStore *ctxstore.FileContextStore
+	reloadedContextStore *recall.FileContextStore
 	legacySessionID      string
 	tempDir              string
 	loadError            error
