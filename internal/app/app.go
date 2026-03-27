@@ -30,6 +30,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
+	recall "github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -144,7 +145,7 @@ type engineParams struct {
 	agentRegistry      *agent.Registry
 	defaultManifest    agent.Manifest
 	alwaysActiveSkills []skill.Skill
-	contextStore       *ctxstore.FileContextStore
+	contextStore       *recall.FileContextStore
 	learningStore      *learning.JSONFileStore
 	appTools           []tool.Tool
 	toolRegistry       *tool.Registry
@@ -996,8 +997,8 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //
 // Side effects:
 //   - None; creates an in-memory context store with no file I/O.
-func createContextStore(cfg *config.AppConfig) *ctxstore.FileContextStore {
-	return ctxstore.NewEmptyContextStore(cfg.Providers.Ollama.Model)
+func createContextStore(cfg *config.AppConfig) *recall.FileContextStore {
+	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model)
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.

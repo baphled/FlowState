@@ -541,64 +541,6 @@ func (m *blockingMockStreamer) Stream(_ context.Context, _, _ string) (<-chan pr
 	return m.ch, nil
 }
 
-type incrementalPhase struct {
-	phase   string
-	content string
-}
-
-type incrementalMockStreamer struct {
-	phaseOutputs     []incrementalPhase
-	fullPlan         string
-	fallbackResponse string
-	fallbackChunks   []provider.StreamChunk
-	callCount        int
-	fallbackCalled   bool
-}
-
-func newIncrementalMockStreamer() *incrementalMockStreamer {
-	return &incrementalMockStreamer{
-		phaseOutputs:   []incrementalPhase{},
-		fallbackCalled: false,
-	}
-}
-
-func (m *incrementalMockStreamer) Stream(_ context.Context, _ string, message string) (<-chan provider.StreamChunk, error) {
-	ch := make(chan provider.StreamChunk, 1)
-
-	// Check if this is a fallback call (contains "Generate ONLY" but not from incremental)
-	if m.fallbackCalled || len(m.fallbackChunks) > 0 {
-		m.fallbackCalled = true
-		go func() {
-			defer close(ch)
-			for _, c := range m.fallbackChunks {
-				ch <- c
-			}
-		}()
-		return ch, nil
-	}
-
-	// Incremental mode - return phase outputs
-	m.callCount++
-
-	phaseIndex := m.callCount - 1
-	if phaseIndex >= len(m.phaseOutputs) {
-		// Fallback to full plan if all phases returned
-		go func() {
-			defer close(ch)
-			ch <- provider.StreamChunk{Content: m.fullPlan}
-		}()
-		return ch, nil
-	}
-
-	phase := m.phaseOutputs[phaseIndex]
-	go func() {
-		defer close(ch)
-		ch <- provider.StreamChunk{Content: phase.content}
-	}()
-
-	return ch, nil
-}
-
 func splitPlanIntoChunks(planText string, count int) []provider.StreamChunk {
 	chunkSize := len(planText) / count
 	chunks := make([]provider.StreamChunk, 0, count)
@@ -758,7 +700,7 @@ var _ = Describe("Harness with ConsistencyVoter", func() {
 
 var _ = Describe("PlanHarness with IncrementalGenerator", func() {
 	var (
-		harness     *plan.PlanHarness
+		harness     *plan.Harness
 		projectRoot string
 	)
 
@@ -768,7 +710,7 @@ var _ = Describe("PlanHarness with IncrementalGenerator", func() {
 
 	Context("when incremental is not configured (nil)", func() {
 		It("uses normal streaming in Evaluate", func() {
-			harness = plan.NewPlanHarness(projectRoot)
+			harness = plan.NewHarness(projectRoot)
 			streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 			Expect(err).NotTo(HaveOccurred())
@@ -777,7 +719,7 @@ var _ = Describe("PlanHarness with IncrementalGenerator", func() {
 		})
 
 		It("uses normal streaming in StreamEvaluate", func() {
-			harness = plan.NewPlanHarness(projectRoot)
+			harness = plan.NewHarness(projectRoot)
 			validPlan := loadValidPlan()
 			chunks := []provider.StreamChunk{
 				{Content: validPlan},
@@ -789,112 +731,6 @@ var _ = Describe("PlanHarness with IncrementalGenerator", func() {
 			received := drainChunks(outCh)
 			completeChunks := filterEventChunks(received, "harness_complete")
 			Expect(completeChunks).To(HaveLen(1))
-		})
-	})
-
-	Context("when incremental is configured", func() {
-		var (
-			incrementalStreamer *incrementalMockStreamer
-			incrementalGen      *plan.IncrementalGenerator
-		)
-
-		BeforeEach(func() {
-			incrementalStreamer = newIncrementalMockStreamer()
-			incrementalGen = &plan.IncrementalGenerator{Streamer: incrementalStreamer, MaxRetries: 3}
-		})
-
-		Describe("Evaluate", func() {
-			It("uses incremental generator on first attempt", func() {
-				harness = plan.NewPlanHarness(projectRoot, plan.WithIncremental(incrementalGen))
-				incrementalStreamer.phaseOutputs = []incrementalPhase{
-					{phase: "Frontmatter", content: "---\nid: test\ntitle: Test\n---\n"},
-					{phase: "Rationale", content: "Rationale: Test rationale"},
-					{phase: "Tasks", content: "## Tasks\n- Task 1"},
-					{phase: "Waves", content: "## Waves\n- Wave 1"},
-					{phase: "SuccessCriteria", content: "## Success Criteria\n- Done"},
-					{phase: "Risks", content: "## Risks\n- Risk 1"},
-				}
-				incrementalStreamer.fullPlan = "---\nid: test\ntitle: Test\n---\n\nRationale: Test rationale\n\n## Tasks\n- Task 1\n\n## Waves\n- Wave 1\n\n## Success Criteria\n- Done\n\n## Risks\n- Risk 1"
-
-				result, err := harness.Evaluate(context.Background(), incrementalStreamer, "planner", "Generate a plan")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result).NotTo(BeNil())
-				// First attempt uses incremental - Generate() calls Stream() for each phase (6 phases)
-				Expect(incrementalStreamer.callCount).To(BeNumerically(">=", 6))
-			})
-
-			It("falls back to normal streaming on retry when validation fails", func() {
-				harness = plan.NewPlanHarness(projectRoot, plan.WithIncremental(incrementalGen))
-				// First attempt (incremental) returns invalid plan (missing tasks)
-				incrementalStreamer.phaseOutputs = []incrementalPhase{
-					{phase: "Frontmatter", content: "---\nid: test\ntitle: Test\n---\n"},
-					{phase: "Rationale", content: "Rationale: Test"},
-					{phase: "Tasks", content: "## Tasks\n- Task 1"},
-					{phase: "Waves", content: "## Waves\n- Wave 1"},
-					{phase: "SuccessCriteria", content: "## Success Criteria\n- Done"},
-					{phase: "Risks", content: "## Risks\n- Risk 1"},
-				}
-				incrementalStreamer.fullPlan = "---\nid: test\ntitle: Test\n---\n\nRationale: Test\n\n## Tasks\n- Task 1\n\n## Waves\n- Wave 1\n\n## Success Criteria\n- Done\n\n## Risks\n- Risk 1"
-
-				// Second attempt (fallback to normal) returns valid plan
-				incrementalStreamer.fallbackResponse = loadValidPlan()
-
-				result, err := harness.Evaluate(context.Background(), incrementalStreamer, "planner", "Generate a plan")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result).NotTo(BeNil())
-				// First attempt uses incremental (6 Stream calls), second uses fallback (1 Stream call)
-				Expect(incrementalStreamer.callCount).To(BeNumerically(">=", 7))
-			})
-		})
-
-		Describe("StreamEvaluate", func() {
-			It("streams phases and emits harness_phase_complete events", func() {
-				harness = plan.NewPlanHarness(projectRoot, plan.WithIncremental(incrementalGen))
-				incrementalStreamer.phaseOutputs = []incrementalPhase{
-					{phase: "Frontmatter", content: "---\nid: test\ntitle: Test\n---\n"},
-					{phase: "Rationale", content: "Rationale: Test"},
-					{phase: "Tasks", content: "## Tasks\n- Task 1"},
-					{phase: "Waves", content: "## Waves\n- Wave 1"},
-					{phase: "SuccessCriteria", content: "## Success Criteria\n- Done"},
-					{phase: "Risks", content: "## Risks\n- Risk 1"},
-				}
-				incrementalStreamer.fullPlan = "---\nid: test\ntitle: Test\n---\n\nRationale: Test\n\n## Tasks\n- Task 1\n\n## Waves\n- Wave 1\n\n## Success Criteria\n- Done\n\n## Risks\n- Risk 1"
-
-				outCh, err := harness.StreamEvaluate(context.Background(), incrementalStreamer, "planner", "Generate a plan")
-				Expect(err).NotTo(HaveOccurred())
-
-				received := drainChunks(outCh)
-				phaseCompleteChunks := filterEventChunks(received, "harness_phase_complete")
-				// Should have 6 phase complete events (Frontmatter, Rationale, Tasks, Waves, SuccessCriteria, Risks)
-				Expect(phaseCompleteChunks).To(HaveLen(6))
-			})
-
-			It("falls back to normal streaming on retry", func() {
-				harness = plan.NewPlanHarness(projectRoot, plan.WithIncremental(incrementalGen))
-				// First attempt (incremental) - we'll use a simple invalid response
-				incrementalStreamer.phaseOutputs = []incrementalPhase{
-					{phase: "Frontmatter", content: "---\nid: test\ntitle: Test\n---\n"},
-					{phase: "Rationale", content: "Rationale: Test"},
-					{phase: "Tasks", content: "## Tasks\n- Task 1"},
-					{phase: "Waves", content: "## Waves\n- Wave 1"},
-					{phase: "SuccessCriteria", content: "## Success Criteria\n- Done"},
-					{phase: "Risks", content: "## Risks\n- Risk 1"},
-				}
-				incrementalStreamer.fullPlan = "---\nid: test\ntitle: Test\n---\n"
-
-				// Second attempt (fallback to normal streaming)
-				incrementalStreamer.fallbackChunks = []provider.StreamChunk{
-					{Content: loadValidPlan()},
-					{Done: true},
-				}
-
-				outCh, err := harness.StreamEvaluate(context.Background(), incrementalStreamer, "planner", "Generate a plan")
-				Expect(err).NotTo(HaveOccurred())
-
-				received := drainChunks(outCh)
-				completeChunks := filterEventChunks(received, "harness_complete")
-				Expect(completeChunks).To(HaveLen(1))
-			})
 		})
 	})
 })
