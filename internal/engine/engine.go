@@ -31,6 +31,7 @@ type Engine struct {
 	manifest          agent.Manifest
 	tools             []tool.Tool
 	store             *recall.FileContextStore
+	chainStore        recall.ChainContextStore
 	windowBuilder     *ctxstore.WindowBuilder
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
@@ -54,6 +55,7 @@ type Config struct {
 	Tools             []tool.Tool
 	Skills            []skill.Skill
 	Store             *recall.FileContextStore
+	ChainStore        recall.ChainContextStore
 	TokenCounter      ctxstore.TokenCounter
 	StreamTimeout     time.Duration
 	HookChain         *hook.Chain
@@ -98,6 +100,7 @@ func New(cfg Config) *Engine {
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
 		store:             cfg.Store,
+		chainStore:        cfg.ChainStore,
 		windowBuilder:     windowBuilder,
 		tokenCounter:      cfg.TokenCounter,
 		streamTimeout:     timeout,
@@ -788,14 +791,35 @@ func (e *Engine) embedMessage(ctx context.Context, content string) {
 //
 // Side effects:
 //   - Appends a message to the context store if configured.
+//   - Dual-writes to the chain store if one is configured (assistant messages only).
 //   - Embeds the response if an embedding provider is configured.
 func (e *Engine) storeResponse(ctx context.Context, content string) {
 	if e.store == nil || content == "" {
 		return
 	}
 
-	e.store.Append(provider.Message{Role: "assistant", Content: content})
+	assistantMsg := provider.Message{Role: "assistant", Content: content}
+	e.store.Append(assistantMsg)
+	e.dualWriteToChainStore(assistantMsg)
 	e.embedMessage(ctx, content)
+}
+
+// dualWriteToChainStore appends an assistant message to the chain store if one is configured.
+//
+// Expected:
+//   - msg is the assistant message to dual-write.
+//
+// Side effects:
+//   - Appends msg to chainStore if non-nil.
+//   - Logs a warning if the chain store append fails.
+func (e *Engine) dualWriteToChainStore(msg provider.Message) {
+	if e.chainStore == nil {
+		return
+	}
+	agentID := e.manifest.ID
+	if err := e.chainStore.Append(agentID, msg); err != nil {
+		slog.Warn("chain store dual-write failed", "agentID", agentID, "error", err)
+	}
 }
 
 // SetContextStore sets the context store for session persistence.
