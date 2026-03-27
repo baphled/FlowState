@@ -210,17 +210,14 @@ func (h *Header) View() string {
 	theme := h.getTheme()
 	var parts []string
 
-	// Render breadcrumbs if present
 	if len(h.breadcrumbs) > 0 {
 		breadcrumbStr := h.renderBreadcrumbs(theme)
 		parts = append(parts, breadcrumbStr)
 	}
 
-	// Render title
 	titleStr := h.renderTitle(theme)
 	parts = append(parts, titleStr)
 
-	// Render subtitle if present
 	if h.subtitle != "" {
 		subtitleStr := h.renderSubtitle(theme)
 		parts = append(parts, subtitleStr)
@@ -255,8 +252,7 @@ func (h *Header) renderTitle(theme themes.Theme) string {
 		Padding(1, 0).
 		MarginBottom(1)
 
-	// Truncate title if it's too long
-	maxWidth := h.width - 4 // Account for potential padding
+	maxWidth := h.width - 4
 	if len(h.title) > maxWidth {
 		title := h.title[:maxWidth-3] + "..."
 		return titleStyle.Render(title)
@@ -281,7 +277,6 @@ func (h *Header) renderSubtitle(theme themes.Theme) string {
 		Italic(true).
 		MarginTop(1)
 
-	// Truncate subtitle if it's too long
 	maxWidth := h.width - 4
 	if len(h.subtitle) > maxWidth {
 		subtitle := h.subtitle[:maxWidth-3] + "..."
@@ -328,7 +323,6 @@ func (h *Header) GetClickedBreadcrumbIndex(x, _ int) int {
 		return -1
 	}
 
-	// Simple implementation: calculate breadcrumb positions
 	separator := " > "
 	currentX := 0
 

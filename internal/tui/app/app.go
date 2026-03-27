@@ -73,7 +73,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = wsm.Width
 		a.height = wsm.Height
 	}
-	// Handle modal messages first
 	if sim, ok := msg.(tuiintents.ShowModalMsg); ok && sim.Modal != nil {
 		a.modal = sim.Modal
 		cmd := sim.Modal.Init()
@@ -83,12 +82,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.modal = nil
 		return a, nil
 	}
-	// Handle intent switch
 	if sim, ok := msg.(tuiintents.SwitchToIntentMsg); ok && sim.Intent != nil {
 		a.intent = sim.Intent
 		return a, nil
 	}
-	// Delegate to active modal if present, otherwise to active intent
 	if a.modal != nil {
 		cmd := a.modal.Update(msg)
 		return a, cmd

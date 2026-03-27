@@ -192,7 +192,6 @@ func (mc *ModalContainer) Render() string {
 	theme := mc.getTheme()
 	var parts []string
 
-	// Determine styles based on destructive flag
 	var titleStyle, messageStyle, buttonStyle, instructionStyle lipgloss.Style
 
 	if mc.isDestructive {
@@ -227,17 +226,14 @@ func (mc *ModalContainer) Render() string {
 		MarginTop(2).
 		MarginBottom(1)
 
-	// Render title if present
 	if mc.hasTitle {
 		parts = append(parts, titleStyle.Render(mc.title))
 	}
 
-	// Render message if present
 	if mc.hasMessage {
 		parts = append(parts, messageStyle.Render(mc.message))
 	}
 
-	// Render buttons if present
 	if mc.hasButtons && len(mc.buttons) > 0 {
 		buttonTexts := []string{}
 		for _, btn := range mc.buttons {
@@ -248,12 +244,10 @@ func (mc *ModalContainer) Render() string {
 		parts = append(parts, buttonContainer)
 	}
 
-	// Render instructions if present
 	if mc.hasInstructions {
 		parts = append(parts, instructionStyle.Render(mc.instructions))
 	}
 
-	// Add scroll hint if enabled
 	if mc.showScrollHint {
 		scrollHint := lipgloss.NewStyle().
 			Foreground(theme.MutedColor()).
@@ -262,10 +256,8 @@ func (mc *ModalContainer) Render() string {
 		parts = append(parts, scrollHint)
 	}
 
-	// Combine all parts
 	content := strings.Join(parts, "\n")
 
-	// Apply modal styling with border and background
 	var modalStyle lipgloss.Style
 	if mc.isDestructive {
 		modalStyle = lipgloss.NewStyle().
@@ -283,7 +275,6 @@ func (mc *ModalContainer) Render() string {
 			Foreground(theme.ForegroundColor())
 	}
 
-	// Apply width if specified
 	if mc.width > 0 {
 		modalStyle = modalStyle.Width(mc.width)
 	}

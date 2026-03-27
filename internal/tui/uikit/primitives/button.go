@@ -141,12 +141,10 @@ func (b *Button) Render() string {
 func (b *Button) buildStyle() lipgloss.Style {
 	style := lipgloss.NewStyle()
 
-	// Base button styling
 	style = style.
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1)
 
-	// Apply variant colors
 	var fg, bg, border lipgloss.Color
 	switch b.variant {
 	case ButtonPrimary:
@@ -163,7 +161,6 @@ func (b *Button) buildStyle() lipgloss.Style {
 		border = b.ErrorColor()
 	}
 
-	// Apply disabled state (overrides variant colors)
 	if b.disabled {
 		fg = b.MutedColor()
 		bg = b.Theme().BackgroundColor()
@@ -176,7 +173,6 @@ func (b *Button) buildStyle() lipgloss.Style {
 		Background(bg).
 		BorderForeground(border)
 
-	// Apply focused state
 	if b.focused && !b.disabled {
 		style = style.
 			BorderForeground(b.AccentColor()).
@@ -184,7 +180,6 @@ func (b *Button) buildStyle() lipgloss.Style {
 			Bold(true)
 	}
 
-	// Apply width constraint if set
 	if b.width > 0 {
 		style = style.Width(b.width)
 	}

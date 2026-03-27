@@ -156,11 +156,9 @@ func (m *DetailModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "backspace", "enter", "q":
-			// Close modal
 			m.Hide()
 			return m, nil
 
-		// Scrolling keys - pass to viewport if content is scrollable
 		case "up", "k", "down", "j", "pgup", "pgdown", "ctrl+u", "ctrl+d":
 			if m.ready && m.hasContent {
 				m.viewport, cmd = m.viewport.Update(msg)
@@ -186,35 +184,31 @@ func (m *DetailModal) View() string {
 
 	theme := m.getTheme()
 
-	// Calculate modal dimensions
 	maxModalHeight := 30
 	terminalMaxHeight := int(float64(m.height) * 0.7)
 	if terminalMaxHeight < maxModalHeight {
 		maxModalHeight = terminalMaxHeight
 	}
 	if maxModalHeight < 10 {
-		maxModalHeight = 10 // Minimum usable height
+		maxModalHeight = 10
 	}
 
-	modalWidth := m.width - 12 // Leave margins
+	modalWidth := m.width - 12
 	if modalWidth < 60 {
-		modalWidth = 60 // Ensure minimum readable width
+		modalWidth = 60
 	}
 	if modalWidth > 80 {
-		modalWidth = 80 // Max width for readability
+		modalWidth = 80
 	}
 
-	// Calculate viewport dimensions
 	contentLines := strings.Split(m.content, "\n")
 	contentHeight := len(contentLines)
 
-	// Calculate viewport height (modal height - borders - padding - title - footer)
-	viewportHeight := maxModalHeight - 8 // Account for border (2), padding (2), title (2), footer (2)
+	viewportHeight := maxModalHeight - 8
 	if viewportHeight < 5 {
 		viewportHeight = 5
 	}
 
-	// Initialize viewport if needed
 	if !m.ready {
 		vpWidth := modalWidth - 4
 		if vpWidth < 10 {
@@ -226,23 +220,18 @@ func (m *DetailModal) View() string {
 		m.ready = true
 	}
 
-	// Build title using UIKit
 	titleRendered := primitives.Title(m.title, theme).Render()
 
-	// Build footer with UIKit primitives
 	var scrollHint string
 	if len(m.footerBadges) > 0 {
-		// Use custom badges
 		badges := m.footerBadges
 		if m.hasContent {
-			// Add scroll percentage if scrollable
 			percentScrolled := int(m.viewport.ScrollPercent() * 100)
 			badges = append(badges, primitives.HelpKeyBadge("↑↓/jk", "Scroll", theme))
 			badges = append([]*primitives.Badge{primitives.HelpKeyBadge(formatPercent(percentScrolled), "", theme)}, badges...)
 		}
 		scrollHint = primitives.RenderHelpFooter(theme, badges...)
 	} else {
-		// Default footer
 		badges := []*primitives.Badge{
 			primitives.HelpKeyBadge("↑↓/jk", "Scroll", theme),
 			primitives.HelpKeyBadge("Enter/Esc", "Close", theme),
@@ -254,10 +243,8 @@ func (m *DetailModal) View() string {
 		scrollHint = primitives.RenderHelpFooter(theme, badges...)
 	}
 
-	// Build modal content
 	modalContent := lipgloss.JoinVertical(lipgloss.Left, titleRendered, "", m.viewport.View(), "", scrollHint)
 
-	// Wrap in styled box with solid background using UIKit
 	return containers.NewBox(theme).
 		Content(modalContent).
 		Width(modalWidth).

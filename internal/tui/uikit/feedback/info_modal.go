@@ -155,7 +155,6 @@ func (m *InfoModal) Update(msg tea.Msg) bool {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "enter", " ", "esc":
-			// User dismissed the modal
 			m.visible = false
 			return true
 		}
@@ -178,18 +177,14 @@ func (m *InfoModal) View() string {
 
 	theme := m.getTheme()
 
-	// Get border color based on variant
 	borderColor := m.getBorderColor()
 
-	// Build footer with KeyBadge components
 	footer := primitives.RenderHelpFooter(theme,
 		primitives.HelpKeyBadge("Enter/Esc", "Close", theme),
 	)
 
-	// Build modal content
 	var content strings.Builder
 
-	// Title (styled based on variant)
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(borderColor).
@@ -197,17 +192,14 @@ func (m *InfoModal) View() string {
 	content.WriteString(titleStyle.Render(m.title))
 	content.WriteString("\n\n")
 
-	// Message (wrapped to modal width)
 	messageStyle := lipgloss.NewStyle().
 		Width(50).
 		MarginBottom(1)
 	content.WriteString(messageStyle.Render(m.message))
 	content.WriteString("\n\n")
 
-	// Footer
 	content.WriteString(footer)
 
-	// Create modal box (centered, with border)
 	modalWidth := 60
 	if modalWidth > m.width-4 {
 		modalWidth = m.width - 4

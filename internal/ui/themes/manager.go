@@ -34,7 +34,6 @@ func NewThemeManager() *ThemeManager {
 		nextID:      0,
 	}
 
-	// Register and activate the default theme
 	defaultTheme := NewDefaultTheme()
 	tm.themes[defaultTheme.Name()] = defaultTheme
 	tm.active = defaultTheme
@@ -109,7 +108,6 @@ func (tm *ThemeManager) SetActive(name string) error {
 
 	tm.active = theme
 
-	// Notify all listeners
 	for _, callback := range tm.onChange {
 		callback(theme)
 	}

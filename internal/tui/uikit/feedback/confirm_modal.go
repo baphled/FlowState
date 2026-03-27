@@ -154,13 +154,11 @@ func (m *ConfirmModal) Update(msg tea.Msg) (tea.Cmd, bool) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "y", "Y", "enter":
-			// User confirmed
 			m.confirmed = true
 			m.visible = false
 			return nil, true
 
 		case "n", "N", "esc":
-			// User cancelled
 			m.confirmed = false
 			m.visible = false
 			return nil, false
@@ -184,28 +182,22 @@ func (m *ConfirmModal) View() string {
 
 	theme := m.getTheme()
 
-	// Build footer with primitives showing keyboard shortcuts
 	footer := primitives.RenderHelpFooter(theme,
 		primitives.HelpKeyBadge("y/Enter", "Confirm", theme),
 		primitives.HelpKeyBadge("n/Esc", "Cancel", theme),
 	)
 
-	// Build modal content
 	var content strings.Builder
 
-	// Title using appropriate text style based on variant
 	titleText := m.renderTitle(theme)
 	content.WriteString(titleText)
 	content.WriteString("\n\n")
 
-	// Message (wrapped to modal width)
 	content.WriteString(primitives.Body(m.message, theme).Width(50).MarginBottom(1).Render())
 	content.WriteString("\n\n")
 
-	// Footer
 	content.WriteString(footer)
 
-	// Calculate modal width
 	modalWidth := 60
 	if modalWidth > m.width-4 {
 		modalWidth = m.width - 4
@@ -214,7 +206,6 @@ func (m *ConfirmModal) View() string {
 		modalWidth = 40
 	}
 
-	// Use UIKit Box with appropriate variant
 	boxVariant := m.getBoxVariant()
 	return containers.NewBox(theme).
 		Content(content.String()).

@@ -68,7 +68,6 @@ func (ti *TerminalInfo) Supports256Colors() bool {
 // Side effects:
 //   - None.
 func DetectColorDepth() ColorDepth {
-	// Check COLORTERM first for true color support
 	colorterm := os.Getenv("COLORTERM")
 	if colorterm != "" {
 		if colorterm == "truecolor" || colorterm == "24bit" {
@@ -76,13 +75,11 @@ func DetectColorDepth() ColorDepth {
 		}
 	}
 
-	// Check TERM for 256 color support
 	term := os.Getenv("TERM")
 	if strings.Contains(term, "256color") {
 		return ColorDepth256
 	}
 
-	// Default to basic 16 colors
 	return ColorDepth16
 }
 
@@ -94,21 +91,16 @@ func DetectColorDepth() ColorDepth {
 // Side effects:
 //   - None.
 func DetectDarkMode() bool {
-	// Check COLORFGBG environment variable
-	// Format: "foreground;background" where values 0-7 are dark, 8-15 are light
 	colorfgbg := os.Getenv("COLORFGBG")
 	if colorfgbg != "" {
 		parts := strings.Split(colorfgbg, ";")
 		if len(parts) >= 2 {
-			// The last part is the background color
 			if bg, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
-				// Dark backgrounds are typically 0-7
 				return bg < 8
 			}
 		}
 	}
 
-	// Default to dark mode (most terminal users prefer dark themes)
 	return true
 }
 
@@ -119,20 +111,17 @@ func DetectDarkMode() bool {
 func (tm *ThemeManager) AutoSelect() {
 	info := NewTerminalInfo()
 
-	// Get list of available themes
 	themeNames := tm.List()
 	if len(themeNames) == 0 {
 		return
 	}
 
-	// Try to find a theme matching the terminal's dark/light mode preference
 	for _, name := range themeNames {
 		theme, err := tm.Get(name)
 		if err != nil {
 			continue
 		}
 
-		// Match dark/light mode
 		if theme.IsDark() == info.IsDark {
 			if tm.SetActive(name) != nil {
 				continue
@@ -141,10 +130,8 @@ func (tm *ThemeManager) AutoSelect() {
 		}
 	}
 
-	// Fall back to default theme if no match found
 	if _, err := tm.Get("default"); err == nil {
 		if err := tm.SetActive("default"); err != nil {
-			// Default theme couldn't be set, nothing more to do
 			_ = err
 		}
 	}

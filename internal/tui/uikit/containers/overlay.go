@@ -97,10 +97,8 @@ func (o *Overlay) DimmedWith(char rune) *Overlay {
 // Side effects:
 //   - None.
 func (o *Overlay) Render() string {
-	// Create background if dimmed
 	var background string
 	if o.dimmed {
-		// Fill with dim characters
 		dimLine := strings.Repeat(string(o.dimChar), o.width)
 		dimLines := make([]string, o.height)
 		for i := range dimLines {
@@ -108,12 +106,10 @@ func (o *Overlay) Render() string {
 		}
 		background = strings.Join(dimLines, "\n")
 
-		// Style the background with muted color
 		backgroundStyle := lipgloss.NewStyle().
 			Foreground(o.MutedColor())
 		background = backgroundStyle.Render(background)
 	} else {
-		// Empty background
 		emptyLine := strings.Repeat(" ", o.width)
 		emptyLines := make([]string, o.height)
 		for i := range emptyLines {
@@ -122,12 +118,10 @@ func (o *Overlay) Render() string {
 		background = strings.Join(emptyLines, "\n")
 	}
 
-	// If no content, just return background
 	if o.content == "" {
 		return background
 	}
 
-	// Place content in center using lipgloss.Place
 	centered := lipgloss.Place(
 		o.width,
 		o.height,

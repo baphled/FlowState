@@ -200,7 +200,6 @@ func (m *HelpModal) ToggleFullHelp() {
 //   - May toggle full/short help view.
 func (m *HelpModal) Update(msg tea.Msg) (consumed bool, cmd tea.Cmd) {
 	if !m.visible {
-		// Check if help key was pressed to open
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
 			if key.Matches(keyMsg, DefaultHelpModalKeyMap().Toggle) {
 				m.Show()
@@ -210,7 +209,6 @@ func (m *HelpModal) Update(msg tea.Msg) (consumed bool, cmd tea.Cmd) {
 		return false, nil
 	}
 
-	// Modal is visible - handle keys
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch {
 		case key.Matches(keyMsg, DefaultHelpModalKeyMap().Close):
@@ -246,10 +244,8 @@ func (m *HelpModal) View() string {
 		content = m.help.ShortHelpView(m.keyMap.ShortHelp())
 	}
 
-	// Build the modal content
 	var sb strings.Builder
 
-	// Title using theme colors
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(t.AccentColor()).
@@ -258,11 +254,9 @@ func (m *HelpModal) View() string {
 	sb.WriteString(titleStyle.Render("Keyboard Shortcuts"))
 	sb.WriteString("\n\n")
 
-	// Help content
 	sb.WriteString(content)
 	sb.WriteString("\n\n")
 
-	// Footer with toggle hint using theme colors
 	footerStyle := lipgloss.NewStyle().
 		Foreground(t.SecondaryColor()).
 		Italic(true)
@@ -273,7 +267,6 @@ func (m *HelpModal) View() string {
 		sb.WriteString(footerStyle.Render("Press ? or esc to close • f for full help"))
 	}
 
-	// Modal container using UIKit Box with solid background
 	modalWidth := m.width - 10
 	if modalWidth < 40 {
 		modalWidth = 40

@@ -223,12 +223,10 @@ func (f *Footer) View() string {
 	theme := f.getTheme()
 	var parts []string
 
-	// Render status and mode on top line if both present
 	if f.showStatus && f.statusMessage != "" && f.showMode && f.modeContext != "" {
 		statusModeLine := f.renderStatusAndMode(theme)
 		parts = append(parts, statusModeLine)
 	} else {
-		// Render them separately if only one is shown
 		if f.showStatus && f.statusMessage != "" {
 			parts = append(parts, f.renderStatus(theme))
 		}
@@ -237,7 +235,6 @@ func (f *Footer) View() string {
 		}
 	}
 
-	// Render help text if present
 	if f.showHelp && f.helpText != "" {
 		helpView := f.renderHelp(theme)
 		if helpView != "" {
@@ -270,16 +267,13 @@ func (f *Footer) renderStatusAndMode(theme themes.Theme) string {
 		Foreground(theme.MutedColor()).
 		Italic(true)
 
-	// Format: "3/10 events  |  Capture Mode: Timeline"
 	status := statusStyle.Render(f.statusMessage)
 	mode := modeStyle.Render(f.modeContext)
 	separator := separatorStyle.Render("  |  ")
 
 	line := status + separator + mode
 
-	// Truncate if too long (use lipgloss.Width for ANSI-safe width calculation)
 	if lipgloss.Width(line) > f.width {
-		// Just show status if combined is too long
 		return status
 	}
 

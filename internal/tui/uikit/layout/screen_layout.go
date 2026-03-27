@@ -318,7 +318,6 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 		parts = append(parts, logoOutput, "")
 	}
 
-	// Add header section (breadcrumbs or title/subtitle)
 	if sl.ShowHeader {
 		if len(sl.Breadcrumbs) > 0 {
 			crumbs := make([]navigation.Breadcrumb, len(sl.Breadcrumbs))
@@ -406,21 +405,17 @@ func (sl *ScreenLayout) buildFooterParts(theme themes.Theme) []string {
 func (sl *ScreenLayout) GetAvailableContentHeight() int {
 	theme := sl.getTheme()
 
-	// Build header and footer using shared helpers
 	headerParts := sl.buildHeaderParts(theme)
 	footerParts := sl.buildFooterParts(theme)
 
-	// Calculate heights
 	header := lipgloss.JoinVertical(lipgloss.Left, headerParts...)
 	footer := lipgloss.JoinVertical(lipgloss.Left, footerParts...)
 
 	headerHeight := lipgloss.Height(header)
 	footerHeight := lipgloss.Height(footer)
 
-	// Calculate available content height
 	availableHeight := sl.TerminalInfo.Height - headerHeight - footerHeight
 
-	// Ensure minimum height of 1
 	if availableHeight < 1 {
 		availableHeight = 1
 	}
@@ -438,28 +433,20 @@ func (sl *ScreenLayout) GetAvailableContentHeight() int {
 func (sl *ScreenLayout) Render() string {
 	theme := sl.getTheme()
 
-	// === HEADER SECTION (pinned to top) ===
-	// Use shared helper to ensure consistent layout with GetAvailableContentHeight
 	headerParts := sl.buildHeaderParts(theme)
-
-	// === FOOTER SECTION (pinned to bottom) ===
-	// Use shared helper to ensure consistent layout with GetAvailableContentHeight
 	footerParts := sl.buildFooterParts(theme)
 
-	// === ASSEMBLE WITH VIEWPORT ===
 	header := lipgloss.JoinVertical(lipgloss.Left, headerParts...)
 	footer := lipgloss.JoinVertical(lipgloss.Left, footerParts...)
 
 	headerHeight := lipgloss.Height(header)
 	footerHeight := lipgloss.Height(footer)
 
-	// Calculate the fixed content area height
 	contentAreaHeight := sl.TerminalInfo.Height - headerHeight - footerHeight
 	if contentAreaHeight < 1 {
 		contentAreaHeight = 1
 	}
 
-	// Prepare the raw content string
 	contentToRender := sl.Content
 	if contentToRender != "" {
 		hasStyle := sl.ContentStyle.GetBackground() != lipgloss.NoColor{} || sl.ContentStyle.GetForeground() != lipgloss.NoColor{}
@@ -468,14 +455,12 @@ func (sl *ScreenLayout) Render() string {
 		}
 	}
 
-	// Left-align content within the available area.
 	contentStyle := lipgloss.NewStyle().
 		Width(sl.TerminalInfo.Width).
 		Height(contentAreaHeight).
 		MaxHeight(contentAreaHeight)
 	contentView := contentStyle.Render(contentToRender)
 
-	// Combine all sections
 	var allParts []string
 	if header != "" {
 		allParts = append(allParts, header)
@@ -487,16 +472,12 @@ func (sl *ScreenLayout) Render() string {
 
 	combined := lipgloss.JoinVertical(lipgloss.Left, allParts...)
 
-	// Place with Top vertical alignment (pins to top)
 	rendered := lipgloss.Place(sl.TerminalInfo.Width, sl.TerminalInfo.Height,
 		lipgloss.Left, lipgloss.Top, combined)
 
-	// Add modal overlay if needed
 	if sl.ShowModal && sl.Modal != nil {
-		// Dim the background content
 		dimmedContent := sl.dimContent(rendered)
 		modalOutput := sl.Modal.Render(sl.TerminalInfo.Width, sl.TerminalInfo.Height)
-		// Overlay modal on top of dimmed content
 		rendered = sl.overlayModal(dimmedContent, modalOutput)
 	}
 
@@ -534,7 +515,6 @@ func (sl *ScreenLayout) overlayModal(background, modal string) string {
 	bgLines := strings.Split(background, "\n")
 	modalLines := strings.Split(modal, "\n")
 
-	// Calculate vertical position to center modal
 	bgHeight := len(bgLines)
 	modalHeight := len(modalLines)
 	startLine := (bgHeight - modalHeight) / 2
@@ -542,14 +522,12 @@ func (sl *ScreenLayout) overlayModal(background, modal string) string {
 		startLine = 0
 	}
 
-	// Overlay modal lines onto background
 	result := make([]string, len(bgLines))
 	copy(result, bgLines)
 
 	for i, modalLine := range modalLines {
 		lineIndex := startLine + i
 		if lineIndex >= 0 && lineIndex < len(result) {
-			// Center modal line horizontally using lipgloss.PlaceHorizontal
 			centeredModalLine := lipgloss.PlaceHorizontal(sl.TerminalInfo.Width, lipgloss.Center, modalLine)
 			result[lineIndex] = centeredModalLine
 		}

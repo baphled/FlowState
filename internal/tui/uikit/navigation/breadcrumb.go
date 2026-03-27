@@ -195,30 +195,25 @@ func (b *BreadcrumbBar) View() string {
 
 	theme := b.getTheme()
 
-	// Build breadcrumb string
 	separator := "  ▸  "
 	var parts []string
 
 	for i, crumb := range b.crumbs {
 		var part string
 
-		// Add icon if enabled
 		if b.showIcon && crumb.Icon != "" {
 			part = crumb.Icon + " " + crumb.Label
 		} else {
 			part = crumb.Label
 		}
 
-		// Style based on position
 		if i == len(b.crumbs)-1 {
-			// Last breadcrumb - current location (bold and accent color)
 			styledPart := lipgloss.NewStyle().
 				Foreground(theme.AccentColor()).
 				Bold(true).
 				Render(part)
 			parts = append(parts, styledPart)
 		} else {
-			// Previous breadcrumbs - muted
 			styledPart := lipgloss.NewStyle().
 				Foreground(theme.MutedColor()).
 				Render(part)
@@ -228,14 +223,11 @@ func (b *BreadcrumbBar) View() string {
 
 	breadcrumbStr := strings.Join(parts, separator)
 
-	// Check if it fits in the width
 	visualWidth := lipgloss.Width(breadcrumbStr)
 	if visualWidth > b.width-4 && len(b.crumbs) > 2 {
-		// Too long - show only first and last with ellipsis
 		breadcrumbStr = b.renderTruncated(theme)
 	}
 
-	// Add box if enabled
 	if b.boxed {
 		boxStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -266,10 +258,8 @@ func (b *BreadcrumbBar) renderTruncated(theme themes.Theme) string {
 	first := b.crumbs[0]
 	last := b.crumbs[len(b.crumbs)-1]
 
-	// Build truncated string
 	var firstPart, lastPart string
 
-	// First crumb
 	if b.showIcon && first.Icon != "" {
 		firstPart = first.Icon + " " + first.Label
 	} else {
@@ -279,7 +269,6 @@ func (b *BreadcrumbBar) renderTruncated(theme themes.Theme) string {
 		Foreground(theme.MutedColor()).
 		Render(firstPart)
 
-	// Last crumb
 	if b.showIcon && last.Icon != "" {
 		lastPart = last.Icon + " " + last.Label
 	} else {

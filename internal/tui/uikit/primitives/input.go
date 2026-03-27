@@ -213,16 +213,13 @@ func (i *Input) Init() tea.Cmd {
 func (i *Input) Render() string {
 	var parts []string
 
-	// Render label if set
 	if i.label != "" {
 		labelText := i.labelStyle.Render(i.label)
 		parts = append(parts, labelText)
 	}
 
-	// Render input field with border
 	inputView := i.textInput.View()
 
-	// Apply border based on focus state
 	borderColor := i.BorderColor()
 	if i.textInput.Focused() {
 		borderColor = i.AccentColor()
@@ -236,7 +233,6 @@ func (i *Input) Render() string {
 		Render(inputView)
 	parts = append(parts, borderedInput)
 
-	// Render error message if set
 	if i.errorMsg != "" {
 		errorText := i.errorStyle.Render(i.errorMsg)
 		parts = append(parts, errorText)
@@ -250,23 +246,19 @@ func (i *Input) Render() string {
 // Side effects:
 //   - Mutates i.labelStyle, i.errorStyle, and i.borderStyle fields.
 func (i *Input) applyTheming() {
-	// Label styling
 	i.labelStyle = lipgloss.NewStyle().
 		Foreground(i.SecondaryColor()).
 		Bold(true).
 		MarginBottom(0)
 
-	// Error styling
 	i.errorStyle = lipgloss.NewStyle().
 		Foreground(i.ErrorColor()).
 		MarginTop(0)
 
-	// Border styling
 	i.borderStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1)
 
-	// Apply theme to textinput
 	i.textInput.TextStyle = lipgloss.NewStyle().Foreground(i.Theme().ForegroundColor())
 	i.textInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(i.MutedColor())
 	i.textInput.PromptStyle = lipgloss.NewStyle().Foreground(i.PrimaryColor())

@@ -859,7 +859,6 @@ func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider
 		}
 	}
 
-	// Anthropic: Try OpenCode first, then env, then config
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	if anthropicKey == "" {
 		anthropicKey = cfg.Providers.Anthropic.APIKey
@@ -869,7 +868,6 @@ func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider
 		providerRegistry.Register(anthropicProvider)
 	}
 
-	// GitHub Copilot: Try OpenCode first, then env, then config
 	githubToken := os.Getenv("GITHUB_TOKEN")
 	if githubToken == "" {
 		githubToken = cfg.Providers.GitHub.APIKey

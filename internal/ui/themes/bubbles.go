@@ -20,7 +20,6 @@ import (
 // Side effects:
 //   - None.
 func NewThemedListStyles(theme Theme) list.Styles {
-	// Return default styles if theme is nil
 	if theme == nil {
 		return list.DefaultStyles()
 	}
@@ -28,54 +27,42 @@ func NewThemedListStyles(theme Theme) list.Styles {
 	palette := theme.Palette()
 	styles := list.DefaultStyles()
 
-	// Style the title bar
 	styles.TitleBar = lipgloss.NewStyle().
 		Foreground(palette.Foreground).
 		Background(palette.BackgroundCard).
 		Padding(0, 1)
 
-	// Style the title
 	styles.Title = lipgloss.NewStyle().
 		Foreground(palette.Primary).
 		Bold(true)
 
-	// Style the spinner
 	styles.Spinner = lipgloss.NewStyle().
 		Foreground(palette.Primary)
 
-	// Style the filter prompt
 	styles.FilterPrompt = lipgloss.NewStyle().
 		Foreground(palette.Primary)
 
-	// Style the filter cursor
 	styles.FilterCursor = lipgloss.NewStyle().
 		Foreground(palette.Primary)
 
-	// Style the status bar
 	styles.StatusBar = lipgloss.NewStyle().
 		Foreground(palette.ForegroundDim)
 
-	// Style the status empty message
 	styles.StatusEmpty = lipgloss.NewStyle().
 		Foreground(palette.ForegroundMuted)
 
-	// Style the no items message
 	styles.NoItems = lipgloss.NewStyle().
 		Foreground(palette.ForegroundMuted)
 
-	// Style the pagination
 	styles.PaginationStyle = lipgloss.NewStyle().
 		Foreground(palette.ForegroundDim)
 
-	// Style the active pagination dot
 	styles.ActivePaginationDot = lipgloss.NewStyle().
 		Foreground(palette.Primary)
 
-	// Style the inactive pagination dot
 	styles.InactivePaginationDot = lipgloss.NewStyle().
 		Foreground(palette.ForegroundMuted)
 
-	// Style the help
 	styles.HelpStyle = lipgloss.NewStyle().
 		Foreground(palette.ForegroundDim)
 
@@ -93,7 +80,6 @@ func NewThemedListStyles(theme Theme) list.Styles {
 // Side effects:
 //   - None.
 func NewThemedTableStyles(theme Theme) table.Styles {
-	// Return default styles if theme is nil
 	if theme == nil {
 		return table.DefaultStyles()
 	}
@@ -101,7 +87,6 @@ func NewThemedTableStyles(theme Theme) table.Styles {
 	palette := theme.Palette()
 	styles := table.DefaultStyles()
 
-	// Style the header row
 	styles.Header = lipgloss.NewStyle().
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(palette.Border).
@@ -110,14 +95,12 @@ func NewThemedTableStyles(theme Theme) table.Styles {
 		Foreground(palette.Primary).
 		Padding(0, 1)
 
-	// Style the selected row
 	styles.Selected = lipgloss.NewStyle().
 		Foreground(palette.Foreground).
 		Background(palette.Selection).
 		Bold(true).
 		Padding(0, 1)
 
-	// Style the cells
 	styles.Cell = lipgloss.NewStyle().
 		Foreground(palette.Foreground).
 		Padding(0, 1)
@@ -136,14 +119,12 @@ func NewThemedTableStyles(theme Theme) table.Styles {
 // Side effects:
 //   - None.
 func NewThemedProgress(theme Theme) progress.Model {
-	// Create default progress model if theme is nil
 	if theme == nil {
 		return progress.New(progress.WithDefaultGradient())
 	}
 
 	palette := theme.Palette()
 
-	// Create progress bar with theme-aware gradient
 	p := progress.New(
 		progress.WithGradient(
 			string(palette.Primary),
@@ -168,7 +149,6 @@ func NewThemedSpinner(theme Theme) spinner.Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
-	// Apply theme color if available
 	if theme != nil {
 		palette := theme.Palette()
 		s.Style = lipgloss.NewStyle().Foreground(palette.Primary)
@@ -188,9 +168,7 @@ func NewThemedSpinner(theme Theme) spinner.Model {
 // Side effects:
 //   - None.
 func NewThemedHelpStyles(theme Theme) help.Styles {
-	// Return default styles if theme is nil
 	if theme == nil {
-		// Create sensible defaults manually
 		return help.Styles{
 			ShortKey:       lipgloss.NewStyle().Bold(true),
 			ShortDesc:      lipgloss.NewStyle(),

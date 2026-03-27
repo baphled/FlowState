@@ -942,7 +942,6 @@ func (o *OverlayModal) buildContent() string {
 	theme := o.getTheme()
 	var parts []string
 
-	// Add title with styling
 	if o.Title != "" {
 		titleStyle := lipgloss.NewStyle().
 			Bold(true).
@@ -951,12 +950,10 @@ func (o *OverlayModal) buildContent() string {
 		parts = append(parts, titleStyle.Render(o.Title))
 	}
 
-	// Add content
 	if o.Content != "" {
 		parts = append(parts, o.Content)
 	}
 
-	// Add footer with muted styling
 	if o.Footer != "" {
 		footerStyle := lipgloss.NewStyle().
 			Foreground(theme.MutedColor()).
@@ -1105,10 +1102,8 @@ func RenderOverlay(background, modalContent string, termWidth, termHeight int, t
 		theme = themes.NewDefaultTheme()
 	}
 
-	// Dim the entire background first
 	dimmedBg := DimContent(background)
 
-	// Create modal box with border
 	modalStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderColor()).
@@ -1117,7 +1112,6 @@ func RenderOverlay(background, modalContent string, termWidth, termHeight int, t
 
 	modalBox := modalStyle.Render(modalContent)
 
-	// Split both into lines
 	bgLines := strings.Split(dimmedBg, "\n")
 	modalLines := strings.Split(modalBox, "\n")
 
@@ -1126,11 +1120,9 @@ func RenderOverlay(background, modalContent string, termWidth, termHeight int, t
 	modalLines, _ = truncateModalLines(modalLines, len(modalLines), availableHeight)
 	bgLines = normalizeBackgroundLines(bgLines, termWidth, termHeight)
 
-	// Create result by copying background
 	result := make([]string, termHeight)
 	copy(result, bgLines)
 
-	// Overlay modal lines (centered horizontally) onto the background
 	for i, modalLine := range modalLines {
 		lineIndex := startY + i
 		if lineIndex >= 0 && lineIndex < termHeight {

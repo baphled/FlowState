@@ -3343,8 +3343,10 @@ func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 	})
 
 	s.mcpServerErr = make(chan error, 1)
+	srv := s.mcpServer
+	transport := s.mcpServerTransport
 	go func() {
-		s.mcpServerErr <- s.mcpServer.Run(context.Background(), s.mcpServerTransport)
+		s.mcpServerErr <- srv.Run(context.Background(), transport)
 	}()
 
 	// Give the server a moment to start before accepting connections

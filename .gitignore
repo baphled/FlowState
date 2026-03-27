@@ -54,3 +54,6 @@ test-results/
 # Sisyphus planning artefacts (never commit)
 .sisyphus/
 demos/temp_demo_env/
+
+# Editor temporary files
+tmp/
