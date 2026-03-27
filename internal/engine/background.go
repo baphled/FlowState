@@ -241,6 +241,30 @@ func (m *BackgroundTaskManager) Cancel(id string) error {
 	return nil
 }
 
+// CancelAll requests cancellation of all running and pending tasks.
+//
+// Returns:
+//   - A slice of task IDs that were successfully cancelled (empty slice if none cancelled).
+//
+// Side effects:
+//   - Calls the context cancel function for each active task.
+func (m *BackgroundTaskManager) CancelAll() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cancelledIDs := make([]string, 0)
+
+	for id, task := range m.tasks {
+		status := task.Status.Load()
+		if status == "pending" || status == "running" {
+			task.cancel()
+			cancelledIDs = append(cancelledIDs, id)
+		}
+	}
+
+	return cancelledIDs
+}
+
 // List returns all tracked tasks.
 //
 // Returns:
