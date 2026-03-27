@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -998,6 +1000,128 @@ var _ = Describe("Delegation", func() {
 
 				Expect(writerEngine.LastModel()).To(Equal("llama3.2"))
 				Expect(writerEngine.LastProvider()).To(Equal("ollama"))
+			})
+		})
+	})
+
+	Describe("SkillResolver", func() {
+		Describe("FileSkillResolver", func() {
+			It("resolves a skill from the filesystem", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "test-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+				skillContent := "# Test Skill\n\nTest content"
+				Expect(os.WriteFile(skillPath, []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				content, err := resolver.Resolve("test-skill")
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(content).To(Equal(skillContent))
+			})
+
+			It("returns ErrSkillNotFound for nonexistent skill", func() {
+				tmpDir := GinkgoT().TempDir()
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				_, err := resolver.Resolve("nonexistent")
+
+				Expect(err).To(MatchError(engine.ErrSkillNotFound))
+			})
+
+			It("returns empty string for empty skill file", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "empty-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+				Expect(os.WriteFile(skillPath, []byte(""), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				content, err := resolver.Resolve("empty-skill")
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(content).To(Equal(""))
+			})
+		})
+
+		Describe("DelegateTool skill injection", func() {
+			It("WithSkillResolver sets the resolver", func() {
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				tmpDir := GinkgoT().TempDir()
+				resolver := engine.NewFileSkillResolver(tmpDir)
+
+				result := delegateTool.WithSkillResolver(resolver)
+
+				Expect(result).To(Equal(delegateTool))
+			})
+
+			It("injects skills into system prompt when loadSkills is provided", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "skill1")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+				skillContent := "Skill 1 content"
+				Expect(os.WriteFile(skillPath, []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "base prompt"
+				injected := delegateTool.InjectSkillsIfProvided([]string{"skill1"}, basePrompt)
+
+				Expect(injected).NotTo(Equal(basePrompt))
+				Expect(injected).To(ContainSubstring(skillContent))
+				Expect(injected).To(ContainSubstring(basePrompt))
+			})
+
+			It("returns base prompt when no resolver is set", func() {
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				basePrompt := "base prompt"
+
+				injected := delegateTool.InjectSkillsIfProvided([]string{"skill1"}, basePrompt)
+
+				Expect(injected).To(Equal(basePrompt))
+			})
+
+			It("returns base prompt when loadSkills is empty", func() {
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				basePrompt := "base prompt"
+
+				injected := delegateTool.InjectSkillsIfProvided([]string{}, basePrompt)
+
+				Expect(injected).To(Equal(basePrompt))
+			})
+
+			It("prepends skills to child engine system prompt during delegation", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "test-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillPath := filepath.Join(skillDir, "SKILL.md")
+				skillContent := "Test skill content"
+				Expect(os.WriteFile(skillPath, []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+
+				mockEngine := engine.New(engine.Config{})
+
+				engines := map[string]*engine.Engine{
+					"target-agent": mockEngine,
+				}
+
+				delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
+					CanDelegate: true,
+					DelegationTable: map[string]string{
+						"test": "target-agent",
+					},
+				}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "base prompt"
+				injected := delegateTool.InjectSkillsIfProvided([]string{"test-skill"}, basePrompt)
+
+				Expect(injected).To(ContainSubstring(skillContent))
+				Expect(injected).To(ContainSubstring(basePrompt))
 			})
 		})
 	})

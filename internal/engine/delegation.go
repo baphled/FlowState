@@ -79,6 +79,7 @@ type DelegateTool struct {
 	embeddingDiscovery *discovery.EmbeddingDiscovery
 	circuitBreaker     *delegation.CircuitBreaker
 	spawnLimits        delegation.SpawnLimits
+	skillResolver      SkillResolver
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -187,6 +188,21 @@ func (d *DelegateTool) SetEmbeddingDiscovery(ed *discovery.EmbeddingDiscovery) {
 //   - Sets the spawnLimits field to enforce during Execute().
 func (d *DelegateTool) WithSpawnLimits(limits delegation.SpawnLimits) *DelegateTool {
 	d.spawnLimits = limits
+	return d
+}
+
+// WithSkillResolver sets the skill resolver for injecting skills into child engine system prompts.
+//
+// Expected:
+//   - r is a non-nil SkillResolver instance.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Sets the skillResolver field for skill injection during delegation.
+func (d *DelegateTool) WithSkillResolver(r SkillResolver) *DelegateTool {
+	d.skillResolver = r
 	return d
 }
 
@@ -699,6 +715,14 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, fmt.Errorf("target agent engine not available: %s", targetAgentID)
 	}
 
+	if len(params.loadSkills) > 0 {
+		manifest := targetEngine.Manifest()
+		basePrompt := manifest.Instructions.SystemPrompt
+		injectedPrompt := d.InjectSkillsIfProvided(params.loadSkills, basePrompt)
+		manifest.Instructions.SystemPrompt = injectedPrompt
+		targetEngine.SetManifest(manifest)
+	}
+
 	return delegationTarget{
 		agentID: targetAgentID,
 		engine:  targetEngine,
@@ -941,4 +965,37 @@ func (d *DelegateTool) HasEmbeddingDiscovery() bool {
 //   - None.
 func (d *DelegateTool) CircuitBreaker() *delegation.CircuitBreaker {
 	return d.circuitBreaker
+}
+
+// InjectSkillsIfProvided prepends skill content to the base system prompt if loadSkills is non-empty.
+//
+// Expected:
+//   - loadSkills is a slice of skill names to resolve.
+//   - basePrompt is the initial system prompt to prepend skills to.
+//
+// Returns:
+//   - The base prompt with skill content prepended (if resolver is available and loadSkills is non-empty).
+//   - The base prompt unchanged if no resolver is configured or loadSkills is empty.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) InjectSkillsIfProvided(loadSkills []string, basePrompt string) string {
+	if d.skillResolver == nil || len(loadSkills) == 0 {
+		return basePrompt
+	}
+
+	var skillContents []string
+	for _, skillName := range loadSkills {
+		content, err := d.skillResolver.Resolve(skillName)
+		if err != nil {
+			continue
+		}
+		skillContents = append(skillContents, content)
+	}
+
+	if len(skillContents) == 0 {
+		return basePrompt
+	}
+
+	return strings.Join(skillContents, "\n\n") + "\n\n" + basePrompt
 }
