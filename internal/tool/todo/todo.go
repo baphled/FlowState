@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
-
-// SessionIDKey is the context key for the current session ID.
-type SessionIDKey struct{}
 
 // Tool implements the todowrite tool, managing per-session todo lists.
 type Tool struct {
@@ -76,7 +74,7 @@ func (t *Tool) Schema() tool.Schema {
 // Execute stores the provided todo list for the current session and returns it as JSON.
 //
 // Expected:
-//   - ctx contains a SessionIDKey value identifying the current session.
+//   - ctx contains a session.IDKey value identifying the current session.
 //   - input contains a "todos" argument with an array of todo objects.
 //
 // Returns:
@@ -86,7 +84,7 @@ func (t *Tool) Schema() tool.Schema {
 // Side effects:
 //   - Replaces the stored todo list for the session in the backing Store.
 func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
-	sessionID, ok := ctx.Value(SessionIDKey{}).(string)
+	sessionID, ok := ctx.Value(session.IDKey{}).(string)
 	if !ok || sessionID == "" {
 		return tool.Result{}, errors.New("session ID missing from context")
 	}

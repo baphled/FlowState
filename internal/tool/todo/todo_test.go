@@ -7,12 +7,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 )
 
 func sessionCtx() context.Context {
-	return context.WithValue(context.Background(), todotool.SessionIDKey{}, "sess-123")
+	return context.WithValue(context.Background(), session.IDKey{}, "sess-123")
 }
 
 var _ = Describe("TodoTool", func() {

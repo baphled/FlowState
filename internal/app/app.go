@@ -59,7 +59,7 @@ type App struct {
 	Learning         *learning.JSONFileStore
 	API              *api.Server
 	Streamer         streaming.Streamer
-	TodoStore        *todotool.MemoryStore
+	TodoStore        todotool.Store
 	mcpClient        mcpclient.Client
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
@@ -239,7 +239,7 @@ type runtimeComponents struct {
 	apiServer       *api.Server
 	metricsRegistry *prometheus.Registry
 	mcpManager      mcpclient.Client
-	todoStore       *todotool.MemoryStore
+	todoStore       todotool.Store
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -631,14 +631,14 @@ func (a *App) DisconnectAll() error {
 //
 // Expected:
 //   - skillLoader is a non-nil skill.FileSkillLoader.
-//   - todoStore is the app-level MemoryStore for persisting todo state.
+//   - todoStore is the app-level Store for persisting todo state.
 //
 // Returns:
 //   - A slice containing bash, file, web, skill_load, and todowrite tools.
 //
 // Side effects:
 //   - Initialises new tool instances.
-func buildTools(skillLoader *skill.FileSkillLoader, todoStore *todotool.MemoryStore) []tool.Tool {
+func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store) []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
 		read.New(),

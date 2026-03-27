@@ -122,3 +122,8 @@ func ToolCallSummaryForTest(name string, args map[string]interface{}) string {
 func IsReadToolCallForTest(name string) bool {
 	return isReadToolCall(name)
 }
+
+// ToolResultMessageForTest exposes toolResultMessage for test assertions.
+func ToolResultMessageForTest(toolName, result string, isError bool) chatview.Message {
+	return toolResultMessage(toolName, result, isError)
+}

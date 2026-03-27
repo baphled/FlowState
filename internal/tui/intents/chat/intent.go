@@ -1216,20 +1216,6 @@ func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
 	}
 }
 
-// handleSessionLoaded processes the result of an async session load.
-//
-// Expected:
-//   - msg contains the loaded FileContextStore, or an error.
-//
-// Returns:
-//   - nil (no further command needed).
-//
-// Side effects:
-//   - Clears the loading modal.
-//   - On error, shows an error modal.
-//   - On success, replaces the engine's context store with the loaded store,
-//     populates the chat view, and refreshes the viewport.
-
 // toolCallSummary extracts the primary argument from a tool call and formats it as "toolName: arg".
 //
 // Expected:
