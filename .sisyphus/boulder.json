@@ -17,8 +17,12 @@
     "ses_2dcf55770ffeE32N45SrlZg6BZ",
     "ses_2dcf594f2ffeJJU4nZh4XrmrZ9",
     "ses_2dcf5008affeKGQVuRz671DiDh",
-    "ses_2dcf1d8c8ffeJlUNx1C8oBPgn1"
+    "ses_2dcf1d8c8ffeJlUNx1C8oBPgn1",
+    "ses_2d5af0e2effef1MdDuk2N6cast",
+    "ses_2d147314cffeOfKj54lM1S5HYH",
+    "ses_2d0ee849fffekbxkykVGxaCDgT"
   ],
   "plan_name": "session-visibility",
-  "agent": "atlas"
+  "agent": "atlas",
+  "task_sessions": {}
 }

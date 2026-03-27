@@ -42,3 +42,9 @@ Feature: Streaming Responses
     Then I should see "[ERROR: API key invalid]" in the chat
     And the error should be logged to stderr
 
+  @smoke
+  Scenario: Assistant text appears before tool call indicator during streaming
+    Given I am in insert mode
+    When a streaming response contains assistant text and a tool call
+    Then the assistant text should appear before the tool call indicator
+

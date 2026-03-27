@@ -367,17 +367,17 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 		sb.WriteString("\n")
 	}
 
-	if v.toolCallName != "" && v.toolCallStatus != "" {
-		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
-		sb.WriteString(tcw.Render())
-		sb.WriteString("\n")
-	}
 	if v.response != "" {
 		mw := widgets.NewMessageWidget("assistant", v.response, th)
 		if v.renderFunc != nil {
 			mw.SetMarkdownRenderer(v.renderFunc)
 		}
 		sb.WriteString(mw.Render(width))
+		sb.WriteString("\n")
+	}
+	if v.toolCallName != "" && v.toolCallStatus != "" {
+		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
+		sb.WriteString(tcw.Render())
 		sb.WriteString("\n")
 	}
 }

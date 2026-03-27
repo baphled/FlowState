@@ -1,6 +1,8 @@
 package chat_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -119,6 +121,20 @@ var _ = Describe("ChatView", func() {
 			Expect(content).To(ContainSubstring("⚡"))
 			Expect(content).To(ContainSubstring("web_search"))
 			Expect(content).To(ContainSubstring("running"))
+		})
+
+		It("renders assistant text before tool call indicator during streaming", func() {
+			view.SetMarkdownRenderer(func(c string, _ int) string { return c })
+			view.SetStreaming(true, "")
+			view.HandleChunk("Hello from assistant", false, "", "file_read", "running")
+			content := view.RenderContent(80)
+
+			textPos := strings.Index(content, "Hello from assistant")
+			toolCallPos := strings.Index(content, "file_read")
+
+			Expect(textPos).To(BeNumerically(">=", 0), "assistant text should appear in content")
+			Expect(toolCallPos).To(BeNumerically(">=", 0), "tool call indicator should appear in content")
+			Expect(textPos).To(BeNumerically("<", toolCallPos), "assistant text should appear before tool call indicator")
 		})
 
 		It("does not render tool call when none is set", func() {

@@ -1698,3 +1698,223 @@ var _ = Describe("skill_load tool call handling", func() {
 		})
 	})
 })
+
+var _ = Describe("isReadToolCall", func() {
+	DescribeTable("returns true for read tool call names",
+		func(name string, expected bool) {
+			Expect(chat.IsReadToolCallForTest(name)).To(Equal(expected))
+		},
+		Entry("raw tool name", "read", true),
+		Entry("formatted with file path", "read: /some/file.go", true),
+		Entry("formatted with short path", "read: README.md", true),
+		Entry("bash is not a read", "bash", false),
+		Entry("bash with command is not a read", "bash: ls -la", false),
+		Entry("grep is not a read", "grep: pattern", false),
+		Entry("empty string is not a read", "", false),
+		Entry("skill_load is not a read", "skill:pre-action", false),
+	)
+})
+
+var _ = Describe("read tool suppression during streaming", func() {
+	var intent *chat.Intent
+
+	BeforeEach(func() {
+		intent = chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "openai",
+			ModelName:    "gpt-4o",
+			TokenBudget:  4096,
+		})
+	})
+
+	It("suppresses read tool result from the chat view", func() {
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "read: /path/to/file.go",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "",
+			ToolResult:   "package main\n\nfunc main() {}",
+			ToolIsError:  false,
+		})
+
+		messages := intent.MessagesForTest()
+		for _, msg := range messages {
+			Expect(msg.Role).NotTo(Equal("tool_result"), "read tool result should be suppressed")
+		}
+	})
+
+	It("still shows read tool call indicator in the chat view", func() {
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "read: /path/to/file.go",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "",
+		})
+
+		messages := intent.MessagesForTest()
+		found := false
+		for _, msg := range messages {
+			if msg.Role == "tool_call" && msg.Content == "read: /path/to/file.go" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "read tool_call indicator should still appear")
+	})
+
+	It("still shows read tool error in the chat view", func() {
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "read: /nonexistent/file.go",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "",
+			ToolResult:   "Error: file not found",
+			ToolIsError:  true,
+		})
+
+		messages := intent.MessagesForTest()
+		found := false
+		for _, msg := range messages {
+			if msg.Role == "tool_error" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "read tool error should still appear in chat")
+	})
+
+	It("does not suppress bash tool results after a read", func() {
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "read: /some/file.go",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "",
+			ToolResult:   "file content here",
+			ToolIsError:  false,
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "bash: echo hello",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolCallName: "",
+		})
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+			ToolResult:  "hello",
+			ToolIsError: false,
+		})
+
+		messages := intent.MessagesForTest()
+		foundBashResult := false
+		for _, msg := range messages {
+			if msg.Role == "tool_result" && msg.Content == "hello" {
+				foundBashResult = true
+			}
+			if msg.Role == "tool_result" && msg.Content == "file content here" {
+				Fail("read tool result should have been suppressed")
+			}
+		}
+		Expect(foundBashResult).To(BeTrue(), "bash tool result should still appear")
+	})
+})
+
+var _ = Describe("read tool suppression on session reload", func() {
+	var (
+		eng           *engine.Engine
+		reg           *provider.Registry
+		sessionIntent *chat.Intent
+	)
+
+	BeforeEach(func() {
+		reg = provider.NewRegistry()
+		reg.Register(&streamingStubProvider{
+			providerName: "test-provider",
+			chunks:       []provider.StreamChunk{},
+		})
+		eng = engine.New(engine.Config{
+			Registry: reg,
+			Manifest: stubManifestWithProvider("test-provider", "test-model"),
+		})
+		sessionIntent = chat.NewIntent(chat.IntentConfig{
+			Engine:       eng,
+			Streamer:     eng,
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  4096,
+		})
+	})
+
+	It("suppresses read tool result on session reload", func() {
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{Role: "user", Content: "show me the file"})
+		store.Append(provider.Message{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []provider.ToolCall{{Name: "read", ID: "tc-read", Arguments: map[string]interface{}{"filePath": "/main.go"}}},
+		})
+		store.Append(provider.Message{Role: "tool", Content: "package main\n\nfunc main() {}"})
+		store.Append(provider.Message{Role: "assistant", Content: "Here is the file."})
+
+		sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "loaded-session",
+			Store:     store,
+		})
+
+		messages := sessionIntent.AllViewMessagesForTest()
+		for _, msg := range messages {
+			Expect(msg.Role).NotTo(Equal("tool_result"), "read tool result should be suppressed on reload")
+		}
+	})
+
+	It("keeps bash tool result visible on session reload", func() {
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []provider.ToolCall{{Name: "bash", ID: "tc-bash", Arguments: map[string]interface{}{"command": "ls"}}},
+		})
+		store.Append(provider.Message{Role: "tool", Content: "file1.go\nfile2.go"})
+
+		sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "loaded-session",
+			Store:     store,
+		})
+
+		messages := sessionIntent.AllViewMessagesForTest()
+		found := false
+		for _, msg := range messages {
+			if msg.Role == "tool_result" && msg.Content == "file1.go\nfile2.go" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "bash tool result should still be visible")
+	})
+
+	It("keeps read tool error visible on session reload", func() {
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{
+			Role:      "assistant",
+			Content:   "",
+			ToolCalls: []provider.ToolCall{{Name: "read", ID: "tc-read", Arguments: map[string]interface{}{"filePath": "/missing.go"}}},
+		})
+		store.Append(provider.Message{Role: "tool", Content: "Error: file not found"})
+
+		sessionIntent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "loaded-session",
+			Store:     store,
+		})
+
+		messages := sessionIntent.AllViewMessagesForTest()
+		found := false
+		for _, msg := range messages {
+			if msg.Role == "tool_error" {
+				found = true
+				break
+			}
+		}
+		Expect(found).To(BeTrue(), "read tool error should still be visible on reload")
+	})
+})

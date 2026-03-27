@@ -389,6 +389,8 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the response should be rendered with syntax highlighting$`, s.theResponseShouldBeRenderedWithSyntaxHighlighting)
 	ctx.Step(`^the AI is streaming a response$`, s.theAIIsStreamingAResponse)
 	ctx.Step(`^the StatusBar should show the current token count$`, s.theStatusBarShouldShowTheCurrentTokenCount)
+	ctx.Step(`^a streaming response contains assistant text and a tool call$`, s.aStreamingResponseContainsAssistantTextAndAToolCall)
+	ctx.Step(`^the assistant text should appear before the tool call indicator$`, s.theAssistantTextShouldAppearBeforeTheToolCallIndicator)
 
 	// XDG config steps
 	ctx.Step(`^XDG_CONFIG_HOME is set to a custom path$`, s.xdgConfigHomeIsSetToACustomPath)
@@ -3551,6 +3553,46 @@ func (s *StepDefinitions) theStatusBarShouldShowTheCurrentTokenCount() error {
 	rendered := s.statusBar.RenderContent(80)
 	if !strings.Contains(rendered, "42") {
 		return fmt.Errorf("expected token count '42' in status bar, got: %q", rendered)
+	}
+	return nil
+}
+
+// aStreamingResponseContainsAssistantTextAndAToolCall sets up a streaming view
+// with both assistant text and an active tool call.
+//
+// Expected: s.chatView is initialised via flowstateTUIIsRunning.
+// Returns: nil on success, or an error if chatView is not initialised.
+// Side effects: Sets chatView streaming state with response text and tool call.
+func (s *StepDefinitions) aStreamingResponseContainsAssistantTextAndAToolCall() error {
+	if s.chatView == nil {
+		s.chatView = chat.NewView()
+	}
+	s.chatView.SetMarkdownRenderer(func(c string, _ int) string { return c })
+	s.chatView.SetStreaming(true, "")
+	s.chatView.HandleChunk("Hello from the assistant", false, "", "file_read", "running")
+	return nil
+}
+
+// theAssistantTextShouldAppearBeforeTheToolCallIndicator asserts rendering order.
+//
+// Expected: s.chatView has been set up by aStreamingResponseContainsAssistantTextAndAToolCall.
+// Returns: nil if assistant text appears before the tool call indicator, or an error otherwise.
+// Side effects: None.
+func (s *StepDefinitions) theAssistantTextShouldAppearBeforeTheToolCallIndicator() error {
+	if s.chatView == nil {
+		return errors.New("chatView not initialised")
+	}
+	rendered := s.chatView.RenderContent(s.chatView.Width())
+	textPos := strings.Index(rendered, "Hello from the assistant")
+	toolCallPos := strings.Index(rendered, "file_read")
+	if textPos < 0 {
+		return fmt.Errorf("expected assistant text to appear in content, but not found; rendered: %q", rendered)
+	}
+	if toolCallPos < 0 {
+		return fmt.Errorf("expected tool call indicator to appear in content, but not found; rendered: %q", rendered)
+	}
+	if textPos >= toolCallPos {
+		return fmt.Errorf("expected assistant text (pos %d) to appear before tool call indicator (pos %d)", textPos, toolCallPos)
 	}
 	return nil
 }

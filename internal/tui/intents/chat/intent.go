@@ -410,12 +410,14 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	}
 
 	committedSkill := false
+	lastToolCall := ""
 	if msg.ToolCallName != "" {
 		i.activeToolCall = msg.ToolCallName
 		if strings.HasPrefix(msg.ToolCallName, "skill:") {
 			committedSkill = true
 		}
 	} else if i.activeToolCall != "" {
+		lastToolCall = i.activeToolCall
 		role := "tool_call"
 		content := i.activeToolCall
 		if strings.HasPrefix(i.activeToolCall, "skill:") {
@@ -427,7 +429,8 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		i.activeToolCall = ""
 	}
 
-	if msg.ToolResult != "" && !committedSkill {
+	suppressResult := isReadToolCall(lastToolCall) && !msg.ToolIsError
+	if msg.ToolResult != "" && !committedSkill && !suppressResult {
 		role := "tool_result"
 		if msg.ToolIsError {
 			role = "tool_error"
@@ -1287,6 +1290,21 @@ func extractToolInfo(toolCall *provider.ToolCall) (string, string) {
 	return toolCallName, "running"
 }
 
+// isReadToolCall reports whether the given tool call name refers to the read tool.
+//
+// Expected:
+//   - name is a raw tool name (e.g. "read") or a formatted summary (e.g. "read: /path").
+//
+// Returns:
+//   - true when name is "read" or begins with "read: ".
+//   - false for all other names, including empty strings.
+//
+// Side effects:
+//   - None.
+func isReadToolCall(name string) bool {
+	return name == "read" || strings.HasPrefix(name, "read: ")
+}
+
 // toolCallArgKey returns the argument key for a given tool name.
 //
 // Expected:
@@ -1334,10 +1352,12 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	}
 	i.engine.SetContextStore(msg.Store)
 	i.view = chat.NewView()
+	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {
 		switch {
 		case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
 			for _, tc := range sm.Message.ToolCalls {
+				lastToolCallName = tc.Name
 				role := "tool_call"
 				content := toolCallSummary(tc.Name, tc.Arguments)
 				if tc.Name == "skill_load" {
@@ -1346,6 +1366,9 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 				i.view.AddMessage(chat.Message{Role: role, Content: content})
 			}
 		case sm.Message.Role == "tool":
+			if isReadToolCall(lastToolCallName) && !strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:") {
+				continue
+			}
 			role := "tool_result"
 			if strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:") {
 				role = "tool_error"

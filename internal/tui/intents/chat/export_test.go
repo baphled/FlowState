@@ -117,3 +117,8 @@ func (i *Intent) HandleStreamChunkForTest(msg StreamChunkMsg) {
 func ToolCallSummaryForTest(name string, args map[string]interface{}) string {
 	return toolCallSummary(name, args)
 }
+
+// IsReadToolCallForTest exposes isReadToolCall for test assertions.
+func IsReadToolCallForTest(name string) bool {
+	return isReadToolCall(name)
+}
