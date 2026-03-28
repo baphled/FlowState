@@ -85,3 +85,53 @@
 - Test descriptions updated where they referenced task_type (e.g. "when task_type not in delegation table" → "when subagent_type not in delegation table")
 - Category routing test description updated to mention subagent_type
 - No test logic changes required — only parameter name changes
+
+## [2026-03-28] Task: T14 — Remove DelegationTable
+- **Files with DelegationTable (prod):** manifest.go, app.go, config_generator.go, delegation.go (2 refs), engine.go (3 refs)
+- **Files with DelegationTable (test):** delegation_test.go (20+), delegation_progress_test.go (2), engine_test.go (4), app_delegation_test.go (4), smoke_test.go (1), config_generator_test.go (6)
+- **BDD steps:** planning_steps.go (2 refs using task_type → changed to subagent_type)
+- **JSON files:** 6 files with `delegation_table` — silently ignored now
+- **Key changes:**
+  - Added direct engine key lookup fallback in `resolveAgentID` (bridges gap without DelegationTable)
+  - Added taskType engine key lookup before `resolveWithDiscovery` (supports task_type backward compat)
+  - `hasReviewerInDelegationTable` → `hasReviewerInDelegation` (now checks DelegationAllowlist)
+  - `wireDelegateToolIfEnabled` now creates engines from registry.List() instead of DelegationTable
+  - Removed `buildDelegationTableSection` and its DelegationTable fallback in `appendDelegationSections`
+  - DelegateToAgent now takes agentID directly instead of mapping via DelegationTable
+- **Pattern:** When removing a struct field used across many test fixtures, `replaceAll` with unique surrounding context is safest. Watch for accidental deletion when using multi-line patterns.
+
+## [2026-03-28] Task: T16 — Remove task_type from Schema
+- task_type property removed from Schema().Properties
+- task_type parsing removed from populateDelegationRouting()
+- taskType field removed from delegationParams struct
+- errTaskTypeMustBeString renamed to errRoutingFieldRequired with updated message
+- resolveAgentID simplified: removed redundant engine check after taskType removal
+- Tests updated: 3 tests converted from task_type to subagent_type routing
+- Scope for commitlint: delegation code lives in internal/engine/ but uses `tool` scope
+
+## [2026-03-28] Task: T12 — planner prompt update
+- planner.md location: internal/prompt/prompts/planner.md
+- Original file had NO task_type references — only prose delegation descriptions
+- Added concrete `delegate(subagent_type=...)` examples to sections 3-6
+- Added "Available Agents" table with all 7 agent IDs: explorer, librarian, analyst, plan-writer, plan-reviewer, executor, planner
+- Agent names in prose updated to lowercase IDs (Explorer → explorer, Plan Writer → plan-writer)
+
+## [2026-03-28] Task: T7 — embedding aliases indexing
+- Embedding file: internal/discovery/embedding.go
+- Field name used for description: `m.Capabilities.CapabilityDescription`
+- How indexing text is built: `capDesc + " " + strings.Join(m.Aliases, " ")` when aliases present, otherwise just capDesc
+- Aliases field location: `Manifest.Aliases []string` (top-level on Manifest struct, line 16)
+- Test strategy: fixedEmbedder maps exact strings → vectors. Put only the concatenated key in the map so old code gets fallback {0,0,0} (no match) and new code gets the correct vector
+- 18/18 discovery specs pass, all 63 packages green
+
+## [2026-03-28] Task: T11 — BDD scenarios updated
+- Feature file: features/planning/planning_loop.feature
+- Step defs: features/support/planning_steps.go
+- delegation_table Background step removed: yes (replaced with "writer and reviewer agents are registered")
+- New scenarios added: "Delegate by agent name via registry", "Unknown agent gives helpful error"
+- Existing scenarios status: all 5 pass unchanged
+- delegateAndCollect migrated from task_type to subagent_type
+- Agent callers updated: "plan-writing"→"plan-writer", "plan-review"→"plan-reviewer"
+- Registry wired in buildPlanningDelegateTool via WithRegistry
+- Commitlint scope: "bdd" not allowed — use "test" for BDD test changes
+- Total: 205 scenarios, 1022 steps — 0 failures

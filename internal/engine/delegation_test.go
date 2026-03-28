@@ -1309,6 +1309,35 @@ var _ = Describe("DelegateTool.ResolveByNameOrAlias", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("available agents: qa-agent, senior-engineer"))
 	})
+
+	It("returns error when registry is nil", func() {
+		engines := map[string]*engine.Engine{}
+		delegation := agent.Delegation{CanDelegate: true}
+		nilRegDelegateTool := engine.NewDelegateTool(engines, delegation, "source-agent")
+		_, err := nilRegDelegateTool.ResolveByNameOrAlias("any-agent")
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("lists empty available agents when registry has no agents", func() {
+		emptyReg := agent.NewRegistry()
+		engines := map[string]*engine.Engine{}
+		delegation := agent.Delegation{CanDelegate: true}
+		emptyRegDelegateTool := engine.NewDelegateTool(engines, delegation, "source-agent").WithRegistry(emptyReg)
+		_, err := emptyRegDelegateTool.ResolveByNameOrAlias("xyz")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("xyz"))
+	})
+
+	It("resolves by uppercase alias", func() {
+		id, err := delegateTool.ResolveByNameOrAlias("GURU")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(id).To(Equal("senior-engineer"))
+	})
+
+	It("returns error for empty name", func() {
+		_, err := delegateTool.ResolveByNameOrAlias("")
+		Expect(err).To(HaveOccurred())
+	})
 })
 
 var _ = Describe("DelegateTool Schema subagent_type enum", func() {
