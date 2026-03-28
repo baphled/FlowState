@@ -1,4 +1,4 @@
-package toast_test
+package notification_test
 
 import (
 	"testing"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestToastExpiry(t *testing.T) {
+func TestNotificationExpiry(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Toast Suite")
+	RunSpecs(t, "Notification Suite")
 }

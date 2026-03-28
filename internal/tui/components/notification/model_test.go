@@ -1,4 +1,4 @@
-package toast_test
+package notification_test
 
 import (
 	"time"
@@ -6,19 +6,19 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/tui/components/toast"
+	"github.com/baphled/flowstate/internal/tui/components/notification"
 )
 
 var _ = Describe("InMemoryManager", func() {
-	It("returns no active toasts after the duration expires", func() {
-		manager := toast.NewInMemoryManager()
+	It("returns no active notifications after the duration expires", func() {
+		manager := notification.NewInMemoryManager()
 		now := time.Now()
 
-		manager.Add(toast.Toast{
-			ID:        "toast-1",
+		manager.Add(notification.Notification{
+			ID:        "notification-1",
 			Title:     "Saved",
 			Message:   "Your changes were saved.",
-			Level:     toast.LevelSuccess,
+			Level:     notification.LevelSuccess,
 			Duration:  time.Second,
 			CreatedAt: now.Add(-2 * time.Second),
 		})
