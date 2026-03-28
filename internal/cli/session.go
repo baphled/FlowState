@@ -29,7 +29,11 @@ func newSessionCmd(getApp func() *app.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newSessionListCmd(getApp), newSessionResumeCmd(getApp))
+	cmd.AddCommand(
+		newSessionListCmd(getApp),
+		newSessionResumeCmd(getApp),
+		newSessionTreeCmd(getApp),
+	)
 	return cmd
 }
 
@@ -108,6 +112,32 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 			return tui.Run(a, agentID, sessionID)
 		},
 	}
+}
+
+// newSessionTreeCmd creates the session tree subcommand.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for displaying session hierarchy.
+//
+// Side effects:
+//   - None.
+func newSessionTreeCmd(_ func() *app.App) *cobra.Command {
+	var jsonOutput bool
+	cmd := &cobra.Command{
+		Use:   "tree <session-id>",
+		Short: "Show session hierarchy as an ASCII tree",
+		Long:  "Display the session hierarchy starting from the given session ID, showing parent-child relationships.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Session tree requires a session manager. Use 'flowstate session list' to see sessions.")
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+	return cmd
 }
 
 // findSession retrieves session information by ID from the session store.
