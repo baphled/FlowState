@@ -1,6 +1,9 @@
 package chat
 
 import (
+	"strings"
+
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -52,7 +55,38 @@ func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {
 
 // ViewportHeight returns the current message viewport height for test assertions.
 func (i *Intent) ViewportHeight() int {
+	if i.msgViewport == nil {
+		return 0
+	}
 	return i.msgViewport.Height
+}
+
+// ViewportYOffsetForTest returns the current message viewport Y offset for test assertions.
+func (i *Intent) ViewportYOffsetForTest() int {
+	if i.msgViewport == nil {
+		return -1 // Return -1 to indicate nil viewport
+	}
+	return i.msgViewport.YOffset
+}
+
+// ViewportReadyForTest returns whether the viewport is ready for test assertions.
+func (i *Intent) ViewportReadyForTest() bool {
+	return i.vpReady && i.msgViewport != nil
+}
+
+// ViewportForTest returns the viewport itself for direct testing.
+func (i *Intent) ViewportForTest() *viewport.Model {
+	return i.msgViewport
+}
+
+// ViewportContentLineCountForTest returns the number of lines in viewport content for test assertions.
+func (i *Intent) ViewportContentLineCountForTest() int {
+	if i.msgViewport == nil {
+		return 0
+	}
+	// The viewport.Model has a private 'lines' field, so we can't access it directly.
+	// As a workaround, we count newlines in the viewport View() output.
+	return strings.Count(i.msgViewport.View(), "\n") + 1
 }
 
 // DetectAgentFromInputForTest exposes detectAgentFromInput for test assertions.

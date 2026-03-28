@@ -132,7 +132,7 @@ type Intent struct {
 	streamChan        <-chan provider.StreamChunk
 	pendingPermission *ToolPermissionMsg
 	result            *tuiintents.IntentResult
-	msgViewport       viewport.Model
+	msgViewport       *viewport.Model
 	vpReady           bool
 	agentRegistry     *agent.Registry
 	sessionStore      SessionLister
@@ -234,7 +234,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 			vpHeight = 1
 		}
 		if !i.vpReady {
-			i.msgViewport = viewport.New(msg.Width, vpHeight)
+			vp := viewport.New(msg.Width, vpHeight)
+			i.msgViewport = &vp // Take address of local, stored on heap due to escape analysis
 			i.msgViewport.SetContent("")
 			i.vpReady = true
 		} else {
@@ -363,7 +364,8 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	switch msg.Type {
 	case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
 		var cmd tea.Cmd
-		i.msgViewport, cmd = i.msgViewport.Update(msg)
+		vp, cmd := i.msgViewport.Update(msg)
+		i.msgViewport = &vp
 		return cmd, true
 	}
 	return nil, false
@@ -662,12 +664,13 @@ func (i *Intent) syncStatusBar() {
 // Side effects:
 //   - Updates msgViewport content and scrolls to latest message.
 func (i *Intent) refreshViewport() {
-	if !i.vpReady {
+	if !i.vpReady || i.msgViewport == nil {
 		return
 	}
 	i.view.SetDimensions(i.width, i.msgViewport.Height)
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
+	i.msgViewport.GotoBottom()
 }
 
 // detectAgentFromInput examines the message for planner or executor keywords and returns the matching agent.
