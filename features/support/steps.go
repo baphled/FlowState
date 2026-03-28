@@ -133,6 +133,10 @@ type StepDefinitions struct {
 	// AGENTS.md loading fields
 	agentsConfigDir  string
 	agentsWorkingDir string
+
+	// Markdown agent test fields
+	markdownFilePath string
+	loadedManifest   *agent.Manifest
 }
 
 // TestApp represents a test application instance.
@@ -513,6 +517,34 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a new session is started$`, s.aNewSessionIsStarted)
 	ctx.Step(`^the system prompt should contain "([^"]*)"$`, s.theSystemPromptShouldContain)
 	ctx.Step(`^the system prompt should not contain AGENTS\.md content$`, s.theSystemPromptShouldNotContainAgentsMdContent)
+
+	// Markdown agent definition steps
+	ctx.Step(`^a markdown agent file "([^"]*)" with frontmatter containing id, name, and capabilities$`,
+		s.aMarkdownAgentFileWithFrontmatterContainingIDNameAndCapabilities)
+	ctx.Step(`^the agent is loaded from the markdown file$`, s.whenTheAgentIsLoadedFromTheMarkdownFile)
+	ctx.Step(`^the agent ID should be "([^"]*)"$`, s.theAgentIDShouldBe)
+	ctx.Step(`^the agent name should match the frontmatter value$`, s.theAgentNameShouldMatchFrontmatterValue)
+	ctx.Step(`^the agent capabilities should include the configured tools$`, s.theAgentCapabilitiesShouldIncludeTheConfiguredTools)
+
+	ctx.Step(`^a markdown agent file with a body containing "([^"]*)"$`, s.aMarkdownAgentFileWithBodyContaining)
+
+	ctx.Step(`^a markdown agent file with model_preferences for anthropic and ollama$`,
+		s.aMarkdownAgentFileWithModelPreferencesForAnthropicAndOllama)
+	ctx.Step(`^the model preferences should contain the anthropic provider$`,
+		s.theModelPreferencesShouldContainTheAnthropicProvider)
+	ctx.Step(`^the model preferences should contain the ollama provider$`,
+		s.theModelPreferencesShouldContainTheOllamaProvider)
+
+	ctx.Step(`^a markdown agent file "([^"]*)" without an id in frontmatter$`,
+		s.aMarkdownAgentFileWithoutAnIDInFrontmatter)
+
+	ctx.Step(`^a markdown agent file "([^"]*)" with id "([^"]*)" in frontmatter$`,
+		s.aMarkdownAgentFileWithIDInFrontmatter)
+
+	ctx.Step(`^a markdown agent file without context_management settings$`,
+		s.aMarkdownAgentFileWithoutContextManagementSettings)
+	ctx.Step(`^the context management should have default values$`,
+		s.theContextManagementShouldHaveDefaultValues)
 }
 
 // normaliseProviderName converts display names to internal provider names.
@@ -5191,11 +5223,19 @@ func (s *StepDefinitions) aNewSessionIsStarted() error {
 // Returns: nil if found, error otherwise.
 // Side effects: None.
 func (s *StepDefinitions) theSystemPromptShouldContain(expected string) error {
-	if s.lastPrompt == "" {
+	var prompt string
+
+	if s.loadedManifest != nil {
+		prompt = s.loadedManifest.Instructions.SystemPrompt
+	} else {
+		prompt = s.lastPrompt
+	}
+
+	if prompt == "" {
 		return errors.New("no system prompt built")
 	}
-	if !strings.Contains(s.lastPrompt, expected) {
-		return fmt.Errorf("system prompt does not contain %q, got: %s", expected, s.lastPrompt)
+	if !strings.Contains(prompt, expected) {
+		return fmt.Errorf("system prompt does not contain %q, got: %s", expected, prompt)
 	}
 	return nil
 }

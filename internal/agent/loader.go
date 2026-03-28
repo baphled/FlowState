@@ -75,20 +75,40 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("reading file: %w", err)
 	}
 	content := string(data)
-	frontmatter, _, err := extractFrontmatter(content)
+	frontmatter, body, err := extractFrontmatter(content)
 	if err != nil {
 		return nil, fmt.Errorf("extracting frontmatter: %w", err)
 	}
-	var mdManifest markdownManifest
-	if err := yaml.Unmarshal([]byte(frontmatter), &mdManifest); err != nil {
+
+	var m Manifest
+	if err := yaml.Unmarshal([]byte(frontmatter), &m); err != nil {
 		return nil, fmt.Errorf("parsing YAML frontmatter: %w", err)
 	}
-	m := convertMarkdownManifest(mdManifest, path)
+
+	derivedID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+
+	if m.ID == "" && m.Metadata.Role == "" {
+		var mdManifest markdownManifest
+		if err := yaml.Unmarshal([]byte(frontmatter), &mdManifest); err == nil && mdManifest.Description != "" {
+			m = convertMarkdownManifest(mdManifest, path)
+		}
+	}
+
+	m.Instructions.SystemPrompt = strings.TrimSpace(body)
+
+	if m.ID == "" {
+		m.ID = derivedID
+	}
+	if m.Name == "" {
+		m.Name = derivedID
+	}
+
 	applyDefaults(&m)
 	return &m, nil
 }
 
-// markdownManifest is a temporary structure for parsing YAML frontmatter from Markdown agent manifests.
+// markdownManifest is superseded by direct Manifest unmarshalling from YAML frontmatter.
+// Retained for backward compatibility with external tools.
 //
 // Expected:
 //   - YAML frontmatter containing description, mode, default_skills, and permission fields.
@@ -98,6 +118,8 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 //
 // Side effects:
 //   - None (data structure only).
+//
+// Deprecated: Use Manifest directly with yaml unmarshalling instead.
 type markdownManifest struct {
 	Description   string   `yaml:"description"`
 	Mode          string   `yaml:"mode"`
@@ -107,7 +129,8 @@ type markdownManifest struct {
 	} `yaml:"permission"`
 }
 
-// convertMarkdownManifest transforms a parsed markdownManifest into a fully-formed Manifest.
+// convertMarkdownManifest is superseded by direct Manifest unmarshalling from YAML frontmatter.
+// Retained for backward compatibility with external tools.
 //
 // Expected:
 //   - md is a valid markdownManifest with description and default_skills fields.
@@ -118,6 +141,8 @@ type markdownManifest struct {
 //
 // Side effects:
 //   - None (pure function).
+//
+// Deprecated: Use Manifest directly with yaml unmarshalling instead.
 func convertMarkdownManifest(md markdownManifest, path string) Manifest {
 	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return Manifest{
