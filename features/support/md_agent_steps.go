@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/app"
 )
 
 // RegisterMarkdownAgentSteps registers step definitions for markdown agent loading tests.
@@ -51,6 +53,18 @@ func (s *StepDefinitions) RegisterMarkdownAgentSteps(ctx *godog.ScenarioContext)
 		s.aMarkdownAgentFileWithoutContextManagementSettings)
 	ctx.Step(`^the context management should have default values$`,
 		s.theContextManagementShouldHaveDefaultValues)
+
+	ctx.Step(`^an agent directory contains both "([^"]*)" and "([^"]*)" with the same agent ID$`,
+		s.anAgentDirectoryContainsBothMarkdownAndJSONWithSameID)
+	ctx.Step(`^the registry should contain exactly one agent with ID "([^"]*)"$`,
+		s.theRegistryShouldContainExactlyOneAgentWithID)
+	ctx.Step(`^the agent should have been loaded from the markdown file$`,
+		s.theAgentShouldHaveBeenLoadedFromTheMarkdownFile)
+	ctx.Step(`^an embedded source containing markdown agent files$`,
+		s.anEmbeddedSourceContainingMarkdownAgentFiles)
+	ctx.Step(`^the agents directory is seeded$`, s.theAgentsDirectoryIsSeeded)
+	ctx.Step(`^the destination should contain the markdown agent files$`,
+		s.theDestinationShouldContainTheMarkdownAgentFiles)
 }
 
 // aMarkdownAgentFileWithFrontmatterContainingIDNameAndCapabilities creates a markdown agent file with full frontmatter.
@@ -416,6 +430,193 @@ func (s *StepDefinitions) theContextManagementShouldHaveDefaultValues() error {
 	}
 	if cm.EmbeddingModel != "nomic-embed-text" {
 		return fmt.Errorf("expected embedding model 'nomic-embed-text', got %q", cm.EmbeddingModel)
+	}
+
+	return nil
+}
+
+// anAgentDirectoryContainsBothMarkdownAndJSONWithSameID creates a directory with both .md and .json manifests for the same agent.
+//
+// Expected:
+//   - mdFilename is a markdown filename.
+//   - jsonFilename is a JSON filename.
+//
+// Returns:
+//   - nil on success, or an error if files cannot be created.
+//
+// Side effects:
+//   - Creates a temporary directory with both manifest files.
+func (s *StepDefinitions) anAgentDirectoryContainsBothMarkdownAndJSONWithSameID(mdFilename, jsonFilename string) error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-precedence-test")
+	_ = os.RemoveAll(s.tempDir)
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return err
+	}
+
+	mdContent := `---
+id: explorer
+name: Explorer Agent
+schema_version: "1"
+---
+Markdown version of the Explorer agent.
+`
+
+	jsonContent := `{
+  "schema_version": "1",
+  "id": "explorer",
+  "name": "Explorer Agent",
+  "instructions": {
+    "system_prompt": "JSON version of the Explorer agent"
+  }
+}`
+
+	if err := os.WriteFile(filepath.Join(s.tempDir, mdFilename), []byte(mdContent), 0o600); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(filepath.Join(s.tempDir, jsonFilename), []byte(jsonContent), 0o600); err != nil {
+		return err
+	}
+
+	s.agentRegistry = agent.NewRegistry()
+	return nil
+}
+
+// theRegistryShouldContainExactlyOneAgentWithID verifies that exactly one agent with the given ID is in the registry.
+//
+// Expected:
+//   - s.agentRegistry has been initialised.
+//   - The registry has discovered agents.
+//
+// Returns:
+//   - nil if exactly one agent with the ID exists, error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) theRegistryShouldContainExactlyOneAgentWithID(id string) error {
+	if err := s.agentRegistry.Discover(s.tempDir); err != nil {
+		return fmt.Errorf("discovering agents: %w", err)
+	}
+
+	manifests := s.agentRegistry.List()
+	count := 0
+	for _, m := range manifests {
+		if m.ID == id {
+			count++
+		}
+	}
+
+	if count != 1 {
+		return fmt.Errorf("expected exactly 1 agent with ID %q, found %d", id, count)
+	}
+
+	return nil
+}
+
+// theAgentShouldHaveBeenLoadedFromTheMarkdownFile verifies that the agent was loaded from a markdown file.
+//
+// Expected:
+//   - The registry has discovered agents.
+//   - An explorer agent exists in the registry.
+//
+// Returns:
+//   - nil if the agent's system prompt contains "Markdown version", error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) theAgentShouldHaveBeenLoadedFromTheMarkdownFile() error {
+	manifest, ok := s.agentRegistry.Get("explorer")
+	if !ok {
+		return errors.New("explorer agent not found in registry")
+	}
+
+	if !strings.Contains(manifest.Instructions.SystemPrompt, "Markdown version") {
+		return fmt.Errorf("expected markdown version in system prompt, got: %q", manifest.Instructions.SystemPrompt)
+	}
+
+	return nil
+}
+
+// anEmbeddedSourceContainingMarkdownAgentFiles creates an in-memory filesystem with markdown agent files.
+//
+// Expected:
+//   - No preconditions.
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Creates a temporary directory with markdown agent files for seeding.
+func (s *StepDefinitions) anEmbeddedSourceContainingMarkdownAgentFiles() error {
+	s.agentsConfigDir = filepath.Join(os.TempDir(), "flowstate-seed-src")
+	_ = os.RemoveAll(s.agentsConfigDir)
+
+	agentsDir := filepath.Join(s.agentsConfigDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o750); err != nil {
+		return err
+	}
+
+	mdContent := `---
+id: test-agent
+name: Test Agent
+schema_version: "1"
+---
+Test agent for seeding.
+`
+
+	if err := os.WriteFile(filepath.Join(agentsDir, "test-agent.md"), []byte(mdContent), 0o600); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// theAgentsDirectoryIsSeeded seeds the agents directory from the embedded source.
+//
+// Expected:
+//   - An embedded source has been created.
+//
+// Returns:
+//   - nil on success, or an error if seeding fails.
+//
+// Side effects:
+//   - Creates the destination directory and copies markdown files.
+func (s *StepDefinitions) theAgentsDirectoryIsSeeded() error {
+	s.agentsWorkingDir = filepath.Join(os.TempDir(), "flowstate-seed-dest")
+	_ = os.RemoveAll(s.agentsWorkingDir)
+
+	srcFS := os.DirFS(s.agentsConfigDir)
+
+	if err := app.SeedAgentsDir(srcFS, s.agentsWorkingDir); err != nil {
+		return fmt.Errorf("seeding agents directory: %w", err)
+	}
+
+	return nil
+}
+
+// theDestinationShouldContainTheMarkdownAgentFiles verifies that markdown files were copied to the destination.
+//
+// Expected:
+//   - Seeding has completed.
+//
+// Returns:
+//   - nil if markdown files exist in the destination, error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) theDestinationShouldContainTheMarkdownAgentFiles() error {
+	mdFile := filepath.Join(s.agentsWorkingDir, "test-agent.md")
+	if _, err := os.Stat(mdFile); err != nil {
+		return fmt.Errorf("markdown file not found in destination: %w", err)
+	}
+
+	content, err := os.ReadFile(mdFile)
+	if err != nil {
+		return fmt.Errorf("reading markdown file: %w", err)
+	}
+
+	if !strings.Contains(string(content), "Test agent for seeding") {
+		return errors.New("markdown file content mismatch")
 	}
 
 	return nil

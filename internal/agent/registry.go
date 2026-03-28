@@ -130,24 +130,27 @@ func (r *Registry) List() []*Manifest {
 // Expected: dir is a valid directory path.
 //
 // Returns: A sorted slice of manifest file paths (*.json and *.md files) found in dir,
-// or an error if globbing fails.
+// with .md files appearing after .json files for the same agent ID.
+// This ensures .md files take precedence when both exist.
+// Returns an error if globbing fails.
 //
 // Side effects: None. This function performs read-only filesystem operations.
 func discoverManifestPaths(dir string) ([]string, error) {
-	patterns := []string{
-		filepath.Join(dir, "*.json"),
-		filepath.Join(dir, "*.md"),
+	jsonMatches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, fmt.Errorf("glob agent manifests with pattern %q: %w", filepath.Join(dir, "*.json"), err)
 	}
+
+	mdMatches, err := filepath.Glob(filepath.Join(dir, "*.md"))
+	if err != nil {
+		return nil, fmt.Errorf("glob agent manifests with pattern %q: %w", filepath.Join(dir, "*.md"), err)
+	}
+
+	sort.Strings(jsonMatches)
+	sort.Strings(mdMatches)
 
 	var paths []string
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("glob agent manifests with pattern %q: %w", pattern, err)
-		}
-		paths = append(paths, matches...)
-	}
-
-	sort.Strings(paths)
+	paths = append(paths, jsonMatches...)
+	paths = append(paths, mdMatches...)
 	return paths, nil
 }

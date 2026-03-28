@@ -545,6 +545,18 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 		s.aMarkdownAgentFileWithoutContextManagementSettings)
 	ctx.Step(`^the context management should have default values$`,
 		s.theContextManagementShouldHaveDefaultValues)
+
+	ctx.Step(`^an agent directory contains both "([^"]*)" and "([^"]*)" with the same agent ID$`,
+		s.anAgentDirectoryContainsBothMarkdownAndJSONWithSameID)
+	ctx.Step(`^the registry should contain exactly one agent with ID "([^"]*)"$`,
+		s.theRegistryShouldContainExactlyOneAgentWithID)
+	ctx.Step(`^the agent should have been loaded from the markdown file$`,
+		s.theAgentShouldHaveBeenLoadedFromTheMarkdownFile)
+	ctx.Step(`^an embedded source containing markdown agent files$`,
+		s.anEmbeddedSourceContainingMarkdownAgentFiles)
+	ctx.Step(`^the agents directory is seeded$`, s.theAgentsDirectoryIsSeeded)
+	ctx.Step(`^the destination should contain the markdown agent files$`,
+		s.theDestinationShouldContainTheMarkdownAgentFiles)
 }
 
 // normaliseProviderName converts display names to internal provider names.

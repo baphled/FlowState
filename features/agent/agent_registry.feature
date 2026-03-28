@@ -19,3 +19,14 @@ Feature: Agent Registry
     When the agent registry discovers agents from that directory
     Then the valid agents should be available in the registry
     And the invalid agent manifests should be skipped
+
+  Scenario: Markdown agent takes precedence over JSON with same ID
+    Given an agent directory contains both "explorer.md" and "explorer.json" with the same agent ID
+    When the agent registry discovers agents from that directory
+    Then the registry should contain exactly one agent with ID "explorer"
+    And the agent should have been loaded from the markdown file
+
+  Scenario: Seed copies markdown agent files
+    Given an embedded source containing markdown agent files
+    When the agents directory is seeded
+    Then the destination should contain the markdown agent files
