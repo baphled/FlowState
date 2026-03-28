@@ -10,6 +10,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
@@ -25,15 +26,16 @@ type Streamer interface {
 
 // Server provides HTTP endpoints for the FlowState platform.
 type Server struct {
-	streamer       Streamer
-	registry       *agent.Registry
-	discovery      *discovery.AgentDiscovery
-	skills         []skill.Skill
-	sessions       *ctxstore.FileSessionStore
-	sessionManager *session.Manager
-	sessionBroker  *SessionBroker
-	todoStore      todo.Store
-	mux            *http.ServeMux
+	streamer          Streamer
+	registry          *agent.Registry
+	discovery         *discovery.AgentDiscovery
+	skills            []skill.Skill
+	sessions          *ctxstore.FileSessionStore
+	sessionManager    *session.Manager
+	sessionBroker     *SessionBroker
+	todoStore         todo.Store
+	backgroundManager *engine.BackgroundTaskManager
+	mux               *http.ServeMux
 }
 
 // ServerOption configures an optional Server dependency.
@@ -93,6 +95,20 @@ func WithSessions(store *ctxstore.FileSessionStore) ServerOption {
 //   - None.
 func WithTodoStore(store todo.Store) ServerOption {
 	return func(s *Server) { s.todoStore = store }
+}
+
+// WithBackgroundManager sets the background task manager for task endpoints.
+//
+// Expected:
+//   - mgr is a non-nil BackgroundTaskManager.
+//
+// Returns:
+//   - A ServerOption that sets the background manager.
+//
+// Side effects:
+//   - None.
+func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
+	return func(s *Server) { s.backgroundManager = mgr }
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -182,6 +198,13 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
+	s.mux.HandleFunc("GET /api/v1/tasks", s.handleListTasks)
+	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
+	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
+	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.
@@ -490,6 +513,164 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	if _, err := w.Write([]byte(embeddedHTML)); err != nil {
 		return
 	}
+}
+
+// handleSessionChildren returns the direct child sessions of the given session.
+//
+// Expected:
+//   - r.PathValue("id") is a valid session ID.
+//
+// Returns:
+//   - 200 with JSON array of child sessions.
+//   - 404 if the session has no children or does not exist.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	children, err := s.sessionManager.ChildSessions(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, children)
+}
+
+// handleSessionTree returns the full session hierarchy rooted at the given session.
+//
+// Expected:
+//   - r.PathValue("id") is a valid session ID.
+//
+// Returns:
+//   - 200 with JSON array of sessions in depth-first order.
+//   - 404 if the session does not exist.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tree, err := s.sessionManager.SessionTree(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, tree)
+}
+
+// handleSessionParent returns the parent session of the given session.
+//
+// Expected:
+//   - r.PathValue("id") is a valid session ID.
+//
+// Returns:
+//   - 200 with JSON parent session.
+//   - 404 if the session is a root session or does not exist.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleSessionParent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	root, err := s.sessionManager.GetRootSession(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, root)
+}
+
+// handleListTasks returns all background tasks.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - 200 with JSON array of tasks.
+//   - 501 if no background manager is configured.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleListTasks(w http.ResponseWriter, _ *http.Request) {
+	if s.backgroundManager == nil {
+		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, s.backgroundManager.List())
+}
+
+// handleGetTask returns a single background task by ID.
+//
+// Expected:
+//   - r.PathValue("id") is a valid task ID.
+//
+// Returns:
+//   - 200 with JSON task.
+//   - 404 if the task does not exist.
+//   - 501 if no background manager is configured.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	if s.backgroundManager == nil {
+		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	task, ok := s.backgroundManager.Get(id)
+	if !ok {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, task)
+}
+
+// handleCancelTask cancels a specific background task.
+//
+// Expected:
+//   - r.PathValue("id") is a valid task ID.
+//
+// Returns:
+//   - 204 on success.
+//   - 404 if the task does not exist.
+//   - 501 if no background manager is configured.
+//
+// Side effects:
+//   - Cancels the specified task.
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	if s.backgroundManager == nil {
+		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.backgroundManager.Cancel(id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCancelAllTasks cancels all background tasks when ?all=true is set.
+//
+// Expected:
+//   - r.URL.Query().Get("all") == "true" to cancel all tasks.
+//
+// Returns:
+//   - 204 on success.
+//   - 400 if ?all=true is not set.
+//   - 501 if no background manager is configured.
+//
+// Side effects:
+//   - Cancels all running tasks when ?all=true.
+func (s *Server) handleCancelAllTasks(w http.ResponseWriter, r *http.Request) {
+	if s.backgroundManager == nil {
+		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	if r.URL.Query().Get("all") != "true" {
+		http.Error(w, `{"error":"pass ?all=true to cancel all tasks"}`, http.StatusBadRequest)
+		return
+	}
+	s.backgroundManager.CancelAll()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // writeJSON encodes data as JSON and writes it to the response with HTTP 200.
