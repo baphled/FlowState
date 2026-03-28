@@ -67,8 +67,8 @@ var _ = Describe("DelegationProgress", func() {
 			input := tool.Input{
 				Name: "delegate",
 				Arguments: map[string]interface{}{
-					"task_type": "testing",
-					"message":   "Run the tests",
+					"subagent_type": "testing",
+					"message":       "Run the tests",
 				},
 			}
 
@@ -137,8 +137,8 @@ var _ = Describe("DelegationProgress", func() {
 			input := tool.Input{
 				Name: "delegate",
 				Arguments: map[string]interface{}{
-					"task_type": "testing",
-					"message":   "Run the tests",
+					"subagent_type": "testing",
+					"message":       "Run the tests",
 				},
 			}
 

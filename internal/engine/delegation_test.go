@@ -113,7 +113,7 @@ var _ = Describe("Delegation", func() {
 			})
 		})
 
-		Context("when task_type not in delegation table", func() {
+		Context("when subagent_type not in delegation table", func() {
 			It("returns an error", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
@@ -204,8 +204,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run the unit tests",
+						"subagent_type": "testing",
+						"message":       "Run the unit tests",
 					},
 				}
 
@@ -227,8 +227,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 					},
 				}
 
@@ -238,7 +238,7 @@ var _ = Describe("Delegation", func() {
 				Expect(err.Error()).To(ContainSubstring("delegation not allowed"))
 			})
 
-			It("returns error when task_type not in table", func() {
+			It("returns error when subagent_type not in table", func() {
 				delegation := agent.Delegation{
 					CanDelegate:     true,
 					DelegationTable: map[string]string{},
@@ -250,8 +250,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "unknown",
-						"message":   "Do something",
+						"subagent_type": "unknown",
+						"message":       "Do something",
 					},
 				}
 
@@ -277,8 +277,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 					},
 				}
 
@@ -338,8 +338,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run the tests",
+						"subagent_type": "testing",
+						"message":       "Run the tests",
 					},
 				}
 
@@ -410,8 +410,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run the tests",
+						"subagent_type": "testing",
+						"message":       "Run the tests",
 					},
 				}
 
@@ -451,8 +451,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run the tests",
+						"subagent_type": "testing",
+						"message":       "Run the tests",
 					},
 				}
 
@@ -513,7 +513,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":         "testing",
+						"subagent_type":     "testing",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -534,7 +534,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":         "testing",
+						"subagent_type":     "testing",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -564,7 +564,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":         "testing",
+						"subagent_type":     "testing",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -588,7 +588,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":         "testing",
+						"subagent_type":     "testing",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -608,8 +608,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests with handoff",
+						"subagent_type": "testing",
+						"message":       "Run tests with handoff",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
 							"target_agent": "qa-agent",
@@ -677,7 +677,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":         "testing",
+						"subagent_type":     "testing",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -727,8 +727,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "run tests",
+						"subagent_type": "testing",
+						"message":       "run tests",
 					},
 				}
 
@@ -773,8 +773,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "run tests",
+						"subagent_type": "testing",
+						"message":       "run tests",
 					},
 				}
 
@@ -834,8 +834,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
 							"target_agent": "qa-agent",
@@ -878,8 +878,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 					},
 				}
 
@@ -898,8 +898,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
 							"target_agent": "qa-agent",
@@ -924,8 +924,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
-						"message":   "Run tests",
+						"subagent_type": "testing",
+						"message":       "Run tests",
 					},
 				}
 
@@ -984,8 +984,8 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "writing",
-						"message":   "Write the plan",
+						"subagent_type": "writing",
+						"message":       "Write the plan",
 					},
 				}
 
@@ -1126,7 +1126,7 @@ var _ = Describe("Delegation", func() {
 		})
 
 		Describe("DelegateTool category routing", func() {
-			It("resolves category to model config when CategoryResolver set", func() {
+			It("resolves category to model config when CategoryResolver set and subagent_type provided", func() {
 				chatProvider := &mockProvider{
 					name: "test-provider",
 					streamChunks: []provider.StreamChunk{
@@ -1165,9 +1165,9 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "quick",
-						"category":  "quick",
-						"message":   "Execute quick task",
+						"subagent_type": "quick",
+						"category":      "quick",
+						"message":       "Execute quick task",
 					},
 				}
 
@@ -1273,9 +1273,9 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type":   "testing",
-						"message":     "Run tests with skills",
-						"load_skills": []interface{}{"injected-skill"},
+						"subagent_type": "testing",
+						"message":       "Run tests with skills",
+						"load_skills":   []interface{}{"injected-skill"},
 					},
 				}
 
