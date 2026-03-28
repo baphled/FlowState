@@ -1389,3 +1389,132 @@ var _ = Describe("DelegateTool Schema subagent_type enum", func() {
 		Expect(categoryProp.Enum).NotTo(ContainElement("explorer"))
 	})
 })
+
+var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
+	var (
+		reg            *agent.Registry
+		explorerEngine *engine.Engine
+		qaEngine       *engine.Engine
+	)
+
+	BeforeEach(func() {
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{
+			ID:      "explorer",
+			Name:    "Explorer",
+			Aliases: []string{"scout"},
+		})
+		reg.Register(&agent.Manifest{
+			ID:   "qa-agent",
+			Name: "QA Agent",
+		})
+
+		explorerProvider := &mockProvider{
+			name: "explorer-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "Explorer response", Done: true},
+			},
+		}
+		explorerManifest := agent.Manifest{
+			ID:                "explorer",
+			Name:              "Explorer",
+			Instructions:      agent.Instructions{SystemPrompt: "You are an explorer."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		explorerEngine = engine.New(engine.Config{
+			ChatProvider: explorerProvider,
+			Manifest:     explorerManifest,
+		})
+
+		qaProvider := &mockProvider{
+			name: "qa-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "QA response", Done: true},
+			},
+		}
+		qaManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		qaEngine = engine.New(engine.Config{
+			ChatProvider: qaProvider,
+			Manifest:     qaManifest,
+		})
+	})
+
+	It("resolves subagent_type via registry lookup", func() {
+		engines := map[string]*engine.Engine{
+			"explorer": explorerEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate:     true,
+			DelegationTable: map[string]string{},
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "explorer",
+				"message":       "Investigate the codebase",
+			},
+		}
+
+		result, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Output).To(ContainSubstring("Explorer response"))
+	})
+
+	It("resolves subagent_type case-insensitively via registry", func() {
+		engines := map[string]*engine.Engine{
+			"explorer": explorerEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate:     true,
+			DelegationTable: map[string]string{},
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "EXPLORER",
+				"message":       "Investigate the codebase",
+			},
+		}
+
+		result, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Output).To(ContainSubstring("Explorer response"))
+	})
+
+	It("resolves task_type via delegation table for backward compatibility", func() {
+		engines := map[string]*engine.Engine{
+			"qa-agent": qaEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate: true,
+			DelegationTable: map[string]string{
+				"testing": "qa-agent",
+			},
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"task_type": "testing",
+				"message":   "Run the unit tests",
+			},
+		}
+
+		result, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Output).To(ContainSubstring("QA response"))
+	})
+})

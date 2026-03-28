@@ -767,15 +767,9 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, errDelegationNotAllowed
 	}
 
-	taskType := params.taskType
-	if taskType == "" {
-		taskType = params.category
-	}
-	if taskType == "" {
-		taskType = params.subagentType
-	}
-	if taskType == "" {
-		return delegationTarget{}, errTaskTypeMustBeString
+	targetAgentID, err := d.resolveAgentID(ctx, params)
+	if err != nil {
+		return delegationTarget{}, err
 	}
 
 	var chainID string
@@ -783,11 +777,6 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		chainID = params.handoff.ChainID
 	} else {
 		chainID = newDelegationChainID()
-	}
-
-	targetAgentID, err := d.resolveWithDiscovery(ctx, taskType, params.message)
-	if err != nil {
-		return delegationTarget{}, err
 	}
 
 	targetEngine, ok := d.engines[targetAgentID]
@@ -820,6 +809,39 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		resolvedModel:    resolvedModel,
 		resolvedProvider: resolvedProvider,
 	}, nil
+}
+
+// resolveAgentID attempts registry lookup via subagent_type, then falls back to discovery.
+//
+// Expected:
+//   - ctx is a valid context for discovery operations.
+//   - params contains routing fields from the delegation input.
+//
+// Returns:
+//   - The resolved agent ID on success.
+//   - An error if no agent can be resolved.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationParams) (string, error) {
+	if params.subagentType != "" {
+		if resolvedID, err := d.ResolveByNameOrAlias(params.subagentType); err == nil {
+			return resolvedID, nil
+		}
+	}
+
+	taskType := params.taskType
+	if taskType == "" {
+		taskType = params.category
+	}
+	if taskType == "" {
+		taskType = params.subagentType
+	}
+	if taskType == "" {
+		return "", errTaskTypeMustBeString
+	}
+
+	return d.resolveWithDiscovery(ctx, taskType, params.message)
 }
 
 // resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery,
