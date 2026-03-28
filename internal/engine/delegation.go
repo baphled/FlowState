@@ -832,9 +832,6 @@ func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationPara
 
 	taskType := params.taskType
 	if taskType == "" {
-		taskType = params.category
-	}
-	if taskType == "" {
 		taskType = params.subagentType
 	}
 	if taskType == "" {

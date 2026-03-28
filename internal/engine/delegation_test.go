@@ -1165,8 +1165,9 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"category": "quick",
-						"message":  "Execute quick task",
+						"task_type": "quick",
+						"category":  "quick",
+						"message":   "Execute quick task",
 					},
 				}
 
@@ -1516,5 +1517,86 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 		result, err := delegateTool.Execute(ctx, input)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Output).To(ContainSubstring("QA response"))
+	})
+})
+
+var _ = Describe("resolveAgentID category decoupling", func() {
+	var (
+		reg            *agent.Registry
+		explorerEngine *engine.Engine
+	)
+
+	BeforeEach(func() {
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{
+			ID:   "explorer",
+			Name: "Explorer",
+		})
+
+		explorerProvider := &mockProvider{
+			name: "explorer-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "Explorer response", Done: true},
+			},
+		}
+		explorerManifest := agent.Manifest{
+			ID:                "explorer",
+			Name:              "Explorer",
+			Instructions:      agent.Instructions{SystemPrompt: "You are an explorer."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		explorerEngine = engine.New(engine.Config{
+			ChatProvider: explorerProvider,
+			Manifest:     explorerManifest,
+		})
+	})
+
+	It("returns error when only category is provided without subagent_type or task_type", func() {
+		engines := map[string]*engine.Engine{
+			"explorer": explorerEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate:     true,
+			DelegationTable: map[string]string{"quick": "explorer"},
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"category": "quick",
+				"message":  "do something",
+			},
+		}
+
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("task_type"))
+	})
+
+	It("resolves agent from subagent_type when both category and subagent_type are provided", func() {
+		engines := map[string]*engine.Engine{
+			"explorer": explorerEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate:     true,
+			DelegationTable: map[string]string{},
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"category":      "quick",
+				"subagent_type": "explorer",
+				"message":       "investigate",
+			},
+		}
+
+		result, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Output).To(ContainSubstring("Explorer response"))
 	})
 })
