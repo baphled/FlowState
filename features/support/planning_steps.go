@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/cucumber/godog"
 
@@ -24,6 +25,7 @@ type PlanningStepDefinitions struct {
 	delegationEvents  []streaming.DelegationEvent
 	requirements      string
 	delegateTool      *engine.DelegateTool
+	lastError         error
 }
 
 // RegisterPlanningSteps registers all planning-loop-related BDD step definitions.
@@ -43,11 +45,12 @@ func RegisterPlanningSteps(ctx *godog.ScenarioContext) {
 		p.delegationEvents = nil
 		p.requirements = ""
 		p.delegateTool = nil
+		p.lastError = nil
 		return bddCtx, nil
 	})
 
 	ctx.Step(`^a planner agent is configured$`, p.aPlannerAgentIsConfigured)
-	ctx.Step(`^the delegation table maps to writer and reviewer agents$`, p.theDelegationTableMapsToWriterAndReviewerAgents)
+	ctx.Step(`^writer and reviewer agents are registered$`, p.writerAndReviewerAgentsAreRegistered)
 	ctx.Step(`^the coordinator receives a planning request$`, p.theCoordinatorReceivesAPlanningRequest)
 	ctx.Step(`^it should delegate to the plan-writer agent$`, p.itShouldDelegateToThePlanWriterAgent)
 	ctx.Step(`^a DelegationEvent with status "([^"]*)" should be emitted$`, p.aDelegationEventWithStatusShouldBeEmitted)
@@ -68,6 +71,9 @@ func RegisterPlanningSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a DelegationEvent should contain the target agent name$`, p.aDelegationEventShouldContainTheTargetAgentName)
 	ctx.Step(`^the event should contain the model name$`, p.theEventShouldContainTheModelName)
 	ctx.Step(`^the event should contain a description$`, p.theEventShouldContainADescription)
+	ctx.Step(`^delegation is requested with subagent_type "([^"]*)"$`, p.delegationIsRequestedWithSubagentType)
+	ctx.Step(`^resolution is attempted for unknown agent "([^"]*)"$`, p.resolutionIsAttemptedForUnknownAgent)
+	ctx.Step(`^the error should list available agents$`, p.theErrorShouldListAvailableAgents)
 }
 
 // planningMockProvider is a minimal provider.Provider implementation for planning BDD tests.
@@ -194,11 +200,15 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 		"plan-reviewer": reviewerEngine,
 	}
 
+	agentRegistry := agent.NewRegistry()
+	agentRegistry.Register(&writerManifest)
+	agentRegistry.Register(&reviewerManifest)
+
 	delegationConfig := agent.Delegation{
 		CanDelegate: true,
 	}
 
-	return engine.NewDelegateTool(engines, delegationConfig, "planner")
+	return engine.NewDelegateTool(engines, delegationConfig, "planner").WithRegistry(agentRegistry)
 }
 
 // delegateAndCollect calls Execute on the delegateTool and collects emitted DelegationEvents.
@@ -206,7 +216,7 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 // Expected:
 //   - ctx is a valid context for the delegation.
 //   - dt is a configured DelegateTool with at least one valid engine route.
-//   - taskType identifies a valid delegation table entry.
+//   - subagentType identifies a valid agent via registry or engine key lookup.
 //   - message is the instruction to send to the target agent.
 //
 // Returns:
@@ -215,15 +225,15 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 //
 // Side effects:
 //   - Calls the target engine's Stream method via DelegateTool.Execute.
-func delegateAndCollect(ctx context.Context, dt *engine.DelegateTool, taskType, message string) ([]streaming.DelegationEvent, error) {
+func delegateAndCollect(ctx context.Context, dt *engine.DelegateTool, subagentType, message string) ([]streaming.DelegationEvent, error) {
 	outChan := make(chan provider.StreamChunk, 16)
 	streamCtx := engine.WithStreamOutput(ctx, outChan)
 
 	input := tool.Input{
 		Name: "delegate",
 		Arguments: map[string]interface{}{
-			"task_type": taskType,
-			"message":   message,
+			"subagent_type": subagentType,
+			"message":       message,
 		},
 	}
 
@@ -269,17 +279,17 @@ func (p *PlanningStepDefinitions) aPlannerAgentIsConfigured(_ context.Context) e
 	return nil
 }
 
-// theDelegationTableMapsToWriterAndReviewerAgents verifies the delegation table routes to both agents.
+// writerAndReviewerAgentsAreRegistered verifies both agents are available via registry.
 //
 // Expected:
-//   - p.delegateTool has been initialised.
+//   - p.delegateTool has been initialised with a registry.
 //
 // Returns:
 //   - nil when both plan-writer and plan-reviewer can be delegated to.
 //
 // Side effects:
 //   - Makes test delegations to verify routing.
-func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgents(ctx context.Context) error {
+func (p *PlanningStepDefinitions) writerAndReviewerAgentsAreRegistered(ctx context.Context) error {
 	if p.delegateTool == nil {
 		return errors.New("delegate tool not initialised")
 	}
@@ -292,7 +302,7 @@ func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgent
 		},
 	}
 	if _, err := p.delegateTool.Execute(ctx, writerInput); err != nil {
-		return fmt.Errorf("delegation missing plan-writer route: %w", err)
+		return fmt.Errorf("plan-writer agent not available: %w", err)
 	}
 
 	reviewerInput := tool.Input{
@@ -303,7 +313,7 @@ func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgent
 		},
 	}
 	if _, err := p.delegateTool.Execute(ctx, reviewerInput); err != nil {
-		return fmt.Errorf("delegation missing plan-reviewer route: %w", err)
+		return fmt.Errorf("plan-reviewer agent not available: %w", err)
 	}
 
 	return nil
@@ -335,7 +345,7 @@ func (p *PlanningStepDefinitions) theCoordinatorReceivesAPlanningRequest(_ conte
 // Side effects:
 //   - Appends collected delegation events to p.delegationEvents.
 func (p *PlanningStepDefinitions) itShouldDelegateToThePlanWriterAgent(ctx context.Context) error {
-	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writing", "Generate a plan for the requirements")
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writer", "Generate a plan for the requirements")
 	if err != nil {
 		return fmt.Errorf("delegation to plan-writer failed: %w", err)
 	}
@@ -421,7 +431,7 @@ func (p *PlanningStepDefinitions) thePlanWriterHasGeneratedAPlan(_ context.Conte
 // Side effects:
 //   - Appends collected delegation events to p.delegationEvents.
 func (p *PlanningStepDefinitions) theCoordinatorDelegatesToThePlanReviewer(ctx context.Context) error {
-	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-review", "Review the generated plan")
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-reviewer", "Review the generated plan")
 	if err != nil {
 		return fmt.Errorf("delegation to plan-reviewer failed: %w", err)
 	}
@@ -634,7 +644,7 @@ func (p *PlanningStepDefinitions) theWriterShouldReceiveTheCoordinatorsRequireme
 // Side effects:
 //   - Appends the first emitted delegation event to p.delegationEvents.
 func (p *PlanningStepDefinitions) aDelegationStarts(ctx context.Context) error {
-	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writing", "Starting delegation to plan-writer")
+	events, err := delegateAndCollect(ctx, p.delegateTool, "plan-writer", "Starting delegation to plan-writer")
 	if err != nil {
 		return fmt.Errorf("delegation failed: %w", err)
 	}
@@ -704,6 +714,62 @@ func (p *PlanningStepDefinitions) theEventShouldContainADescription(_ context.Co
 	event := p.delegationEvents[len(p.delegationEvents)-1]
 	if event.Description == "" {
 		return errors.New("delegation event missing description")
+	}
+	return nil
+}
+
+// delegationIsRequestedWithSubagentType delegates using subagent_type and collects events.
+//
+// Expected:
+//   - p.delegateTool is configured with a registry containing the named agent.
+//
+// Returns:
+//   - nil when delegation succeeds and events are collected.
+//
+// Side effects:
+//   - Appends collected delegation events to p.delegationEvents.
+func (p *PlanningStepDefinitions) delegationIsRequestedWithSubagentType(ctx context.Context, agentName string) error {
+	events, err := delegateAndCollect(ctx, p.delegateTool, agentName, "Delegate to "+agentName)
+	if err != nil {
+		return fmt.Errorf("delegation to %s failed: %w", agentName, err)
+	}
+	p.delegationEvents = append(p.delegationEvents, events...)
+	return nil
+}
+
+// resolutionIsAttemptedForUnknownAgent attempts registry resolution for a non-existent agent.
+//
+// Expected:
+//   - p.delegateTool is configured with a registry.
+//
+// Returns:
+//   - nil always; the resolution error is captured in p.lastError.
+//
+// Side effects:
+//   - Stores the resolution error in p.lastError.
+func (p *PlanningStepDefinitions) resolutionIsAttemptedForUnknownAgent(_ context.Context, agentName string) error {
+	_, err := p.delegateTool.ResolveByNameOrAlias(agentName)
+	p.lastError = err
+	return nil
+}
+
+// theErrorShouldListAvailableAgents verifies the last error includes available agent names.
+//
+// Expected:
+//   - p.lastError is set from a prior resolution attempt.
+//
+// Returns:
+//   - nil when the error message contains "available agents:".
+//
+// Side effects:
+//   - None.
+func (p *PlanningStepDefinitions) theErrorShouldListAvailableAgents(_ context.Context) error {
+	if p.lastError == nil {
+		return errors.New("expected error but got nil")
+	}
+	errMsg := p.lastError.Error()
+	if !strings.Contains(errMsg, "available agents:") {
+		return fmt.Errorf("expected 'available agents' in error, got: %s", errMsg)
 	}
 	return nil
 }

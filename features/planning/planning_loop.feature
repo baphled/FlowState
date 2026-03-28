@@ -5,7 +5,7 @@ Feature: Deterministic Planning Loop
 
   Background:
     Given a planner agent is configured
-    And the delegation table maps to writer and reviewer agents
+    And writer and reviewer agents are registered
 
   @delegation
   Scenario: Coordinator delegates to plan writer
@@ -41,3 +41,15 @@ Feature: Deterministic Planning Loop
     Then a DelegationEvent should contain the target agent name
     And the event should contain the model name
     And the event should contain a description
+
+  @delegation @registry
+  Scenario: Delegate by agent name via registry
+    When delegation is requested with subagent_type "plan-writer"
+    Then it should delegate to the plan-writer agent
+    And a DelegationEvent with status "started" should be emitted
+    And the delegation should complete with status "completed"
+
+  @delegation @registry
+  Scenario: Unknown agent gives helpful error
+    When resolution is attempted for unknown agent "nonexistent-agent"
+    Then the error should list available agents
