@@ -1339,3 +1339,53 @@ var _ = Describe("DelegateTool.ResolveByNameOrAlias", func() {
 		Expect(err.Error()).To(ContainSubstring("xyz-unknown"))
 	})
 })
+
+var _ = Describe("DelegateTool Schema subagent_type enum", func() {
+	It("populates subagent_type enum from registry agent IDs", func() {
+		reg := agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "explorer"})
+		reg.Register(&agent.Manifest{ID: "planner"})
+		reg.Register(&agent.Manifest{ID: "senior-engineer"})
+		reg.Register(&agent.Manifest{ID: "qa-agent"})
+		reg.Register(&agent.Manifest{ID: "analyst"})
+		reg.Register(&agent.Manifest{ID: "librarian"})
+		reg.Register(&agent.Manifest{ID: "plan-reviewer"})
+
+		engines := map[string]*engine.Engine{}
+		del := agent.Delegation{CanDelegate: true}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		schema := delegateTool.Schema()
+		subagentProp := schema.Properties["subagent_type"]
+
+		Expect(subagentProp.Enum).To(ConsistOf(
+			"analyst", "explorer", "librarian", "plan-reviewer",
+			"planner", "qa-agent", "senior-engineer",
+		))
+	})
+
+	It("leaves subagent_type enum nil when registry is nil", func() {
+		engines := map[string]*engine.Engine{}
+		del := agent.Delegation{CanDelegate: true}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator")
+
+		schema := delegateTool.Schema()
+		subagentProp := schema.Properties["subagent_type"]
+
+		Expect(subagentProp.Enum).To(BeNil())
+	})
+
+	It("does not change category enum", func() {
+		reg := agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "explorer"})
+
+		engines := map[string]*engine.Engine{}
+		del := agent.Delegation{CanDelegate: true}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		schema := delegateTool.Schema()
+		categoryProp := schema.Properties["category"]
+
+		Expect(categoryProp.Enum).NotTo(ContainElement("explorer"))
+	})
+})

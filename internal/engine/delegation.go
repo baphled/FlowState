@@ -372,6 +372,20 @@ func (d *DelegateTool) Schema() tool.Schema {
 		},
 		Required: []string{"task_type", "message"},
 	}
+
+	if d.registry != nil {
+		manifests := d.registry.List()
+		if len(manifests) > 0 {
+			agentIDs := make([]string, 0, len(manifests))
+			for _, m := range manifests {
+				agentIDs = append(agentIDs, m.ID)
+			}
+			prop := schema.Properties["subagent_type"]
+			prop.Enum = agentIDs
+			schema.Properties["subagent_type"] = prop
+		}
+	}
+
 	return schema
 }
 
