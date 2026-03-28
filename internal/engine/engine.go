@@ -43,6 +43,7 @@ type Engine struct {
 	agentRegistry     *agent.Registry
 	agentsFileLoader  *agent.AgentsFileLoader
 	lastContextResult ctxstore.BuildResult
+	agentOverrides    map[string]string
 	mu                sync.RWMutex
 }
 
@@ -112,7 +113,21 @@ func New(cfg Config) *Engine {
 		providerRegistry:  cfg.Registry,
 		agentRegistry:     cfg.AgentRegistry,
 		agentsFileLoader:  cfg.AgentsFileLoader,
+		agentOverrides:    make(map[string]string),
 	}
+}
+
+// SetAgentOverrides sets the agent-specific configuration overrides, such as prompt appends.
+//
+// Expected:
+//   - overrides is a map from agent ID to PromptAppend text.
+//
+// Side effects:
+//   - Modifies e.agentOverrides in place, replacing any existing overrides.
+func (e *Engine) SetAgentOverrides(overrides map[string]string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.agentOverrides = overrides
 }
 
 // buildModelPreferences constructs model preferences from the agent manifest.
@@ -314,6 +329,8 @@ func buildDelegationTableSection(delegationTable map[string]string) string {
 
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
+// The composition order is: base prompt → agent files → delegation sections → prompt_append (last).
+//
 // Returns:
 //   - The concatenated system prompt string including always-active and agent-level skill content.
 //
@@ -333,6 +350,12 @@ func (e *Engine) BuildSystemPrompt() string {
 
 	if e.manifest.Delegation.CanDelegate {
 		base = e.appendDelegationSections(base)
+	}
+
+	if e.agentOverrides != nil {
+		if appendText, ok := e.agentOverrides[e.manifest.ID]; ok && appendText != "" {
+			base = base + "\n\n" + appendText
+		}
 	}
 
 	return base

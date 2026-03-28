@@ -25,6 +25,7 @@ type AppConfig struct {
 	MCPServers         []MCPServerConfig                `yaml:"mcp_servers,omitempty"`
 	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
 	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
+	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
 }
 
 // ProvidersConfig configures all available LLM providers.
@@ -80,6 +81,14 @@ type HarnessConfig struct {
 	CriticEnabled      bool   `json:"critic_enabled" yaml:"critic_enabled"`
 	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
 	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
+}
+
+// AgentOverrideConfig holds per-agent configuration overrides.
+//
+// PromptAppend contains text to be appended to an agent's system prompt
+// at runtime, without modifying the agent .md file.
+type AgentOverrideConfig struct {
+	PromptAppend string `json:"prompt_append" yaml:"prompt_append"`
 }
 
 // Dir returns the configuration directory path.
@@ -173,6 +182,7 @@ func DefaultConfig() *AppConfig {
 			VotingEnabled:      false,
 			IncrementalEnabled: false,
 		},
+		AgentOverrides: make(map[string]AgentOverrideConfig),
 	}
 }
 

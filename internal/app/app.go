@@ -137,6 +137,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		app.Store = planStore
 	}
 
+	app.setAgentOverridesFromConfig(cfg, runtime.engine)
 	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
@@ -280,6 +281,31 @@ func createEngine(params engineParams) *engine.Engine {
 		TokenCounter:      params.tokenCounter,
 	})
 	return eng
+}
+
+// setAgentOverridesFromConfig extracts agent overrides from the app config and applies them to the engine.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig.
+//   - eng is a fully initialised Engine.
+//
+// Side effects:
+//   - Calls SetAgentOverrides on the engine with the prompt_append values from cfg.
+func (a *App) setAgentOverridesFromConfig(cfg *config.AppConfig, eng *engine.Engine) {
+	if cfg == nil || len(cfg.AgentOverrides) == 0 {
+		return
+	}
+
+	overrides := make(map[string]string)
+	for agentID, override := range cfg.AgentOverrides {
+		if override.PromptAppend != "" {
+			overrides[agentID] = override.PromptAppend
+		}
+	}
+
+	if len(overrides) > 0 {
+		eng.SetAgentOverrides(overrides)
+	}
 }
 
 // wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
