@@ -1339,6 +1339,12 @@ var _ = Describe("DelegateTool.ResolveByNameOrAlias", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("xyz-unknown"))
 	})
+
+	It("lists available agents alphabetically in error for unknown name", func() {
+		_, err := delegateTool.ResolveByNameOrAlias("xyz-unknown")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("available agents: qa-agent, senior-engineer"))
+	})
 })
 
 var _ = Describe("DelegateTool Schema subagent_type enum", func() {

@@ -258,7 +258,11 @@ func (d *DelegateTool) ResolveByNameOrAlias(name string) (string, error) {
 	}
 	manifest, ok := d.registry.GetByNameOrAlias(name)
 	if !ok {
-		return "", fmt.Errorf("unknown agent %q", name)
+		ids := make([]string, 0, len(d.registry.List()))
+		for _, m := range d.registry.List() {
+			ids = append(ids, m.ID)
+		}
+		return "", fmt.Errorf("unknown agent %q; available agents: %s", name, strings.Join(ids, ", "))
 	}
 	return manifest.ID, nil
 }
