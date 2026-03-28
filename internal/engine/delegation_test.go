@@ -1563,6 +1563,29 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 		Expect(result.Output).To(ContainSubstring("Explorer response"))
 	})
 
+	It("returns helpful error with available agents when subagent_type is unknown", func() {
+		engines := map[string]*engine.Engine{
+			"explorer": explorerEngine,
+		}
+		del := agent.Delegation{
+			CanDelegate: true,
+		}
+		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "xyz-unknown",
+				"message":       "do something",
+			},
+		}
+
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("available agents:"))
+	})
+
 	It("requires subagent_type and message in Schema", func() {
 		del := agent.Delegation{CanDelegate: true}
 		delegateTool := engine.NewDelegateTool(nil, del, "orchestrator")

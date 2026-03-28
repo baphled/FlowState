@@ -816,10 +816,13 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 // Side effects:
 //   - None.
 func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationParams) (string, error) {
+	var registryErr error
 	if params.subagentType != "" {
-		if resolvedID, err := d.ResolveByNameOrAlias(params.subagentType); err == nil {
+		resolvedID, err := d.ResolveByNameOrAlias(params.subagentType)
+		if err == nil {
 			return resolvedID, nil
 		}
+		registryErr = err
 		if _, ok := d.engines[params.subagentType]; ok {
 			return params.subagentType, nil
 		}
@@ -829,7 +832,11 @@ func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationPara
 		return "", errRoutingFieldRequired
 	}
 
-	return d.resolveWithDiscovery(ctx, params.subagentType, params.message)
+	id, discErr := d.resolveWithDiscovery(ctx, params.subagentType, params.message)
+	if discErr != nil && registryErr != nil && d.registry != nil {
+		return "", registryErr
+	}
+	return id, discErr
 }
 
 // resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery.
