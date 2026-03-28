@@ -550,6 +550,11 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the context management should have default values$`,
 		s.theContextManagementShouldHaveDefaultValues)
 
+	ctx.Step(`^a markdown agent file with frontmatter but no body content$`,
+		s.aMarkdownAgentFileWithFrontmatterButNoBodyContent)
+	ctx.Step(`^the loaded manifest system prompt should be empty$`,
+		s.theLoadedManifestSystemPromptShouldBeEmpty)
+
 	ctx.Step(`^an agent directory contains both "([^"]*)" and "([^"]*)" with the same agent ID$`,
 		s.anAgentDirectoryContainsBothMarkdownAndJSONWithSameID)
 	ctx.Step(`^the registry should contain exactly one agent with ID "([^"]*)"$`,

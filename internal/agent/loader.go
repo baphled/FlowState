@@ -107,19 +107,12 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// markdownManifest is superseded by direct Manifest unmarshalling from YAML frontmatter.
-// Retained for backward compatibility with external tools.
+// markdownManifest is the legacy format used by OpenCode-style agent
+// definitions (description, mode, default_skills, permission).
 //
-// Expected:
-//   - YAML frontmatter containing description, mode, default_skills, and permission fields.
-//
-// Returns:
-//   - N/A (type definition).
-//
-// Side effects:
-//   - None (data structure only).
-//
-// Deprecated: Use Manifest directly with yaml unmarshalling instead.
+// Deprecated: Superseded by direct Manifest unmarshalling from YAML frontmatter.
+// Retained as a fallback for .md files that use the legacy format rather than
+// the full Manifest schema.
 type markdownManifest struct {
 	Description   string   `yaml:"description"`
 	Mode          string   `yaml:"mode"`
@@ -129,8 +122,8 @@ type markdownManifest struct {
 	} `yaml:"permission"`
 }
 
-// convertMarkdownManifest is superseded by direct Manifest unmarshalling from YAML frontmatter.
-// Retained for backward compatibility with external tools.
+// convertMarkdownManifest converts the legacy OpenCode-style markdown
+// frontmatter into a Manifest.
 //
 // Expected:
 //   - md is a valid markdownManifest with description and default_skills fields.
@@ -142,7 +135,8 @@ type markdownManifest struct {
 // Side effects:
 //   - None (pure function).
 //
-// Deprecated: Use Manifest directly with yaml unmarshalling instead.
+// Deprecated: Used as a fallback when direct Manifest unmarshalling fails
+// (e.g., .md files with only description/mode/default_skills fields).
 func convertMarkdownManifest(md markdownManifest, path string) Manifest {
 	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return Manifest{

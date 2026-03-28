@@ -54,6 +54,11 @@ func (s *StepDefinitions) RegisterMarkdownAgentSteps(ctx *godog.ScenarioContext)
 	ctx.Step(`^the context management should have default values$`,
 		s.theContextManagementShouldHaveDefaultValues)
 
+	ctx.Step(`^a markdown agent file with frontmatter but no body content$`,
+		s.aMarkdownAgentFileWithFrontmatterButNoBodyContent)
+	ctx.Step(`^the loaded manifest system prompt should be empty$`,
+		s.theLoadedManifestSystemPromptShouldBeEmpty)
+
 	ctx.Step(`^an agent directory contains both "([^"]*)" and "([^"]*)" with the same agent ID$`,
 		s.anAgentDirectoryContainsBothMarkdownAndJSONWithSameID)
 	ctx.Step(`^the registry should contain exactly one agent with ID "([^"]*)"$`,
@@ -432,6 +437,54 @@ func (s *StepDefinitions) theContextManagementShouldHaveDefaultValues() error {
 		return fmt.Errorf("expected embedding model 'nomic-embed-text', got %q", cm.EmbeddingModel)
 	}
 
+	return nil
+}
+
+// aMarkdownAgentFileWithFrontmatterButNoBodyContent creates a markdown file with frontmatter but empty body.
+//
+// Expected:
+//   - No preconditions.
+//
+// Returns:
+//   - nil on success, or an error if the file cannot be created.
+//
+// Side effects:
+//   - Creates a temporary directory and markdown file with frontmatter only.
+func (s *StepDefinitions) aMarkdownAgentFileWithFrontmatterButNoBodyContent() error {
+	s.tempDir = filepath.Join(os.TempDir(), "flowstate-md-empty-body-test")
+	_ = os.RemoveAll(s.tempDir)
+	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
+		return err
+	}
+
+	content := `---
+id: empty-body-test
+name: Empty Body Test Agent
+schema_version: "1"
+---
+`
+
+	s.markdownFilePath = filepath.Join(s.tempDir, "empty-body-test.md")
+	return os.WriteFile(s.markdownFilePath, []byte(content), 0o600)
+}
+
+// theLoadedManifestSystemPromptShouldBeEmpty verifies that the loaded manifest's system prompt is empty.
+//
+// Expected:
+//   - A manifest has been loaded.
+//
+// Returns:
+//   - nil if system prompt is empty, error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) theLoadedManifestSystemPromptShouldBeEmpty() error {
+	if s.loadedManifest == nil {
+		return errors.New("no manifest loaded")
+	}
+	if s.loadedManifest.Instructions.SystemPrompt != "" {
+		return fmt.Errorf("expected empty system prompt, got %q", s.loadedManifest.Instructions.SystemPrompt)
+	}
 	return nil
 }
 

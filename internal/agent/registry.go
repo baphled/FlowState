@@ -28,6 +28,8 @@ func NewRegistry() *Registry {
 }
 
 // Discover scans a directory for agent manifests and loads them into the registry.
+// When both .md and .json files exist for the same agent ID, the markdown
+// definition takes precedence.
 //
 // Expected:
 //   - dir is a valid path to an existing directory.
@@ -126,6 +128,8 @@ func (r *Registry) List() []*Manifest {
 }
 
 // discoverManifestPaths discovers manifest file paths in the specified directory.
+// Files are returned with .json before .md for the same basename, ensuring
+// markdown definitions take precedence when loaded into the registry map.
 //
 // Expected: dir is a valid directory path.
 //

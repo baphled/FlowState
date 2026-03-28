@@ -36,3 +36,8 @@ Feature: Markdown Agent Definitions
     Given a markdown agent file without context_management settings
     When the agent is loaded from the markdown file
     Then the context management should have default values
+
+  Scenario: Empty body results in empty system prompt
+    Given a markdown agent file with frontmatter but no body content
+    When the agent is loaded from the markdown file
+    Then the loaded manifest system prompt should be empty
