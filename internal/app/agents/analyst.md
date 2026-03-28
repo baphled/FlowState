@@ -47,6 +47,21 @@ metadata:
   role: Evidence Analyst
   goal: Synthesise research findings into structured evidence dossiers
   when_to_use: When synthesising research findings into structured evidence dossiers
+orchestrator_meta:
+  cost: CHEAP
+  category: specialist
+  prompt_alias: Analyst
+  key_trigger: "Synthesis of disparate findings needed → delegate analysis"
+  use_when:
+    - Multiple research results need integration
+    - Complex system interactions identified
+    - Evidence needs critical review
+  avoid_when:
+    - Single source of truth available
+    - Linear cause-effect relationship
+  triggers:
+    - domain: Analyse
+      trigger: Synthesise evidence from multiple sources and identify root causes
 ---
 
 # Role: Evidence Analyst

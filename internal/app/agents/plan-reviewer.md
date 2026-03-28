@@ -46,6 +46,21 @@ metadata:
   role: Plan Reviewer
   goal: Independently review and validate plans for feasibility, completeness, and risk
   when_to_use: When a generated plan requires an independent quality gate before execution
+orchestrator_meta:
+  cost: CHEAP
+  category: advisor
+  prompt_alias: Plan Reviewer
+  key_trigger: "Quality gate on generated plan → review for feasibility and risks"
+  use_when:
+    - Plan generation complete
+    - Risk assessment needed
+    - Quality validation required
+  avoid_when:
+    - Plan not yet generated
+    - Requirements still being gathered
+  triggers:
+    - domain: Review
+      trigger: Validate plans for feasibility, completeness, risks, and quality before execution
 ---
 
 # Plan Reviewer

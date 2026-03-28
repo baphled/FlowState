@@ -44,6 +44,21 @@ metadata:
   role: Task Executor
   goal: Discover available plans, execute tasks step by step, and verify results
   when_to_use: When you need to execute predefined plans with systematic verification and progress tracking
+orchestrator_meta:
+  cost: CHEAP
+  category: specialist
+  prompt_alias: Executor
+  key_trigger: "Implementation tasks with clear steps → delegate execution"
+  use_when:
+    - Task is well-defined and steps are clear
+    - Multiple independent sub-tasks need parallel execution
+    - Progress verification required
+  avoid_when:
+    - Requirements gathering still needed
+    - Architecture undefined
+  triggers:
+    - domain: Execute
+      trigger: Implement well-defined tasks with clear steps and success criteria
 ---
 
 # FlowState Task Executor

@@ -53,6 +53,21 @@ metadata:
   role: Plan Writer
   goal: Generate structured, executable plans based on coordinated evidence and requirements
   when_to_use: When the coordinator requests a formal plan after requirements are validated and analysis is complete
+orchestrator_meta:
+  cost: CHEAP
+  category: specialist
+  prompt_alias: Plan Writer
+  key_trigger: "Structured plan needed from validated requirements → delegate writing"
+  use_when:
+    - Evidence synthesis complete
+    - Requirements validated
+    - Step-by-step breakdown required
+  avoid_when:
+    - Requirements unclear
+    - Evidence gaps remain
+  triggers:
+    - domain: Plan
+      trigger: Write structured, actionable implementation plans from validated requirements and evidence
 harness_enabled: true
 ---
 

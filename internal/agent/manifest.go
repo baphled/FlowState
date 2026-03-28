@@ -20,6 +20,8 @@ type Manifest struct {
 	// Loop defines the delegation loop for coordinator agents.
 	// When present, the agent operates in review-cycle mode rather than single-shot mode.
 	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`
+	// OrchestratorMeta describes how orchestrators should reference and invoke this agent.
+	OrchestratorMeta OrchestratorMetadata `json:"orchestrator_meta" yaml:"orchestrator_meta"`
 }
 
 // ModelPref specifies a preferred model for a provider.
@@ -53,10 +55,29 @@ type ContextManagement struct {
 	EmbeddingModel      string  `json:"embedding_model" yaml:"embedding_model"`
 }
 
+// DelegationTrigger describes when an orchestrator should delegate to this agent.
+type DelegationTrigger struct {
+	Domain  string `json:"domain" yaml:"domain"`
+	Trigger string `json:"trigger" yaml:"trigger"`
+}
+
+// OrchestratorMetadata describes how orchestrators should reference and invoke this agent.
+// These fields are consumed by dynamic section builders to compose orchestrator prompts.
+type OrchestratorMetadata struct {
+	Cost        string              `json:"cost" yaml:"cost"`
+	Category    string              `json:"category" yaml:"category"`
+	Triggers    []DelegationTrigger `json:"triggers" yaml:"triggers"`
+	UseWhen     []string            `json:"use_when" yaml:"use_when"`
+	AvoidWhen   []string            `json:"avoid_when" yaml:"avoid_when"`
+	PromptAlias string              `json:"prompt_alias" yaml:"prompt_alias"`
+	KeyTrigger  string              `json:"key_trigger" yaml:"key_trigger"`
+}
+
 // Delegation configures whether and how an agent can delegate tasks.
 type Delegation struct {
-	CanDelegate     bool              `json:"can_delegate" yaml:"can_delegate"`
-	DelegationTable map[string]string `json:"delegation_table" yaml:"delegation_table"`
+	CanDelegate         bool              `json:"can_delegate" yaml:"can_delegate"`
+	DelegationTable     map[string]string `json:"delegation_table" yaml:"delegation_table"`
+	DelegationAllowlist []string          `json:"delegation_allowlist" yaml:"delegation_allowlist"`
 }
 
 // HarnessConfig defines the output validation and quality layers for an agent.

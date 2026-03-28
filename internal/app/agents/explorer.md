@@ -44,6 +44,20 @@ metadata:
   role: Codebase Investigator
   goal: Search local code for patterns, structures, and conventions
   when_to_use: When investigating codebase structure, patterns, and conventions
+orchestrator_meta:
+  cost: FREE
+  category: exploration
+  prompt_alias: Explorer
+  key_trigger: "2+ modules involved → fire explore"
+  use_when:
+    - Multiple search angles needed
+    - Unfamiliar module structure
+  avoid_when:
+    - You know exactly what to search
+    - Single keyword/pattern suffices
+  triggers:
+    - domain: Explore
+      trigger: Find existing codebase structure, patterns and styles
 ---
 
 # Role: Codebase Explorer

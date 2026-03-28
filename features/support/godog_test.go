@@ -55,5 +55,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterReadToolSteps(ctx, rts)
 	// Planning steps are in the same package
 	RegisterPlanningSteps(ctx)
+	RegisterOrchestratorMetadataSteps(ctx)
 	s.RegisterSteps(ctx)
 }

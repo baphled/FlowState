@@ -12,7 +12,6 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/hook"
-	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
@@ -313,84 +312,6 @@ func buildDelegationTableSection(delegationTable map[string]string) string {
 	return sb.String()
 }
 
-// buildDynamicDelegationTable constructs a markdown delegation table from prompt frontmatter and agent registry.
-//
-// This method:
-// 1. Reads the prompt's YAML frontmatter to extract delegation_allowlist
-// 2. Queries the agent registry for all available agents
-// 3. Filters to only agents in the allowlist
-// 4. Returns a formatted markdown table, sorted alphabetically
-//
-// If no frontmatter is found, no allowlist is configured, or no agents match: returns empty string.
-//
-// Returns:
-//   - A markdown-formatted delegation table section, or empty string if delegation is not applicable.
-//
-// Side effects:
-//   - None (read-only).
-func (e *Engine) buildDynamicDelegationTable() string {
-	// Get prompt with metadata
-	promptContent, err := prompt.GetPromptWithMetadata(e.manifest.ID)
-	if err != nil || promptContent == nil || promptContent.Metadata == nil {
-		return ""
-	}
-
-	// Check if allowlist is configured
-	allowlist := promptContent.Metadata.DelegationAllowlist
-	if len(allowlist) == 0 {
-		return ""
-	}
-
-	// Query agent registry for all available agents
-	if e.agentRegistry == nil {
-		return ""
-	}
-
-	availableAgents := e.agentRegistry.List()
-	if len(availableAgents) == 0 {
-		return ""
-	}
-
-	// Build a map of available agent IDs for quick lookup
-	availableByID := make(map[string]*agent.Manifest)
-	for _, a := range availableAgents {
-		availableByID[a.ID] = a
-	}
-
-	// Filter to only agents in allowlist that are available
-	var delegationAgents []string
-	for _, agentID := range allowlist {
-		if _, exists := availableByID[agentID]; exists {
-			delegationAgents = append(delegationAgents, agentID)
-		}
-	}
-
-	if len(delegationAgents) == 0 {
-		return ""
-	}
-
-	// Sort alphabetically
-	slices.Sort(delegationAgents)
-
-	// Build markdown table
-	var sb strings.Builder
-	sb.WriteString("## Available Delegation Targets\n\n")
-	sb.WriteString("You can delegate tasks to the following agents:\n\n")
-	sb.WriteString("| Agent ID | Agent Name |\n")
-	sb.WriteString("|---|---|\n")
-
-	for _, agentID := range delegationAgents {
-		agentManifest := availableByID[agentID]
-		sb.WriteString("| `")
-		sb.WriteString(agentID)
-		sb.WriteString("` | ")
-		sb.WriteString(agentManifest.Name)
-		sb.WriteString(" |\n")
-	}
-
-	return sb.String()
-}
-
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // Returns:
@@ -410,18 +331,52 @@ func (e *Engine) BuildSystemPrompt() string {
 		}
 	}
 
-	// Inject delegation table if agent can delegate
 	if e.manifest.Delegation.CanDelegate {
-		// Try dynamic delegation from frontmatter + agent registry first
-		dynamicTable := e.buildDynamicDelegationTable()
-		if dynamicTable != "" {
-			base = base + "\n\n" + dynamicTable
-		} else if len(e.manifest.Delegation.DelegationTable) > 0 {
-			// Fall back to static delegation table from manifest (backwards compatibility)
-			base = base + "\n\n" + buildDelegationTableSection(e.manifest.Delegation.DelegationTable)
-		}
+		base = e.appendDelegationSections(base)
 	}
 
+	return base
+}
+
+// appendDelegationSections builds and appends delegation sections from agent metadata or fallback table.
+//
+// Expected:
+//   - base is the current system prompt string.
+//
+// Returns:
+//   - The base string with appended delegation sections.
+//
+// Side effects:
+//   - None.
+func (e *Engine) appendDelegationSections(base string) string {
+	if e.agentRegistry == nil {
+		if len(e.manifest.Delegation.DelegationTable) > 0 {
+			base = base + "\n\n" + buildDelegationTableSection(e.manifest.Delegation.DelegationTable)
+		}
+		return base
+	}
+
+	agents := e.agentRegistry.List()
+
+	allowlist := e.manifest.Delegation.DelegationAllowlist
+	if len(allowlist) > 0 {
+		agents = filterByAllowlist(agents, allowlist)
+	}
+
+	keyTriggers := buildKeyTriggersSection(agents)
+	if keyTriggers != "" {
+		base = base + "\n\n" + keyTriggers
+	}
+
+	toolSelection := buildToolSelectionSection(agents)
+	if toolSelection != "" {
+		base = base + "\n\n" + toolSelection
+	}
+
+	delegation := buildDelegationSection(agents)
+	if delegation != "" {
+		base = base + "\n\n" + delegation
+	}
 	return base
 }
 

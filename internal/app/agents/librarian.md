@@ -34,6 +34,21 @@ delegation:
   can_delegate: false
 metadata:
   when_to_use: "When searching official docs, library best practices, and external references"
+orchestrator_meta:
+  cost: CHEAP
+  category: exploration
+  prompt_alias: Librarian
+  key_trigger: "External documentation or references needed → delegate search"
+  use_when:
+    - Library documentation required
+    - Open source examples needed
+    - API reference lookup
+  avoid_when:
+    - Internal code patterns only
+    - No external dependencies involved
+  triggers:
+    - domain: Research
+      trigger: Find documentation, examples, and best practices from external sources
 ---
 
 # Reference Librarian

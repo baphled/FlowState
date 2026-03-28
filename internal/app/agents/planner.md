@@ -38,12 +38,12 @@ context_management:
   embedding_model: nomic-embed-text
 delegation:
   can_delegate: true
-  delegation_table:
-    explorer: explorer
-    librarian: librarian
-    analyst: analyst
-    plan-writer: plan-writer
-    plan-reviewer: plan-reviewer
+  delegation_allowlist:
+    - explorer
+    - librarian
+    - analyst
+    - plan-writer
+    - plan-reviewer
 hooks:
   before: []
   after: []
@@ -51,6 +51,21 @@ metadata:
   role: Planner
   goal: Orchestrate the deterministic planning loop through delegation
   when_to_use: When a complex task requires structured requirement gathering, evidence-backed analysis, and reviewed plan generation
+orchestrator_meta:
+  cost: EXPENSIVE
+  category: advisor
+  prompt_alias: Planner
+  key_trigger: "Complex multi-step planning needed → delegate orchestration loop"
+  use_when:
+    - Requirements gathering needed
+    - Multiple specialist agents required
+    - Deterministic planning loop needed
+  avoid_when:
+    - Simple, single-agent tasks
+    - Real-time execution preferred
+  triggers:
+    - domain: Plan
+      trigger: Orchestrate the full planning loop including requirements, research, analysis, and reviewed plan generation
 harness_enabled: true
 ---
 
