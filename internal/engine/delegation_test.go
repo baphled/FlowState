@@ -1290,3 +1290,52 @@ var _ = Describe("Delegation", func() {
 	})
 
 })
+
+var _ = Describe("DelegateTool.ResolveByNameOrAlias", func() {
+	var (
+		reg          *agent.Registry
+		delegateTool *engine.DelegateTool
+	)
+
+	BeforeEach(func() {
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{
+			ID:      "senior-engineer",
+			Name:    "Senior Engineer",
+			Aliases: []string{"lead-dev", "guru"},
+		})
+		reg.Register(&agent.Manifest{
+			ID:      "qa-agent",
+			Name:    "QA Agent",
+			Aliases: []string{"tester"},
+		})
+
+		engines := map[string]*engine.Engine{}
+		delegation := agent.Delegation{CanDelegate: true}
+		delegateTool = engine.NewDelegateTool(engines, delegation, "orchestrator").WithRegistry(reg)
+	})
+
+	It("resolves by exact name", func() {
+		id, err := delegateTool.ResolveByNameOrAlias("senior-engineer")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(id).To(Equal("senior-engineer"))
+	})
+
+	It("resolves by case-insensitive name", func() {
+		id, err := delegateTool.ResolveByNameOrAlias("SENIOR-ENGINEER")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(id).To(Equal("senior-engineer"))
+	})
+
+	It("resolves by alias", func() {
+		id, err := delegateTool.ResolveByNameOrAlias("guru")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(id).To(Equal("senior-engineer"))
+	})
+
+	It("returns error for unknown name", func() {
+		_, err := delegateTool.ResolveByNameOrAlias("xyz-unknown")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("xyz-unknown"))
+	})
+})

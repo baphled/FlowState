@@ -82,6 +82,7 @@ type DelegateTool struct {
 	spawnLimits        delegation.SpawnLimits
 	skillResolver      SkillResolver
 	categoryResolver   *CategoryResolver
+	registry           *agent.Registry
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -223,6 +224,43 @@ func (d *DelegateTool) WithSkillResolver(r SkillResolver) *DelegateTool {
 func (d *DelegateTool) WithCategoryResolver(r *CategoryResolver) *DelegateTool {
 	d.categoryResolver = r
 	return d
+}
+
+// WithRegistry sets the agent registry used for name and alias resolution.
+//
+// Expected:
+//   - reg is a non-nil agent Registry.
+//
+// Returns:
+//   - The DelegateTool for method chaining.
+//
+// Side effects:
+//   - Replaces any previously configured registry.
+func (d *DelegateTool) WithRegistry(reg *agent.Registry) *DelegateTool {
+	d.registry = reg
+	return d
+}
+
+// ResolveByNameOrAlias looks up an agent ID using the registry by name or alias.
+//
+// Expected:
+//   - name is a non-empty string identifying an agent.
+//
+// Returns:
+//   - The resolved agent ID and nil on success.
+//   - Empty string and error if not found.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) ResolveByNameOrAlias(name string) (string, error) {
+	if d.registry == nil {
+		return "", fmt.Errorf("no registry configured for agent %q lookup", name)
+	}
+	manifest, ok := d.registry.GetByNameOrAlias(name)
+	if !ok {
+		return "", fmt.Errorf("unknown agent %q", name)
+	}
+	return manifest.ID, nil
 }
 
 // checkSpawnLimits validates that delegation respects configured depth and budget limits.
