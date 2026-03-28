@@ -402,17 +402,7 @@ func (e *Engine) BuildSystemPrompt() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	var base string
-	if prompt.HasPrompt(e.manifest.ID) {
-		promptContent, err := prompt.GetPromptWithMetadata(e.manifest.ID)
-		if err == nil {
-			base = promptContent.Body
-		} else {
-			base = e.manifest.Instructions.SystemPrompt
-		}
-	} else {
-		base = e.manifest.Instructions.SystemPrompt
-	}
+	base := e.manifest.Instructions.SystemPrompt
 
 	if e.agentsFileLoader != nil {
 		for _, f := range e.agentsFileLoader.LoadFiles() {

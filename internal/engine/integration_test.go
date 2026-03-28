@@ -240,13 +240,13 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			}
 		})
 
-		Context("when agent manifest ID is planner", func() {
-			It("uses embedded planner prompt instead of legacy system prompt", func() {
+		Context("when agent manifest system prompt is planner", func() {
+			It("uses the planner system prompt from manifest", func() {
 				manifest := agent.Manifest{
 					ID:   "planner",
 					Name: "Planner",
 					Instructions: agent.Instructions{
-						SystemPrompt: "Legacy fallback should not appear",
+						SystemPrompt: "You are the FlowState Planner managing the planning loop.",
 					},
 				}
 
@@ -258,17 +258,17 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 				prompt := eng.BuildSystemPrompt()
 
 				Expect(prompt).To(ContainSubstring("FlowState Planner"))
-				Expect(prompt).NotTo(ContainSubstring("Legacy fallback should not appear"))
+				Expect(prompt).To(ContainSubstring("planning loop"))
 			})
 		})
 
-		Context("when agent manifest ID is executor", func() {
-			It("uses embedded executor prompt instead of legacy system prompt", func() {
+		Context("when agent manifest system prompt is executor", func() {
+			It("uses the executor system prompt from manifest", func() {
 				manifest := agent.Manifest{
 					ID:   "executor",
 					Name: "Executor",
 					Instructions: agent.Instructions{
-						SystemPrompt: "Legacy fallback should not appear",
+						SystemPrompt: "You are the FlowState Task Executor discovering and running plans.",
 					},
 				}
 
@@ -280,7 +280,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 				prompt := eng.BuildSystemPrompt()
 
 				Expect(prompt).To(ContainSubstring("FlowState Task Executor"))
-				Expect(prompt).NotTo(ContainSubstring("Legacy fallback should not appear"))
+				Expect(prompt).To(ContainSubstring("discovering and running"))
 			})
 		})
 

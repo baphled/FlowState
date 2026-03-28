@@ -198,10 +198,10 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
-		Context("when agent ID has an embedded prompt", func() {
-			It("uses embedded prompt as base instead of legacy SystemPrompt", func() {
+		Context("when agent manifest has SystemPrompt populated from markdown", func() {
+			It("uses manifest SystemPrompt as the base prompt", func() {
 				manifest.ID = "planner"
-				manifest.Instructions.SystemPrompt = "Legacy fallback prompt"
+				manifest.Instructions.SystemPrompt = "You are the FlowState Planner with comprehensive instructions."
 
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
@@ -211,8 +211,7 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(ContainSubstring("FlowState Planner"))
-				Expect(prompt).NotTo(ContainSubstring("Legacy fallback prompt"))
+				Expect(prompt).To(ContainSubstring("You are the FlowState Planner with comprehensive instructions."))
 			})
 		})
 
@@ -690,7 +689,7 @@ var _ = Describe("Engine", func() {
 	})
 
 	Describe("buildContextWindow with window builder active", func() {
-		It("uses the embedded system prompt rather than the inline string", func() {
+		It("uses the system prompt from manifest instructions", func() {
 			tempDir, err := os.MkdirTemp("", "engine-context-window-test-*")
 			Expect(err).NotTo(HaveOccurred())
 			defer os.RemoveAll(tempDir)
@@ -705,7 +704,7 @@ var _ = Describe("Engine", func() {
 				ID:   "default-assistant",
 				Name: "Default Assistant Agent",
 				Instructions: agent.Instructions{
-					SystemPrompt: "Short inline prompt.",
+					SystemPrompt: "You are a helpful assistant.",
 				},
 				Capabilities: agent.Capabilities{
 					AlwaysActiveSkills: []string{"memory-keeper"},
@@ -734,8 +733,7 @@ var _ = Describe("Engine", func() {
 			systemMessage := chatProvider.capturedRequest.Messages[0]
 			Expect(systemMessage.Role).To(Equal("system"))
 
-			Expect(systemMessage.Content).To(ContainSubstring("general-purpose AI assistant"))
-			Expect(systemMessage.Content).NotTo(ContainSubstring("Short inline prompt."))
+			Expect(systemMessage.Content).To(ContainSubstring("You are a helpful assistant."))
 		})
 	})
 
@@ -852,7 +850,7 @@ var _ = Describe("Engine", func() {
 				plannerManifest := agent.Manifest{
 					ID: "planner",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are a planner.",
+						SystemPrompt: "You are a planner orchestrating complex tasks.",
 					},
 				}
 				agentReg.Register(&plannerManifest)
@@ -869,7 +867,7 @@ var _ = Describe("Engine", func() {
 				for chunk := range ch {
 					_ = chunk
 				}
-				Expect(eng.BuildSystemPrompt()).To(ContainSubstring("Planner"))
+				Expect(eng.BuildSystemPrompt()).To(ContainSubstring("planner orchestrating"))
 			})
 
 			It("is a no-op for unknown agentID", func() {

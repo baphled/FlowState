@@ -25,3 +25,9 @@ Feature: Agent Prompt Loading
     Given the FlowState TUI is running with the planner agent
     When I switch to the executor agent
     Then the active agent should be "executor"
+
+  Scenario: BuildSystemPrompt uses manifest SystemPrompt from markdown agent
+    Given an explorer agent loaded from a markdown definition
+    When the system prompt is built
+    Then the prompt should contain the explorer role description
+    And the prompt should not be the bare JSON system prompt

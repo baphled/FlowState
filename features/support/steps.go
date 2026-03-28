@@ -27,6 +27,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/recall"
@@ -501,9 +502,12 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the FlowState TUI is running$`, s.theFlowStateTUIIsRunning)
 	ctx.Step(`^the planner agent is configured$`, s.thePlannerAgentIsConfigured)
 	ctx.Step(`^the executor agent is configured$`, s.theExecutorAgentIsConfigured)
+	ctx.Step(`^an explorer agent loaded from a markdown definition$`, s.anExplorerAgentLoadedFromMarkdown)
 	ctx.Step(`^the system prompt is built$`, s.theSystemPromptIsBuilt)
 	ctx.Step(`^the prompt should contain planning instructions$`, s.thePromptShouldContainPlanningInstructions)
 	ctx.Step(`^the prompt should contain execution instructions$`, s.thePromptShouldContainExecutionInstructions)
+	ctx.Step(`^the prompt should contain the explorer role description$`, s.thePromptShouldContainTheExplorerRoleDescription)
+	ctx.Step(`^the prompt should not be the bare JSON system prompt$`, s.thePromptShouldNotBeTheBareJSONSystemPrompt)
 	ctx.Step(`^the prompt size should be at least (\d+) characters$`, s.thePromptSizeShouldBeAtLeastCharacters)
 	ctx.Step(`^I open the agent picker$`, s.iOpenTheAgentPicker)
 	ctx.Step(`^I should see "([^"]*)" in the agent list$`, s.iShouldSeeInTheAgentList)
@@ -5010,6 +5014,10 @@ func (s *StepDefinitions) thePlannerAgentIsConfigured() error {
 			SystemPrompt: "You are a strategic planner helping users interview and plan.",
 		},
 	}
+	promptContent, err := prompt.GetPromptWithMetadata("planner")
+	if err == nil && promptContent != nil {
+		manifest.Instructions.SystemPrompt = promptContent.Body
+	}
 	s.agentEngine = engine.New(engine.Config{
 		Manifest: manifest,
 	})
@@ -5028,6 +5036,10 @@ func (s *StepDefinitions) theExecutorAgentIsConfigured() error {
 		Instructions: agent.Instructions{
 			SystemPrompt: "You are a task executor implementing plans with precision.",
 		},
+	}
+	promptContent, err := prompt.GetPromptWithMetadata("executor")
+	if err == nil && promptContent != nil {
+		manifest.Instructions.SystemPrompt = promptContent.Body
 	}
 	s.agentEngine = engine.New(engine.Config{
 		Manifest: manifest,
@@ -5091,6 +5103,63 @@ func (s *StepDefinitions) thePromptSizeShouldBeAtLeastCharacters(size int) error
 	}
 	if len(s.lastPrompt) < size {
 		return fmt.Errorf("expected prompt size at least %d, got %d", size, len(s.lastPrompt))
+	}
+	return nil
+}
+
+// thePromptShouldNotBeTheBareJSONSystemPrompt asserts the prompt is not a bare JSON stub.
+//
+// Expected: s.lastPrompt has significant length (>100 chars).
+// Returns: nil on success, or an error if prompt is too short.
+// Side effects: None.
+func (s *StepDefinitions) thePromptShouldNotBeTheBareJSONSystemPrompt() error {
+	if s.lastPrompt == "" {
+		return errors.New("no prompt built")
+	}
+	if len(s.lastPrompt) < 100 {
+		return fmt.Errorf("expected full prompt (>100 chars), got bare JSON stub (%d chars)", len(s.lastPrompt))
+	}
+	return nil
+}
+
+// anExplorerAgentLoadedFromMarkdown creates an engine with the explorer agent manifest.
+//
+// Expected: explorer agent manifest is available.
+// Returns: nil on success, or an error if engine creation fails.
+// Side effects: Creates s.agentEngine with explorer agent loaded from embedded prompt.
+func (s *StepDefinitions) anExplorerAgentLoadedFromMarkdown() error {
+	manifest := agent.Manifest{
+		ID:   "explorer",
+		Name: "Codebase Explorer",
+		Instructions: agent.Instructions{
+			SystemPrompt: "You are a codebase explorer.",
+		},
+	}
+	promptContent, err := prompt.GetPromptWithMetadata("explorer")
+	if err == nil && promptContent != nil {
+		manifest.Instructions.SystemPrompt = promptContent.Body
+	}
+	s.agentEngine = engine.New(engine.Config{
+		Manifest: manifest,
+	})
+	return nil
+}
+
+// thePromptShouldContainTheExplorerRoleDescription asserts the prompt contains explorer keywords.
+//
+// Expected: s.lastPrompt contains keywords like "explorer" or "investigator".
+// Returns: nil on success, or an error if keywords not found.
+// Side effects: None.
+func (s *StepDefinitions) thePromptShouldContainTheExplorerRoleDescription() error {
+	if s.lastPrompt == "" {
+		return errors.New("no prompt built")
+	}
+	lowerPrompt := strings.ToLower(s.lastPrompt)
+	hasExplorer := strings.Contains(lowerPrompt, "explorer")
+	hasInvestigator := strings.Contains(lowerPrompt, "investigator")
+	hasCodebase := strings.Contains(lowerPrompt, "codebase")
+	if !hasExplorer && !hasInvestigator && !hasCodebase {
+		return errors.New("prompt does not contain explorer role description")
 	}
 	return nil
 }
@@ -5235,19 +5304,19 @@ func (s *StepDefinitions) aNewSessionIsStarted() error {
 // Returns: nil if found, error otherwise.
 // Side effects: None.
 func (s *StepDefinitions) theSystemPromptShouldContain(expected string) error {
-	var prompt string
+	var promptText string
 
 	if s.loadedManifest != nil {
-		prompt = s.loadedManifest.Instructions.SystemPrompt
+		promptText = s.loadedManifest.Instructions.SystemPrompt
 	} else {
-		prompt = s.lastPrompt
+		promptText = s.lastPrompt
 	}
 
-	if prompt == "" {
+	if promptText == "" {
 		return errors.New("no system prompt built")
 	}
-	if !strings.Contains(prompt, expected) {
-		return fmt.Errorf("system prompt does not contain %q, got: %s", expected, prompt)
+	if !strings.Contains(promptText, expected) {
+		return fmt.Errorf("system prompt does not contain %q, got: %s", expected, promptText)
 	}
 	return nil
 }
