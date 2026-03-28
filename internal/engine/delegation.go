@@ -832,6 +832,9 @@ func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationPara
 		if resolvedID, err := d.ResolveByNameOrAlias(params.subagentType); err == nil {
 			return resolvedID, nil
 		}
+		if _, ok := d.engines[params.subagentType]; ok {
+			return params.subagentType, nil
+		}
 	}
 
 	taskType := params.taskType
@@ -842,11 +845,14 @@ func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationPara
 		return "", errTaskTypeMustBeString
 	}
 
+	if _, ok := d.engines[taskType]; ok {
+		return taskType, nil
+	}
+
 	return d.resolveWithDiscovery(ctx, taskType, params.message)
 }
 
-// resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery,
-// falling back to the delegation table if confidence is below threshold or discovery is unavailable.
+// resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery.
 //
 // Expected:
 //   - ctx is a valid context for the embedding operation.
@@ -869,12 +875,7 @@ func (d *DelegateTool) resolveWithDiscovery(ctx context.Context, taskType, messa
 		}
 	}
 
-	targetAgentID, ok := d.delegation.DelegationTable[taskType]
-	if !ok {
-		return "", fmt.Errorf("no agent configured for task type: %s", taskType)
-	}
-
-	return targetAgentID, nil
+	return "", fmt.Errorf("no agent configured for task type: %s", taskType)
 }
 
 // parseHandoff parses a handoff argument into a delegation.Handoff struct.
@@ -1096,7 +1097,7 @@ func ptrTime(t time.Time) *time.Time {
 // Expected:
 //   - ctx is a valid context for the delegation operation.
 //   - engines is a map of agent IDs to their Engine instances.
-//   - taskType identifies the delegation target via the delegation table.
+//   - agentID identifies the delegation target directly.
 //   - message is the instruction to send to the target agent.
 //
 // Returns:
@@ -1108,24 +1109,19 @@ func ptrTime(t time.Time) *time.Time {
 func (e *Engine) DelegateToAgent(
 	ctx context.Context,
 	engines map[string]*Engine,
-	taskType string,
+	agentID string,
 	message string,
 ) (<-chan provider.StreamChunk, error) {
 	if !e.manifest.Delegation.CanDelegate {
 		return nil, errDelegationNotAllowed
 	}
 
-	targetAgentID, ok := e.manifest.Delegation.DelegationTable[taskType]
+	targetEngine, ok := engines[agentID]
 	if !ok {
-		return nil, fmt.Errorf("no agent configured for task type: %s", taskType)
+		return nil, fmt.Errorf("target agent engine not available: %s", agentID)
 	}
 
-	targetEngine, ok := engines[targetAgentID]
-	if !ok {
-		return nil, fmt.Errorf("target agent engine not available: %s", targetAgentID)
-	}
-
-	return targetEngine.Stream(ctx, targetAgentID, message)
+	return targetEngine.Stream(ctx, agentID, message)
 }
 
 // BackgroundManager returns the background task manager for this delegate tool.

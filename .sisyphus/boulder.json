@@ -24,9 +24,21 @@
     "ses_2d02a0f32ffeUUpPfJlYuMIyJ5",
     "ses_2d04bf514ffeAJaIQPgLU8dnhS",
     "ses_2cfe88926ffeVyvvoSyod5280N",
-    "ses_2cee73645ffe95v1MfRvmNxfIj"
+    "ses_2cee73645ffe95v1MfRvmNxfIj",
+    "ses_2caefce04ffe0P79y6Mxs2erWZ",
+    "ses_2cacf6514ffeUbkhbq4m0pHWr8"
   ],
   "plan_name": "session-visibility",
   "agent": "atlas",
-  "task_sessions": {}
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Add Aliases field to Manifest struct",
+      "session_id": "ses_2cae861d5ffeAnwdN0pewFdUEl",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-03-28T15:43:35.046Z"
+    }
+  }
 }

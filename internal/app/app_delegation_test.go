@@ -57,10 +57,6 @@ func TestWireDelegateToolIfEnabled_CreatesIsolatedEngines(t *testing.T) {
 		Name: "Coordinator",
 		Delegation: agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"explore": "explorer",
-				"analyze": "analyst",
-			},
 		},
 		ModelPreferences: map[string][]agent.ModelPref{
 			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
@@ -137,9 +133,6 @@ func TestWireDelegateToolIfEnabled_TargetEnginesHaveCorrectManifest(t *testing.T
 		Name: "Coordinator",
 		Delegation: agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"explore": "explorer",
-			},
 		},
 		ModelPreferences: map[string][]agent.ModelPref{
 			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
@@ -195,9 +188,6 @@ func TestWireDelegateToolIfEnabled_CoordinatorStatePreserved(t *testing.T) {
 		Name: "Coordinator",
 		Delegation: agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"explore": "explorer",
-			},
 		},
 		ModelPreferences: map[string][]agent.ModelPref{
 			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
@@ -331,9 +321,6 @@ func TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery(t *testing.T) {
 		Name: "Coordinator",
 		Delegation: agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"explore": "explorer",
-			},
 		},
 	}
 

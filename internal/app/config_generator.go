@@ -71,7 +71,7 @@ func DefaultHarnessConfigForAgent(manifest agent.Manifest) config.HarnessConfig 
 		projectRoot = "."
 	}
 
-	criticEnabled := !hasReviewerInDelegationTable(manifest)
+	criticEnabled := !hasReviewerInDelegation(manifest)
 
 	return config.HarnessConfig{
 		Enabled:       true,
@@ -81,26 +81,23 @@ func DefaultHarnessConfigForAgent(manifest agent.Manifest) config.HarnessConfig 
 	}
 }
 
-// hasReviewerInDelegationTable checks if the plan-reviewer agent is in the delegation table.
+// hasReviewerInDelegation checks if the plan-reviewer agent is in the delegation allowlist.
 //
 // Returns:
-//   - True if the delegation table contains plan-reviewer as a target.
-//   - False if delegation is disabled, table is nil, or reviewer is not present.
+//   - True if the delegation allowlist contains plan-reviewer as a target.
+//   - False if delegation is disabled, allowlist is empty, or reviewer is not present.
 //
 // Expected:
 //   - The helper returns a boolean that reflects whether plan-reviewer appears in the delegation targets.
 //
 // Side effects:
 //   - None.
-func hasReviewerInDelegationTable(manifest agent.Manifest) bool {
+func hasReviewerInDelegation(manifest agent.Manifest) bool {
 	if !manifest.Delegation.CanDelegate {
 		return false
 	}
-	if manifest.Delegation.DelegationTable == nil {
-		return false
-	}
-	for _, targetID := range manifest.Delegation.DelegationTable {
-		if targetID == PlanReviewerAgentID {
+	for _, id := range manifest.Delegation.DelegationAllowlist {
+		if id == PlanReviewerAgentID {
 			return true
 		}
 	}

@@ -108,9 +108,8 @@ type OrchestratorMetadata struct {
 
 // Delegation configures whether and how an agent can delegate tasks.
 type Delegation struct {
-	CanDelegate         bool              `json:"can_delegate" yaml:"can_delegate"`
-	DelegationTable     map[string]string `json:"delegation_table" yaml:"delegation_table"`
-	DelegationAllowlist []string          `json:"delegation_allowlist" yaml:"delegation_allowlist"`
+	CanDelegate         bool     `json:"can_delegate" yaml:"can_delegate"`
+	DelegationAllowlist []string `json:"delegation_allowlist" yaml:"delegation_allowlist"`
 }
 
 // HarnessConfig defines the output validation and quality layers for an agent.

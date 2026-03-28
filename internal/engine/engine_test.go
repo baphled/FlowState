@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1187,7 +1186,7 @@ var _ = Describe("Engine", func() {
 	})
 
 	Describe("BuildSystemPrompt with delegation", func() {
-		It("includes delegation table when agent can delegate", func() {
+		It("does not include delegation sections when no registry is set", func() {
 			manifest := agent.Manifest{
 				ID:   "test-delegator",
 				Name: "Test Delegator",
@@ -1196,13 +1195,6 @@ var _ = Describe("Engine", func() {
 				},
 				Delegation: agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"explorer":      "explorer",
-						"librarian":     "librarian",
-						"analyst":       "analyst",
-						"plan-writer":   "plan-writer",
-						"plan-reviewer": "plan-reviewer",
-					},
 				},
 			}
 
@@ -1214,16 +1206,10 @@ var _ = Describe("Engine", func() {
 			prompt := eng.BuildSystemPrompt()
 
 			Expect(prompt).To(ContainSubstring("You are a test delegator."))
-			Expect(prompt).To(ContainSubstring("## Delegation Targets"))
-			Expect(prompt).To(ContainSubstring("When delegating, use these exact task_type values:"))
-			Expect(prompt).To(ContainSubstring("| analyst | `analyst` |"))
-			Expect(prompt).To(ContainSubstring("| explorer | `explorer` |"))
-			Expect(prompt).To(ContainSubstring("| librarian | `librarian` |"))
-			Expect(prompt).To(ContainSubstring("| plan-reviewer | `plan-reviewer` |"))
-			Expect(prompt).To(ContainSubstring("| plan-writer | `plan-writer` |"))
+			Expect(prompt).NotTo(ContainSubstring("## Delegation Targets"))
 		})
 
-		It("does not include delegation table when agent cannot delegate", func() {
+		It("does not include delegation sections when agent cannot delegate", func() {
 			manifest := agent.Manifest{
 				ID:   "test-non-delegator",
 				Name: "Test Non-Delegator",
@@ -1232,9 +1218,6 @@ var _ = Describe("Engine", func() {
 				},
 				Delegation: agent.Delegation{
 					CanDelegate: false,
-					DelegationTable: map[string]string{
-						"explorer": "explorer",
-					},
 				},
 			}
 
@@ -1247,62 +1230,6 @@ var _ = Describe("Engine", func() {
 
 			Expect(prompt).To(ContainSubstring("You are a test non-delegator."))
 			Expect(prompt).NotTo(ContainSubstring("## Delegation Targets"))
-		})
-
-		It("does not include delegation table when table is empty", func() {
-			manifest := agent.Manifest{
-				ID:   "test-empty-table",
-				Name: "Test Empty Table",
-				Instructions: agent.Instructions{
-					SystemPrompt: "You are a test empty table agent.",
-				},
-				Delegation: agent.Delegation{
-					CanDelegate:     true,
-					DelegationTable: map[string]string{},
-				},
-			}
-
-			eng := engine.New(engine.Config{
-				ChatProvider: &mockProvider{name: "test"},
-				Manifest:     manifest,
-			})
-
-			prompt := eng.BuildSystemPrompt()
-
-			Expect(prompt).To(ContainSubstring("You are a test empty table agent."))
-			Expect(prompt).NotTo(ContainSubstring("## Delegation Targets"))
-		})
-
-		It("sorts delegation table keys alphabetically", func() {
-			manifest := agent.Manifest{
-				ID:   "test-sort-delegator",
-				Name: "Test Sort Delegator",
-				Instructions: agent.Instructions{
-					SystemPrompt: "You are a test sort delegator.",
-				},
-				Delegation: agent.Delegation{
-					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"zebra":  "zebra-task",
-						"apple":  "apple-task",
-						"middle": "middle-task",
-					},
-				},
-			}
-
-			eng := engine.New(engine.Config{
-				ChatProvider: &mockProvider{name: "test"},
-				Manifest:     manifest,
-			})
-
-			prompt := eng.BuildSystemPrompt()
-
-			appleIdx := strings.Index(prompt, "| apple |")
-			middleIdx := strings.Index(prompt, "| middle |")
-			zebraIdx := strings.Index(prompt, "| zebra |")
-
-			Expect(appleIdx).To(BeNumerically("<", middleIdx))
-			Expect(middleIdx).To(BeNumerically("<", zebraIdx))
 		})
 	})
 })

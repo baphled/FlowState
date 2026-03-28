@@ -156,10 +156,6 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 		},
 		Delegation: agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"plan-writer":   "plan-writer",
-				"plan-reviewer": "plan-reviewer",
-			},
 		},
 		ContextManagement: agent.DefaultContextManagement(),
 	}

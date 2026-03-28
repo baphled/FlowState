@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -282,51 +281,6 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 	return nil, nil
 }
 
-// buildDelegationTableSection constructs a markdown delegation table section.
-//
-// If the delegation table is nil or empty, returns an empty string.
-// Otherwise, returns a formatted markdown section with the agent targets
-// sorted alphabetically by key.
-//
-// Expected:
-//   - delegationTable is a map of agent target names to task_type values.
-//
-// Returns:
-//   - A markdown-formatted delegation table section, or empty string if no delegations.
-//
-// Side effects:
-//   - None.
-func buildDelegationTableSection(delegationTable map[string]string) string {
-	if len(delegationTable) == 0 {
-		return ""
-	}
-
-	// Extract keys and sort alphabetically
-	keys := make([]string, 0, len(delegationTable))
-	for k := range delegationTable {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-
-	// Build markdown table
-	var sb strings.Builder
-	sb.WriteString("## Delegation Targets\n\n")
-	sb.WriteString("When delegating, use these exact task_type values:\n\n")
-	sb.WriteString("| Delegation Target | task_type |\n")
-	sb.WriteString("|---|---|\n")
-
-	for _, target := range keys {
-		taskType := delegationTable[target]
-		sb.WriteString("| ")
-		sb.WriteString(target)
-		sb.WriteString(" | `")
-		sb.WriteString(taskType)
-		sb.WriteString("` |\n")
-	}
-
-	return sb.String()
-}
-
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // The composition order is: base prompt → agent files → delegation sections → prompt_append (last).
@@ -373,9 +327,6 @@ func (e *Engine) BuildSystemPrompt() string {
 //   - None.
 func (e *Engine) appendDelegationSections(base string) string {
 	if e.agentRegistry == nil {
-		if len(e.manifest.Delegation.DelegationTable) > 0 {
-			base = base + "\n\n" + buildDelegationTableSection(e.manifest.Delegation.DelegationTable)
-		}
 		return base
 	}
 

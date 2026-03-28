@@ -51,9 +51,6 @@ var _ = Describe("DelegationProgress", func() {
 				},
 				Delegation: agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				},
 				ContextManagement: agent.DefaultContextManagement(),
 			}
@@ -67,7 +64,7 @@ var _ = Describe("DelegationProgress", func() {
 			input := tool.Input{
 				Name: "delegate",
 				Arguments: map[string]interface{}{
-					"subagent_type": "testing",
+					"subagent_type": "qa-agent",
 					"message":       "Run the tests",
 				},
 			}
@@ -121,9 +118,6 @@ var _ = Describe("DelegationProgress", func() {
 				},
 				Delegation: agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				},
 				ContextManagement: agent.DefaultContextManagement(),
 			}
@@ -137,7 +131,7 @@ var _ = Describe("DelegationProgress", func() {
 			input := tool.Input{
 				Name: "delegate",
 				Arguments: map[string]interface{}{
-					"subagent_type": "testing",
+					"subagent_type": "qa-agent",
 					"message":       "Run the tests",
 				},
 			}

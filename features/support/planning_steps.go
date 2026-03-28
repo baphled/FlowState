@@ -196,10 +196,6 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 
 	delegationConfig := agent.Delegation{
 		CanDelegate: true,
-		DelegationTable: map[string]string{
-			"plan-writing": "plan-writer",
-			"plan-review":  "plan-reviewer",
-		},
 	}
 
 	return engine.NewDelegateTool(engines, delegationConfig, "planner")
@@ -291,23 +287,23 @@ func (p *PlanningStepDefinitions) theDelegationTableMapsToWriterAndReviewerAgent
 	writerInput := tool.Input{
 		Name: "delegate",
 		Arguments: map[string]interface{}{
-			"task_type": "plan-writing",
-			"message":   "verify writer routing",
+			"subagent_type": "plan-writer",
+			"message":       "verify writer routing",
 		},
 	}
 	if _, err := p.delegateTool.Execute(ctx, writerInput); err != nil {
-		return fmt.Errorf("delegation table missing plan-writer entry: %w", err)
+		return fmt.Errorf("delegation missing plan-writer route: %w", err)
 	}
 
 	reviewerInput := tool.Input{
 		Name: "delegate",
 		Arguments: map[string]interface{}{
-			"task_type": "plan-review",
-			"message":   "verify reviewer routing",
+			"subagent_type": "plan-reviewer",
+			"message":       "verify reviewer routing",
 		},
 	}
 	if _, err := p.delegateTool.Execute(ctx, reviewerInput); err != nil {
-		return fmt.Errorf("delegation table missing plan-reviewer entry: %w", err)
+		return fmt.Errorf("delegation missing plan-reviewer route: %w", err)
 	}
 
 	return nil

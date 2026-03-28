@@ -59,15 +59,13 @@ var _ = Describe("Config Generator", func() {
 	})
 
 	Describe("DefaultHarnessConfigForAgent", func() {
-		Context("when delegation table contains plan-reviewer", func() {
+		Context("when delegation allowlist contains plan-reviewer", func() {
 			It("returns CriticEnabled as false", func() {
 				manifest := agent.Manifest{
 					ID: "planner",
 					Delegation: agent.Delegation{
-						CanDelegate: true,
-						DelegationTable: map[string]string{
-							"plan-reviewer": "plan-reviewer",
-						},
+						CanDelegate:         true,
+						DelegationAllowlist: []string{"plan-reviewer"},
 					},
 				}
 
@@ -77,15 +75,13 @@ var _ = Describe("Config Generator", func() {
 			})
 		})
 
-		Context("when delegation table does not contain plan-reviewer", func() {
+		Context("when delegation allowlist does not contain plan-reviewer", func() {
 			It("returns CriticEnabled as true", func() {
 				manifest := agent.Manifest{
 					ID: "simple-agent",
 					Delegation: agent.Delegation{
-						CanDelegate: true,
-						DelegationTable: map[string]string{
-							"explorer": "explorer",
-						},
+						CanDelegate:         true,
+						DelegationAllowlist: []string{"explorer"},
 					},
 				}
 
@@ -95,13 +91,12 @@ var _ = Describe("Config Generator", func() {
 			})
 		})
 
-		Context("when delegation table is empty", func() {
+		Context("when delegation allowlist is empty", func() {
 			It("returns CriticEnabled as true", func() {
 				manifest := agent.Manifest{
 					ID: "no-delegation-agent",
 					Delegation: agent.Delegation{
-						CanDelegate:     false,
-						DelegationTable: map[string]string{},
+						CanDelegate: false,
 					},
 				}
 
@@ -116,8 +111,7 @@ var _ = Describe("Config Generator", func() {
 				manifest := agent.Manifest{
 					ID: "no-delegation-agent",
 					Delegation: agent.Delegation{
-						CanDelegate:     false,
-						DelegationTable: nil,
+						CanDelegate: false,
 					},
 				}
 
@@ -127,14 +121,12 @@ var _ = Describe("Config Generator", func() {
 			})
 		})
 
-		It("returns Enabled as true regardless of delegation table", func() {
+		It("returns Enabled as true regardless of delegation allowlist", func() {
 			manifest := agent.Manifest{
 				ID: "test-agent",
 				Delegation: agent.Delegation{
-					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"plan-reviewer": "plan-reviewer",
-					},
+					CanDelegate:         true,
+					DelegationAllowlist: []string{"plan-reviewer"},
 				},
 			}
 
@@ -143,14 +135,12 @@ var _ = Describe("Config Generator", func() {
 			Expect(cfg.Enabled).To(BeTrue())
 		})
 
-		It("returns VotingEnabled as false regardless of delegation table", func() {
+		It("returns VotingEnabled as false regardless of delegation allowlist", func() {
 			manifest := agent.Manifest{
 				ID: "test-agent",
 				Delegation: agent.Delegation{
-					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"plan-reviewer": "plan-reviewer",
-					},
+					CanDelegate:         true,
+					DelegationAllowlist: []string{"plan-reviewer"},
 				},
 			}
 

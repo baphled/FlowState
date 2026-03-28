@@ -326,14 +326,14 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	bgManager := engine.NewBackgroundTaskManager()
 	coordinationStore := coordination.NewMemoryStore()
 
-	engines := make(map[string]*engine.Engine, len(manifest.Delegation.DelegationTable))
-	for _, targetID := range manifest.Delegation.DelegationTable {
-		targetManifest, ok := a.Registry.Get(targetID)
-		if !ok {
+	allAgents := a.Registry.List()
+	engines := make(map[string]*engine.Engine, len(allAgents))
+	for _, agentManifest := range allAgents {
+		if agentManifest.ID == manifest.ID {
 			continue
 		}
-		targetEngine := a.createDelegateEngine(*targetManifest, coordinationStore)
-		engines[targetID] = targetEngine
+		targetEngine := a.createDelegateEngine(*agentManifest, coordinationStore)
+		engines[agentManifest.ID] = targetEngine
 	}
 
 	delegateTool := engine.NewDelegateToolWithBackground(

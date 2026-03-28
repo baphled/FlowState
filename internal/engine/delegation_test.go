@@ -40,10 +40,6 @@ var _ = Describe("Delegation", func() {
 			},
 			Delegation: agent.Delegation{
 				CanDelegate: true,
-				DelegationTable: map[string]string{
-					"testing": "qa-agent",
-					"coding":  "senior-engineer",
-				},
 			},
 			ContextManagement: agent.DefaultContextManagement(),
 		}
@@ -81,7 +77,7 @@ var _ = Describe("Delegation", func() {
 				})
 
 				ctx := context.Background()
-				chunks, err := eng.DelegateToAgent(ctx, engines, "testing", "Run the tests")
+				chunks, err := eng.DelegateToAgent(ctx, engines, "qa-agent", "Run the tests")
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(chunks).NotTo(BeNil())
@@ -113,7 +109,7 @@ var _ = Describe("Delegation", func() {
 			})
 		})
 
-		Context("when subagent_type not in delegation table", func() {
+		Context("when target agent not in engines", func() {
 			It("returns an error", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
@@ -124,7 +120,7 @@ var _ = Describe("Delegation", func() {
 				_, err := eng.DelegateToAgent(ctx, nil, "unknown-task", "Do something")
 
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("no agent configured for task type"))
+				Expect(err.Error()).To(ContainSubstring("target agent engine not available"))
 			})
 		})
 
@@ -138,7 +134,7 @@ var _ = Describe("Delegation", func() {
 				engines := map[string]*engine.Engine{}
 
 				ctx := context.Background()
-				_, err := eng.DelegateToAgent(ctx, engines, "testing", "Run the tests")
+				_, err := eng.DelegateToAgent(ctx, engines, "qa-agent", "Run the tests")
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("target agent engine not available"))
@@ -167,7 +163,7 @@ var _ = Describe("Delegation", func() {
 		})
 
 		Context("when executing", func() {
-			It("dispatches via delegation table", func() {
+			It("dispatches via direct engine key match", func() {
 				qaProvider := &mockProvider{
 					name: "qa-provider",
 					streamChunks: []provider.StreamChunk{
@@ -193,9 +189,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation := agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				}
 
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
@@ -204,7 +197,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run the unit tests",
 					},
 				}
@@ -227,7 +220,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests",
 					},
 				}
@@ -238,10 +231,9 @@ var _ = Describe("Delegation", func() {
 				Expect(err.Error()).To(ContainSubstring("delegation not allowed"))
 			})
 
-			It("returns error when subagent_type not in table", func() {
+			It("returns error when subagent_type has no matching engine", func() {
 				delegation := agent.Delegation{
-					CanDelegate:     true,
-					DelegationTable: map[string]string{},
+					CanDelegate: true,
 				}
 
 				delegateTool := engine.NewDelegateTool(nil, delegation, "source")
@@ -261,14 +253,11 @@ var _ = Describe("Delegation", func() {
 				Expect(err.Error()).To(ContainSubstring("no agent configured for task type"))
 			})
 
-			It("returns error when target engine not available", func() {
+			It("returns error when no engine matches subagent_type", func() {
 				engines := map[string]*engine.Engine{}
 
 				delegation := agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				}
 
 				delegateTool := engine.NewDelegateTool(engines, delegation, "source")
@@ -277,7 +266,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "nonexistent-agent",
 						"message":       "Run tests",
 					},
 				}
@@ -285,7 +274,7 @@ var _ = Describe("Delegation", func() {
 				_, err := delegateTool.Execute(ctx, input)
 
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("target agent engine not available"))
+				Expect(err.Error()).To(ContainSubstring("no agent configured for task type"))
 			})
 		})
 
@@ -323,9 +312,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation = agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				}
 
 				outChan = make(chan provider.StreamChunk, 16)
@@ -338,7 +324,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run the tests",
 					},
 				}
@@ -410,7 +396,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run the tests",
 					},
 				}
@@ -451,7 +437,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run the tests",
 					},
 				}
@@ -499,9 +485,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation = agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				}
 			})
 
@@ -513,7 +496,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type":     "testing",
+						"subagent_type":     "qa-agent",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -534,7 +517,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type":     "testing",
+						"subagent_type":     "qa-agent",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -564,7 +547,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type":     "testing",
+						"subagent_type":     "qa-agent",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -588,7 +571,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type":     "testing",
+						"subagent_type":     "qa-agent",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -608,7 +591,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests with handoff",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
@@ -662,8 +645,7 @@ var _ = Describe("Delegation", func() {
 
 				nbEngines := map[string]*engine.Engine{"qa-agent": qaEngine}
 				nbDelegation := agent.Delegation{
-					CanDelegate:     true,
-					DelegationTable: map[string]string{"testing": "qa-agent"},
+					CanDelegate: true,
 				}
 
 				nbBgManager := engine.NewBackgroundTaskManager()
@@ -677,7 +659,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type":     "testing",
+						"subagent_type":     "qa-agent",
 						"message":           "Run tests async",
 						"run_in_background": true,
 					},
@@ -717,8 +699,7 @@ var _ = Describe("Delegation", func() {
 
 				cbEngines := map[string]*engine.Engine{"fail-agent": failEngine}
 				cbDelegation := agent.Delegation{
-					CanDelegate:     true,
-					DelegationTable: map[string]string{"testing": "fail-agent"},
+					CanDelegate: true,
 				}
 
 				delegateTool := engine.NewDelegateTool(cbEngines, cbDelegation, "orchestrator")
@@ -727,7 +708,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "fail-agent",
 						"message":       "run tests",
 					},
 				}
@@ -763,8 +744,7 @@ var _ = Describe("Delegation", func() {
 
 				cbEngines := map[string]*engine.Engine{"success-agent": successEngine}
 				cbDelegation := agent.Delegation{
-					CanDelegate:     true,
-					DelegationTable: map[string]string{"testing": "success-agent"},
+					CanDelegate: true,
 				}
 
 				delegateTool := engine.NewDelegateTool(cbEngines, cbDelegation, "orchestrator")
@@ -773,7 +753,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "success-agent",
 						"message":       "run tests",
 					},
 				}
@@ -818,9 +798,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation = agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "qa-agent",
-					},
 				}
 			})
 
@@ -834,7 +811,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
@@ -878,7 +855,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests",
 					},
 				}
@@ -898,7 +875,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests",
 						"handoff": map[string]interface{}{
 							"source_agent": "orchestrator",
@@ -924,7 +901,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "qa-agent",
 						"message":       "Run tests",
 					},
 				}
@@ -959,8 +936,7 @@ var _ = Describe("Delegation", func() {
 						"anthropic": {{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
 					},
 					Delegation: agent.Delegation{
-						CanDelegate:     true,
-						DelegationTable: map[string]string{"writing": "writer"},
+						CanDelegate: true,
 					},
 					ContextManagement: agent.DefaultContextManagement(),
 				}
@@ -984,7 +960,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "writing",
+						"subagent_type": "writer",
 						"message":       "Write the plan",
 					},
 				}
@@ -1111,9 +1087,6 @@ var _ = Describe("Delegation", func() {
 
 				delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"test": "target-agent",
-					},
 				}, "test-agent")
 				delegateTool.WithSkillResolver(resolver)
 
@@ -1152,9 +1125,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation := agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"quick": "target-agent",
-					},
 				}
 
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
@@ -1165,7 +1135,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "quick",
+						"subagent_type": "target-agent",
 						"category":      "quick",
 						"message":       "Execute quick task",
 					},
@@ -1177,7 +1147,7 @@ var _ = Describe("Delegation", func() {
 				Expect(result.Output).To(ContainSubstring("delegated response"))
 			})
 
-			It("falls back to task_type routing when no category resolver configured", func() {
+			It("falls back to task_type routing via direct engine key match", func() {
 				chatProvider := &mockProvider{
 					name: "test-provider",
 					streamChunks: []provider.StreamChunk{
@@ -1203,9 +1173,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation := agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "target-agent",
-					},
 				}
 
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
@@ -1214,7 +1181,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "testing",
+						"task_type": "target-agent",
 						"message":   "Run tests",
 					},
 				}
@@ -1260,9 +1227,6 @@ var _ = Describe("Delegation", func() {
 
 				delegation := agent.Delegation{
 					CanDelegate: true,
-					DelegationTable: map[string]string{
-						"testing": "target-agent",
-					},
 				}
 
 				skillResolver := engine.NewFileSkillResolver(tmpDir)
@@ -1273,7 +1237,7 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"subagent_type": "testing",
+						"subagent_type": "target-agent",
 						"message":       "Run tests with skills",
 						"load_skills":   []interface{}{"injected-skill"},
 					},
@@ -1456,8 +1420,7 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 			"explorer": explorerEngine,
 		}
 		del := agent.Delegation{
-			CanDelegate:     true,
-			DelegationTable: map[string]string{},
+			CanDelegate: true,
 		}
 		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
 
@@ -1480,8 +1443,7 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 			"explorer": explorerEngine,
 		}
 		del := agent.Delegation{
-			CanDelegate:     true,
-			DelegationTable: map[string]string{},
+			CanDelegate: true,
 		}
 		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
 
@@ -1499,15 +1461,12 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 		Expect(result.Output).To(ContainSubstring("Explorer response"))
 	})
 
-	It("resolves task_type via delegation table for backward compatibility", func() {
+	It("resolves task_type via direct engine key match for backward compatibility", func() {
 		engines := map[string]*engine.Engine{
 			"qa-agent": qaEngine,
 		}
 		del := agent.Delegation{
 			CanDelegate: true,
-			DelegationTable: map[string]string{
-				"testing": "qa-agent",
-			},
 		}
 		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
 
@@ -1515,7 +1474,7 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 		input := tool.Input{
 			Name: "delegate",
 			Arguments: map[string]interface{}{
-				"task_type": "testing",
+				"task_type": "qa-agent",
 				"message":   "Run the unit tests",
 			},
 		}
@@ -1562,8 +1521,7 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			"explorer": explorerEngine,
 		}
 		del := agent.Delegation{
-			CanDelegate:     true,
-			DelegationTable: map[string]string{"quick": "explorer"},
+			CanDelegate: true,
 		}
 		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
 
@@ -1586,8 +1544,7 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			"explorer": explorerEngine,
 		}
 		del := agent.Delegation{
-			CanDelegate:     true,
-			DelegationTable: map[string]string{},
+			CanDelegate: true,
 		}
 		delegateTool := engine.NewDelegateTool(engines, del, "orchestrator").WithRegistry(reg)
 

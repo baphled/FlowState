@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"encoding/json"
+	"reflect"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -191,6 +192,14 @@ var _ = Describe("Manifest JSON deserialisation", func() {
 			Expect(m.Harness.Enabled).To(BeTrue())
 			Expect(m.Harness.CriticEnabled).To(BeTrue())
 			Expect(m.Harness.VotingEnabled).To(BeTrue())
+		})
+	})
+
+	Describe("Delegation struct", func() {
+		It("does not have a DelegationTable field", func() {
+			delegationType := reflect.TypeOf(agent.Delegation{})
+			_, found := delegationType.FieldByName("DelegationTable")
+			Expect(found).To(BeFalse(), "DelegationTable should be removed from Delegation struct")
 		})
 	})
 })
