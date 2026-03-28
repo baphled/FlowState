@@ -157,7 +157,7 @@ var _ = Describe("Delegation", func() {
 			schema := delegateTool.Schema()
 
 			Expect(schema.Type).To(Equal("object"))
-			Expect(schema.Properties).To(HaveKey("task_type"))
+			Expect(schema.Properties).NotTo(HaveKey("task_type"))
 			Expect(schema.Properties).To(HaveKey("message"))
 			Expect(schema.Required).To(ConsistOf("subagent_type", "message"))
 		})
@@ -1147,11 +1147,11 @@ var _ = Describe("Delegation", func() {
 				Expect(result.Output).To(ContainSubstring("delegated response"))
 			})
 
-			It("falls back to task_type routing via direct engine key match", func() {
+			It("routes via subagent_type direct engine key match", func() {
 				chatProvider := &mockProvider{
 					name: "test-provider",
 					streamChunks: []provider.StreamChunk{
-						{Content: "task type routed", Done: true},
+						{Content: "subagent routed", Done: true},
 					},
 				}
 
@@ -1181,15 +1181,15 @@ var _ = Describe("Delegation", func() {
 				input := tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
-						"task_type": "target-agent",
-						"message":   "Run tests",
+						"subagent_type": "target-agent",
+						"message":       "Run tests",
 					},
 				}
 
 				result, err := delegateTool.Execute(ctx, input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("task type routed"))
+				Expect(result.Output).To(ContainSubstring("subagent routed"))
 			})
 
 			It("injects skills when load_skills provided", func() {
@@ -1461,7 +1461,7 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 		Expect(result.Output).To(ContainSubstring("Explorer response"))
 	})
 
-	It("resolves task_type via direct engine key match for backward compatibility", func() {
+	It("resolves subagent_type via direct engine key match", func() {
 		engines := map[string]*engine.Engine{
 			"qa-agent": qaEngine,
 		}
@@ -1474,8 +1474,8 @@ var _ = Describe("resolveTargetWithOptions subagent_type wiring", func() {
 		input := tool.Input{
 			Name: "delegate",
 			Arguments: map[string]interface{}{
-				"task_type": "qa-agent",
-				"message":   "Run the unit tests",
+				"subagent_type": "qa-agent",
+				"message":       "Run the unit tests",
 			},
 		}
 
@@ -1516,7 +1516,7 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 		})
 	})
 
-	It("returns error when only category is provided without subagent_type or task_type", func() {
+	It("returns error when only category is provided without subagent_type", func() {
 		engines := map[string]*engine.Engine{
 			"explorer": explorerEngine,
 		}
@@ -1536,7 +1536,7 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 
 		_, err := delegateTool.Execute(ctx, input)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("task_type"))
+		Expect(err.Error()).To(ContainSubstring("subagent_type"))
 	})
 
 	It("resolves agent from subagent_type when both category and subagent_type are provided", func() {

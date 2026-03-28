@@ -19,7 +19,7 @@ import (
 
 var (
 	errDelegationNotAllowed     = errors.New("delegation not allowed for this agent")
-	errTaskTypeMustBeString     = errors.New("task_type, category, or subagent_type must be provided")
+	errRoutingFieldRequired     = errors.New("category or subagent_type must be provided")
 	errMessageMustBeString      = errors.New("message must be a string")
 	errCategoryMustBeString     = errors.New("category must be a string")
 	errSubagentTypeMustBeString = errors.New("subagent_type must be a string")
@@ -98,7 +98,6 @@ type delegationTarget struct {
 
 // delegationParams groups the parsed delegation input fields.
 type delegationParams struct {
-	taskType     string
 	category     string
 	subagentType string
 	message      string
@@ -357,10 +356,6 @@ func (d *DelegateTool) Schema() tool.Schema {
 				Type:        "string",
 				Description: "Optional session identifier for continuation",
 			},
-			"task_type": {
-				Type:        "string",
-				Description: "The type of task to delegate (e.g., testing, coding)",
-			},
 			"message": {
 				Type:        "string",
 				Description: "The message or instruction to send to the target agent",
@@ -399,7 +394,7 @@ func (d *DelegateTool) Schema() tool.Schema {
 //
 // Expected:
 //   - ctx is a valid context for the delegation operation.
-//   - input contains "task_type" and "message" string arguments.
+//   - input contains "subagent_type" and "message" string arguments.
 //   - Optional "run_in_background" boolean to run asynchronously.
 //   - Optional "handoff" object for ChainID and coordination.
 //
@@ -500,13 +495,6 @@ func (d *DelegateTool) parseDelegationParams(input tool.Input) (delegationParams
 // Side effects:
 //   - Writes parsed values into params.
 func populateDelegationRouting(params *delegationParams, arguments map[string]interface{}) error {
-	if raw, ok := arguments["task_type"]; ok && raw != nil {
-		taskType, ok := raw.(string)
-		if !ok {
-			return errTaskTypeMustBeString
-		}
-		params.taskType = taskType
-	}
 	if raw, ok := arguments["category"]; ok && raw != nil {
 		category, ok := raw.(string)
 		if !ok {
@@ -521,8 +509,8 @@ func populateDelegationRouting(params *delegationParams, arguments map[string]in
 		}
 		params.subagentType = subagentType
 	}
-	if params.taskType == "" && params.category == "" && params.subagentType == "" {
-		return errTaskTypeMustBeString
+	if params.category == "" && params.subagentType == "" {
+		return errRoutingFieldRequired
 	}
 	return nil
 }
@@ -757,7 +745,7 @@ func (d *DelegateTool) executeBackgroundTask(
 //
 // Expected:
 //   - ctx is a valid context for the discovery operation.
-//   - input contains task_type, message, run_in_background, and optional handoff arguments.
+//   - input contains subagent_type, message, run_in_background, and optional handoff arguments.
 //
 // Returns:
 //   - The resolved target with chain ID.
@@ -837,19 +825,11 @@ func (d *DelegateTool) resolveAgentID(ctx context.Context, params delegationPara
 		}
 	}
 
-	taskType := params.taskType
-	if taskType == "" {
-		taskType = params.subagentType
-	}
-	if taskType == "" {
-		return "", errTaskTypeMustBeString
+	if params.subagentType == "" {
+		return "", errRoutingFieldRequired
 	}
 
-	if _, ok := d.engines[taskType]; ok {
-		return taskType, nil
-	}
-
-	return d.resolveWithDiscovery(ctx, taskType, params.message)
+	return d.resolveWithDiscovery(ctx, params.subagentType, params.message)
 }
 
 // resolveWithDiscovery attempts to resolve the target agent using embedding-based discovery.
