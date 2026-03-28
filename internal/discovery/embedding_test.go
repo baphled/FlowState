@@ -96,6 +96,38 @@ var _ = Describe("EmbeddingDiscovery", func() {
 			})
 		})
 
+		Context("when agent has aliases", func() {
+			It("matches on alias terms via concatenated index text", func() {
+				aliasEmbedder := &fixedEmbedder{
+					vectors: map[string][]float64{
+						"investigates and analyses systems research investigation": {0, 1, 0},
+						"investigation": {0, 1, 0},
+					},
+				}
+
+				m := &agent.Manifest{
+					ID:      "researcher-agent",
+					Name:    "Researcher",
+					Aliases: []string{"research", "investigation"},
+					Capabilities: agent.Capabilities{
+						CapabilityDescription: "investigates and analyses systems",
+					},
+				}
+				reg := agent.NewRegistry()
+				reg.Register(m)
+
+				ed := discovery.NewEmbeddingDiscovery(reg, aliasEmbedder)
+				err := ed.IndexAgents(context.Background())
+				Expect(err).NotTo(HaveOccurred())
+
+				matches, err := ed.Match(context.Background(), "investigation")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(matches).NotTo(BeEmpty())
+				Expect(matches[0].AgentID).To(Equal("researcher-agent"))
+				Expect(matches[0].Confidence).To(BeNumerically(">", 0.9))
+			})
+		})
+
 		Context("when confidence is below 0.7", func() {
 			It("still returns results and lets the caller decide on threshold", func() {
 				lowEmbedder := &fixedEmbedder{

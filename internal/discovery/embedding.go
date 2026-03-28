@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -51,7 +52,7 @@ func NewEmbeddingDiscovery(registry *agent.Registry, embedder EmbeddingProvider)
 	}
 }
 
-// IndexAgents embeds all agents' CapabilityDescription at startup.
+// IndexAgents embeds all agents' CapabilityDescription concatenated with aliases at startup.
 //
 // Expected:
 //   - ctx is a valid context for the embedding operation.
@@ -74,8 +75,13 @@ func (ed *EmbeddingDiscovery) IndexAgents(ctx context.Context) error {
 			continue
 		}
 
+		indexText := capDesc
+		if len(m.Aliases) > 0 {
+			indexText = capDesc + " " + strings.Join(m.Aliases, " ")
+		}
+
 		vec, err := ed.embedder.Embed(ctx, provider.EmbedRequest{
-			Input: capDesc,
+			Input: indexText,
 		})
 		if err != nil {
 			continue
