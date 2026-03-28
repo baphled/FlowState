@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Registry manages a collection of agent manifests.
@@ -98,6 +99,36 @@ func (r *Registry) Register(manifest *Manifest) {
 func (r *Registry) Get(id string) (*Manifest, bool) {
 	manifest, ok := r.manifests[id]
 	return manifest, ok
+}
+
+// GetByNameOrAlias looks up an agent by exact ID, case-insensitive ID, or alias.
+//
+// Resolution order:
+//  1. Exact ID match (case-sensitive)
+//  2. Case-insensitive ID match
+//  3. Case-insensitive alias match (any alias in Manifest.Aliases)
+//
+// Returns the first matching manifest and true, or nil and false if not found.
+func (r *Registry) GetByNameOrAlias(name string) (*Manifest, bool) {
+	if m, ok := r.manifests[name]; ok {
+		return m, true
+	}
+
+	for id, m := range r.manifests {
+		if strings.EqualFold(id, name) {
+			return m, true
+		}
+	}
+
+	for _, m := range r.manifests {
+		for _, alias := range m.Aliases {
+			if strings.EqualFold(alias, name) {
+				return m, true
+			}
+		}
+	}
+
+	return nil, false
 }
 
 // List returns all manifests in the registry sorted by ID.

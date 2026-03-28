@@ -114,6 +114,94 @@ var _ = Describe("Registry", func() {
 		})
 	})
 
+	Describe("GetByNameOrAlias", func() {
+		Context("when the name matches an exact ID", func() {
+			It("returns the manifest", func() {
+				manifest := &agent.Manifest{
+					ID:      "explorer",
+					Name:    "Explorer Agent",
+					Aliases: []string{"investigation", "research"},
+				}
+				registry.Register(manifest)
+
+				result, ok := registry.GetByNameOrAlias("explorer")
+
+				Expect(ok).To(BeTrue())
+				Expect(result.ID).To(Equal("explorer"))
+			})
+		})
+
+		Context("when the name matches an ID case-insensitively", func() {
+			It("returns the manifest", func() {
+				manifest := &agent.Manifest{
+					ID:      "explorer",
+					Name:    "Explorer Agent",
+					Aliases: []string{"investigation"},
+				}
+				registry.Register(manifest)
+
+				result, ok := registry.GetByNameOrAlias("Explorer")
+
+				Expect(ok).To(BeTrue())
+				Expect(result.ID).To(Equal("explorer"))
+			})
+		})
+
+		Context("when the name matches an alias case-insensitively", func() {
+			It("returns the manifest", func() {
+				manifest := &agent.Manifest{
+					ID:      "explorer",
+					Name:    "Explorer Agent",
+					Aliases: []string{"exploration", "investigation"},
+				}
+				registry.Register(manifest)
+
+				result, ok := registry.GetByNameOrAlias("Investigation")
+
+				Expect(ok).To(BeTrue())
+				Expect(result.ID).To(Equal("explorer"))
+			})
+		})
+
+		Context("when the name does not match any agent", func() {
+			It("returns nil and false", func() {
+				manifest := &agent.Manifest{
+					ID:      "explorer",
+					Name:    "Explorer Agent",
+					Aliases: []string{"investigation"},
+				}
+				registry.Register(manifest)
+
+				result, ok := registry.GetByNameOrAlias("nonexistent")
+
+				Expect(ok).To(BeFalse())
+				Expect(result).To(BeNil())
+			})
+		})
+
+		Context("when exact ID and alias both could match", func() {
+			It("prefers the exact ID match", func() {
+				agentA := &agent.Manifest{
+					ID:      "search",
+					Name:    "Search Agent",
+					Aliases: []string{"find"},
+				}
+				agentB := &agent.Manifest{
+					ID:      "finder",
+					Name:    "Finder Agent",
+					Aliases: []string{"search", "locate"},
+				}
+				registry.Register(agentA)
+				registry.Register(agentB)
+
+				result, ok := registry.GetByNameOrAlias("search")
+
+				Expect(ok).To(BeTrue())
+				Expect(result.ID).To(Equal("search"))
+			})
+		})
+	})
+
 	Describe("Discover", func() {
 		Context("with valid directory", func() {
 			It("discovers JSON manifests", func() {
