@@ -18,6 +18,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
@@ -498,3 +499,247 @@ func parseSSEEvents(body *bytes.Buffer) []string {
 
 	return events
 }
+
+var _ = Describe("Session hierarchy endpoints", func() {
+	var (
+		server *api.Server
+		mgr    *session.Manager
+	)
+
+	BeforeEach(func() {
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		mgr = session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		server = api.NewServer(
+			streamer,
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	Describe("GET /api/v1/sessions/{id}/children", func() {
+		It("returns 200 with empty list for non-existent session", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions/nonexistent/children", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var children []*session.Session
+			err := json.Unmarshal(w.Body.Bytes(), &children)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).To(BeEmpty())
+		})
+
+		It("returns 200 with empty list when session has no children", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest("GET", "/api/v1/sessions/"+sess.ID+"/children", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var children []*session.Session
+			err = json.Unmarshal(w.Body.Bytes(), &children)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).To(BeEmpty())
+		})
+	})
+
+	Describe("GET /api/v1/sessions/{id}/tree", func() {
+		It("returns 200 with session tree", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest("GET", "/api/v1/sessions/"+sess.ID+"/tree", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var tree []*session.Session
+			err = json.Unmarshal(w.Body.Bytes(), &tree)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(tree).NotTo(BeEmpty())
+		})
+
+		It("returns 404 for non-existent session", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions/nonexistent/tree", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+
+	Describe("GET /api/v1/sessions/{id}/parent", func() {
+		It("returns 200 with root session", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest("GET", "/api/v1/sessions/"+sess.ID+"/parent", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var rootSess *session.Session
+			err = json.Unmarshal(w.Body.Bytes(), &rootSess)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rootSess).NotTo(BeNil())
+		})
+
+		It("returns 404 for non-existent session", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions/nonexistent/parent", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+	})
+})
+
+var _ = Describe("Background task endpoints", func() {
+	var (
+		server *api.Server
+		mgr    *engine.BackgroundTaskManager
+	)
+
+	BeforeEach(func() {
+		mgr = engine.NewBackgroundTaskManager()
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		sessionMgr := session.NewManager(streamer)
+		server = api.NewServer(
+			streamer,
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(sessionMgr),
+			api.WithBackgroundManager(mgr),
+		)
+	})
+
+	Describe("GET /api/v1/tasks", func() {
+		It("returns 200 with empty task list", func() {
+			req := httptest.NewRequest("GET", "/api/v1/tasks", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var tasks []*engine.BackgroundTask
+			err := json.Unmarshal(w.Body.Bytes(), &tasks)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns 501 when no background manager is configured", func() {
+			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			sessionMgr := session.NewManager(streamer)
+			noMgrServer := api.NewServer(
+				streamer,
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(sessionMgr),
+			)
+
+			req := httptest.NewRequest("GET", "/api/v1/tasks", http.NoBody)
+			w := httptest.NewRecorder()
+			noMgrServer.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("GET /api/v1/tasks/{id}", func() {
+		It("returns 404 for non-existent task", func() {
+			req := httptest.NewRequest("GET", "/api/v1/tasks/nonexistent", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 501 when no background manager is configured", func() {
+			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			sessionMgr := session.NewManager(streamer)
+			noMgrServer := api.NewServer(
+				streamer,
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(sessionMgr),
+			)
+
+			req := httptest.NewRequest("GET", "/api/v1/tasks/any", http.NoBody)
+			w := httptest.NewRecorder()
+			noMgrServer.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("DELETE /api/v1/tasks/{id}", func() {
+		It("returns 404 for non-existent task", func() {
+			req := httptest.NewRequest("DELETE", "/api/v1/tasks/nonexistent", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+
+		It("returns 501 when no background manager is configured", func() {
+			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			sessionMgr := session.NewManager(streamer)
+			noMgrServer := api.NewServer(
+				streamer,
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(sessionMgr),
+			)
+
+			req := httptest.NewRequest("DELETE", "/api/v1/tasks/any", http.NoBody)
+			w := httptest.NewRecorder()
+			noMgrServer.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("DELETE /api/v1/tasks", func() {
+		It("returns 400 when ?all=true is not set", func() {
+			req := httptest.NewRequest("DELETE", "/api/v1/tasks", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("returns 204 when ?all=true is set", func() {
+			req := httptest.NewRequest("DELETE", "/api/v1/tasks?all=true", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNoContent))
+		})
+
+		It("returns 501 when no background manager is configured", func() {
+			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			sessionMgr := session.NewManager(streamer)
+			noMgrServer := api.NewServer(
+				streamer,
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(sessionMgr),
+			)
+
+			req := httptest.NewRequest("DELETE", "/api/v1/tasks?all=true", http.NoBody)
+			w := httptest.NewRecorder()
+			noMgrServer.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+})
