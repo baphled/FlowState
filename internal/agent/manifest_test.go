@@ -125,6 +125,34 @@ var _ = Describe("Manifest JSON deserialisation", func() {
 		})
 	})
 
+	Context("when JSON contains aliases", func() {
+		It("deserialises alias names correctly", func() {
+			raw := `{
+				"id": "research-agent",
+				"name": "Research Agent",
+				"aliases": ["research", "investigation"]
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.Aliases).To(Equal([]string{"research", "investigation"}))
+		})
+
+		It("defaults aliases to an empty slice when missing", func() {
+			raw := `{
+				"id": "research-agent",
+				"name": "Research Agent"
+			}`
+
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+			Expect(m.Aliases).NotTo(BeNil())
+			Expect(m.Aliases).To(BeEmpty())
+		})
+	})
+
 	Context("when JSON contains neither harness nor loop blocks", func() {
 		It("deserialises without error, with nil Harness and Loop fields", func() {
 			raw := `{

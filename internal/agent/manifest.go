@@ -1,5 +1,7 @@
 package agent
 
+import "encoding/json"
+
 // Manifest defines the complete configuration for a FlowState agent.
 type Manifest struct {
 	SchemaVersion     string                 `json:"schema_version" yaml:"schema_version"`
@@ -10,10 +12,12 @@ type Manifest struct {
 	Metadata          Metadata               `json:"metadata" yaml:"metadata"`
 	Capabilities      Capabilities           `json:"capabilities" yaml:"capabilities"`
 	ContextManagement ContextManagement      `json:"context_management" yaml:"context_management"`
-	Delegation        Delegation             `json:"delegation" yaml:"delegation"`
-	Hooks             Hooks                  `json:"hooks" yaml:"hooks"`
-	Instructions      Instructions           `json:"instructions" yaml:"instructions"`
-	HarnessEnabled    bool                   `json:"harness_enabled" yaml:"harness_enabled"`
+	// Aliases contains alternative names and keywords that can be used to route to this agent.
+	Aliases        []string     `json:"aliases" yaml:"aliases"`
+	Delegation     Delegation   `json:"delegation" yaml:"delegation"`
+	Hooks          Hooks        `json:"hooks" yaml:"hooks"`
+	Instructions   Instructions `json:"instructions" yaml:"instructions"`
+	HarnessEnabled bool         `json:"harness_enabled" yaml:"harness_enabled"`
 	// Harness defines fine-grained output validation and quality layers for this agent.
 	// When present, it takes precedence over the legacy HarnessEnabled boolean.
 	Harness *HarnessConfig `json:"harness,omitempty" yaml:"harness,omitempty"`
@@ -22,6 +26,35 @@ type Manifest struct {
 	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`
 	// OrchestratorMeta describes how orchestrators should reference and invoke this agent.
 	OrchestratorMeta OrchestratorMetadata `json:"orchestrator_meta" yaml:"orchestrator_meta"`
+}
+
+// UnmarshalJSON deserialises a manifest while defaulting aliases to an empty slice.
+//
+// Expected:
+//   - The input data encodes a valid Manifest JSON object.
+//
+// Returns:
+//   - nil when the manifest is decoded successfully.
+//   - An error when the JSON payload cannot be decoded.
+//
+// Side effects:
+//   - Normalises missing aliases to an empty slice.
+func (m *Manifest) UnmarshalJSON(data []byte) error {
+	type manifestAlias Manifest
+	var raw struct {
+		*manifestAlias
+		Aliases []string `json:"aliases"`
+	}
+	raw.manifestAlias = (*manifestAlias)(m)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Aliases == nil {
+		m.Aliases = []string{}
+		return nil
+	}
+	m.Aliases = raw.Aliases
+	return nil
 }
 
 // ModelPref specifies a preferred model for a provider.
