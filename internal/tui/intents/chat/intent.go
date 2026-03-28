@@ -143,7 +143,10 @@ type Intent struct {
 	activeToolCall string
 	streamCancel   context.CancelFunc
 	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
-	cachedScreenLayout *layout.ScreenLayout
+	cachedScreenLayout    *layout.ScreenLayout
+	breadcrumbPath        string
+	delegationPickerModal *chat.DelegationPickerModal
+	sessionViewerModal    *chat.SessionViewerModal
 }
 
 // NewIntent creates a new chat intent from the given configuration.
@@ -190,6 +193,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		agentRegistry:   cfg.AgentRegistry,
 		sessionStore:    cfg.SessionStore,
 		view:            chat.NewView(),
+		breadcrumbPath:  "Chat",
 	}
 }
 
@@ -268,6 +272,60 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// handleDelegationKeyMsg processes keyboard input for the delegation picker modal.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates modal state or closes modal based on key press.
+func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) {
+	if i.delegationPickerModal == nil {
+		return
+	}
+	switch msg.String() {
+	case "esc":
+		i.delegationPickerModal = nil
+	case "up", "k":
+		i.delegationPickerModal.MoveUp()
+	case "down", "j":
+		i.delegationPickerModal.MoveDown()
+	case "enter":
+		if sel := i.delegationPickerModal.Selected(); sel != nil {
+			i.delegationPickerModal = nil
+			viewer := chat.NewSessionViewerModal(sel.ID, "", i.width, i.height)
+			i.sessionViewerModal = viewer
+		}
+	}
+}
+
+// handleSessionViewerKeyMsg processes keyboard input for the session viewer modal.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates modal state or closes modal based on key press.
+func (i *Intent) handleSessionViewerKeyMsg(msg tea.KeyMsg) {
+	if i.sessionViewerModal == nil {
+		return
+	}
+	switch msg.String() {
+	case "esc":
+		i.sessionViewerModal = nil
+	case "up", "k":
+		i.sessionViewerModal.ScrollUp()
+	case "down", "j":
+		i.sessionViewerModal.ScrollDown()
+	}
+}
+
 // handleModalKeyMsg processes keyboard input when a feedback modal is active.
 //
 // Expected:
@@ -322,6 +380,14 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 // Side effects:
 //   - Updates input or returns a quit command based on key input.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	if i.sessionViewerModal != nil {
+		i.handleSessionViewerKeyMsg(msg)
+		return nil
+	}
+	if i.delegationPickerModal != nil {
+		i.handleDelegationKeyMsg(msg)
+		return nil
+	}
 	if i.handleModalKeyMsg(msg) {
 		return nil
 	}
@@ -331,11 +397,26 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	if cmd, handled := i.handleScrollKey(msg); handled {
 		return cmd
 	}
+	return i.handleInputKey(msg)
+}
 
+// handleInputKey processes keyboard input for text input and control commands.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd to execute, or nil if no command is needed.
+//
+// Side effects:
+//   - Updates i.input on typing keys.
+func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		i.cancelActiveStream()
 		return tea.Sequence(i.saveSession(), tea.Quit)
+	case tea.KeyCtrlD:
+		return i.openDelegationPicker()
 	case tea.KeyTab:
 		return i.toggleAgent()
 	case tea.KeyCtrlP:
@@ -810,7 +891,7 @@ func (i *Intent) View() string {
 
 	if i.cachedScreenLayout == nil {
 		i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
-			WithBreadcrumbs("Chat").
+			WithBreadcrumbs(i.breadcrumbPath).
 			WithFooterSeparator(true)
 	}
 
@@ -834,6 +915,14 @@ func (i *Intent) View() string {
 // Side effects:
 //   - None.
 func (i *Intent) renderModalOverlay(baseView string) string {
+	if i.sessionViewerModal != nil {
+		modalContent := i.sessionViewerModal.Render(i.width, i.height)
+		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
+	}
+	if i.delegationPickerModal != nil {
+		modalContent := i.delegationPickerModal.Render(i.width, i.height)
+		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
+	}
 	if i.loadingModal != nil {
 		modalContent := i.loadingModal.Render(i.width, i.height)
 		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
@@ -1142,6 +1231,22 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 		})
 		return tuiintents.ShowModalMsg{Modal: browserIntent}
 	}
+}
+
+// openDelegationPicker opens the delegation list modal.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A Cmd that opens the modal, or nil if no session manager available.
+//
+// Side effects:
+//   - Sets delegationPickerModal on the intent.
+func (i *Intent) openDelegationPicker() tea.Cmd {
+	modal := chat.NewDelegationPickerModal(nil, i.width, i.height)
+	i.delegationPickerModal = modal
+	return nil
 }
 
 // handleSessionResult dispatches the session browser outcome to the
@@ -1611,4 +1716,19 @@ func (i *Intent) SetAgentIDForTest(id string) {
 //   - None.
 func (i *Intent) MessagesForTest() []chat.Message {
 	return i.view.Messages()
+}
+
+// SetBreadcrumbPath sets the breadcrumb navigation path shown in the chat header.
+//
+// Expected:
+//   - path is a non-empty string like "Chat" or "Chat > qa-agent".
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the breadcrumb display on next View() call.
+func (i *Intent) SetBreadcrumbPath(path string) {
+	i.breadcrumbPath = path
+	i.cachedScreenLayout = nil
 }
