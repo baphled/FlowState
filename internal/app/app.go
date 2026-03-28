@@ -50,21 +50,22 @@ import (
 
 // App is the main application container holding all initialized components.
 type App struct {
-	Config           *config.AppConfig
-	Registry         *agent.Registry
-	Skills           []skill.Skill
-	Engine           *engine.Engine
-	Discovery        *discovery.AgentDiscovery
-	Sessions         *ctxstore.FileSessionStore
-	Learning         *learning.JSONFileStore
-	API              *api.Server
-	Streamer         streaming.Streamer
-	TodoStore        todotool.Store
-	mcpClient        mcpclient.Client
-	providerRegistry *provider.Registry
-	ollamaProvider   *ollama.Provider
-	metricsRegistry  *prometheus.Registry
-	Store            *plan.Store
+	Config            *config.AppConfig
+	Registry          *agent.Registry
+	Skills            []skill.Skill
+	Engine            *engine.Engine
+	Discovery         *discovery.AgentDiscovery
+	Sessions          *ctxstore.FileSessionStore
+	Learning          *learning.JSONFileStore
+	API               *api.Server
+	Streamer          streaming.Streamer
+	TodoStore         todotool.Store
+	mcpClient         mcpclient.Client
+	providerRegistry  *provider.Registry
+	ollamaProvider    *ollama.Provider
+	metricsRegistry   *prometheus.Registry
+	Store             *plan.Store
+	backgroundManager *engine.BackgroundTaskManager
 }
 
 // New creates a new App instance with all components initialised.
@@ -1161,4 +1162,32 @@ func NewForTest(tc TestConfig) (*App, error) {
 		mcpClient:        tc.MCPClient,
 		providerRegistry: nil,
 	}, nil
+}
+
+// BackgroundManager returns the background task manager for delegation.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The background task manager, or nil if not configured.
+//
+// Side effects:
+//   - None.
+func (a *App) BackgroundManager() *engine.BackgroundTaskManager {
+	return a.backgroundManager
+}
+
+// SetBackgroundManager sets the background task manager.
+//
+// Expected:
+//   - mgr is a valid BackgroundTaskManager or nil.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the background manager for later access.
+func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
+	a.backgroundManager = mgr
 }
