@@ -134,7 +134,7 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 		task, _ = b.manager.Get(taskID)
 	}
 
-	result := b.buildResultOutput(task, fullSession)
+	result := b.buildResultOutput(&task, fullSession)
 	jsonBytes, err := json.Marshal(result)
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("marshalling result: %w", err)
@@ -165,12 +165,12 @@ func (b *BackgroundOutputTool) pollUntilComplete(_ context.Context, taskID strin
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 
 	for {
-		task, found := b.manager.Get(taskID)
+		taskCopy, found := b.manager.Get(taskID)
 		if !found {
 			return ""
 		}
 
-		status := task.Status.Load()
+		status := taskCopy.Status.Load()
 		if isTerminalStatus(status) {
 			return status
 		}

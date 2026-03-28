@@ -209,7 +209,10 @@ func (m *BackgroundTaskManager) executeTask(
 		<-keySem
 	}()
 
+	m.mu.Lock()
 	task.Status.store("running")
+	m.mu.Unlock()
+
 	result, err := fn(taskCtx)
 
 	completedAt := time.Now().UTC()
@@ -243,22 +246,26 @@ func (m *BackgroundTaskManager) executeTask(
 	}
 }
 
-// Get retrieves a task by its identifier.
+// Get returns a snapshot copy of the task with the given identifier.
 //
 // Expected:
-//   - id is the task identifier to look up.
+//   - id is a non-empty task identifier.
 //
 // Returns:
-//   - The BackgroundTask and true if found, or nil and false otherwise.
+//   - A value copy of the BackgroundTask and true if found.
+//   - Zero BackgroundTask and false if not found.
 //
 // Side effects:
 //   - None.
-func (m *BackgroundTaskManager) Get(id string) (*BackgroundTask, bool) {
+func (m *BackgroundTaskManager) Get(id string) (BackgroundTask, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	task, ok := m.tasks[id]
-	return task, ok
+	if !ok {
+		return BackgroundTask{}, false
+	}
+	return *task, true
 }
 
 // Cancel requests cancellation of a running task by its identifier.
@@ -320,13 +327,24 @@ func (m *BackgroundTaskManager) CancelAll() []string {
 //
 // Side effects:
 //   - None.
-func (m *BackgroundTaskManager) List() []*BackgroundTask {
+//
+// List returns snapshot copies of all tracked background tasks.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A slice of BackgroundTask value copies.
+//
+// Side effects:
+//   - None.
+func (m *BackgroundTaskManager) List() []BackgroundTask {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	tasks := make([]*BackgroundTask, 0, len(m.tasks))
-	for _, task := range m.tasks {
-		tasks = append(tasks, task)
+	tasks := make([]BackgroundTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		tasks = append(tasks, *t)
 	}
 
 	return tasks

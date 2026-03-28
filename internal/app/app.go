@@ -138,6 +138,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 	}
 
 	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
+	if app.backgroundManager != nil && app.API != nil {
+		app.API.SetBackgroundManager(app.backgroundManager)
+	}
 	return app, nil
 }
 
@@ -326,9 +329,14 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 
 	eng.AddTool(delegateTool)
 
+	eng.AddTool(engine.NewBackgroundOutputTool(bgManager))
+	eng.AddTool(engine.NewBackgroundCancelTool(bgManager))
+
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		eng.AddTool(coordinationtool.New(coordinationStore))
 	}
+
+	a.backgroundManager = bgManager
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.

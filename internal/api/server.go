@@ -111,6 +111,20 @@ func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
 	return func(s *Server) { s.backgroundManager = mgr }
 }
 
+// SetBackgroundManager sets the background manager after server construction.
+//
+// Expected:
+//   - mgr is a non-nil BackgroundTaskManager.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the server's background manager reference.
+func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
+	s.backgroundManager = mgr
+}
+
 // NewServer creates a new API server with the given dependencies.
 //
 // Expected:
@@ -523,10 +537,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 // Returns:
 //   - 200 with JSON array of child sessions.
 //   - 404 if the session has no children or does not exist.
+//   - 501 if no session manager is configured.
 //
 // Side effects:
 //   - None.
 func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
 	id := r.PathValue("id")
 	children, err := s.sessionManager.ChildSessions(id)
 	if err != nil {
@@ -544,10 +563,15 @@ func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 // Returns:
 //   - 200 with JSON array of sessions in depth-first order.
 //   - 404 if the session does not exist.
+//   - 501 if no session manager is configured.
 //
 // Side effects:
 //   - None.
 func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
 	id := r.PathValue("id")
 	tree, err := s.sessionManager.SessionTree(id)
 	if err != nil {
@@ -565,10 +589,15 @@ func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
 // Returns:
 //   - 200 with JSON parent session.
 //   - 404 if the session is a root session or does not exist.
+//   - 501 if no session manager is configured.
 //
 // Side effects:
 //   - None.
 func (s *Server) handleSessionParent(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
 	id := r.PathValue("id")
 	root, err := s.sessionManager.GetRootSession(id)
 	if err != nil {

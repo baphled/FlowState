@@ -152,8 +152,8 @@ var _ = Describe("BackgroundTaskManager", func() {
 				})
 
 				Eventually(func() bool {
-					t, found := manager.Get("get-task")
-					return found && t != nil
+					_, found := manager.Get("get-task")
+					return found
 				}).Should(BeTrue())
 
 				t, found := manager.Get("get-task")
@@ -163,10 +163,10 @@ var _ = Describe("BackgroundTaskManager", func() {
 		})
 
 		Context("when task does not exist", func() {
-			It("returns nil and false", func() {
+			It("returns zero value and false", func() {
 				t, found := manager.Get("nonexistent")
-				Expect(t).To(BeNil())
 				Expect(found).To(BeFalse())
+				Expect(t.ID).To(BeEmpty())
 			})
 		})
 	})
