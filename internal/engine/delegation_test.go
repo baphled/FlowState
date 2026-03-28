@@ -155,7 +155,7 @@ var _ = Describe("Delegation", func() {
 			Expect(delegateTool.Description()).NotTo(BeEmpty())
 		})
 
-		It("returns correct schema with task_type and message parameters", func() {
+		It("returns correct schema with subagent_type and message as required parameters", func() {
 			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{}, "source")
 
 			schema := delegateTool.Schema()
@@ -163,7 +163,7 @@ var _ = Describe("Delegation", func() {
 			Expect(schema.Type).To(Equal("object"))
 			Expect(schema.Properties).To(HaveKey("task_type"))
 			Expect(schema.Properties).To(HaveKey("message"))
-			Expect(schema.Required).To(ConsistOf("task_type", "message"))
+			Expect(schema.Required).To(ConsistOf("subagent_type", "message"))
 		})
 
 		Context("when executing", func() {
@@ -1598,5 +1598,12 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 		result, err := delegateTool.Execute(ctx, input)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.Output).To(ContainSubstring("Explorer response"))
+	})
+
+	It("requires subagent_type and message in Schema", func() {
+		del := agent.Delegation{CanDelegate: true}
+		delegateTool := engine.NewDelegateTool(nil, del, "orchestrator")
+		schema := delegateTool.Schema()
+		Expect(schema.Required).To(ConsistOf("subagent_type", "message"))
 	})
 })

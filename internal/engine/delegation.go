@@ -322,7 +322,7 @@ func (d *DelegateTool) Description() string {
 // Schema returns the JSON schema for the delegation tool input.
 //
 // Returns:
-//   - A tool.Schema describing the required task_type and message properties,
+//   - A tool.Schema describing the required subagent_type and message properties,
 //   - plus optional run_in_background and handoff properties.
 //
 // Side effects:
@@ -370,7 +370,7 @@ func (d *DelegateTool) Schema() tool.Schema {
 				Description: "Optional handoff metadata including ChainID for coordination",
 			},
 		},
-		Required: []string{"task_type", "message"},
+		Required: []string{"subagent_type", "message"},
 	}
 
 	if d.registry != nil {
