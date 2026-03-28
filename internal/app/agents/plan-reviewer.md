@@ -2,6 +2,10 @@
 schema_version: "1.0.0"
 id: plan-reviewer
 name: Plan Reviewer
+aliases:
+  - review
+  - reviewer
+  - validation
 complexity: deep
 model_preferences:
   ollama:

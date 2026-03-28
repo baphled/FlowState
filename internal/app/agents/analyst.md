@@ -2,6 +2,10 @@
 schema_version: "1.0.0"
 id: analyst
 name: Evidence Analyst
+aliases:
+  - analysis
+  - synthesis
+  - strategy
 complexity: deep
 model_preferences:
   ollama:

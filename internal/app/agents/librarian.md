@@ -2,6 +2,11 @@
 schema_version: "1.0.0"
 id: librarian
 name: Reference Librarian
+aliases:
+  - library
+  - documentation
+  - docs
+  - external-refs
 complexity: medium
 model_preferences:
   ollama:

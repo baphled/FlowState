@@ -2,6 +2,7 @@
   "schema_version": "1.0.0",
   "id": "executor",
   "name": "Task Executor",
+  "aliases": ["execution", "task-runner", "implement"],
   "complexity": "deep",
   "model_preferences": {
     "ollama": [

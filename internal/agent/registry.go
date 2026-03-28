@@ -108,7 +108,15 @@ func (r *Registry) Get(id string) (*Manifest, bool) {
 //  2. Case-insensitive ID match
 //  3. Case-insensitive alias match (any alias in Manifest.Aliases)
 //
-// Returns the first matching manifest and true, or nil and false if not found.
+// Expected:
+//   - name is a non-empty string identifying the agent.
+//
+// Returns:
+//   - The first matching manifest and true if found.
+//   - nil and false if no match exists.
+//
+// Side effects:
+//   - None.
 func (r *Registry) GetByNameOrAlias(name string) (*Manifest, bool) {
 	if m, ok := r.manifests[name]; ok {
 		return m, true

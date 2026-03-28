@@ -2,6 +2,10 @@
 schema_version: "1.0.0"
 id: planner
 name: Planner
+aliases:
+  - planning
+  - orchestration
+  - coordinator
 complexity: deep
 model_preferences:
   ollama:

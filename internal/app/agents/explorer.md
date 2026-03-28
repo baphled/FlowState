@@ -2,6 +2,11 @@
 schema_version: "1.0.0"
 id: explorer
 name: Codebase Explorer
+aliases:
+  - exploration
+  - investigate
+  - codebase
+  - research
 complexity: medium
 model_preferences:
   anthropic:

@@ -2,6 +2,7 @@
   "schema_version": "1.0.0",
   "id": "plan-writer",
   "name": "Plan Writer",
+  "aliases": ["writing", "plan-generation", "writer"],
   "complexity": "deep",
   "model_preferences": {
     "ollama": [
