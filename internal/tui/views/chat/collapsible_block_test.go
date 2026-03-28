@@ -159,4 +159,47 @@ var _ = Describe("CollapsibleDelegationBlock", func() {
 			Expect(rendered).To(ContainSubstring("0s"))
 		})
 	})
+
+	Describe("CollapsibleDelegationBlock mouse support", func() {
+		var mouseBlock *chat.CollapsibleDelegationBlock
+
+		BeforeEach(func() {
+			info := &provider.DelegationInfo{
+				TargetAgent: "qa-agent",
+				Status:      "running",
+				ChainID:     "chain-abc",
+			}
+			mouseBlock = chat.NewCollapsibleDelegationBlock(info, th)
+			mouseBlock.SetYPosition(10)
+			mouseBlock.Render()
+		})
+
+		It("ContainsY returns true for Y within bounds", func() {
+			Expect(mouseBlock.ContainsY(10)).To(BeTrue())
+			Expect(mouseBlock.ContainsY(10 + mouseBlock.Height - 1)).To(BeTrue())
+		})
+
+		It("ContainsY returns false for Y outside bounds", func() {
+			Expect(mouseBlock.ContainsY(9)).To(BeFalse())
+			Expect(mouseBlock.ContainsY(10 + mouseBlock.Height)).To(BeFalse())
+		})
+
+		It("SetHovered does not panic", func() {
+			Expect(func() { mouseBlock.SetHovered(true) }).NotTo(Panic())
+			Expect(func() { mouseBlock.SetHovered(false) }).NotTo(Panic())
+		})
+
+		It("SessionID returns ChainID from info", func() {
+			Expect(mouseBlock.SessionID()).To(Equal("chain-abc"))
+		})
+
+		It("ChainID returns ChainID from info", func() {
+			Expect(mouseBlock.ChainID()).To(Equal("chain-abc"))
+		})
+
+		It("SessionID returns empty string when info is nil", func() {
+			nilBlock := chat.NewCollapsibleDelegationBlock(nil, th)
+			Expect(nilBlock.SessionID()).To(BeEmpty())
+		})
+	})
 })

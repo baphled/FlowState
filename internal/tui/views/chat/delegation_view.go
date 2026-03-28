@@ -146,6 +146,7 @@ type CollapsibleDelegationBlock struct {
 	expanded    bool
 	YPosition   int
 	Height      int
+	hovered     bool
 	frames      []string
 	frame       int
 	dimStyle    lipgloss.Style
@@ -374,4 +375,66 @@ func (b *CollapsibleDelegationBlock) renderExpanded(dimStyle, activeStyle, statu
 
 	b.Height = strings.Count(bordered, "\n") + 1
 	return bordered
+}
+
+// ContainsY reports whether the given Y coordinate falls within this block's rendered bounds.
+//
+// Expected:
+//   - b.Height has been set by a prior call to Render().
+//
+// Returns:
+//   - true when YPosition <= y < YPosition+Height.
+//
+// Side effects:
+//   - None.
+func (b *CollapsibleDelegationBlock) ContainsY(y int) bool {
+	return y >= b.YPosition && y < b.YPosition+b.Height
+}
+
+// SetHovered sets the hover highlight state for this block.
+//
+// Expected:
+//   - hovered is the desired state.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates b.hovered.
+func (b *CollapsibleDelegationBlock) SetHovered(hovered bool) {
+	b.hovered = hovered
+}
+
+// SessionID returns the chain ID used to identify the child session.
+//
+// Expected:
+//   - b.info may be nil.
+//
+// Returns:
+//   - b.info.ChainID, or empty string if info is nil.
+//
+// Side effects:
+//   - None.
+func (b *CollapsibleDelegationBlock) SessionID() string {
+	if b.info == nil {
+		return ""
+	}
+	return b.info.ChainID
+}
+
+// ChainID returns the delegation chain identifier.
+//
+// Expected:
+//   - b.info may be nil.
+//
+// Returns:
+//   - b.info.ChainID, or empty string if info is nil.
+//
+// Side effects:
+//   - None.
+func (b *CollapsibleDelegationBlock) ChainID() string {
+	if b.info == nil {
+		return ""
+	}
+	return b.info.ChainID
 }

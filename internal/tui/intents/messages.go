@@ -12,3 +12,12 @@ type DismissModalMsg struct{}
 type SwitchToIntentMsg struct {
 	Intent Intent
 }
+
+// NavigateToDelegationMsg signals navigation into a child delegation session.
+type NavigateToDelegationMsg struct {
+	SessionID string
+	ChainID   string
+}
+
+// NavigateToParentMsg signals navigation back to the parent session.
+type NavigateToParentMsg struct{}

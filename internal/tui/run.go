@@ -39,7 +39,7 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 	})
 	appShell := app.New(chatIntent, application)
 	chatIntent.SetApp(appShell)
-	p := tea.NewProgram(appShell, tea.WithAltScreen())
+	p := tea.NewProgram(appShell, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
