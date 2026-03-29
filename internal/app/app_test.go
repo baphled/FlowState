@@ -780,6 +780,121 @@ When to use: Testing purposes
 		})
 	})
 
+	Describe("External plugin lifecycle", func() {
+		Context("when app starts with a plugin directory", func() {
+			It("discovers and starts external plugins at startup", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-external-discover")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				pluginsDir := filepath.Join(tempDir, "plugins")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(pluginsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Plugins.Dir = pluginsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.ExternalPluginsStarted()).To(BeTrue())
+			})
+		})
+
+		Context("when plugin directory does not exist", func() {
+			It("continues startup without aborting", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-external-nodir")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Plugins.Dir = "/nonexistent/plugins/dir"
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.ExternalPluginsStarted()).To(BeTrue())
+			})
+		})
+
+		Context("when external plugin fails to start", func() {
+			It("does not abort FlowState", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-external-fail")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				pluginsDir := filepath.Join(tempDir, "plugins")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(pluginsDir, 0o755)).To(Succeed())
+
+				badPluginDir := filepath.Join(pluginsDir, "bad-plugin")
+				Expect(os.MkdirAll(badPluginDir, 0o755)).To(Succeed())
+				manifestJSON := `{"name":"bad-plugin","version":"1.0.0","command":"/nonexistent/binary","hooks":["event"]}`
+				Expect(os.WriteFile(
+					filepath.Join(badPluginDir, "manifest.json"),
+					[]byte(manifestJSON), 0o600,
+				)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Plugins.Dir = pluginsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.ExternalPluginsStarted()).To(BeTrue())
+			})
+		})
+
+		Context("when app shuts down", func() {
+			It("stops external plugin lifecycle on shutdown", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-external-stop")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				pluginsDir := filepath.Join(tempDir, "plugins")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(pluginsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Plugins.Dir = pluginsDir
+
+				application, err := app.New(cfg)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(application.ClosePlugins()).To(Succeed())
+			})
+		})
+	})
+
 	Describe("RegisterProvidersForTest", func() {
 		Context("when no API keys are provided anywhere", func() {
 			It("returns a registry without OpenAI or Anthropic", func() {

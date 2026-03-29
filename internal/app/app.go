@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,13 +76,14 @@ type App struct {
 
 // pluginRuntime groups the plugin wiring created during application startup.
 type pluginRuntime struct {
-	config        config.PluginsConfig
-	discoverer    *external.Discoverer
-	lifecycle     *external.LifecycleManager
-	registry      *pluginpkg.Registry
-	eventLogger   *eventlogger.EventLogger
-	healthManager *failover.HealthManager
-	failoverHook  *failover.Hook
+	config          config.PluginsConfig
+	discoverer      *external.Discoverer
+	lifecycle       *external.LifecycleManager
+	registry        *pluginpkg.Registry
+	eventLogger     *eventlogger.EventLogger
+	healthManager   *failover.HealthManager
+	failoverHook    *failover.Hook
+	externalStarted bool
 }
 
 // New creates a new App instance with all components initialised.
@@ -130,6 +132,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		return nil, err
 	}
 	startCorePluginSubscriptions(pluginRT, runtime.engine)
+	startExternalPlugins(pluginRT)
 	app := buildApp(appBuildParams{
 		cfg:              cfg,
 		agentRegistry:    agentRegistry,
@@ -974,6 +977,9 @@ func buildHookChain(
 // pluginFailoverHook returns the failover hook from the plugin runtime, or nil
 // when the runtime is not initialised.
 //
+// Expected:
+//   - rt may be nil; when nil the function returns nil.
+//
 // Returns:
 //   - The failover hook, or nil when rt is nil.
 //
@@ -1015,6 +1021,38 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	}
 	if rt.healthManager != nil {
 		failover.NewRateLimitDetector(bus, rt.healthManager)
+	}
+}
+
+// startExternalPlugins discovers and starts external plugins from the configured
+// directory. Discovery or startup failures are logged as warnings and do not
+// prevent FlowState from starting.
+//
+// Expected:
+//   - rt may be nil; when nil the function returns immediately.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Reads plugin manifests from disk via the discoverer.
+//   - Spawns external plugin processes via the lifecycle manager.
+//   - Sets rt.externalStarted to true after the attempt completes.
+func startExternalPlugins(rt *pluginRuntime) {
+	if rt == nil {
+		return
+	}
+	rt.externalStarted = true
+	manifests, err := rt.discoverer.Discover(rt.config.Dir)
+	if err != nil {
+		slog.Warn("discovering external plugins", "dir", rt.config.Dir, "error", err)
+		return
+	}
+	if len(manifests) == 0 {
+		return
+	}
+	if startErr := rt.lifecycle.Start(context.Background(), manifests); startErr != nil {
+		slog.Warn("starting external plugins", "error", startErr)
 	}
 }
 
@@ -1491,16 +1529,35 @@ func (a *App) HasFailoverHook() bool {
 	return a.plugins != nil && a.plugins.failoverHook != nil
 }
 
-// ClosePlugins shuts down plugin runtime resources, including the event logger.
+// ExternalPluginsStarted reports whether external plugin discovery and startup
+// was attempted during application initialisation.
+//
+// Returns:
+//   - true if external plugin startup was attempted, false otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) ExternalPluginsStarted() bool {
+	return a.plugins != nil && a.plugins.externalStarted
+}
+
+// ClosePlugins shuts down plugin runtime resources, stopping external plugin
+// processes and closing the event logger.
 //
 // Returns:
 //   - An error if closing the event logger fails, nil otherwise.
 //
 // Side effects:
+//   - Stops all active external plugin processes via the lifecycle manager.
 //   - Closes the event logger file handle if present.
 func (a *App) ClosePlugins() error {
 	if a.plugins == nil {
 		return nil
+	}
+	if a.plugins.lifecycle != nil {
+		if err := a.plugins.lifecycle.Stop(context.Background()); err != nil {
+			slog.Warn("stopping external plugins", "error", err)
+		}
 	}
 	if a.plugins.eventLogger != nil {
 		return a.plugins.eventLogger.Close()
