@@ -26,23 +26,9 @@ type FallbackChain struct {
 //
 // Expected: providers is non-empty and ordered by preference tier (Tier0→Tier3).
 // Tiers maps model names to tier constants (e.g. "claude-sonnet-4-20250514"→Tier0).
-// When tiers is nil or empty, sensible defaults are used based on model families:
-// premium models (Claude/GPT-4)→Tier0, standard models→Tier1, budget models→Tier2,
-// local models (Ollama)→Tier3.
 // Returns: a new FallbackChain with the resolved tier mappings.
-// Side effects: allocates a new map for tier mappings.
+// Side effects: none.
 func NewFallbackChain(providers []ProviderModel, tiers map[string]string) *FallbackChain {
-	if len(tiers) == 0 {
-		tiers = map[string]string{
-			"claude-sonnet-4-20250514":   Tier0,
-			"claude-3-5-sonnet-20241022": Tier0,
-			"gpt-4o":                     Tier1,
-			"gpt-4o-mini":                Tier2,
-			"llama3.2":                   Tier3,
-			"llama3":                     Tier3,
-		}
-	}
-
 	fc := &FallbackChain{
 		providers: providers,
 		tiers:     tiers,
