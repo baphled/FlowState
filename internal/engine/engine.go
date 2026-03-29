@@ -1041,6 +1041,15 @@ func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
 }
 
 // publishSessionEvent publishes a session lifecycle event to the engine bus.
+//
+// Expected:
+//   - action is the session lifecycle transition name.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes an event on the engine bus when one is configured.
 func (e *Engine) publishSessionEvent(action string) {
 	e.bus.Publish("session."+action, events.NewSessionEvent(events.SessionEventData{
 		SessionID: e.manifest.ID,
@@ -1049,6 +1058,16 @@ func (e *Engine) publishSessionEvent(action string) {
 }
 
 // publishToolBeforeEvent publishes a tool execution start event to the engine bus.
+//
+// Expected:
+//   - toolName identifies the tool being executed.
+//   - args contains the tool arguments.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a tool execution start event on the engine bus.
 func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interface{}) {
 	e.bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
 		ToolName: toolName,
@@ -1057,6 +1076,18 @@ func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interfa
 }
 
 // publishToolAfterEvent publishes a tool execution completion event to the engine bus.
+//
+// Expected:
+//   - toolName identifies the tool being executed.
+//   - args contains the tool arguments.
+//   - result contains the tool output.
+//   - execErr contains the execution error, if any.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a tool execution completion event on the engine bus.
 func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interface{}, result string, execErr error) {
 	e.bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
 		ToolName: toolName,
@@ -1067,6 +1098,15 @@ func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interfac
 }
 
 // publishProviderErrorEvent publishes a provider failure event to the engine bus.
+//
+// Expected:
+//   - err describes the provider failure.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a provider error event on the engine bus.
 func (e *Engine) publishProviderErrorEvent(err error) {
 	e.bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
 		ProviderName: e.LastProvider(),
