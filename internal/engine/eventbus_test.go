@@ -139,12 +139,18 @@ var _ = Describe("EventBus Integration", func() {
 			var mu sync.Mutex
 			var beforeEvents []*events.ToolEvent
 			eng.EventBus().Subscribe("tool.execute.before", func(event any) {
-				if te, ok := event.(*events.ToolEvent); ok { mu.Lock(); beforeEvents = append(beforeEvents, te); mu.Unlock() }
+				if te, ok := event.(*events.ToolEvent); ok {
+					mu.Lock()
+					beforeEvents = append(beforeEvents, te)
+					mu.Unlock()
+				}
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks {}
-			mu.Lock(); defer mu.Unlock()
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(beforeEvents).To(HaveLen(1))
 			Expect(beforeEvents[0].Data.ToolName).To(Equal("test_tool"))
 			Expect(beforeEvents[0].Data.Args).To(HaveKeyWithValue("key", "value"))
@@ -155,12 +161,18 @@ var _ = Describe("EventBus Integration", func() {
 			var mu sync.Mutex
 			var afterEvents []*events.ToolEvent
 			eng.EventBus().Subscribe("tool.execute.after", func(event any) {
-				if te, ok := event.(*events.ToolEvent); ok { mu.Lock(); afterEvents = append(afterEvents, te); mu.Unlock() }
+				if te, ok := event.(*events.ToolEvent); ok {
+					mu.Lock()
+					afterEvents = append(afterEvents, te)
+					mu.Unlock()
+				}
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks {}
-			mu.Lock(); defer mu.Unlock()
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(afterEvents).To(HaveLen(1))
 			Expect(afterEvents[0].Data.ToolName).To(Equal("test_tool"))
 			Expect(afterEvents[0].Data.Result).To(Equal("tool output"))
@@ -176,12 +188,18 @@ var _ = Describe("EventBus Integration", func() {
 			var mu sync.Mutex
 			var afterEvents []*events.ToolEvent
 			eng.EventBus().Subscribe("tool.execute.after", func(event any) {
-				if te, ok := event.(*events.ToolEvent); ok { mu.Lock(); afterEvents = append(afterEvents, te); mu.Unlock() }
+				if te, ok := event.(*events.ToolEvent); ok {
+					mu.Lock()
+					afterEvents = append(afterEvents, te)
+					mu.Unlock()
+				}
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks {}
-			mu.Lock(); defer mu.Unlock()
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(afterEvents).To(HaveLen(1))
 			Expect(afterEvents[0].Data.Error).To(MatchError("tool failed"))
 		})
@@ -194,8 +212,10 @@ var _ = Describe("EventBus Integration", func() {
 			eng.EventBus().Subscribe("tool.execute.after", func(_ any) { mu.Lock(); order = append(order, "after"); mu.Unlock() })
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks {}
-			mu.Lock(); defer mu.Unlock()
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(order).To(Equal([]string{"before", "after"}))
 		})
 	})
@@ -207,11 +227,16 @@ var _ = Describe("EventBus Integration", func() {
 			var mu sync.Mutex
 			var providerErrors []*events.ProviderEvent
 			eng.EventBus().Subscribe("provider.error", func(event any) {
-				if pe, ok := event.(*events.ProviderEvent); ok { mu.Lock(); providerErrors = append(providerErrors, pe); mu.Unlock() }
+				if pe, ok := event.(*events.ProviderEvent); ok {
+					mu.Lock()
+					providerErrors = append(providerErrors, pe)
+					mu.Unlock()
+				}
 			})
 			_, err := eng.Stream(context.Background(), "test-agent", "Hello")
 			Expect(err).To(HaveOccurred())
-			mu.Lock(); defer mu.Unlock()
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(providerErrors).To(HaveLen(1))
 			Expect(providerErrors[0].Data.ProviderName).To(Equal("test-chat-provider"))
 			Expect(providerErrors[0].Data.Error).To(MatchError("provider unavailable"))
@@ -230,12 +255,18 @@ var _ = Describe("EventBus Integration", func() {
 			var mu sync.Mutex
 			var providerErrors []*events.ProviderEvent
 			eng.EventBus().Subscribe("provider.error", func(event any) {
-				if pe, ok := event.(*events.ProviderEvent); ok { mu.Lock(); providerErrors = append(providerErrors, pe); mu.Unlock() }
+				if pe, ok := event.(*events.ProviderEvent); ok {
+					mu.Lock()
+					providerErrors = append(providerErrors, pe)
+					mu.Unlock()
+				}
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks {}
-			mu.Lock(); defer mu.Unlock()
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
 			Expect(providerErrors).To(HaveLen(1))
 			Expect(providerErrors[0].Data.Error).To(MatchError("provider down on retry"))
 		})
@@ -248,7 +279,9 @@ var _ = Describe("EventBus Integration", func() {
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
 			Expect(err).NotTo(HaveOccurred())
 			var received []provider.StreamChunk
-			for chunk := range chunks { received = append(received, chunk) }
+			for chunk := range chunks {
+				received = append(received, chunk)
+			}
 			Expect(received).To(HaveLen(1))
 			Expect(received[0].Content).To(Equal("Hello"))
 		})
@@ -276,11 +309,22 @@ type failOnSecondCallProvider struct {
 func (p *failOnSecondCallProvider) Name() string { return p.name }
 func (p *failOnSecondCallProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	p.callCount++
-	if p.callCount > 1 { return nil, p.secondErr }
+	if p.callCount > 1 {
+		return nil, p.secondErr
+	}
 	ch := make(chan provider.StreamChunk, len(p.firstChunks))
-	go func() { defer close(ch); for _, c := range p.firstChunks { ch <- c } }()
+	go func() {
+		defer close(ch)
+		for _, c := range p.firstChunks {
+			ch <- c
+		}
+	}()
 	return ch, nil
 }
-func (p *failOnSecondCallProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) { return provider.ChatResponse{}, nil }
-func (p *failOnSecondCallProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) { return nil, nil }
+func (p *failOnSecondCallProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (p *failOnSecondCallProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
 func (p *failOnSecondCallProvider) Models() ([]provider.Model, error) { return nil, nil }

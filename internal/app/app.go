@@ -25,6 +25,10 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
+	pluginpkg "github.com/baphled/flowstate/internal/plugin"
+	"github.com/baphled/flowstate/internal/plugin/eventlogger"
+	"github.com/baphled/flowstate/internal/plugin/external"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/copilot"
@@ -61,11 +65,23 @@ type App struct {
 	Streamer          streaming.Streamer
 	TodoStore         todotool.Store
 	mcpClient         mcpclient.Client
+	plugins           *pluginRuntime
 	providerRegistry  *provider.Registry
 	ollamaProvider    *ollama.Provider
 	metricsRegistry   *prometheus.Registry
 	Store             *plan.Store
 	backgroundManager *engine.BackgroundTaskManager
+}
+
+// pluginRuntime groups the plugin wiring created during application startup.
+type pluginRuntime struct {
+	config        config.PluginsConfig
+	discoverer    *external.Discoverer
+	lifecycle     *external.LifecycleManager
+	registry      *pluginpkg.Registry
+	eventLogger   *eventlogger.EventLogger
+	healthManager *failover.HealthManager
+	failoverHook  *failover.Hook
 }
 
 // New creates a new App instance with all components initialised.
@@ -97,6 +113,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	pluginRT := setupPluginRuntime(cfg)
 	runtime, err := setupEngine(setupEngineParams{
 		cfg:                cfg,
 		providerRegistry:   providerRegistry,
@@ -107,27 +124,23 @@ func New(cfg *config.AppConfig) (*App, error) {
 		skills:             skills,
 		sessionStore:       sessionStore,
 		learningStore:      learningStore,
+		failoverHook:       pluginFailoverHook(pluginRT),
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	app := &App{
-		Config:           cfg,
-		Registry:         agentRegistry,
-		Skills:           skills,
-		Engine:           runtime.engine,
-		Discovery:        runtime.discovery,
-		Sessions:         sessionStore,
-		Learning:         learningStore,
-		API:              runtime.apiServer,
-		Streamer:         runtime.streamer,
-		TodoStore:        runtime.todoStore,
-		mcpClient:        runtime.mcpManager,
+	startCorePluginSubscriptions(pluginRT, runtime.engine)
+	app := buildApp(appBuildParams{
+		cfg:              cfg,
+		agentRegistry:    agentRegistry,
+		skills:           skills,
+		runtime:          runtime,
+		sessionStore:     sessionStore,
+		learningStore:    learningStore,
 		providerRegistry: providerRegistry,
 		ollamaProvider:   ollamaProvider,
-		metricsRegistry:  runtime.metricsRegistry,
-	}
+		pluginRuntime:    pluginRT,
+	})
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
 	planStore, err := plan.NewStore(planDir)
@@ -145,6 +158,106 @@ func New(cfg *config.AppConfig) (*App, error) {
 	return app, nil
 }
 
+// appBuildParams groups the dependencies required to assemble an App value.
+type appBuildParams struct {
+	cfg              *config.AppConfig
+	agentRegistry    *agent.Registry
+	skills           []skill.Skill
+	runtime          *runtimeComponents
+	sessionStore     *ctxstore.FileSessionStore
+	learningStore    *learning.JSONFileStore
+	providerRegistry *provider.Registry
+	ollamaProvider   *ollama.Provider
+	pluginRuntime    *pluginRuntime
+}
+
+// buildApp assembles the application container from initialised runtime pieces.
+//
+// Expected:
+//   - params contains the fully initialised application dependencies.
+//
+// Returns:
+//   - A wired App instance ready for post-startup adjustments.
+//
+// Side effects:
+//   - Creates the plan store when the destination directory is available.
+func buildApp(params appBuildParams) *App {
+	cfg := params.cfg
+	agentRegistry := params.agentRegistry
+	skills := params.skills
+	runtime := params.runtime
+	sessionStore := params.sessionStore
+	learningStore := params.learningStore
+	providerRegistry := params.providerRegistry
+	ollamaProvider := params.ollamaProvider
+	pluginRuntime := params.pluginRuntime
+	app := &App{
+		Config:           cfg,
+		Registry:         agentRegistry,
+		Skills:           skills,
+		Engine:           runtime.engine,
+		Discovery:        runtime.discovery,
+		Sessions:         sessionStore,
+		Learning:         learningStore,
+		API:              runtime.apiServer,
+		Streamer:         runtime.streamer,
+		TodoStore:        runtime.todoStore,
+		mcpClient:        runtime.mcpManager,
+		plugins:          pluginRuntime,
+		providerRegistry: providerRegistry,
+		ollamaProvider:   ollamaProvider,
+		metricsRegistry:  runtime.metricsRegistry,
+	}
+
+	planDir := filepath.Join(cfg.DataDir, "plans")
+	planStore, err := plan.NewStore(planDir)
+	if err != nil {
+		log.Printf("warning: creating plan store: %v", err)
+	} else {
+		app.Store = planStore
+	}
+
+	app.setAgentOverridesFromConfig(cfg, runtime.engine)
+	app.wireDelegateToolIfEnabled(runtime.engine, selectDefaultManifest(agentRegistry, cfg.DefaultAgent))
+	if app.backgroundManager != nil && app.API != nil {
+		app.API.SetBackgroundManager(app.backgroundManager)
+	}
+
+	return app
+}
+
+// setupPluginRuntime initialises the plugin registry and external plugin wiring.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig.
+//
+// Returns:
+//   - A pluginRuntime containing the config values and external plugin managers,
+//     or nil when cfg is nil.
+//
+// Side effects:
+//   - Allocates the plugin registry and plugin lifecycle manager.
+func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
+	if cfg == nil {
+		return nil
+	}
+
+	registry := pluginpkg.NewRegistry()
+	healthManager := failover.NewHealthManager()
+	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
+	failoverHk := failover.NewHook(chain, healthManager)
+
+	return &pluginRuntime{
+		config:        cfg.Plugins,
+		discoverer:    external.NewDiscoverer(cfg.Plugins),
+		lifecycle:     external.NewLifecycleManager(external.NewSpawner(), registry),
+		registry:      registry,
+		eventLogger:   eventlogger.New(defaultEventLogPath(), 10*1024*1024),
+		healthManager: healthManager,
+		failoverHook:  failoverHk,
+	}
+}
+
 // engineParams holds parameters for engine creation.
 type engineParams struct {
 	defaultProvider    provider.Provider
@@ -160,6 +273,7 @@ type engineParams struct {
 	permissionHandler  tool.PermissionHandler
 	agentsFileLoader   *agent.AgentsFileLoader
 	tokenCounter       ctxstore.TokenCounter
+	failoverHook       *failover.Hook
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -199,6 +313,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		permissionHandler:  permHandler,
 		agentsFileLoader:   buildAgentsFileLoader(),
 		tokenCounter:       ctxstore.NewTiktokenCounter(),
+		failoverHook:       params.failoverHook,
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -234,6 +349,7 @@ type setupEngineParams struct {
 	skills             []skill.Skill
 	sessionStore       *ctxstore.FileSessionStore
 	learningStore      *learning.JSONFileStore
+	failoverHook       *failover.Hook
 }
 
 // runtimeComponents groups the runtime values created during engine setup.
@@ -264,7 +380,7 @@ func createEngine(params engineParams) *engine.Engine {
 			return eng.Manifest()
 		}
 		return params.defaultManifest
-	})
+	}, params.failoverHook)
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
@@ -381,7 +497,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
 func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
-	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest })
+	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil)
 	eng := engine.New(engine.Config{
 		Registry:      a.providerRegistry,
 		AgentRegistry: a.Registry,
@@ -814,10 +930,13 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 }
 
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
+// When failoverHk is non-nil, a failover middleware hook is prepended to the chain so
+// provider failover runs before all other hooks.
 //
 // Expected:
 //   - learningStore is a non-nil JSONFileStore for persisting learning data.
 //   - manifestGetter returns the current agent manifest for skill selection.
+//   - failoverHk may be nil; when non-nil it is prepended as the first hook.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
@@ -827,6 +946,7 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 func buildHookChain(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
+	failoverHk *failover.Hook,
 ) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
 	if err != nil {
@@ -845,7 +965,128 @@ func buildHookChain(
 		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
 	}
 	hooks = append(hooks, tracer.Hook())
+	if failoverHk != nil {
+		hooks = append([]hook.Hook{failoverHookAdapter(failoverHk)}, hooks...)
+	}
 	return hook.NewChain(hooks...)
+}
+
+// pluginFailoverHook returns the failover hook from the plugin runtime, or nil
+// when the runtime is not initialised.
+//
+// Returns:
+//   - The failover hook, or nil when rt is nil.
+//
+// Side effects:
+//   - None.
+func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
+	if rt == nil {
+		return nil
+	}
+	return rt.failoverHook
+}
+
+// startCorePluginSubscriptions wires the event logger and rate-limit detector
+// to the engine's EventBus after the engine has been created. If either the
+// plugin runtime or the engine is nil, subscriptions are safely skipped.
+//
+// Expected:
+//   - rt may be nil; when non-nil its eventLogger and healthManager are wired.
+//   - eng may be nil; when non-nil its EventBus is used for subscriptions.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Starts the event logger (opens file, subscribes to EventBus).
+//   - Creates and subscribes a RateLimitDetector to "provider.error" events.
+func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
+	if rt == nil || eng == nil {
+		return
+	}
+	bus := eng.EventBus()
+	if bus == nil {
+		return
+	}
+	if rt.eventLogger != nil {
+		if err := rt.eventLogger.Start(bus); err != nil {
+			log.Printf("warning: starting event logger: %v", err)
+		}
+	}
+	if rt.healthManager != nil {
+		failover.NewRateLimitDetector(bus, rt.healthManager)
+	}
+}
+
+// failoverHookAdapter wraps a failover.Hook as a hook.Hook middleware so it can
+// be included in the request middleware chain. The failover hook's Apply method
+// is called before the next handler; if it returns an error the request is aborted.
+//
+// Expected:
+//   - fh is a non-nil failover.Hook.
+//
+// Returns:
+//   - A hook.Hook middleware wrapping the failover logic.
+//
+// Side effects:
+//   - None.
+func failoverHookAdapter(fh *failover.Hook) hook.Hook {
+	return func(next hook.HandlerFunc) hook.HandlerFunc {
+		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			if applyErr := fh.Apply(ctx, req); applyErr != nil {
+				return nil, applyErr
+			}
+			return next(ctx, req)
+		}
+	}
+}
+
+// defaultFailoverProviders returns the default provider/model entries for the
+// failover fallback chain, ordered by tier preference.
+//
+// Returns:
+//   - A slice of ProviderModel entries from Tier0 through Tier3.
+//
+// Side effects:
+//   - None.
+func defaultFailoverProviders() []failover.ProviderModel {
+	return []failover.ProviderModel{
+		{Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+		{Provider: "github-copilot", Model: "claude-sonnet-4-20250514"},
+		{Provider: "openai", Model: "gpt-4o"},
+		{Provider: "ollama", Model: "llama3.2"},
+	}
+}
+
+// defaultFailoverTiers returns the default tier assignments for each provider.
+//
+// Returns:
+//   - A map from provider name to tier constant.
+//
+// Side effects:
+//   - None.
+func defaultFailoverTiers() map[string]string {
+	return map[string]string{
+		"anthropic":      failover.Tier0,
+		"github-copilot": failover.Tier1,
+		"openai":         failover.Tier2,
+		"ollama":         failover.Tier3,
+	}
+}
+
+// defaultEventLogPath returns the default file path for the event logger output.
+//
+// Returns:
+//   - A path under the user's cache directory, or a temp directory fallback.
+//
+// Side effects:
+//   - None.
+func defaultEventLogPath() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	return filepath.Join(cacheDir, "flowstate", "events.jsonl")
 }
 
 // buildTracedProvider creates a Prometheus metrics registry, wraps the default
@@ -963,7 +1204,7 @@ func BuildHookChainForTest(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
-	return buildHookChain(learningStore, manifestGetter)
+	return buildHookChain(learningStore, manifestGetter, nil)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.
@@ -1211,6 +1452,82 @@ func NewForTest(tc TestConfig) (*App, error) {
 //   - None.
 func (a *App) BackgroundManager() *engine.BackgroundTaskManager {
 	return a.backgroundManager
+}
+
+// PluginConfigForTest returns the plugin configuration wired into the app.
+//
+// Returns:
+//   - The plugin configuration currently attached to the app, or a zero-value
+//     configuration when plugin wiring has not been initialised.
+//
+// Side effects:
+//   - None.
+func (a *App) PluginConfigForTest() config.PluginsConfig {
+	if a.plugins == nil {
+		return config.PluginsConfig{}
+	}
+	return a.plugins.config
+}
+
+// HasEventLogger reports whether the event logger is configured in the plugin runtime.
+//
+// Returns:
+//   - true if the event logger is present, false otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) HasEventLogger() bool {
+	return a.plugins != nil && a.plugins.eventLogger != nil
+}
+
+// HasFailoverHook reports whether the failover hook is configured in the plugin runtime.
+//
+// Returns:
+//   - true if the failover hook is present, false otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) HasFailoverHook() bool {
+	return a.plugins != nil && a.plugins.failoverHook != nil
+}
+
+// ClosePlugins shuts down plugin runtime resources, including the event logger.
+//
+// Returns:
+//   - An error if closing the event logger fails, nil otherwise.
+//
+// Side effects:
+//   - Closes the event logger file handle if present.
+func (a *App) ClosePlugins() error {
+	if a.plugins == nil {
+		return nil
+	}
+	if a.plugins.eventLogger != nil {
+		return a.plugins.eventLogger.Close()
+	}
+	return nil
+}
+
+// BuildHookChainForTestWithFailover is a test helper that exposes buildHookChain
+// with a non-nil failover hook for verifying chain length.
+//
+// Expected:
+//   - learningStore may be nil for testing purposes.
+//   - manifestGetter returns the current agent manifest.
+//
+// Returns:
+//   - A hook.Chain with the failover hook included.
+//
+// Side effects:
+//   - None.
+func BuildHookChainForTestWithFailover(
+	learningStore *learning.JSONFileStore,
+	manifestGetter func() agent.Manifest,
+) *hook.Chain {
+	health := failover.NewHealthManager()
+	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
+	fh := failover.NewHook(chain, health)
+	return buildHookChain(learningStore, manifestGetter, fh)
 }
 
 // SetBackgroundManager sets the background task manager.

@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/mcp"
@@ -650,6 +651,131 @@ When to use: Testing purposes
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("getting default provider"))
 				Expect(application).To(BeNil())
+			})
+		})
+
+		Context("with plugin configuration", func() {
+			It("wires plugin config into startup runtime", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-plugin-config")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Plugins = config.PluginsConfig{
+					Dir:     "/custom/plugins",
+					Timeout: 9,
+					Enabled: []string{"alpha"},
+				}
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				pluginCfg := application.PluginConfigForTest()
+				Expect(pluginCfg.Dir).To(Equal("/custom/plugins"))
+				Expect(pluginCfg.Timeout).To(Equal(9))
+				Expect(pluginCfg.Enabled).To(Equal([]string{"alpha"}))
+			})
+		})
+	})
+
+	Describe("Plugin startup wiring", func() {
+		Context("when app starts with valid configuration", func() {
+			It("creates event logger in plugin runtime", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-plugin-logger")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.HasEventLogger()).To(BeTrue())
+			})
+
+			It("creates failover hook in plugin runtime", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-plugin-failover")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application.HasFailoverHook()).To(BeTrue())
+			})
+
+			It("includes failover hook in the hook chain", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-hook-chain")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+
+				chainWithFailover := app.BuildHookChainForTestWithFailover(nil, func() agent.Manifest {
+					return agent.Manifest{ID: "test"}
+				})
+				chainWithout := app.BuildHookChainForTest(nil, func() agent.Manifest {
+					return agent.Manifest{ID: "test"}
+				})
+
+				Expect(chainWithFailover.Len()).To(Equal(chainWithout.Len() + 1))
+			})
+
+			It("event logger closes without error on shutdown", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-plugin-close")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application.ClosePlugins()).To(Succeed())
 			})
 		})
 	})

@@ -1,0 +1,57 @@
+=== Task 19: Wire core plugin ports into app startup ===
+Date: 2026-03-29T21:12:19Z
+
+--- Plugin startup tests ---
+=== RUN   TestWireDelegateToolIfEnabled_CreatesIsolatedEngines
+--- PASS: TestWireDelegateToolIfEnabled_CreatesIsolatedEngines (0.00s)
+=== RUN   TestWireDelegateToolIfEnabled_TargetEnginesHaveCorrectManifest
+--- PASS: TestWireDelegateToolIfEnabled_TargetEnginesHaveCorrectManifest (0.00s)
+=== RUN   TestWireDelegateToolIfEnabled_CoordinatorStatePreserved
+--- PASS: TestWireDelegateToolIfEnabled_CoordinatorStatePreserved (0.00s)
+=== RUN   TestWireDelegateToolIfEnabled_SkipsWhenCanDelegateFalse
+--- PASS: TestWireDelegateToolIfEnabled_SkipsWhenCanDelegateFalse (0.00s)
+=== RUN   TestCreateDelegateEngine_ReturnsIsolatedEngine
+--- PASS: TestCreateDelegateEngine_ReturnsIsolatedEngine (0.00s)
+=== RUN   TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery
+--- PASS: TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery (0.00s)
+=== RUN   TestWireDelegateToolIfEnabled_WiresRegistry
+--- PASS: TestWireDelegateToolIfEnabled_WiresRegistry (0.00s)
+=== RUN   TestBuildToolsForManifest_IncludesCoordinationTool
+--- PASS: TestBuildToolsForManifest_IncludesCoordinationTool (0.00s)
+=== RUN   TestBuildToolsForManifest_WithoutCoordinationTool
+--- PASS: TestBuildToolsForManifest_WithoutCoordinationTool (0.00s)
+=== RUN   TestCoordinationToolIsCorrectType
+--- PASS: TestCoordinationToolIsCorrectType (0.00s)
+=== RUN   TestMemoryStoreSharing
+--- PASS: TestMemoryStoreSharing (0.00s)
+=== RUN   TestCoordinationKeyFormat
+--- PASS: TestCoordinationKeyFormat (0.00s)
+=== RUN   TestApp
+Running Suite: App Suite - /home/baphled/Projects/FlowState.git/agent-platform/internal/app
+===========================================================================================
+Random Seed: [1m1774818740[0m
+
+Will run [1m4[0m of [1m81[0m specs
+[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m2026/03/29 22:12:20 info: agents seeded to "/tmp/app-test2468419850/agents"
+2026/03/29 22:12:20 info: discovered 7 agent(s) in "/tmp/app-test2468419850/agents"
+[38;5;10m•[0m2026/03/29 22:12:20 info: agents seeded to "/tmp/app-test1670707010/agents"
+2026/03/29 22:12:20 info: discovered 7 agent(s) in "/tmp/app-test1670707010/agents"
+[38;5;10m•[0m[38;5;10m•[0m2026/03/29 22:12:20 info: agents seeded to "/tmp/app-test1514853877/agents"
+2026/03/29 22:12:20 info: discovered 7 agent(s) in "/tmp/app-test1514853877/agents"
+[38;5;10m•[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m[38;5;14mS[0m
+
+[38;5;10m[1mRan 4 of 81 Specs in 0.005 seconds[0m
+[38;5;10m[1mSUCCESS![0m -- [38;5;10m[1m4 Passed[0m | [38;5;9m[1m0 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m77 Skipped[0m
+--- PASS: TestApp (0.01s)
+PASS
+ok  	github.com/baphled/flowstate/internal/app	0.013s
+
+--- Full app test suite ---
+[38;5;10m[1mRan 81 of 81 Specs in 0.021 seconds[0m
+[38;5;10m[1mSUCCESS![0m -- [38;5;10m[1m81 Passed[0m | [38;5;9m[1m0 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m
+--- PASS: TestApp (0.02s)
+PASS
+ok  	github.com/baphled/flowstate/internal/app	0.029s
+
+--- Build ---
+BUILD_OK
