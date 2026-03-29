@@ -121,6 +121,7 @@ func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest
 		name:    mfst.Name,
 		version: mfst.Version,
 		client:  client,
+		hooks:   convertManifestHooks(mfst.Hooks),
 	}
 	if regErr := m.registry.Register(ext); regErr != nil {
 		killProcess(process)
@@ -196,11 +197,32 @@ func (m *LifecycleManager) Stop(_ context.Context) error {
 	return nil
 }
 
+// convertManifestHooks converts a slice of hook name strings from the manifest
+// to a slice of HookType constants, skipping unknown hook names.
+//
+// Expected: hooks is a slice of hook names as declared in the plugin manifest.
+//
+// Returns: a slice of HookType constants for the recognised hooks.
+//
+// Side effects: None.
+func convertManifestHooks(hooks []string) []plugin.HookType {
+	var result []plugin.HookType
+	for _, hookName := range hooks {
+		hookType := plugin.HookType(hookName)
+		switch hookType {
+		case plugin.ChatParams, plugin.EventType, plugin.ToolExecBefore, plugin.ToolExecAfter:
+			result = append(result, hookType)
+		}
+	}
+	return result
+}
+
 // externalPlugin is a Plugin wrapping an external process.
 type externalPlugin struct {
 	name    string
 	version string
 	client  *JSONRPCClient
+	hooks   []plugin.HookType
 }
 
 // Name returns the plugin's name.
@@ -240,9 +262,11 @@ func (p *externalPlugin) Init() error {
 //
 // Side effects: None.
 func (p *externalPlugin) Hooks() map[plugin.HookType]interface{} {
-	return map[plugin.HookType]interface{}{
-		plugin.EventType: p.client,
+	result := make(map[plugin.HookType]interface{})
+	for _, hookType := range p.hooks {
+		result[hookType] = p.client
 	}
+	return result
 }
 
 // Shutdown shuts down the plugin.

@@ -27,6 +27,7 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/eventlogger"
 	"github.com/baphled/flowstate/internal/plugin/external"
 	"github.com/baphled/flowstate/internal/plugin/failover"
@@ -83,6 +84,7 @@ type pluginRuntime struct {
 	eventLogger     *eventlogger.EventLogger
 	healthManager   *failover.HealthManager
 	failoverHook    *failover.Hook
+	dispatcher      *external.Dispatcher
 	externalStarted bool
 }
 
@@ -258,6 +260,7 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 		eventLogger:   eventlogger.New(defaultEventLogPath(), 10*1024*1024),
 		healthManager: healthManager,
 		failoverHook:  failoverHk,
+		dispatcher:    external.NewDispatcher(registry),
 	}
 }
 
@@ -992,12 +995,12 @@ func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
 	return rt.failoverHook
 }
 
-// startCorePluginSubscriptions wires the event logger and rate-limit detector
-// to the engine's EventBus after the engine has been created. If either the
-// plugin runtime or the engine is nil, subscriptions are safely skipped.
+// startCorePluginSubscriptions wires the event logger, rate-limit detector, and
+// plugin dispatcher to the engine's EventBus after the engine has been created.
+// If either the plugin runtime or the engine is nil, subscriptions are safely skipped.
 //
 // Expected:
-//   - rt may be nil; when non-nil its eventLogger and healthManager are wired.
+//   - rt may be nil; when non-nil its eventLogger, healthManager, and dispatcher are wired.
 //   - eng may be nil; when non-nil its EventBus is used for subscriptions.
 //
 // Returns:
@@ -1006,6 +1009,7 @@ func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
 // Side effects:
 //   - Starts the event logger (opens file, subscribes to EventBus).
 //   - Creates and subscribes a RateLimitDetector to "provider.error" events.
+//   - Subscribes the dispatcher to plugin hook events for forwarding to external plugins.
 func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt == nil || eng == nil {
 		return
@@ -1022,6 +1026,46 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt.healthManager != nil {
 		failover.NewRateLimitDetector(bus, rt.healthManager)
 	}
+	if rt.dispatcher != nil {
+		subscribeDispatcherHooks(rt.dispatcher, bus)
+	}
+}
+
+// subscribeDispatcherHooks wires event forwarding from the engine's EventBus
+// to the external plugin dispatcher, enabling plugins to respond to hook events.
+//
+// Expected:
+//   - dispatcher is a valid Dispatcher instance.
+//   - bus is a valid EventBus instance.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Subscribes to "plugin.event", "tool.execute.before", and "tool.execute.after" events on the bus.
+//   - Logs warnings if plugin hook dispatch errors occur.
+func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.EventBus) {
+	bus.Subscribe("plugin.event", func(msg any) {
+		if evt, ok := msg.(pluginpkg.Event); ok {
+			if err := dispatcher.Dispatch(context.Background(), pluginpkg.EventType, evt); err != nil {
+				slog.Warn("plugin hook dispatch error", "hook", "event", "error", err)
+			}
+		}
+	})
+	bus.Subscribe("tool.execute.before", func(msg any) {
+		if args, ok := msg.(*external.ToolExecArgs); ok {
+			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecBefore, args); err != nil {
+				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.before", "error", err)
+			}
+		}
+	})
+	bus.Subscribe("tool.execute.after", func(msg any) {
+		if args, ok := msg.(*external.ToolExecArgs); ok {
+			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
+				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.after", "error", err)
+			}
+		}
+	})
 }
 
 // startExternalPlugins discovers and starts external plugins from the configured
@@ -1527,6 +1571,17 @@ func (a *App) HasEventLogger() bool {
 //   - None.
 func (a *App) HasFailoverHook() bool {
 	return a.plugins != nil && a.plugins.failoverHook != nil
+}
+
+// HasDispatcher reports whether the external plugin dispatcher is configured in the plugin runtime.
+//
+// Returns:
+//   - true if the dispatcher is present, false otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) HasDispatcher() bool {
+	return a.plugins != nil && a.plugins.dispatcher != nil
 }
 
 // ExternalPluginsStarted reports whether external plugin discovery and startup
