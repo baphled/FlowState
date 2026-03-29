@@ -27,6 +27,7 @@ type ToolResultInfo struct {
 
 // ChatRequest contains the parameters for a chat completion request.
 type ChatRequest struct {
+	Provider string
 	Model    string
 	Messages []Message
 	Tools    []Tool
