@@ -43,7 +43,6 @@ func NewFallbackChain(providers []ProviderModel, tiers map[string]string) *Fallb
 // with error if all remaining providers are rate-limited or chain is exhausted.
 // Side effects: none (read-only operation on health state).
 func (fc *FallbackChain) NextHealthy(current ProviderModel, health *HealthManager) (ProviderModel, error) {
-	// Find current provider index
 	currentIdx := -1
 	for i, p := range fc.providers {
 		if p.Provider == current.Provider && p.Model == current.Model {
@@ -52,7 +51,6 @@ func (fc *FallbackChain) NextHealthy(current ProviderModel, health *HealthManage
 		}
 	}
 
-	// Walk through remaining providers
 	for i := currentIdx + 1; i < len(fc.providers); i++ {
 		provider := fc.providers[i]
 		if !health.IsRateLimited(provider.Provider, provider.Model) {
@@ -60,6 +58,5 @@ func (fc *FallbackChain) NextHealthy(current ProviderModel, health *HealthManage
 		}
 	}
 
-	// No healthy provider found
 	return ProviderModel{}, errors.New("all providers rate-limited or exhausted")
 }

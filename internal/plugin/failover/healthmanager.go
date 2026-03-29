@@ -11,8 +11,9 @@ import (
 
 // HealthManager manages provider/model rate-limit health with concurrency safety.
 type HealthManager struct {
-	mu   sync.RWMutex
-	data map[string]time.Time
+	mu          sync.RWMutex
+	data        map[string]time.Time
+	persistPath string
 }
 
 // NewHealthManager creates a new HealthManager instance.
@@ -20,9 +21,26 @@ type HealthManager struct {
 // Returns: a new HealthManager with empty rate-limit tracking.
 // Side effects: allocates a new map for rate-limit state.
 func NewHealthManager() *HealthManager {
-	return &HealthManager{
-		data: make(map[string]time.Time),
+	cacheDir, err := os.UserCacheDir()
+	persistPath := filepath.Join(cacheDir, "flowstate", "provider-health.json")
+	if err != nil {
+		persistPath = filepath.Join(os.TempDir(), "flowstate", "provider-health.json")
 	}
+	return &HealthManager{
+		data:        make(map[string]time.Time),
+		persistPath: persistPath,
+	}
+}
+
+// SetPersistPath updates the path used when persisting rate-limit state.
+//
+// Expected: path is a valid filesystem path writable by the process.
+// Returns: nothing.
+// Side effects: updates the persist path used on next MarkRateLimited call.
+func (hm *HealthManager) SetPersistPath(path string) {
+	hm.mu.Lock()
+	hm.persistPath = path
+	hm.mu.Unlock()
 }
 
 // MarkRateLimited marks a provider/model as rate-limited until retryAfter.
@@ -39,12 +57,7 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 		snapshot[k] = v
 	}
 	hm.mu.Unlock()
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return fmt.Errorf("get cache dir: %w", err)
-	}
-	persistPath := filepath.Join(cacheDir, "flowstate", "provider-health.json")
-	return hm.PersistState(persistPath, snapshot)
+	return hm.PersistState(hm.persistPath, snapshot)
 }
 
 // IsRateLimited returns true if provider/model is currently rate-limited.

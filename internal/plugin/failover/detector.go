@@ -223,7 +223,7 @@ func (fh *Hook) Apply(_ context.Context, req *provider.ChatRequest) error {
 
 	if currentProvider == "" {
 		currentProvider = "anthropic"
-		currentModel = "claude-3-5-sonnet-20241022"
+		currentModel = ""
 		req.Provider = currentProvider
 		req.Model = currentModel
 	}

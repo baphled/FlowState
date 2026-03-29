@@ -1,4 +1,4 @@
-package failover_test
+package failover
 
 import (
 	"os"
@@ -7,21 +7,25 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/baphled/flowstate/internal/plugin/failover"
 )
 
 var _ = Describe("HealthManager", func() {
 	var (
 		dir  string
 		path string
-		hm   *failover.HealthManager
+		hm   *HealthManager
 	)
 
 	BeforeEach(func() {
-		dir = GinkgoT().TempDir()
+		var err error
+		dir, err = os.MkdirTemp("", "healthmanager-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
 		path = filepath.Join(dir, "provider-health.json")
-		hm = failover.NewHealthManager()
+		hm = NewHealthManager()
+		hm.SetPersistPath(path)
 	})
 
 	It("marks provider+model as rate-limited", func() {
@@ -61,7 +65,8 @@ var _ = Describe("HealthManager", func() {
 		hm.MarkRateLimited("anthropic", "claude-3", now)
 		err := hm.PersistStateInternal(path)
 		Expect(err).NotTo(HaveOccurred())
-		newHM := failover.NewHealthManager()
+		newHM := NewHealthManager()
+		newHM.persistPath = path
 		err = newHM.LoadState(path)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(newHM.IsRateLimited("anthropic", "claude-3")).To(BeTrue())

@@ -31,8 +31,15 @@ var _ = Describe("RateLimitDetector", func() {
 	)
 
 	BeforeEach(func() {
+		var err error
+		dir, err := os.MkdirTemp("", "failover-detector-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
 		bus = eventbus.NewEventBus()
 		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
 		detector = failover.NewRateLimitDetector(bus, health)
 	})
 
@@ -202,6 +209,12 @@ var _ = Describe("Hook", func() {
 	)
 
 	BeforeEach(func() {
+		var err error
+		dir, err := os.MkdirTemp("", "failover-hook-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
 		providers = []failover.ProviderModel{
 			{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"},
 			{Provider: "github-copilot", Model: "claude-3-5-sonnet-20241022"},
@@ -210,6 +223,7 @@ var _ = Describe("Hook", func() {
 		}
 		chain = failover.NewFallbackChain(providers, nil)
 		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
 		hook = failover.NewHook(chain, health)
 	})
 
