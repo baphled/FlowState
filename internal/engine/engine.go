@@ -11,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
@@ -43,6 +45,7 @@ type Engine struct {
 	agentsFileLoader  *agent.AgentsFileLoader
 	lastContextResult ctxstore.BuildResult
 	agentOverrides    map[string]string
+	bus               *eventbus.EventBus
 	mu                sync.RWMutex
 }
 
@@ -113,6 +116,7 @@ func New(cfg Config) *Engine {
 		agentRegistry:     cfg.AgentRegistry,
 		agentsFileLoader:  cfg.AgentsFileLoader,
 		agentOverrides:    make(map[string]string),
+		bus:               eventbus.NewEventBus(),
 	}
 }
 
@@ -127,6 +131,17 @@ func (e *Engine) SetAgentOverrides(overrides map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.agentOverrides = overrides
+}
+
+// EventBus returns the engine's event bus for plugin event subscriptions.
+//
+// Returns:
+//   - The EventBus instance created at engine construction.
+//
+// Side effects:
+//   - None.
+func (e *Engine) EventBus() *eventbus.EventBus {
+	return e.bus
 }
 
 // buildModelPreferences constructs model preferences from the agent manifest.
@@ -432,6 +447,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	providerChunks, err := e.streamFromProvider(ctx, &req)
 	if err != nil {
+		e.publishProviderErrorEvent(err)
 		return nil, err
 	}
 
@@ -547,6 +563,7 @@ func (e *Engine) streamWithToolLoop(
 		}
 		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
 		if streamErr != nil {
+			e.publishProviderErrorEvent(streamErr)
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
@@ -632,12 +649,14 @@ func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCal
 			continue
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
+		e.publishToolBeforeEvent(toolCall.Name, toolCall.Arguments)
 		input := tool.Input{
 			Name:      toolCall.Name,
 			Arguments: toolCall.Arguments,
 		}
 		result, err := t.Execute(ctx, input)
 		result.Error = err
+		e.publishToolAfterEvent(toolCall.Name, toolCall.Arguments, result.Output, err)
 		return result, nil
 	}
 	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
@@ -904,8 +923,16 @@ func (e *Engine) dualWriteToChainStore(msg provider.Message) {
 //
 // Side effects:
 //   - Replaces the engine's current context store reference.
+//   - Publishes session.created when store is non-nil.
+//   - Publishes session.ended when store is nil and a previous store existed.
 func (e *Engine) SetContextStore(store *recall.FileContextStore) {
+	hadStore := e.store != nil
 	e.store = store
+	if store != nil {
+		e.publishSessionEvent("created")
+	} else if hadStore {
+		e.publishSessionEvent("ended")
+	}
 }
 
 // ContextStore returns the current context store.
@@ -1011,4 +1038,38 @@ func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// publishSessionEvent publishes a session lifecycle event to the engine bus.
+func (e *Engine) publishSessionEvent(action string) {
+	e.bus.Publish("session."+action, events.NewSessionEvent(events.SessionEventData{
+		SessionID: e.manifest.ID,
+		Action:    action,
+	}))
+}
+
+// publishToolBeforeEvent publishes a tool execution start event to the engine bus.
+func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interface{}) {
+	e.bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
+		ToolName: toolName,
+		Args:     args,
+	}))
+}
+
+// publishToolAfterEvent publishes a tool execution completion event to the engine bus.
+func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interface{}, result string, execErr error) {
+	e.bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
+		ToolName: toolName,
+		Args:     args,
+		Result:   result,
+		Error:    execErr,
+	}))
+}
+
+// publishProviderErrorEvent publishes a provider failure event to the engine bus.
+func (e *Engine) publishProviderErrorEvent(err error) {
+	e.bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+		ProviderName: e.LastProvider(),
+		Error:        err,
+	}))
 }
