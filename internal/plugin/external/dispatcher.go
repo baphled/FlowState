@@ -28,6 +28,12 @@ type Dispatcher struct {
 }
 
 // NewDispatcher creates a Dispatcher backed by the given plugin registry.
+//
+// Expected: registry must be a valid plugin registry.
+//
+// Returns: a new Dispatcher instance.
+//
+// Side effects: None.
 func NewDispatcher(registry *plugin.Registry) *Dispatcher {
 	return &Dispatcher{registry: registry}
 }
@@ -37,6 +43,15 @@ func NewDispatcher(registry *plugin.Registry) *Dispatcher {
 // Plugins are called in registration order. An error from one plugin is logged
 // and collected but does not prevent dispatch to remaining plugins. Returns a
 // combined error of all failures, or nil when every invocation succeeds.
+//
+// Expected:
+//   - ctx: context for hook execution
+//   - hookType: the type of hook to dispatch
+//   - payload: hook-specific payload
+//
+// Returns: combined error of all failures, or nil when every invocation succeeds.
+//
+// Side effects: May call external plugins via RPC.
 func (d *Dispatcher) Dispatch(ctx context.Context, hookType plugin.HookType, payload interface{}) error {
 	var errs []error
 	for _, p := range d.registry.List() {
@@ -56,6 +71,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, hookType plugin.HookType, pay
 	return errors.Join(errs...)
 }
 
+// callHook dispatches a hook invocation to the appropriate handler based on type.
+//
+// Expected:
+//   - ctx: context for hook execution
+//   - hookType: the type of hook
+//   - hookFn: the hook function to invoke
+//   - payload: hook-specific payload
+//
+// Returns: error from hook execution, or nil on success.
+//
+// Side effects: May call external plugins via RPC.
 func callHook(ctx context.Context, hookType plugin.HookType, hookFn interface{}, payload interface{}) error {
 	switch fn := hookFn.(type) {
 	case *JSONRPCClient:

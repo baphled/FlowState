@@ -40,6 +40,18 @@ type JSONRPCClient struct {
 }
 
 // NewJSONRPCClient returns a JSONRPCClient backed by the given read/write connection.
+//
+// Returns:
+//
+//	A new JSONRPCClient configured with the provided connection.
+//
+// Expected:
+//
+//	The conn parameter must be a valid, open read-write connection.
+//
+// Side effects:
+//
+//	None. The client does not perform any I/O until Call is invoked.
 func NewJSONRPCClient(conn io.ReadWriter) *JSONRPCClient {
 	return &JSONRPCClient{
 		enc: json.NewEncoder(conn),
@@ -48,6 +60,20 @@ func NewJSONRPCClient(conn io.ReadWriter) *JSONRPCClient {
 }
 
 // Call sends a JSON-RPC 2.0 request and returns the result.
+//
+// Returns:
+//   - json.RawMessage: The result from the JSON-RPC response.
+//   - error: An error if the request failed, timed out, or the server returned an error.
+//
+// Expected:
+//
+//	The method parameter must be a valid JSON-RPC method name.
+//	The params parameter should match the expected parameter type for the method.
+//
+// Side effects:
+//
+//	This method locks the client's encoder to ensure thread-safe encoding and decoding.
+//	It launches a goroutine to handle the request/response cycle.
 func (c *JSONRPCClient) Call(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
 	id := c.seq.Add(1)
 	req := jsonrpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}

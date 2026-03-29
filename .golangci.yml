@@ -82,6 +82,11 @@ linters:
         - io.WriteString
         - (*bytes.Buffer).WriteString
         - (*strings.Builder).WriteString
+        - (*os.Process).Wait
+        - (*os.Process).Signal
+        - (*os.Process).Kill
+        - (*github.com/baphled/flowstate/internal/plugin/external.PluginProcess).Kill
+        - cmd.Wait
 
     errorlint:
       errorf: true
@@ -420,6 +425,12 @@ linters:
 
       # G204: MCP manager executes configured MCP server commands
       - path: 'internal/mcp/manager\.go'
+        linters:
+          - gosec
+        text: 'G204'
+
+      # G204: Plugin spawner executes plugin commands from manifests
+      - path: 'internal/plugin/external/spawner\.go'
         linters:
           - gosec
         text: 'G204'

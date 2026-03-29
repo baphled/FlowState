@@ -84,6 +84,46 @@ func (r *Registry) List() []Plugin {
 	return plugins
 }
 
+// Remove removes a plugin from the registry by name.
+//
+// Expected:
+//   - Safe for concurrent use.
+//   - No-op if plugin not found.
+//
+// Returns: nothing.
+// Side effects: mutates the registry's plugin map and order slice.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.plugins[name]; !exists {
+		return
+	}
+	delete(r.plugins, name)
+	newOrder := make([]string, 0, len(r.order)-1)
+	for _, n := range r.order {
+		if n != name {
+			newOrder = append(newOrder, n)
+		}
+	}
+	r.order = newOrder
+}
+
+// Names returns the names of all registered plugins in registration order.
+//
+// Expected:
+//   - Safe for concurrent use.
+//   - Returns names in registration order.
+//
+// Returns: slice of plugin names in registration order.
+// Side effects: none.
+func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, len(r.order))
+	copy(names, r.order)
+	return names
+}
+
 // ErrPluginExists is returned when a plugin with the same name is already registered.
 //
 // Expected: used as a sentinel error for duplicate plugin registration.
