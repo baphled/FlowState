@@ -74,9 +74,7 @@ func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 // Expected: provider and model parameters are reserved for future use.
 // Returns: a slice of ProviderModel entries that are healthy (not rate-limited).
 // Side effects: none (read-only operation).
-func (hm *HealthManager) GetHealthyAlternatives(provider, model string) []ProviderModel {
-	_ = provider
-	_ = model
+func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 	hm.mu.RLock()
 	snapshot := make(map[string]time.Time, len(hm.data))
 	for k, v := range hm.data {

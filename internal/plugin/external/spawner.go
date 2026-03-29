@@ -163,24 +163,17 @@ func (s *Spawner) Spawn(ctx context.Context, m *manifest.Manifest) (*PluginProce
 func (s *Spawner) StopProcess(_ string, p *PluginProcess) error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			slog.Debug("signal error", "error", err)
+			slog.Debug("SIGTERM error", "error", err)
 		}
 
-		done := make(chan struct{})
-		go func() {
-			if err := p.cmd.Wait(); err != nil {
-				slog.Debug("process wait error", "error", err)
-			}
-			close(done)
-		}()
-
 		select {
-		case <-done:
+		case <-p.done:
 			return nil
 		case <-time.After(5 * time.Second):
-			if err := p.cmd.Process.Kill(); err != nil {
-				slog.Debug("process kill error", "error", err)
+			if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				slog.Warn("SIGKILL error", "error", err)
 			}
+			<-p.done
 		}
 	}
 	return p.Kill()

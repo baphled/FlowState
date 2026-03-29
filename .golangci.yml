@@ -82,11 +82,6 @@ linters:
         - io.WriteString
         - (*bytes.Buffer).WriteString
         - (*strings.Builder).WriteString
-        - (*os.Process).Wait
-        - (*os.Process).Signal
-        - (*os.Process).Kill
-        - (*github.com/baphled/flowstate/internal/plugin/external.PluginProcess).Kill
-        - cmd.Wait
 
     errorlint:
       errorf: true
