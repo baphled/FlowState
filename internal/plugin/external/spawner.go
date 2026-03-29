@@ -23,6 +23,15 @@ type PluginProcess struct {
 }
 
 // NewPluginProcess creates a new PluginProcess with the given read/write streams and done channel.
+//
+// Expected:
+//   - r: reader for process stdout
+//   - w: writer for process stdin
+//   - done: channel that closes when process exits
+//
+// Returns: a new PluginProcess instance.
+//
+// Side effects: None.
 func NewPluginProcess(r io.ReadCloser, w io.WriteCloser, done <-chan struct{}) *PluginProcess {
 	return &PluginProcess{
 		r:    r,
@@ -32,11 +41,23 @@ func NewPluginProcess(r io.ReadCloser, w io.WriteCloser, done <-chan struct{}) *
 }
 
 // Done returns a channel that is closed when the process exits.
+//
+// Expected: None.
+//
+// Returns: a channel that closes when the process exits.
+//
+// Side effects: None.
 func (p *PluginProcess) Done() <-chan struct{} {
 	return p.done
 }
 
 // Kill terminates the plugin process immediately.
+//
+// Expected: None.
+//
+// Returns: an error if closing streams fails, nil otherwise.
+//
+// Side effects: Closes stdin and stdout pipes.
 func (p *PluginProcess) Kill() error {
 	if rc, ok := p.r.(io.Closer); ok {
 		if err := rc.Close(); err != nil {
@@ -52,11 +73,23 @@ func (p *PluginProcess) Kill() error {
 }
 
 // Read implements io.Reader.
+//
+// Expected: b must be a valid slice with capacity for reading data.
+//
+// Returns: the number of bytes read and any error encountered.
+//
+// Side effects: May read from the process stdout.
 func (p *PluginProcess) Read(b []byte) (int, error) {
 	return p.r.Read(b)
 }
 
 // Write implements io.Writer.
+//
+// Expected: b contains data to write to process stdin.
+//
+// Returns: the number of bytes written and any error encountered.
+//
+// Side effects: Writes to the process stdin.
 func (p *PluginProcess) Write(b []byte) (int, error) {
 	return p.w.Write(b)
 }
@@ -65,11 +98,25 @@ func (p *PluginProcess) Write(b []byte) (int, error) {
 type Spawner struct{}
 
 // NewSpawner creates a new Spawner.
+//
+// Expected: None.
+//
+// Returns: a new Spawner instance.
+//
+// Side effects: None.
 func NewSpawner() *Spawner {
 	return &Spawner{}
 }
 
 // Spawn starts a new plugin process from the given manifest.
+//
+// Expected:
+//   - ctx: context for process execution
+//   - m: manifest with Command and Args populated
+//
+// Returns: a new PluginProcess and nil error, or nil process and error if spawning fails.
+//
+// Side effects: Starts a new OS process.
 func (s *Spawner) Spawn(ctx context.Context, m *manifest.Manifest) (*PluginProcess, error) {
 	if m.Command == "" {
 		return nil, errors.New("manifest command is empty")
@@ -106,7 +153,13 @@ func (s *Spawner) Spawn(ctx context.Context, m *manifest.Manifest) (*PluginProce
 
 // StopProcess stops a running plugin process by sending SIGTERM, waiting, then SIGKILL.
 //
-// The name parameter is unused but kept for interface compatibility.
+// Expected:
+//   - name: unused but kept for interface compatibility
+//   - p: the plugin process to stop
+//
+// Returns: an error if stopping fails, nil otherwise.
+//
+// Side effects: Sends signals to and may kill the process.
 func (s *Spawner) StopProcess(_ string, p *PluginProcess) error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {

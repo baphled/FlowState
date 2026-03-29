@@ -13,6 +13,10 @@ import (
 
 // killProcess kills a plugin process, ignoring any error.
 // This is used during cleanup when the process is already in a failed state.
+//
+// Expected: p must be a valid PluginProcess.
+//
+// Side effects: Closes stdin/stdout pipes of the process.
 func killProcess(p *PluginProcess) {
 	if err := p.Kill(); err != nil {
 		slog.Debug("kill process error", "error", err)
@@ -35,6 +39,7 @@ type LifecycleManager struct {
 	active   []*activePlugin
 }
 
+// activePlugin tracks a running external plugin process.
 type activePlugin struct {
 	name    string
 	process *PluginProcess
@@ -42,6 +47,14 @@ type activePlugin struct {
 }
 
 // NewLifecycleManager returns a new LifecycleManager.
+//
+// Expected:
+//   - spawner: interface for spawning plugin processes
+//   - registry: plugin registry to register plugins with
+//
+// Returns: a new LifecycleManager instance.
+//
+// Side effects: None.
 func NewLifecycleManager(spawner SpawnIface, registry *plugin.Registry) *LifecycleManager {
 	return &LifecycleManager{
 		spawner:  spawner,
@@ -51,9 +64,13 @@ func NewLifecycleManager(spawner SpawnIface, registry *plugin.Registry) *Lifecyc
 
 // Start spawns each plugin, runs initialize RPC, and registers it.
 //
-// The ctx parameter is passed to each plugin's spawn and initialization.
+// Expected:
+//   - ctx: context passed to each plugin's spawn and initialization
+//   - manifests: slice of plugin manifests to start
 //
-//go:context(ctx)
+// Returns: an error if any plugin fails to start, nil otherwise.
+//
+// Side effects: Starts multiple OS processes and registers plugins.
 func (m *LifecycleManager) Start(ctx context.Context, manifests []*manifest.Manifest) error {
 	var errs []error
 	for _, mfst := range manifests {
@@ -69,9 +86,13 @@ func (m *LifecycleManager) Start(ctx context.Context, manifests []*manifest.Mani
 
 // startOne spawns and initializes a single plugin.
 //
-// The ctx parameter is used for spawn and init operations.
+// Expected:
+//   - ctx: context for spawn and init operations
+//   - mfst: manifest for the plugin to start
 //
-//go:context(ctx)
+// Returns: an error if spawning or initialization fails, nil otherwise.
+//
+// Side effects: Starts an OS process and registers the plugin.
 func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest) error {
 	process, err := m.spawner.Spawn(ctx, mfst)
 	if err != nil {
@@ -127,6 +148,13 @@ func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest
 	return nil
 }
 
+// removeActive removes an active plugin from the tracking slice.
+//
+// Expected: name of the plugin to remove.
+//
+// Returns: None.
+//
+// Side effects: Modifies the active slice.
 func (m *LifecycleManager) removeActive(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -141,9 +169,11 @@ func (m *LifecycleManager) removeActive(name string) {
 
 // Stop sends shutdown RPC to each plugin in reverse order, then kills them.
 //
-// The ctx parameter is unused but kept for interface compatibility.
+// Expected: ctx is unused but kept for interface compatibility.
 //
-//go:context(ctx)
+// Returns: an error if any plugin fails to stop, nil otherwise.
+//
+// Side effects: Stops and kills multiple plugin processes.
 func (m *LifecycleManager) Stop(_ context.Context) error {
 	m.mu.Lock()
 	active := make([]*activePlugin, len(m.active))
@@ -174,17 +204,41 @@ type externalPlugin struct {
 }
 
 // Name returns the plugin's name.
+//
+// Expected: None.
+//
+// Returns: the plugin's name.
+//
+// Side effects: None.
 func (p *externalPlugin) Name() string { return p.name }
 
 // Version returns the plugin's version.
+//
+// Expected: None.
+//
+// Returns: the plugin's version.
+//
+// Side effects: None.
 func (p *externalPlugin) Version() string { return p.version }
 
 // Init initializes the plugin.
+//
+// Expected: None.
+//
+// Returns: nil as external plugins are initialized via RPC.
+//
+// Side effects: None.
 func (p *externalPlugin) Init() error {
 	return nil
 }
 
 // Hooks returns the plugin's hooks.
+//
+// Expected: None.
+//
+// Returns: a map of hook types to implementations.
+//
+// Side effects: None.
 func (p *externalPlugin) Hooks() map[plugin.HookType]interface{} {
 	return map[plugin.HookType]interface{}{
 		plugin.EventType: p.client,
@@ -192,4 +246,10 @@ func (p *externalPlugin) Hooks() map[plugin.HookType]interface{} {
 }
 
 // Shutdown shuts down the plugin.
+//
+// Expected: None.
+//
+// Returns: nil as external plugins are shut down via lifecycle manager.
+//
+// Side effects: None.
 func (p *externalPlugin) Shutdown() error { return nil }
