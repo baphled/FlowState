@@ -117,11 +117,10 @@ func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest
 		return fmt.Errorf("initialize: %w", initErr)
 	}
 
-	ext := &ProcessPlugin{
+	ext := &externalPlugin{
 		name:    mfst.Name,
 		version: mfst.Version,
 		client:  client,
-		hooks:   convertManifestHooks(mfst.Hooks),
 	}
 	if regErr := m.registry.Register(ext); regErr != nil {
 		killProcess(process)
@@ -149,23 +148,12 @@ func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest
 	return nil
 }
 
-// convertManifestHooks converts a slice of hook names to HookType values.
-//
-// Expected: hooks is a slice of string hook names from the manifest.
-// Returns: slice of plugin.HookType.
-// Side effects: None.
-func convertManifestHooks(hooks []string) []plugin.HookType {
-	hookTypes := make([]plugin.HookType, len(hooks))
-	for i, h := range hooks {
-		hookTypes[i] = plugin.HookType(h)
-	}
-	return hookTypes
-}
-
 // removeActive removes an active plugin from the tracking slice.
 //
 // Expected: name of the plugin to remove.
+//
 // Returns: None.
+//
 // Side effects: Modifies the active slice.
 func (m *LifecycleManager) removeActive(name string) {
 	m.mu.Lock()
@@ -182,7 +170,9 @@ func (m *LifecycleManager) removeActive(name string) {
 // Stop sends shutdown RPC to each plugin in reverse order, then kills them.
 //
 // Expected: ctx is unused but kept for interface compatibility.
+//
 // Returns: an error if any plugin fails to stop, nil otherwise.
+//
 // Side effects: Stops and kills multiple plugin processes.
 func (m *LifecycleManager) Stop(_ context.Context) error {
 	m.mu.Lock()
@@ -206,53 +196,60 @@ func (m *LifecycleManager) Stop(_ context.Context) error {
 	return nil
 }
 
-// ProcessPlugin wraps an external plugin process.
-type ProcessPlugin struct {
+// externalPlugin is a Plugin wrapping an external process.
+type externalPlugin struct {
 	name    string
 	version string
 	client  *JSONRPCClient
-	hooks   []plugin.HookType
 }
 
 // Name returns the plugin's name.
 //
 // Expected: None.
+//
 // Returns: the plugin's name.
+//
 // Side effects: None.
-func (p *ProcessPlugin) Name() string { return p.name }
+func (p *externalPlugin) Name() string { return p.name }
 
 // Version returns the plugin's version.
 //
 // Expected: None.
+//
 // Returns: the plugin's version.
+//
 // Side effects: None.
-func (p *ProcessPlugin) Version() string { return p.version }
+func (p *externalPlugin) Version() string { return p.version }
 
 // Init initializes the plugin.
 //
 // Expected: None.
+//
 // Returns: nil as external plugins are initialized via RPC.
+//
 // Side effects: None.
-func (p *ProcessPlugin) Init() error {
+func (p *externalPlugin) Init() error {
 	return nil
 }
 
 // Hooks returns the plugin's hooks.
 //
-// Expected: Returns a map of hook types to implementations from the hooks field.
-// Returns: map[plugin.HookType]interface{}.
+// Expected: None.
+//
+// Returns: a map of hook types to implementations.
+//
 // Side effects: None.
-func (p *ProcessPlugin) Hooks() map[plugin.HookType]interface{} {
-	m := make(map[plugin.HookType]interface{}, len(p.hooks))
-	for _, h := range p.hooks {
-		m[h] = p.client
+func (p *externalPlugin) Hooks() map[plugin.HookType]interface{} {
+	return map[plugin.HookType]interface{}{
+		plugin.EventType: p.client,
 	}
-	return m
 }
 
 // Shutdown shuts down the plugin.
 //
 // Expected: None.
+//
 // Returns: nil as external plugins are shut down via lifecycle manager.
+//
 // Side effects: None.
-func (p *ProcessPlugin) Shutdown() error { return nil }
+func (p *externalPlugin) Shutdown() error { return nil }

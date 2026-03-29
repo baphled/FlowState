@@ -27,7 +27,6 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
-	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/eventlogger"
 	"github.com/baphled/flowstate/internal/plugin/external"
 	"github.com/baphled/flowstate/internal/plugin/failover"
@@ -84,7 +83,6 @@ type pluginRuntime struct {
 	eventLogger     *eventlogger.EventLogger
 	healthManager   *failover.HealthManager
 	failoverHook    *failover.Hook
-	dispatcher      *external.Dispatcher
 	externalStarted bool
 }
 
@@ -260,7 +258,6 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 		eventLogger:   eventlogger.New(defaultEventLogPath(), 10*1024*1024),
 		healthManager: healthManager,
 		failoverHook:  failoverHk,
-		dispatcher:    external.NewDispatcher(registry),
 	}
 }
 
@@ -1000,7 +997,7 @@ func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
 // plugin runtime or the engine is nil, subscriptions are safely skipped.
 //
 // Expected:
-//   - rt may be nil; when non-nil its eventLogger, healthManager, and dispatcher are wired.
+//   - rt may be nil; when non-nil its eventLogger and healthManager are wired.
 //   - eng may be nil; when non-nil its EventBus is used for subscriptions.
 //
 // Returns:
@@ -1009,7 +1006,6 @@ func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
 // Side effects:
 //   - Starts the event logger (opens file, subscribes to EventBus).
 //   - Creates and subscribes a RateLimitDetector to "provider.error" events.
-//   - Subscribes dispatcher to EventBus for forwarding events and tool execution hooks to plugins.
 func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt == nil || eng == nil {
 		return
@@ -1018,67 +1014,14 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if bus == nil {
 		return
 	}
-	startEventLogger(rt.eventLogger, bus)
-	startRateLimitDetector(rt.healthManager, bus)
-	if rt.dispatcher != nil {
-		for _, evtType := range []string{"session.created", "session.ended", "provider.request", "provider.error", "provider.rate_limited"} {
-			et := evtType
-			bus.Subscribe(et, func(event any) {
-				if err := rt.dispatcher.Dispatch(context.Background(), pluginpkg.EventType, event); err != nil {
-					slog.Warn("dispatching event hook", "event", et, "error", err)
-				}
-			})
+	if rt.eventLogger != nil {
+		if err := rt.eventLogger.Start(bus); err != nil {
+			log.Printf("warning: starting event logger: %v", err)
 		}
-		bus.Subscribe("tool.execute.before", func(event any) {
-			if err := rt.dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecBefore, event); err != nil {
-				slog.Warn("dispatching tool.execute.before hook", "error", err)
-			}
-		})
-		bus.Subscribe("tool.execute.after", func(event any) {
-			if err := rt.dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, event); err != nil {
-				slog.Warn("dispatching tool.execute.after hook", "error", err)
-			}
-		})
 	}
-}
-
-// startEventLogger opens the event log file and subscribes the logger to
-// EventBus events. If either argument is nil the call is a no-op.
-//
-// Expected:
-//   - logger may be nil; bus may be nil.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Opens a file handle for event logging.
-//   - Subscribes handlers to the EventBus.
-func startEventLogger(logger *eventlogger.EventLogger, bus *eventbus.EventBus) {
-	if logger == nil || bus == nil {
-		return
+	if rt.healthManager != nil {
+		failover.NewRateLimitDetector(bus, rt.healthManager)
 	}
-	if err := logger.Start(bus); err != nil {
-		log.Printf("warning: starting event logger: %v", err)
-	}
-}
-
-// startRateLimitDetector subscribes a rate-limit detector to provider.error
-// events on the EventBus. If either argument is nil the call is a no-op.
-//
-// Expected:
-//   - healthMgr may be nil; bus may be nil.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Subscribes a handler to the EventBus.
-func startRateLimitDetector(healthMgr *failover.HealthManager, bus *eventbus.EventBus) {
-	if healthMgr == nil || bus == nil {
-		return
-	}
-	failover.NewRateLimitDetector(bus, healthMgr)
 }
 
 // startExternalPlugins discovers and starts external plugins from the configured
@@ -1584,17 +1527,6 @@ func (a *App) HasEventLogger() bool {
 //   - None.
 func (a *App) HasFailoverHook() bool {
 	return a.plugins != nil && a.plugins.failoverHook != nil
-}
-
-// HasDispatcher reports whether the dispatcher is configured in the plugin runtime.
-//
-// Returns:
-//   - true if the dispatcher is present, false otherwise.
-//
-// Side effects:
-//   - None.
-func (a *App) HasDispatcher() bool {
-	return a.plugins != nil && a.plugins.dispatcher != nil
 }
 
 // ExternalPluginsStarted reports whether external plugin discovery and startup

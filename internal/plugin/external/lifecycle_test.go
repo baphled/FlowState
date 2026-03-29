@@ -206,49 +206,4 @@ var _ = Describe("LifecycleManager", func() {
 			return reg.Names()
 		}, "2s").ShouldNot(ContainElement("pluginA"))
 	})
-
-	Describe("externalPlugin.Hooks", func() {
-		It("returns hooks matching the manifest's declared hooks", func() {
-			manifests := []*manifest.Manifest{
-				{
-					Name:    "test-plugin",
-					Command: "sh",
-					Hooks:   []string{"event", "tool.execute.before", "tool.execute.after"},
-				},
-			}
-			Expect(mgr.Start(ctx, manifests)).To(Succeed())
-
-			plugins := reg.List()
-			Expect(plugins).To(HaveLen(1))
-
-			ext, ok := plugins[0].(*external.ProcessPlugin)
-			Expect(ok).To(BeTrue())
-
-			hooks := ext.Hooks()
-			Expect(hooks).To(HaveLen(3))
-			Expect(hooks).To(HaveKey(plugin.EventType))
-			Expect(hooks).To(HaveKey(plugin.ToolExecBefore))
-			Expect(hooks).To(HaveKey(plugin.ToolExecAfter))
-		})
-
-		It("returns empty map when manifest declares no hooks", func() {
-			manifests := []*manifest.Manifest{
-				{
-					Name:    "no-hooks-plugin",
-					Command: "sh",
-					Hooks:   []string{},
-				},
-			}
-			Expect(mgr.Start(ctx, manifests)).To(Succeed())
-
-			plugins := reg.List()
-			Expect(plugins).To(HaveLen(1))
-
-			ext, ok := plugins[0].(*external.ProcessPlugin)
-			Expect(ok).To(BeTrue())
-
-			hooks := ext.Hooks()
-			Expect(hooks).To(BeEmpty())
-		})
-	})
 })

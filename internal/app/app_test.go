@@ -757,27 +757,6 @@ When to use: Testing purposes
 				Expect(chainWithFailover.Len()).To(Equal(chainWithout.Len() + 1))
 			})
 
-			It("creates dispatcher in plugin runtime", func() {
-				os.Setenv("OPENAI_API_KEY", "test-key-dispatcher")
-				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
-
-				agentsDir := filepath.Join(tempDir, "agents")
-				skillsDir := filepath.Join(tempDir, "skills")
-				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
-				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
-
-				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
-				cfg.DataDir = tempDir
-				cfg.AgentDir = agentsDir
-				cfg.SkillDir = skillsDir
-
-				application, err := app.New(cfg)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(application.HasDispatcher()).To(BeTrue())
-			})
-
 			It("event logger closes without error on shutdown", func() {
 				os.Setenv("OPENAI_API_KEY", "test-key-plugin-close")
 				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
