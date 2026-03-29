@@ -3,65 +3,96 @@ package external_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/plugin/external"
 )
+
+// pluginConn simulates bidirectional stdio between client and a mock plugin.
+type pluginConn struct {
+	clientR *io.PipeReader
+	clientW *io.PipeWriter
+	pluginR *io.PipeReader
+	pluginW *io.PipeWriter
+}
+
+func newPluginConn() *pluginConn {
+	pr1, pw1 := io.Pipe()
+	pr2, pw2 := io.Pipe()
+	return &pluginConn{clientR: pr2, clientW: pw1, pluginR: pr1, pluginW: pw2}
+}
+
+func (p *pluginConn) Read(buf []byte) (int, error)  { return p.clientR.Read(buf) }
+func (p *pluginConn) Write(buf []byte) (int, error) { return p.clientW.Write(buf) }
+
+func (p *pluginConn) Close() {
+	_ = p.clientW.Close()
+	_ = p.pluginW.Close()
+}
 
 var _ = Describe("JSONRPCClient", func() {
 	var (
-		client *JSONRPCClient
-		mockIO *mockReadWriter
+		client *external.JSONRPCClient
+		conn   *pluginConn
 	)
 
 	BeforeEach(func() {
-		mockIO = newMockReadWriter()
-		client = NewJSONRPCClient(mockIO)
+		conn = newPluginConn()
+		client = external.NewJSONRPCClient(conn)
+	})
+
+	AfterEach(func() {
+		conn.Close()
 	})
 
 	Describe("Call", func() {
-		PIt("sends a valid JSON-RPC 2.0 request and receives a response", func() {
+		It("sends a valid JSON-RPC 2.0 request and receives a response", func() {
 			params := map[string]interface{}{"foo": "bar"}
 			go func() {
-				// Simulate plugin response
-				var req jsonrpcRequest
-				json.NewDecoder(mockIO.readBuf).Decode(&req)
-				resp := jsonrpcResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result:  json.RawMessage(`{"ok":true}`),
+				var req struct {
+					ID int64 `json:"id"`
 				}
-				json.NewEncoder(mockIO.writeBuf).Encode(resp)
+				_ = json.NewDecoder(conn.pluginR).Decode(&req)
+				resp := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result":  map[string]interface{}{"ok": true},
+				}
+				_ = json.NewEncoder(conn.pluginW).Encode(resp)
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			result, err := client.Call(ctx, "testMethod", params)
 			Expect(err).NotTo(HaveOccurred())
 			var out map[string]interface{}
-			json.Unmarshal(result, &out)
+			Expect(json.Unmarshal(result, &out)).To(Succeed())
 			Expect(out["ok"]).To(BeTrue())
 		})
 
-		PIt("returns error on timeout", func() {
+		It("returns error on timeout", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()
 			_, err := client.Call(ctx, "slowMethod", nil)
-			Expect(err).To(MatchError(ContainSubstring("timeout")))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("timeout"))
 		})
 
-		PIt("returns error if plugin returns JSON-RPC error", func() {
+		It("returns error if plugin returns JSON-RPC error", func() {
 			go func() {
-				var req jsonrpcRequest
-				json.NewDecoder(mockIO.readBuf).Decode(&req)
-				resp := jsonrpcResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error:   &jsonrpcError{Code: -32601, Message: "method not found"},
+				var req struct {
+					ID int64 `json:"id"`
 				}
-				json.NewEncoder(mockIO.writeBuf).Encode(resp)
+				_ = json.NewDecoder(conn.pluginR).Decode(&req)
+				resp := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]interface{}{"code": -32601, "message": "method not found"},
+				}
+				_ = json.NewEncoder(conn.pluginW).Encode(resp)
 			}()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -70,37 +101,3 @@ var _ = Describe("JSONRPCClient", func() {
 		})
 	})
 })
-
-// Test helpers and stubs.
-type mockReadWriter struct {
-	readBuf  *io.PipeReader
-	writeBuf *io.PipeWriter
-}
-
-func newMockReadWriter() *mockReadWriter {
-	r, w := io.Pipe()
-	return &mockReadWriter{readBuf: r, writeBuf: w}
-}
-
-func (m *mockReadWriter) Read(p []byte) (int, error)  { return m.readBuf.Read(p) }
-func (m *mockReadWriter) Write(p []byte) (int, error) { return m.writeBuf.Write(p) }
-
-// Minimal stubs for compilation.
-type JSONRPCClient struct{}
-
-func NewJSONRPCClient(rw io.ReadWriter) *JSONRPCClient { return nil }
-func (c *JSONRPCClient) Call(ctx context.Context, method string, params interface{}) (json.RawMessage, error) {
-	return nil, errors.New("not implemented")
-}
-
-type jsonrpcRequest struct{ ID int }
-type jsonrpcResponse struct {
-	JSONRPC string
-	ID      int
-	Result  json.RawMessage
-	Error   *jsonrpcError
-}
-type jsonrpcError struct {
-	Code    int
-	Message string
-}
