@@ -339,6 +339,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	delegateTool := engine.NewDelegateToolWithBackground(
 		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
 	)
+	delegateTool.WithRegistry(a.Registry)
 
 	if embedder := a.resolveEmbedder(); embedder != nil {
 		ed := discovery.NewEmbeddingDiscovery(a.Registry, embedder)

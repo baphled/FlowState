@@ -135,3 +135,15 @@
 - Registry wired in buildPlanningDelegateTool via WithRegistry
 - Commitlint scope: "bdd" not allowed — use "test" for BDD test changes
 - Total: 205 scenarios, 1022 steps — 0 failures
+
+## [2026-03-28] QA Coverage Gaps — 4 Tests Added
+- **Task:** Add 4 missing edge-case tests to close QA-identified coverage gaps in ResolveByNameOrAlias
+- **File:** internal/engine/delegation_test.go — lines 1313–1344
+- **Tests added (all in DelegateTool.ResolveByNameOrAlias Describe block):**
+  1. "returns error when registry is nil" — Tests behavior when WithRegistry() not called
+  2. "lists empty available agents when registry has no agents" — Empty registry error message
+  3. "resolves by uppercase alias" — Case-insensitive alias matching ("GURU" → "senior-engineer")
+  4. "returns error for empty name" — Empty string input validation
+- **Pattern:** Appended new It() specs INSIDE existing Describe block after line 1311; reused BeforeEach setup (reg, delegateTool)
+- **Verification:** `make test` passes 212 specs, 0 failures
+- **Commit:** test(engine): add missing edge-case tests for ResolveByNameOrAlias

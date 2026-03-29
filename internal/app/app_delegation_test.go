@@ -370,3 +370,51 @@ func findDelegateTool(t *testing.T, eng *engine.Engine) *engine.DelegateTool {
 	// Return a minimal struct - actual verification is done through behavior
 	return &engine.DelegateTool{}
 }
+
+func TestWireDelegateToolIfEnabled_WiresRegistry(t *testing.T) {
+	// Given: App with registry containing coordinator and target agents
+	app := &App{
+		Registry: agent.NewRegistry(),
+	}
+
+	coordinatorManifest := agent.Manifest{
+		ID:   "coordinator",
+		Name: "Coordinator",
+		Delegation: agent.Delegation{
+			CanDelegate: true,
+		},
+	}
+
+	explorerManifest := agent.Manifest{
+		ID:   "explorer",
+		Name: "Explorer",
+		Capabilities: agent.Capabilities{
+			CapabilityDescription: "explores systems",
+		},
+	}
+
+	app.Registry.Register(&coordinatorManifest)
+	app.Registry.Register(&explorerManifest)
+
+	providerReg := provider.NewRegistry()
+	providerReg.Register(&mockProvider{name: "ollama"})
+	app.providerRegistry = providerReg
+
+	coordinatorEngine := engine.New(engine.Config{
+		Manifest:      coordinatorManifest,
+		AgentRegistry: app.Registry,
+		Registry:      providerReg,
+	})
+
+	// When: We wire the delegate tool
+	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+
+	// Then: The delegate tool should be wired with the registry
+	require.True(t, coordinatorEngine.HasTool("delegate"))
+	delegateTool, found := coordinatorEngine.GetDelegateTool()
+	require.True(t, found, "delegate tool should be found")
+
+	// And: Registry-based resolution should work (explorer exists in registry)
+	_, err := delegateTool.ResolveByNameOrAlias("explorer")
+	require.NoError(t, err, "should be able to resolve agent by name from registry")
+}
