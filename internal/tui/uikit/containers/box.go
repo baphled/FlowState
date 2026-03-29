@@ -350,24 +350,22 @@ func (b *Box) getBorderStyle() lipgloss.Border {
 func (b *Box) getBorderColor() lipgloss.Color {
 	th := b.Theme()
 	if th == nil {
-		// Fallback colors if theme is not available
 		switch b.variant {
 		case BoxDestructive:
-			return lipgloss.Color("#d76e6e") // Error red fallback
+			return lipgloss.Color("#d76e6e")
 		case BoxSuccess:
-			return lipgloss.Color("#6cb56c") // Success green fallback
+			return lipgloss.Color("#6cb56c")
 		case BoxWarning:
-			return lipgloss.Color("#d9a66c") // Warning amber fallback
+			return lipgloss.Color("#d9a66c")
 		case BoxInfo:
-			return lipgloss.Color("#6ab0d3") // Info blue fallback
+			return lipgloss.Color("#6ab0d3")
 		case BoxSubtle:
-			return lipgloss.Color("#5e6673") // ForegroundMuted fallback
+			return lipgloss.Color("#5e6673")
 		default:
-			return lipgloss.Color("#5fb3b3") // Primary teal fallback
+			return lipgloss.Color("#5fb3b3")
 		}
 	}
 
-	// Use theme colors
 	switch b.variant {
 	case BoxDestructive:
 		return th.ErrorColor()

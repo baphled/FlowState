@@ -39,23 +39,18 @@ type FrontmatterMetadata struct {
 //   - None.
 func ParseFrontmatter(content string) (*FrontmatterMetadata, string, error) {
 	if !strings.HasPrefix(content, "---\n") {
-		// No frontmatter, return original content unchanged
 		return nil, content, nil
 	}
 
-	// Find closing delimiter
-	remaining := content[4:] // Skip opening "---\n"
+	remaining := content[4:]
 	idx := strings.Index(remaining, "\n---\n")
 	if idx == -1 {
-		// Malformed: opening --- but no closing ---
-		// Return original content unchanged (graceful degradation)
 		return nil, content, nil
 	}
 
 	yamlBlock := remaining[:idx]
-	contentAfter := remaining[idx+5:] // Skip "\n---\n"
+	contentAfter := remaining[idx+5:]
 
-	// Parse YAML
 	var meta FrontmatterMetadata
 	if err := yaml.Unmarshal([]byte(yamlBlock), &meta); err != nil {
 		return nil, content, fmt.Errorf("parsing frontmatter YAML: %w", err)

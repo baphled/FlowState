@@ -263,7 +263,6 @@ func (l *Logo) render() string {
 	theme := l.getTheme()
 	var parts []string
 
-	// Render the ASCII art with fade effect
 	logoLines := strings.Split(logoArt, "\n")
 	styledLines := make([]string, len(logoLines))
 
@@ -275,7 +274,6 @@ func (l *Logo) render() string {
 	logoRendered := strings.Join(styledLines, "\n")
 	parts = append(parts, logoRendered)
 
-	// Add tagline if enabled
 	if l.showTagline && l.tagline != "" {
 		taglineStyle := lipgloss.NewStyle().
 			Foreground(theme.SecondaryColor()).
@@ -285,7 +283,6 @@ func (l *Logo) render() string {
 		parts = append(parts, "", taglineText)
 	}
 
-	// Add version if enabled
 	if l.showVersion && l.version != "" {
 		versionStyle := lipgloss.NewStyle().
 			Foreground(theme.MutedColor()).
