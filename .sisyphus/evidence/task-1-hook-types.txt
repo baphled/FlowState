@@ -1,0 +1,13 @@
+=== RUN   TestPlugin
+Running Suite: Plugin Suite - /home/baphled/Projects/FlowState.git/agent-platform/internal/plugin
+=================================================================================================
+Random Seed: [1m1774795176[0m
+
+Will run [1m3[0m of [1m3[0m specs
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m
+
+[38;5;10m[1mRan 3 of 3 Specs in 0.000 seconds[0m
+[38;5;10m[1mSUCCESS![0m -- [38;5;10m[1m3 Passed[0m | [38;5;9m[1m0 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m
+--- PASS: TestPlugin (0.00s)
+PASS
+ok  	github.com/baphled/flowstate/internal/plugin	0.005s

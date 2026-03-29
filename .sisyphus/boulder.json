@@ -1,45 +1,21 @@
 {
-  "active_plan": "/home/baphled/Projects/FlowState.git/agent-platform/.sisyphus/plans/session-visibility.md",
-  "started_at": "2026-03-25T02:30:00.000Z",
+  "active_plan": "/home/baphled/Projects/FlowState.git/agent-platform/.sisyphus/plans/plugin-system.md",
+  "started_at": "2026-03-29T14:31:31.193Z",
   "session_ids": [
-    "ses_2dd7ee4b3ffekgXRQwzqkBOHn1",
-    "ses_2dd2b1400ffe9iK8ymT2CBV4L6",
-    "ses_2dd278af4ffet2pHUINoniwcnv",
-    "ses_2dd24ab4fffeHebOXJxrxdKuuF",
-    "ses_2dd1f26e1ffekirur3CPtW7ph2",
-    "ses_2dd1aeba0ffeJVxfBUhVIv4TJb",
-    "ses_2dd15f932ffeQ5X2mpsABC9vRH",
-    "ses_2dd13896fffe4oBypdvVGhbpRg",
-    "ses_2dd0d83eaffegEWQTaT8RIlTUw",
-    "ses_2dd0abfdfffe6N2pYsnkQzBw2o",
-    "ses_2dd084c2fffe9Qk3S4t1MI1R65",
-    "ses_2dcf8db41ffeiH9LiUzAYkhNMS",
-    "ses_2dcf55770ffeE32N45SrlZg6BZ",
-    "ses_2dcf594f2ffeJJU4nZh4XrmrZ9",
-    "ses_2dcf5008affeKGQVuRz671DiDh",
-    "ses_2dcf1d8c8ffeJlUNx1C8oBPgn1",
-    "ses_2d5af0e2effef1MdDuk2N6cast",
-    "ses_2d147314cffeOfKj54lM1S5HYH",
-    "ses_2d0ee849fffekbxkykVGxaCDgT",
-    "ses_2d02a0f32ffeUUpPfJlYuMIyJ5",
-    "ses_2d04bf514ffeAJaIQPgLU8dnhS",
-    "ses_2cfe88926ffeVyvvoSyod5280N",
-    "ses_2cee73645ffe95v1MfRvmNxfIj",
-    "ses_2caefce04ffe0P79y6Mxs2erWZ",
-    "ses_2cacf6514ffeUbkhbq4m0pHWr8",
-    "ses_2ca27d611ffedaszU020EY8KLo"
+    "ses_2c629a837ffeb9er0rNfLpgHOI",
+    "ses_2c5f92cbcffelinfoeihGqCeEB",
+    "ses_2c5f9650cffeoOpp0dzqkWrQKn"
   ],
-  "plan_name": "session-visibility",
-  "agent": "atlas",
+  "plan_name": "plugin-system",
   "task_sessions": {
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "Add Aliases field to Manifest struct",
-      "session_id": "ses_2cae861d5ffeAnwdN0pewFdUEl",
+      "task_title": "HookType Enum + Typed Hook Interfaces",
+      "session_id": "ses_2c5f9650cffeoOpp0dzqkWrQKn",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-03-28T15:43:35.046Z"
+      "updated_at": "2026-03-29T14:41:57.859Z"
     }
   }
 }

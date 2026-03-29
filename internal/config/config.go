@@ -22,6 +22,7 @@ type AppConfig struct {
 	LogLevel           string                           `json:"log_level" yaml:"log_level"`
 	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
 	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
+	Plugins            PluginsConfig                    `json:"plugins" yaml:"plugins,omitempty"`
 	MCPServers         []MCPServerConfig                `yaml:"mcp_servers,omitempty"`
 	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
 	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
@@ -89,6 +90,14 @@ type HarnessConfig struct {
 // at runtime, without modifying the agent .md file.
 type AgentOverrideConfig struct {
 	PromptAppend string `json:"prompt_append" yaml:"prompt_append"`
+}
+
+// PluginsConfig holds configuration for FlowState plugins.
+type PluginsConfig struct {
+	Dir      string   `json:"dir" yaml:"dir,omitempty"`
+	Enabled  []string `json:"enabled" yaml:"enabled,omitempty"`
+	Disabled []string `json:"disabled" yaml:"disabled,omitempty"`
+	Timeout  int      `json:"timeout" yaml:"timeout,omitempty"`
 }
 
 // Dir returns the configuration directory path.
@@ -318,6 +327,12 @@ func applyDefaults(cfg *AppConfig) {
 		cfg.DefaultAgent = defaults.DefaultAgent
 	}
 	cfg.CategoryRouting = mergeCategoryRouting(defaults.CategoryRouting, cfg.CategoryRouting)
+	if cfg.Plugins.Dir == "" {
+		cfg.Plugins.Dir = filepath.Join(homeDir(), ".config", "flowstate", "plugins")
+	}
+	if cfg.Plugins.Timeout == 0 {
+		cfg.Plugins.Timeout = 5
+	}
 
 	// Apply harness defaults: Enabled defaults to true unless explicitly disabled.
 	// YAML unmarshals missing bool as false, so we need to handle this carefully.

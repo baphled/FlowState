@@ -156,6 +156,64 @@ log_level: debug
 	})
 
 	Describe("LoadConfigFromPath", func() {
+		Context("when plugins section is absent", func() {
+			It("loads plugin defaults", func() {
+				configContent := `
+log_level: info
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				homeDir, _ := os.UserHomeDir()
+				Expect(cfg.Plugins.Dir).To(Equal(filepath.Join(homeDir, ".config", "flowstate", "plugins")))
+				Expect(cfg.Plugins.Timeout).To(Equal(5))
+			})
+		})
+
+		Context("when plugins section is provided", func() {
+			It("loads custom plugin dir from YAML", func() {
+				configContent := `
+plugins:
+  dir: /custom/plugins
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Plugins.Dir).To(Equal("/custom/plugins"))
+				Expect(cfg.Plugins.Timeout).To(Equal(5))
+			})
+
+			It("loads enabled and disabled lists", func() {
+				configContent := `
+plugins:
+  enabled:
+    - plugin-a
+    - plugin-b
+  disabled:
+    - plugin-c
+  timeout: 12
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Plugins.Enabled).To(Equal([]string{"plugin-a", "plugin-b"}))
+				Expect(cfg.Plugins.Disabled).To(Equal([]string{"plugin-c"}))
+				Expect(cfg.Plugins.Timeout).To(Equal(12))
+			})
+		})
+
 		Context("when config file does not exist", func() {
 			It("returns default config", func() {
 				cfg, err := config.LoadConfigFromPath(filepath.Join(tempDir, "nonexistent.yaml"))
