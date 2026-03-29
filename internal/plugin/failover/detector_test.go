@@ -208,7 +208,7 @@ var _ = Describe("Hook", func() {
 			{Provider: "openai", Model: "gpt-4o"},
 			{Provider: "ollama", Model: "llama3.2"},
 		}
-		chain = failover.NewFallbackChain(providers)
+		chain = failover.NewFallbackChain(providers, nil)
 		health = failover.NewHealthManager()
 		hook = failover.NewHook(chain, health)
 	})

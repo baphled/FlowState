@@ -23,7 +23,7 @@ var _ = Describe("FallbackChain", func() {
 			{Provider: "openai", Model: "gpt-4"},
 			{Provider: "ollama", Model: "llama3.2"},
 		}
-		fc = failover.NewFallbackChain(chain)
+		fc = failover.NewFallbackChain(chain, nil)
 		health = failover.NewHealthManager()
 	})
 
@@ -53,6 +53,38 @@ var _ = Describe("FallbackChain", func() {
 			next, err := fc.NextHealthy(current, health)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(next).To(Equal(chain[2]))
+		})
+	})
+
+	Context("with configurable tiers", func() {
+		It("uses default tiers when nil is provided", func() {
+			fc = failover.NewFallbackChain(chain, nil)
+			current := chain[0]
+			next, err := fc.NextHealthy(current, health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next).To(Equal(chain[1]))
+		})
+
+		It("accepts custom tier mappings", func() {
+			customTiers := map[string]string{
+				"anthropic":      failover.Tier0,
+				"github-copilot": failover.Tier1,
+				"openai":         failover.Tier2,
+				"ollama":         failover.Tier3,
+			}
+			fc = failover.NewFallbackChain(chain, customTiers)
+			current := chain[0]
+			next, err := fc.NextHealthy(current, health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next).To(Equal(chain[1]))
+		})
+
+		It("uses defaults when empty map is provided", func() {
+			fc = failover.NewFallbackChain(chain, map[string]string{})
+			current := chain[0]
+			next, err := fc.NextHealthy(current, health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next).To(Equal(chain[1]))
 		})
 	})
 

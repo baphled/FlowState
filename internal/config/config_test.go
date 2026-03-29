@@ -520,6 +520,60 @@ log_level: debug
 		})
 	})
 
+	Describe("Failover configuration", func() {
+		Describe("DefaultConfig", func() {
+			It("includes default tier mappings", func() {
+				cfg := config.DefaultConfig()
+
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(4))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("github-copilot", "tier-1"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("openai", "tier-2"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("ollama", "tier-3"))
+			})
+		})
+
+		Describe("LoadConfigFromPath", func() {
+			Context("when failover section is absent", func() {
+				It("applies default tier mappings", func() {
+					configContent := `
+log_level: info
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(4))
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
+				})
+			})
+
+			Context("when failover section is provided", func() {
+				It("preserves custom tier mappings", func() {
+					configContent := `
+plugins:
+  failover:
+    tiers:
+      anthropic: "tier-0"
+      ollama: "tier-1"
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("ollama", "tier-1"))
+				})
+			})
+		})
+	})
+
 	Describe("AlwaysActiveSkills", func() {
 		It("defaults to 9 canonical core-tier skills", func() {
 			cfg := config.DefaultConfig()

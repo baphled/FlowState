@@ -25,18 +25,24 @@ type FallbackChain struct {
 // NewFallbackChain creates a new FallbackChain with providers in order.
 //
 // Expected: providers is non-empty and ordered by preference tier (Tier0→Tier3).
-// Returns: a new FallbackChain with default tier mappings: anthropic→Tier0,
-// github-copilot→Tier1, openai→Tier2, ollama→Tier3.
+// Tiers maps provider names to tier constants (e.g. "anthropic"→Tier0). When tiers
+// is nil or empty, sensible defaults are used: anthropic→Tier0, github-copilot→Tier1,
+// openai→Tier2, ollama→Tier3.
+// Returns: a new FallbackChain with the resolved tier mappings.
 // Side effects: allocates a new map for tier mappings.
-func NewFallbackChain(providers []ProviderModel) *FallbackChain {
-	fc := &FallbackChain{
-		providers: providers,
-		tiers: map[string]string{
+func NewFallbackChain(providers []ProviderModel, tiers map[string]string) *FallbackChain {
+	if len(tiers) == 0 {
+		tiers = map[string]string{
 			"anthropic":      Tier0,
 			"github-copilot": Tier1,
 			"openai":         Tier2,
 			"ollama":         Tier3,
-		},
+		}
+	}
+
+	fc := &FallbackChain{
+		providers: providers,
+		tiers:     tiers,
 	}
 	return fc
 }

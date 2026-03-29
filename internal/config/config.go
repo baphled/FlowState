@@ -94,10 +94,16 @@ type AgentOverrideConfig struct {
 
 // PluginsConfig holds configuration for FlowState plugins.
 type PluginsConfig struct {
-	Dir      string   `json:"dir" yaml:"dir,omitempty"`
-	Enabled  []string `json:"enabled" yaml:"enabled,omitempty"`
-	Disabled []string `json:"disabled" yaml:"disabled,omitempty"`
-	Timeout  int      `json:"timeout" yaml:"timeout,omitempty"`
+	Dir      string         `json:"dir" yaml:"dir,omitempty"`
+	Enabled  []string       `json:"enabled" yaml:"enabled,omitempty"`
+	Disabled []string       `json:"disabled" yaml:"disabled,omitempty"`
+	Timeout  int            `json:"timeout" yaml:"timeout,omitempty"`
+	Failover FailoverConfig `json:"failover" yaml:"failover,omitempty"`
+}
+
+// FailoverConfig holds configurable tier mappings for provider failover.
+type FailoverConfig struct {
+	Tiers map[string]string `json:"tiers" yaml:"tiers,omitempty"`
 }
 
 // Dir returns the configuration directory path.
@@ -190,6 +196,16 @@ func DefaultConfig() *AppConfig {
 			CriticEnabled:      false,
 			VotingEnabled:      false,
 			IncrementalEnabled: false,
+		},
+		Plugins: PluginsConfig{
+			Failover: FailoverConfig{
+				Tiers: map[string]string{
+					"anthropic":      "tier-0",
+					"github-copilot": "tier-1",
+					"openai":         "tier-2",
+					"ollama":         "tier-3",
+				},
+			},
 		},
 		AgentOverrides: make(map[string]AgentOverrideConfig),
 	}
@@ -332,6 +348,10 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.Plugins.Timeout == 0 {
 		cfg.Plugins.Timeout = 5
+	}
+
+	if len(cfg.Plugins.Failover.Tiers) == 0 {
+		cfg.Plugins.Failover.Tiers = defaults.Plugins.Failover.Tiers
 	}
 
 	// Apply harness defaults: Enabled defaults to true unless explicitly disabled.
