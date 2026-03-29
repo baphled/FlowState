@@ -121,7 +121,7 @@ func (m *LifecycleManager) startOne(ctx context.Context, mfst *manifest.Manifest
 		name:    mfst.Name,
 		version: mfst.Version,
 		client:  client,
-		hooks:   convertManifestHooks(mfst.Hooks),
+		hooks:   ConvertManifestHooks(mfst.Hooks),
 	}
 	if regErr := m.registry.Register(ext); regErr != nil {
 		killProcess(process)
@@ -197,7 +197,7 @@ func (m *LifecycleManager) Stop(_ context.Context) error {
 	return nil
 }
 
-// convertManifestHooks converts a slice of hook name strings from the manifest
+// ConvertManifestHooks converts a slice of hook name strings from the manifest
 // to a slice of HookType constants, skipping unknown hook names.
 //
 // Expected: hooks is a slice of hook names as declared in the plugin manifest.
@@ -205,7 +205,7 @@ func (m *LifecycleManager) Stop(_ context.Context) error {
 // Returns: a slice of HookType constants for the recognised hooks.
 //
 // Side effects: None.
-func convertManifestHooks(hooks []string) []plugin.HookType {
+func ConvertManifestHooks(hooks []string) []plugin.HookType {
 	var result []plugin.HookType
 	for _, hookName := range hooks {
 		hookType := plugin.HookType(hookName)

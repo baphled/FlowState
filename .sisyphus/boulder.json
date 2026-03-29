@@ -4,7 +4,38 @@
   "session_ids": [
     "ses_2c629a837ffeb9er0rNfLpgHOI",
     "ses_2c5f92cbcffelinfoeihGqCeEB",
-    "ses_2c5f9650cffeoOpp0dzqkWrQKn"
+    "ses_2c5f9650cffeoOpp0dzqkWrQKn",
+    "ses_2caefce04ffe0P79y6Mxs2erWZ",
+    "ses_2c558160effeH4gG1OKErA0iyI",
+    "ses_2c53c0f95ffeUuzoUveJsOC2aU",
+    "ses_2c5222c55ffeRK1pyOVGgg6TPG",
+    "ses_2c52221ddffeJPLOE17NNLiXhF",
+    "ses_2c520cc7dffeVawA75H1ND8aM6",
+    "ses_2c51a6094ffeLJPkAkDArLIesQ",
+    "ses_2c50c0505ffeLAhstQ8PzK7NMy",
+    "ses_2c50a1a9affea0rNG53BGShMZn",
+    "ses_2c5003e4fffeze5nDgVt9ROmmB",
+    "ses_2c4fd484effetnLYk02QG9Yj10",
+    "ses_2c4ebd473ffemscqbK5uFF0fF6",
+    "ses_2c4eb83ceffe7cFjkePK2e5czg",
+    "ses_2c4dfe7feffe0SDpVaiEMGfqjB",
+    "ses_2c4da7928ffe31H9JFFGl6hBsV",
+    "ses_2c4da2bcaffew1XrgdAxnm2yI7",
+    "ses_2c4cf8b87fferZz57eGaAs86Sy",
+    "ses_2c4ac3566ffeN6bTieEfLbKpI4",
+    "ses_2c4a76987ffe69L2xDaLPdsZ3t",
+    "ses_2c4a7af6dffe3qZsH019y8cf5u",
+    "ses_2c49527d5ffeqKybWd7MirUt8A",
+    "ses_2c47d2768ffeyznm1pSpo60eMh",
+    "ses_2c474751dffeLgt7Dcn3kp5Dak",
+    "ses_2c4684cecffeY0uvzSYVjTLiBZ",
+    "ses_2c467ed8effeooB6Di1nKNxqyf",
+    "ses_2c468707affeTeVcj74UQVdQXa",
+    "ses_2c4681a4bffeXq3eQpRrabpTcR",
+    "ses_2c45b66b0ffeGfEeEUjHLYws8H",
+    "ses_2c45389ebffeMNIDKzD5bj9AGw",
+    "ses_2c41323edffeU2NhZszw9Rck8e",
+    "ses_2c40f68e6ffe05WH3Jdx4Y9Qac"
   ],
   "plan_name": "plugin-system",
   "task_sessions": {
@@ -12,10 +43,71 @@
       "task_key": "todo:1",
       "task_label": "1",
       "task_title": "HookType Enum + Typed Hook Interfaces",
-      "session_id": "ses_2c5f9650cffeoOpp0dzqkWrQKn",
+      "session_id": "ses_2c558160effeH4gG1OKErA0iyI",
+      "agent": "Senior-Engineer",
+      "updated_at": "2026-03-29T17:46:04.691Z"
+    },
+    "todo:13": {
+      "task_key": "todo:13",
+      "task_label": "13",
+      "task_title": "Plugin Process Spawner (stdio subprocess)",
+      "session_id": "ses_2c4da7928ffe31H9JFFGl6hBsV",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-03-29T19:51:35.971Z"
+    },
+    "todo:16": {
+      "task_key": "todo:16",
+      "task_label": "16",
+      "task_title": "Plugin Lifecycle Manager",
+      "session_id": "ses_2c4ac3566ffeN6bTieEfLbKpI4",
+      "agent": "Senior-Engineer",
+      "updated_at": "2026-03-29T20:44:07.993Z"
+    },
+    "todo:18": {
+      "task_key": "todo:18",
+      "task_label": "18",
+      "task_title": "Wire EventBus Into Engine + Session Manager",
+      "session_id": "ses_2c4a7af6dffe3qZsH019y8cf5u",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-03-29T21:02:46.978Z"
+    },
+    "todo:19": {
+      "task_key": "todo:19",
+      "task_label": "19",
+      "task_title": "Wire Core Ports Into App Startup",
+      "session_id": "ses_2c49527d5ffeqKybWd7MirUt8A",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-03-29T21:16:22.271Z"
+    },
+    "todo:20": {
+      "task_key": "todo:20",
+      "task_label": "20",
+      "task_title": "Wire External Plugins Into App Lifecycle",
+      "session_id": "ses_2c47d2768ffeyznm1pSpo60eMh",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-03-29T21:40:05.869Z"
+    },
+    "todo:22": {
+      "task_key": "todo:22",
+      "task_label": "22",
+      "task_title": "Integration BDD Scenarios",
+      "session_id": "ses_2c474751dffeLgt7Dcn3kp5Dak",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-03-29T21:53:15.860Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_2c45b66b0ffeGfEeEUjHLYws8H",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-03-29T14:41:57.859Z"
+      "updated_at": "2026-03-29T22:12:49.270Z"
     }
   }
 }

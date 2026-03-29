@@ -81,6 +81,170 @@ var _ = Describe("PluginRegistry", func() {
 		})
 	})
 
+	Describe("Remove", func() {
+		It("removes an existing plugin from the registry", func() {
+			p := &testPlugin{name: "plugin1", version: "1.0"}
+			reg.Register(p)
+			Expect(reg.List()).To(HaveLen(1))
+
+			reg.Remove("plugin1")
+
+			Expect(reg.List()).To(BeEmpty())
+			_, ok := reg.Get("plugin1")
+			Expect(ok).To(BeFalse())
+		})
+
+		It("is a no-op when removing a non-existent plugin", func() {
+			p := &testPlugin{name: "plugin1", version: "1.0"}
+			reg.Register(p)
+
+			reg.Remove("non-existent")
+
+			Expect(reg.List()).To(HaveLen(1))
+			plugin, ok := reg.Get("plugin1")
+			Expect(ok).To(BeTrue())
+			Expect(plugin.Name()).To(Equal("plugin1"))
+		})
+
+		It("is a no-op when removing from empty registry", func() {
+			Expect(reg.List()).To(BeEmpty())
+
+			reg.Remove("any-name")
+
+			Expect(reg.List()).To(BeEmpty())
+		})
+
+		It("maintains order after removing a plugin from the middle", func() {
+			p1 := &testPlugin{name: "a", version: "1"}
+			p2 := &testPlugin{name: "b", version: "2"}
+			p3 := &testPlugin{name: "c", version: "3"}
+			reg.Register(p1)
+			reg.Register(p2)
+			reg.Register(p3)
+
+			reg.Remove("b")
+
+			list := reg.List()
+			Expect(list).To(HaveLen(2))
+			Expect(list[0].Name()).To(Equal("a"))
+			Expect(list[1].Name()).To(Equal("c"))
+		})
+
+		It("is idempotent when called multiple times", func() {
+			p := &testPlugin{name: "plugin1", version: "1.0"}
+			reg.Register(p)
+
+			reg.Remove("plugin1")
+			reg.Remove("plugin1")
+			reg.Remove("plugin1")
+
+			Expect(reg.List()).To(BeEmpty())
+		})
+
+		It("is safe for concurrent Remove calls", func() {
+			p1 := &testPlugin{name: "a", version: "1"}
+			p2 := &testPlugin{name: "b", version: "2"}
+			p3 := &testPlugin{name: "c", version: "3"}
+			reg.Register(p1)
+			reg.Register(p2)
+			reg.Register(p3)
+
+			wg := sync.WaitGroup{}
+			for _, name := range []string{"a", "b", "c"} {
+				n := name
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					reg.Remove(n)
+				}()
+			}
+			wg.Wait()
+
+			Expect(reg.List()).To(BeEmpty())
+		})
+	})
+
+	Describe("Names", func() {
+		It("returns empty slice when no plugins are registered", func() {
+			names := reg.Names()
+			Expect(names).To(BeEmpty())
+		})
+
+		It("returns all plugin names in registration order", func() {
+			p1 := &testPlugin{name: "first", version: "1"}
+			p2 := &testPlugin{name: "second", version: "2"}
+			p3 := &testPlugin{name: "third", version: "3"}
+			reg.Register(p1)
+			reg.Register(p2)
+			reg.Register(p3)
+
+			names := reg.Names()
+
+			Expect(names).To(HaveLen(3))
+			Expect(names[0]).To(Equal("first"))
+			Expect(names[1]).To(Equal("second"))
+			Expect(names[2]).To(Equal("third"))
+		})
+
+		It("returns correct names after removing plugins", func() {
+			p1 := &testPlugin{name: "a", version: "1"}
+			p2 := &testPlugin{name: "b", version: "2"}
+			p3 := &testPlugin{name: "c", version: "3"}
+			reg.Register(p1)
+			reg.Register(p2)
+			reg.Register(p3)
+
+			reg.Remove("b")
+			names := reg.Names()
+
+			Expect(names).To(HaveLen(2))
+			Expect(names).To(ConsistOf("a", "c"))
+			Expect(names[0]).To(Equal("a"))
+			Expect(names[1]).To(Equal("c"))
+		})
+
+		It("returns a copy, not the internal slice", func() {
+			p1 := &testPlugin{name: "first", version: "1.0"}
+			p2 := &testPlugin{name: "second", version: "2.0"}
+			reg.Register(p1)
+			reg.Register(p2)
+
+			names := reg.Names()
+			originalLen := len(names)
+
+			reg.Remove("first")
+
+			namesAfter := reg.Names()
+			Expect(originalLen).To(Equal(2))
+			Expect(namesAfter).To(HaveLen(1))
+		})
+
+		It("is safe for concurrent Names calls", func() {
+			p1 := &testPlugin{name: "a", version: "1"}
+			p2 := &testPlugin{name: "b", version: "2"}
+			reg.Register(p1)
+			reg.Register(p2)
+
+			results := make([][]string, 10)
+			wg := sync.WaitGroup{}
+			for i := range 10 {
+				idx := i
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					results[idx] = reg.Names()
+				}()
+			}
+			wg.Wait()
+
+			for i := range results {
+				Expect(results[i]).To(HaveLen(2))
+				Expect(results[i][0]).To(Equal("a"))
+				Expect(results[i][1]).To(Equal("b"))
+			}
+		})
+	})
+
 	Describe("Concurrency", func() {
 		It("is safe for concurrent Register/Get/List", func() {
 			wg := sync.WaitGroup{}
@@ -95,7 +259,6 @@ var _ = Describe("PluginRegistry", func() {
 			}
 			wg.Wait()
 			list := reg.List()
-			// Should have up to 10 unique plugins (duplicates ignored)
 			Expect(len(list)).To(BeNumerically("<=", 10))
 			for _, p := range list {
 				got, ok := reg.Get(p.Name())

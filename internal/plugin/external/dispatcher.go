@@ -82,7 +82,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, hookType plugin.HookType, pay
 // Returns: error from hook execution, or nil on success.
 //
 // Side effects: May call external plugins via RPC.
-func callHook(ctx context.Context, hookType plugin.HookType, hookFn interface{}, payload interface{}) error {
+func callHook(ctx context.Context, hookType plugin.HookType, hookFn interface{}, payload interface{}) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("hook function panic: %v", r)
+		}
+	}()
+
 	switch fn := hookFn.(type) {
 	case *JSONRPCClient:
 		_, err := fn.Call(ctx, "hooks/dispatch", payload)

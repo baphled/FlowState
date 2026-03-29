@@ -134,6 +134,9 @@ func (s *Spawner) Spawn(ctx context.Context, m *manifest.Manifest) (*PluginProce
 		return nil, fmt.Errorf("start process: %w", err)
 	}
 
+	pr1.Close()
+	pw2.Close()
+
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			slog.Debug("process wait error", "error", err)
