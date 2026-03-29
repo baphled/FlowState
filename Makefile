@@ -191,7 +191,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo "Usage:"; \
 		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
 		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
+		echo "Required: AI_MODEL must be set (OPENCODE=1 is set automatically)"; \
 		echo ""; \
 		echo "Create your commit message file:"; \
 		echo "  cat > /tmp/commit.txt << 'EOF'"; \
@@ -204,7 +204,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo ""; \
 		exit 1; \
 	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+	@OPENCODE=1 bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
 
 check-ai-attribution: ## Check latest commit for AI attribution
 	@echo "Checking latest commit for AI attribution..."

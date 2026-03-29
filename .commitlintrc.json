@@ -43,10 +43,14 @@
         "test",
         "tool",
         "tui",
-        "wave1a",
-        "wave1b",
-        "wave2",
-        "wave3",
+        "database",
+        "event",
+        "handler",
+        "middleware",
+        "repository",
+        "service",
+        "transport",
+        "validation",
         "workflow"
       ]
     ],
