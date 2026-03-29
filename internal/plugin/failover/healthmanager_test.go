@@ -3,7 +3,6 @@ package failover_test
 import (
 	"os"
 	"path/filepath"
-	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -11,11 +10,6 @@ import (
 
 	"github.com/baphled/flowstate/internal/plugin/failover"
 )
-
-func TestHealthManager(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "HealthManager Suite")
-}
 
 var _ = Describe("HealthManager", func() {
 	var (
