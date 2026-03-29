@@ -200,10 +200,12 @@ func DefaultConfig() *AppConfig {
 		Plugins: PluginsConfig{
 			Failover: FailoverConfig{
 				Tiers: map[string]string{
-					"anthropic":      "tier-0",
-					"github-copilot": "tier-1",
-					"openai":         "tier-2",
-					"ollama":         "tier-3",
+					"claude-sonnet-4-20250514":   "tier-0",
+					"claude-3-5-sonnet-20241022": "tier-0",
+					"gpt-4o":                     "tier-1",
+					"gpt-4o-mini":                "tier-2",
+					"llama3.2":                   "tier-3",
+					"llama3":                     "tier-3",
 				},
 			},
 		},

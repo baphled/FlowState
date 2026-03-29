@@ -525,11 +525,13 @@ log_level: debug
 			It("includes default tier mappings", func() {
 				cfg := config.DefaultConfig()
 
-				Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(4))
-				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
-				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("github-copilot", "tier-1"))
-				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("openai", "tier-2"))
-				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("ollama", "tier-3"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(6))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-sonnet-4-20250514", "tier-0"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-3-5-sonnet-20241022", "tier-0"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("gpt-4o", "tier-1"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("gpt-4o-mini", "tier-2"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("llama3.2", "tier-3"))
+				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("llama3", "tier-3"))
 			})
 		})
 
@@ -546,8 +548,8 @@ log_level: info
 					cfg, err := config.LoadConfigFromPath(configPath)
 
 					Expect(err).NotTo(HaveOccurred())
-					Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(4))
-					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(6))
+					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-sonnet-4-20250514", "tier-0"))
 				})
 			})
 
