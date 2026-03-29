@@ -161,3 +161,8 @@ func IsReadToolCallForTest(name string) bool {
 func ToolResultMessageForTest(toolName, result string, isError bool) chatview.Message {
 	return toolResultMessage(toolName, result, isError)
 }
+
+// AtBottomForTest returns whether the viewport is tracking the bottom position for test assertions.
+func (i *Intent) AtBottomForTest() bool {
+	return i.atBottom
+}

@@ -57,5 +57,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterPlanningSteps(ctx)
 	RegisterOrchestratorMetadataSteps(ctx)
 	RegisterConfigSteps(ctx)
+	ss := &ScrollingSteps{}
+	RegisterScrollingSteps(ctx, ss)
 	s.RegisterSteps(ctx)
 }

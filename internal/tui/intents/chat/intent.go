@@ -134,6 +134,7 @@ type Intent struct {
 	result            *tuiintents.IntentResult
 	msgViewport       *viewport.Model
 	vpReady           bool
+	atBottom          bool
 	agentRegistry     *agent.Registry
 	sessionStore      SessionLister
 	view              *chat.View
@@ -190,6 +191,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		tokenBudget:     cfg.TokenBudget,
 		tickFrame:       0,
 		result:          nil,
+		atBottom:        true,
 		agentRegistry:   cfg.AgentRegistry,
 		sessionStore:    cfg.SessionStore,
 		view:            chat.NewView(),
@@ -220,32 +222,15 @@ func (i *Intent) Init() tea.Cmd {
 //   - Updates terminal dimensions on WindowSizeMsg.
 //   - Accumulates token count on StreamChunkMsg.
 //   - Delegates to handleKeyMsg for key events.
+//   - Delegates to msgViewport for mouse events.
 func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return i.handleKeyMsg(msg)
+	case tea.MouseMsg:
+		return i.handleMouseMsg(msg)
 	case tea.WindowSizeMsg:
-		i.width = msg.Width
-		i.height = msg.Height
-		extraLines := i.inputLineCount() - 1
-		footerHeight := 8 + extraLines
-		vpHeight := msg.Height - footerHeight
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-		if !i.vpReady {
-			vp := viewport.New(msg.Width, vpHeight)
-			i.msgViewport = &vp // Take address of local, stored on heap due to escape analysis
-			i.msgViewport.SetContent("")
-			i.vpReady = true
-		} else {
-			i.msgViewport.Width = msg.Width
-			i.msgViewport.Height = vpHeight
-		}
-		i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: msg.Width, Height: msg.Height}).
-			WithBreadcrumbs("Chat").
-			WithFooterSeparator(true)
-		return nil
+		return i.handleWindowSize(msg)
 	case StreamChunkMsg:
 		return i.handleStreamChunkMsg(msg)
 	case ToolPermissionMsg:
@@ -357,6 +342,7 @@ func (i *Intent) handleModalKeyMsg(msg tea.KeyMsg) bool {
 //
 // Side effects:
 //   - Updates the viewport position on scroll keys.
+//   - Updates atBottom flag based on new scroll position.
 func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if !i.vpReady {
 		return nil, false
@@ -366,9 +352,66 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		var cmd tea.Cmd
 		vp, cmd := i.msgViewport.Update(msg)
 		i.msgViewport = &vp
+		i.atBottom = vp.AtBottom()
 		return cmd, true
 	}
 	return nil, false
+}
+
+// handleMouseMsg processes mouse events, delegating to viewport for scroll wheel support.
+//
+// Expected:
+//   - msg is a tea.MouseMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd from the viewport's Update method, or nil if viewport not ready.
+//
+// Side effects:
+//   - Updates the viewport position on mouse wheel events.
+//   - Updates atBottom flag based on new scroll position.
+func (i *Intent) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
+	if !i.vpReady || i.msgViewport == nil {
+		return nil
+	}
+	vp, cmd := i.msgViewport.Update(msg)
+	i.msgViewport = &vp
+	i.atBottom = vp.AtBottom()
+	return cmd
+}
+
+// handleWindowSize initialises or resizes the viewport when the terminal size changes.
+//
+// Expected:
+//   - msg is a tea.WindowSizeMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - nil (window sizing doesn't produce commands).
+//
+// Side effects:
+//   - Creates or updates msgViewport dimensions.
+//   - Caches screen layout information.
+func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
+	i.width = msg.Width
+	i.height = msg.Height
+	extraLines := i.inputLineCount() - 1
+	footerHeight := 8 + extraLines
+	vpHeight := msg.Height - footerHeight
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	if !i.vpReady {
+		vp := viewport.New(msg.Width, vpHeight)
+		i.msgViewport = &vp // Take address of local, stored on heap due to escape analysis
+		i.msgViewport.SetContent("")
+		i.vpReady = true
+	} else {
+		i.msgViewport.Width = msg.Width
+		i.msgViewport.Height = vpHeight
+	}
+	i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: msg.Width, Height: msg.Height}).
+		WithBreadcrumbs("Chat").
+		WithFooterSeparator(true)
+	return nil
 }
 
 // handleKeyMsg processes keyboard input directly without mode switching.
@@ -659,10 +702,10 @@ func (i *Intent) syncStatusBar() {
 	})
 }
 
-// refreshViewport rebuilds the message viewport content and scrolls to the bottom.
+// refreshViewport rebuilds the message viewport content and conditionally scrolls to the bottom.
 //
 // Side effects:
-//   - Updates msgViewport content and scrolls to latest message.
+//   - Updates msgViewport content and scrolls to latest message if atBottom is true.
 func (i *Intent) refreshViewport() {
 	if !i.vpReady || i.msgViewport == nil {
 		return
@@ -670,7 +713,9 @@ func (i *Intent) refreshViewport() {
 	i.view.SetDimensions(i.width, i.msgViewport.Height)
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)
-	i.msgViewport.GotoBottom()
+	if i.atBottom {
+		i.msgViewport.GotoBottom()
+	}
 }
 
 // detectAgentFromInput examines the message for planner or executor keywords and returns the matching agent.
@@ -730,7 +775,7 @@ func (i *Intent) cancelActiveStream() {
 //   - A tea.Cmd that starts the stream and reads the first chunk.
 //
 // Side effects:
-//   - Appends the input to messages as a user message, clears input, and sets streaming to true.
+//   - Appends the input to messages as a user message, clears input, sets streaming to true, and resets scroll to bottom.
 func (i *Intent) sendMessage() tea.Cmd {
 	userMessage := i.input
 	i.input = ""
@@ -752,6 +797,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
 	i.view.StartStreaming()
+	i.atBottom = true
 	i.refreshViewport()
 
 	i.cancelActiveStream()

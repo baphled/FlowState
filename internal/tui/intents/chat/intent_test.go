@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -143,6 +144,45 @@ var _ = Describe("ChatIntent", func() {
 
 				// Now YOffset should be > 0 (scrolled to show latest content)
 				Expect(vp.YOffset).To(BeNumerically(">", 0), "GotoBottom() should set YOffset > 0 to show latest content")
+			})
+
+			It("initializes with atBottom=true to auto-scroll new content", func() {
+				Expect(intent.AtBottomForTest()).To(BeTrue(), "atBottom should start as true for auto-scroll")
+			})
+
+			It("atBottom field is reset to true when sending a message", func() {
+				testIntent := chat.NewIntent(chat.IntentConfig{
+					AgentID:      "test-agent",
+					SessionID:    "test-session",
+					ProviderName: "openai",
+					ModelName:    "gpt-4o",
+					TokenBudget:  4096,
+				})
+				testIntent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+				initialState := testIntent.AtBottomForTest()
+				Expect(initialState).To(BeTrue())
+
+				testIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+				testIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+				Expect(testIntent.AtBottomForTest()).To(BeTrue(), "atBottom should be true after sending message")
+			})
+
+			It("preserves viewport offset when atBottom is false during streaming", func() {
+				vp := intent.ViewportForTest()
+				content := strings.Repeat("line\n", 30)
+				vp.SetContent(content)
+				vp.GotoBottom()
+
+				initialAtBottom := intent.AtBottomForTest()
+				Expect(initialAtBottom).To(BeTrue())
+
+				chunk := chat.StreamChunkMsg{Content: "new chunk\n", Done: false}
+				intent.HandleStreamChunkForTest(chunk)
+
+				stillAtBottom := intent.AtBottomForTest()
+				Expect(stillAtBottom).To(BeTrue(), "should stay at bottom if we started there")
 			})
 		})
 
