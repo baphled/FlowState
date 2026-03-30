@@ -305,6 +305,20 @@ var _ = Describe("Hook", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(req.Provider).To(Equal("anthropic"))
 		})
+
+		It("preserves existing model when Provider field is empty", func() {
+			req := &provider.ChatRequest{
+				Provider: "",
+				Model:    "claude-sonnet-4-6",
+				Messages: []provider.Message{{Role: "user", Content: "Hello"}},
+			}
+
+			err := hook.Apply(context.Background(), req)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(req.Provider).To(Equal("anthropic"))
+			Expect(req.Model).To(Equal("claude-sonnet-4-6"))
+		})
 	})
 
 	Describe("handles nil request", func() {

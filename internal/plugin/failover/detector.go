@@ -223,9 +223,7 @@ func (fh *Hook) Apply(_ context.Context, req *provider.ChatRequest) error {
 
 	if currentProvider == "" {
 		currentProvider = "anthropic"
-		currentModel = ""
 		req.Provider = currentProvider
-		req.Model = currentModel
 	}
 
 	if !fh.health.IsRateLimited(currentProvider, currentModel) {
