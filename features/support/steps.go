@@ -5025,6 +5025,11 @@ func (s *StepDefinitions) theExecutorAgentIsConfigured() error {
 	return s.configureAgentEngine("executor", "Task Executor", "You are a task executor implementing plans with precision.")
 }
 
+// configureAgentEngine creates an engine for the named agent manifest.
+//
+// Expected: id, name, and defaultPrompt identify a valid agent scenario.
+// Returns: nil when the engine is created successfully, or an error if setup fails.
+// Side effects: creates s.agentEngine with a configured manifest and failover manager.
 func (s *StepDefinitions) configureAgentEngine(id, name, defaultPrompt string) error {
 	manifest := agent.Manifest{
 		ID:   id,
