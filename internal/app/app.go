@@ -29,6 +29,7 @@ import (
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/eventlogger"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/external"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
@@ -249,7 +250,8 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 
 	registry := pluginpkg.NewRegistry()
 	healthManager := failover.NewHealthManager()
-	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
+	tiers := resolveFailoverTiers(cfg.Plugins.Failover.Tiers)
+	chain := failover.NewFallbackChain(defaultFailoverProviders(), tiers)
 	failoverHk := failover.NewHook(chain, healthManager)
 
 	return &pluginRuntime{
@@ -332,6 +334,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithSessions(params.sessionStore),
 		api.WithSessionManager(sessionMgr),
 		api.WithTodoStore(todoStore),
+		api.WithMetricsHandler(promhttp.HandlerFor(metricsReg, promhttp.HandlerOpts{})),
 	)
 	return &runtimeComponents{
 		engine:          eng,
@@ -1026,6 +1029,7 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt.healthManager != nil {
 		failover.NewRateLimitDetector(bus, rt.healthManager)
 	}
+	subscribeRateLimitLogger(bus)
 	if rt.dispatcher != nil {
 		subscribeDispatcherHooks(rt.dispatcher, bus)
 	}
@@ -1033,6 +1037,11 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 
 // subscribeDispatcherHooks wires event forwarding from the engine's EventBus
 // to the external plugin dispatcher, enabling plugins to respond to hook events.
+//
+// The "plugin.event" subscription is an integration point for external plugins.
+// No internal component publishes this event; it exists so that external plugin
+// processes can emit events that are forwarded to other registered plugins via
+// the dispatcher.
 //
 // Expected:
 //   - dispatcher is a valid Dispatcher instance.
@@ -1064,6 +1073,26 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
 				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.after", "error", err)
 			}
+		}
+	})
+}
+
+// subscribeRateLimitLogger subscribes to "provider.rate_limited" events and logs
+// them as warnings. The failover hook handles provider switching internally;
+// this subscriber ensures rate-limit events are visible in application logs.
+//
+// Expected:
+//   - bus is a valid EventBus instance.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Subscribes a logging handler to "provider.rate_limited" on the bus.
+func subscribeRateLimitLogger(bus *eventbus.EventBus) {
+	bus.Subscribe("provider.rate_limited", func(msg any) {
+		if pe, ok := msg.(*events.ProviderEvent); ok {
+			slog.Warn("provider rate-limited", "provider", pe.Data.ProviderName)
 		}
 	})
 }
@@ -1138,6 +1167,24 @@ func defaultFailoverProviders() []failover.ProviderModel {
 		{Provider: "openai", Model: "gpt-4o"},
 		{Provider: "ollama", Model: "llama3.2"},
 	}
+}
+
+// resolveFailoverTiers returns the configured tiers when non-empty, falling
+// back to the hardcoded defaults otherwise.
+//
+// Expected:
+//   - configTiers is the map from the application configuration; may be nil or empty.
+//
+// Returns:
+//   - The configTiers map when it contains at least one entry, or the default tiers.
+//
+// Side effects:
+//   - None.
+func resolveFailoverTiers(configTiers map[string]string) map[string]string {
+	if len(configTiers) > 0 {
+		return configTiers
+	}
+	return defaultFailoverTiers()
 }
 
 // defaultFailoverTiers returns the default tier assignments for each provider.

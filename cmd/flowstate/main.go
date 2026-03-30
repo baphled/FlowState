@@ -44,6 +44,8 @@ func run() int {
 		cfg = config.DefaultConfig()
 	}
 
+	app.ConfigureLogging(cfg.LogLevel)
+
 	application, err := app.New(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -16,7 +16,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const githubClientID = "Ov23liZeaYyl1NyI50K1"
+const defaultGitHubClientID = "Ov23liZeaYyl1NyI50K1"
+
+// resolveGitHubClientID returns the OAuth client ID from config, falling back
+// to the default when the config value is empty.
+//
+// Expected:
+//   - cfg may be nil or contain an empty ClientID field.
+//
+// Returns:
+//   - The configured ClientID when non-empty, or the default GitHub client ID.
+//
+// Side effects:
+//   - None.
+func resolveGitHubClientID(cfg *config.AppConfig) string {
+	if cfg != nil && cfg.Providers.GitHub.OAuth.ClientID != "" {
+		return cfg.Providers.GitHub.OAuth.ClientID
+	}
+	return defaultGitHubClientID
+}
 
 // newAuthGitHubCmd creates the GitHub Copilot authentication command via OAuth Device Flow.
 //
@@ -63,7 +81,8 @@ func runAuthGitHub(cmd *cobra.Command, application *app.App) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	ghProvider := oauth.NewGitHub(githubClientID)
+	clientID := resolveGitHubClientID(application.Config)
+	ghProvider := oauth.NewGitHub(clientID)
 
 	dcResp, err := ghProvider.InitiateFlow(ctx)
 	if err != nil {
@@ -150,7 +169,7 @@ func handleGitHubApproved(cmd *cobra.Command, application *app.App, flowResult *
 	cfg.Providers.GitHub.APIKey = flowResult.Token.AccessToken
 	cfg.Providers.GitHub.OAuth.Enabled = true
 	cfg.Providers.GitHub.OAuth.UseOAuth = true
-	cfg.Providers.GitHub.OAuth.ClientID = githubClientID
+	cfg.Providers.GitHub.OAuth.ClientID = resolveGitHubClientID(cfg)
 
 	if err := writeConfig(cfg); err != nil {
 		return fmt.Errorf("writing config: %w", err)
