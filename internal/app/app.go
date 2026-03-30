@@ -27,8 +27,8 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
+	_ "github.com/baphled/flowstate/internal/plugin/builtin/all" // builtin/all is blank-imported so builtin plugin factories register via init.
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
-	"github.com/baphled/flowstate/internal/plugin/eventlogger"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/external"
 	"github.com/baphled/flowstate/internal/plugin/failover"
@@ -82,7 +82,6 @@ type pluginRuntime struct {
 	discoverer      *external.Discoverer
 	lifecycle       *external.LifecycleManager
 	registry        *pluginpkg.Registry
-	eventLogger     *eventlogger.EventLogger
 	healthManager   *failover.HealthManager
 	failoverHook    *failover.Hook
 	failoverManager *failover.Manager
@@ -137,8 +136,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	startCorePluginSubscriptions(pluginRT, runtime.engine)
-	startExternalPlugins(pluginRT)
+	if err := loadBuiltinPlugins(cfg, pluginRT, runtime); err != nil {
+		return nil, err
+	}
 	app := buildApp(appBuildParams{
 		cfg:              cfg,
 		agentRegistry:    agentRegistry,
@@ -150,7 +150,56 @@ func New(cfg *config.AppConfig) (*App, error) {
 		ollamaProvider:   ollamaProvider,
 		pluginRuntime:    pluginRT,
 	})
+	configureApplicationAfterBuild(app, cfg, runtime.engine, defaultManifest, pluginRT)
+	return app, nil
+}
 
+// loadBuiltinPlugins instantiates builtin plugins after the engine has been created.
+//
+// Expected:
+//   - cfg is a non-nil application configuration.
+//   - rt and runtime are fully initialised.
+//
+// Returns:
+//   - An error if builtin plugin loading fails.
+//
+// Side effects:
+//   - Instantiates builtin plugins and registers them in the plugin registry.
+func loadBuiltinPlugins(cfg *config.AppConfig, rt *pluginRuntime, runtime *runtimeComponents) error {
+	return pluginpkg.LoadBuiltins(pluginpkg.Deps{
+		Registry:      rt.registry,
+		EventBus:      runtime.engine.EventBus(),
+		HealthManager: rt.healthManager,
+		PluginsConfig: pluginpkg.PluginsConf{
+			Dir:      cfg.Plugins.Dir,
+			LogPath:  defaultEventLogPath(),
+			LogSize:  10 * 1024 * 1024,
+			Timeout:  cfg.Plugins.Timeout,
+			Enabled:  cfg.Plugins.Enabled,
+			Disabled: cfg.Plugins.Disabled,
+		},
+	})
+}
+
+// configureApplicationAfterBuild applies the remaining startup wiring used by New.
+//
+// Expected:
+//   - app, cfg, eng, and rt are fully initialised.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Creates the plan store when available.
+//   - Applies agent overrides and delegate wiring.
+//   - Starts builtin and external plugin wiring.
+func configureApplicationAfterBuild(
+	app *App,
+	cfg *config.AppConfig,
+	eng *engine.Engine,
+	defaultManifest agent.Manifest,
+	rt *pluginRuntime,
+) {
 	planDir := filepath.Join(cfg.DataDir, "plans")
 	planStore, err := plan.NewStore(planDir)
 	if err != nil {
@@ -159,12 +208,13 @@ func New(cfg *config.AppConfig) (*App, error) {
 		app.Store = planStore
 	}
 
-	app.setAgentOverridesFromConfig(cfg, runtime.engine)
-	app.wireDelegateToolIfEnabled(runtime.engine, defaultManifest)
+	app.setAgentOverridesFromConfig(cfg, eng)
+	app.wireDelegateToolIfEnabled(eng, defaultManifest)
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
-	return app, nil
+	startCorePluginSubscriptions(rt, eng)
+	startExternalPlugins(rt)
 }
 
 // appBuildParams groups the dependencies required to assemble an App value.
@@ -262,7 +312,6 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 		discoverer:    external.NewDiscoverer(cfg.Plugins),
 		lifecycle:     external.NewLifecycleManager(external.NewSpawner(), registry),
 		registry:      registry,
-		eventLogger:   eventlogger.New(defaultEventLogPath(), 10*1024*1024),
 		healthManager: healthManager,
 		failoverHook:  failoverHk,
 		dispatcher:    external.NewDispatcher(registry),
@@ -1068,17 +1117,41 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if bus == nil {
 		return
 	}
-	if rt.eventLogger != nil {
-		if err := rt.eventLogger.Start(bus); err != nil {
-			log.Printf("warning: starting event logger: %v", err)
-		}
-	}
-	if rt.healthManager != nil {
-		failover.NewRateLimitDetector(bus, rt.healthManager)
-	}
+	startBusPlugins(rt.registry, bus)
 	subscribeRateLimitLogger(bus)
 	if rt.dispatcher != nil {
 		subscribeDispatcherHooks(rt.dispatcher, bus)
+	}
+}
+
+// startBusPlugins starts builtin plugins that implement BusStarter.
+//
+// Expected:
+//   - registry and bus may be nil.
+//   - registry contains any builtin plugins that need event bus access.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Calls Start on each BusStarter plugin in registry order.
+//   - Logs warnings when a plugin fails to start.
+func startBusPlugins(registry *pluginpkg.Registry, bus *eventbus.EventBus) {
+	if registry == nil || bus == nil {
+		return
+	}
+	for _, name := range registry.Names() {
+		plug, ok := registry.Get(name)
+		if !ok {
+			continue
+		}
+		starter, ok := plug.(pluginpkg.BusStarter)
+		if !ok {
+			continue
+		}
+		if err := starter.Start(bus); err != nil {
+			log.Printf("warning: starting builtin plugin %q: %v", name, err)
+		}
 	}
 }
 
@@ -1653,7 +1726,11 @@ func (a *App) PluginConfigForTest() config.PluginsConfig {
 // Side effects:
 //   - None.
 func (a *App) HasEventLogger() bool {
-	return a.plugins != nil && a.plugins.eventLogger != nil
+	if a.plugins == nil || a.plugins.registry == nil {
+		return false
+	}
+	_, ok := a.plugins.registry.Get("event-logger")
+	return ok
 }
 
 // HasFailoverHook reports whether the failover hook is configured in the plugin runtime.
@@ -1708,8 +1785,12 @@ func (a *App) ClosePlugins() error {
 			slog.Warn("stopping external plugins", "error", err)
 		}
 	}
-	if a.plugins.eventLogger != nil {
-		return a.plugins.eventLogger.Close()
+	if a.plugins.registry != nil {
+		if plug, ok := a.plugins.registry.Get("event-logger"); ok {
+			if closer, ok := plug.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+		}
 	}
 	return nil
 }

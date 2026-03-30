@@ -78,3 +78,23 @@
 - Removed the stale hardcoded Anthropic model fallback in `internal/plugin/failover/detector.go` by clearing the default model string instead of pinning `claude-3-5-sonnet-20241022`.
 - Removed in-function comments from `internal/plugin/failover/fallback_chain.go` to keep function bodies comment-free.
 - Added test-only persist-path injection to `HealthManager` and pointed failover specs at per-test temp files to stop concurrent writes to shared `provider-health.json`.
+
+## 2026-03-30 Task: P6 builtin plugin wiring
+
+### Architecture decisions
+- `internal/app/app.go` now blank-imports `internal/plugin/builtin/all` so builtin factories self-register before startup wiring.
+- Builtins are loaded after engine creation with `plugin.LoadBuiltins`, using registry, bus, health manager, and plugin config dependencies.
+- Post-load bus activation is generic: `startBusPlugins` iterates registry names, looks up each plugin, and starts only those that implement `BusStarter`.
+- `HasEventLogger` and `ClosePlugins` now resolve `event-logger` from the registry instead of relying on a stored field.
+
+### Implementation notes
+- `setupPluginRuntime` no longer constructs the event logger directly; the builtin factory owns creation now.
+- `failover.Hook` and `failover.Manager` stayed hardcoded in `app.go`, preserving engine-construction responsibility.
+- `startExternalPlugins` remained unchanged.
+- Verification passed with `go test ./internal/app/...`, `go test ./internal/plugin/...`, `go build ./...`, `make lint`, and `lsp_diagnostics` clean on `internal/app/app.go`.
+
+## 2026-03-30 Task: P6 docblock follow-up
+
+### Verification notes
+- `loadBuiltinPlugins`, `configureApplicationAfterBuild`, and `startBusPlugins` all now have complete godoc sections.
+- `make check` passed after the comment-only update, including the docblocks checker.
