@@ -1127,9 +1127,11 @@ func (e *Engine) publishSessionEvent(action string) {
 // Side effects:
 //   - Publishes a tool execution start event on the engine bus.
 func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interface{}) {
+	sessionID := e.manifest.ID
 	e.bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
-		ToolName: toolName,
-		Args:     args,
+		SessionID: sessionID,
+		ToolName:  toolName,
+		Args:      args,
 	}))
 }
 
@@ -1147,11 +1149,13 @@ func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interfa
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
 func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interface{}, result string, execErr error) {
+	sessionID := e.manifest.ID
 	e.bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
-		ToolName: toolName,
-		Args:     args,
-		Result:   result,
-		Error:    execErr,
+		SessionID: sessionID,
+		ToolName:  toolName,
+		Args:      args,
+		Result:    result,
+		Error:     execErr,
 	}))
 }
 
@@ -1166,7 +1170,9 @@ func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interfac
 // Side effects:
 //   - Publishes a provider error event on the engine bus.
 func (e *Engine) publishProviderErrorEvent(err error) {
+	sessionID := e.manifest.ID
 	e.bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+		SessionID:    sessionID,
 		ProviderName: e.LastProvider(),
 		Error:        err,
 	}))

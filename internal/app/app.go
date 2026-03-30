@@ -389,6 +389,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithSessionManager(sessionMgr),
 		api.WithTodoStore(todoStore),
 		api.WithMetricsHandler(promhttp.HandlerFor(metricsReg, promhttp.HandlerOpts{})),
+		api.WithEventBus(eng.EventBus()),
 	)
 	return &runtimeComponents{
 		engine:          eng,

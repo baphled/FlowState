@@ -73,6 +73,7 @@ type WSChunkMsg struct {
 // Side effects:
 //   - Reads JSON messages from the client and forwards them to the session engine.
 //   - Writes engine response chunks as JSON to the client.
+//   - Subscribes to EventBus events for the session and forwards them to the client.
 //   - Closes the connection when the engine stream is complete or an error occurs.
 func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
@@ -91,18 +92,32 @@ func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return
 	}
-	defer closeWebSocket(conn)
 
+	out := make(chan WSChunkMsg, 128)
+	writeDone := make(chan struct{})
 	ctx := r.Context()
+
+	go func() {
+		writeWSLoop(ctx, conn, out)
+		close(writeDone)
+	}()
+
+	stopBus := s.subscribeSessionBus(id, out)
+
 	for {
 		incoming, ok := readWSMessage(ctx, conn)
 		if !ok {
-			return
+			break
 		}
-		if !s.serveWSSession(ctx, conn, id, incoming) {
-			return
+		if !s.serveWSSession(ctx, out, id, incoming) {
+			break
 		}
 	}
+
+	close(out)
+	stopBus()
+	<-writeDone
+	closeWebSocket(conn)
 }
 
 // readWSMessage reads and decodes the next message from the WebSocket connection.
@@ -128,11 +143,29 @@ func readWSMessage(ctx context.Context, conn *websocket.Conn) (wsIncomingMsg, bo
 	return msg, true
 }
 
-// serveWSSession forwards an incoming message to the session engine and streams the response.
+// writeWSLoop reads messages from the out channel and writes each to the WebSocket connection.
+// This ensures all writes are serialised through a single goroutine, preventing concurrent writes.
 //
 // Expected:
 //   - ctx is a valid context for cancellation.
 //   - conn is an open WebSocket connection.
+//   - out is a readable channel of WSChunkMsg values.
+//
+// Side effects:
+//   - Writes JSON-encoded messages to conn until out is closed or ctx is cancelled.
+func writeWSLoop(ctx context.Context, conn *websocket.Conn, out <-chan WSChunkMsg) {
+	for msg := range out {
+		if err := sendWSMsg(ctx, conn, msg); err != nil {
+			return
+		}
+	}
+}
+
+// serveWSSession forwards an incoming message to the session engine and streams the response.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - out is a channel for sending response chunks to the WebSocket writer goroutine.
 //   - sessionID identifies an existing session.
 //   - msg contains the content to send to the engine.
 //
@@ -140,8 +173,8 @@ func readWSMessage(ctx context.Context, conn *websocket.Conn) (wsIncomingMsg, bo
 //   - true to continue the read loop, false to close the connection.
 //
 // Side effects:
-//   - Calls sessionManager.SendMessage and forwards response chunks to conn.
-func (s *Server) serveWSSession(ctx context.Context, conn *websocket.Conn, sessionID string, msg wsIncomingMsg) bool {
+//   - Calls sessionManager.SendMessage and forwards response chunks to out.
+func (s *Server) serveWSSession(ctx context.Context, out chan<- WSChunkMsg, sessionID string, msg wsIncomingMsg) bool {
 	if msg.Content == "" {
 		return true
 	}
@@ -149,25 +182,27 @@ func (s *Server) serveWSSession(ctx context.Context, conn *websocket.Conn, sessi
 	if err != nil {
 		return false
 	}
-	return s.forwardWSChunks(ctx, conn, chunks)
+	return s.forwardWSChunks(ctx, out, chunks)
 }
 
-// forwardWSChunks reads from a chunk channel and writes each chunk to the WebSocket connection.
+// forwardWSChunks reads from a chunk channel and sends each chunk through the out channel.
 //
 // Expected:
 //   - ctx is a valid context for cancellation.
-//   - conn is an open WebSocket connection.
+//   - out is a channel for sending WSChunkMsg values to the writer goroutine.
 //   - chunks is a readable channel of provider.StreamChunk values.
 //
 // Returns:
 //   - true to continue the read loop, false when streaming is complete or an error occurs.
 //
 // Side effects:
-//   - Writes JSON-encoded chunks to conn.
-func (s *Server) forwardWSChunks(ctx context.Context, conn *websocket.Conn, chunks <-chan provider.StreamChunk) bool {
+//   - Sends WSChunkMsg values to out.
+func (s *Server) forwardWSChunks(ctx context.Context, out chan<- WSChunkMsg, chunks <-chan provider.StreamChunk) bool {
 	for chunk := range chunks {
 		msg := BuildWSChunkMsg(chunk)
-		if sendErr := sendWSMsg(ctx, conn, msg); sendErr != nil {
+		select {
+		case out <- msg:
+		case <-ctx.Done():
 			return false
 		}
 		if chunk.Done || chunk.Error != nil {

@@ -11,6 +11,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
@@ -40,6 +41,7 @@ type Server struct {
 	sessionBroker     *SessionBroker
 	todoStore         todo.Store
 	backgroundManager *engine.BackgroundTaskManager
+	eventBus          *eventbus.EventBus
 	metricsHandler    http.Handler
 	mux               *http.ServeMux
 }
@@ -117,6 +119,20 @@ func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
 	return func(s *Server) { s.backgroundManager = mgr }
 }
 
+// WithEventBus configures the EventBus for forwarding operational events to WebSocket clients.
+//
+// Expected:
+//   - bus is a non-nil EventBus from the engine.
+//
+// Returns:
+//   - A ServerOption that sets the eventBus field.
+//
+// Side effects:
+//   - None until subscribeSessionBus is called.
+func WithEventBus(bus *eventbus.EventBus) ServerOption {
+	return func(s *Server) { s.eventBus = bus }
+}
+
 // WithMetricsHandler sets the HTTP handler for the /metrics endpoint.
 //
 // Expected:
@@ -143,6 +159,23 @@ func WithMetricsHandler(h http.Handler) ServerOption {
 //   - Updates the server's background manager reference.
 func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 	s.backgroundManager = mgr
+}
+
+// SubscribeSessionBus exposes subscribeSessionBus for external use.
+// It subscribes to EventBus events for the given session, forwarding sanitised
+// summaries to the provided channel. The returned function stops forwarding when called.
+//
+// Expected:
+//   - sessionID is a valid session identifier.
+//   - out is a buffered channel for receiving WSChunkMsg values.
+//
+// Returns:
+//   - An unsubscribe function that stops event forwarding.
+//
+// Side effects:
+//   - Subscribes to EventBus events for the given session when the EventBus is configured.
+func (s *Server) SubscribeSessionBus(sessionID string, out chan<- WSChunkMsg) func() {
+	return s.subscribeSessionBus(sessionID, out)
 }
 
 // NewServer creates a new API server with the given dependencies.

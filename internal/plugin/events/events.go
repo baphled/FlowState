@@ -100,10 +100,11 @@ func NewSessionEvent(data SessionEventData, ts ...time.Time) *SessionEvent {
 // Returns: struct with tool event fields.
 // Side effects: none.
 type ToolEventData struct {
-	ToolName string
-	Args     map[string]any
-	Result   any
-	Error    error
+	SessionID string
+	ToolName  string
+	Args      map[string]any
+	Result    any
+	Error     error
 }
 
 // ToolEvent represents a tool-related event.
@@ -144,6 +145,7 @@ func NewToolEvent(data ToolEventData, ts ...time.Time) *ToolEvent {
 // Returns: struct with provider event fields.
 // Side effects: none.
 type ProviderEventData struct {
+	SessionID    string
 	ProviderName string
 	Request      any
 	Response     any

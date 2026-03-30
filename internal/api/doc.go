@@ -5,6 +5,7 @@
 //   - Agent discovery and listing endpoints
 //   - Session management endpoints
 //   - Skill listing endpoints
+//   - WebSocket session endpoints with EventBus event forwarding
 //
 // The server is designed to integrate with the engine package for
 // orchestrating AI interactions and the context package for session
