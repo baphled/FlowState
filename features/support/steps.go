@@ -5013,24 +5013,7 @@ func (s *StepDefinitions) iShouldSeeAnErrorContaining(msg string) error {
 // Returns: nil on success, or an error if engine creation fails.
 // Side effects: Creates s.agentEngine with planner agent.
 func (s *StepDefinitions) thePlannerAgentIsConfigured() error {
-	manifest := agent.Manifest{
-		ID:   "planner",
-		Name: "Strategic Planner",
-		Instructions: agent.Instructions{
-			SystemPrompt: "You are a strategic planner helping users interview and plan.",
-		},
-	}
-	promptContent, err := prompt.GetPromptWithMetadata("planner")
-	if err == nil && promptContent != nil {
-		manifest.Instructions.SystemPrompt = promptContent.Body
-	}
-	registry := provider.NewRegistry()
-	s.agentEngine = engine.New(engine.Config{
-		Registry:        registry,
-		Manifest:        manifest,
-		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
-	})
-	return nil
+	return s.configureAgentEngine("planner", "Strategic Planner", "You are a strategic planner helping users interview and plan.")
 }
 
 // theExecutorAgentIsConfigured creates an engine with the executor agent manifest.
@@ -5039,14 +5022,18 @@ func (s *StepDefinitions) thePlannerAgentIsConfigured() error {
 // Returns: nil on success, or an error if engine creation fails.
 // Side effects: Creates s.agentEngine with executor agent.
 func (s *StepDefinitions) theExecutorAgentIsConfigured() error {
+	return s.configureAgentEngine("executor", "Task Executor", "You are a task executor implementing plans with precision.")
+}
+
+func (s *StepDefinitions) configureAgentEngine(id, name, defaultPrompt string) error {
 	manifest := agent.Manifest{
-		ID:   "executor",
-		Name: "Task Executor",
+		ID:   id,
+		Name: name,
 		Instructions: agent.Instructions{
-			SystemPrompt: "You are a task executor implementing plans with precision.",
+			SystemPrompt: defaultPrompt,
 		},
 	}
-	promptContent, err := prompt.GetPromptWithMetadata("executor")
+	promptContent, err := prompt.GetPromptWithMetadata(id)
 	if err == nil && promptContent != nil {
 		manifest.Instructions.SystemPrompt = promptContent.Body
 	}
@@ -5140,24 +5127,7 @@ func (s *StepDefinitions) thePromptShouldNotBeTheBareJSONSystemPrompt() error {
 // Returns: nil on success, or an error if engine creation fails.
 // Side effects: Creates s.agentEngine with explorer agent loaded from embedded prompt.
 func (s *StepDefinitions) anExplorerAgentLoadedFromMarkdown() error {
-	manifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Codebase Explorer",
-		Instructions: agent.Instructions{
-			SystemPrompt: "You are a codebase explorer.",
-		},
-	}
-	promptContent, err := prompt.GetPromptWithMetadata("explorer")
-	if err == nil && promptContent != nil {
-		manifest.Instructions.SystemPrompt = promptContent.Body
-	}
-	registry := provider.NewRegistry()
-	s.agentEngine = engine.New(engine.Config{
-		Registry:        registry,
-		Manifest:        manifest,
-		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
-	})
-	return nil
+	return s.configureAgentEngine("explorer", "Codebase Explorer", "You are a codebase explorer.")
 }
 
 // thePromptShouldContainTheExplorerRoleDescription asserts the prompt contains explorer keywords.
