@@ -192,6 +192,19 @@ func (m *Manager) StreamTimeout() time.Duration {
 	return m.timeout
 }
 
+// Health returns the HealthManager used for rate-limit tracking.
+//
+// Returns:
+//   - The HealthManager instance.
+//
+// Side effects:
+//   - None.
+func (m *Manager) Health() *HealthManager {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.health
+}
+
 // effectivePreferences composes the effective preference list from override and base preferences.
 //
 // Expected: called under at least an RLock on m.mu.

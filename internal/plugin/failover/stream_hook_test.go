@@ -279,6 +279,86 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		Context("when first provider returns sync rate-limit error", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("rate_limit: quota exceeded")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "ollama",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Fallback response", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("marks the failed provider as rate-limited in health", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+			})
+
+			It("falls back to the next provider", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Fallback response"))
+			})
+		})
+
+		Context("when first provider returns async rate-limit error", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: asyncErrorStreamFn(errors.New("rate_limit: too many requests")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "ollama",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Async fallback", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("marks the failed provider as rate-limited in health", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+			})
+
+			It("falls back to the next provider", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Async fallback"))
+			})
+		})
+
 		Context("when no candidates are available", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{

@@ -200,6 +200,75 @@ var _ = Describe("RateLimitDetector", func() {
 	})
 })
 
+var _ = Describe("CheckAndMarkRateLimited", func() {
+	var (
+		health *failover.HealthManager
+	)
+
+	BeforeEach(func() {
+		var err error
+		dir, err := os.MkdirTemp("", "failover-check-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+	})
+
+	It("returns false and does not mark when error is nil", func() {
+		result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", nil)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+	})
+
+	It("returns true and marks provider when error contains rate_limit", func() {
+		err := errors.New("rate_limit exceeded")
+
+		result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+	})
+
+	It("returns true and marks provider when error contains quota exceeded", func() {
+		err := errors.New("quota exceeded for this month")
+
+		result := failover.CheckAndMarkRateLimited(health, "openai", "gpt-4", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("openai", "gpt-4")).To(BeTrue())
+	})
+
+	It("returns true and marks provider when error contains too many requests", func() {
+		err := errors.New("too many requests, please try again later")
+
+		result := failover.CheckAndMarkRateLimited(health, "github-copilot", "claude-3", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("github-copilot", "claude-3")).To(BeTrue())
+	})
+
+	It("returns false and does not mark for generic non-rate-limit error", func() {
+		err := errors.New("invalid request: missing required field")
+
+		result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+	})
+
+	It("returns false and does not mark for auth error", func() {
+		err := errors.New("authentication failed: invalid API key")
+
+		result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+	})
+})
+
 var _ = Describe("Hook", func() {
 	var (
 		chain     *failover.FallbackChain

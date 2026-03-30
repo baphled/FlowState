@@ -96,6 +96,7 @@ func (sh *StreamHook) attemptCandidate(
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
 		cancel()
+		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, err)
 		return nil, err
 	}
 
@@ -110,6 +111,7 @@ func (sh *StreamHook) attemptCandidate(
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
+		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
 		return nil, firstChunk.Error
 	}
 

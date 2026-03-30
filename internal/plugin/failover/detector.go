@@ -13,6 +13,34 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// CheckAndMarkRateLimited inspects err for rate-limit signals and, if found,
+// marks the provider/model pair as rate-limited in health for one hour.
+//
+// Expected:
+//   - health is non-nil.
+//   - providerName and model identify the provider/model pair.
+//   - err is the error returned by the provider attempt (may be nil).
+//
+// Returns:
+//   - true if err was a rate-limit signal and health was updated.
+//   - false otherwise.
+//
+// Side effects:
+//   - May update health state for the given provider/model.
+func CheckAndMarkRateLimited(health *HealthManager, providerName, model string, err error) bool {
+	if err == nil {
+		return false
+	}
+	d := &RateLimitDetector{health: health}
+	if d.isRateLimitedError(err) {
+		markErr := health.MarkRateLimited(providerName, model, time.Now().Add(time.Hour))
+		if markErr == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // RateLimitDetector monitors provider errors and detects rate-limit conditions.
 //
 // RateLimitDetector subscribes to "provider.error" events from the EventBus,
