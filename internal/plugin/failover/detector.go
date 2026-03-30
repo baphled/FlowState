@@ -27,16 +27,14 @@ import (
 //
 // Side effects:
 //   - May update health state for the given provider/model.
-func CheckAndMarkRateLimited(health *HealthManager, providerName, model string, err error) bool {
+func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, err error) bool {
 	if err == nil {
 		return false
 	}
 	d := &RateLimitDetector{health: health}
 	if d.isRateLimitedError(err) {
-		markErr := health.MarkRateLimited(providerName, model, time.Now().Add(time.Hour))
-		if markErr == nil {
-			return true
-		}
+		health.MarkRateLimited(providerName, model, time.Now().Add(time.Hour))
+		return true
 	}
 	return false
 }
@@ -44,12 +42,12 @@ func CheckAndMarkRateLimited(health *HealthManager, providerName, model string, 
 // RateLimitDetector monitors provider errors and detects rate-limit conditions.
 //
 // RateLimitDetector subscribes to "provider.error" events from the EventBus,
-// extracts rate-limit signals from provider responses, and updates the HealthManager
+// extracts rate-limit signals from provider responses, and updates the rate-limit aware health
 // accordingly. When a rate-limit is detected, it publishes a "provider.rate_limited"
 // event to notify other components.
 type RateLimitDetector struct {
 	bus    *eventbus.EventBus
-	health *HealthManager
+	health RateLimitAware
 }
 
 // NewRateLimitDetector creates a new RateLimitDetector instance.
@@ -60,7 +58,7 @@ type RateLimitDetector struct {
 // Expected: bus is non-nil, health is non-nil.
 // Returns: a RateLimitDetector ready to detect rate-limit conditions.
 // Side effects: subscribes to "provider.error" event on the bus.
-func NewRateLimitDetector(bus *eventbus.EventBus, health *HealthManager) *RateLimitDetector {
+func NewRateLimitDetector(bus *eventbus.EventBus, health RateLimitAware) *RateLimitDetector {
 	detector := &RateLimitDetector{
 		bus:    bus,
 		health: health,
@@ -89,16 +87,14 @@ func (d *RateLimitDetector) HandleError(event any) {
 	retryAfter := d.extractRetryAfter(data.Response)
 
 	if d.isRateLimitedError(data.Error) || d.hasRateLimitStatus(data.Response) {
-		err := d.health.MarkRateLimited(
+		d.health.MarkRateLimited(
 			data.ProviderName,
 			d.extractModel(data.Request),
 			retryAfter,
 		)
-		if err == nil {
-			d.bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
-				ProviderName: data.ProviderName,
-			}))
-		}
+		d.bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
+			ProviderName: data.ProviderName,
+		}))
 	}
 }
 

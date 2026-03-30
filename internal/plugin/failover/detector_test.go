@@ -414,8 +414,7 @@ var _ = Describe("HealthManager", func() {
 	})
 
 	It("marks provider+model as rate-limited", func() {
-		err := hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
-		Expect(err).NotTo(HaveOccurred())
+		hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
 		Expect(hm.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
 	})
 

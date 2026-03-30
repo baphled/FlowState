@@ -512,7 +512,8 @@ func (p *PluginStepDefinitions) flowstateIsRunningWithTheFailoverPluginActive() 
 //   - Marks anthropic/claude-sonnet-4-20250514 as rate-limited in p.health.
 func (p *PluginStepDefinitions) aProviderReturnsARateLimitError() error {
 	retryAfter := time.Now().Add(1 * time.Hour)
-	return p.health.MarkRateLimited("anthropic", "claude-sonnet-4-20250514", retryAfter)
+	p.health.MarkRateLimited("anthropic", "claude-sonnet-4-20250514", retryAfter)
+	return nil
 }
 
 // theFailoverHookSwitchesToAnAlternativeProvider verifies the hook selects a different provider.

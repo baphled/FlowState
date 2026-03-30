@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -71,18 +72,20 @@ type Registration struct {
 var (
 	builtinMu            sync.RWMutex
 	builtinRegistrations []Registration
+	loadResults          map[*Registry]error
 )
 
-// ResetBuiltins clears all registered builtin factories.
+// ResetBuiltins clears all registered builtin factories and resets idempotency state.
 // This is intended for testing only.
 //
-// Expected: called during test setup.
+// Expected: called during test setup to restore a clean slate.
 // Returns: nothing.
-// Side effects: clears the global factory slice.
+// Side effects: clears the global factory slice and resets the once guard.
 func ResetBuiltins() {
 	builtinMu.Lock()
 	defer builtinMu.Unlock()
 	builtinRegistrations = nil
+	loadResults = nil
 }
 
 // RegisterBuiltin registers a builtin plugin with its metadata.
@@ -95,6 +98,20 @@ func RegisterBuiltin(r Registration) {
 	builtinMu.Lock()
 	defer builtinMu.Unlock()
 	builtinRegistrations = append(builtinRegistrations, r)
+}
+
+// safeCallFactory invokes a factory, converting any panic into an error.
+//
+// Expected: name is the plugin name; factory is non-nil.
+// Returns: plugin and nil on success; nil and error on failure or panic.
+// Side effects: may allocate resources if the factory succeeds.
+func safeCallFactory(name string, factory func(Deps) (Plugin, error), deps Deps) (p Plugin, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("plugin %q factory panic: %v", name, r)
+		}
+	}()
+	return factory(deps)
 }
 
 // isEnabled determines whether a registration should be loaded based on config.
@@ -113,16 +130,52 @@ func isEnabled(r Registration, conf PluginsConf) bool {
 }
 
 // LoadBuiltins instantiates all registered builtin factories in order,
-// skipping those disabled by PluginsConf.
+// skipping those disabled by PluginsConf. It is idempotent — subsequent
+// calls return the result of the first call without re-running factories.
 //
 // A plugin is loaded if:
 //   - EnabledByDefault is true AND it is not in PluginsConf.Disabled
 //   - OR it is explicitly listed in PluginsConf.Enabled (regardless of default)
 //
-// Expected: deps.Registry is non-nil; factories must return valid plugins.
-// Returns: error if any factory fails or registration fails.
-// Side effects: instantiates plugins and registers them in the registry.
+// Expected: deps.Registry is non-nil; call once per registry during application startup.
+// Returns: error if any factory fails or registration fails; nil on subsequent calls for the same registry.
+// Side effects: instantiates plugins and registers them in the registry on the first call per registry only.
 func LoadBuiltins(deps Deps) error {
+	if deps.Registry == nil {
+		return errors.New("loading builtin plugins: registry is nil")
+	}
+
+	builtinMu.Lock()
+	if loadResults == nil {
+		loadResults = make(map[*Registry]error)
+	}
+	if err, ok := loadResults[deps.Registry]; ok {
+		builtinMu.Unlock()
+		return err
+	}
+	builtinMu.Unlock()
+
+	err := doLoadBuiltins(deps)
+
+	builtinMu.Lock()
+	loadResults[deps.Registry] = err
+	builtinMu.Unlock()
+
+	return err
+}
+
+// doLoadBuiltins is the implementation called exactly once by LoadBuiltins.
+//
+// Expected: deps.Registry is non-nil; called only via LoadBuiltins.
+// Returns: error if any factory fails, returns nil plugin, or config is invalid.
+// Side effects: instantiates plugins and registers them in deps.Registry.
+func doLoadBuiltins(deps Deps) error {
+	for _, name := range deps.PluginsConfig.Enabled {
+		if slices.Contains(deps.PluginsConfig.Disabled, name) {
+			return fmt.Errorf("plugin config conflict: %q is in both Enabled and Disabled lists", name)
+		}
+	}
+
 	builtinMu.RLock()
 	registrations := make([]Registration, len(builtinRegistrations))
 	copy(registrations, builtinRegistrations)
@@ -136,12 +189,15 @@ func LoadBuiltins(deps Deps) error {
 		if !isEnabled(r, deps.PluginsConfig) {
 			continue
 		}
-		plugin, err := r.Factory(deps)
+		plug, err := safeCallFactory(r.Name, r.Factory, deps)
 		if err != nil {
-			return fmt.Errorf("loading builtin plugin: %w", err)
+			return fmt.Errorf("loading builtin plugin %q: %w", r.Name, err)
 		}
-		if err := deps.Registry.Register(plugin); err != nil {
-			return fmt.Errorf("registering builtin plugin %s: %w", plugin.Name(), err)
+		if plug == nil {
+			return fmt.Errorf("loading builtin plugin %q: factory returned nil plugin", r.Name)
+		}
+		if err := deps.Registry.Register(plug); err != nil {
+			return fmt.Errorf("registering builtin plugin %q: %w", r.Name, err)
 		}
 	}
 

@@ -2,10 +2,23 @@ package failover
 
 import (
 	"errors"
+	"time"
 
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 )
+
+// RateLimitAware is the subset of HealthManager that the rate-limit plugin requires.
+//
+// Expected: implemented by *HealthManager.
+// Returns: nothing.
+// Side effects: MarkRateLimited modifies internal rate-limit state.
+type RateLimitAware interface {
+	// IsRateLimited returns true when the provider/model is currently rate-limited.
+	IsRateLimited(provider, model string) bool
+	// MarkRateLimited records a provider/model as rate-limited until the expiry time.
+	MarkRateLimited(provider, model string, expiry time.Time)
+}
 
 // rateLimitPlugin wraps RateLimitDetector as a Plugin and BusStarter.
 //
@@ -13,7 +26,7 @@ import (
 // Returns: implements plugin.Plugin and plugin.BusStarter.
 // Side effects: none until Start is called.
 type rateLimitPlugin struct {
-	health   *HealthManager
+	health   RateLimitAware
 	detector *RateLimitDetector
 }
 
@@ -73,11 +86,11 @@ func RegisterBuiltins() {
 		Order:            20,
 		EnabledByDefault: true,
 		Factory: func(d pluginpkg.Deps) (pluginpkg.Plugin, error) {
-			health, ok := d.HealthManager.(*HealthManager)
+			aware, ok := d.HealthManager.(RateLimitAware)
 			if !ok {
-				return nil, errors.New("rate-limit-detector: HealthManager must be *failover.HealthManager")
+				return nil, errors.New("rate-limit-detector: HealthManager does not implement RateLimitAware")
 			}
-			return &rateLimitPlugin{health: health}, nil
+			return &rateLimitPlugin{health: aware}, nil
 		},
 	})
 }

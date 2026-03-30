@@ -46,9 +46,9 @@ func (hm *HealthManager) SetPersistPath(path string) {
 // MarkRateLimited marks a provider/model as rate-limited until retryAfter.
 //
 // Expected: provider and model are non-empty strings, retryAfter is in the future.
-// Returns: an error if persisting state to disk fails.
+// Returns: nothing.
 // Side effects: updates internal rate-limit state and persists to ~/.cache/flowstate/provider-health.json.
-func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time.Time) error {
+func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time.Time) {
 	hm.mu.Lock()
 	key := provider + "+" + model
 	hm.data[key] = retryAfter
@@ -57,7 +57,9 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 		snapshot[k] = v
 	}
 	hm.mu.Unlock()
-	return hm.PersistState(hm.persistPath, snapshot)
+	if err := hm.PersistState(hm.persistPath, snapshot); err != nil {
+		_ = err
+	}
 }
 
 // IsRateLimited returns true if provider/model is currently rate-limited.

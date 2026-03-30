@@ -31,6 +31,11 @@ func (t *builtinTestBusStarter) Start(bus *eventbus.EventBus) error {
 	return t.startErr
 }
 
+func returnNilPlugin() (plugin.Plugin, error) {
+	var p plugin.Plugin
+	return p, nil
+}
+
 var _ = Describe("Builtin", func() {
 	var reg *plugin.Registry
 	var bus *eventbus.EventBus
@@ -123,6 +128,78 @@ var _ = Describe("Builtin", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("registering builtin plugin"))
+		})
+	})
+
+	Describe("LoadBuiltins hardening", func() {
+		It("returns an error when factory panics", func() {
+			plugin.RegisterBuiltin(plugin.Registration{
+				Name:             "panic-plugin",
+				Order:            0,
+				EnabledByDefault: true,
+				Factory: func(deps plugin.Deps) (plugin.Plugin, error) {
+					panic("boom")
+				},
+			})
+
+			err := plugin.LoadBuiltins(plugin.Deps{Registry: reg})
+
+			Expect(err).To(MatchError(ContainSubstring("panic")))
+		})
+
+		It("returns an error when factory returns nil plugin", func() {
+			plugin.RegisterBuiltin(plugin.Registration{
+				Name:             "nil-plugin",
+				Order:            0,
+				EnabledByDefault: true,
+				Factory:          func(deps plugin.Deps) (plugin.Plugin, error) { return returnNilPlugin() },
+			})
+
+			err := plugin.LoadBuiltins(plugin.Deps{Registry: reg})
+
+			Expect(err).To(MatchError(ContainSubstring("nil plugin")))
+		})
+
+		It("returns an error when plugin appears in both Enabled and Disabled", func() {
+			plugin.RegisterBuiltin(plugin.Registration{
+				Name:             "conflict-plugin",
+				Order:            0,
+				EnabledByDefault: true,
+				Factory: func(deps plugin.Deps) (plugin.Plugin, error) {
+					return &builtinTestPlugin{name: "conflict-plugin", version: "1.0.0"}, nil
+				},
+			})
+
+			err := plugin.LoadBuiltins(plugin.Deps{
+				Registry: reg,
+				PluginsConfig: plugin.PluginsConf{
+					Enabled:  []string{"conflict-plugin"},
+					Disabled: []string{"conflict-plugin"},
+				},
+			})
+
+			Expect(err).To(MatchError(ContainSubstring("conflict")))
+		})
+
+		It("is idempotent — second call returns nil and registers plugin exactly once", func() {
+			calls := 0
+			plugin.RegisterBuiltin(plugin.Registration{
+				Name:             "idempotent-plugin",
+				Order:            0,
+				EnabledByDefault: true,
+				Factory: func(deps plugin.Deps) (plugin.Plugin, error) {
+					calls++
+					return &builtinTestPlugin{name: "idempotent-plugin", version: "1.0.0"}, nil
+				},
+			})
+
+			err1 := plugin.LoadBuiltins(plugin.Deps{Registry: reg})
+			err2 := plugin.LoadBuiltins(plugin.Deps{Registry: reg})
+
+			Expect(err1).NotTo(HaveOccurred())
+			Expect(err2).NotTo(HaveOccurred())
+			Expect(calls).To(Equal(1))
+			Expect(reg.Names()).To(HaveLen(1))
 		})
 	})
 
