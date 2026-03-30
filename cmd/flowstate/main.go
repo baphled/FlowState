@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -31,9 +32,11 @@ func main() {
 //   - Loads configuration, initialises the application, and runs the CLI.
 //   - Defers MCP server disconnection for graceful shutdown.
 func run() int {
+	logWriter := io.Discard
 	logPath := filepath.Join(config.DataDir(), "flowstate.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
 		if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			logWriter = f
 			log.SetOutput(f)
 			defer f.Close()
 		}
@@ -44,7 +47,7 @@ func run() int {
 		cfg = config.DefaultConfig()
 	}
 
-	app.ConfigureLogging(cfg.LogLevel)
+	app.ConfigureLogging(cfg.LogLevel, logWriter)
 
 	application, err := app.New(cfg)
 	if err != nil {

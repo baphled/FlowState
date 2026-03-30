@@ -1,8 +1,8 @@
 package app
 
 import (
+	"io"
 	"log/slog"
-	"os"
 	"strings"
 )
 
@@ -10,16 +10,20 @@ import (
 // configuration value. Recognised levels are "debug", "info", "warn", and
 // "error" (case-insensitive). Unrecognised values default to info.
 //
+// The w parameter controls where structured log output is written. Callers
+// should pass the application log file to avoid corrupting the Bubble Tea TUI.
+//
 // Expected:
 //   - level is a string log level from the application configuration.
+//   - w is a valid io.Writer for log output (e.g. a log file or io.Discard).
 //
 // Side effects:
 //   - Replaces the default slog logger with one using the parsed level.
-func ConfigureLogging(level string) {
+func ConfigureLogging(level string, w io.Writer) {
 	slogLevel := parseLogLevel(level)
 	levelVar := &slog.LevelVar{}
 	levelVar.Set(slogLevel)
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: levelVar})
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: levelVar})
 	slog.SetDefault(slog.New(handler))
 }
 
