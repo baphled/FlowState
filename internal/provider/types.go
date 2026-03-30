@@ -84,7 +84,10 @@ type StreamChunk struct {
 	ToolCall       *ToolCall
 	ToolResult     *ToolResultInfo
 	DelegationInfo *DelegationInfo
-	Event          interface{}
+	// Event carries a streaming.ProgressEvent or other streaming.Event implementation.
+	// Set by the streaming infrastructure (not by providers directly) to convey typed
+	// progress data to consumers such as SSE and WebSocket handlers.
+	Event interface{}
 }
 
 // EmbedRequest contains the parameters for an embedding request.

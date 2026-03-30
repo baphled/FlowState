@@ -18,6 +18,11 @@ import (
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 )
 
+const (
+	errSessionManagerNotConfigured    = `{"error":"session manager not configured"}`
+	errBackgroundManagerNotConfigured = `{"error":"background manager not configured"}`
+)
+
 // Streamer abstracts the streaming producer for chat responses.
 type Streamer interface {
 	// Stream returns a channel of response chunks for the given agent and message.
@@ -35,6 +40,7 @@ type Server struct {
 	sessionBroker     *SessionBroker
 	todoStore         todo.Store
 	backgroundManager *engine.BackgroundTaskManager
+	metricsHandler    http.Handler
 	mux               *http.ServeMux
 }
 
@@ -109,6 +115,20 @@ func WithTodoStore(store todo.Store) ServerOption {
 //   - None.
 func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
 	return func(s *Server) { s.backgroundManager = mgr }
+}
+
+// WithMetricsHandler sets the HTTP handler for the /metrics endpoint.
+//
+// Expected:
+//   - h is a non-nil http.Handler serving metrics in Prometheus exposition format.
+//
+// Returns:
+//   - A ServerOption that installs the provided metrics handler.
+//
+// Side effects:
+//   - None.
+func WithMetricsHandler(h http.Handler) ServerOption {
+	return func(s *Server) { s.metricsHandler = h }
 }
 
 // SetBackgroundManager sets the background manager after server construction.
@@ -219,6 +239,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
+	s.mux.HandleFunc("GET /health", s.handleHealth)
+	if s.metricsHandler != nil {
+		s.mux.Handle("GET /metrics", s.metricsHandler)
+	}
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.
@@ -344,6 +368,10 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 //   - Creates a session through the session manager.
 //   - Writes a JSON session summary response.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	type reqBody struct {
 		AgentID string `json:"agent_id"`
@@ -369,6 +397,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 // Side effects:
 //   - Writes a JSON array of session summaries.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
 	summaries := s.sessionManager.ListSessions()
 	if summaries == nil {
 		summaries = []*session.Summary{}
@@ -387,6 +419,10 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 //   - Publishes stream chunks to the session broker if configured.
 //   - Writes the updated session as JSON.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	type reqBody struct {
@@ -444,6 +480,10 @@ func (s *Server) handleSessionTodos(w http.ResponseWriter, r *http.Request) {
 //   - Writes server-sent events to the response.
 //   - Blocks until the broker closes the subscription or the client disconnects.
 func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
 	id := r.PathValue("id")
 	verbosity := r.URL.Query().Get("verbosity")
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -543,7 +583,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
 //   - None.
 func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
-		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	id := r.PathValue("id")
@@ -569,7 +609,7 @@ func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 //   - None.
 func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
-		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	id := r.PathValue("id")
@@ -595,7 +635,7 @@ func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
 //   - None.
 func (s *Server) handleSessionParent(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
-		http.Error(w, `{"error":"session manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	id := r.PathValue("id")
@@ -620,7 +660,7 @@ func (s *Server) handleSessionParent(w http.ResponseWriter, r *http.Request) {
 //   - None.
 func (s *Server) handleListTasks(w http.ResponseWriter, _ *http.Request) {
 	if s.backgroundManager == nil {
-		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errBackgroundManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	writeJSON(w, s.backgroundManager.List())
@@ -640,7 +680,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, _ *http.Request) {
 //   - None.
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	if s.backgroundManager == nil {
-		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errBackgroundManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	id := r.PathValue("id")
@@ -666,7 +706,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 //   - Cancels the specified task.
 func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	if s.backgroundManager == nil {
-		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errBackgroundManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	id := r.PathValue("id")
@@ -691,7 +731,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 //   - Cancels all running tasks when ?all=true.
 func (s *Server) handleCancelAllTasks(w http.ResponseWriter, r *http.Request) {
 	if s.backgroundManager == nil {
-		http.Error(w, `{"error":"background manager not configured"}`, http.StatusNotImplemented)
+		http.Error(w, errBackgroundManagerNotConfigured, http.StatusNotImplemented)
 		return
 	}
 	if r.URL.Query().Get("all") != "true" {
@@ -700,6 +740,25 @@ func (s *Server) handleCancelAllTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	s.backgroundManager.CancelAll()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// healthResponse represents the JSON payload returned by the health endpoint.
+type healthResponse struct {
+	Status string `json:"status"`
+}
+
+// handleHealth returns a simple health check response indicating the server is running.
+//
+// Expected:
+//   - w is a valid http.ResponseWriter.
+//
+// Returns:
+//   - 200 with JSON {"status":"ok"}.
+//
+// Side effects:
+//   - None.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, healthResponse{Status: "ok"})
 }
 
 // writeJSON encodes data as JSON and writes it to the response with HTTP 200.

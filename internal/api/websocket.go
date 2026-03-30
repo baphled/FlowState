@@ -27,8 +27,9 @@ type wsIncomingMsg struct {
 //   - None.
 func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
 	msg := WSChunkMsg{
-		Content: chunk.Content,
-		Done:    chunk.Done,
+		Content:   chunk.Content,
+		Done:      chunk.Done,
+		EventType: chunk.EventType,
 	}
 	if chunk.Error != nil {
 		msg.Error = chunk.Error.Error()
@@ -43,6 +44,9 @@ func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
 		if progressEvent, ok := chunk.Event.(streaming.ProgressEvent); ok {
 			msg.Progress = &progressEvent
 		}
+		if _, ok := chunk.Event.(streaming.Event); ok {
+			msg.EventData = chunk.Event
+		}
 	}
 	return msg
 }
@@ -55,6 +59,8 @@ type WSChunkMsg struct {
 	Delegation *provider.DelegationInfo `json:"delegation,omitempty"`
 	ToolCall   *provider.ToolCall       `json:"tool_call,omitempty"`
 	Progress   *streaming.ProgressEvent `json:"progress,omitempty"`
+	EventType  string                   `json:"event_type,omitempty"`
+	EventData  interface{}              `json:"event_data,omitempty"`
 }
 
 // handleSessionWebSocket upgrades the connection to WebSocket, validates the session,
@@ -69,6 +75,10 @@ type WSChunkMsg struct {
 //   - Writes engine response chunks as JSON to the client.
 //   - Closes the connection when the engine stream is complete or an error occurs.
 func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
 	id := r.PathValue("id")
 	if _, err := s.sessionManager.GetSession(id); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -199,8 +209,9 @@ func closeWebSocket(conn *websocket.Conn) {
 	}
 }
 
-// WSConsumer implements streaming.DelegationConsumer and streaming.DelegationProgressConsumer
-// by forwarding events as JSON over a WebSocket connection.
+// WSConsumer implements streaming.DelegationConsumer, streaming.DelegationProgressConsumer,
+// streaming.EventConsumer, and streaming.HarnessEventConsumer by forwarding events as
+// JSON over a WebSocket connection.
 type WSConsumer struct {
 	conn *websocket.Conn
 	ctx  context.Context
@@ -294,5 +305,173 @@ func (c *WSConsumer) WriteProgress(ev streaming.ProgressEvent) error {
 func (c *WSConsumer) WriteProgressToMsg(ev streaming.ProgressEvent) WSChunkMsg {
 	return WSChunkMsg{
 		Progress: &ev,
+	}
+}
+
+// WriteEvent sends a typed streaming Event as a WebSocket message to the client.
+//
+// Expected:
+//   - event is a non-nil Event implementation.
+//   - conn is an open WebSocket connection.
+//
+// Returns:
+//   - An error if the write fails.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteEvent(event streaming.Event) error {
+	msg := c.WriteEventToMsg(event)
+	return sendWSMsg(c.ctx, c.conn, msg)
+}
+
+// WriteEventToMsg converts a typed streaming Event to a WSChunkMsg for testing.
+//
+// Expected:
+//   - event is a non-nil Event implementation.
+//
+// Returns:
+//   - A WSChunkMsg with event_type and event_data fields populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteEventToMsg(event streaming.Event) WSChunkMsg {
+	return WSChunkMsg{
+		EventType: event.Type(),
+		EventData: event,
+	}
+}
+
+// WriteHarnessRetry sends a harness retry event as a WebSocket message to the client.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//   - conn is an open WebSocket connection.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteHarnessRetry(content string) {
+	msg := c.WriteHarnessRetryToMsg(content)
+	c.sendHarnessMsg(msg)
+}
+
+// WriteHarnessRetryToMsg converts harness retry content to a WSChunkMsg for testing.
+//
+// Expected:
+//   - content describes the validation failure and retry reason.
+//
+// Returns:
+//   - A WSChunkMsg with event_type set to harness_retry and content populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteHarnessRetryToMsg(content string) WSChunkMsg {
+	return WSChunkMsg{
+		EventType: "harness_retry",
+		Content:   content,
+	}
+}
+
+// WriteAttemptStart sends a harness attempt start event as a WebSocket message to the client.
+//
+// Expected:
+//   - content describes the attempt being started.
+//   - conn is an open WebSocket connection.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteAttemptStart(content string) {
+	msg := c.WriteAttemptStartToMsg(content)
+	c.sendHarnessMsg(msg)
+}
+
+// WriteAttemptStartToMsg converts harness attempt start content to a WSChunkMsg for testing.
+//
+// Expected:
+//   - content describes the attempt being started.
+//
+// Returns:
+//   - A WSChunkMsg with event_type set to harness_attempt_start and content populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteAttemptStartToMsg(content string) WSChunkMsg {
+	return WSChunkMsg{
+		EventType: "harness_attempt_start",
+		Content:   content,
+	}
+}
+
+// WriteComplete sends a harness completion event as a WebSocket message to the client.
+//
+// Expected:
+//   - content describes the evaluation outcome.
+//   - conn is an open WebSocket connection.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteComplete(content string) {
+	msg := c.WriteCompleteToMsg(content)
+	c.sendHarnessMsg(msg)
+}
+
+// WriteCompleteToMsg converts harness completion content to a WSChunkMsg for testing.
+//
+// Expected:
+//   - content describes the evaluation outcome.
+//
+// Returns:
+//   - A WSChunkMsg with event_type set to harness_complete and content populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteCompleteToMsg(content string) WSChunkMsg {
+	return WSChunkMsg{
+		EventType: "harness_complete",
+		Content:   content,
+	}
+}
+
+// WriteCriticFeedback sends a harness critic feedback event as a WebSocket message to the client.
+//
+// Expected:
+//   - content describes the critic's feedback on the plan.
+//   - conn is an open WebSocket connection.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection.
+func (c *WSConsumer) WriteCriticFeedback(content string) {
+	msg := c.WriteCriticFeedbackToMsg(content)
+	c.sendHarnessMsg(msg)
+}
+
+// WriteCriticFeedbackToMsg converts harness critic feedback to a WSChunkMsg for testing.
+//
+// Expected:
+//   - content describes the critic's feedback on the plan.
+//
+// Returns:
+//   - A WSChunkMsg with event_type set to harness_critic_feedback and content populated.
+//
+// Side effects:
+//   - None.
+func (c *WSConsumer) WriteCriticFeedbackToMsg(content string) WSChunkMsg {
+	return WSChunkMsg{
+		EventType: "harness_critic_feedback",
+		Content:   content,
+	}
+}
+
+// sendHarnessMsg sends a harness event message over the WebSocket, discarding errors
+// because the HarnessEventConsumer interface methods do not return errors.
+//
+// Expected:
+//   - msg is a valid WSChunkMsg to send.
+//   - c.conn is an open WebSocket connection.
+//
+// Side effects:
+//   - Writes JSON to the WebSocket connection if the connection is available.
+func (c *WSConsumer) sendHarnessMsg(msg WSChunkMsg) {
+	if err := sendWSMsg(c.ctx, c.conn, msg); err != nil {
+		return
 	}
 }

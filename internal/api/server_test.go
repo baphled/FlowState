@@ -23,6 +23,9 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type mockStreamer struct {
@@ -741,5 +744,121 @@ var _ = Describe("Background task endpoints", func() {
 			noMgrServer.Handler().ServeHTTP(w, req)
 			Expect(w.Code).To(Equal(http.StatusNotImplemented))
 		})
+	})
+})
+
+var _ = Describe("Session manager nil-safety", func() {
+	var server *api.Server
+
+	BeforeEach(func() {
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		server = api.NewServer(streamer, registry, disc, nil)
+	})
+
+	Describe("POST /api/v1/sessions", func() {
+		It("returns 501 when session manager is nil", func() {
+			body := `{"agent_id":"test-agent"}`
+			req := httptest.NewRequest("POST", "/api/v1/sessions", strings.NewReader(body))
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("GET /api/v1/sessions", func() {
+		It("returns 501 when session manager is nil", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("POST /api/v1/sessions/{id}/messages", func() {
+		It("returns 501 when session manager is nil", func() {
+			body := `{"content":"hello"}`
+			req := httptest.NewRequest("POST", "/api/v1/sessions/sess-1/messages", strings.NewReader(body))
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("GET /api/v1/sessions/{id}/stream", func() {
+		It("returns 501 when session manager is nil", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions/sess-1/stream", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("GET /api/v1/sessions/{id}/ws", func() {
+		It("returns 501 when session manager is nil", func() {
+			req := httptest.NewRequest("GET", "/api/v1/sessions/sess-1/ws", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+})
+
+var _ = Describe("GET /health", func() {
+	var server *api.Server
+
+	BeforeEach(func() {
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		server = api.NewServer(streamer, registry, disc, nil)
+	})
+
+	It("returns 200 with status ok", func() {
+		req := httptest.NewRequest("GET", "/health", http.NoBody)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Header().Get("Content-Type")).To(Equal("application/json"))
+
+		var resp map[string]string
+		Expect(json.Unmarshal(w.Body.Bytes(), &resp)).To(Succeed())
+		Expect(resp["status"]).To(Equal("ok"))
+	})
+})
+
+var _ = Describe("GET /metrics", func() {
+	It("returns 200 with metrics when handler is configured", func() {
+		reg := prometheus.NewRegistry()
+		metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		server := api.NewServer(
+			streamer, registry, disc, nil,
+			api.WithMetricsHandler(metricsHandler),
+		)
+
+		req := httptest.NewRequest("GET", "/metrics", http.NoBody)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+	})
+
+	It("does not serve metrics when no handler is configured", func() {
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		server := api.NewServer(streamer, registry, disc, nil)
+
+		req := httptest.NewRequest("GET", "/metrics", http.NoBody)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+
+		Expect(w.Header().Get("Content-Type")).NotTo(ContainSubstring("text/plain"))
 	})
 })
