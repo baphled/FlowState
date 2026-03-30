@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
@@ -29,6 +30,7 @@ type Engine struct {
 	chatProvider      provider.Provider
 	embeddingProvider provider.Provider
 	failbackChain     *provider.FailbackChain
+	failoverManager   *failover.Manager
 	manifest          agent.Manifest
 	tools             []tool.Tool
 	skills            []skill.Skill
@@ -55,6 +57,7 @@ type Config struct {
 	EmbeddingProvider provider.Provider
 	Registry          *provider.Registry
 	AgentRegistry     *agent.Registry
+	FailoverManager   *failover.Manager
 	Manifest          agent.Manifest
 	Tools             []tool.Tool
 	Skills            []skill.Skill
@@ -90,10 +93,16 @@ func New(cfg Config) *Engine {
 	}
 
 	var failbackChain *provider.FailbackChain
-	if cfg.Registry != nil {
+	if cfg.FailoverManager == nil && cfg.Registry != nil {
 		prefs := buildModelPreferences(cfg.Manifest)
 		if len(prefs) > 0 {
 			failbackChain = provider.NewFailbackChain(cfg.Registry, prefs, timeout)
+		}
+	}
+	if cfg.FailoverManager != nil {
+		prefs := buildModelPreferences(cfg.Manifest)
+		if len(prefs) > 0 {
+			cfg.FailoverManager.SetBasePreferences(prefs)
 		}
 	}
 
@@ -101,6 +110,7 @@ func New(cfg Config) *Engine {
 		chatProvider:      cfg.ChatProvider,
 		embeddingProvider: cfg.EmbeddingProvider,
 		failbackChain:     failbackChain,
+		failoverManager:   cfg.FailoverManager,
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
 		skills:            cfg.Skills,
@@ -200,6 +210,15 @@ func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 // Side effects:
 //   - None.
 func (e *Engine) LastProvider() string {
+	if e.failoverManager != nil {
+		if p := e.failoverManager.LastProvider(); p != "" {
+			return p
+		}
+		prefs := e.failoverManager.Preferences()
+		if len(prefs) > 0 {
+			return prefs[0].Provider
+		}
+	}
 	if e.failbackChain != nil {
 		if p := e.failbackChain.LastProvider(); p != "" {
 			return p
@@ -221,6 +240,15 @@ func (e *Engine) LastProvider() string {
 // Side effects:
 //   - None.
 func (e *Engine) LastModel() string {
+	if e.failoverManager != nil {
+		if m := e.failoverManager.LastModel(); m != "" {
+			return m
+		}
+		prefs := e.failoverManager.Preferences()
+		if len(prefs) > 0 {
+			return prefs[0].Model
+		}
+	}
 	if e.failbackChain != nil {
 		if m := e.failbackChain.LastModel(); m != "" {
 			return m
@@ -239,6 +267,12 @@ func (e *Engine) LastModel() string {
 // Side effects:
 //   - Modifies the failback chain's preferences to use the specified model first.
 func (e *Engine) SetModelPreference(providerName string, modelName string) {
+	if e.failoverManager != nil {
+		e.failoverManager.SetOverride(provider.ModelPreference{
+			Provider: providerName, Model: modelName,
+		})
+		return
+	}
 	if e.failbackChain != nil {
 		e.failbackChain.SetPreferences([]provider.ModelPreference{
 			{Provider: providerName, Model: modelName},
@@ -257,11 +291,13 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.manifest = manifest
-	if e.providerRegistry != nil {
-		prefs := buildModelPreferences(manifest)
-		if len(prefs) > 0 {
-			e.failbackChain = provider.NewFailbackChain(e.providerRegistry, prefs, e.streamTimeout)
-		}
+	prefs := buildModelPreferences(manifest)
+	if e.failoverManager != nil {
+		e.failoverManager.SetBasePreferences(prefs)
+		return
+	}
+	if e.providerRegistry != nil && len(prefs) > 0 {
+		e.failbackChain = provider.NewFailbackChain(e.providerRegistry, prefs, e.streamTimeout)
 	}
 }
 
@@ -287,6 +323,9 @@ func (e *Engine) Manifest() agent.Manifest {
 // Side effects:
 //   - May make network calls to providers to fetch model lists.
 func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
+	if e.failoverManager != nil {
+		return e.failoverManager.ListModels()
+	}
 	if e.failbackChain != nil {
 		return e.failbackChain.ListModels()
 	}
@@ -491,6 +530,12 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 //   - None.
 func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		if e.failoverManager != nil && req.Provider != "" {
+			p, err := e.providerRegistry.Get(req.Provider)
+			if err == nil {
+				return p.Stream(ctx, *req)
+			}
+		}
 		if e.failbackChain != nil {
 			return e.failbackChain.Stream(ctx, *req)
 		}
@@ -982,6 +1027,12 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 func (e *Engine) ModelContextLimit() int {
 	if e.tokenCounter == nil {
 		return 4096
+	}
+	if e.failoverManager != nil {
+		prefs := e.failoverManager.Preferences()
+		if len(prefs) > 0 {
+			return e.tokenCounter.ModelLimit(prefs[0].Model)
+		}
 	}
 	if e.failbackChain != nil {
 		if m := e.failbackChain.DefaultModel(); m != "" {

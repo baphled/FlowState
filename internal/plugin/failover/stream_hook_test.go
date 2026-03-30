@@ -1,0 +1,404 @@
+package failover_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin/failover"
+	"github.com/baphled/flowstate/internal/provider"
+)
+
+type mockStreamProvider struct {
+	name     string
+	streamFn func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error)
+}
+
+func (m *mockStreamProvider) Name() string { return m.name }
+
+func (m *mockStreamProvider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return m.streamFn(ctx, req)
+}
+
+func (m *mockStreamProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, errMockNotImplemented
+}
+
+func (m *mockStreamProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, errMockNotImplemented
+}
+
+func (m *mockStreamProvider) Models() ([]provider.Model, error) {
+	return nil, errMockNotImplemented
+}
+
+func successStreamFn(chunks ...provider.StreamChunk) func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		ch := make(chan provider.StreamChunk, len(chunks))
+		go func() {
+			defer close(ch)
+			for _, c := range chunks {
+				ch <- c
+			}
+		}()
+		return ch, nil
+	}
+}
+
+func syncErrorStreamFn(err error) func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		return nil, err
+	}
+}
+
+func asyncErrorStreamFn(err error) func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		ch := make(chan provider.StreamChunk, 1)
+		go func() {
+			defer close(ch)
+			ch <- provider.StreamChunk{Error: err, Done: true}
+		}()
+		return ch, nil
+	}
+}
+
+func closedChannelStreamFn() func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		ch := make(chan provider.StreamChunk)
+		close(ch)
+		return ch, nil
+	}
+}
+
+func baseHandler(registry *provider.Registry) hook.HandlerFunc {
+	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		if req.Provider == "" {
+			return nil, fmt.Errorf("no provider specified in request")
+		}
+		p, err := registry.Get(req.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q not found: %w", req.Provider, err)
+		}
+		return p.Stream(ctx, *req)
+	}
+}
+
+var _ = Describe("StreamHook", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		sh       *failover.StreamHook
+		timeout  time.Duration
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		timeout = 2 * time.Second
+		manager = failover.NewManager(registry, health, timeout)
+		sh = failover.NewStreamHook(manager)
+	})
+
+	Describe("Execute", func() {
+		Context("when first provider succeeds", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name: "anthropic",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Hello"},
+						provider.StreamChunk{Content: " World", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("returns the stream from that provider", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ch).NotTo(BeNil())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(2))
+				Expect(chunks[0].Content).To(Equal("Hello"))
+				Expect(chunks[1].Content).To(Equal(" World"))
+				Expect(chunks[1].Done).To(BeTrue())
+			})
+
+			It("calls SetLast on the manager", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+				Expect(manager.LastProvider()).To(Equal("anthropic"))
+				Expect(manager.LastModel()).To(Equal("claude-3"))
+			})
+		})
+
+		Context("when first provider returns sync error and second succeeds", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("auth failed")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "ollama",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Fallback response", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("falls back to the second provider", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Fallback response"))
+			})
+
+			It("records the fallback provider as last", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+				Expect(manager.LastProvider()).To(Equal("ollama"))
+				Expect(manager.LastModel()).To(Equal("llama3.2"))
+			})
+		})
+
+		Context("when first provider returns async error and second succeeds", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: asyncErrorStreamFn(errors.New("model not found")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "ollama",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Async fallback", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("detects the async error and falls back", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Async fallback"))
+			})
+		})
+
+		Context("when first provider channel closes immediately and second succeeds", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: closedChannelStreamFn(),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "ollama",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Closed fallback", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("detects immediate close and falls back", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Closed fallback"))
+			})
+		})
+
+		Context("when all providers fail", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("anthropic down")),
+				})
+				registry.Register(&mockStreamProvider{
+					name:     "ollama",
+					streamFn: syncErrorStreamFn(errors.New("ollama down")),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "ollama", Model: "llama3.2"},
+				})
+			})
+
+			It("returns the last error", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("all providers failed"))
+			})
+		})
+
+		Context("when no candidates are available", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("should not be called")),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+				health.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
+			})
+
+			It("returns an error about no healthy providers", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("no healthy providers available"))
+			})
+		})
+
+		Context("when replay channel delivers first chunk then remaining", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name: "anthropic",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "First"},
+						provider.StreamChunk{Content: "Second"},
+						provider.StreamChunk{Content: "Third", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("replays the first chunk and forwards remaining chunks in order", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					contents = append(contents, chunk.Content)
+				}
+				Expect(contents).To(Equal([]string{"First", "Second", "Third"}))
+			})
+		})
+
+		Context("when per-attempt timeout is applied", func() {
+			BeforeEach(func() {
+				shortTimeout := 50 * time.Millisecond
+				manager = failover.NewManager(registry, health, shortTimeout)
+				sh = failover.NewStreamHook(manager)
+
+				registry.Register(&mockStreamProvider{
+					name: "slow",
+					streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						ch := make(chan provider.StreamChunk)
+						return ch, nil
+					},
+				})
+				registry.Register(&mockStreamProvider{
+					name: "fast",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Fast response", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "slow", Model: "slow-model"},
+					{Provider: "fast", Model: "fast-model"},
+				})
+			})
+
+			It("times out the slow provider and falls back to fast", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				var chunks []provider.StreamChunk
+				for chunk := range ch {
+					chunks = append(chunks, chunk)
+				}
+				Expect(chunks).To(HaveLen(1))
+				Expect(chunks[0].Content).To(Equal("Fast response"))
+				Expect(manager.LastProvider()).To(Equal("fast"))
+			})
+		})
+
+		Context("when request fields are set for each candidate", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name: "anthropic",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Response", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("sets provider and model on the request", func() {
+				var capturedProvider, capturedModel string
+				captureHandler := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					capturedProvider = req.Provider
+					capturedModel = req.Model
+					p, _ := registry.Get(req.Provider)
+					return p.Stream(context.Background(), *req)
+				}
+
+				handler := sh.Execute(captureHandler)
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				Expect(capturedProvider).To(Equal("anthropic"))
+				Expect(capturedModel).To(Equal("claude-3"))
+			})
+		})
+	})
+})

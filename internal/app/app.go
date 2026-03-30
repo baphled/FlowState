@@ -85,6 +85,7 @@ type pluginRuntime struct {
 	eventLogger     *eventlogger.EventLogger
 	healthManager   *failover.HealthManager
 	failoverHook    *failover.Hook
+	failoverManager *failover.Manager
 	dispatcher      *external.Dispatcher
 	externalStarted bool
 }
@@ -119,6 +120,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		return nil, err
 	}
 	pluginRT := setupPluginRuntime(cfg)
+	wireFailoverManager(pluginRT, providerRegistry)
 	runtime, err := setupEngine(setupEngineParams{
 		cfg:                cfg,
 		providerRegistry:   providerRegistry,
@@ -130,6 +132,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		sessionStore:       sessionStore,
 		learningStore:      learningStore,
 		failoverHook:       pluginFailoverHook(pluginRT),
+		failoverManager:    pluginFailoverManager(pluginRT),
 	})
 	if err != nil {
 		return nil, err
@@ -282,6 +285,7 @@ type engineParams struct {
 	agentsFileLoader   *agent.AgentsFileLoader
 	tokenCounter       ctxstore.TokenCounter
 	failoverHook       *failover.Hook
+	failoverManager    *failover.Manager
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -322,6 +326,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		agentsFileLoader:   buildAgentsFileLoader(),
 		tokenCounter:       ctxstore.NewTiktokenCounter(),
 		failoverHook:       params.failoverHook,
+		failoverManager:    params.failoverManager,
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -359,6 +364,7 @@ type setupEngineParams struct {
 	sessionStore       *ctxstore.FileSessionStore
 	learningStore      *learning.JSONFileStore
 	failoverHook       *failover.Hook
+	failoverManager    *failover.Manager
 }
 
 // runtimeComponents groups the runtime values created during engine setup.
@@ -389,12 +395,13 @@ func createEngine(params engineParams) *engine.Engine {
 			return eng.Manifest()
 		}
 		return params.defaultManifest
-	}, params.failoverHook)
+	}, params.failoverHook, params.failoverManager)
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
 		Registry:          params.providerRegistry,
 		AgentRegistry:     params.agentRegistry,
+		FailoverManager:   params.failoverManager,
 		Manifest:          params.defaultManifest,
 		Skills:            params.alwaysActiveSkills,
 		Store:             params.contextStore,
@@ -506,7 +513,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
 func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
-	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil)
+	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil)
 	eng := engine.New(engine.Config{
 		Registry:      a.providerRegistry,
 		AgentRegistry: a.Registry,
@@ -939,13 +946,14 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 }
 
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
-// When failoverHk is non-nil, a failover middleware hook is prepended to the chain so
-// provider failover runs before all other hooks.
+// When failoverMgr is non-nil, a StreamHook is appended LAST so provider failover wraps
+// the base handler. When only failoverHk is set (legacy path), it is prepended first.
 //
 // Expected:
 //   - learningStore is a non-nil JSONFileStore for persisting learning data.
 //   - manifestGetter returns the current agent manifest for skill selection.
-//   - failoverHk may be nil; when non-nil it is prepended as the first hook.
+//   - failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
+//   - failoverMgr may be nil; when non-nil, a StreamHook is appended LAST.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
@@ -956,6 +964,7 @@ func buildHookChain(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
 	failoverHk *failover.Hook,
+	failoverMgr *failover.Manager,
 ) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
 	if err != nil {
@@ -974,10 +983,48 @@ func buildHookChain(
 		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
 	}
 	hooks = append(hooks, tracer.Hook())
-	if failoverHk != nil {
+	if failoverMgr != nil {
+		streamHook := failover.NewStreamHook(failoverMgr)
+		hooks = append(hooks, streamHook.Execute)
+	} else if failoverHk != nil {
 		hooks = append([]hook.Hook{failoverHookAdapter(failoverHk)}, hooks...)
 	}
 	return hook.NewChain(hooks...)
+}
+
+// wireFailoverManager creates a failover.Manager on the plugin runtime using the
+// provider registry and health manager. This bridges the gap between plugin setup
+// (which has the health manager) and engine setup (which needs the manager).
+//
+// Expected:
+//   - rt may be nil; when nil the function returns immediately.
+//   - providerRegistry is the registry containing all configured providers.
+//
+// Side effects:
+//   - Sets rt.failoverManager when rt is non-nil.
+func wireFailoverManager(rt *pluginRuntime, providerRegistry *provider.Registry) {
+	if rt == nil || rt.healthManager == nil {
+		return
+	}
+	rt.failoverManager = failover.NewManager(providerRegistry, rt.healthManager, 5*time.Minute)
+}
+
+// pluginFailoverManager returns the failover manager from the plugin runtime, or nil
+// when the runtime is not initialised.
+//
+// Expected:
+//   - rt may be nil; when nil the function returns nil.
+//
+// Returns:
+//   - The failover manager, or nil when rt is nil.
+//
+// Side effects:
+//   - None.
+func pluginFailoverManager(rt *pluginRuntime) *failover.Manager {
+	if rt == nil {
+		return nil
+	}
+	return rt.failoverManager
 }
 
 // pluginFailoverHook returns the failover hook from the plugin runtime, or nil
@@ -1333,7 +1380,7 @@ func BuildHookChainForTest(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
-	return buildHookChain(learningStore, manifestGetter, nil)
+	return buildHookChain(learningStore, manifestGetter, nil, nil)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.
@@ -1686,7 +1733,7 @@ func BuildHookChainForTestWithFailover(
 	health := failover.NewHealthManager()
 	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
 	fh := failover.NewHook(chain, health)
-	return buildHookChain(learningStore, manifestGetter, fh)
+	return buildHookChain(learningStore, manifestGetter, fh, nil)
 }
 
 // SetBackgroundManager sets the background task manager.
