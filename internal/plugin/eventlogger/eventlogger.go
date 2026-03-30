@@ -56,6 +56,30 @@ type EventLogger struct {
 	file    *os.File
 }
 
+// Init initialises the event logger.
+//
+// Returns: nil.
+// Side effects: none.
+func (l *EventLogger) Init() error {
+	return nil
+}
+
+// Name returns the plugin name.
+//
+// Returns: the builtin plugin name.
+// Side effects: none.
+func (l *EventLogger) Name() string {
+	return "event-logger"
+}
+
+// Version returns the plugin version.
+//
+// Returns: the builtin plugin version string.
+// Side effects: none.
+func (l *EventLogger) Version() string {
+	return "v0.0.0"
+}
+
 // New creates a new EventLogger targeting the given path with a maximum file
 // size in bytes before rotation.
 //
