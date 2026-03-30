@@ -5,4 +5,5 @@ package all
 import (
 	// Import eventlogger for its init-based builtin registration.
 	_ "github.com/baphled/flowstate/internal/plugin/eventlogger"
+	_ "github.com/baphled/flowstate/internal/plugin/failover"
 )
