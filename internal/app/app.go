@@ -1149,9 +1149,16 @@ func startBusPlugins(registry *pluginpkg.Registry, bus *eventbus.EventBus) {
 		if !ok {
 			continue
 		}
-		if err := starter.Start(bus); err != nil {
-			log.Printf("warning: starting builtin plugin %q: %v", name, err)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("panic: starting builtin plugin %q: %v", name, r)
+				}
+			}()
+			if err := starter.Start(bus); err != nil {
+				log.Printf("warning: starting builtin plugin %q: %v", name, err)
+			}
+		}()
 	}
 }
 
