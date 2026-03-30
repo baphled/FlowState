@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -187,12 +189,14 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 	}
 
 	writerEngine := engine.New(engine.Config{
-		Registry: reg,
-		Manifest: writerManifest,
+		Registry:        reg,
+		FailoverManager: failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute),
+		Manifest:        writerManifest,
 	})
 	reviewerEngine := engine.New(engine.Config{
-		Registry: reg,
-		Manifest: reviewerManifest,
+		Registry:        reg,
+		FailoverManager: failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute),
+		Manifest:        reviewerManifest,
 	})
 
 	engines := map[string]*engine.Engine{

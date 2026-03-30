@@ -103,6 +103,12 @@ type Model struct {
 	ContextLength int
 }
 
+// ModelPreference specifies a preferred model and provider combination.
+type ModelPreference struct {
+	Provider string
+	Model    string
+}
+
 // Health contains health check information for a provider.
 type Health struct {
 	Name      string

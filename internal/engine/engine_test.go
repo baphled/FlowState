@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
@@ -497,6 +498,7 @@ var _ = Describe("Engine", func() {
 			primaryProvider   *mockProvider
 			secondaryProvider *mockProvider
 			registry          *provider.Registry
+			manager           *failover.Manager
 		)
 
 		BeforeEach(func() {
@@ -518,6 +520,13 @@ var _ = Describe("Engine", func() {
 			registry.Register(primaryProvider)
 			registry.Register(secondaryProvider)
 
+			health := failover.NewHealthManager()
+			manager = failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "primary", Model: "primary-model"},
+				{Provider: "secondary", Model: "secondary-model"},
+			})
+
 			manifest = agent.Manifest{
 				ID:         "test-agent",
 				Name:       "Test Agent",
@@ -538,8 +547,9 @@ var _ = Describe("Engine", func() {
 		Context("when primary provider works", func() {
 			It("uses the primary provider", func() {
 				eng := engine.New(engine.Config{
-					Registry: registry,
-					Manifest: manifest,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
 				})
 
 				ctx := context.Background()
@@ -565,8 +575,9 @@ var _ = Describe("Engine", func() {
 
 			It("uses the secondary provider", func() {
 				eng := engine.New(engine.Config{
-					Registry: registry,
-					Manifest: manifest,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
 				})
 
 				ctx := context.Background()
@@ -593,8 +604,9 @@ var _ = Describe("Engine", func() {
 
 			It("returns error listing all attempts", func() {
 				eng := engine.New(engine.Config{
-					Registry: registry,
-					Manifest: manifest,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
 				})
 
 				ctx := context.Background()
@@ -616,6 +628,13 @@ var _ = Describe("Engine", func() {
 				slowRegistry.Register(slowProvider)
 				slowRegistry.Register(secondaryProvider)
 
+				slowHealth := failover.NewHealthManager()
+				slowManager := failover.NewManager(slowRegistry, slowHealth, 50*time.Millisecond)
+				slowManager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "slow", Model: "slow-model"},
+					{Provider: "secondary", Model: "secondary-model"},
+				})
+
 				slowManifest := agent.Manifest{
 					ID:         "test-agent",
 					Name:       "Test Agent",
@@ -633,9 +652,10 @@ var _ = Describe("Engine", func() {
 				}
 
 				eng := engine.New(engine.Config{
-					Registry:      slowRegistry,
-					Manifest:      slowManifest,
-					StreamTimeout: 50 * time.Millisecond,
+					Registry:        slowRegistry,
+					FailoverManager: slowManager,
+					Manifest:        slowManifest,
+					StreamTimeout:   50 * time.Millisecond,
 				})
 
 				slowProvider.streamErr = context.DeadlineExceeded
@@ -658,8 +678,9 @@ var _ = Describe("Engine", func() {
 		Context("when logging which provider served request", func() {
 			It("tracks the last provider that served the request", func() {
 				eng := engine.New(engine.Config{
-					Registry: registry,
-					Manifest: manifest,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
 				})
 
 				ctx := context.Background()
@@ -775,9 +796,17 @@ var _ = Describe("Engine", func() {
 				},
 			}
 
+			health := failover.NewHealthManager()
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "ollama", Model: "llama3.2"},
+				{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"},
+			})
+
 			eng := engine.New(engine.Config{
-				Registry: registry,
-				Manifest: manifestWithProviderKeys,
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest:        manifestWithProviderKeys,
 			})
 
 			Expect(eng).NotTo(BeNil())
@@ -965,10 +994,17 @@ var _ = Describe("Engine", func() {
 
 				tokenCounter := ctxstore.NewTiktokenCounter()
 
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				})
+
 				eng := engine.New(engine.Config{
-					Registry:     registry,
-					Manifest:     claudeManifest,
-					TokenCounter: tokenCounter,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        claudeManifest,
+					TokenCounter:    tokenCounter,
 				})
 
 				ctx := context.Background()
@@ -1028,10 +1064,18 @@ var _ = Describe("Engine", func() {
 
 				tokenCounter := ctxstore.NewTiktokenCounter()
 
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "ollama", Model: "llama3.2"},
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				})
+
 				eng := engine.New(engine.Config{
-					Registry:     registry,
-					Manifest:     ollamaManifest,
-					TokenCounter: tokenCounter,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        ollamaManifest,
+					TokenCounter:    tokenCounter,
 				})
 
 				ctx := context.Background()
@@ -1083,10 +1127,17 @@ var _ = Describe("Engine", func() {
 
 				tokenCounter := ctxstore.NewTiktokenCounter()
 
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				})
+
 				eng := engine.New(engine.Config{
-					Registry:     registry,
-					Manifest:     claudeManifest,
-					TokenCounter: tokenCounter,
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        claudeManifest,
+					TokenCounter:    tokenCounter,
 				})
 
 				ctx := context.Background()

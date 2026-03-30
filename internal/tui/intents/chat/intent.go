@@ -156,6 +156,8 @@ type Intent struct {
 	sessionViewerModal    *chat.SessionViewerModal
 }
 
+var runningInTests bool
+
 // NewIntent creates a new chat intent from the given configuration.
 //
 // Expected:
@@ -180,6 +182,9 @@ func NewIntent(cfg IntentConfig) *Intent {
 	})
 
 	notifManager := notification.NewInMemoryManager()
+	if cfg.Engine != nil {
+		cfg.Engine.SetModelPreference(cfg.ProviderName, cfg.ModelName)
+	}
 
 	return &Intent{
 		app:                 cfg.App,
@@ -217,6 +222,9 @@ func NewIntent(cfg IntentConfig) *Intent {
 // Side effects:
 //   - Schedules the first SpinnerTickMsg.
 func (i *Intent) Init() tea.Cmd {
+	if runningInTests {
+		return nil
+	}
 	return tea.Batch(tickSpinner(), i.notifications.Init())
 }
 

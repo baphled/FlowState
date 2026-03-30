@@ -567,9 +567,18 @@ func (p *PluginStepDefinitions) aSessionIsCreated() error {
 		UserID:    "test-user",
 		Action:    "created",
 	})
-	p.bus.Publish("session", event)
-	time.Sleep(50 * time.Millisecond)
-	return nil
+	p.bus.Publish("session.created", event)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		data, err := os.ReadFile(p.logPath)
+		if err == nil && len(data) > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("event log file is empty")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // anEventIsWrittenToTheEventLogFile verifies the JSONL log contains the session event.

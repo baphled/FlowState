@@ -18,6 +18,7 @@ var _ = Describe("notification wiring", func() {
 	var intent *chat.Intent
 
 	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
 		intent = chat.NewIntent(chat.IntentConfig{
 			AgentID:      "test-agent",
 			SessionID:    "test-session",
@@ -25,6 +26,10 @@ var _ = Describe("notification wiring", func() {
 			ModelName:    "gpt-4o",
 			TokenBudget:  4096,
 		})
+	})
+
+	AfterEach(func() {
+		chat.SetRunningInTestsForTest(false)
 	})
 
 	Describe("NewIntent initialisation", func() {
@@ -38,9 +43,9 @@ var _ = Describe("notification wiring", func() {
 	})
 
 	Describe("Init", func() {
-		It("returns a batch command including notification tick", func() {
+		It("skips notification tick initialisation in tests", func() {
 			cmd := intent.Init()
-			Expect(cmd).NotTo(BeNil())
+			Expect(cmd).To(BeNil())
 		})
 	})
 

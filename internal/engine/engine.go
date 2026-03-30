@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -29,7 +30,6 @@ const (
 type Engine struct {
 	chatProvider      provider.Provider
 	embeddingProvider provider.Provider
-	failbackChain     *provider.FailbackChain
 	failoverManager   *failover.Manager
 	manifest          agent.Manifest
 	tools             []tool.Tool
@@ -47,6 +47,8 @@ type Engine struct {
 	agentsFileLoader  *agent.AgentsFileLoader
 	lastContextResult ctxstore.BuildResult
 	agentOverrides    map[string]string
+	preferredProvider string
+	preferredModel    string
 	bus               *eventbus.EventBus
 	mu                sync.RWMutex
 }
@@ -92,24 +94,23 @@ func New(cfg Config) *Engine {
 		timeout = defaultStreamTimeout
 	}
 
-	var failbackChain *provider.FailbackChain
-	if cfg.FailoverManager == nil && cfg.Registry != nil {
-		prefs := buildModelPreferences(cfg.Manifest)
-		if len(prefs) > 0 {
-			failbackChain = provider.NewFailbackChain(cfg.Registry, prefs, timeout)
-		}
-	}
+	var chain *hook.Chain
 	if cfg.FailoverManager != nil {
 		prefs := buildModelPreferences(cfg.Manifest)
 		if len(prefs) > 0 {
 			cfg.FailoverManager.SetBasePreferences(prefs)
 		}
+		streamHook := failover.NewStreamHook(cfg.FailoverManager)
+		chain = hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
+			return streamHook.Execute(next)
+		})
+	} else if cfg.HookChain != nil {
+		chain = cfg.HookChain
 	}
 
 	return &Engine{
 		chatProvider:      cfg.ChatProvider,
 		embeddingProvider: cfg.EmbeddingProvider,
-		failbackChain:     failbackChain,
 		failoverManager:   cfg.FailoverManager,
 		manifest:          cfg.Manifest,
 		tools:             cfg.Tools,
@@ -119,7 +120,7 @@ func New(cfg Config) *Engine {
 		windowBuilder:     windowBuilder,
 		tokenCounter:      cfg.TokenCounter,
 		streamTimeout:     timeout,
-		hookChain:         cfg.HookChain,
+		hookChain:         chain,
 		toolRegistry:      cfg.ToolRegistry,
 		permissionHandler: cfg.PermissionHandler,
 		providerRegistry:  cfg.Registry,
@@ -210,6 +211,14 @@ func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
 // Side effects:
 //   - None.
 func (e *Engine) LastProvider() string {
+	e.mu.RLock()
+	if e.preferredProvider != "" {
+		providerName := e.preferredProvider
+		e.mu.RUnlock()
+		return providerName
+	}
+	e.mu.RUnlock()
+
 	if e.failoverManager != nil {
 		if p := e.failoverManager.LastProvider(); p != "" {
 			return p
@@ -219,11 +228,11 @@ func (e *Engine) LastProvider() string {
 			return prefs[0].Provider
 		}
 	}
-	if e.failbackChain != nil {
-		if p := e.failbackChain.LastProvider(); p != "" {
-			return p
-		}
-		return e.failbackChain.DefaultProvider()
+	e.mu.RLock()
+	prefs := buildModelPreferences(e.manifest)
+	e.mu.RUnlock()
+	if len(prefs) > 0 {
+		return prefs[0].Provider
 	}
 	if e.chatProvider != nil {
 		return e.chatProvider.Name()
@@ -240,6 +249,14 @@ func (e *Engine) LastProvider() string {
 // Side effects:
 //   - None.
 func (e *Engine) LastModel() string {
+	e.mu.RLock()
+	if e.preferredModel != "" {
+		modelName := e.preferredModel
+		e.mu.RUnlock()
+		return modelName
+	}
+	e.mu.RUnlock()
+
 	if e.failoverManager != nil {
 		if m := e.failoverManager.LastModel(); m != "" {
 			return m
@@ -249,11 +266,11 @@ func (e *Engine) LastModel() string {
 			return prefs[0].Model
 		}
 	}
-	if e.failbackChain != nil {
-		if m := e.failbackChain.LastModel(); m != "" {
-			return m
-		}
-		return e.failbackChain.DefaultModel()
+	e.mu.RLock()
+	prefs := buildModelPreferences(e.manifest)
+	e.mu.RUnlock()
+	if len(prefs) > 0 {
+		return prefs[0].Model
 	}
 	return ""
 }
@@ -265,18 +282,18 @@ func (e *Engine) LastModel() string {
 //   - modelName is a non-empty string.
 //
 // Side effects:
-//   - Modifies the failback chain's preferences to use the specified model first.
+//   - Modifies the failover manager's preferences to use the specified model first.
 func (e *Engine) SetModelPreference(providerName string, modelName string) {
+	e.mu.Lock()
+	e.preferredProvider = providerName
+	e.preferredModel = modelName
+	e.mu.Unlock()
+
 	if e.failoverManager != nil {
 		e.failoverManager.SetOverride(provider.ModelPreference{
 			Provider: providerName, Model: modelName,
 		})
 		return
-	}
-	if e.failbackChain != nil {
-		e.failbackChain.SetPreferences([]provider.ModelPreference{
-			{Provider: providerName, Model: modelName},
-		})
 	}
 }
 
@@ -294,10 +311,6 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	prefs := buildModelPreferences(manifest)
 	if e.failoverManager != nil {
 		e.failoverManager.SetBasePreferences(prefs)
-		return
-	}
-	if e.providerRegistry != nil && len(prefs) > 0 {
-		e.failbackChain = provider.NewFailbackChain(e.providerRegistry, prefs, e.streamTimeout)
 	}
 }
 
@@ -325,9 +338,6 @@ func (e *Engine) Manifest() agent.Manifest {
 func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 	if e.failoverManager != nil {
 		return e.failoverManager.ListModels()
-	}
-	if e.failbackChain != nil {
-		return e.failbackChain.ListModels()
 	}
 	if e.chatProvider != nil {
 		return e.chatProvider.Models()
@@ -480,6 +490,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}
 
 	req := provider.ChatRequest{
+		Provider: e.LastProvider(),
+		Model:    e.LastModel(),
 		Messages: messages,
 		Tools:    e.buildToolSchemas(),
 	}
@@ -530,16 +542,16 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 //   - None.
 func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-		if e.failoverManager != nil && req.Provider != "" {
+		if req.Provider != "" && e.providerRegistry != nil {
 			p, err := e.providerRegistry.Get(req.Provider)
 			if err == nil {
 				return p.Stream(ctx, *req)
 			}
 		}
-		if e.failbackChain != nil {
-			return e.failbackChain.Stream(ctx, *req)
+		if e.chatProvider != nil {
+			return e.chatProvider.Stream(ctx, *req)
 		}
-		return e.chatProvider.Stream(ctx, *req)
+		return nil, errors.New("no provider available: configure either ChatProvider or FailoverManager")
 	}
 }
 
@@ -1032,11 +1044,6 @@ func (e *Engine) ModelContextLimit() int {
 		prefs := e.failoverManager.Preferences()
 		if len(prefs) > 0 {
 			return e.tokenCounter.ModelLimit(prefs[0].Model)
-		}
-	}
-	if e.failbackChain != nil {
-		if m := e.failbackChain.DefaultModel(); m != "" {
-			return e.tokenCounter.ModelLimit(m)
 		}
 	}
 	return e.tokenCounter.ModelLimit(e.LastModel())

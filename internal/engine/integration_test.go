@@ -3,12 +3,14 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -17,6 +19,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 		var (
 			reg *provider.Registry
 			eng *engine.Engine
+			mgr *failover.Manager
 		)
 
 		Context("when the first provider sends an async error chunk", func() {
@@ -33,9 +36,17 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					},
 				})
 
+				health := failover.NewHealthManager()
+				mgr = failover.NewManager(reg, health, 5*time.Minute)
+				mgr.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "broken-provider", Model: "broken-model"},
+					{Provider: "healthy-provider", Model: "healthy-model"},
+				})
+
 				eng = engine.New(engine.Config{
-					Registry: reg,
-					Manifest: failbackManifest(),
+					Registry:        reg,
+					FailoverManager: mgr,
+					Manifest:        failbackManifest(),
 				})
 			})
 
@@ -78,8 +89,16 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					name: "broken-b",
 				})
 
+				health := failover.NewHealthManager()
+				mgr = failover.NewManager(reg, health, 5*time.Minute)
+				mgr.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "broken-a", Model: "model-a"},
+					{Provider: "broken-b", Model: "model-b"},
+				})
+
 				eng = engine.New(engine.Config{
-					Registry: reg,
+					Registry:        reg,
+					FailoverManager: mgr,
 					Manifest: agent.Manifest{
 						ID:         "test-agent",
 						Name:       "Test Agent",
@@ -116,8 +135,16 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					},
 				})
 
+				health := failover.NewHealthManager()
+				mgr = failover.NewManager(reg, health, 5*time.Minute)
+				mgr.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "sync-broken", Model: "broken-model"},
+					{Provider: "fallback-ok", Model: "ok-model"},
+				})
+
 				eng = engine.New(engine.Config{
-					Registry: reg,
+					Registry:        reg,
+					FailoverManager: mgr,
 					Manifest: agent.Manifest{
 						ID:         "test-agent",
 						Name:       "Test Agent",
@@ -154,6 +181,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 		var (
 			reg   *provider.Registry
 			eng   *engine.Engine
+			mgr   *failover.Manager
 			provA *workingStreamProvider
 			provB *workingStreamProvider
 		)
@@ -177,8 +205,15 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			reg.Register(provA)
 			reg.Register(provB)
 
+			health := failover.NewHealthManager()
+			mgr = failover.NewManager(reg, health, 5*time.Minute)
+			mgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "provider-a", Model: "model-a"},
+			})
+
 			eng = engine.New(engine.Config{
-				Registry: reg,
+				Registry:        reg,
+				FailoverManager: mgr,
 				Manifest: agent.Manifest{
 					ID:         "test-agent",
 					Name:       "Test Agent",

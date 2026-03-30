@@ -27,6 +27,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
@@ -5023,8 +5024,11 @@ func (s *StepDefinitions) thePlannerAgentIsConfigured() error {
 	if err == nil && promptContent != nil {
 		manifest.Instructions.SystemPrompt = promptContent.Body
 	}
+	registry := provider.NewRegistry()
 	s.agentEngine = engine.New(engine.Config{
-		Manifest: manifest,
+		Registry:        registry,
+		Manifest:        manifest,
+		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})
 	return nil
 }
@@ -5046,8 +5050,11 @@ func (s *StepDefinitions) theExecutorAgentIsConfigured() error {
 	if err == nil && promptContent != nil {
 		manifest.Instructions.SystemPrompt = promptContent.Body
 	}
+	registry := provider.NewRegistry()
 	s.agentEngine = engine.New(engine.Config{
-		Manifest: manifest,
+		Registry:        registry,
+		Manifest:        manifest,
+		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})
 	return nil
 }
@@ -5144,8 +5151,11 @@ func (s *StepDefinitions) anExplorerAgentLoadedFromMarkdown() error {
 	if err == nil && promptContent != nil {
 		manifest.Instructions.SystemPrompt = promptContent.Body
 	}
+	registry := provider.NewRegistry()
 	s.agentEngine = engine.New(engine.Config{
-		Manifest: manifest,
+		Registry:        registry,
+		Manifest:        manifest,
+		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})
 	return nil
 }
@@ -5289,7 +5299,9 @@ func (s *StepDefinitions) aNewSessionIsStarted() error {
 		_ = os.MkdirAll(workingDir, 0o755)
 	}
 	loader := agent.NewAgentsFileLoader(configDir, workingDir)
+	registry := provider.NewRegistry()
 	s.agentEngine = engine.New(engine.Config{
+		Registry: registry,
 		Manifest: agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
@@ -5298,6 +5310,7 @@ func (s *StepDefinitions) aNewSessionIsStarted() error {
 			},
 		},
 		AgentsFileLoader: loader,
+		FailoverManager:  failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})
 	s.lastPrompt = s.agentEngine.BuildSystemPrompt()
 	return nil

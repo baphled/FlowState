@@ -92,6 +92,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 			Expect(ok).To(BeTrue())
 			Expect(chunk1.Content).To(Equal("Hello "))
 			Expect(chunk1.Done).To(BeFalse())
+			Expect(testIntent.Response()).To(Equal(""))
 		})
 
 		It("accumulates content incrementally across chunks", func() {

@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	delegationpkg "github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -947,10 +948,13 @@ var _ = Describe("Delegation", func() {
 					},
 					ContextManagement: agent.DefaultContextManagement(),
 				}
+				writerHealth := failover.NewHealthManager()
+				writerMgr := failover.NewManager(provReg, writerHealth, 5*time.Minute)
 
 				writerEngine := engine.New(engine.Config{
-					Registry: provReg,
-					Manifest: writerManifest,
+					Registry:        provReg,
+					Manifest:        writerManifest,
+					FailoverManager: writerMgr,
 				})
 
 				engines := map[string]*engine.Engine{"writer": writerEngine}
