@@ -6,7 +6,7 @@ import (
 	"io/fs"
 )
 
-//go:embed agents/*.json
+//go:embed agents/*.md
 var agentsFS embed.FS
 
 // EmbeddedAgentsFS returns the embedded fs.FS containing bundled agent manifests.
@@ -14,7 +14,7 @@ var agentsFS embed.FS
 // The embedded filesystem contains agent JSON manifests that are compiled into the binary.
 //
 // Returns:
-//   - An fs.FS rooted at the module root containing agents/*.json
+//   - An fs.FS rooted at the module root containing agents/*.md
 //
 // Side effects:
 //   - None.

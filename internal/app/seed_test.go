@@ -131,26 +131,26 @@ var _ = Describe("EmbeddedAgentsFS", func() {
 			Expect(embeddedFS).NotTo(BeNil())
 		})
 
-		It("contains planner.json", func() {
+		It("contains planner.md", func() {
 			embeddedFS := app.EmbeddedAgentsFS()
 
 			agentsDir, err := fs.Sub(embeddedFS, "agents")
 			Expect(err).NotTo(HaveOccurred())
 
-			plannerContent, err := fs.ReadFile(agentsDir, "planner.json")
+			plannerContent, err := fs.ReadFile(agentsDir, "planner.md")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(plannerContent)).To(ContainSubstring(`"id"`))
+			Expect(string(plannerContent)).To(ContainSubstring("id: planner"))
 		})
 
-		It("contains executor.json", func() {
+		It("contains executor.md", func() {
 			embeddedFS := app.EmbeddedAgentsFS()
 
 			agentsDir, err := fs.Sub(embeddedFS, "agents")
 			Expect(err).NotTo(HaveOccurred())
 
-			executorContent, err := fs.ReadFile(agentsDir, "executor.json")
+			executorContent, err := fs.ReadFile(agentsDir, "executor.md")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(executorContent)).To(ContainSubstring(`"id"`))
+			Expect(string(executorContent)).To(ContainSubstring("id: executor"))
 		})
 
 		It("can seed all manifests on first run", func() {
@@ -167,13 +167,13 @@ var _ = Describe("EmbeddedAgentsFS", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(7))
 
-			plannerContent, err := os.ReadFile(filepath.Join(destDir, "planner.json"))
+			plannerContent, err := os.ReadFile(filepath.Join(destDir, "planner.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(plannerContent)).To(ContainSubstring(`"id"`))
+			Expect(string(plannerContent)).To(ContainSubstring("id: planner"))
 
-			executorContent, err := os.ReadFile(filepath.Join(destDir, "executor.json"))
+			executorContent, err := os.ReadFile(filepath.Join(destDir, "executor.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(executorContent)).To(ContainSubstring(`"id"`))
+			Expect(string(executorContent)).To(ContainSubstring("id: executor"))
 		})
 	})
 })

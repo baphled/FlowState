@@ -222,6 +222,14 @@ func NewIntent(cfg IntentConfig) *Intent {
 // Side effects:
 //   - Schedules the first SpinnerTickMsg.
 func (i *Intent) Init() tea.Cmd {
+	if i.sessionID != "" && i.sessionStore != nil {
+		if store, err := i.sessionStore.Load(i.sessionID); err != nil {
+			i.handleSessionLoaded(sessionbrowser.SessionLoadedMsg{SessionID: i.sessionID, Err: err})
+		} else {
+			i.handleSessionLoaded(sessionbrowser.SessionLoadedMsg{SessionID: i.sessionID, Store: store})
+		}
+	}
+
 	if runningInTests {
 		return nil
 	}

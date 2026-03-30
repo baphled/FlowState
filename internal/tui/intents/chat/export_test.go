@@ -157,6 +157,11 @@ func (i *Intent) SetSessionStoreForTest(store SessionLister) {
 	i.sessionStore = store
 }
 
+// SessionIDForTest returns the current session ID for test assertions.
+func (i *Intent) SessionIDForTest() string {
+	return i.sessionID
+}
+
 // SetEngineForTest sets the engine for testing purposes.
 func (i *Intent) SetEngineForTest(eng *engine.Engine) {
 	i.engine = eng

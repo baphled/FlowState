@@ -59,6 +59,45 @@ var _ = Describe("ChatIntent", func() {
 			cmd := intent.Init()
 			Expect(cmd).NotTo(BeNil())
 		})
+
+		It("loads prior session messages when a session store is configured", func() {
+			chat.SetRunningInTestsForTest(true)
+			DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+
+			reg := provider.NewRegistry()
+			reg.Register(&streamingStubProvider{providerName: "test-provider", chunks: []provider.StreamChunk{}})
+
+			eng := engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("test-provider", "test-model"),
+			})
+
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "user", Content: "hello"})
+			store.Append(provider.Message{Role: "assistant", Content: "hi there"})
+
+			sessionStore := &stubSessionLister{loadStore: store}
+			startupIntent := chat.NewIntent(chat.IntentConfig{
+				Engine:       eng,
+				Streamer:     eng,
+				AgentID:      "test-agent",
+				SessionID:    "session-123",
+				ProviderName: "test-provider",
+				ModelName:    "test-model",
+				TokenBudget:  4096,
+				SessionStore: sessionStore,
+			})
+
+			Expect(startupIntent.Messages()).To(BeEmpty())
+			Expect(startupIntent.Init()).To(BeNil())
+
+			messages := startupIntent.AllViewMessagesForTest()
+			Expect(messages).To(HaveLen(2))
+			Expect(messages[0].Role).To(Equal("user"))
+			Expect(messages[0].Content).To(Equal("hello"))
+			Expect(messages[1].Role).To(Equal("assistant"))
+			Expect(messages[1].Content).To(Equal("hi there"))
+		})
 	})
 
 	Describe("Update", func() {
@@ -1702,6 +1741,8 @@ type stubSessionLister struct {
 	savedID    string
 	savedMeta  contextpkg.SessionMetadata
 	saveErr    error
+	loadStore  *recall.FileContextStore
+	loadErr    error
 	sessions   []contextpkg.SessionInfo
 }
 
@@ -1710,6 +1751,12 @@ func (s *stubSessionLister) List() []contextpkg.SessionInfo { return s.sessions 
 func (s *stubSessionLister) SetTitle(_ string, _ string) error { return nil }
 
 func (s *stubSessionLister) Load(_ string) (*recall.FileContextStore, error) {
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	if s.loadStore != nil {
+		return s.loadStore, nil
+	}
 	return nil, errors.New("stub: not implemented")
 }
 
