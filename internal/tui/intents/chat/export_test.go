@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
@@ -117,6 +118,35 @@ func (i *Intent) SimulateModalModelSelectionForTest() bool {
 	return true
 }
 
+// OpenAgentPickerForTest exposes openAgentPicker for test assertions.
+func (i *Intent) OpenAgentPickerForTest() tea.Cmd {
+	return i.openAgentPicker()
+}
+
+// SimulateAgentPickerSelectionForTest calls openAgentPicker, executes the Cmd
+// to get the agentpicker.Intent, then simulates selecting the given agent by
+// navigating down and pressing Enter. Returns true if selection succeeded.
+func (i *Intent) SimulateAgentPickerSelectionForTest(targetIndex int) bool {
+	cmd := i.openAgentPicker()
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if msg == nil {
+		return false
+	}
+	showMsg, ok := msg.(tuiintents.ShowModalMsg)
+	if !ok || showMsg.Modal == nil {
+		return false
+	}
+	modal := showMsg.Modal
+	for range targetIndex {
+		modal.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	modal.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return true
+}
+
 // SetSessionStoreForTest sets the session store for testing purposes.
 func (i *Intent) SetSessionStoreForTest(store SessionLister) {
 	i.sessionStore = store
@@ -165,4 +195,19 @@ func ToolResultMessageForTest(toolName, result string, isError bool) chatview.Me
 // AtBottomForTest returns whether the viewport is tracking the bottom position for test assertions.
 func (i *Intent) AtBottomForTest() bool {
 	return i.atBottom
+}
+
+// NotificationManagerForTest returns the notification manager for test assertions.
+func (i *Intent) NotificationManagerForTest() notification.Manager {
+	return i.notificationManager
+}
+
+// NotificationsViewForTest returns the rendered notification view for test assertions.
+func (i *Intent) NotificationsViewForTest() string {
+	return i.notifications.View()
+}
+
+// StreamingEventMetaForTest exposes streamingEventMeta for test assertions.
+func StreamingEventMetaForTest(eventType string) (string, notification.Level) {
+	return streamingEventMeta(eventType)
 }

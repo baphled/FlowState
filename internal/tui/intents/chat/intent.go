@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,10 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
+	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 	"github.com/baphled/flowstate/internal/tui/uikit/feedback"
@@ -113,33 +117,35 @@ type IntentConfig struct {
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
-	app               AppShell
-	engine            *engine.Engine
-	streamer          Streamer
-	agentID           string
-	sessionID         string
-	input             string
-	width             int
-	height            int
-	statusBar         *layout.StatusBar
-	statusIndicator   *widgets.StatusIndicator
-	tokenCount        int
-	tokenCounter      contextpkg.TokenCounter
-	providerName      string
-	modelName         string
-	tokenBudget       int
-	tickFrame         int
-	streamChan        <-chan provider.StreamChunk
-	pendingPermission *ToolPermissionMsg
-	result            *tuiintents.IntentResult
-	msgViewport       *viewport.Model
-	vpReady           bool
-	atBottom          bool
-	agentRegistry     *agent.Registry
-	sessionStore      SessionLister
-	view              *chat.View
-	loadingModal      *feedback.Modal
-	errorModal        *feedback.Modal
+	app                 AppShell
+	engine              *engine.Engine
+	streamer            Streamer
+	agentID             string
+	sessionID           string
+	input               string
+	width               int
+	height              int
+	statusBar           *layout.StatusBar
+	statusIndicator     *widgets.StatusIndicator
+	tokenCount          int
+	tokenCounter        contextpkg.TokenCounter
+	providerName        string
+	modelName           string
+	tokenBudget         int
+	tickFrame           int
+	streamChan          <-chan provider.StreamChunk
+	pendingPermission   *ToolPermissionMsg
+	result              *tuiintents.IntentResult
+	msgViewport         *viewport.Model
+	vpReady             bool
+	atBottom            bool
+	agentRegistry       *agent.Registry
+	sessionStore        SessionLister
+	view                *chat.View
+	loadingModal        *feedback.Modal
+	errorModal          *feedback.Modal
+	notifications       *notification.Component
+	notificationManager notification.Manager
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
 	streamCancel   context.CancelFunc
@@ -173,29 +179,33 @@ func NewIntent(cfg IntentConfig) *Intent {
 		TokenBudget: cfg.TokenBudget,
 	})
 
+	notifManager := notification.NewInMemoryManager()
+
 	return &Intent{
-		app:             cfg.App,
-		engine:          cfg.Engine,
-		streamer:        cfg.Streamer,
-		agentID:         cfg.AgentID,
-		sessionID:       cfg.SessionID,
-		input:           "",
-		width:           80,
-		height:          24,
-		statusBar:       sb,
-		statusIndicator: widgets.NewStatusIndicator(nil),
-		tokenCount:      0,
-		tokenCounter:    contextpkg.NewTiktokenCounter(),
-		providerName:    cfg.ProviderName,
-		modelName:       cfg.ModelName,
-		tokenBudget:     cfg.TokenBudget,
-		tickFrame:       0,
-		result:          nil,
-		atBottom:        true,
-		agentRegistry:   cfg.AgentRegistry,
-		sessionStore:    cfg.SessionStore,
-		view:            chat.NewView(),
-		breadcrumbPath:  "Chat",
+		app:                 cfg.App,
+		engine:              cfg.Engine,
+		streamer:            cfg.Streamer,
+		agentID:             cfg.AgentID,
+		sessionID:           cfg.SessionID,
+		input:               "",
+		width:               80,
+		height:              24,
+		statusBar:           sb,
+		statusIndicator:     widgets.NewStatusIndicator(nil),
+		tokenCount:          0,
+		tokenCounter:        contextpkg.NewTiktokenCounter(),
+		providerName:        cfg.ProviderName,
+		modelName:           cfg.ModelName,
+		tokenBudget:         cfg.TokenBudget,
+		tickFrame:           0,
+		result:              nil,
+		atBottom:            true,
+		agentRegistry:       cfg.AgentRegistry,
+		sessionStore:        cfg.SessionStore,
+		view:                chat.NewView(),
+		notifications:       notification.NewComponent(notifManager),
+		notificationManager: notifManager,
+		breadcrumbPath:      "Chat",
 	}
 }
 
@@ -207,7 +217,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 // Side effects:
 //   - Schedules the first SpinnerTickMsg.
 func (i *Intent) Init() tea.Cmd {
-	return tickSpinner()
+	return tea.Batch(tickSpinner(), i.notifications.Init())
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -250,6 +260,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 			return tickSpinner()
 		}
 		return nil
+	case notification.TickMsg:
+		return i.notifications.Update(msg)
 	case sessionbrowser.SessionSelectedMsg:
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
@@ -393,6 +405,7 @@ func (i *Intent) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	i.width = msg.Width
 	i.height = msg.Height
+	i.notifications.SetWidth(msg.Width)
 	extraLines := i.inputLineCount() - 1
 	footerHeight := 8 + extraLines
 	vpHeight := msg.Height - footerHeight
@@ -464,6 +477,8 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.openDelegationPicker()
 	case tea.KeyTab:
 		return i.toggleAgent()
+	case tea.KeyCtrlA:
+		return i.openAgentPicker()
 	case tea.KeyCtrlP:
 		return i.openModelSelector()
 	case tea.KeyCtrlS:
@@ -566,6 +581,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	if msg.DelegationInfo != nil {
 		i.view.HandleDelegation(msg.DelegationInfo)
+		i.notifications.AddDelegationNotification(msg.DelegationInfo)
 	}
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
@@ -594,6 +610,8 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		return i.handleHarnessRetry(msg)
 	case "harness_attempt_start", "harness_complete", "harness_critic_feedback":
 		return i.handleHarnessEvent(msg)
+	case streaming.EventTypePlanArtifact, streaming.EventTypeReviewVerdict, streaming.EventTypeStatusTransition:
+		return i.handleStreamingEvent(msg)
 	}
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
@@ -653,6 +671,61 @@ func (i *Intent) handleHarnessEvent(msg StreamChunkMsg) tea.Cmd {
 		return msg.Next
 	}
 	return nil
+}
+
+// handleStreamingEvent processes plan_artifact, review_verdict, and status_transition
+// events by adding a notification and a system message to the chat view.
+//
+// Expected:
+//   - msg.EventType is one of "plan_artifact", "review_verdict", or "status_transition".
+//   - msg.Content carries the event description.
+//
+// Returns:
+//   - A tea.Cmd that batches the next chunk read with a spinner tick if streaming continues.
+//
+// Side effects:
+//   - Adds a notification to the notification component.
+//   - Adds a system message to the chat view.
+//   - Refreshes the viewport.
+func (i *Intent) handleStreamingEvent(msg StreamChunkMsg) tea.Cmd {
+	title, level := streamingEventMeta(msg.EventType)
+	i.notificationManager.Add(notification.Notification{
+		ID:        msg.EventType + "-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     title,
+		Message:   msg.Content,
+		Level:     level,
+		Duration:  5 * time.Second,
+		CreatedAt: time.Now(),
+	})
+	i.view.AddMessage(chat.Message{Role: "system", Content: title + ": " + msg.Content})
+	i.refreshViewport()
+	if msg.Next != nil {
+		return tea.Batch(msg.Next, tickSpinner())
+	}
+	return tickSpinner()
+}
+
+// streamingEventMeta returns the display title and notification level for a streaming event type.
+//
+// Expected:
+//   - eventType is one of "plan_artifact", "review_verdict", or "status_transition".
+//
+// Returns:
+//   - A human-readable title and notification Level.
+//
+// Side effects:
+//   - None.
+func streamingEventMeta(eventType string) (string, notification.Level) {
+	switch eventType {
+	case streaming.EventTypePlanArtifact:
+		return "Plan Artifact", notification.LevelInfo
+	case streaming.EventTypeReviewVerdict:
+		return "Review Verdict", notification.LevelWarning
+	case streaming.EventTypeStatusTransition:
+		return "Status Transition", notification.LevelInfo
+	default:
+		return "Event", notification.LevelInfo
+	}
 }
 
 // saveSession builds session metadata from the current engine state and persists
@@ -926,6 +999,10 @@ func (i *Intent) View() string {
 	var content string
 	if i.vpReady {
 		content = i.msgViewport.View()
+	}
+
+	if notifView := i.notifications.View(); notifView != "" {
+		content = notifView + "\n" + content
 	}
 
 	var inputLine string
@@ -1238,6 +1315,43 @@ func (i *Intent) openModelSelector() tea.Cmd {
 			},
 		})
 		return tuiintents.ShowModalMsg{Modal: modelIntent}
+	}
+}
+
+// openAgentPicker creates and shows the agent picker as a modal overlay.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the agent picker.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openAgentPicker() tea.Cmd {
+	return func() tea.Msg {
+		if i.agentRegistry == nil {
+			return nil
+		}
+		agents := i.agentRegistry.List()
+		entries := make([]agentpicker.AgentEntry, len(agents))
+		for idx := range agents {
+			entries[idx] = agentpicker.AgentEntry{
+				ID:   agents[idx].ID,
+				Name: agents[idx].Name,
+			}
+		}
+		pickerIntent := agentpicker.NewIntent(agentpicker.IntentConfig{
+			Agents: entries,
+			OnSelect: func(agentID string) {
+				manifest, found := i.agentRegistry.Get(agentID)
+				if !found {
+					return
+				}
+				i.engine.SetManifest(*manifest)
+				i.agentID = agentID
+				i.tokenBudget = i.engine.ModelContextLimit()
+				i.syncStatusBar()
+			},
+		})
+		return tuiintents.ShowModalMsg{Modal: pickerIntent}
 	}
 }
 

@@ -1261,6 +1261,94 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("Ctrl+A opens agent picker modal", func() {
+		var (
+			eng          *engine.Engine
+			reg          *provider.Registry
+			agentReg     *agent.Registry
+			pickerIntent *chat.Intent
+		)
+
+		BeforeEach(func() {
+			agentReg = agent.NewRegistry()
+			agentReg.Register(&agent.Manifest{
+				ID:   "planner",
+				Name: "Planner Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {{Provider: "test-provider", Model: "test-model"}},
+				},
+			})
+			agentReg.Register(&agent.Manifest{
+				ID:   "executor",
+				Name: "Executor Agent",
+				ModelPreferences: map[string][]agent.ModelPref{
+					"standard": {{Provider: "test-provider", Model: "test-model"}},
+				},
+			})
+
+			reg = provider.NewRegistry()
+			reg.Register(&stubProvider{providerName: "test-provider"})
+
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("test-provider", "test-model"),
+			})
+
+			pickerIntent = chat.NewIntent(chat.IntentConfig{
+				Engine:        eng,
+				Streamer:      eng,
+				AgentID:       "executor",
+				SessionID:     "test-session",
+				ProviderName:  "test-provider",
+				ModelName:     "test-model",
+				TokenBudget:   4096,
+				AgentRegistry: agentReg,
+			})
+		})
+
+		It("returns a non-nil command on Ctrl+A", func() {
+			cmd := pickerIntent.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+			Expect(cmd).NotTo(BeNil())
+		})
+
+		It("returns nil command when no agent registry is configured", func() {
+			noRegIntent := chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "test-provider",
+				ModelName:    "test-model",
+				TokenBudget:  4096,
+			})
+			cmd := noRegIntent.OpenAgentPickerForTest()
+			Expect(cmd).NotTo(BeNil())
+			msg := cmd()
+			Expect(msg).To(BeNil())
+		})
+
+		It("switches agent when selecting from the picker", func() {
+			Expect(pickerIntent.AgentIDForTest()).To(Equal("executor"))
+			selected := pickerIntent.SimulateAgentPickerSelectionForTest(0)
+			Expect(selected).To(BeTrue())
+		})
+
+		It("updates engine manifest after agent selection via picker", func() {
+			pickerIntent.SimulateAgentPickerSelectionForTest(1)
+			Expect(pickerIntent.AgentIDForTest()).To(Equal("planner"))
+		})
+
+		It("updates status bar after agent selection via picker", func() {
+			pickerIntent.SimulateAgentPickerSelectionForTest(1)
+			view := pickerIntent.View()
+			Expect(view).To(ContainSubstring("planner"))
+		})
+
+		It("preserves input text when opening agent picker", func() {
+			pickerIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h', 'i'}})
+			pickerIntent.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+			Expect(pickerIntent.Input()).To(Equal("hi"))
+		})
+	})
+
 	Describe("handleSessionLoaded tool call formatting", func() {
 		var (
 			eng           *engine.Engine
