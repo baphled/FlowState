@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check clean help ai-commit check-ai-attribution list-ai-commits install-tools
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
 
 # Binary name
 BINARY_NAME=flowstate
@@ -37,14 +37,25 @@ clean: ## Clean build artifacts
 # Testing
 #
 
-test: ## Run all Go tests
+test: ## Run all Go tests (excluding BDD features)
 	@echo "Running tests..."
-	$(GOTEST) -v ./...
+	$(GOTEST) -v $(shell go list ./... | grep -v '/features/')
 
-test-coverage: ## Run tests with coverage
+test-coverage: ## Run tests with coverage (excluding BDD features)
 	@echo "Running tests with coverage..."
-	$(GOTEST) -v -coverprofile=coverage.out ./...
+	$(GOTEST) -v -coverprofile=coverage.out $(shell go list ./... | grep -v '/features/')
 	$(GOCMD) tool cover -html=coverage.out
+
+GOBIN ?= $$(go env GOPATH)/bin
+
+install-coverage-tools: ## Install go-test-coverage tool
+	@echo "Installing go-test-coverage..."
+	go install github.com/vladopajic/go-test-coverage/v2@latest
+
+coverage-check: ## Check test coverage against thresholds (excluding BDD features)
+	@echo "Running coverage check..."
+	@$(GOTEST) $(shell go list ./... | grep -v '/features/') -coverprofile=./coverage.out -covermode=atomic -coverpkg=./... 2>/dev/null
+	@$(GOBIN)/go-test-coverage --config=./.testcoverage.yml
 
 #
 # BDD Testing (Godog/Cucumber)
@@ -52,19 +63,19 @@ test-coverage: ## Run tests with coverage
 
 bdd: ## Run all BDD tests
 	@echo "Running BDD tests..."
-	godog run ./features/...
+	go test -v ./features/...
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
-	godog run --tags=@smoke ./features/...
+	GODOG_TAGS="@smoke" go test -v ./features/... -run "Test"
 
 bdd-wip: ## Run WIP BDD tests
 	@echo "Running WIP tests..."
-	godog run --tags=@wip ./features/...
+	go test -v ./features/... -run "Test"
 
 bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
 	@echo "Running feature: $(FEATURE)"
-	godog run ./features/$(FEATURE).feature
+	go test -v ./features/... -run "Test"
 
 #
 # Code Quality
@@ -79,9 +90,34 @@ lint: ## Run linters
 	$(GOVET) ./...
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
 	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
-	@if command -v deadcode &> /dev/null && go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -q .; then deadcode ./...; fi
 
-check: fmt lint test ## Run all checks
+check-docblocks: ## Run structured docblock analyser
+	@echo "Checking docblocks..."
+	@go run ./cmd/docblocks/... ./...
+
+check-untested-packages: ## Fail if any internal/ package has no test files
+	@echo "Checking for untested internal packages..."
+	@FAILED=0; \
+	for pkg in $$(go list ./internal/...); do \
+		dir=$$(go list -f '{{.Dir}}' $$pkg); \
+		if ! ls $$dir/*_test.go > /dev/null 2>&1; then \
+			echo "  MISSING TESTS: $$pkg"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		echo ""; \
+		echo "ERROR: Some internal packages have no test files."; \
+		echo "Add at least one *_test.go file to each package above."; \
+		exit 1; \
+	fi
+	@echo "All internal packages have test files."
+
+check-note-comments: ## Fail if NOTE: appears outside a docblock
+	@echo "Checking NOTE: comment placement..."
+	@bash scripts/check-note-comments.sh
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments ## Run all checks
 
 #
 # Dependencies
@@ -93,9 +129,13 @@ deps: ## Download dependencies
 deps-tidy: ## Tidy dependencies
 	$(GOMOD) tidy
 
-install-tools: ## Install development tools
-	@echo "Installing development tools..."
-	@go install golang.org/x/tools/cmd/deadcode@latest
+#
+# Hooks
+#
+
+install-hooks: ## Install git hooks (run once after checkout)
+	@git config core.hooksPath .git-hooks
+	@echo "Git hooks installed. Hooks directory: .git-hooks/"
 
 #
 # Git Worktree Helpers
@@ -151,7 +191,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo "Usage:"; \
 		echo "  AI_MODEL=claude-opus-4-5 make ai-commit FILE=/path/to/commit-msg.txt"; \
 		echo ""; \
-		echo "Required: AI_MODEL must be set (agent auto-detected from OPENCODE env)"; \
+		echo "Required: AI_MODEL must be set (OPENCODE=1 is set automatically)"; \
 		echo ""; \
 		echo "Create your commit message file:"; \
 		echo "  cat > /tmp/commit.txt << 'EOF'"; \
@@ -164,7 +204,7 @@ ai-commit: ## Create AI-attributed commit (FILE=/path/to/msg.txt AI_MODEL=model)
 		echo ""; \
 		exit 1; \
 	fi
-	@bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
+	@OPENCODE=1 bash scripts/ai-commit.sh "$(FILE)" "$(NO_VERIFY)"
 
 check-ai-attribution: ## Check latest commit for AI attribution
 	@echo "Checking latest commit for AI attribution..."

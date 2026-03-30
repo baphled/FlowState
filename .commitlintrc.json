@@ -1,5 +1,7 @@
 {
-  "extends": ["@commitlint/config-conventional"],
+  "extends": [
+    "@commitlint/config-conventional"
+  ],
   "rules": {
     "type-enum": [
       2,
@@ -8,51 +10,105 @@
         "feat",
         "fix",
         "docs",
+        "style",
         "refactor",
         "test",
         "chore",
         "perf",
         "ci",
         "build",
-        "revert",
-        "style"
+        "revert"
       ]
+    ],
+    "type-case": [
+      2,
+      "always",
+      "lower-case"
+    ],
+    "type-empty": [
+      2,
+      "never"
     ],
     "scope-enum": [
       2,
       "always",
       [
-        "oauth",
-        "provider",
-        "tui",
-        "chat",
-        "nav",
-        "build",
+        "agent",
+        "api",
+        "cli",
         "config",
+        "context",
+        "core",
+        "database",
         "deps",
+        "discovery",
         "docs",
-        "tests",
-        "lint",
-        "security",
-        "workflow",
-        "ci",
-        "release",
-        "intents",
-        "uikit",
-        "behaviors",
-        "tools",
-        "session",
+        "event",
+        "handler",
+        "hook",
+        "learning",
         "mcp",
-        "engine",
-        "streaming"
+        "middleware",
+        "plugin",
+        "prompt",
+        "provider",
+        "release",
+        "repository",
+        "service",
+        "skill",
+        "test",
+        "tool",
+        "transport",
+        "tui",
+        "validation",
+        "workflow"
       ]
     ],
-    "scope-empty": [1, "never"],
-    "subject-case": [2, "always", "lower-case"],
-    "subject-empty": [2, "never"],
-    "subject-max-length": [2, "always", 72],
-    "header-max-length": [2, "always", 100],
-    "body-max-line-length": [2, "always", 200],
-    "footer-max-line-length": [2, "always", 200]
+    "scope-case": [
+      2,
+      "always",
+      "lower-case"
+    ],
+    "subject-empty": [
+      2,
+      "never"
+    ],
+    "subject-case": [
+      2,
+      "never"
+    ],
+    "subject-full-stop": [
+      2,
+      "never",
+      "."
+    ],
+    "subject-max-length": [
+      2,
+      "always",
+      72
+    ],
+    "header-max-length": [
+      2,
+      "always",
+      100
+    ],
+    "body-leading-blank": [
+      2,
+      "always"
+    ],
+    "body-max-line-length": [
+      2,
+      "always",
+      100
+    ],
+    "footer-leading-blank": [
+      2,
+      "always"
+    ],
+    "footer-max-line-length": [
+      2,
+      "always",
+      100
+    ]
   }
 }

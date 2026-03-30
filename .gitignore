@@ -1,5 +1,6 @@
 # Binaries
 /flowstate
+/docblocks
 /bin/
 *.exe
 *.exe~
@@ -34,14 +35,26 @@ Thumbs.db
 
 # Local config (keep .flowstate/config.json.example)
 .flowstate/config.json
+.env
+.env.*
 
 # Build artifacts
 dist/
+build/
 
 # Debug
 __debug_bin*
 debug.log
+/.tmp
 
 # Test artifacts
 test-results/
 *.log
+
+# Sisyphus planning artefacts (never commit)
+.sisyphus/
+demos/temp_demo_env/
+
+# Editor temporary files
+tmp/
+*.orig

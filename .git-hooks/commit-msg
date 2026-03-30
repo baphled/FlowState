@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -e
+
+COMMIT_MSG_FILE="$1"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Validate commit message format with commitlint
+echo "Validating commit message format..."
+if ! commitlint --config "$REPO_ROOT/.commitlintrc.json" --edit "$COMMIT_MSG_FILE"; then
+    echo "commitlint FAILED — fix commit message format and retry."
+    echo "Format: type(scope): description"
+    echo "Types: feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert"
+    exit 1
+fi
+
+# Validate AI attribution trailers
+echo "Checking AI attribution..."
+if ! grep -q "AI-Generated-By:" "$COMMIT_MSG_FILE"; then
+    echo "commit-msg FAILED — missing AI-Generated-By trailer."
+    echo "Use: make ai-commit FILE=/tmp/commit.txt"
+    exit 1
+fi
+
+echo "commit-msg checks passed."
