@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 )
 
-// SeedAgentsDir copies all *.json and *.md files from the source filesystem to the destination directory.
+// SeedAgentsDir copies all *.md files from the source filesystem to the destination directory.
 // It always overwrites existing files to ensure embedded manifests stay current.
 //
 // Expected:
-//   - srcFS is a valid fs.FS containing an "agents" subdirectory with .json and .md files.
+//   - srcFS is a valid fs.FS containing an "agents" subdirectory with .md files.
 //   - destDir is a writable destination directory path (created if missing).
 //
 // Returns:
@@ -22,7 +22,7 @@ import (
 //
 // Side effects:
 //   - Creates destDir if it does not exist.
-//   - Copies each .json and .md file from srcFS to destDir, overwriting existing files.
+//   - Copies each .md file from srcFS to destDir, overwriting existing files.
 func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 	agentsDir, err := fs.Sub(srcFS, "agents")
 	if err != nil {
@@ -45,7 +45,7 @@ func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 
 		filename := entry.Name()
 		ext := filepath.Ext(filename)
-		if ext != ".json" && ext != ".md" {
+		if ext != ".md" {
 			continue
 		}
 

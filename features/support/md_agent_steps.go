@@ -36,13 +36,6 @@ func (s *StepDefinitions) RegisterMarkdownAgentSteps(ctx *godog.ScenarioContext)
 
 	ctx.Step(`^a markdown agent file with a body containing "([^"]*)"$`, s.aMarkdownAgentFileWithBodyContaining)
 
-	ctx.Step(`^a markdown agent file with model_preferences for anthropic and ollama$`,
-		s.aMarkdownAgentFileWithModelPreferencesForAnthropicAndOllama)
-	ctx.Step(`^the model preferences should contain the anthropic provider$`,
-		s.theModelPreferencesShouldContainTheAnthropicProvider)
-	ctx.Step(`^the model preferences should contain the ollama provider$`,
-		s.theModelPreferencesShouldContainTheOllamaProvider)
-
 	ctx.Step(`^a markdown agent file "([^"]*)" without an id in frontmatter$`,
 		s.aMarkdownAgentFileWithoutAnIDInFrontmatter)
 
@@ -240,82 +233,6 @@ schema_version: "1"
 
 	s.markdownFilePath = filepath.Join(s.tempDir, "body-test.md")
 	return os.WriteFile(s.markdownFilePath, []byte(content), 0o600)
-}
-
-// aMarkdownAgentFileWithModelPreferencesForAnthropicAndOllama creates a markdown file with model preferences.
-//
-// Expected:
-//   - No preconditions.
-//
-// Returns:
-//   - nil on success, or an error if the file cannot be created.
-//
-// Side effects:
-//   - Creates a temporary directory and markdown file with model preferences.
-func (s *StepDefinitions) aMarkdownAgentFileWithModelPreferencesForAnthropicAndOllama() error {
-	s.tempDir = filepath.Join(os.TempDir(), "flowstate-md-models-test")
-	_ = os.RemoveAll(s.tempDir)
-	if err := os.MkdirAll(s.tempDir, 0o750); err != nil {
-		return err
-	}
-
-	content := `---
-id: models-test
-name: Models Test Agent
-schema_version: "1"
-model_preferences:
-  anthropic:
-    - provider: anthropic
-      model: claude-opus-4-5
-  ollama:
-    - provider: ollama
-      model: llama2
----
-Agent with model preferences.
-`
-
-	s.markdownFilePath = filepath.Join(s.tempDir, "models-test.md")
-	return os.WriteFile(s.markdownFilePath, []byte(content), 0o600)
-}
-
-// theModelPreferencesShouldContainTheAnthropicProvider verifies anthropic is in preferences.
-//
-// Expected:
-//   - A manifest has been loaded with model preferences.
-//
-// Returns:
-//   - nil if anthropic provider is present, error otherwise.
-//
-// Side effects:
-//   - None.
-func (s *StepDefinitions) theModelPreferencesShouldContainTheAnthropicProvider() error {
-	if s.loadedManifest == nil {
-		return errors.New("no manifest loaded")
-	}
-	if _, hasAnthropic := s.loadedManifest.ModelPreferences["anthropic"]; !hasAnthropic {
-		return errors.New("expected anthropic provider in model preferences")
-	}
-	return nil
-}
-
-// theModelPreferencesShouldContainTheOllamaProvider verifies ollama is in preferences.
-//
-// Expected:
-//   - A manifest has been loaded with model preferences.
-//
-// Returns:
-//   - nil if ollama provider is present, error otherwise.
-//
-// Side effects:
-//   - None.
-func (s *StepDefinitions) theModelPreferencesShouldContainTheOllamaProvider() error {
-	if s.loadedManifest == nil {
-		return errors.New("no manifest loaded")
-	}
-	if _, hasOllama := s.loadedManifest.ModelPreferences["ollama"]; !hasOllama {
-		return errors.New("expected ollama provider in model preferences")
-	}
-	return nil
 }
 
 // aMarkdownAgentFileWithoutAnIDInFrontmatter creates a markdown file without an ID field.

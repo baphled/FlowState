@@ -494,15 +494,10 @@ func (s *integrationAppShell) Get(name string) (provider.Provider, error) {
 	return s.registry.Get(name)
 }
 
-func integrationManifest(providerName, model string) agent.Manifest {
+func integrationManifest(_, _ string) agent.Manifest {
 	return agent.Manifest{
 		ID:         "test-agent",
 		Name:       "Test Agent",
 		Complexity: "standard",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"standard": {
-				{Provider: providerName, Model: model},
-			},
-		},
 	}
 }

@@ -58,17 +58,11 @@ func TestWireDelegateToolIfEnabled_CreatesIsolatedEngines(t *testing.T) {
 		Delegation: agent.Delegation{
 			CanDelegate: true,
 		},
-		ModelPreferences: map[string][]agent.ModelPref{
-			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
-		},
 	}
 
 	explorerManifest := agent.Manifest{
 		ID:   "explorer",
 		Name: "Explorer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-		},
 		Capabilities: agent.Capabilities{
 			Tools: []string{"read", "bash"},
 		},
@@ -77,9 +71,6 @@ func TestWireDelegateToolIfEnabled_CreatesIsolatedEngines(t *testing.T) {
 	analystManifest := agent.Manifest{
 		ID:   "analyst",
 		Name: "Analyst Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"openai": {{Provider: "openai", Model: "gpt-4o"}},
-		},
 		Capabilities: agent.Capabilities{
 			Tools: []string{"read", "bash", "write"},
 		},
@@ -134,17 +125,11 @@ func TestWireDelegateToolIfEnabled_TargetEnginesHaveCorrectManifest(t *testing.T
 		Delegation: agent.Delegation{
 			CanDelegate: true,
 		},
-		ModelPreferences: map[string][]agent.ModelPref{
-			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
-		},
 	}
 
 	explorerManifest := agent.Manifest{
 		ID:   "explorer",
 		Name: "Explorer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-		},
 		Capabilities: agent.Capabilities{
 			Tools: []string{"read", "bash"},
 		},
@@ -189,17 +174,11 @@ func TestWireDelegateToolIfEnabled_CoordinatorStatePreserved(t *testing.T) {
 		Delegation: agent.Delegation{
 			CanDelegate: true,
 		},
-		ModelPreferences: map[string][]agent.ModelPref{
-			"anthropic": {{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"}},
-		},
 	}
 
 	explorerManifest := agent.Manifest{
 		ID:   "explorer",
 		Name: "Explorer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-		},
 	}
 
 	app.Registry.Register(&coordinatorManifest)
@@ -279,9 +258,6 @@ func TestCreateDelegateEngine_ReturnsIsolatedEngine(t *testing.T) {
 	explorerManifest := agent.Manifest{
 		ID:   "explorer",
 		Name: "Explorer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-		},
 		Capabilities: agent.Capabilities{
 			Tools: []string{"read", "bash"},
 		},

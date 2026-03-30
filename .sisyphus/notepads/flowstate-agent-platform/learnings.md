@@ -198,6 +198,12 @@ AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.t
 - `internal/tui/chat.go` - Model, NewModel, Init, Update, View + accessor methods
 - `internal/tui/run.go` - Run() wrapper starting tea.Program with AltScreen
 - `internal/tui/suite_test.go` - Ginkgo bootstrap
+
+## 2026-03-30 Agent Manifest Cleanup
+
+- Removed `model_preferences` from all seven built-in agent markdown manifests under `internal/app/agents/`.
+- Kept the rest of each frontmatter block intact and left the markdown bodies untouched.
+- Provider selection is now left to configuration rather than agent manifests.
 - `internal/tui/chat_test.go` - 19 specs covering all behaviours
 
 ## 2026-03-18 T31: Skill Importer

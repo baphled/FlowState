@@ -24,9 +24,9 @@ var _ = Describe("SeedAgentsDir", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		srcFS = fstest.MapFS{
-			"agents/general.json":    &fstest.MapFile{Data: []byte(`{"id": "general", "name": "General"}`)},
-			"agents/coder.json":      &fstest.MapFile{Data: []byte(`{"id": "coder", "name": "Coder"}`)},
-			"agents/researcher.json": &fstest.MapFile{Data: []byte(`{"id": "researcher", "name": "Researcher"}`)},
+			"agents/general.md":    &fstest.MapFile{Data: []byte("---\nid: general\nname: General\n---\n")},
+			"agents/coder.md":      &fstest.MapFile{Data: []byte("---\nid: coder\nname: Coder\n---\n")},
+			"agents/researcher.md": &fstest.MapFile{Data: []byte("---\nid: researcher\nname: Researcher\n---\n")},
 		}
 	})
 
@@ -47,9 +47,9 @@ var _ = Describe("SeedAgentsDir", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(3))
 
-			content, err := os.ReadFile(filepath.Join(agentsDest, "general.json"))
+			content, err := os.ReadFile(filepath.Join(agentsDest, "general.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring(`"id": "general"`))
+			Expect(string(content)).To(ContainSubstring("id: general"))
 		})
 	})
 
@@ -72,16 +72,16 @@ var _ = Describe("SeedAgentsDir", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			staleContent := `{"id": "general", "name": "Stale General"}`
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(staleContent), 0o600)).To(Succeed())
+			staleContent := "---\nid: general\nname: Stale General\n---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
 			Expect(err).NotTo(HaveOccurred())
 
-			content, err := os.ReadFile(filepath.Join(agentsDest, "general.json"))
+			content, err := os.ReadFile(filepath.Join(agentsDest, "general.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring(`"name": "General"`))
+			Expect(string(content)).To(ContainSubstring("name: General"))
 			Expect(string(content)).NotTo(ContainSubstring("Stale"))
 		})
 
@@ -89,8 +89,8 @@ var _ = Describe("SeedAgentsDir", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			staleContent := `{"id": "general", "name": "Stale General"}`
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.json"), []byte(staleContent), 0o600)).To(Succeed())
+			staleContent := "---\nid: general\nname: Stale General\n---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
@@ -100,13 +100,13 @@ var _ = Describe("SeedAgentsDir", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(3))
 
-			content, err := os.ReadFile(filepath.Join(agentsDest, "general.json"))
+			content, err := os.ReadFile(filepath.Join(agentsDest, "general.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring(`"name": "General"`))
+			Expect(string(content)).To(ContainSubstring("name: General"))
 
-			content, err = os.ReadFile(filepath.Join(agentsDest, "coder.json"))
+			content, err = os.ReadFile(filepath.Join(agentsDest, "coder.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring(`"id": "coder"`))
+			Expect(string(content)).To(ContainSubstring("id: coder"))
 		})
 	})
 

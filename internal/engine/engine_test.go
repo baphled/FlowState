@@ -531,12 +531,6 @@ var _ = Describe("Engine", func() {
 				ID:         "test-agent",
 				Name:       "Test Agent",
 				Complexity: "standard",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {
-						{Provider: "primary", Model: "primary-model"},
-						{Provider: "secondary", Model: "secondary-model"},
-					},
-				},
 				Instructions: agent.Instructions{
 					SystemPrompt: "You are a helpful assistant.",
 				},
@@ -639,12 +633,6 @@ var _ = Describe("Engine", func() {
 					ID:         "test-agent",
 					Name:       "Test Agent",
 					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "slow", Model: "slow-model"},
-							{Provider: "secondary", Model: "secondary-model"},
-						},
-					},
 					Instructions: agent.Instructions{
 						SystemPrompt: "You are a helpful assistant.",
 					},
@@ -757,178 +745,108 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
-	Describe("buildModelPreferences", func() {
-		It("flattens provider-keyed model preferences to initialize failback chain", func() {
+	Describe("concurrent manifest access", func() {
+		It("does not race when SetManifest and BuildSystemPrompt are called concurrently", func() {
 			registry := provider.NewRegistry()
-
-			ollamaProvider := &mockProvider{
-				name: "ollama",
-				streamChunks: []provider.StreamChunk{
-					{Content: "response from ollama", Done: true},
-				},
+			mockProv := &mockProvider{
+				name:         "ollama",
+				streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
 			}
+			registry.Register(mockProv)
 
-			anthropicProvider := &mockProvider{
-				name: "anthropic",
-				streamChunks: []provider.StreamChunk{
-					{Content: "response from anthropic", Done: true},
-				},
+			manifest := agent.Manifest{
+				ID: "executor",
 			}
-
-			registry.Register(ollamaProvider)
-			registry.Register(anthropicProvider)
-
-			manifestWithProviderKeys := agent.Manifest{
-				ID:         "planner",
-				Name:       "Strategic Planner",
-				Complexity: "deep",
-				Instructions: agent.Instructions{
-					SystemPrompt: "You are a strategic planner.",
-				},
-				ContextManagement: agent.DefaultContextManagement(),
-				ModelPreferences: map[string][]agent.ModelPref{
-					"ollama": {
-						{Provider: "ollama", Model: "llama3.2"},
-					},
-					"anthropic": {
-						{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"},
-					},
-				},
-			}
-
-			health := failover.NewHealthManager()
-			manager := failover.NewManager(registry, health, 5*time.Minute)
-			manager.SetBasePreferences([]provider.ModelPreference{
-				{Provider: "ollama", Model: "llama3.2"},
-				{Provider: "anthropic", Model: "claude-3-5-sonnet-20241022"},
+			eng := engine.New(engine.Config{
+				Registry: registry,
+				Manifest: manifest,
 			})
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for range 10 {
+					eng.SetManifest(manifest)
+				}
+			}()
+			for range 10 {
+				_ = eng.BuildSystemPrompt()
+			}
+			<-done
+		})
+	})
+
+	Describe("Stream agentID resolution", func() {
+		var (
+			registry *provider.Registry
+			agentReg *agent.Registry
+			mockProv *mockProvider
+		)
+
+		BeforeEach(func() {
+			registry = provider.NewRegistry()
+			mockProv = &mockProvider{
+				name:         "ollama",
+				streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
+			}
+			registry.Register(mockProv)
+			agentReg = agent.NewRegistry()
+		})
+
+		It("uses planner manifest when agentID is 'planner'", func() {
+			plannerManifest := agent.Manifest{
+				ID: "planner",
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are a planner orchestrating complex tasks.",
+				},
+			}
+			agentReg.Register(&plannerManifest)
 
 			eng := engine.New(engine.Config{
-				Registry:        registry,
-				FailoverManager: manager,
-				Manifest:        manifestWithProviderKeys,
+				ChatProvider:  mockProv,
+				Registry:      registry,
+				AgentRegistry: agentReg,
+				Manifest:      agent.Manifest{ID: "executor"},
 			})
 
-			Expect(eng).NotTo(BeNil())
-
-			ctx := context.Background()
-			chunks, err := eng.Stream(ctx, "planner", "test message")
+			ch, err := eng.Stream(context.Background(), "planner", "hello")
 			Expect(err).NotTo(HaveOccurred())
-
-			var response string
-			for chunk := range chunks {
-				response += chunk.Content
+			for chunk := range ch {
+				_ = chunk
 			}
-
-			Expect(response).NotTo(BeEmpty())
+			Expect(eng.BuildSystemPrompt()).To(ContainSubstring("planner orchestrating"))
 		})
 
-		Describe("concurrent manifest access", func() {
-			It("does not race when SetManifest and BuildSystemPrompt are called concurrently", func() {
-				registry := provider.NewRegistry()
-				mockProv := &mockProvider{
-					name:         "ollama",
-					streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
-				}
-				registry.Register(mockProv)
-
-				manifest := agent.Manifest{
-					ID: "executor",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-					},
-				}
-				eng := engine.New(engine.Config{
-					Registry: registry,
-					Manifest: manifest,
-				})
-
-				done := make(chan struct{})
-				go func() {
-					defer close(done)
-					for range 10 {
-						eng.SetManifest(manifest)
-					}
-				}()
-				for range 10 {
-					_ = eng.BuildSystemPrompt()
-				}
-				<-done
+		It("is a no-op for unknown agentID", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider:  mockProv,
+				Registry:      registry,
+				AgentRegistry: agentReg,
+				Manifest:      agent.Manifest{ID: "executor"},
 			})
-		})
-
-		Describe("Stream agentID resolution", func() {
-			var (
-				registry *provider.Registry
-				agentReg *agent.Registry
-				mockProv *mockProvider
-			)
-
-			BeforeEach(func() {
-				registry = provider.NewRegistry()
-				mockProv = &mockProvider{
-					name:         "ollama",
-					streamChunks: []provider.StreamChunk{{Content: "hi", Done: true}},
-				}
-				registry.Register(mockProv)
-				agentReg = agent.NewRegistry()
-			})
-
-			It("uses planner manifest when agentID is 'planner'", func() {
-				plannerManifest := agent.Manifest{
-					ID: "planner",
-					Instructions: agent.Instructions{
-						SystemPrompt: "You are a planner orchestrating complex tasks.",
-					},
-				}
-				agentReg.Register(&plannerManifest)
-
-				eng := engine.New(engine.Config{
-					ChatProvider:  mockProv,
-					Registry:      registry,
-					AgentRegistry: agentReg,
-					Manifest:      agent.Manifest{ID: "executor"},
-				})
-
-				ch, err := eng.Stream(context.Background(), "planner", "hello")
+			Expect(func() {
+				ch, err := eng.Stream(context.Background(), "unknown", "hello")
 				Expect(err).NotTo(HaveOccurred())
 				for chunk := range ch {
 					_ = chunk
 				}
-				Expect(eng.BuildSystemPrompt()).To(ContainSubstring("planner orchestrating"))
-			})
+			}).NotTo(Panic())
+		})
 
-			It("is a no-op for unknown agentID", func() {
-				eng := engine.New(engine.Config{
-					ChatProvider:  mockProv,
-					Registry:      registry,
-					AgentRegistry: agentReg,
-					Manifest:      agent.Manifest{ID: "executor"},
-				})
-				Expect(func() {
-					ch, err := eng.Stream(context.Background(), "unknown", "hello")
-					Expect(err).NotTo(HaveOccurred())
-					for chunk := range ch {
-						_ = chunk
-					}
-				}).NotTo(Panic())
+		It("is a no-op for empty agentID", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider:  mockProv,
+				Registry:      registry,
+				AgentRegistry: agentReg,
+				Manifest:      agent.Manifest{ID: "executor"},
 			})
-
-			It("is a no-op for empty agentID", func() {
-				eng := engine.New(engine.Config{
-					ChatProvider:  mockProv,
-					Registry:      registry,
-					AgentRegistry: agentReg,
-					Manifest:      agent.Manifest{ID: "executor"},
-				})
-				Expect(func() {
-					ch, err := eng.Stream(context.Background(), "", "hello")
-					Expect(err).NotTo(HaveOccurred())
-					for chunk := range ch {
-						_ = chunk
-					}
-				}).NotTo(Panic())
-			})
+			Expect(func() {
+				ch, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for chunk := range ch {
+					_ = chunk
+				}
+			}).NotTo(Panic())
 		})
 	})
 
@@ -981,11 +899,6 @@ var _ = Describe("Engine", func() {
 					ID:         "test-agent",
 					Name:       "Test Agent",
 					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "anthropic", Model: "claude-sonnet-4-6"},
-						},
-					},
 					Instructions: agent.Instructions{
 						SystemPrompt: "You are a helpful assistant.",
 					},
@@ -1051,11 +964,6 @@ var _ = Describe("Engine", func() {
 					ID:         "test-agent",
 					Name:       "Test Agent",
 					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "ollama", Model: "llama3.2"},
-						},
-					},
 					Instructions: agent.Instructions{
 						SystemPrompt: "You are a helpful assistant.",
 					},
@@ -1092,8 +1000,8 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
-		Context("after SetManifest changes to a manifest with different model prefs", func() {
-			It("returns the new manifest first preference model limit even after a stream", func() {
+		Context("after SetModelPreference changes to a different provider", func() {
+			It("returns the new model limit even after a previous stream used a different model", func() {
 				registry := provider.NewRegistry()
 				anthropicProvider := &mockProvider{
 					name: "anthropic",
@@ -1110,15 +1018,10 @@ var _ = Describe("Engine", func() {
 				registry.Register(anthropicProvider)
 				registry.Register(ollamaProvider)
 
-				claudeManifest := agent.Manifest{
-					ID:         "claude-agent",
-					Name:       "Claude Agent",
+				testManifest := agent.Manifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
 					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "anthropic", Model: "claude-sonnet-4-6"},
-						},
-					},
 					Instructions: agent.Instructions{
 						SystemPrompt: "You are a helpful assistant.",
 					},
@@ -1136,34 +1039,23 @@ var _ = Describe("Engine", func() {
 				eng := engine.New(engine.Config{
 					Registry:        registry,
 					FailoverManager: manager,
-					Manifest:        claudeManifest,
+					Manifest:        testManifest,
 					TokenCounter:    tokenCounter,
 				})
 
 				ctx := context.Background()
-				chunks, err := eng.Stream(ctx, "claude-agent", "Hello")
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
 				Expect(err).NotTo(HaveOccurred())
 				for v := range chunks {
 					_ = v
 				}
 				Expect(eng.ModelContextLimit()).To(Equal(200000))
 
-				llamaManifest := agent.Manifest{
-					ID:         "llama-agent",
-					Name:       "Llama Agent",
-					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "ollama", Model: "llama3.2"},
-						},
-					},
-					Instructions: agent.Instructions{
-						SystemPrompt: "You are a llama assistant.",
-					},
-					ContextManagement: agent.DefaultContextManagement(),
-				}
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "ollama", Model: "llama3.2"},
+				})
 
-				eng.SetManifest(llamaManifest)
+				eng.SetModelPreference("ollama", "llama3.2")
 
 				Expect(eng.ModelContextLimit()).To(Equal(4096))
 			})

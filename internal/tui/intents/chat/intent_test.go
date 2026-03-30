@@ -940,20 +940,10 @@ var _ = Describe("ChatIntent", func() {
 			plannerManifest = agent.Manifest{
 				ID:   "planner",
 				Name: "Planner Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {
-						{Provider: "test-provider", Model: "test-model"},
-					},
-				},
 			}
 			executorManifest = agent.Manifest{
 				ID:   "executor",
 				Name: "Executor Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {
-						{Provider: "test-provider", Model: "test-model"},
-					},
-				},
 			}
 
 			agentReg = agent.NewRegistry()
@@ -1172,20 +1162,10 @@ var _ = Describe("ChatIntent", func() {
 			plannerManifest = agent.Manifest{
 				ID:   "planner",
 				Name: "Planner Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {
-						{Provider: "test-provider", Model: "test-model"},
-					},
-				},
 			}
 			executorManifest = agent.Manifest{
 				ID:   "executor",
 				Name: "Executor Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {
-						{Provider: "test-provider", Model: "test-model"},
-					},
-				},
 			}
 
 			agentReg = agent.NewRegistry()
@@ -1313,16 +1293,10 @@ var _ = Describe("ChatIntent", func() {
 			agentReg.Register(&agent.Manifest{
 				ID:   "planner",
 				Name: "Planner Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {{Provider: "test-provider", Model: "test-model"}},
-				},
 			})
 			agentReg.Register(&agent.Manifest{
 				ID:   "executor",
 				Name: "Executor Agent",
-				ModelPreferences: map[string][]agent.ModelPref{
-					"standard": {{Provider: "test-provider", Model: "test-model"}},
-				},
 			})
 
 			reg = provider.NewRegistry()
@@ -1723,16 +1697,11 @@ func (p *streamingStubProvider) Embed(_ context.Context, _ provider.EmbedRequest
 	return nil, nil
 }
 
-func stubManifestWithProvider(providerName, model string) agent.Manifest {
+func stubManifestWithProvider(_, _ string) agent.Manifest {
 	return agent.Manifest{
 		ID:         "test-agent",
 		Name:       "Test Agent",
 		Complexity: "standard",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"standard": {
-				{Provider: providerName, Model: model},
-			},
-		},
 	}
 }
 

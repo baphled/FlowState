@@ -16,12 +16,6 @@ Feature: Markdown Agent Definitions
     When the agent is loaded from the markdown file
     Then the system prompt should contain "You are a test specialist"
 
-  Scenario: Model preferences parsed from YAML map
-    Given a markdown agent file with model_preferences for anthropic and ollama
-    When the agent is loaded from the markdown file
-    Then the model preferences should contain the anthropic provider
-    And the model preferences should contain the ollama provider
-
   Scenario: Agent ID derived from filename when not in frontmatter
     Given a markdown agent file "derived-id.md" without an id in frontmatter
     When the agent is loaded from the markdown file

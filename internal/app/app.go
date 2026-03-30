@@ -360,6 +360,11 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	allServers := mergeMCPServers(params.cfg.MCPServers, config.DiscoverMCPServers())
 	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
+	if params.failoverManager != nil {
+		if prefs := buildConfigProviderPreferences(params.cfg); len(prefs) > 0 {
+			params.failoverManager.SetBasePreferences(prefs)
+		}
+	}
 	eng := createEngine(engineParams{
 		defaultProvider:    tracedProvider,
 		ollamaProvider:     params.ollamaProvider,
@@ -1429,6 +1434,54 @@ func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider
 		providerRegistry.Register(copilotProvider)
 	}
 	return providerRegistry, ollamaProvider
+}
+
+// buildConfigProviderPreferences constructs a provider preference list from application
+// configuration, ordered so that cfg.Providers.Default is always tried first.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider configuration.
+//
+// Returns:
+//   - A slice of ModelPreference values in default-first order, skipping providers
+//     with no model configured.
+//
+// Side effects:
+//   - None.
+func buildConfigProviderPreferences(cfg *config.AppConfig) []provider.ModelPreference {
+	type namedProvider struct {
+		name  string
+		model string
+	}
+
+	allProviders := []namedProvider{
+		{"ollama", cfg.Providers.Ollama.Model},
+		{"anthropic", cfg.Providers.Anthropic.Model},
+		{"openai", cfg.Providers.OpenAI.Model},
+		{"github", cfg.Providers.GitHub.Model},
+	}
+
+	defaultName := cfg.Providers.Default
+	sorted := make([]namedProvider, 0, len(allProviders))
+	for _, p := range allProviders {
+		if p.name == defaultName {
+			sorted = append([]namedProvider{p}, sorted...)
+		} else {
+			sorted = append(sorted, p)
+		}
+	}
+
+	var prefs []provider.ModelPreference
+	for _, p := range sorted {
+		if p.model == "" {
+			continue
+		}
+		prefs = append(prefs, provider.ModelPreference{
+			Provider: p.name,
+			Model:    p.model,
+		})
+	}
+	return prefs
 }
 
 // RegisterProvidersForTest is a test helper that exposes registerProviders for testing.

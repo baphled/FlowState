@@ -933,23 +933,20 @@ var _ = Describe("Delegation", func() {
 
 				coordinatorManifest := agent.Manifest{
 					ID: "coordinator",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"anthropic": {{Provider: "anthropic", Model: "claude-sonnet-4-6"}},
-					},
 					Delegation: agent.Delegation{
 						CanDelegate: true,
 					},
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 				writerManifest := agent.Manifest{
-					ID: "writer",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"ollama": {{Provider: "ollama", Model: "llama3.2"}},
-					},
+					ID:                "writer",
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 				writerHealth := failover.NewHealthManager()
 				writerMgr := failover.NewManager(provReg, writerHealth, 5*time.Minute)
+				writerMgr.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "ollama", Model: "llama3.2"},
+				})
 
 				writerEngine := engine.New(engine.Config{
 					Registry:        provReg,

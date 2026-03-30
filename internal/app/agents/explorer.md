@@ -8,13 +8,6 @@ aliases:
   - codebase
   - research
 complexity: medium
-model_preferences:
-  anthropic:
-    - provider: anthropic
-      model: claude-sonnet-4-6
-  ollama:
-    - provider: ollama
-      model: llama3.2
 capabilities:
   tools:
     - bash

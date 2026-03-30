@@ -96,10 +96,6 @@ func New(cfg Config) *Engine {
 
 	var chain *hook.Chain
 	if cfg.FailoverManager != nil {
-		prefs := buildModelPreferences(cfg.Manifest)
-		if len(prefs) > 0 {
-			cfg.FailoverManager.SetBasePreferences(prefs)
-		}
 		streamHook := failover.NewStreamHook(cfg.FailoverManager)
 		chain = hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
 			return streamHook.Execute(next)
@@ -155,54 +151,6 @@ func (e *Engine) EventBus() *eventbus.EventBus {
 	return e.bus
 }
 
-// buildModelPreferences constructs model preferences from the agent manifest.
-//
-// The manifest uses a provider-keyed format where keys are provider names
-// (e.g., "ollama", "anthropic", "openai") and values are model preference lists.
-// This function flattens all preferences in a deterministic order.
-//
-// Expected:
-//   - manifest contains a valid ModelPreferences map with provider keys.
-//
-// Returns:
-//   - A slice of provider.ModelPreference with all preferences flattened, or empty if none exist.
-//
-// Side effects:
-//   - None.
-func buildModelPreferences(manifest agent.Manifest) []provider.ModelPreference {
-	order := []string{"anthropic", "ollama", "openai"}
-
-	var result []provider.ModelPreference
-	seen := make(map[string]bool)
-
-	for _, key := range order {
-		prefs, ok := manifest.ModelPreferences[key]
-		if ok {
-			for _, p := range prefs {
-				result = append(result, provider.ModelPreference{
-					Provider: p.Provider,
-					Model:    p.Model,
-				})
-			}
-		}
-		seen[key] = true
-	}
-
-	for key, prefs := range manifest.ModelPreferences {
-		if seen[key] {
-			continue
-		}
-		for _, p := range prefs {
-			result = append(result, provider.ModelPreference{
-				Provider: p.Provider,
-				Model:    p.Model,
-			})
-		}
-	}
-
-	return result
-}
-
 // LastProvider returns the name of the most recently used provider.
 //
 // Returns:
@@ -227,12 +175,6 @@ func (e *Engine) LastProvider() string {
 		if len(prefs) > 0 {
 			return prefs[0].Provider
 		}
-	}
-	e.mu.RLock()
-	prefs := buildModelPreferences(e.manifest)
-	e.mu.RUnlock()
-	if len(prefs) > 0 {
-		return prefs[0].Provider
 	}
 	if e.chatProvider != nil {
 		return e.chatProvider.Name()
@@ -265,12 +207,6 @@ func (e *Engine) LastModel() string {
 		if len(prefs) > 0 {
 			return prefs[0].Model
 		}
-	}
-	e.mu.RLock()
-	prefs := buildModelPreferences(e.manifest)
-	e.mu.RUnlock()
-	if len(prefs) > 0 {
-		return prefs[0].Model
 	}
 	return ""
 }
@@ -308,10 +244,6 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.manifest = manifest
-	prefs := buildModelPreferences(manifest)
-	if e.failoverManager != nil {
-		e.failoverManager.SetBasePreferences(prefs)
-	}
 }
 
 // Manifest returns the current agent manifest.

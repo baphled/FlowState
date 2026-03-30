@@ -103,12 +103,6 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 						ID:         "test-agent",
 						Name:       "Test Agent",
 						Complexity: "standard",
-						ModelPreferences: map[string][]agent.ModelPref{
-							"standard": {
-								{Provider: "broken-a", Model: "model-a"},
-								{Provider: "broken-b", Model: "model-b"},
-							},
-						},
 					},
 				})
 			})
@@ -149,12 +143,6 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 						ID:         "test-agent",
 						Name:       "Test Agent",
 						Complexity: "standard",
-						ModelPreferences: map[string][]agent.ModelPref{
-							"standard": {
-								{Provider: "sync-broken", Model: "broken-model"},
-								{Provider: "fallback-ok", Model: "ok-model"},
-							},
-						},
 					},
 				})
 			})
@@ -218,11 +206,6 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					ID:         "test-agent",
 					Name:       "Test Agent",
 					Complexity: "standard",
-					ModelPreferences: map[string][]agent.ModelPref{
-						"standard": {
-							{Provider: "provider-a", Model: "model-a"},
-						},
-					},
 				},
 			})
 		})
@@ -422,11 +405,5 @@ func failbackManifest() agent.Manifest {
 		ID:         "test-agent",
 		Name:       "Test Agent",
 		Complexity: "standard",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"standard": {
-				{Provider: "broken-provider", Model: "broken-model"},
-				{Provider: "healthy-provider", Model: "healthy-model"},
-			},
-		},
 	}
 }

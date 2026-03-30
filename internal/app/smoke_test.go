@@ -151,9 +151,6 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 		ID:         "planner",
 		Name:       "Planner",
 		Complexity: "deep",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"deep": {{Provider: "scripted", Model: "test-model"}},
-		},
 		Delegation: agent.Delegation{
 			CanDelegate: true,
 		},
@@ -164,7 +161,6 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 		ID:                "plan-writer",
 		Name:              "Plan Writer",
 		Complexity:        "standard",
-		ModelPreferences:  map[string][]agent.ModelPref{},
 		Delegation:        agent.Delegation{CanDelegate: true},
 		ContextManagement: agent.DefaultContextManagement(),
 	}
@@ -173,7 +169,6 @@ func createTestEngines(coordStore coordination.Store) (map[string]*engine.Engine
 		ID:                "plan-reviewer",
 		Name:              "Plan Reviewer",
 		Complexity:        "standard",
-		ModelPreferences:  map[string][]agent.ModelPref{},
 		Delegation:        agent.Delegation{CanDelegate: false},
 		ContextManagement: agent.DefaultContextManagement(),
 	}

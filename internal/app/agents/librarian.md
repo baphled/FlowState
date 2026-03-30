@@ -8,16 +8,6 @@ aliases:
   - docs
   - external-refs
 complexity: medium
-model_preferences:
-  ollama:
-    - provider: ollama
-      model: llama3.2
-  anthropic:
-    - provider: anthropic
-      model: claude-sonnet-4-6
-  openai:
-    - provider: openai
-      model: gpt-4o
 capabilities:
   tools:
     - web

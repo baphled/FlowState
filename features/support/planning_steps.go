@@ -170,32 +170,35 @@ func buildPlanningDelegateTool() *engine.DelegateTool {
 	reg.Register(&planningMockProvider{agentName: "plan-writer"})
 
 	writerManifest := agent.Manifest{
-		ID:   "plan-writer",
-		Name: "Plan Writer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"mock-planning": {{Provider: "mock-planning", Model: "llama3.2"}},
-		},
+		ID:                "plan-writer",
+		Name:              "Plan Writer Agent",
 		Instructions:      agent.Instructions{SystemPrompt: "You are a plan writer."},
 		ContextManagement: agent.DefaultContextManagement(),
 	}
 	reviewerManifest := agent.Manifest{
-		ID:   "plan-reviewer",
-		Name: "Plan Reviewer Agent",
-		ModelPreferences: map[string][]agent.ModelPref{
-			"mock-planning": {{Provider: "mock-planning", Model: "llama3.2"}},
-		},
+		ID:                "plan-reviewer",
+		Name:              "Plan Reviewer Agent",
 		Instructions:      agent.Instructions{SystemPrompt: "You are a plan reviewer."},
 		ContextManagement: agent.DefaultContextManagement(),
 	}
 
+	writerMgr := failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute)
+	writerMgr.SetBasePreferences([]provider.ModelPreference{
+		{Provider: "mock-planning", Model: "llama3.2"},
+	})
 	writerEngine := engine.New(engine.Config{
 		Registry:        reg,
-		FailoverManager: failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute),
+		FailoverManager: writerMgr,
 		Manifest:        writerManifest,
+	})
+
+	reviewerMgr := failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute)
+	reviewerMgr.SetBasePreferences([]provider.ModelPreference{
+		{Provider: "mock-planning", Model: "llama3.2"},
 	})
 	reviewerEngine := engine.New(engine.Config{
 		Registry:        reg,
-		FailoverManager: failover.NewManager(reg, failover.NewHealthManager(), 5*time.Minute),
+		FailoverManager: reviewerMgr,
 		Manifest:        reviewerManifest,
 	})
 

@@ -4,14 +4,13 @@ import "encoding/json"
 
 // Manifest defines the complete configuration for a FlowState agent.
 type Manifest struct {
-	SchemaVersion     string                 `json:"schema_version" yaml:"schema_version"`
-	ID                string                 `json:"id" yaml:"id"`
-	Name              string                 `json:"name" yaml:"name"`
-	Complexity        string                 `json:"complexity" yaml:"complexity"`
-	ModelPreferences  map[string][]ModelPref `json:"model_preferences" yaml:"model_preferences"`
-	Metadata          Metadata               `json:"metadata" yaml:"metadata"`
-	Capabilities      Capabilities           `json:"capabilities" yaml:"capabilities"`
-	ContextManagement ContextManagement      `json:"context_management" yaml:"context_management"`
+	SchemaVersion     string            `json:"schema_version" yaml:"schema_version"`
+	ID                string            `json:"id" yaml:"id"`
+	Name              string            `json:"name" yaml:"name"`
+	Complexity        string            `json:"complexity" yaml:"complexity"`
+	Metadata          Metadata          `json:"metadata" yaml:"metadata"`
+	Capabilities      Capabilities      `json:"capabilities" yaml:"capabilities"`
+	ContextManagement ContextManagement `json:"context_management" yaml:"context_management"`
 	// Aliases contains alternative names and keywords that can be used to route to this agent.
 	Aliases        []string     `json:"aliases" yaml:"aliases"`
 	Delegation     Delegation   `json:"delegation" yaml:"delegation"`
@@ -55,12 +54,6 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 	}
 	m.Aliases = raw.Aliases
 	return nil
-}
-
-// ModelPref specifies a preferred model for a provider.
-type ModelPref struct {
-	Provider string `json:"provider" yaml:"provider"`
-	Model    string `json:"model" yaml:"model"`
 }
 
 // Metadata contains descriptive information about an agent.

@@ -533,13 +533,6 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^a markdown agent file with a body containing "([^"]*)"$`, s.aMarkdownAgentFileWithBodyContaining)
 
-	ctx.Step(`^a markdown agent file with model_preferences for anthropic and ollama$`,
-		s.aMarkdownAgentFileWithModelPreferencesForAnthropicAndOllama)
-	ctx.Step(`^the model preferences should contain the anthropic provider$`,
-		s.theModelPreferencesShouldContainTheAnthropicProvider)
-	ctx.Step(`^the model preferences should contain the ollama provider$`,
-		s.theModelPreferencesShouldContainTheOllamaProvider)
-
 	ctx.Step(`^a markdown agent file "([^"]*)" without an id in frontmatter$`,
 		s.aMarkdownAgentFileWithoutAnIDInFrontmatter)
 
