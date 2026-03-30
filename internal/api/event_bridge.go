@@ -25,7 +25,7 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 	handlers := []busHandler{
 		{eventType: "tool.execute.before", handler: newToolBeforeHandler(sessionID, out)},
 		{eventType: "tool.execute.after", handler: newToolAfterHandler(sessionID, out)},
-		{eventType: "provider.rate_limited", handler: newRateLimitHandler(sessionID, out)},
+		{eventType: "provider.rate_limited", handler: newRateLimitHandler(out)},
 	}
 
 	for _, h := range handlers {
@@ -85,16 +85,17 @@ func newToolAfterHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Event
 	}
 }
 
-// newRateLimitHandler creates an EventHandler that forwards sanitised provider.rate_limited
-// events to the out channel when the session ID matches.
+// newRateLimitHandler creates an EventHandler that forwards provider.rate_limited
+// events to all connected WebSocket clients. Rate-limit events are provider-wide
+// and not session-scoped.
 //
-// Expected: sessionID is the connection's session; out accepts WSChunkMsg values.
+// Expected: out accepts WSChunkMsg values.
 // Returns: an eventbus.EventHandler for provider.rate_limited events.
 // Side effects: sends to out channel on matching events.
-func newRateLimitHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+func newRateLimitHandler(out chan<- WSChunkMsg) eventbus.EventHandler {
 	return func(msg any) {
 		pe, ok := msg.(*events.ProviderEvent)
-		if !ok || pe.Data.SessionID != sessionID {
+		if !ok {
 			return
 		}
 		select {

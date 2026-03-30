@@ -81,7 +81,7 @@ var _ = Describe("subscribeSessionBus", func() {
 			Expect(data["ok"]).To(BeFalse())
 		})
 
-		It("forwards provider.rate_limited events", func() {
+		It("forwards provider.rate_limited events regardless of session ID", func() {
 			bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
 				SessionID:    "sess-1",
 				ProviderName: "anthropic",
@@ -92,6 +92,19 @@ var _ = Describe("subscribeSessionBus", func() {
 			Expect(msg.EventType).To(Equal("provider.rate_limited"))
 			data := msg.EventData.(map[string]string)
 			Expect(data["provider"]).To(Equal("anthropic"))
+		})
+
+		It("forwards provider.rate_limited events from other sessions", func() {
+			bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
+				SessionID:    "sess-other",
+				ProviderName: "openai",
+			}))
+
+			var msg api.WSChunkMsg
+			Eventually(out, 2*time.Second).Should(Receive(&msg))
+			Expect(msg.EventType).To(Equal("provider.rate_limited"))
+			data := msg.EventData.(map[string]string)
+			Expect(data["provider"]).To(Equal("openai"))
 		})
 	})
 
