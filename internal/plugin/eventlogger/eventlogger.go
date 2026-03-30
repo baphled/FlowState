@@ -14,7 +14,16 @@ import (
 )
 
 // subscribedEventTypes lists all event type strings the logger subscribes to.
-var subscribedEventTypes = []string{"session", "tool", "provider"}
+// These must match the exact event names published by the engine and plugin
+// subsystems (e.g. "session.created", not "session").
+var subscribedEventTypes = []string{
+	"session.created",
+	"session.ended",
+	"tool.execute.before",
+	"tool.execute.after",
+	"provider.error",
+	"provider.rate_limited",
+}
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.
 const defaultMaxRotated = 5

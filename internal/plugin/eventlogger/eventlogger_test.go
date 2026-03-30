@@ -50,7 +50,7 @@ var _ = Describe("EventLogger", func() {
 				Action:    "created",
 			}, time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC))
 
-			bus.Publish("session", evt)
+			bus.Publish("session.created", evt)
 
 			data, err := os.ReadFile(logPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -71,13 +71,13 @@ var _ = Describe("EventLogger", func() {
 			Expect(logger.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
-			bus.Publish("session", events.NewSessionEvent(events.SessionEventData{
+			bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
 				SessionID: "sess-1", Action: "created",
 			}, ts))
-			bus.Publish("tool", events.NewToolEvent(events.ToolEventData{
+			bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
 				ToolName: "bash", Args: map[string]any{"cmd": "ls"},
 			}, ts))
-			bus.Publish("provider", events.NewProviderEvent(events.ProviderEventData{
+			bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
 				ProviderName: "anthropic",
 			}, ts))
 
@@ -93,10 +93,10 @@ var _ = Describe("EventLogger", func() {
 			Expect(logger.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
-			bus.Publish("session", events.NewSessionEvent(events.SessionEventData{
+			bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
 				SessionID: "sess-1", Action: "created",
 			}, ts))
-			bus.Publish("tool", events.NewToolEvent(events.ToolEventData{
+			bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
 				ToolName: "echo",
 			}, ts))
 
@@ -117,7 +117,7 @@ var _ = Describe("EventLogger", func() {
 
 			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
 			for range 10 {
-				bus.Publish("session", events.NewSessionEvent(events.SessionEventData{
+				bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
 					SessionID: "sess-long-id-to-exceed-limit",
 					UserID:    "user-long-id",
 					Action:    "created",
@@ -136,7 +136,7 @@ var _ = Describe("EventLogger", func() {
 
 			ts := time.Date(2026, 3, 29, 12, 0, 0, 0, time.UTC)
 			for range 10 {
-				bus.Publish("session", events.NewSessionEvent(events.SessionEventData{
+				bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
 					SessionID: "sess-abc", Action: "created",
 					Details: map[string]any{"padding": "extra-data-to-fill"},
 				}, ts))
@@ -162,7 +162,7 @@ var _ = Describe("EventLogger", func() {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					bus.Publish("session", events.NewSessionEvent(events.SessionEventData{
+					bus.Publish("session.created", events.NewSessionEvent(events.SessionEventData{
 						SessionID: "sess",
 						Action:    "created",
 					}, ts))
