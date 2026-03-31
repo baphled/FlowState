@@ -162,7 +162,7 @@ func DefaultConfig() *AppConfig {
 
 	return &AppConfig{
 		Providers: ProvidersConfig{
-			Default: "ollama",
+			Default: "anthropic",
 			Ollama: ProviderConfig{
 				Host:  "http://localhost:11434",
 				Model: "llama3.2",

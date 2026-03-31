@@ -184,6 +184,143 @@ func NewProviderEvent(data ProviderEventData, ts ...time.Time) *ProviderEvent {
 	}
 }
 
+// PromptEventData holds data for prompt observation events.
+//
+// Expected: used as payload for PromptEvent.
+// Returns: struct with prompt event fields.
+// Side effects: none.
+type PromptEventData struct {
+	AgentID    string
+	FullPrompt string
+	TokenCount int
+	Truncated  bool
+	Sources    []string
+}
+
+// PromptEvent represents a prompt observation event emitted when the system
+// prompt is assembled for a model call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains prompt event details.
+//
+// Returns: struct for prompt events.
+// Side effects: none.
+type PromptEvent struct {
+	BaseEvent
+	Data PromptEventData
+}
+
+// NewPromptEvent creates a new PromptEvent.
+//
+// Expected:
+//   - Sets eventType to "prompt".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new PromptEvent.
+// Side effects: none.
+func NewPromptEvent(data PromptEventData, ts ...time.Time) *PromptEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PromptEvent{
+		BaseEvent: BaseEvent{eventType: "prompt", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ContextWindowEventData holds data for context window observation events.
+//
+// Expected: used as payload for ContextWindowEvent.
+// Returns: struct with context window event fields.
+// Side effects: none.
+type ContextWindowEventData struct {
+	AgentID         string
+	TokenBudget     int
+	TokensUsed      int
+	BudgetRemaining int
+	MessageCount    int
+	Truncated       bool
+}
+
+// ContextWindowEvent represents a context window state event emitted after
+// the context window is built for a model call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains context window event details.
+//
+// Returns: struct for context window events.
+// Side effects: none.
+type ContextWindowEvent struct {
+	BaseEvent
+	Data ContextWindowEventData
+}
+
+// NewContextWindowEvent creates a new ContextWindowEvent.
+//
+// Expected:
+//   - Sets eventType to "context.window".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new ContextWindowEvent.
+// Side effects: none.
+func NewContextWindowEvent(data ContextWindowEventData, ts ...time.Time) *ContextWindowEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ContextWindowEvent{
+		BaseEvent: BaseEvent{eventType: "context.window", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolReasoningEventData holds data for tool reasoning observation events.
+//
+// Expected: used as payload for ToolReasoningEvent.
+// Returns: struct with tool reasoning event fields.
+// Side effects: none.
+type ToolReasoningEventData struct {
+	AgentID          string
+	ToolName         string
+	ReasoningContent string
+}
+
+// ToolReasoningEvent represents a tool reasoning observation event emitted
+// when the model produces text output before choosing a tool call.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains tool reasoning event details.
+//
+// Returns: struct for tool reasoning events.
+// Side effects: none.
+type ToolReasoningEvent struct {
+	BaseEvent
+	Data ToolReasoningEventData
+}
+
+// NewToolReasoningEvent creates a new ToolReasoningEvent.
+//
+// Expected:
+//   - Sets eventType to "tool.reasoning".
+//   - Sets timestamp to now if not provided.
+//
+// Returns: pointer to new ToolReasoningEvent.
+// Side effects: none.
+func NewToolReasoningEvent(data ToolReasoningEventData, ts ...time.Time) *ToolReasoningEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolReasoningEvent{
+		BaseEvent: BaseEvent{eventType: "tool.reasoning", timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -193,4 +330,7 @@ var (
 	_ Event = (*SessionEvent)(nil)
 	_ Event = (*ToolEvent)(nil)
 	_ Event = (*ProviderEvent)(nil)
+	_ Event = (*PromptEvent)(nil)
+	_ Event = (*ContextWindowEvent)(nil)
+	_ Event = (*ToolReasoningEvent)(nil)
 )

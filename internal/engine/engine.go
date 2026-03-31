@@ -629,6 +629,8 @@ func (e *Engine) streamWithToolLoop(
 
 		var streamErr error
 		toolReq := provider.ChatRequest{
+			Provider: e.LastProvider(),
+			Model:    e.LastModel(),
 			Messages: messages,
 			Tools:    e.buildToolSchemas(),
 		}
@@ -688,6 +690,13 @@ func (e *Engine) processStreamChunks(
 			}
 
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+				if e.bus != nil && responseContent.Len() > 0 {
+					e.bus.Publish("tool.reasoning", events.NewToolReasoningEvent(events.ToolReasoningEventData{
+						AgentID:          e.manifest.ID,
+						ToolName:         chunk.ToolCall.Name,
+						ReasoningContent: responseContent.String(),
+					}))
+				}
 				outChan <- chunk
 				return chunk.ToolCall, responseContent.String(), false
 			}
@@ -925,6 +934,23 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 	e.mu.Lock()
 	e.lastContextResult = result
 	e.mu.Unlock()
+
+	if e.bus != nil {
+		e.bus.Publish("prompt.generated", events.NewPromptEvent(events.PromptEventData{
+			AgentID:    e.manifest.ID,
+			FullPrompt: manifestCopy.Instructions.SystemPrompt,
+			TokenCount: result.TokensUsed,
+			Truncated:  result.Truncated,
+		}))
+		e.bus.Publish("context.window.built", events.NewContextWindowEvent(events.ContextWindowEventData{
+			AgentID:         e.manifest.ID,
+			TokenBudget:     tokenBudget,
+			TokensUsed:      result.TokensUsed,
+			BudgetRemaining: result.BudgetRemaining,
+			MessageCount:    len(result.Messages),
+			Truncated:       result.Truncated,
+		}))
+	}
 
 	return result.Messages
 }

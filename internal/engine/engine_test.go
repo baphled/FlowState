@@ -1175,4 +1175,54 @@ var _ = Describe("Engine", func() {
 			Expect(prompt).NotTo(ContainSubstring("## Delegation Targets"))
 		})
 	})
+
+	Describe("Tool continuation with provider preservation", func() {
+		It("preserves selected provider in tool continuation requests", func() {
+			anthropicProvider := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Response", Done: true},
+				},
+			}
+
+			registry := provider.NewRegistry()
+			registry.Register(anthropicProvider)
+
+			health := failover.NewHealthManager()
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus"},
+			})
+
+			testManifest := agent.Manifest{
+				ID:   "test-agent",
+				Name: "Test Agent",
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are a helpful assistant.",
+				},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			eng := engine.New(engine.Config{
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest:        testManifest,
+			})
+
+			eng.SetModelPreference("anthropic", "claude-opus")
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+
+			Expect(err).NotTo(HaveOccurred())
+
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(anthropicProvider.capturedRequest).NotTo(BeNil())
+			Expect(anthropicProvider.capturedRequest.Provider).To(Equal("anthropic"))
+			Expect(anthropicProvider.capturedRequest.Model).To(Equal("claude-opus"))
+		})
+	})
 })

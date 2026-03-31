@@ -80,7 +80,7 @@ var _ = Describe("Config", func() {
 			cfg := config.DefaultConfig()
 
 			Expect(cfg).NotTo(BeNil())
-			Expect(cfg.Providers.Default).To(Equal("ollama"))
+			Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			Expect(cfg.LogLevel).To(Equal("info"))
 			Expect(cfg.DefaultAgent).To(Equal("executor"))
 		})
@@ -150,7 +150,7 @@ log_level: debug
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg).NotTo(BeNil())
-				Expect(cfg.Providers.Default).To(Equal("ollama"))
+				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			})
 		})
 	})
@@ -220,7 +220,7 @@ plugins:
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg).NotTo(BeNil())
-				Expect(cfg.Providers.Default).To(Equal("ollama"))
+				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			})
 		})
 
@@ -258,7 +258,7 @@ log_level: warn
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg.LogLevel).To(Equal("warn"))
-				Expect(cfg.Providers.Default).To(Equal("ollama"))
+				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 				Expect(cfg.DefaultAgent).To(Equal("executor"))
 			})
 
