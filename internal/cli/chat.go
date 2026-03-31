@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui"
 	"github.com/spf13/cobra"
@@ -110,13 +111,19 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 
+	wrappedStreamer := streaming.NewSessionContextStreamer(
+		application.Streamer,
+		func() string { return sessionID },
+		session.IDKey{},
+	)
+
 	writer := io.Discard
 	if opts.Output == "json" {
 		writer = cmd.OutOrStdout()
 	}
 
 	chatOpts := chatStreamOptions{outputFormat: opts.Output, verbosity: opts.Verbosity}
-	response, err := streamChatResponse(application, agentName, opts.Message, chatOpts, writer)
+	response, err := streamChatResponse(wrappedStreamer, agentName, opts.Message, chatOpts, writer)
 	if err != nil {
 		return err
 	}
@@ -180,11 +187,11 @@ func resolveChatAgentName(agent, defaultAgent string) string {
 //
 // Side effects:
 //   - None.
-func resolveChatSessionID(session string) string {
-	if session == "" {
+func resolveChatSessionID(sessionParam string) string {
+	if sessionParam == "" {
 		return generateSessionID()
 	}
-	return session
+	return sessionParam
 }
 
 // loadSessionIfRequested loads a session into the engine if a session ID is provided.
@@ -198,9 +205,9 @@ func resolveChatSessionID(session string) string {
 //
 // Side effects:
 //   - Loads session into the engine if session is non-empty and sessions store is available.
-func loadSessionIfRequested(application *app.App, session string) {
-	if session != "" && application.Sessions != nil {
-		store, loadErr := application.Sessions.Load(session)
+func loadSessionIfRequested(application *app.App, sessionParam string) {
+	if sessionParam != "" && application.Sessions != nil {
+		store, loadErr := application.Sessions.Load(sessionParam)
 		if loadErr == nil {
 			application.Engine.SetContextStore(store)
 		}
@@ -216,7 +223,7 @@ type chatStreamOptions struct {
 // streamChatResponse streams a response from the streamer and returns the complete message.
 //
 // Expected:
-//   - application is a non-nil App instance with a configured streamer.
+//   - streamer is a non-nil streaming.Streamer for response generation.
 //   - agentName is a non-empty string.
 //   - message is a non-empty string.
 //   - opts specifies output format and verbosity.
@@ -228,7 +235,7 @@ type chatStreamOptions struct {
 // Side effects:
 //   - Streams response chunks from the streamer.
 func streamChatResponse(
-	application *app.App, agentName string, message string, opts chatStreamOptions, writer io.Writer,
+	streamer streaming.Streamer, agentName string, message string, opts chatStreamOptions, writer io.Writer,
 ) (string, error) {
 	var inner streaming.StreamConsumer
 	if opts.outputFormat == "json" {
@@ -237,7 +244,7 @@ func streamChatResponse(
 		inner = NewWriterConsumer(writer, true)
 	}
 	consumer := streaming.NewVerbosityFilter(inner, parseCLIVerbosityLevel(opts.verbosity))
-	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, message); err != nil {
+	if err := streaming.Run(context.Background(), streamer, consumer, agentName, message); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
 	if err := getConsumerError(inner); err != nil {

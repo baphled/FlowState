@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/spf13/cobra"
 )
@@ -97,7 +98,13 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	sessionID := resolveSessionID(opts.Session)
 	loadExistingSession(application, opts.Session)
 
-	response, err := streamResponse(cmd, application, agentName, opts)
+	wrappedStreamer := streaming.NewSessionContextStreamer(
+		application.Streamer,
+		func() string { return sessionID },
+		session.IDKey{},
+	)
+
+	response, err := streamResponse(cmd, wrappedStreamer, agentName, opts)
 	if err != nil {
 		return err
 	}
@@ -151,11 +158,11 @@ func resolveAgentName(agent string) string {
 //
 // Side effects:
 //   - None.
-func resolveSessionID(session string) string {
-	if session == "" {
+func resolveSessionID(sessionParam string) string {
+	if sessionParam == "" {
 		return generateSessionID()
 	}
-	return session
+	return sessionParam
 }
 
 // loadExistingSession loads a session into the engine if a session ID is provided.
@@ -169,11 +176,11 @@ func resolveSessionID(session string) string {
 //
 // Side effects:
 //   - Loads session into the engine if session is non-empty and sessions store is available.
-func loadExistingSession(application *app.App, session string) {
-	if session == "" || application.Sessions == nil {
+func loadExistingSession(application *app.App, sessionParam string) {
+	if sessionParam == "" || application.Sessions == nil {
 		return
 	}
-	store, err := application.Sessions.Load(session)
+	store, err := application.Sessions.Load(sessionParam)
 	if err == nil {
 		application.Engine.SetContextStore(store)
 	}
@@ -183,7 +190,7 @@ func loadExistingSession(application *app.App, session string) {
 //
 // Expected:
 //   - cmd is a non-nil cobra.Command.
-//   - application is a non-nil App instance with a configured streamer.
+//   - streamer is a non-nil streaming.Streamer for response generation.
 //   - agentName is a non-empty string.
 //   - opts is a non-nil RunOptions with a non-empty prompt.
 //
@@ -192,9 +199,9 @@ func loadExistingSession(application *app.App, session string) {
 //
 // Side effects:
 //   - Streams response chunks to stdout if JSON output is not requested.
-func streamResponse(cmd *cobra.Command, application *app.App, agentName string, opts *RunOptions) (string, error) {
+func streamResponse(cmd *cobra.Command, streamer streaming.Streamer, agentName string, opts *RunOptions) (string, error) {
 	consumer := NewWriterConsumer(cmd.OutOrStdout(), opts.JSON)
-	if err := streaming.Run(context.Background(), application.Streamer, consumer, agentName, opts.Prompt); err != nil {
+	if err := streaming.Run(context.Background(), streamer, consumer, agentName, opts.Prompt); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
 	if consumer.Err() != nil {

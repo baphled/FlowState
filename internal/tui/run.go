@@ -4,6 +4,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	flowapp "github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/app"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
@@ -25,10 +27,15 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 			application.Engine.SetManifest(*manifest)
 		}
 	}
+	sessionStreamer := streaming.NewSessionContextStreamer(
+		application.Streamer,
+		func() string { return sessionID },
+		session.IDKey{},
+	)
 	chatIntent := chat.NewIntent(chat.IntentConfig{
 		App:           nil,
 		Engine:        application.Engine,
-		Streamer:      application.Streamer,
+		Streamer:      sessionStreamer,
 		AgentID:       agentID,
 		SessionID:     sessionID,
 		ModelName:     application.Engine.LastModel(),
