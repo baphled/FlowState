@@ -71,6 +71,7 @@ var _ = Describe("ContextTools", func() {
 	})
 
 	AfterEach(func() {
+		store.Close()
 		os.RemoveAll(tempDir)
 	})
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/google/uuid"
@@ -66,16 +67,29 @@ type persistedStore struct {
 }
 
 // FileContextStore implements MessageStore and EmbeddingStore with file persistence.
+//
+// Persistence is batched to reduce disk I/O: writes occur when the pending
+// append count reaches flushThreshold, or when flushInterval elapses,
+// whichever comes first. Callers may force an immediate write with Flush.
 type FileContextStore struct {
-	path       string
-	messages   []StoredMessage
-	embeddings []EmbeddingEntry
-	mu         sync.RWMutex
-	maxSize    int
-	model      string
+	path           string
+	messages       []StoredMessage
+	embeddings     []EmbeddingEntry
+	mu             sync.RWMutex
+	maxSize        int
+	model          string
+	pendingWrites  int
+	flushInterval  time.Duration
+	flushThreshold int
+	flushTimer     *time.Timer
+	closed         bool
 }
 
-const defaultMaxSize = 1000
+const (
+	defaultMaxSize        = 1000
+	defaultFlushThreshold = 5
+	defaultFlushInterval  = 10 * time.Second
+)
 
 // NewFileContextStore creates a new file-backed context store at the given path.
 //
@@ -97,11 +111,13 @@ func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error)
 	}
 
 	store := &FileContextStore{
-		path:       path,
-		messages:   make([]StoredMessage, 0),
-		embeddings: make([]EmbeddingEntry, 0),
-		maxSize:    defaultMaxSize,
-		model:      embeddingModel,
+		path:           path,
+		messages:       make([]StoredMessage, 0),
+		embeddings:     make([]EmbeddingEntry, 0),
+		maxSize:        defaultMaxSize,
+		model:          embeddingModel,
+		flushThreshold: defaultFlushThreshold,
+		flushInterval:  defaultFlushInterval,
 	}
 
 	if err := store.load(); err != nil {
@@ -123,11 +139,13 @@ func NewFileContextStore(path, embeddingModel string) (*FileContextStore, error)
 //   - None. No files are created or read.
 func NewEmptyContextStore(model string) *FileContextStore {
 	return &FileContextStore{
-		path:       "",
-		messages:   make([]StoredMessage, 0),
-		embeddings: make([]EmbeddingEntry, 0),
-		maxSize:    defaultMaxSize,
-		model:      model,
+		path:           "",
+		messages:       make([]StoredMessage, 0),
+		embeddings:     make([]EmbeddingEntry, 0),
+		maxSize:        defaultMaxSize,
+		model:          model,
+		flushThreshold: math.MaxInt32,
+		flushInterval:  0,
 	}
 }
 
@@ -208,17 +226,22 @@ func (s *FileContextStore) persist() error {
 	return nil
 }
 
-// Append adds a message to the store and persists the updated state.
+// Append adds a message to the store with batched persistence.
 //
 // Expected:
 //   - msg is a valid provider.Message to store.
 //
 // Side effects:
-//   - Persists the updated message list to disk.
 //   - Evicts the oldest message if the store exceeds its maximum size.
+//   - Persists to disk when pendingWrites reaches flushThreshold.
+//   - Starts a timer to auto-flush after flushInterval if below threshold.
 func (s *FileContextStore) Append(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.closed {
+		return
+	}
 
 	sm := StoredMessage{
 		ID:       uuid.New().String(),
@@ -232,8 +255,80 @@ func (s *FileContextStore) Append(msg provider.Message) {
 		s.messages = s.messages[1:]
 	}
 
+	s.pendingWrites++
+	if s.pendingWrites >= s.flushThreshold {
+		s.flushLocked()
+	} else {
+		s.resetFlushTimer()
+	}
+}
+
+// flushLocked persists pending messages to disk and resets the write counter.
+// The caller must hold s.mu.Lock.
+//
+// Side effects:
+//   - Writes the store's messages and embeddings to disk via atomic write.
+//   - Resets the pending write counter and stops the flush timer.
+func (s *FileContextStore) flushLocked() {
+	if s.path == "" || s.pendingWrites == 0 {
+		return
+	}
 	if err := s.persist(); err != nil {
 		log.Printf("warning: %v", err)
+	}
+	s.pendingWrites = 0
+	s.stopFlushTimer()
+}
+
+// Flush persists any pending messages to disk immediately.
+//
+// Side effects:
+//   - Writes the current state to the store's file path.
+//   - Resets the pending write counter and stops the auto-flush timer.
+func (s *FileContextStore) Flush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushLocked()
+}
+
+// Close flushes pending messages and prevents further operations.
+//
+// Side effects:
+//   - Persists any pending messages to disk.
+//   - Stops the auto-flush timer.
+//   - Marks the store as closed; subsequent Append calls are ignored.
+func (s *FileContextStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flushLocked()
+	s.stopFlushTimer()
+	s.closed = true
+}
+
+// resetFlushTimer starts or restarts the auto-flush timer.
+// The caller must hold s.mu.Lock.
+//
+// Side effects:
+//   - Stops any existing flush timer and starts a new one.
+func (s *FileContextStore) resetFlushTimer() {
+	if s.flushInterval <= 0 {
+		return
+	}
+	s.stopFlushTimer()
+	s.flushTimer = time.AfterFunc(s.flushInterval, func() {
+		s.Flush()
+	})
+}
+
+// stopFlushTimer cancels and clears any active auto-flush timer.
+// The caller must hold s.mu.Lock.
+//
+// Side effects:
+//   - Stops and nils the flush timer if one is active.
+func (s *FileContextStore) stopFlushTimer() {
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+		s.flushTimer = nil
 	}
 }
 

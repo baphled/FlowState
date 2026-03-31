@@ -792,6 +792,12 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		targetEngine.SetManifest(manifest)
 	}
 
+	if params.sessionID == "" {
+		targetEngine.SetSkipAgentFiles(true)
+	} else {
+		targetEngine.SetSkipAgentFiles(false)
+	}
+
 	return delegationTarget{
 		agentID:          targetAgentID,
 		engine:           targetEngine,
@@ -1178,6 +1184,10 @@ func (d *DelegateTool) InjectSkillsIfProvided(loadSkills []string, basePrompt st
 		if err != nil {
 			continue
 		}
+		marker := extractSkillMarker(content)
+		if marker != "" && containsSkillMarker(basePrompt, marker) {
+			continue
+		}
 		skillContents = append(skillContents, content)
 	}
 
@@ -1186,4 +1196,42 @@ func (d *DelegateTool) InjectSkillsIfProvided(loadSkills []string, basePrompt st
 	}
 
 	return strings.Join(skillContents, "\n\n") + "\n\n" + basePrompt
+}
+
+// extractSkillMarker returns the first line of content if it starts with a
+// Markdown heading (# or ##). This is used as a deduplication marker to avoid
+// injecting the same skill twice into a prompt.
+//
+// Expected:
+//   - content is a non-empty skill content string (may be empty, returns "").
+//
+// Returns:
+//   - The first line when it begins with "# " or "## ".
+//   - An empty string if content is empty or the first line is not a heading.
+//
+// Side effects:
+//   - None.
+func extractSkillMarker(content string) string {
+	firstLine, _, _ := strings.Cut(content, "\n")
+	if strings.HasPrefix(firstLine, "# ") || strings.HasPrefix(firstLine, "## ") {
+		return firstLine
+	}
+	return ""
+}
+
+// containsSkillMarker reports whether marker appears as a complete line in prompt.
+// This prevents false-positive prefix matches such as "# Skill: golang" matching
+// against "# Skill: golang-testing".
+//
+// Expected:
+//   - marker is a non-empty heading line extracted by extractSkillMarker.
+//   - prompt is the base system prompt to search.
+//
+// Returns:
+//   - true if marker appears as a standalone line (followed by "\n" or at end of string).
+//
+// Side effects:
+//   - None.
+func containsSkillMarker(prompt, marker string) bool {
+	return strings.Contains(prompt, marker+"\n") || strings.HasSuffix(prompt, marker)
 }

@@ -1,8 +1,10 @@
 package recall_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,6 +30,7 @@ var _ = Describe("FileContextStore", func() {
 	})
 
 	AfterEach(func() {
+		store.Close()
 		os.RemoveAll(tempDir)
 	})
 
@@ -146,14 +149,140 @@ var _ = Describe("FileContextStore", func() {
 	})
 
 	Describe("Atomic persistence", func() {
-		It("creates file after Append", func() {
+		It("creates file after reaching flush threshold", func() {
 			_, err := os.Stat(path)
 			Expect(os.IsNotExist(err)).To(BeTrue())
 
-			store.Append(provider.Message{Role: "user", Content: "test"})
+			for range 5 {
+				store.Append(provider.Message{Role: "user", Content: "test"})
+			}
 
 			_, err = os.Stat(path)
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("Batch persistence", func() {
+		It("does not persist below the flush threshold", func() {
+			_, err := os.Stat(path)
+			Expect(os.IsNotExist(err)).To(BeTrue())
+
+			store.Append(provider.Message{Role: "user", Content: "one"})
+			store.Append(provider.Message{Role: "user", Content: "two"})
+
+			_, err = os.Stat(path)
+			Expect(os.IsNotExist(err)).To(BeTrue())
+			Expect(store.Count()).To(Equal(2))
+		})
+
+		It("persists when the flush threshold is reached", func() {
+			for range 5 {
+				store.Append(provider.Message{Role: "user", Content: "msg"})
+			}
+
+			_, err := os.Stat(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			data, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			var persisted struct {
+				Messages []json.RawMessage `json:"messages"`
+			}
+			Expect(json.Unmarshal(data, &persisted)).To(Succeed())
+			Expect(persisted.Messages).To(HaveLen(5))
+		})
+
+		It("resets pending count after flush threshold persist", func() {
+			for range 5 {
+				store.Append(provider.Message{Role: "user", Content: "batch1"})
+			}
+
+			modTimeBefore := fileModTime(path)
+
+			store.Append(provider.Message{Role: "user", Content: "batch2-one"})
+
+			modTimeAfter := fileModTime(path)
+			Expect(modTimeAfter).To(Equal(modTimeBefore))
+		})
+
+		It("persists via timer when below threshold", func() {
+			store.Append(provider.Message{Role: "user", Content: "timed"})
+
+			Eventually(func() bool {
+				_, err := os.Stat(path)
+				return err == nil
+			}, 15*time.Second, 500*time.Millisecond).Should(BeTrue())
+
+			data, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			var persisted struct {
+				Messages []json.RawMessage `json:"messages"`
+			}
+			Expect(json.Unmarshal(data, &persisted)).To(Succeed())
+			Expect(persisted.Messages).To(HaveLen(1))
+		})
+	})
+
+	Describe("Flush", func() {
+		It("persists pending messages immediately", func() {
+			store.Append(provider.Message{Role: "user", Content: "pending"})
+
+			_, err := os.Stat(path)
+			Expect(os.IsNotExist(err)).To(BeTrue())
+
+			store.Flush()
+
+			_, err = os.Stat(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			data, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			var persisted struct {
+				Messages []json.RawMessage `json:"messages"`
+			}
+			Expect(json.Unmarshal(data, &persisted)).To(Succeed())
+			Expect(persisted.Messages).To(HaveLen(1))
+		})
+
+		It("is a no-op when there are no pending writes", func() {
+			store.Flush()
+
+			_, err := os.Stat(path)
+			Expect(os.IsNotExist(err)).To(BeTrue())
+		})
+	})
+
+	Describe("Close", func() {
+		It("flushes pending messages", func() {
+			store.Append(provider.Message{Role: "user", Content: "before-close"})
+
+			store.Close()
+
+			_, err := os.Stat(path)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("survives multiple Close calls", func() {
+			store.Append(provider.Message{Role: "user", Content: "close-twice"})
+			store.Close()
+			store.Close()
+
+			Expect(store.Count()).To(Equal(1))
+		})
+	})
+
+	Describe("Reload after batch persist", func() {
+		It("loads all messages from the flushed file", func() {
+			for range 5 {
+				store.Append(provider.Message{Role: "user", Content: "reload-test"})
+			}
+
+			reloaded, err := recall.NewFileContextStore(path, "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded.Count()).To(Equal(5))
 		})
 	})
 
@@ -172,6 +301,14 @@ var _ = Describe("FileContextStore", func() {
 		})
 	})
 })
+
+func fileModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
 
 var _ = Describe("EmptyContextStore", func() {
 	Describe("NewEmptyContextStore", func() {

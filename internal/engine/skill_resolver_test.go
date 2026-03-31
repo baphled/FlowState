@@ -56,5 +56,63 @@ var _ = Describe("FileSkillResolver", func() {
 				Expect(content).To(BeEmpty())
 			})
 		})
+
+		Context("caching behaviour", func() {
+			It("returns cached content after the file is deleted", func() {
+				skillDir := filepath.Join(tmpDir, "cached-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillContent := "# Skill: cached-skill\n\nCached content."
+				Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				content, err := resolver.Resolve("cached-skill")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(content).To(Equal(skillContent))
+
+				Expect(os.RemoveAll(skillDir)).To(Succeed())
+
+				content, err = resolver.Resolve("cached-skill")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(content).To(Equal(skillContent))
+			})
+
+			It("does not cache errors for missing skills", func() {
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				_, err := resolver.Resolve("late-skill")
+				Expect(err).To(MatchError(engine.ErrSkillNotFound))
+
+				skillDir := filepath.Join(tmpDir, "late-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillContent := "# Skill: late-skill\n\nAppeared later."
+				Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o600)).To(Succeed())
+
+				content, err := resolver.Resolve("late-skill")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(content).To(Equal(skillContent))
+			})
+
+			It("caches each skill independently", func() {
+				for _, name := range []string{"alpha", "beta"} {
+					skillDir := filepath.Join(tmpDir, name)
+					Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+					Expect(os.WriteFile(
+						filepath.Join(skillDir, "SKILL.md"),
+						[]byte("# Skill: "+name),
+						0o600,
+					)).To(Succeed())
+				}
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				alpha, err := resolver.Resolve("alpha")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(alpha).To(Equal("# Skill: alpha"))
+
+				beta, err := resolver.Resolve("beta")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(beta).To(Equal("# Skill: beta"))
+
+				Expect(alpha).NotTo(Equal(beta))
+			})
+		})
 	})
 })

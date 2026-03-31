@@ -358,7 +358,7 @@ Claude then calls the `skill_load` tool to fetch each skill's SKILL.md content a
 
 ### Provider Priority
 
-FlowState builds a failback chain with providers in this order: **anthropic → ollama → openai**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
+FlowState builds a failback chain with providers in this order: **anthropic → github-copilot → openai → ollama**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
 
 ### Agent Manifest Model Names
 

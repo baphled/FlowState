@@ -714,9 +714,9 @@ func (p *Provider) extractSystemPrompt(
 		if m.Role != "system" || m.Content == "" {
 			continue
 		}
-		block := anthropicAPI.TextBlockParam{Text: m.Content}
-		if !p.isOAuth {
-			block.CacheControl = anthropicAPI.NewCacheControlEphemeralParam()
+		block := anthropicAPI.TextBlockParam{
+			Text:         m.Content,
+			CacheControl: anthropicAPI.NewCacheControlEphemeralParam(),
 		}
 		blocks = append(blocks, block)
 	}
@@ -755,6 +755,8 @@ func buildTools(
 			OfTool: &toolParam,
 		})
 	}
+	lastTool := result[len(result)-1].OfTool
+	lastTool.CacheControl = anthropicAPI.NewCacheControlEphemeralParam()
 	return result
 }
 

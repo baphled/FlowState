@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -130,12 +131,18 @@ var _ = Describe("extractSystemPrompt", func() {
 			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
 		})
 
-		It("omits CacheControl on all blocks including billing", func() {
+		It("omits CacheControl on the billing header block", func() {
 			p := &Provider{isOAuth: true}
 			blocks := p.extractSystemPrompt(msgs)
-			for _, block := range blocks {
-				Expect(block.CacheControl).To(BeZero())
-			}
+			Expect(blocks).To(HaveLen(2))
+			Expect(blocks[0].CacheControl).To(BeZero())
+		})
+
+		It("includes CacheControl on system content blocks", func() {
+			p := &Provider{isOAuth: true}
+			blocks := p.extractSystemPrompt(msgs)
+			Expect(blocks).To(HaveLen(2))
+			Expect(blocks[1].CacheControl).NotTo(BeZero())
 		})
 
 		It("places the billing header before multiple system messages", func() {
@@ -164,6 +171,66 @@ var _ = Describe("extractSystemPrompt", func() {
 			Expect(blocks).To(HaveLen(1))
 			Expect(blocks[0].Text).To(Equal("Valid prompt"))
 		})
+	})
+})
+
+var _ = Describe("buildTools", func() {
+	It("returns nil when tools slice is empty", func() {
+		result := buildTools(nil)
+		Expect(result).To(BeNil())
+	})
+
+	It("converts provider tools to Anthropic tool params", func() {
+		tools := []provider.Tool{
+			{
+				Name:        "read_file",
+				Description: "Read a file from disk",
+				Schema: provider.ToolSchema{
+					Properties: map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
+					Required:   []string{"path"},
+				},
+			},
+		}
+		result := buildTools(tools)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool).NotTo(BeNil())
+		Expect(result[0].OfTool.Name).To(Equal("read_file"))
+	})
+
+	It("applies CacheControl to the last tool definition only", func() {
+		tools := []provider.Tool{
+			{
+				Name:        "tool_a",
+				Description: "First tool",
+				Schema:      provider.ToolSchema{},
+			},
+			{
+				Name:        "tool_b",
+				Description: "Second tool",
+				Schema:      provider.ToolSchema{},
+			},
+		}
+		result := buildTools(tools)
+		Expect(result).To(HaveLen(2))
+		Expect(result[0].OfTool.CacheControl).To(BeZero())
+		Expect(result[1].OfTool.CacheControl).To(
+			Equal(anthropicAPI.NewCacheControlEphemeralParam()),
+		)
+	})
+
+	It("applies CacheControl when there is only one tool", func() {
+		tools := []provider.Tool{
+			{
+				Name:        "only_tool",
+				Description: "Single tool",
+				Schema:      provider.ToolSchema{},
+			},
+		}
+		result := buildTools(tools)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool.CacheControl).To(
+			Equal(anthropicAPI.NewCacheControlEphemeralParam()),
+		)
 	})
 })
 

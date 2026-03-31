@@ -50,7 +50,15 @@ type Engine struct {
 	preferredProvider string
 	preferredModel    string
 	bus               *eventbus.EventBus
-	mu                sync.RWMutex
+
+	cachedSystemPrompt string
+	systemPromptDirty  bool
+	cachedToolSchemas  []provider.Tool
+	cachedAgentFiles   []agent.InstructionFile
+	agentFilesCached   bool
+	skipAgentFiles     bool
+
+	mu sync.RWMutex
 }
 
 // Config holds the configuration for creating a new Engine.
@@ -124,6 +132,7 @@ func New(cfg Config) *Engine {
 		agentsFileLoader:  cfg.AgentsFileLoader,
 		agentOverrides:    make(map[string]string),
 		bus:               eventbus.NewEventBus(),
+		systemPromptDirty: true,
 	}
 }
 
@@ -134,10 +143,42 @@ func New(cfg Config) *Engine {
 //
 // Side effects:
 //   - Modifies e.agentOverrides in place, replacing any existing overrides.
+//   - Invalidates the cached system prompt.
 func (e *Engine) SetAgentOverrides(overrides map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.agentOverrides = overrides
+	e.systemPromptDirty = true
+}
+
+// SetSkipAgentFiles controls whether agent instruction files (AGENTS.md) are excluded
+// from the system prompt. Delegated child engines use this to reduce token usage
+// when the parent's project-level instructions are irrelevant.
+//
+// Expected:
+//   - skip is true to exclude agent files, false to include them.
+//
+// Side effects:
+//   - Invalidates the cached system prompt.
+func (e *Engine) SetSkipAgentFiles(skip bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skipAgentFiles = skip
+	e.systemPromptDirty = true
+}
+
+// SkipAgentFiles reports whether agent instruction files are currently excluded
+// from the system prompt for this engine.
+//
+// Returns:
+//   - true if agent files are excluded, false if they are included.
+//
+// Side effects:
+//   - None.
+func (e *Engine) SkipAgentFiles() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.skipAgentFiles
 }
 
 // EventBus returns the engine's event bus for plugin event subscriptions.
@@ -240,10 +281,12 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 //
 // Side effects:
 //   - Replaces the engine's active manifest for subsequent chat operations.
+//   - Invalidates the cached system prompt.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.manifest = manifest
+	e.systemPromptDirty = true
 }
 
 // Manifest returns the current agent manifest.
@@ -280,20 +323,38 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
 //
 // The composition order is: base prompt → agent files → delegation sections → prompt_append (last).
+// Returns a cached result when the prompt inputs have not changed since the last build.
+// The cache is invalidated by SetManifest and SetAgentOverrides.
 //
 // Returns:
 //   - The concatenated system prompt string including always-active and agent-level skill content.
 //
 // Side effects:
-//   - None.
+//   - Caches the built prompt and loaded agent files for subsequent calls.
 func (e *Engine) BuildSystemPrompt() string {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
+	if !e.systemPromptDirty {
+		cached := e.cachedSystemPrompt
+		e.mu.RUnlock()
+		return cached
+	}
+	e.mu.RUnlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if !e.systemPromptDirty {
+		return e.cachedSystemPrompt
+	}
 
 	base := e.manifest.Instructions.SystemPrompt
 
-	if e.agentsFileLoader != nil {
-		for _, f := range e.agentsFileLoader.LoadFiles() {
+	if e.agentsFileLoader != nil && !e.skipAgentFiles {
+		if !e.agentFilesCached {
+			e.cachedAgentFiles = e.agentsFileLoader.LoadFiles()
+			e.agentFilesCached = true
+		}
+		for _, f := range e.cachedAgentFiles {
 			base = base + "\n\nInstructions from: " + f.Path + "\n" + f.Content
 		}
 	}
@@ -307,6 +368,9 @@ func (e *Engine) BuildSystemPrompt() string {
 			base = base + "\n\n" + appendText
 		}
 	}
+
+	e.cachedSystemPrompt = base
+	e.systemPromptDirty = false
 
 	return base
 }
@@ -354,10 +418,26 @@ func (e *Engine) appendDelegationSections(base string) string {
 //
 // Returns:
 //   - A slice of provider.Tool values with schema information for each tool.
+//   - Returns a cached result when tools have not changed since the last call.
 //
 // Side effects:
-//   - None.
+//   - Caches the built schemas for subsequent calls.
 func (e *Engine) buildToolSchemas() []provider.Tool {
+	e.mu.RLock()
+	if e.cachedToolSchemas != nil {
+		cached := e.cachedToolSchemas
+		e.mu.RUnlock()
+		return cached
+	}
+	e.mu.RUnlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.cachedToolSchemas != nil {
+		return e.cachedToolSchemas
+	}
+
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {
 		schema := t.Schema()
@@ -383,6 +463,8 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 			},
 		})
 	}
+
+	e.cachedToolSchemas = tools
 	return tools
 }
 
@@ -1010,8 +1092,12 @@ func (e *Engine) HasTool(name string) bool {
 //
 // Side effects:
 //   - Modifies the engine's internal tools slice.
+//   - Invalidates the cached tool schemas.
 func (e *Engine) AddTool(t tool.Tool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.tools = append(e.tools, t)
+	e.cachedToolSchemas = nil
 }
 
 // GetDelegateTool returns the DelegateTool from the engine's tool set, if present.

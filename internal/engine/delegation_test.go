@@ -1097,6 +1097,80 @@ var _ = Describe("Delegation", func() {
 				Expect(injected).To(ContainSubstring(skillContent))
 				Expect(injected).To(ContainSubstring(basePrompt))
 			})
+
+			It("skips skills already present in the base prompt", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "pre-action")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillContent := "# Skill: pre-action\n\nPre-action skill content."
+				Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "# Skill: pre-action\n\nPre-action skill content.\n\nYou are an agent."
+				injected := delegateTool.InjectSkillsIfProvided([]string{"pre-action"}, basePrompt)
+
+				Expect(injected).To(Equal(basePrompt))
+			})
+
+			It("injects only skills not already present in the base prompt", func() {
+				tmpDir := GinkgoT().TempDir()
+				for _, name := range []string{"existing-skill", "new-skill"} {
+					skillDir := filepath.Join(tmpDir, name)
+					Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+					content := "# Skill: " + name + "\n\nContent for " + name + "."
+					Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600)).To(Succeed())
+				}
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "# Skill: existing-skill\n\nContent for existing-skill.\n\nYou are an agent."
+				injected := delegateTool.InjectSkillsIfProvided([]string{"existing-skill", "new-skill"}, basePrompt)
+
+				Expect(injected).To(ContainSubstring("# Skill: new-skill"))
+				Expect(injected).To(ContainSubstring(basePrompt))
+			})
+
+			It("does not deduplicate skills without a heading marker", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "plain-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				skillContent := "Plain content without heading."
+				Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0o600)).To(Succeed())
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "Plain content without heading.\n\nYou are an agent."
+				injected := delegateTool.InjectSkillsIfProvided([]string{"plain-skill"}, basePrompt)
+
+				Expect(injected).NotTo(Equal(basePrompt))
+				Expect(injected).To(ContainSubstring(skillContent))
+			})
+
+			It("does not false-positive suppress a skill whose name is a prefix of a present skill", func() {
+				tmpDir := GinkgoT().TempDir()
+				for _, name := range []string{"golang", "golang-testing"} {
+					skillDir := filepath.Join(tmpDir, name)
+					Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+					content := "# Skill: " + name + "\n\nContent for " + name + "."
+					Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600)).To(Succeed())
+				}
+
+				resolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "test-agent")
+				delegateTool.WithSkillResolver(resolver)
+
+				basePrompt := "# Skill: golang-testing\n\nContent for golang-testing.\n\nYou are an agent."
+				injected := delegateTool.InjectSkillsIfProvided([]string{"golang"}, basePrompt)
+
+				Expect(injected).To(ContainSubstring("# Skill: golang\n"))
+			})
 		})
 
 		Describe("DelegateTool category routing", func() {
@@ -1621,5 +1695,183 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 		delegateTool := engine.NewDelegateTool(nil, del, "orchestrator")
 		schema := delegateTool.Schema()
 		Expect(schema.Required).To(ConsistOf("subagent_type", "message"))
+	})
+
+	Describe("agent files skipping for delegated engines", func() {
+		It("excludes agent files from child system prompt for fresh delegations", func() {
+			tempDir, err := os.MkdirTemp("", "delegation-skip-agents-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tempDir) })
+
+			agentsContent := "# Project Instructions\n\nExpensive project rules that waste tokens."
+			Expect(os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte(agentsContent), 0o600)).To(Succeed())
+
+			loader := agent.NewAgentsFileLoader(tempDir, "")
+
+			childProvider := &mockProvider{
+				name: "child-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Child response", Done: true},
+				},
+			}
+
+			childManifest := agent.Manifest{
+				ID:                "child-agent",
+				Name:              "Child Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a child agent."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			childEngine := engine.New(engine.Config{
+				ChatProvider:     childProvider,
+				Manifest:         childManifest,
+				AgentsFileLoader: loader,
+			})
+
+			engines := map[string]*engine.Engine{
+				"child-agent": childEngine,
+			}
+
+			delegation := agent.Delegation{CanDelegate: true}
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "child-agent",
+					"message":       "Do the task",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childProvider.capturedRequest).NotTo(BeNil())
+			Expect(childProvider.capturedRequest.Messages[0].Content).NotTo(
+				ContainSubstring("Expensive project rules that waste tokens."),
+			)
+		})
+
+		It("resets skip flag between fresh and session-continuation delegations to the same engine", func() {
+			tempDir, err := os.MkdirTemp("", "delegation-reset-skip-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tempDir) })
+
+			agentsContent := "# Project Instructions\n\nShould appear on session continuation."
+			Expect(os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte(agentsContent), 0o600)).To(Succeed())
+
+			loader := agent.NewAgentsFileLoader(tempDir, "")
+
+			childProvider := &mockProvider{
+				name: "child-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "First response", Done: true},
+				},
+			}
+
+			childManifest := agent.Manifest{
+				ID:                "shared-child",
+				Name:              "Shared Child",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a shared child agent."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			childEngine := engine.New(engine.Config{
+				ChatProvider:     childProvider,
+				Manifest:         childManifest,
+				AgentsFileLoader: loader,
+			})
+
+			engines := map[string]*engine.Engine{
+				"shared-child": childEngine,
+			}
+
+			delegation := agent.Delegation{CanDelegate: true}
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			freshInput := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "shared-child",
+					"message":       "Fresh delegation without session",
+				},
+			}
+			_, err = delegateTool.Execute(ctx, freshInput)
+			Expect(err).NotTo(HaveOccurred())
+
+			childProvider.streamChunks = []provider.StreamChunk{
+				{Content: "Session response", Done: true},
+			}
+			sessionInput := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "shared-child",
+					"message":       "Continue the session",
+					"session_id":    "existing-session-456",
+				},
+			}
+			_, err = delegateTool.Execute(ctx, sessionInput)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childProvider.capturedRequest).NotTo(BeNil())
+			Expect(childProvider.capturedRequest.Messages[0].Content).To(
+				ContainSubstring("Should appear on session continuation."),
+			)
+		})
+
+		It("includes agent files in child system prompt for session continuations", func() {
+			tempDir, err := os.MkdirTemp("", "delegation-session-agents-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tempDir) })
+
+			agentsContent := "# Project Instructions\n\nImportant context for session continuation."
+			Expect(os.WriteFile(filepath.Join(tempDir, "AGENTS.md"), []byte(agentsContent), 0o600)).To(Succeed())
+
+			loader := agent.NewAgentsFileLoader(tempDir, "")
+
+			childProvider := &mockProvider{
+				name: "child-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Session response", Done: true},
+				},
+			}
+
+			childManifest := agent.Manifest{
+				ID:                "child-agent",
+				Name:              "Child Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a child agent."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			childEngine := engine.New(engine.Config{
+				ChatProvider:     childProvider,
+				Manifest:         childManifest,
+				AgentsFileLoader: loader,
+			})
+
+			engines := map[string]*engine.Engine{
+				"child-agent": childEngine,
+			}
+
+			delegation := agent.Delegation{CanDelegate: true}
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "child-agent",
+					"message":       "Continue the session",
+					"session_id":    "existing-session-123",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childProvider.capturedRequest).NotTo(BeNil())
+			Expect(childProvider.capturedRequest.Messages[0].Content).To(
+				ContainSubstring("Important context for session continuation."),
+			)
+		})
 	})
 })
