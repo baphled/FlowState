@@ -351,7 +351,7 @@ Without this, FlowState defaults to `~/.local/share/flowstate/skills/` which onl
 The `SkillAutoLoaderHook` (at `internal/hook/skill_autoloader.go`) prepends a lean header to every system message:
 
 ```
-Your load_skills: [pre-action, memory-keeper, ...]. Call skill_load(name) for each before starting work.
+Your load_skills: [pre-action, memory-keeper, ...]. Use skill_load(name) only when relevant to the current task.
 ```
 
 Claude then calls the `skill_load` tool to fetch each skill's SKILL.md content at runtime. The skill names are selected based on the agent manifest's `always_active_skills` and the user's config-level `always_active_skills`.

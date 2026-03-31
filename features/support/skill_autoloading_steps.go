@@ -73,7 +73,7 @@ func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 	}
 
 	lean := fmt.Sprintf(
-		"Your load_skills: [%s]. Call skill_load(name) for each before starting work.",
+		"Your load_skills: [%s]. Use skill_load(name) only when relevant to the current task.",
 		strings.Join(s.selection.Skills, ", "),
 	)
 

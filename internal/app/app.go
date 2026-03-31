@@ -32,6 +32,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/external"
 	"github.com/baphled/flowstate/internal/plugin/failover"
+	"github.com/baphled/flowstate/internal/plugin/sessionrecorder"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/copilot"
@@ -150,7 +151,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		ollamaProvider:   ollamaProvider,
 		pluginRuntime:    pluginRT,
 	})
-	configureApplicationAfterBuild(app, cfg, runtime.engine, defaultManifest, pluginRT)
+	configureApplicationAfterBuild(app, cfg, runtime, defaultManifest, pluginRT)
 	return app, nil
 }
 
@@ -184,7 +185,7 @@ func loadBuiltinPlugins(cfg *config.AppConfig, rt *pluginRuntime, runtime *runti
 // configureApplicationAfterBuild applies the remaining startup wiring used by New.
 //
 // Expected:
-//   - app, cfg, eng, and rt are fully initialised.
+//   - app, cfg, runtime, and rt are fully initialised.
 //
 // Returns:
 //   - Nothing.
@@ -193,13 +194,15 @@ func loadBuiltinPlugins(cfg *config.AppConfig, rt *pluginRuntime, runtime *runti
 //   - Creates the plan store when available.
 //   - Applies agent overrides and delegate wiring.
 //   - Starts builtin and external plugin wiring.
+//   - Starts the session recorder when available.
 func configureApplicationAfterBuild(
 	app *App,
 	cfg *config.AppConfig,
-	eng *engine.Engine,
+	runtime *runtimeComponents,
 	defaultManifest agent.Manifest,
 	rt *pluginRuntime,
 ) {
+	eng := runtime.engine
 	planDir := filepath.Join(cfg.DataDir, "plans")
 	planStore, err := plan.NewStore(planDir)
 	if err != nil {
@@ -214,6 +217,7 @@ func configureApplicationAfterBuild(
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
 	startCorePluginSubscriptions(rt, eng)
+	startSessionRecorder(runtime.sessionRecorder, eng)
 	startExternalPlugins(rt)
 }
 
@@ -385,6 +389,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
 	sessionMgr := session.NewManager(streamer)
+	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr)
 	apiServer := api.NewServer(
 		streamer,
 		params.agentRegistry,
@@ -404,6 +409,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		metricsRegistry: metricsReg,
 		mcpManager:      mcpMgr,
 		todoStore:       todoStore,
+		sessionRecorder: sessRecorder,
 	}, nil
 }
 
@@ -431,6 +437,7 @@ type runtimeComponents struct {
 	metricsRegistry *prometheus.Registry
 	mcpManager      mcpclient.Client
 	todoStore       todotool.Store
+	sessionRecorder *sessionrecorder.Recorder
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -1349,6 +1356,70 @@ func defaultEventLogPath() string {
 		cacheDir = os.TempDir()
 	}
 	return filepath.Join(cacheDir, "flowstate", "events.jsonl")
+}
+
+// startSessionRecorder starts the session recorder's EventBus subscriptions
+// when session recording is enabled.
+//
+// Expected:
+//   - recorder may be nil; when nil the function returns immediately.
+//   - eng is a non-nil Engine with a valid EventBus.
+//
+// Returns: none.
+// Side effects: subscribes the recorder to EventBus events.
+func startSessionRecorder(recorder *sessionrecorder.Recorder, eng *engine.Engine) {
+	if recorder == nil || eng == nil {
+		return
+	}
+	bus := eng.EventBus()
+	if bus == nil {
+		return
+	}
+	if err := recorder.Start(bus); err != nil {
+		log.Printf("warning: starting session recorder: %v", err)
+	}
+}
+
+// defaultSessionRecordingDir returns the default directory for session recording output.
+//
+// Returns:
+//   - A path under the user's cache directory, or a temp directory fallback.
+//
+// Side effects:
+//   - None.
+func defaultSessionRecordingDir() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.TempDir()
+	}
+	return filepath.Join(cacheDir, "flowstate", "session-recordings")
+}
+
+// wireSessionRecorder creates and attaches a session recorder to the session
+// manager when session recording is enabled in the configuration. The returned
+// recorder must be started separately via its Start method to begin subscribing
+// to EventBus events.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig.
+//   - sessionMgr is a fully initialised session Manager.
+//
+// Returns: the recorder when session recording is enabled, nil otherwise.
+// Side effects: creates a Recorder and wires it to the session manager.
+func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager) *sessionrecorder.Recorder {
+	if cfg == nil || !cfg.SessionRecording {
+		return nil
+	}
+
+	recorder := sessionrecorder.New(defaultSessionRecordingDir())
+	if err := recorder.Init(); err != nil {
+		log.Printf("warning: initialising session recorder: %v", err)
+		return nil
+	}
+
+	sessionMgr.SetRecorder(recorder)
+	log.Printf("info: session recording enabled, writing to %s", defaultSessionRecordingDir())
+	return recorder
 }
 
 // buildTracedProvider creates a Prometheus metrics registry, wraps the default

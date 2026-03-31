@@ -60,6 +60,12 @@ type Summary struct {
 	MessageCount int       `json:"message_count"`
 }
 
+// Recorder captures stream chunks for session recording.
+type Recorder interface {
+	// RecordChunk captures a stream chunk for the given session.
+	RecordChunk(sessionID string, chunk provider.StreamChunk)
+}
+
 // Manager handles session lifecycle and message routing.
 type Manager struct {
 	sessions      map[string]*Session
@@ -67,6 +73,7 @@ type Manager struct {
 	streamer      streaming.Streamer
 	notifications map[string][]streaming.CompletionNotificationEvent
 	notifMu       sync.Mutex
+	recorder      Recorder
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -84,6 +91,19 @@ func NewManager(streamer streaming.Streamer) *Manager {
 		streamer:      streamer,
 		notifications: make(map[string][]streaming.CompletionNotificationEvent),
 	}
+}
+
+// SetRecorder attaches an optional session recorder to the manager.
+// When set, SendMessage tees stream chunks to the recorder alongside
+// the caller's channel.
+//
+// Expected:
+//   - r may be nil to disable recording.
+//
+// Returns: none.
+// Side effects: updates the recorder reference.
+func (m *Manager) SetRecorder(r Recorder) {
+	m.recorder = r
 }
 
 // CreateSession creates a new session for the given agent ID.
@@ -312,7 +332,24 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	m.mu.Unlock()
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
-	return m.streamer.Stream(ctx, sess.AgentID, message)
+	rawCh, err := m.streamer.Stream(ctx, sess.AgentID, message)
+	if err != nil {
+		return nil, err
+	}
+
+	if m.recorder != nil {
+		teedCh := make(chan provider.StreamChunk, 64)
+		go func() {
+			defer close(teedCh)
+			for chunk := range rawCh {
+				m.recorder.RecordChunk(sessionID, chunk)
+				teedCh <- chunk
+			}
+		}()
+		return teedCh, nil
+	}
+
+	return rawCh, nil
 }
 
 // CloseSession marks a session as completed.

@@ -21,8 +21,9 @@ import (
 //
 // Side effects:
 //   - Mutates the ChatRequest system message on first invocation.
-//   - Passes through without mutation on continuation messages (assistant reply present)
-//     or tool-call follow-ups (load_skills already injected).
+//   - Passes through without mutation on continuation messages (assistant reply present),
+//     tool-call follow-ups (load_skills already injected), or when skill selection yields
+//     no skills (empty baseline, no agent skills, no keyword matches).
 func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() agent.Manifest) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -38,6 +39,9 @@ func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() ag
 				AgentDefaultSkills: manifest.Capabilities.AlwaysActiveSkills,
 			}
 			selection := SelectSkills(input, config)
+			if len(selection.Skills) == 0 {
+				return next(ctx, req)
+			}
 			lean := buildLeanInjection(selection.Skills)
 			injectLeanSkills(req, lean)
 			return next(ctx, req)
@@ -71,12 +75,12 @@ func containsAssistantMessage(messages []provider.Message) bool {
 //   - skills is a slice of skill names (may be empty).
 //
 // Returns:
-//   - A formatted string: "Your load_skills: [X, Y]. Call skill_load(name) for each before starting work."
+//   - A formatted string: "Your load_skills: [X, Y]. Use skill_load(name) only when relevant to the current task."
 //
 // Side effects:
 //   - None.
 func buildLeanInjection(skills []string) string {
-	return fmt.Sprintf("Your load_skills: [%s]. Call skill_load(name) for each before starting work.", strings.Join(skills, ", "))
+	return fmt.Sprintf("Your load_skills: [%s]. Use skill_load(name) only when relevant to the current task.", strings.Join(skills, ", "))
 }
 
 // injectLeanSkills prepends a lean skill string to the system message in a chat request.

@@ -78,7 +78,7 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 		It("injects lean format with load_skills directive", func() {
 			req := runHook("Hello")
 			Expect(req.Messages[0].Content).To(ContainSubstring("Your load_skills:"))
-			Expect(req.Messages[0].Content).To(ContainSubstring("Call skill_load(name)"))
+			Expect(req.Messages[0].Content).To(ContainSubstring("Use skill_load(name) only when relevant to the current task."))
 		})
 	})
 

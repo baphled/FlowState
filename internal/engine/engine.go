@@ -287,6 +287,7 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	defer e.mu.Unlock()
 	e.manifest = manifest
 	e.systemPromptDirty = true
+	e.cachedToolSchemas = nil
 }
 
 // Manifest returns the current agent manifest.
@@ -414,7 +415,44 @@ func (e *Engine) appendDelegationSections(base string) string {
 	return base
 }
 
+// buildAllowedToolSet returns the set of tool names allowed by the current manifest.
+//
+// Expected:
+//   - e.manifest is the current agent manifest.
+//
+// Returns:
+//   - A map of allowed tool names, or nil when the manifest does not restrict tools
+//     (empty Capabilities.Tools means all tools are allowed for backward compatibility).
+//
+// Side effects:
+//   - None.
+func (e *Engine) buildAllowedToolSet() map[string]bool {
+	manifestTools := e.manifest.Capabilities.Tools
+	if len(manifestTools) == 0 {
+		return nil
+	}
+
+	allowed := make(map[string]bool, len(manifestTools))
+	for _, mt := range manifestTools {
+		switch mt {
+		case "file":
+			allowed["read"] = true
+			allowed["write"] = true
+		case "delegate":
+			allowed["delegate"] = true
+			allowed["background_output"] = true
+			allowed["background_cancel"] = true
+		default:
+			allowed[mt] = true
+		}
+	}
+
+	return allowed
+}
+
 // buildToolSchemas converts the engine's tools into provider-compatible tool schemas.
+// When the manifest specifies Capabilities.Tools, only matching tools are included.
+// An empty Capabilities.Tools list means all tools are exposed (backward compatibility).
 //
 // Returns:
 //   - A slice of provider.Tool values with schema information for each tool.
@@ -438,8 +476,13 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 		return e.cachedToolSchemas
 	}
 
+	allowedSet := e.buildAllowedToolSet()
+
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {
+		if allowedSet != nil && !allowedSet[t.Name()] {
+			continue
+		}
 		schema := t.Schema()
 		props := make(map[string]interface{})
 		for k, v := range schema.Properties {
@@ -510,6 +553,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		Tools:    e.buildToolSchemas(),
 	}
 
+	e.publishProviderRequestEvent(req)
 	providerChunks, err := e.streamFromProvider(ctx, &req)
 	if err != nil {
 		e.publishProviderErrorEvent(err)
@@ -634,6 +678,7 @@ func (e *Engine) streamWithToolLoop(
 			Messages: messages,
 			Tools:    e.buildToolSchemas(),
 		}
+		e.publishProviderRequestEvent(toolReq)
 		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
 		if streamErr != nil {
 			e.publishProviderErrorEvent(streamErr)
@@ -1219,5 +1264,28 @@ func (e *Engine) publishProviderErrorEvent(err error) {
 		SessionID:    sessionID,
 		ProviderName: e.LastProvider(),
 		Error:        err,
+	}))
+}
+
+// publishProviderRequestEvent publishes a provider request event to the engine bus
+// before each outbound provider call.
+//
+// Expected:
+//   - req contains the full ChatRequest being sent to the provider.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a provider.request event on the engine bus.
+func (e *Engine) publishProviderRequestEvent(req provider.ChatRequest) {
+	if e.bus == nil {
+		return
+	}
+	e.bus.Publish("provider.request", events.NewProviderRequestEvent(events.ProviderRequestEventData{
+		AgentID:      e.manifest.ID,
+		ProviderName: req.Provider,
+		ModelName:    req.Model,
+		Request:      req,
 	}))
 }

@@ -1,6 +1,10 @@
 package events
 
-import "time"
+import (
+	"time"
+
+	"github.com/baphled/flowstate/internal/provider"
+)
 
 // Event is the interface implemented by all event types for the plugin EventBus.
 //
@@ -184,6 +188,51 @@ func NewProviderEvent(data ProviderEventData, ts ...time.Time) *ProviderEvent {
 	}
 }
 
+// ProviderRequestEventData holds data for outbound provider request events.
+//
+// Expected: used as payload for ProviderRequestEvent.
+// Returns: struct with provider request fields.
+// Side effects: none.
+type ProviderRequestEventData struct {
+	SessionID    string
+	AgentID      string
+	ProviderName string
+	ModelName    string
+	Request      provider.ChatRequest
+}
+
+// ProviderRequestEvent represents an outbound request to a provider.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the full ChatRequest being sent.
+//
+// Returns: struct for provider request events.
+// Side effects: none.
+type ProviderRequestEvent struct {
+	BaseEvent
+	Data ProviderRequestEventData
+}
+
+// NewProviderRequestEvent creates a new ProviderRequestEvent.
+//
+// Expected:
+//   - Sets eventType to "provider.request".
+//   - Sets timestamp to now if zero.
+//
+// Returns: pointer to new ProviderRequestEvent.
+// Side effects: none.
+func NewProviderRequestEvent(data ProviderRequestEventData, ts ...time.Time) *ProviderRequestEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderRequestEvent{
+		BaseEvent: BaseEvent{eventType: "provider.request", timestamp: t},
+		Data:      data,
+	}
+}
+
 // PromptEventData holds data for prompt observation events.
 //
 // Expected: used as payload for PromptEvent.
@@ -333,4 +382,5 @@ var (
 	_ Event = (*PromptEvent)(nil)
 	_ Event = (*ContextWindowEvent)(nil)
 	_ Event = (*ToolReasoningEvent)(nil)
+	_ Event = (*ProviderRequestEvent)(nil)
 )

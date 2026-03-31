@@ -64,7 +64,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(HavePrefix("Your load_skills: ["))
 			Expect(systemContent).To(ContainSubstring("pre-action"))
 			Expect(systemContent).To(ContainSubstring("memory-keeper"))
-			Expect(systemContent).To(ContainSubstring("]. Call skill_load(name) for each before starting work."))
+			Expect(systemContent).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
 			Expect(systemContent).To(ContainSubstring("You are a helpful assistant."))
 		})
 
@@ -137,7 +137,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(capturedRequest.Messages).To(HaveLen(2))
 			Expect(capturedRequest.Messages[0].Role).To(Equal("system"))
 			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("Your load_skills: ["))
-			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("]. Call skill_load(name) for each before starting work."))
+			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
 		})
 	})
 
@@ -197,7 +197,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
-			Expect(systemContent).To(ContainSubstring("]. Call skill_load(name) for each before starting work."))
+			Expect(systemContent).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
 			for _, skill := range config.BaselineSkills {
 				Expect(systemContent).To(ContainSubstring(skill))
 			}
@@ -209,7 +209,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery, clean-code]. Call skill_load(name) for each before starting work.\n\nYou are a helpful assistant."},
+					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery, clean-code]. Use skill_load(name) only when relevant to the current task.\n\nYou are a helpful assistant."},
 					{Role: "user", Content: "follow-up after tool call"},
 				},
 			}
@@ -292,6 +292,64 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
 			Expect(systemContent).To(ContainSubstring("pre-action"))
+		})
+	})
+
+	Context("when no skills are selected (empty baseline, no agent skills, no keyword match)", func() {
+		var emptyManifest agent.Manifest
+
+		BeforeEach(func() {
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns:  []hook.KeywordPattern{},
+			}
+			emptyManifest = agent.Manifest{
+				ID:         "bare-agent",
+				Name:       "Bare Agent",
+				Complexity: "quick",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{},
+				},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("does not inject anything into the system message", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(Equal("You are a helpful assistant."))
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+		})
+
+		It("still calls through to the next handler", func() {
+			var handlerCalled bool
+			handler := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				handlerCalled = true
+				capturedRequest = req
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "ok", Done: true}
+				close(ch)
+				return ch, nil
+			}
+
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest })
+			wrapped := autoloader(handler)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handlerCalled).To(BeTrue())
 		})
 	})
 

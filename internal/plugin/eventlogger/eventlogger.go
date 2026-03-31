@@ -26,6 +26,7 @@ var subscribedEventTypes = []string{
 	"prompt.generated",
 	"context.window.built",
 	"tool.reasoning",
+	"provider.request",
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.
@@ -224,6 +225,8 @@ func extractEventData(ev events.Event) any {
 	case *events.ContextWindowEvent:
 		return e.Data
 	case *events.ToolReasoningEvent:
+		return e.Data
+	case *events.ProviderRequestEvent:
 		return e.Data
 	default:
 		return ev

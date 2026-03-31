@@ -272,6 +272,65 @@ var _ = Describe("EventBus Integration", func() {
 		})
 	})
 
+	Describe("provider request events", func() {
+		It("publishes provider.request before the initial provider stream call", func() {
+			eng := engine.New(engine.Config{ChatProvider: chatProvider, Manifest: manifest})
+			var mu sync.Mutex
+			var requestEvents []*events.ProviderRequestEvent
+			eng.EventBus().Subscribe("provider.request", func(event any) {
+				if pe, ok := event.(*events.ProviderRequestEvent); ok {
+					mu.Lock()
+					requestEvents = append(requestEvents, pe)
+					mu.Unlock()
+				}
+			})
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(requestEvents).To(HaveLen(1))
+			Expect(requestEvents[0].EventType()).To(Equal("provider.request"))
+			Expect(requestEvents[0].Data.AgentID).To(Equal("test-agent"))
+			Expect(requestEvents[0].Data.ProviderName).To(Equal("test-chat-provider"))
+			Expect(requestEvents[0].Data.Request.Messages).NotTo(BeEmpty())
+			Expect(requestEvents[0].Data.Request.Provider).To(Equal("test-chat-provider"))
+		})
+
+		It("publishes provider.request before each tool loop retry", func() {
+			testTool := &executableMockTool{name: "test_tool", description: "A test tool", execResult: tool.Result{Output: "tool output"}}
+			seqProvider := &streamSequenceProvider{
+				name: "test-provider",
+				sequences: [][]provider.StreamChunk{
+					{{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_req_test", Name: "test_tool", Arguments: map[string]interface{}{"key": "value"}}}},
+					{{Content: "Done.", Done: true}},
+				},
+			}
+			toolManifest := agent.Manifest{ID: "test-agent", Name: "Test Agent", Instructions: agent.Instructions{SystemPrompt: "You are a helpful assistant."}, ContextManagement: agent.DefaultContextManagement()}
+			eng := engine.New(engine.Config{ChatProvider: seqProvider, Manifest: toolManifest, Tools: []tool.Tool{testTool}})
+			var mu sync.Mutex
+			var requestEvents []*events.ProviderRequestEvent
+			eng.EventBus().Subscribe("provider.request", func(event any) {
+				if pe, ok := event.(*events.ProviderRequestEvent); ok {
+					mu.Lock()
+					requestEvents = append(requestEvents, pe)
+					mu.Unlock()
+				}
+			})
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(requestEvents).To(HaveLen(2))
+			Expect(requestEvents[0].Data.AgentID).To(Equal("test-agent"))
+			Expect(requestEvents[1].Data.AgentID).To(Equal("test-agent"))
+			Expect(requestEvents[1].Data.Request.Messages).NotTo(BeEmpty())
+		})
+	})
+
 	Describe("EventBus does not affect existing hook chain", func() {
 		It("does not interfere with normal stream operation", func() {
 			eng := engine.New(engine.Config{ChatProvider: chatProvider, Manifest: manifest})

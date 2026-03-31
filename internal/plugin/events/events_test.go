@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 var _ = Describe("Events", func() {
@@ -131,6 +132,42 @@ var _ = Describe("Events", func() {
 				ReasoningContent: "Let me read the file to understand the pattern.",
 			}
 			evt := events.NewToolReasoningEvent(data)
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+	})
+
+	Describe("ProviderRequestEvent", func() {
+		It("implements Event interface and sets fields", func() {
+			data := events.ProviderRequestEventData{
+				SessionID:    "sess1",
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Request: provider.ChatRequest{
+					Provider: "anthropic",
+					Model:    "claude-3",
+					Messages: []provider.Message{{Role: "user", Content: "hello"}},
+					Tools:    []provider.Tool{{Name: "bash", Description: "run commands"}},
+				},
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewProviderRequestEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("provider.request"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data).To(Equal(data))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			data := events.ProviderRequestEventData{
+				AgentID:      "executor",
+				ProviderName: "openai",
+				ModelName:    "gpt-4",
+				Request: provider.ChatRequest{
+					Provider: "openai",
+					Model:    "gpt-4",
+				},
+			}
+			evt := events.NewProviderRequestEvent(data)
 			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
 		})
 	})

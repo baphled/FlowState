@@ -27,6 +27,7 @@ type AppConfig struct {
 	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
 	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
 	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
+	SessionRecording   bool                             `json:"session_recording" yaml:"session_recording"`
 }
 
 // ProvidersConfig configures all available LLM providers.

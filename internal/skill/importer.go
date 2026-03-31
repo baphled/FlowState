@@ -61,6 +61,7 @@ func (imp *Importer) Add(ctx context.Context, ownerRepo string) (Skill, error) {
 	defer os.RemoveAll(tempDir)
 
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", repoURL, tempDir)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if err := cmd.Run(); err != nil {
 		return Skill{}, fmt.Errorf("cloning repository %s: %w", ownerRepo, err)
 	}

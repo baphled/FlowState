@@ -554,6 +554,127 @@ var _ = Describe("Manager", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Describe("SessionRecorder integration", func() {
+		var (
+			ctx  context.Context
+			sess *session.Session
+			rec  *spyRecorder
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			var err error
+			sess, err = mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+			rec = &spyRecorder{}
+		})
+
+		Context("when recorder is nil", func() {
+			It("returns the raw channel without wrapping", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "raw"})
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					if chunk.Content != "" {
+						contents = append(contents, chunk.Content)
+					}
+				}
+				Expect(contents).To(ConsistOf("raw"))
+			})
+		})
+
+		Context("when recorder is set", func() {
+			BeforeEach(func() {
+				mgr.SetRecorder(rec)
+			})
+
+			It("forwards chunks to both recorder and caller", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "First"})
+				mockStream.addChunk(provider.StreamChunk{Content: "Second"})
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					if chunk.Content != "" {
+						contents = append(contents, chunk.Content)
+					}
+				}
+				Expect(contents).To(ConsistOf("First", "Second"))
+
+				Eventually(func() int {
+					rec.mu.Lock()
+					defer rec.mu.Unlock()
+					return len(rec.chunks)
+				}).Should(Equal(3))
+
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+				Expect(rec.chunks[0].Content).To(Equal("First"))
+				Expect(rec.chunks[1].Content).To(Equal("Second"))
+				Expect(rec.chunks[2].Done).To(BeTrue())
+			})
+
+			It("records chunks with the correct session ID", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "data"})
+
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Test")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				Eventually(func() int {
+					rec.mu.Lock()
+					defer rec.mu.Unlock()
+					return len(rec.sessionIDs)
+				}).Should(Equal(1))
+
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+				Expect(rec.sessionIDs[0]).To(Equal(sess.ID))
+			})
+
+			It("receives chunks in the same order as the caller", func() {
+				mockStream.addChunk(provider.StreamChunk{Content: "a"})
+				mockStream.addChunk(provider.StreamChunk{Content: "b"})
+				mockStream.addChunk(provider.StreamChunk{Content: "c"})
+
+				ch, err := mgr.SendMessage(ctx, sess.ID, "Order test")
+				Expect(err).NotTo(HaveOccurred())
+
+				var callerOrder []string
+				for chunk := range ch {
+					if chunk.Content != "" {
+						callerOrder = append(callerOrder, chunk.Content)
+					}
+				}
+
+				Eventually(func() int {
+					rec.mu.Lock()
+					defer rec.mu.Unlock()
+					return len(rec.chunks)
+				}).Should(Equal(3))
+
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+				var recorderOrder []string
+				for _, c := range rec.chunks {
+					if c.Content != "" {
+						recorderOrder = append(recorderOrder, c.Content)
+					}
+				}
+				Expect(recorderOrder).To(Equal(callerOrder))
+			})
+		})
+	})
 })
 
 type mockStreamer struct {
@@ -591,4 +712,17 @@ func (m *mockStreamer) Stream(ctx context.Context, agentID string, message strin
 	close(ch)
 
 	return ch, nil
+}
+
+type spyRecorder struct {
+	mu         sync.Mutex
+	sessionIDs []string
+	chunks     []provider.StreamChunk
+}
+
+func (s *spyRecorder) RecordChunk(sessionID string, chunk provider.StreamChunk) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionIDs = append(s.sessionIDs, sessionID)
+	s.chunks = append(s.chunks, chunk)
 }

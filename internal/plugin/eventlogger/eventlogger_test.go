@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/eventlogger"
 	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 var _ = Describe("EventLogger", func() {
@@ -178,6 +179,36 @@ var _ = Describe("EventLogger", func() {
 			for _, line := range lines {
 				Expect(json.Valid([]byte(line))).To(BeTrue())
 			}
+		})
+	})
+
+	Describe("provider.request event logging", func() {
+		It("writes a provider.request event as a JSONL line with correct type", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.request", events.NewProviderRequestEvent(events.ProviderRequestEventData{
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Request: provider.ChatRequest{
+					Provider: "anthropic",
+					Model:    "claude-3",
+					Messages: []provider.Message{{Role: "user", Content: "hello"}},
+				},
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("provider.request"))
+			Expect(entry).To(HaveKey("data"))
 		})
 	})
 
