@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -284,10 +285,18 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 //   - Invalidates the cached system prompt.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	oldID := e.manifest.ID
 	e.manifest = manifest
 	e.systemPromptDirty = true
 	e.cachedToolSchemas = nil
+	e.mu.Unlock()
+
+	if e.bus != nil && oldID != manifest.ID && oldID != "" {
+		e.bus.Publish("agent.switched", events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
+			FromAgent: oldID,
+			ToAgent:   manifest.ID,
+		}))
+	}
 }
 
 // Manifest returns the current agent manifest.
@@ -527,6 +536,8 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 //   - Embeds the user message if an embedding provider is configured.
 //   - Spawns a goroutine to process the stream and handle tool calls.
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
+	sessionID := sessionIDFromContext(ctx)
+
 	if agentID != "" && e.agentRegistry != nil {
 		if manifest, found := e.agentRegistry.Get(agentID); found {
 			e.mu.RLock()
@@ -538,7 +549,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		}
 	}
 
-	messages := e.buildContextWindow(ctx, message)
+	messages := e.buildContextWindow(ctx, sessionID, message)
 
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
@@ -553,10 +564,10 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		Tools:    e.buildToolSchemas(),
 	}
 
-	e.publishProviderRequestEvent(req)
+	e.publishProviderRequestEvent(sessionID, req)
 	providerChunks, err := e.streamFromProvider(ctx, &req)
 	if err != nil {
-		e.publishProviderErrorEvent(err)
+		e.publishProviderErrorEvent(sessionID, err)
 		return nil, err
 	}
 
@@ -564,7 +575,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
-		e.streamWithToolLoop(ctx, messages, providerChunks, outChan)
+		e.streamWithToolLoop(ctx, sessionID, messages, providerChunks, outChan)
 	}()
 
 	return outChan, nil
@@ -626,11 +637,11 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 //   - Executes tool calls and appends results to messages.
 //   - Stores responses in the context store.
 func (e *Engine) streamWithToolLoop(
-	ctx context.Context, messages []provider.Message,
+	ctx context.Context, sessionID string, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) {
 	for {
-		toolCall, responseContent, done := e.processStreamChunks(ctx, providerChunks, outChan)
+		toolCall, responseContent, done := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
 		if done {
 			e.storeResponse(ctx, responseContent)
 			return
@@ -645,7 +656,7 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
-		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), toolCall)
+		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, toolCall)
 		if err != nil {
 			outChan <- provider.StreamChunk{Error: err, Done: true}
 			return
@@ -678,10 +689,10 @@ func (e *Engine) streamWithToolLoop(
 			Messages: messages,
 			Tools:    e.buildToolSchemas(),
 		}
-		e.publishProviderRequestEvent(toolReq)
+		e.publishProviderRequestEvent(sessionID, toolReq)
 		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
 		if streamErr != nil {
-			e.publishProviderErrorEvent(streamErr)
+			e.publishProviderErrorEvent(sessionID, streamErr)
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
@@ -720,7 +731,7 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 //   - Forwards chunks to outChan.
 //   - Sends error chunks if context is cancelled.
 func (e *Engine) processStreamChunks(
-	ctx context.Context, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
+	ctx context.Context, sessionID string, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) (*provider.ToolCall, string, bool) {
 	var responseContent strings.Builder
 
@@ -737,6 +748,7 @@ func (e *Engine) processStreamChunks(
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
 				if e.bus != nil && responseContent.Len() > 0 {
 					e.bus.Publish("tool.reasoning", events.NewToolReasoningEvent(events.ToolReasoningEventData{
+						SessionID:        sessionID,
 						AgentID:          e.manifest.ID,
 						ToolName:         chunk.ToolCall.Name,
 						ReasoningContent: responseContent.String(),
@@ -768,20 +780,20 @@ func (e *Engine) processStreamChunks(
 //
 // Side effects:
 //   - Executes the tool, which may have its own side effects.
-func (e *Engine) executeToolCall(ctx context.Context, toolCall *provider.ToolCall) (tool.Result, error) {
+func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
 	for _, t := range e.tools {
 		if t.Name() != toolCall.Name {
 			continue
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
-		e.publishToolBeforeEvent(toolCall.Name, toolCall.Arguments)
+		e.publishToolBeforeEvent(sessionID, toolCall.Name, toolCall.Arguments)
 		input := tool.Input{
 			Name:      toolCall.Name,
 			Arguments: toolCall.Arguments,
 		}
 		result, err := t.Execute(ctx, input)
 		result.Error = err
-		e.publishToolAfterEvent(toolCall.Name, toolCall.Arguments, result.Output, err)
+		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err)
 		return result, nil
 	}
 	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
@@ -958,7 +970,7 @@ func (e *Engine) appendToolResultToMessages(
 //
 // Side effects:
 //   - None.
-func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []provider.Message {
+func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userMessage string) []provider.Message {
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPrompt()
 		return []provider.Message{
@@ -982,12 +994,14 @@ func (e *Engine) buildContextWindow(ctx context.Context, userMessage string) []p
 
 	if e.bus != nil {
 		e.bus.Publish("prompt.generated", events.NewPromptEvent(events.PromptEventData{
+			SessionID:  sessionID,
 			AgentID:    e.manifest.ID,
 			FullPrompt: manifestCopy.Instructions.SystemPrompt,
 			TokenCount: result.TokensUsed,
 			Truncated:  result.Truncated,
 		}))
 		e.bus.Publish("context.window.built", events.NewContextWindowEvent(events.ContextWindowEventData{
+			SessionID:       sessionID,
 			AgentID:         e.manifest.ID,
 			TokenBudget:     tokenBudget,
 			TokensUsed:      result.TokensUsed,
@@ -1062,18 +1076,19 @@ func (e *Engine) dualWriteToChainStore(msg provider.Message) {
 //
 // Expected:
 //   - store is a FileContextStore instance, or nil to clear the store.
+//   - sessionID identifies the session associated with this store.
 //
 // Side effects:
 //   - Replaces the engine's current context store reference.
 //   - Publishes session.created when store is non-nil.
 //   - Publishes session.ended when store is nil and a previous store existed.
-func (e *Engine) SetContextStore(store *recall.FileContextStore) {
+func (e *Engine) SetContextStore(store *recall.FileContextStore, sessionID string) {
 	hadStore := e.store != nil
 	e.store = store
 	if store != nil {
-		e.publishSessionEvent("created")
+		e.publishSessionEvent(sessionID, "created")
 	} else if hadStore {
-		e.publishSessionEvent("ended")
+		e.publishSessionEvent(sessionID, "ended")
 	}
 }
 
@@ -1197,9 +1212,9 @@ func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
 //
 // Side effects:
 //   - Publishes an event on the engine bus when one is configured.
-func (e *Engine) publishSessionEvent(action string) {
+func (e *Engine) publishSessionEvent(sessionID string, action string) {
 	e.bus.Publish("session."+action, events.NewSessionEvent(events.SessionEventData{
-		SessionID: e.manifest.ID,
+		SessionID: sessionID,
 		Action:    action,
 	}))
 }
@@ -1215,8 +1230,7 @@ func (e *Engine) publishSessionEvent(action string) {
 //
 // Side effects:
 //   - Publishes a tool execution start event on the engine bus.
-func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interface{}) {
-	sessionID := e.manifest.ID
+func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args map[string]interface{}) {
 	e.bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
 		SessionID: sessionID,
 		ToolName:  toolName,
@@ -1237,8 +1251,7 @@ func (e *Engine) publishToolBeforeEvent(toolName string, args map[string]interfa
 //
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
-func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interface{}, result string, execErr error) {
-	sessionID := e.manifest.ID
+func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error) {
 	e.bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
 		SessionID: sessionID,
 		ToolName:  toolName,
@@ -1258,8 +1271,7 @@ func (e *Engine) publishToolAfterEvent(toolName string, args map[string]interfac
 //
 // Side effects:
 //   - Publishes a provider error event on the engine bus.
-func (e *Engine) publishProviderErrorEvent(err error) {
-	sessionID := e.manifest.ID
+func (e *Engine) publishProviderErrorEvent(sessionID string, err error) {
 	e.bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
 		SessionID:    sessionID,
 		ProviderName: e.LastProvider(),
@@ -1278,14 +1290,34 @@ func (e *Engine) publishProviderErrorEvent(err error) {
 //
 // Side effects:
 //   - Publishes a provider.request event on the engine bus.
-func (e *Engine) publishProviderRequestEvent(req provider.ChatRequest) {
+func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.ChatRequest) {
 	if e.bus == nil {
 		return
 	}
 	e.bus.Publish("provider.request", events.NewProviderRequestEvent(events.ProviderRequestEventData{
+		SessionID:    sessionID,
 		AgentID:      e.manifest.ID,
 		ProviderName: req.Provider,
 		ModelName:    req.Model,
 		Request:      req,
 	}))
+}
+
+// sessionIDFromContext extracts the session ID from the context, returning
+// an empty string if no session ID is present.
+//
+// Expected:
+//   - ctx is a valid context that may carry a session.IDKey value.
+//
+// Returns:
+//   - The session ID string, or empty if not set.
+//
+// Side effects:
+//   - None.
+func sessionIDFromContext(ctx context.Context) string {
+	id, ok := ctx.Value(session.IDKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return id
 }

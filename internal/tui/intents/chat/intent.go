@@ -103,16 +103,17 @@ type SessionLister interface {
 
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
-	App           AppShell
-	Engine        *engine.Engine
-	Streamer      Streamer
-	AgentID       string
-	SessionID     string
-	ProviderName  string
-	ModelName     string
-	TokenBudget   int
-	AgentRegistry *agent.Registry
-	SessionStore  SessionLister
+	App            AppShell
+	Engine         *engine.Engine
+	Streamer       Streamer
+	SessionManager SessionManager
+	AgentID        string
+	SessionID      string
+	ProviderName   string
+	ModelName      string
+	TokenBudget    int
+	AgentRegistry  *agent.Registry
+	SessionStore   SessionLister
 }
 
 // Intent handles chat interactions in the TUI.
@@ -120,6 +121,7 @@ type Intent struct {
 	app                 AppShell
 	engine              *engine.Engine
 	streamer            Streamer
+	sessionManager      SessionManager
 	agentID             string
 	sessionID           string
 	input               string
@@ -190,6 +192,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		app:                 cfg.App,
 		engine:              cfg.Engine,
 		streamer:            cfg.Streamer,
+		sessionManager:      cfg.SessionManager,
 		agentID:             cfg.AgentID,
 		sessionID:           cfg.SessionID,
 		input:               "",
@@ -894,7 +897,14 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.streamCancel = cancel
 
 	return func() tea.Msg {
-		stream, err := i.streamer.Stream(ctx, i.agentID, userMessage)
+		var stream <-chan provider.StreamChunk
+		var err error
+		if i.sessionManager != nil {
+			i.sessionManager.EnsureSession(i.sessionID, i.agentID)
+			stream, err = i.sessionManager.SendMessage(ctx, i.sessionID, userMessage)
+		} else {
+			stream, err = i.streamer.Stream(ctx, i.agentID, userMessage)
+		}
 		if err != nil {
 			return StreamChunkMsg{Content: "", Error: err, Done: true}
 		}
@@ -1455,7 +1465,7 @@ func (i *Intent) handleSessionResult(msg sessionbrowser.SessionSelectedMsg) tea.
 //   - Generates a new session ID, resets the chat view, and syncs the status bar.
 func (i *Intent) createNewSession() tea.Cmd {
 	i.sessionID = uuid.New().String()
-	i.engine.SetContextStore(recall.NewEmptyContextStore(""))
+	i.engine.SetContextStore(recall.NewEmptyContextStore(""), i.sessionID)
 	i.view = chat.NewView()
 	i.refreshViewport()
 	i.syncStatusBar()
@@ -1645,7 +1655,7 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 		i.errorModal = feedback.NewErrorModal("Session Error", "Failed to load session: "+msg.Err.Error())
 		return nil
 	}
-	i.engine.SetContextStore(msg.Store)
+	i.engine.SetContextStore(msg.Store, msg.SessionID)
 	i.view = chat.NewView()
 	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {

@@ -24,13 +24,17 @@ var subscribedEventTypes = []string{
 	"provider.error",
 	"provider.rate_limited",
 	"provider.request",
+	"agent.switched",
 	"prompt.generated",
 	"context.window.built",
 	"tool.reasoning",
+	"background.task.started",
+	"background.task.completed",
+	"background.task.failed",
 }
 
 // defaultSessionID is used for events that do not carry a session identifier.
-const defaultSessionID = "global"
+const defaultSessionID = "unknown"
 
 // TimelineEntry represents a single chronological entry in a session's timeline.
 //
@@ -255,38 +259,76 @@ func extractEventInfo(event any) (sessionID, eventType string, data any) {
 	}
 
 	eventType = ev.EventType()
-	data = event
+	data = extractEventData(ev)
 
-	switch e := ev.(type) {
-	case *events.SessionEvent:
-		data = e.Data
-		if e.Data.SessionID != "" {
-			sessionID = e.Data.SessionID
-		}
-	case *events.ToolEvent:
-		data = e.Data
-		if e.Data.SessionID != "" {
-			sessionID = e.Data.SessionID
-		}
-	case *events.ProviderEvent:
-		data = e.Data
-		if e.Data.SessionID != "" {
-			sessionID = e.Data.SessionID
-		}
-	case *events.ProviderRequestEvent:
-		data = e.Data
-		if e.Data.SessionID != "" {
-			sessionID = e.Data.SessionID
-		}
-	case *events.PromptEvent:
-		data = e.Data
-	case *events.ContextWindowEvent:
-		data = e.Data
-	case *events.ToolReasoningEvent:
-		data = e.Data
+	if id := extractSessionID(ev); id != "" {
+		sessionID = id
 	}
 
 	return sessionID, eventType, data
+}
+
+// extractEventData returns the typed data payload from a known event type.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: the event's Data field, or the event itself for unrecognised types.
+// Side effects: none.
+func extractEventData(ev events.Event) any {
+	switch e := ev.(type) {
+	case *events.SessionEvent:
+		return e.Data
+	case *events.ToolEvent:
+		return e.Data
+	case *events.ProviderEvent:
+		return e.Data
+	case *events.ProviderRequestEvent:
+		return e.Data
+	case *events.AgentSwitchedEvent:
+		return e.Data
+	case *events.PromptEvent:
+		return e.Data
+	case *events.ContextWindowEvent:
+		return e.Data
+	case *events.ToolReasoningEvent:
+		return e.Data
+	default:
+		return ev
+	}
+}
+
+// extractSessionID returns the session ID embedded in a known event type,
+// or an empty string if the event type does not carry one.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: session ID string, or empty if not present.
+// Side effects: none.
+func extractSessionID(ev events.Event) string {
+	switch e := ev.(type) {
+	case *events.SessionEvent:
+		return e.Data.SessionID
+	case *events.ToolEvent:
+		return e.Data.SessionID
+	case *events.ProviderEvent:
+		return e.Data.SessionID
+	case *events.ProviderRequestEvent:
+		return e.Data.SessionID
+	case *events.AgentSwitchedEvent:
+		if e.Data.SessionID != "" {
+			return e.Data.SessionID
+		}
+		if e.Data.ToAgent != "" {
+			return e.Data.ToAgent
+		}
+		return e.Data.FromAgent
+	case *events.PromptEvent:
+		return e.Data.SessionID
+	case *events.ContextWindowEvent:
+		return e.Data.SessionID
+	case *events.ToolReasoningEvent:
+		return e.Data.SessionID
+	default:
+		return ""
+	}
 }
 
 // eventTimestamp returns the timestamp from an events.Event, falling back

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -111,6 +112,29 @@ type ToolEventData struct {
 	Error     error
 }
 
+// MarshalJSON serialises ToolEventData while preserving error messages.
+func (d ToolEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID string         `json:"session_id,omitempty"`
+		ToolName  string         `json:"tool_name"`
+		Args      map[string]any `json:"args,omitempty"`
+		Result    any            `json:"result,omitempty"`
+		Error     string         `json:"error,omitempty"`
+	}
+
+	data := payload{
+		SessionID: d.SessionID,
+		ToolName:  d.ToolName,
+		Args:      d.Args,
+		Result:    d.Result,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
+}
+
 // ToolEvent represents a tool-related event.
 //
 // Expected:
@@ -154,6 +178,29 @@ type ProviderEventData struct {
 	Request      any
 	Response     any
 	Error        error
+}
+
+// MarshalJSON serialises ProviderEventData while preserving error messages.
+func (d ProviderEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID    string `json:"session_id,omitempty"`
+		ProviderName string `json:"provider_name"`
+		Request      any    `json:"request,omitempty"`
+		Response     any    `json:"response,omitempty"`
+		Error        string `json:"error,omitempty"`
+	}
+
+	data := payload{
+		SessionID:    d.SessionID,
+		ProviderName: d.ProviderName,
+		Request:      d.Request,
+		Response:     d.Response,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
 }
 
 // ProviderEvent represents a provider-related event.
@@ -233,12 +280,38 @@ func NewProviderRequestEvent(data ProviderRequestEventData, ts ...time.Time) *Pr
 	}
 }
 
+// AgentSwitchedEventData holds data for agent switch events.
+type AgentSwitchedEventData struct {
+	SessionID string
+	FromAgent string
+	ToAgent   string
+}
+
+// AgentSwitchedEvent represents an agent switch event.
+type AgentSwitchedEvent struct {
+	BaseEvent
+	Data AgentSwitchedEventData
+}
+
+// NewAgentSwitchedEvent creates a new AgentSwitchedEvent.
+func NewAgentSwitchedEvent(data AgentSwitchedEventData, ts ...time.Time) *AgentSwitchedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &AgentSwitchedEvent{
+		BaseEvent: BaseEvent{eventType: "agent.switched", timestamp: t},
+		Data:      data,
+	}
+}
+
 // PromptEventData holds data for prompt observation events.
 //
 // Expected: used as payload for PromptEvent.
 // Returns: struct with prompt event fields.
 // Side effects: none.
 type PromptEventData struct {
+	SessionID  string
 	AgentID    string
 	FullPrompt string
 	TokenCount int
@@ -285,6 +358,7 @@ func NewPromptEvent(data PromptEventData, ts ...time.Time) *PromptEvent {
 // Returns: struct with context window event fields.
 // Side effects: none.
 type ContextWindowEventData struct {
+	SessionID       string
 	AgentID         string
 	TokenBudget     int
 	TokensUsed      int
@@ -332,6 +406,7 @@ func NewContextWindowEvent(data ContextWindowEventData, ts ...time.Time) *Contex
 // Returns: struct with tool reasoning event fields.
 // Side effects: none.
 type ToolReasoningEventData struct {
+	SessionID        string
 	AgentID          string
 	ToolName         string
 	ReasoningContent string
@@ -370,6 +445,76 @@ func NewToolReasoningEvent(data ToolReasoningEventData, ts ...time.Time) *ToolRe
 	}
 }
 
+// BackgroundTaskEventData holds data for background task lifecycle events.
+type BackgroundTaskEventData struct {
+	SessionID string
+	TaskID    string
+	Name      string
+	Status    string // running, completed, failed
+	Error     string // non-empty if failed
+}
+
+// Event type constants for background task lifecycle.
+const (
+	EventTypeBackgroundTaskStarted   = "background.task.started"
+	EventTypeBackgroundTaskCompleted = "background.task.completed"
+	EventTypeBackgroundTaskFailed    = "background.task.failed"
+)
+
+// BackgroundTaskStartedEvent represents a background task start event.
+type BackgroundTaskStartedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskStartedEvent creates a new background task started event.
+func NewBackgroundTaskStartedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskStartedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskStartedEvent{
+		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskStarted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskCompletedEvent represents a background task completion event.
+type BackgroundTaskCompletedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskCompletedEvent creates a new background task completed event.
+func NewBackgroundTaskCompletedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskCompletedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskCompletedEvent{
+		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskCompleted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// BackgroundTaskFailedEvent represents a background task failure event.
+type BackgroundTaskFailedEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskFailedEvent creates a new background task failed event.
+func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -383,4 +528,8 @@ var (
 	_ Event = (*ContextWindowEvent)(nil)
 	_ Event = (*ToolReasoningEvent)(nil)
 	_ Event = (*ProviderRequestEvent)(nil)
+	_ Event = (*AgentSwitchedEvent)(nil)
+	_ Event = (*BackgroundTaskStartedEvent)(nil)
+	_ Event = (*BackgroundTaskCompletedEvent)(nil)
+	_ Event = (*BackgroundTaskFailedEvent)(nil)
 )

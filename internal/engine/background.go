@@ -7,11 +7,30 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // BackgroundTask represents a tracked background execution.
+//
+// Fields:
+//   - ID: Unique identifier for the task.
+//   - AgentID: Identifier of the owning agent (used for concurrency key).
+//   - Description: Human-readable description of the task.
+//   - Status: Current status ("pending", "running", "completed", "failed", "cancelled").
+//   - StartedAt: Timestamp when the task was launched.
+//   - CompletedAt: Timestamp when the task finished (nil if not completed).
+//   - Result: Optional result string from the task function.
+//   - Error: Optional error from the task function.
+//   - cancel: Context cancellation function for this task.
+//   - ConcurrencyKey: Key used for concurrency limiting (e.g., provider+model).
+//   - ParentSessionID: ID of the parent session for notification purposes.
+//
+// Note: Status is managed atomically to allow concurrent reads and updates
+//
+//	without locking the entire task struct.
 type BackgroundTask struct {
 	ID              string
 	AgentID         string
@@ -73,6 +92,7 @@ type BackgroundTaskManager struct {
 	totalSem   chan struct{}
 	semsMu     sync.Mutex
 	sessionMgr *session.Manager
+	eventBus   *eventbus.EventBus
 }
 
 // NewBackgroundTaskManager creates a new task manager with per-key concurrency limiting.
@@ -107,6 +127,66 @@ func NewBackgroundTaskManager() *BackgroundTaskManager {
 func (m *BackgroundTaskManager) WithSessionManager(mgr *session.Manager) *BackgroundTaskManager {
 	m.sessionMgr = mgr
 	return m
+}
+
+// SetEventBus sets the event bus for emitting background task lifecycle events.
+// Expected:
+//   - bus is a valid event bus or nil to disable event emission.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the event bus reference for later use.
+func (m *BackgroundTaskManager) SetEventBus(bus *eventbus.EventBus) {
+	m.eventBus = bus
+}
+
+// emitTaskStarted emits a background task started event if the event bus is configured.
+func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
+	if m.eventBus == nil {
+		return
+	}
+	event := events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
+		SessionID: task.ParentSessionID,
+		TaskID:    task.ID,
+		Name:      task.Description,
+		Status:    "running",
+	})
+	m.eventBus.Publish(events.EventTypeBackgroundTaskStarted, event)
+}
+
+// emitTaskCompleted emits a background task completed event if the event bus is configured.
+func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
+	if m.eventBus == nil {
+		return
+	}
+	event := events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
+		SessionID: task.ParentSessionID,
+		TaskID:    task.ID,
+		Name:      task.Description,
+		Status:    "completed",
+	})
+	m.eventBus.Publish(events.EventTypeBackgroundTaskCompleted, event)
+}
+
+// emitTaskFailed emits a background task failed event if the event bus is configured.
+func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
+	if m.eventBus == nil {
+		return
+	}
+	errMsg := ""
+	if task.Error != nil {
+		errMsg = task.Error.Error()
+	}
+	event := events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
+		SessionID: task.ParentSessionID,
+		TaskID:    task.ID,
+		Name:      task.Description,
+		Status:    "failed",
+		Error:     errMsg,
+	})
+	m.eventBus.Publish(events.EventTypeBackgroundTaskFailed, event)
 }
 
 // injectCompletionNotification sends a completion notification to the parent session.
@@ -213,6 +293,8 @@ func (m *BackgroundTaskManager) executeTask(
 	task.Status.store("running")
 	m.mu.Unlock()
 
+	m.emitTaskStarted(task)
+
 	result, err := fn(taskCtx)
 
 	completedAt := time.Now().UTC()
@@ -232,6 +314,17 @@ func (m *BackgroundTaskManager) executeTask(
 	}
 
 	m.mu.Unlock()
+
+	m.handleTaskCompletion(task, result, err, completedAt)
+}
+
+// handleTaskCompletion processes task results after fn returns.
+func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ string, err error, completedAt time.Time) {
+	if err != nil {
+		m.emitTaskFailed(task)
+	} else {
+		m.emitTaskCompleted(task)
+	}
 
 	if m.sessionMgr != nil && task.ParentSessionID != "" {
 		notification := streaming.CompletionNotificationEvent{
