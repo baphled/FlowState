@@ -516,15 +516,7 @@ func buildPropertyMap(properties map[string]tool.Property) map[string]interface{
 //   - Caches the built schemas for subsequent calls.
 func (e *Engine) buildToolSchemas() []provider.Tool {
 	e.mu.RLock()
-	if e.cachedToolSchemas != nil {
-		cached := e.cachedToolSchemas
-		e.mu.RUnlock()
-		return cached
-	}
-	e.mu.RUnlock()
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	defer e.mu.RUnlock()
 
 	if e.cachedToolSchemas != nil {
 		return e.cachedToolSchemas
@@ -1025,17 +1017,17 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	}
 
 	tokenBudget := e.ModelContextLimit()
+	systemPrompt := e.BuildSystemPrompt()
 
 	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	manifestCopy := e.manifest
-	e.mu.RUnlock()
-	manifestCopy.Instructions.SystemPrompt = e.BuildSystemPrompt()
+	manifestCopy.Instructions.SystemPrompt = systemPrompt
 	result := e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
-	e.mu.Lock()
 	e.lastContextResult = result
-	e.mu.Unlock()
 
 	if e.bus != nil {
 		e.bus.Publish("prompt.generated", events.NewPromptEvent(events.PromptEventData{
