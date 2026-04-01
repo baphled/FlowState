@@ -233,7 +233,8 @@ var _ = Describe("OpenZen Provider", func() {
 			ch, err := p.Stream(context.Background(), providerPkg.ChatRequest{Model: "claude-sonnet-4-5"})
 			Expect(err).NotTo(HaveOccurred())
 
-			for range ch {
+			for chunk := range ch {
+				_ = chunk
 			}
 
 			_, open := <-ch

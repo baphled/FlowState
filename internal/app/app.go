@@ -38,6 +38,8 @@ import (
 	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/openai"
+	"github.com/baphled/flowstate/internal/provider/openzen"
+	"github.com/baphled/flowstate/internal/provider/zai"
 	recall "github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -1503,6 +1505,24 @@ func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider
 	copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
 	if copilotErr == nil {
 		providerRegistry.Register(copilotProvider)
+	}
+
+	zaiKey := os.Getenv("ZAI_API_KEY")
+	if zaiKey == "" {
+		zaiKey = cfg.Providers.ZAI.APIKey
+	}
+	zaiProvider, zaiErr := zai.NewFromOpenCodeOrConfig(opencodePath, zaiKey)
+	if zaiErr == nil {
+		providerRegistry.Register(zaiProvider)
+	}
+
+	openzenKey := os.Getenv("OPENZEN_API_KEY")
+	if openzenKey == "" {
+		openzenKey = cfg.Providers.OpenZen.APIKey
+	}
+	openzenProvider, openzenErr := openzen.NewFromOpenCodeOrConfig(opencodePath, openzenKey)
+	if openzenErr == nil {
+		providerRegistry.Register(openzenProvider)
 	}
 	return providerRegistry, ollamaProvider
 }

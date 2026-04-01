@@ -141,6 +141,18 @@ func loadProviderStatuses(cfg *config.AppConfig) []ProviderStatus {
 			Model:   "",
 			Enabled: cfg.Providers.GitHub.APIKey != "",
 		},
+		{
+			Name:    "zai",
+			APIKey:  cfg.Providers.ZAI.APIKey,
+			Model:   cfg.Providers.ZAI.Model,
+			Enabled: cfg.Providers.ZAI.APIKey != "",
+		},
+		{
+			Name:    "openzen",
+			APIKey:  cfg.Providers.OpenZen.APIKey,
+			Model:   cfg.Providers.OpenZen.Model,
+			Enabled: cfg.Providers.OpenZen.APIKey != "",
+		},
 	}
 }
 
@@ -358,6 +370,16 @@ func (i *Intent) loadOpenCodeCredential() tea.Cmd {
 					i.providers[idx].APIKey = ocAuth.GitHubCopilot.Access
 					i.config.Providers.GitHub.APIKey = ocAuth.GitHubCopilot.Access
 				}
+			case "zai":
+				if ocAuth.ZAI != nil && ocAuth.ZAI.Access != "" {
+					i.providers[idx].APIKey = ocAuth.ZAI.Access
+					i.config.Providers.ZAI.APIKey = ocAuth.ZAI.Access
+				}
+			case "openzen":
+				if ocAuth.OpenZen != nil && ocAuth.OpenZen.Access != "" {
+					i.providers[idx].APIKey = ocAuth.OpenZen.Access
+					i.config.Providers.OpenZen.APIKey = ocAuth.OpenZen.Access
+				}
 			}
 			break
 		}
@@ -388,6 +410,10 @@ func isValidCredential(providerName, credential string) bool {
 		return len(credential) >= 13 && (credential[:13] == "sk-ant-api03-" || credential[:13] == "sk-ant-oat01-")
 	case "github-copilot":
 		return len(credential) >= 4 && credential[:4] == "gho_"
+	case "zai":
+		return len(credential) >= 3 && credential[:3] == "sk-"
+	case "openzen":
+		return len(credential) >= 3 && credential[:3] == "sk-"
 	case "openai":
 		return len(credential) >= 3 && credential[:3] == "sk-"
 	default:
@@ -415,6 +441,10 @@ func (i *Intent) saveAPIKey() {
 				i.config.Providers.Anthropic.APIKey = i.apiKeyInput
 			case "github-copilot":
 				i.config.Providers.GitHub.APIKey = i.apiKeyInput
+			case "zai":
+				i.config.Providers.ZAI.APIKey = i.apiKeyInput
+			case "openzen":
+				i.config.Providers.OpenZen.APIKey = i.apiKeyInput
 			}
 			break
 		}
@@ -438,6 +468,10 @@ func (i *Intent) saveAndReturn() tea.Cmd {
 			i.config.Providers.Anthropic.APIKey = p.APIKey
 		case "github-copilot":
 			i.config.Providers.GitHub.APIKey = p.APIKey
+		case "zai":
+			i.config.Providers.ZAI.APIKey = p.APIKey
+		case "openzen":
+			i.config.Providers.OpenZen.APIKey = p.APIKey
 		}
 	}
 	i.config.MCPServers = i.mcpServers

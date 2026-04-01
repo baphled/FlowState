@@ -199,6 +199,12 @@ AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.t
 - `internal/tui/run.go` - Run() wrapper starting tea.Program with AltScreen
 - `internal/tui/suite_test.go` - Ginkgo bootstrap
 
+## 2026-04-01 Provider model lists
+
+- Z.AI and OpenZen now fetch model lists from `client.Models.List(ctx)` first.
+- Fallback lists should stay minimal and provider-specific so startup still works if the API is unavailable.
+- The OpenAI Go SDK returns model IDs directly from `Models.List`, so mapping stays simple and isolated in each provider.
+
 ## 2026-03-30 Agent Manifest Cleanup
 
 - Removed `model_preferences` from all seven built-in agent markdown manifests under `internal/app/agents/`.
@@ -512,3 +518,10 @@ Verified with: python3 check for `'id' in d and 'agent_id' in d` → `True True`
 
 ### Linter
 - `revive` exported type name check: if a type is in package `session`, avoid prefixing the name with `Session` (use `IDKey` not `SessionIDKey`)
+
+## 2026-04-01 Provider lint clean-up
+
+### Learnings
+- `for range ch {}` in tests triggers `revive` empty-block warnings; use `for chunk := range ch { _ = chunk }` when draining streamed channels.
+- `//nolint:nestif` in this repository must include a reason, otherwise `nolintlint` fails the build.
+- For credential-resolution constructors that intentionally inspect multiple sources, a targeted `nolint:nestif // ...` is acceptable when the logic is otherwise stable and well-tested.
