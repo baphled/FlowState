@@ -477,9 +477,36 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 	return allowed
 }
 
-// buildToolSchemas converts the engine's tools into provider-compatible tool schemas.
-// When the manifest specifies Capabilities.Tools, only matching tools are included.
-// An empty Capabilities.Tools list means all tools are exposed (backward compatibility).
+// buildPropertyMap converts a map of tool.Property definitions into the
+// JSON Schema property map expected by provider.ToolSchema.
+//
+// Expected:
+//   - properties contains valid tool.Property entries with Type and Description set.
+//
+// Returns:
+//   - A map of property names to their JSON Schema representations.
+//
+// Side effects:
+//   - None; this is a pure transformation function.
+func buildPropertyMap(properties map[string]tool.Property) map[string]interface{} {
+	props := make(map[string]interface{}, len(properties))
+	for k, v := range properties {
+		propMap := map[string]interface{}{
+			"type":        v.Type,
+			"description": v.Description,
+		}
+		if len(v.Enum) > 0 {
+			propMap["enum"] = v.Enum
+		}
+		if len(v.Items) > 0 {
+			propMap["items"] = v.Items
+		}
+		props[k] = propMap
+	}
+	return props
+}
+
+// buildToolSchemas constructs provider-compatible tool schemas from registered tools.
 //
 // Returns:
 //   - A slice of provider.Tool values with schema information for each tool.
@@ -511,18 +538,7 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 			continue
 		}
 		schema := t.Schema()
-		props := make(map[string]interface{})
-		for k, v := range schema.Properties {
-			props[k] = map[string]interface{}{
-				"type":        v.Type,
-				"description": v.Description,
-			}
-			if len(v.Enum) > 0 {
-				if propMap, ok := props[k].(map[string]interface{}); ok {
-					propMap["enum"] = v.Enum
-				}
-			}
-		}
+		props := buildPropertyMap(schema.Properties)
 		tools = append(tools, provider.Tool{
 			Name:        t.Name(),
 			Description: t.Description(),

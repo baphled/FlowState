@@ -65,6 +65,25 @@ func (t *Tool) Schema() tool.Schema {
 			"todos": {
 				Type:        "array",
 				Description: "The updated todo list",
+				Items: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"content": map[string]interface{}{
+							"type":        "string",
+							"description": "Brief description of the task",
+						},
+						"status": map[string]interface{}{
+							"type":        "string",
+							"description": "Current status of the task: pending, in_progress, completed, cancelled",
+						},
+						"priority": map[string]interface{}{
+							"type":        "string",
+							"description": "Priority level of the task: high, medium, low",
+						},
+					},
+					"required":             []string{"content", "status", "priority"},
+					"additionalProperties": false,
+				},
 			},
 		},
 		Required: []string{"todos"},
@@ -115,10 +134,11 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 //
 // Expected:
 //   - raw contains interface{} elements that are each map[string]interface{}.
+//   - Each element must include a non-empty "content" key.
 //
 // Returns:
 //   - A slice of Item values extracted from each element.
-//   - An error when an element cannot be cast to map[string]interface{}.
+//   - An error when an element is not a map or is missing a non-empty content field.
 //
 // Side effects:
 //   - None.
@@ -129,8 +149,12 @@ func parseTodos(raw []interface{}) ([]Item, error) {
 		if !ok {
 			return nil, errors.New("each todo must be an object")
 		}
+		content := stringField(m, "content")
+		if content == "" {
+			return nil, errors.New("each todo must have a non-empty content field")
+		}
 		todos = append(todos, Item{
-			Content:  stringField(m, "content"),
+			Content:  content,
 			Status:   stringField(m, "status"),
 			Priority: stringField(m, "priority"),
 		})

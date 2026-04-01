@@ -39,6 +39,9 @@ type Property struct {
 	Type        string
 	Description string
 	Enum        []string
+	// Items holds the JSON Schema definition for elements of an array-typed property.
+	// When non-nil, it is propagated as the "items" key in the generated JSON Schema.
+	Items map[string]interface{}
 }
 
 // PermissionRequest describes a tool invocation awaiting user approval.

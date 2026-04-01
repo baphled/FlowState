@@ -47,6 +47,15 @@ var _ = Describe("TodoTool", func() {
 			Expect(s.Properties["todos"].Type).To(Equal("array"))
 			Expect(s.Required).To(ConsistOf("todos"))
 		})
+
+		It("defines items schema for the todos array with required fields", func() {
+			s := t.Schema()
+			items := s.Properties["todos"].Items
+			Expect(items).NotTo(BeNil())
+			Expect(items).To(HaveKey("properties"))
+			Expect(items).To(HaveKey("required"))
+			Expect(items).To(HaveKeyWithValue("additionalProperties", false))
+		})
 	})
 
 	Describe("Execute", func() {
@@ -191,6 +200,43 @@ var _ = Describe("TodoTool", func() {
 				})
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("todos"))
+			})
+		})
+
+		Context("when a todo item has no content field", func() {
+			It("returns an error mentioning content", func() {
+				_, err := t.Execute(sessionCtx(), tool.Input{
+					Name: "todowrite",
+					Arguments: map[string]interface{}{
+						"todos": []interface{}{
+							map[string]interface{}{
+								"status":   "pending",
+								"priority": "high",
+							},
+						},
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("content"))
+			})
+		})
+
+		Context("when a todo uses wrong field name instead of content", func() {
+			It("returns an error mentioning content", func() {
+				_, err := t.Execute(sessionCtx(), tool.Input{
+					Name: "todowrite",
+					Arguments: map[string]interface{}{
+						"todos": []interface{}{
+							map[string]interface{}{
+								"title":    "My task",
+								"status":   "pending",
+								"priority": "high",
+							},
+						},
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("content"))
 			})
 		})
 	})
