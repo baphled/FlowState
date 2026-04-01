@@ -384,7 +384,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		toolRegistry:       toolRegistry,
 		permissionHandler:  permHandler,
 		agentsFileLoader:   buildAgentsFileLoader(),
-		tokenCounter:       ctxstore.NewTiktokenCounter(),
+		tokenCounter:       ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
 		failoverHook:       params.failoverHook,
 		failoverManager:    params.failoverManager,
 	})
@@ -519,6 +519,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	if !manifest.Delegation.CanDelegate {
 		return
 	}
+
 	bgManager := engine.NewBackgroundTaskManager()
 	coordinationStore := coordination.NewMemoryStore()
 
