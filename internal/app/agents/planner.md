@@ -11,6 +11,8 @@ capabilities:
   tools:
     - delegate
     - coordination_store
+    - skill_load
+    - todowrite
   skills:
     - scope-management
     - systems-thinker

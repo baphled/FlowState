@@ -305,6 +305,7 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 
 	if dt, ok := e.getDelegateToolLocked(); ok {
 		dt.SetDelegation(manifest.Delegation)
+		dt.SetSourceAgentID(manifest.ID)
 	}
 	e.mu.Unlock()
 
@@ -535,6 +536,17 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 
 	e.cachedToolSchemas = tools
 	return tools
+}
+
+// ToolSchemas returns the current tool schemas filtered by the active manifest.
+//
+// Returns:
+//   - A slice of provider.Tool representing the tools available under the current manifest.
+//
+// Side effects:
+//   - May cache the schemas internally for subsequent calls.
+func (e *Engine) ToolSchemas() []provider.Tool {
+	return e.buildToolSchemas()
 }
 
 // Stream sends a message and returns a channel of streamed response chunks.
@@ -1213,6 +1225,8 @@ func (e *Engine) ResolveContextLength(providerName, model string) int {
 // Side effects:
 //   - None.
 func (e *Engine) HasTool(name string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	for _, t := range e.tools {
 		if t.Name() == name {
 			return true

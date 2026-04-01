@@ -1167,6 +1167,17 @@ func (d *DelegateTool) SetDelegation(config agent.Delegation) {
 	d.delegation = config
 }
 
+// SetSourceAgentID updates the source agent identifier for delegation event attribution.
+//
+// Expected:
+//   - id is the identifier of the agent that owns this tool.
+//
+// Side effects:
+//   - Replaces the internal sourceAgentID used during Execute().
+func (d *DelegateTool) SetSourceAgentID(id string) {
+	d.sourceAgentID = id
+}
+
 // Delegation returns the current delegation configuration.
 //
 // Returns:

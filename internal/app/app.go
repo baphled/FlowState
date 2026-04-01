@@ -215,6 +215,11 @@ func configureApplicationAfterBuild(
 
 	app.setAgentOverridesFromConfig(cfg, eng)
 	app.wireDelegateToolIfEnabled(eng, defaultManifest)
+	if runtime.setEnsureTools != nil {
+		runtime.setEnsureTools(func(m agent.Manifest) {
+			app.wireDelegateToolIfEnabled(eng, m)
+		})
+	}
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
@@ -284,6 +289,11 @@ func buildApp(params appBuildParams) *App {
 
 	app.setAgentOverridesFromConfig(cfg, runtime.engine)
 	app.wireDelegateToolIfEnabled(runtime.engine, selectDefaultManifest(agentRegistry, cfg.DefaultAgent))
+	if runtime.setEnsureTools != nil {
+		runtime.setEnsureTools(func(m agent.Manifest) {
+			app.wireDelegateToolIfEnabled(runtime.engine, m)
+		})
+	}
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
@@ -371,7 +381,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 			params.failoverManager.SetBasePreferences(prefs)
 		}
 	}
-	eng := createEngine(engineParams{
+	eng, setEnsureTools := createEngine(engineParams{
 		defaultProvider:    tracedProvider,
 		ollamaProvider:     params.ollamaProvider,
 		providerRegistry:   params.providerRegistry,
@@ -412,6 +422,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		mcpManager:      mcpMgr,
 		todoStore:       todoStore,
 		sessionRecorder: sessRecorder,
+		setEnsureTools:  setEnsureTools,
 	}, nil
 }
 
@@ -440,6 +451,7 @@ type runtimeComponents struct {
 	mcpManager      mcpclient.Client
 	todoStore       todotool.Store
 	sessionRecorder *sessionrecorder.Recorder
+	setEnsureTools  func(func(agent.Manifest))
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -449,17 +461,39 @@ type runtimeComponents struct {
 //
 // Returns:
 //   - A fully initialised Engine with hook chain wired to live manifest.
+//   - A setter that accepts a func(agent.Manifest) for lazy ensureTools wiring.
 //
 // Side effects:
 //   - Creates engine and connects MCP servers.
-func createEngine(params engineParams) *engine.Engine {
+func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest))) {
 	var eng *engine.Engine
+	var ensureToolsFn func(agent.Manifest)
 	hookChain := buildHookChain(params.learningStore, func() agent.Manifest {
 		if eng != nil {
 			return eng.Manifest()
 		}
 		return params.defaultManifest
-	}, params.failoverHook, params.failoverManager)
+	}, params.failoverHook, params.failoverManager,
+		&toolWiringCallbacks{
+			hasTool: func(name string) bool {
+				if eng == nil {
+					return false
+				}
+				return eng.HasTool(name)
+			},
+			ensureTools: func(m agent.Manifest) {
+				if ensureToolsFn != nil {
+					ensureToolsFn(m)
+				}
+			},
+			schemaRebuilder: func() []provider.Tool {
+				if eng == nil {
+					return nil
+				}
+				return eng.ToolSchemas()
+			},
+		},
+	)
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
@@ -476,7 +510,10 @@ func createEngine(params engineParams) *engine.Engine {
 		AgentsFileLoader:  params.agentsFileLoader,
 		TokenCounter:      params.tokenCounter,
 	})
-	return eng
+	setEnsureTools := func(fn func(agent.Manifest)) {
+		ensureToolsFn = fn
+	}
+	return eng, setEnsureTools
 }
 
 // setAgentOverridesFromConfig extracts agent overrides from the app config and applies them to the engine.
@@ -578,7 +615,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
 func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
-	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil)
+	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil, nil)
 	eng := engine.New(engine.Config{
 		Registry:      a.providerRegistry,
 		AgentRegistry: a.Registry,
@@ -1010,6 +1047,14 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 	return skills, alwaysActiveSkills
 }
 
+// toolWiringCallbacks groups the callbacks required to lazily wire delegation
+// tools at request time via ToolWiringHook.
+type toolWiringCallbacks struct {
+	hasTool         func(string) bool
+	ensureTools     func(agent.Manifest)
+	schemaRebuilder func() []provider.Tool
+}
+
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
 // When failoverMgr is non-nil, a StreamHook is appended LAST so provider failover wraps
 // the base handler. When only failoverHk is set (legacy path), it is prepended first.
@@ -1019,6 +1064,7 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 //   - manifestGetter returns the current agent manifest for skill selection.
 //   - failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
 //   - failoverMgr may be nil; when non-nil, a StreamHook is appended LAST.
+//   - twc may be nil; when non-nil, a ToolWiringHook is appended after SkillAutoLoader.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
@@ -1030,6 +1076,7 @@ func buildHookChain(
 	manifestGetter func() agent.Manifest,
 	failoverHk *failover.Hook,
 	failoverMgr *failover.Manager,
+	twc *toolWiringCallbacks,
 ) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
 	if err != nil {
@@ -1039,6 +1086,9 @@ func buildHookChain(
 		hook.LoggingHook(),
 		hook.LearningHook(learningStore),
 		hook.SkillAutoLoaderHook(cfg, manifestGetter),
+	}
+	if twc != nil {
+		hooks = append(hooks, hook.ToolWiringHook(manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
 	}
 	if manifestGetter().HarnessEnabled {
 		projectRoot, err := os.Getwd()
@@ -1606,7 +1656,7 @@ func BuildHookChainForTest(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
-	return buildHookChain(learningStore, manifestGetter, nil, nil)
+	return buildHookChain(learningStore, manifestGetter, nil, nil, nil)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.
@@ -1967,7 +2017,7 @@ func BuildHookChainForTestWithFailover(
 	health := failover.NewHealthManager()
 	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
 	fh := failover.NewHook(chain, health)
-	return buildHookChain(learningStore, manifestGetter, fh, nil)
+	return buildHookChain(learningStore, manifestGetter, fh, nil, nil)
 }
 
 // SetBackgroundManager sets the background task manager.
