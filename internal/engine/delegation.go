@@ -30,6 +30,7 @@ var (
 	errCircuitBreakerOpen       = errors.New("circuit breaker open: too many delegation failures")
 	errDepthLimitExceeded       = errors.New("depth limit exceeded: maximum delegation depth reached")
 	errBudgetLimitExceeded      = errors.New("budget limit exceeded: maximum concurrent delegations reached")
+	errAgentNotInAllowlist      = errors.New("agent not in delegation allowlist")
 )
 
 const maxDelegationFailures = 3
@@ -764,6 +765,11 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, err
 	}
 
+	if len(d.delegation.DelegationAllowlist) > 0 && !containsAgent(d.delegation.DelegationAllowlist, targetAgentID) {
+		return delegationTarget{}, fmt.Errorf("%w: %q not in allowlist: %v",
+			errAgentNotInAllowlist, targetAgentID, d.delegation.DelegationAllowlist)
+	}
+
 	var chainID string
 	if params.handoff != nil {
 		chainID = params.handoff.ChainID
@@ -1150,6 +1156,28 @@ func (d *DelegateTool) HasEmbeddingDiscovery() bool {
 	return d.embeddingDiscovery != nil
 }
 
+// SetDelegation updates the delegation configuration for this tool.
+//
+// Expected:
+//   - config is the new delegation configuration to apply.
+//
+// Side effects:
+//   - Replaces the internal delegation config used during Execute().
+func (d *DelegateTool) SetDelegation(config agent.Delegation) {
+	d.delegation = config
+}
+
+// Delegation returns the current delegation configuration.
+//
+// Returns:
+//   - The agent.Delegation currently in use by this tool.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) Delegation() agent.Delegation {
+	return d.delegation
+}
+
 // CircuitBreaker returns the circuit breaker protecting the delegation flow.
 //
 // Returns:
@@ -1234,4 +1262,24 @@ func extractSkillMarker(content string) string {
 //   - None.
 func containsSkillMarker(prompt, marker string) bool {
 	return strings.Contains(prompt, marker+"\n") || strings.HasSuffix(prompt, marker)
+}
+
+// containsAgent reports whether agentID appears in the allowlist slice.
+//
+// Expected:
+//   - allowlist is a slice of agent ID strings (may be empty).
+//   - agentID is the resolved agent identifier to search for.
+//
+// Returns:
+//   - true if agentID matches any element in allowlist.
+//
+// Side effects:
+//   - None.
+func containsAgent(allowlist []string, agentID string) bool {
+	for _, id := range allowlist {
+		if id == agentID {
+			return true
+		}
+	}
+	return false
 }

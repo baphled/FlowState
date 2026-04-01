@@ -27,6 +27,36 @@ type Manager struct {
 	lastModel       string
 }
 
+// ResolveContextLength returns the context length for a given provider/model, or 4096 if unknown.
+//
+// Expected:
+//   - providerName is the name of the provider to query.
+//   - model is the model identifier to look up.
+//
+// Returns:
+//   - The context length for the given model, or 4096 if the provider or model is unknown.
+//
+// Side effects:
+//   - None.
+func (m *Manager) ResolveContextLength(providerName, model string) int {
+	p, err := m.registry.Get(providerName)
+	if err != nil {
+		return 4096
+	}
+	models, err := p.Models()
+	if err != nil {
+		return 4096
+	}
+	for _, m := range models {
+		if m.ID == model {
+			if m.ContextLength > 0 {
+				return m.ContextLength
+			}
+		}
+	}
+	return 4096
+}
+
 // NewManager creates a new Manager with the given registry, health manager, and stream timeout.
 //
 // Expected:

@@ -152,6 +152,28 @@ var _ = Describe("Delegation", func() {
 			Expect(delegateTool.Description()).NotTo(BeEmpty())
 		})
 
+		Describe("SetDelegation", func() {
+			It("updates the delegation configuration", func() {
+				delegateTool := engine.NewDelegateTool(nil, agent.Delegation{CanDelegate: false}, "source")
+
+				Expect(delegateTool.Delegation().CanDelegate).To(BeFalse())
+
+				delegateTool.SetDelegation(agent.Delegation{CanDelegate: true})
+
+				Expect(delegateTool.Delegation().CanDelegate).To(BeTrue())
+			})
+
+			It("allows delegation after switching from false to true", func() {
+				delegateTool := engine.NewDelegateTool(nil, agent.Delegation{CanDelegate: false}, "source")
+
+				Expect(delegateTool.Delegation().CanDelegate).To(BeFalse())
+
+				delegateTool.SetDelegation(agent.Delegation{CanDelegate: true})
+
+				Expect(delegateTool.Delegation().CanDelegate).To(BeTrue())
+			})
+		})
+
 		It("returns correct schema with subagent_type and message as required parameters", func() {
 			delegateTool := engine.NewDelegateTool(nil, agent.Delegation{}, "source")
 
@@ -1872,6 +1894,148 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			Expect(childProvider.capturedRequest.Messages[0].Content).To(
 				ContainSubstring("Important context for session continuation."),
 			)
+		})
+	})
+
+	Describe("DelegateTool delegation allowlist", func() {
+		It("allows any agent when allowlist is empty", func() {
+			targetProvider := &mockProvider{
+				name: "target-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Target response", Done: true},
+				},
+			}
+
+			targetManifest := agent.Manifest{
+				ID:                "target-agent",
+				Name:              "Target Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a target."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			targetEngine := engine.New(engine.Config{
+				ChatProvider: targetProvider,
+				Manifest:     targetManifest,
+			})
+
+			engines := map[string]*engine.Engine{
+				"target-agent": targetEngine,
+			}
+
+			delegation := agent.Delegation{
+				CanDelegate:         true,
+				DelegationAllowlist: []string{},
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "target-agent",
+					"message":       "Do the work",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("Target response"))
+		})
+
+		It("allows agents present in a non-empty allowlist", func() {
+			targetProvider := &mockProvider{
+				name: "target-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Allowlisted response", Done: true},
+				},
+			}
+
+			targetManifest := agent.Manifest{
+				ID:                "explorer",
+				Name:              "Explorer",
+				Instructions:      agent.Instructions{SystemPrompt: "You explore."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			targetEngine := engine.New(engine.Config{
+				ChatProvider: targetProvider,
+				Manifest:     targetManifest,
+			})
+
+			engines := map[string]*engine.Engine{
+				"explorer": targetEngine,
+			}
+
+			delegation := agent.Delegation{
+				CanDelegate:         true,
+				DelegationAllowlist: []string{"explorer", "librarian", "analyst"},
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "explorer",
+					"message":       "Explore the codebase",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("Allowlisted response"))
+		})
+
+		It("rejects agents not present in a non-empty allowlist", func() {
+			targetProvider := &mockProvider{
+				name: "target-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "Should not reach", Done: true},
+				},
+			}
+
+			targetManifest := agent.Manifest{
+				ID:                "message",
+				Name:              "Message Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You handle messages."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			targetEngine := engine.New(engine.Config{
+				ChatProvider: targetProvider,
+				Manifest:     targetManifest,
+			})
+
+			engines := map[string]*engine.Engine{
+				"message": targetEngine,
+			}
+
+			delegation := agent.Delegation{
+				CanDelegate:         true,
+				DelegationAllowlist: []string{"explorer", "librarian", "analyst"},
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "message",
+					"message":       "Send a message",
+				},
+			}
+
+			_, err := delegateTool.Execute(ctx, input)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			Expect(err.Error()).To(ContainSubstring("message"))
+			Expect(err.Error()).To(ContainSubstring("explorer"))
 		})
 	})
 })

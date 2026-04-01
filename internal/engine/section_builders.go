@@ -44,7 +44,9 @@ func buildDelegationSection(agents []*agent.Manifest) string {
 	for _, a := range delegationAgents {
 		sb.WriteString("| ")
 		sb.WriteString(a.Name)
-		sb.WriteString(" | ")
+		sb.WriteString(" (")
+		sb.WriteString(a.ID)
+		sb.WriteString(") | ")
 		sb.WriteString(a.OrchestratorMeta.Cost)
 		sb.WriteString(" | ")
 		useWhenText := ""

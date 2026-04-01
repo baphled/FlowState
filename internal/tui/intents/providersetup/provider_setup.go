@@ -345,6 +345,29 @@ func (i *Intent) loadOpenCodeCredential() tea.Cmd {
 		return nil
 	}
 
+	ocAuth := i.loadOpenCodeAuth()
+	if ocAuth == nil {
+		return nil
+	}
+
+	i.applyOpenCodeCredential(ocAuth)
+
+	i.editingAPIKey = false
+	i.showInputModeSelector = false
+	return nil
+}
+
+// loadOpenCodeAuth loads and returns the OpenCode authentication credentials from disk.
+//
+// Expected:
+//   - The user's home directory is accessible via os.UserHomeDir.
+//
+// Returns:
+//   - A pointer to OpenCodeAuth if credentials are found, or nil on error.
+//
+// Side effects:
+//   - Reads the OpenCode auth.json file from the user's local data directory.
+func (i *Intent) loadOpenCodeAuth() *auth.OpenCodeAuth {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		homeDir = ""
@@ -355,39 +378,92 @@ func (i *Intent) loadOpenCodeCredential() tea.Cmd {
 	if err != nil || ocAuth == nil {
 		return nil
 	}
+	return ocAuth
+}
 
-	for idx := range i.providers {
-		if i.providers[idx].Name == i.selectedProviderForKey {
-			i.providers[idx].Enabled = true
-			switch i.selectedProviderForKey {
-			case "anthropic":
-				if ocAuth.Anthropic != nil && ocAuth.Anthropic.Access != "" {
-					i.providers[idx].APIKey = ocAuth.Anthropic.Access
-					i.config.Providers.Anthropic.APIKey = ocAuth.Anthropic.Access
-				}
-			case "github-copilot":
-				if ocAuth.GitHubCopilot != nil && ocAuth.GitHubCopilot.Access != "" {
-					i.providers[idx].APIKey = ocAuth.GitHubCopilot.Access
-					i.config.Providers.GitHub.APIKey = ocAuth.GitHubCopilot.Access
-				}
-			case "zai":
-				if ocAuth.ZAI != nil && ocAuth.ZAI.Access != "" {
-					i.providers[idx].APIKey = ocAuth.ZAI.Access
-					i.config.Providers.ZAI.APIKey = ocAuth.ZAI.Access
-				}
-			case "openzen":
-				if ocAuth.OpenZen != nil && ocAuth.OpenZen.Access != "" {
-					i.providers[idx].APIKey = ocAuth.OpenZen.Access
-					i.config.Providers.OpenZen.APIKey = ocAuth.OpenZen.Access
-				}
-			}
-			break
-		}
+// applyOpenCodeCredential applies the resolved OpenCode credential to the selected provider.
+//
+// Expected:
+//   - ocAuth is a non-nil OpenCodeAuth containing valid credentials.
+//   - i.selectedProviderForKey identifies a provider present in i.providers.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Enables the matching provider, sets its API key, and updates the configuration.
+func (i *Intent) applyOpenCodeCredential(ocAuth *auth.OpenCodeAuth) {
+	credential := resolveOpenCodeCredential(ocAuth, i.selectedProviderForKey)
+	if credential == "" {
+		return
 	}
 
-	i.editingAPIKey = false
-	i.showInputModeSelector = false
-	return nil
+	for idx := range i.providers {
+		if i.providers[idx].Name != i.selectedProviderForKey {
+			continue
+		}
+		i.providers[idx].Enabled = true
+		i.providers[idx].APIKey = credential
+		i.applyCredentialToConfig(credential)
+		break
+	}
+}
+
+// resolveOpenCodeCredential returns the access token for the given provider from OpenCode auth.
+//
+// Expected:
+//   - ocAuth is a non-nil OpenCodeAuth instance.
+//   - providerName is one of the supported provider identifiers.
+//
+// Returns:
+//   - The access token string for the provider, or an empty string if unavailable.
+//
+// Side effects:
+//   - None.
+func resolveOpenCodeCredential(ocAuth *auth.OpenCodeAuth, providerName string) string {
+	switch providerName {
+	case "anthropic":
+		if ocAuth.Anthropic != nil {
+			return ocAuth.Anthropic.Access
+		}
+	case "github-copilot":
+		if ocAuth.GitHubCopilot != nil {
+			return ocAuth.GitHubCopilot.Access
+		}
+	case "zai":
+		if ocAuth.ZAI != nil {
+			return ocAuth.ZAI.Access
+		}
+	case "openzen":
+		if ocAuth.OpenZen != nil {
+			return ocAuth.OpenZen.Access
+		}
+	}
+	return ""
+}
+
+// applyCredentialToConfig writes the credential into the configuration for the selected provider.
+//
+// Expected:
+//   - credential is a non-empty API key or access token.
+//   - i.selectedProviderForKey identifies a supported provider in i.config.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Mutates the provider API key field in i.config for the selected provider.
+func (i *Intent) applyCredentialToConfig(credential string) {
+	switch i.selectedProviderForKey {
+	case "anthropic":
+		i.config.Providers.Anthropic.APIKey = credential
+	case "github-copilot":
+		i.config.Providers.GitHub.APIKey = credential
+	case "zai":
+		i.config.Providers.ZAI.APIKey = credential
+	case "openzen":
+		i.config.Providers.OpenZen.APIKey = credential
+	}
 }
 
 // isValidCredential checks if a credential matches the expected format for the given provider.

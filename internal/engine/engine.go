@@ -182,6 +182,17 @@ func (e *Engine) SkipAgentFiles() bool {
 	return e.skipAgentFiles
 }
 
+// FailoverManager returns the failover manager as a ModelResolver.
+//
+// Returns:
+//   - The failover.Manager instance used by this engine, or nil if not configured.
+//
+// Side effects:
+//   - None.
+func (e *Engine) FailoverManager() *failover.Manager {
+	return e.failoverManager
+}
+
 // EventBus returns the engine's event bus for plugin event subscriptions.
 //
 // Returns:
@@ -289,6 +300,10 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.manifest = manifest
 	e.systemPromptDirty = true
 	e.cachedToolSchemas = nil
+
+	if dt, ok := e.getDelegateToolLocked(); ok {
+		dt.SetDelegation(manifest.Delegation)
+	}
 	e.mu.Unlock()
 
 	if e.bus != nil && oldID != manifest.ID && oldID != "" {
@@ -1137,16 +1152,34 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 // Side effects:
 //   - None.
 func (e *Engine) ModelContextLimit() int {
-	if e.tokenCounter == nil {
-		return 4096
-	}
 	if e.failoverManager != nil {
 		prefs := e.failoverManager.Preferences()
 		if len(prefs) > 0 {
-			return e.tokenCounter.ModelLimit(prefs[0].Model)
+			return e.failoverManager.ResolveContextLength(prefs[0].Provider, prefs[0].Model)
 		}
 	}
-	return e.tokenCounter.ModelLimit(e.LastModel())
+	if e.tokenCounter != nil {
+		return e.tokenCounter.ModelLimit(e.LastModel())
+	}
+	return 4096
+}
+
+// ResolveContextLength returns the context window limit for the given provider/model.
+// It delegates to the failover manager's resolver if available, or returns 4096.
+//
+// Expected:
+//   - providerName and model identify a known provider/model pair.
+//
+// Returns:
+//   - The context length in tokens, or 4096 if the provider/model is unknown.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ResolveContextLength(providerName, model string) int {
+	if e.failoverManager != nil {
+		return e.failoverManager.ResolveContextLength(providerName, model)
+	}
+	return 4096
 }
 
 // HasTool reports whether the engine has a tool with the given name.
@@ -1194,6 +1227,20 @@ func (e *Engine) AddTool(t tool.Tool) {
 // Side effects:
 //   - None.
 func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.getDelegateToolLocked()
+}
+
+// getDelegateToolLocked returns the DelegateTool without acquiring the lock.
+// Caller must hold e.mu (read or write).
+//
+// Returns:
+//   - The DelegateTool and true when registered, or nil and false otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) getDelegateToolLocked() (*DelegateTool, bool) {
 	for _, t := range e.tools {
 		if dt, ok := t.(*DelegateTool); ok {
 			return dt, true

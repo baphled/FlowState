@@ -82,6 +82,19 @@ func (t *mockTool) Schema() tool.Schema {
 	return tool.Schema{}
 }
 
+// mockResolver implements context.ModelResolver for tests.
+type mockResolver struct {
+	limits map[string]int
+}
+
+func (m *mockResolver) ResolveContextLength(providerName, model string) int {
+	key := providerName + "/" + model
+	if limit, ok := m.limits[key]; ok {
+		return limit
+	}
+	return 0
+}
+
 var _ = Describe("Engine", func() {
 	var (
 		chatProvider      *mockProvider
@@ -860,6 +873,36 @@ var _ = Describe("Engine", func() {
 			eng.SetManifest(agent.Manifest{ID: "planner"})
 			Expect(eng.Manifest().ID).To(Equal("planner"))
 		})
+
+		It("updates the delegate tool delegation config when agent switches", func() {
+			executorManifest := agent.Manifest{
+				ID: "executor",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				Manifest: executorManifest,
+			})
+
+			delegateTool := engine.NewDelegateTool(nil, executorManifest.Delegation, "executor")
+			eng.AddTool(delegateTool)
+
+			Expect(delegateTool.Delegation().CanDelegate).To(BeFalse())
+
+			plannerManifest := agent.Manifest{
+				ID: "planner",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			eng.SetManifest(plannerManifest)
+
+			dt, ok := eng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			Expect(dt.Delegation().CanDelegate).To(BeTrue())
+		})
 	})
 
 	Describe("LoadedSkills", func() {
@@ -892,6 +935,9 @@ var _ = Describe("Engine", func() {
 					streamChunks: []provider.StreamChunk{
 						{Content: "response", Done: true},
 					},
+					models: []provider.Model{
+						{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000},
+					},
 				}
 				registry.Register(claudeProvider)
 
@@ -905,7 +951,10 @@ var _ = Describe("Engine", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				tokenCounter := ctxstore.NewTiktokenCounter()
+				resolver := &mockResolver{limits: map[string]int{
+					"anthropic/claude-sonnet-4-6": 200000,
+				}}
+				tokenCounter := ctxstore.NewTiktokenCounterWithResolver(resolver, "anthropic")
 
 				health := failover.NewHealthManager()
 				manager := failover.NewManager(registry, health, 5*time.Minute)
@@ -950,11 +999,17 @@ var _ = Describe("Engine", func() {
 					streamChunks: []provider.StreamChunk{
 						{Content: "response", Done: true},
 					},
+					models: []provider.Model{
+						{ID: "llama3.2", Provider: "ollama", ContextLength: 4096},
+					},
 				}
 				anthropicProvider := &mockProvider{
 					name: "anthropic",
 					streamChunks: []provider.StreamChunk{
 						{Content: "response", Done: true},
+					},
+					models: []provider.Model{
+						{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000},
 					},
 				}
 				registry.Register(ollamaProvider)
@@ -970,7 +1025,11 @@ var _ = Describe("Engine", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				tokenCounter := ctxstore.NewTiktokenCounter()
+				resolver := &mockResolver{limits: map[string]int{
+					"ollama/llama3.2":             4096,
+					"anthropic/claude-sonnet-4-6": 200000,
+				}}
+				tokenCounter := ctxstore.NewTiktokenCounterWithResolver(resolver, "ollama")
 
 				health := failover.NewHealthManager()
 				manager := failover.NewManager(registry, health, 5*time.Minute)
@@ -1008,11 +1067,17 @@ var _ = Describe("Engine", func() {
 					streamChunks: []provider.StreamChunk{
 						{Content: "response", Done: true},
 					},
+					models: []provider.Model{
+						{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000},
+					},
 				}
 				ollamaProvider := &mockProvider{
 					name: "ollama",
 					streamChunks: []provider.StreamChunk{
 						{Content: "response", Done: true},
+					},
+					models: []provider.Model{
+						{ID: "llama3.2", Provider: "ollama", ContextLength: 4096},
 					},
 				}
 				registry.Register(anthropicProvider)
@@ -1028,7 +1093,11 @@ var _ = Describe("Engine", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				tokenCounter := ctxstore.NewTiktokenCounter()
+				resolver := &mockResolver{limits: map[string]int{
+					"anthropic/claude-sonnet-4-6": 200000,
+					"ollama/llama3.2":             4096,
+				}}
+				tokenCounter := ctxstore.NewTiktokenCounterWithResolver(resolver, "anthropic")
 
 				health := failover.NewHealthManager()
 				manager := failover.NewManager(registry, health, 5*time.Minute)

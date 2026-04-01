@@ -78,14 +78,15 @@ var _ = Describe("ChatIntent", func() {
 
 			sessionStore := &stubSessionLister{loadStore: store}
 			startupIntent := chat.NewIntent(chat.IntentConfig{
-				Engine:       eng,
-				Streamer:     eng,
-				AgentID:      "test-agent",
-				SessionID:    "session-123",
-				ProviderName: "test-provider",
-				ModelName:    "test-model",
-				TokenBudget:  4096,
-				SessionStore: sessionStore,
+				Engine:        eng,
+				Streamer:      eng,
+				AgentID:       "test-agent",
+				SessionID:     "session-123",
+				ProviderName:  "test-provider",
+				ModelName:     "test-model",
+				TokenBudget:   4096,
+				SessionStore:  sessionStore,
+				ModelResolver: eng.FailoverManager(),
 			})
 
 			Expect(startupIntent.Messages()).To(BeEmpty())
@@ -316,6 +317,7 @@ var _ = Describe("ChatIntent", func() {
 						ModelName:     "test-model",
 						TokenBudget:   4096,
 						AgentRegistry: agentReg,
+						ModelResolver: eng.FailoverManager(),
 					})
 				})
 

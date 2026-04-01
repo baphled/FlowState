@@ -280,9 +280,9 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 	}
 
 	models := make([]provider.Model, 0, len(modelsPage.Data))
-	for _, m := range modelsPage.Data {
+	for i := range modelsPage.Data {
 		models = append(models, provider.Model{
-			ID:            m.ID,
+			ID:            modelsPage.Data[i].ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
 		})

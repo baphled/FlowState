@@ -1,8 +1,6 @@
 package context
 
 import (
-	"strings"
-
 	"github.com/pkoukk/tiktoken-go"
 )
 
@@ -14,9 +12,17 @@ type TokenCounter interface {
 	ModelLimit(model string) int
 }
 
+// ModelResolver resolves context window limits for provider models.
+type ModelResolver interface {
+	// ResolveContextLength returns the context window token limit for the given provider and model pair.
+	ResolveContextLength(provider, model string) int
+}
+
 // TiktokenCounter counts tokens using the tiktoken library.
 type TiktokenCounter struct {
 	encoding string
+	resolver ModelResolver
+	provider string
 }
 
 // NewTiktokenCounter creates a new TiktokenCounter with the default cl100k_base encoding.
@@ -28,6 +34,21 @@ type TiktokenCounter struct {
 //   - None.
 func NewTiktokenCounter() *TiktokenCounter {
 	return &TiktokenCounter{encoding: "cl100k_base"}
+}
+
+// NewTiktokenCounterWithResolver creates a new TiktokenCounter with a ModelResolver
+// and provider name for dynamic context limit resolution.
+//
+// Expected:
+//   - resolver is non-nil and provider is non-empty for dynamic resolution.
+//
+// Returns:
+//   - A configured TiktokenCounter instance.
+//
+// Side effects:
+//   - None.
+func NewTiktokenCounterWithResolver(resolver ModelResolver, provider string) *TiktokenCounter {
+	return &TiktokenCounter{encoding: "cl100k_base", resolver: resolver, provider: provider}
 }
 
 // Count returns the number of tokens in the text using tiktoken encoding.
@@ -55,16 +76,26 @@ func (c *TiktokenCounter) Count(text string) int {
 //   - model is a provider model identifier string.
 //
 // Returns:
-//   - The maximum token limit for the specified model.
+//   - The maximum token limit for the specified model, resolved from the
+//     configured ModelResolver if available, or 4096 as a safe fallback.
 //
 // Side effects:
 //   - None.
 func (c *TiktokenCounter) ModelLimit(model string) int {
-	return modelLimit(model)
+	if c.resolver != nil && c.provider != "" {
+		limit := c.resolver.ResolveContextLength(c.provider, model)
+		if limit > 0 {
+			return limit
+		}
+	}
+	return 4096
 }
 
 // ApproximateCounter estimates token counts using character-based approximation.
-type ApproximateCounter struct{}
+type ApproximateCounter struct {
+	resolver ModelResolver
+	provider string
+}
 
 // NewApproximateCounter creates a new character-based approximate token counter.
 //
@@ -75,6 +106,21 @@ type ApproximateCounter struct{}
 //   - None.
 func NewApproximateCounter() *ApproximateCounter {
 	return &ApproximateCounter{}
+}
+
+// NewApproximateCounterWithResolver creates a new ApproximateCounter with a
+// ModelResolver and provider name for dynamic context limit resolution.
+//
+// Expected:
+//   - resolver is non-nil and provider is non-empty for dynamic resolution.
+//
+// Returns:
+//   - A configured ApproximateCounter instance.
+//
+// Side effects:
+//   - None.
+func NewApproximateCounterWithResolver(resolver ModelResolver, provider string) *ApproximateCounter {
+	return &ApproximateCounter{resolver: resolver, provider: provider}
 }
 
 // Count returns an approximate token count for the given text using character-based estimation.
@@ -104,43 +150,18 @@ func (c *ApproximateCounter) Count(text string) int {
 //   - model is a provider model identifier string.
 //
 // Returns:
-//   - The maximum token limit for the specified model.
+//   - The maximum token limit for the specified model, resolved from the
+//     configured ModelResolver if available, or 4096 as a safe fallback.
 //
 // Side effects:
 //   - None.
 func (c *ApproximateCounter) ModelLimit(model string) int {
-	return modelLimit(model)
-}
-
-// modelLimit returns the token limit for the given model identifier.
-//
-// Expected:
-//   - model is a provider model identifier string.
-//
-// Returns:
-//   - The maximum token limit for the specified model.
-//   - Defaults to 4096 for unknown models.
-//
-// Side effects:
-//   - None.
-func modelLimit(model string) int {
-	switch model {
-	case "gpt-4o", "gpt-4o-mini", "gpt-4-turbo":
-		return 128000
-	case "gpt-3.5-turbo":
-		return 16385
+	if c.resolver != nil && c.provider != "" {
+		limit := c.resolver.ResolveContextLength(c.provider, model)
+		if limit > 0 {
+			return limit
+		}
 	}
-
-	if strings.HasPrefix(model, "claude") {
-		return 200000
-	}
-
-	if strings.HasPrefix(model, "llama") ||
-		strings.HasPrefix(model, "mistral") ||
-		strings.HasPrefix(model, "nomic") {
-		return 4096
-	}
-
 	return 4096
 }
 

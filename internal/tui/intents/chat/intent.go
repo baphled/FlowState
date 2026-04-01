@@ -122,6 +122,7 @@ type IntentConfig struct {
 	TokenBudget    int
 	AgentRegistry  *agent.Registry
 	SessionStore   SessionLister
+	ModelResolver  contextpkg.ModelResolver // Optional: enables dynamic model context limits
 }
 
 // Intent handles chat interactions in the TUI.
@@ -168,7 +169,24 @@ type Intent struct {
 
 var runningInTests bool
 
-// NewIntent creates a new chat intent from the given configuration.
+// tokenCounterFromConfig builds a token counter from the given intent configuration.
+//
+// Expected:
+//   - cfg is a valid IntentConfig; cfg.ModelResolver and cfg.ProviderName are optional.
+//
+// Returns:
+//   - A TokenCounter using the model resolver if available, or a default tiktoken counter.
+//
+// Side effects:
+//   - None.
+func tokenCounterFromConfig(cfg IntentConfig) contextpkg.TokenCounter {
+	if cfg.ModelResolver != nil && cfg.ProviderName != "" {
+		return contextpkg.NewTiktokenCounterWithResolver(cfg.ModelResolver, cfg.ProviderName)
+	}
+	return contextpkg.NewTiktokenCounter()
+}
+
+// NewIntent creates a new chat Intent from the given configuration.
 //
 // Expected:
 //   - cfg.Engine is a non-nil Engine instance.
@@ -209,7 +227,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		statusBar:           sb,
 		statusIndicator:     widgets.NewStatusIndicator(nil),
 		tokenCount:          0,
-		tokenCounter:        contextpkg.NewTiktokenCounter(),
+		tokenCounter:        tokenCounterFromConfig(cfg),
 		providerName:        cfg.ProviderName,
 		modelName:           cfg.ModelName,
 		tokenBudget:         cfg.TokenBudget,

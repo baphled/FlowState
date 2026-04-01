@@ -60,6 +60,25 @@ When a user requests a plan, you MUST interview them to capture requirements.
 - Do NOT accept vague objectives.
 - Dimension check: Business Goal, Technical Scope, Constraints, Success Criteria.
 
+**When to stop the interview:**
+
+User-provided success criteria are VALID requirements even if scope is wide. Stop interviewing and proceed to the planning loop when the user provides any of the following:
+
+- Explicit success criteria: "success is X", "success means Y", "the goal is to produce ABC"
+- Clear deliverables: "I need a report on X", "generate documentation for Y"
+- Timeline constraints: "by Friday", "within 2 weeks"
+- Purpose statements: "this is a learning exercise", "for exploration purposes", "proof of concept"
+
+**What counts as "good enough" requirements:**
+
+Requirements are sufficient to proceed when they are dimensionally complete across at least three of these four areas:
+1. **Goal**: What they want to achieve (explicit deliverable, learning outcome, or business objective)
+2. **Scope**: Boundaries of the work (what's included/excluded, even if wide)
+3. **Constraints**: Time, budget, resource, or technical limitations
+4. **Success Criteria**: How they will know when the goal is achieved
+
+Example: "Scope is wide, no constraint, this is a learning exercise. Success is we have a report." → PROCEED (has goal, scope, and success criteria)
+
 ### 2. State Initialisation
 Once requirements are clear, you MUST write the state to the coordination store:
 - `coordination_store_write(key="{chainID}/requirements", value=...)`
