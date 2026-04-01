@@ -801,7 +801,7 @@ var _ = Describe("Engine tool call context store", func() {
 			Tools:        []tool.Tool{testTool},
 			ToolRegistry: registry,
 		})
-		eng.SetContextStore(store)
+		eng.SetContextStore(store, "test-session")
 
 		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
 		Expect(streamErr).NotTo(HaveOccurred())
@@ -896,7 +896,7 @@ var _ = Describe("Engine tool result emission", func() {
 			Tools:        []tool.Tool{testTool},
 			ToolRegistry: registry,
 		})
-		eng.SetContextStore(store)
+		eng.SetContextStore(store, "test-session")
 
 		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "Use the tool")
 		Expect(streamErr).NotTo(HaveOccurred())

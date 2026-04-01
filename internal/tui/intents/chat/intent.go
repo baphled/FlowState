@@ -101,6 +101,14 @@ type SessionLister interface {
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
+// SessionManager manages active chat sessions and message delivery.
+type SessionManager interface {
+	// EnsureSession makes sure the session exists for the provided agent.
+	EnsureSession(sessionID string, agentID string)
+	// SendMessage sends a message to the session and returns streamed chunks.
+	SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error)
+}
+
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
 	App            AppShell

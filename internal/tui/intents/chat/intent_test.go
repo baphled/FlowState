@@ -1022,7 +1022,7 @@ var _ = Describe("ChatIntent", func() {
 			DeferCleanup(func() { os.RemoveAll(tmpDir) })
 			ctxStore, err := recall.NewFileContextStore(filepath.Join(tmpDir, "ctx.json"), "")
 			Expect(err).NotTo(HaveOccurred())
-			eng.SetContextStore(ctxStore)
+			eng.SetContextStore(ctxStore, "test-session")
 
 			sessionStore = &stubSessionLister{}
 

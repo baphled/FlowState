@@ -209,7 +209,7 @@ func loadSessionIfRequested(application *app.App, sessionParam string) {
 	if sessionParam != "" && application.Sessions != nil {
 		store, loadErr := application.Sessions.Load(sessionParam)
 		if loadErr == nil {
-			application.Engine.SetContextStore(store)
+			application.Engine.SetContextStore(store, sessionParam)
 		}
 	}
 }

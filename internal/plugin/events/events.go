@@ -113,6 +113,16 @@ type ToolEventData struct {
 }
 
 // MarshalJSON serialises ToolEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains tool event data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
 func (d ToolEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
 		SessionID string         `json:"session_id,omitempty"`
@@ -181,6 +191,16 @@ type ProviderEventData struct {
 }
 
 // MarshalJSON serialises ProviderEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains provider event data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
 func (d ProviderEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
 		SessionID    string `json:"session_id,omitempty"`
@@ -294,6 +314,16 @@ type AgentSwitchedEvent struct {
 }
 
 // NewAgentSwitchedEvent creates a new AgentSwitchedEvent.
+//
+// Expected:
+//   - data contains the agent switch metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - An AgentSwitchedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewAgentSwitchedEvent(data AgentSwitchedEventData, ts ...time.Time) *AgentSwitchedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -468,6 +498,16 @@ type BackgroundTaskStartedEvent struct {
 }
 
 // NewBackgroundTaskStartedEvent creates a new background task started event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskStartedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewBackgroundTaskStartedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskStartedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -486,6 +526,16 @@ type BackgroundTaskCompletedEvent struct {
 }
 
 // NewBackgroundTaskCompletedEvent creates a new background task completed event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskCompletedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewBackgroundTaskCompletedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskCompletedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -504,6 +554,16 @@ type BackgroundTaskFailedEvent struct {
 }
 
 // NewBackgroundTaskFailedEvent creates a new background task failed event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskFailedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {

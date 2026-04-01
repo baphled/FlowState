@@ -197,7 +197,7 @@ var _ = Describe("Session Timeline", Label("integration"), func() {
 				recorder := newSessionRecorder()
 				recorder.Subscribe(eng.EventBus())
 
-				eng.SetContextStore(recall.NewEmptyContextStore("test-model"))
+				eng.SetContextStore(recall.NewEmptyContextStore("test-model"), "test-session")
 
 				mgr := session.NewManager(eng)
 				sess, err := mgr.CreateSession("timeline-test")
@@ -286,7 +286,7 @@ var _ = Describe("Session Timeline", Label("integration"), func() {
 
 				recorder := newSessionRecorder()
 				recorder.Subscribe(eng.EventBus())
-				eng.SetContextStore(recall.NewEmptyContextStore("test-model"))
+				eng.SetContextStore(recall.NewEmptyContextStore("test-model"), "test-session")
 
 				mgr := session.NewManager(eng)
 				sess, err := mgr.CreateSession("timeline-test")

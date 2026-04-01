@@ -34,7 +34,7 @@ var subscribedEventTypes = []string{
 }
 
 // defaultSessionID is used for events that do not carry a session identifier.
-const defaultSessionID = "unknown"
+const defaultSessionID = "global"
 
 // TimelineEntry represents a single chronological entry in a session's timeline.
 //

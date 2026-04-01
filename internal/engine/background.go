@@ -143,6 +143,13 @@ func (m *BackgroundTaskManager) SetEventBus(bus *eventbus.EventBus) {
 }
 
 // emitTaskStarted emits a background task started event if the event bus is configured.
+//
+// Expected:
+//   - task is a populated BackgroundTask.
+//   - The event bus may be nil when event emission is disabled.
+//
+// Side effects:
+//   - Publishes a background task started event when an event bus is configured.
 func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -157,6 +164,13 @@ func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
 }
 
 // emitTaskCompleted emits a background task completed event if the event bus is configured.
+//
+// Expected:
+//   - task is a populated BackgroundTask.
+//   - The event bus may be nil when event emission is disabled.
+//
+// Side effects:
+//   - Publishes a background task completed event when an event bus is configured.
 func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -171,6 +185,13 @@ func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
 }
 
 // emitTaskFailed emits a background task failed event if the event bus is configured.
+//
+// Expected:
+//   - task is a populated BackgroundTask.
+//   - The event bus may be nil when event emission is disabled.
+//
+// Side effects:
+//   - Publishes a background task failed event when an event bus is configured.
 func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -319,6 +340,15 @@ func (m *BackgroundTaskManager) executeTask(
 }
 
 // handleTaskCompletion processes task results after fn returns.
+//
+// Expected:
+//   - task contains the final task state after execution.
+//   - err reflects the outcome returned by the task function.
+//   - completedAt is the time at which execution finished.
+//
+// Side effects:
+//   - Emits the appropriate task completion event.
+//   - Sends a completion notification when a parent session exists.
 func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ string, err error, completedAt time.Time) {
 	if err != nil {
 		m.emitTaskFailed(task)

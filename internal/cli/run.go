@@ -182,7 +182,7 @@ func loadExistingSession(application *app.App, sessionParam string) {
 	}
 	store, err := application.Sessions.Load(sessionParam)
 	if err == nil {
-		application.Engine.SetContextStore(store)
+		application.Engine.SetContextStore(store, sessionParam)
 	}
 }
 
