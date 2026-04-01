@@ -2,6 +2,7 @@ package sessionrecorder_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,6 +149,63 @@ var _ = Describe("Recorder", func() {
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["kind"]).To(Equal("event"))
 			Expect(entry["event_type"]).To(Equal("provider"))
+		})
+
+		It("writes provider response events to the correct per-session file", func() {
+			Expect(recorder.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.response", events.NewProviderResponseEvent(events.ProviderResponseEventData{
+				SessionID:       "sess-pr",
+				AgentID:         "test-agent",
+				ProviderName:    "anthropic",
+				ModelName:       "claude-3",
+				ResponseContent: "Hello",
+				ToolCalls:       0,
+				DurationMS:      150,
+			}, ts))
+
+			sessionFile := filepath.Join(tmpDir, "sess-pr.jsonl")
+			Expect(sessionFile).To(BeAnExistingFile())
+
+			data, err := os.ReadFile(sessionFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["kind"]).To(Equal("event"))
+			Expect(entry["event_type"]).To(Equal("provider.response"))
+		})
+
+		It("writes provider error events with typed event to the correct per-session file", func() {
+			Expect(recorder.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
+				SessionID:    "sess-perr",
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Error:        errors.New("rate limited"),
+				Phase:        "failover",
+			}, ts))
+
+			sessionFile := filepath.Join(tmpDir, "sess-perr.jsonl")
+			Expect(sessionFile).To(BeAnExistingFile())
+
+			data, err := os.ReadFile(sessionFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["kind"]).To(Equal("event"))
+			Expect(entry["event_type"]).To(Equal("provider.error"))
 		})
 	})
 

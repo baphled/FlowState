@@ -24,6 +24,7 @@ var subscribedEventTypes = []string{
 	"provider.error",
 	"provider.rate_limited",
 	"provider.request",
+	"provider.response",
 	"agent.switched",
 	"prompt.generated",
 	"context.window.built",
@@ -283,6 +284,10 @@ func extractEventData(ev events.Event) any {
 		return e.Data
 	case *events.ProviderRequestEvent:
 		return e.Data
+	case *events.ProviderResponseEvent:
+		return e.Data
+	case *events.ProviderErrorEvent:
+		return e.Data
 	case *events.AgentSwitchedEvent:
 		return e.Data
 	case *events.PromptEvent:
@@ -311,6 +316,10 @@ func extractSessionID(ev events.Event) string {
 	case *events.ProviderEvent:
 		return e.Data.SessionID
 	case *events.ProviderRequestEvent:
+		return e.Data.SessionID
+	case *events.ProviderResponseEvent:
+		return e.Data.SessionID
+	case *events.ProviderErrorEvent:
 		return e.Data.SessionID
 	case *events.AgentSwitchedEvent:
 		if e.Data.SessionID != "" {

@@ -1,6 +1,8 @@
 package events_test
 
 import (
+	"encoding/json"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -179,6 +181,102 @@ var _ = Describe("Events", func() {
 			evt := events.NewSessionEvent(data, ts)
 			Expect(evt.EventType()).To(Equal("session"))
 			Expect(evt.Timestamp()).To(Equal(ts))
+		})
+	})
+
+	Describe("ProviderResponseEvent", func() {
+		It("implements Event interface and sets fields", func() {
+			data := events.ProviderResponseEventData{
+				SessionID:       "sess1",
+				AgentID:         "test-agent",
+				ProviderName:    "anthropic",
+				ModelName:       "claude-3",
+				ResponseContent: "Hello, world!",
+				ToolCalls:       2,
+				DurationMS:      1500,
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewProviderResponseEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("provider.response"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data).To(Equal(data))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			data := events.ProviderResponseEventData{
+				AgentID:      "executor",
+				ProviderName: "openai",
+				ModelName:    "gpt-4",
+			}
+			evt := events.NewProviderResponseEvent(data)
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+	})
+
+	Describe("ProviderErrorEvent", func() {
+		It("implements Event interface and sets fields", func() {
+			data := events.ProviderErrorEventData{
+				SessionID:    "sess1",
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Error:        errors.New("auth failed"),
+				Phase:        "stream_init",
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewProviderErrorEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("provider.error"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data.SessionID).To(Equal("sess1"))
+			Expect(evt.Data.AgentID).To(Equal("test-agent"))
+			Expect(evt.Data.ProviderName).To(Equal("anthropic"))
+			Expect(evt.Data.ModelName).To(Equal("claude-3"))
+			Expect(evt.Data.Error).To(MatchError("auth failed"))
+			Expect(evt.Data.Phase).To(Equal("stream_init"))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			data := events.ProviderErrorEventData{
+				AgentID:      "executor",
+				ProviderName: "openai",
+				ModelName:    "gpt-4",
+				Error:        errors.New("timeout"),
+				Phase:        "failover",
+			}
+			evt := events.NewProviderErrorEvent(data)
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+
+		It("serialises to JSON with error as string", func() {
+			data := events.ProviderErrorEventData{
+				SessionID:    "sess1",
+				AgentID:      "test-agent",
+				ProviderName: "anthropic",
+				ModelName:    "claude-3",
+				Error:        errors.New("rate limited"),
+				Phase:        "failover",
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed["error"]).To(Equal("rate limited"))
+			Expect(parsed["phase"]).To(Equal("failover"))
+			Expect(parsed["provider_name"]).To(Equal("anthropic"))
+		})
+
+		It("serialises to JSON with empty error when nil", func() {
+			data := events.ProviderErrorEventData{
+				ProviderName: "ollama",
+				Phase:        "stream_init",
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed).NotTo(HaveKey("error"))
 		})
 	})
 })

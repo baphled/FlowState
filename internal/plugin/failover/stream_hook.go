@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -15,21 +17,26 @@ const replayBufferSize = 16
 // peek-and-replay. It queries the Manager for healthy candidates and tries each
 // in order, peeking at the first chunk to detect async errors before committing.
 type StreamHook struct {
-	manager *Manager
+	manager  *Manager
+	eventBus *eventbus.EventBus
+	agentID  string
 }
 
-// NewStreamHook creates a new StreamHook with the given failover manager.
+// NewStreamHook creates a new StreamHook with the given failover manager,
+// optional event bus, and agent identifier.
 //
 // Expected:
 //   - manager is a non-nil Manager with preferences and health tracking configured.
+//   - bus may be nil; when non-nil, error events are published during failover.
+//   - agentID identifies the agent for event metadata.
 //
 // Returns:
 //   - A StreamHook ready for use in a hook chain.
 //
 // Side effects:
 //   - None.
-func NewStreamHook(manager *Manager) *StreamHook {
-	return &StreamHook{manager: manager}
+func NewStreamHook(manager *Manager, bus *eventbus.EventBus, agentID string) *StreamHook {
+	return &StreamHook{manager: manager, eventBus: bus, agentID: agentID}
 }
 
 // Execute returns a hook.HandlerFunc that wraps the next handler with multi-provider
@@ -97,21 +104,26 @@ func (sh *StreamHook) attemptCandidate(
 	if err != nil {
 		cancel()
 		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, err)
+		sh.publishFailoverError(candidate, err)
 		return nil, err
 	}
 
 	firstChunk, ok, peekErr := peekFirstChunk(timeoutCtx, ch, candidate.Provider)
 	if peekErr != nil {
 		cancel()
+		sh.publishFailoverError(candidate, peekErr)
 		return nil, peekErr
 	}
 	if !ok {
 		cancel()
-		return nil, fmt.Errorf("provider %s: stream closed immediately", candidate.Provider)
+		closeErr := fmt.Errorf("provider %s: stream closed immediately", candidate.Provider)
+		sh.publishFailoverError(candidate, closeErr)
+		return nil, closeErr
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
 		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
+		sh.publishFailoverError(candidate, firstChunk.Error)
 		return nil, firstChunk.Error
 	}
 
@@ -187,4 +199,29 @@ func streamWithReplay(
 		}
 	}()
 	return replayCh
+}
+
+// publishFailoverError publishes a provider error event when a failover
+// candidate fails, provided the event bus is configured.
+//
+// Expected:
+//   - candidate identifies the failed provider/model pair.
+//   - err describes the failure.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a provider.error event on the event bus when non-nil.
+func (sh *StreamHook) publishFailoverError(candidate provider.ModelPreference, err error) {
+	if sh.eventBus == nil {
+		return
+	}
+	sh.eventBus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
+		AgentID:      sh.agentID,
+		ProviderName: candidate.Provider,
+		ModelName:    candidate.Model,
+		Error:        err,
+		Phase:        "failover",
+	}))
 }

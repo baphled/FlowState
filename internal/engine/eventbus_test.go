@@ -225,9 +225,9 @@ var _ = Describe("EventBus Integration", func() {
 			chatProvider.streamErr = errors.New("provider unavailable")
 			eng := engine.New(engine.Config{ChatProvider: chatProvider, Manifest: manifest})
 			var mu sync.Mutex
-			var providerErrors []*events.ProviderEvent
+			var providerErrors []*events.ProviderErrorEvent
 			eng.EventBus().Subscribe("provider.error", func(event any) {
-				if pe, ok := event.(*events.ProviderEvent); ok {
+				if pe, ok := event.(*events.ProviderErrorEvent); ok {
 					mu.Lock()
 					providerErrors = append(providerErrors, pe)
 					mu.Unlock()
@@ -253,9 +253,9 @@ var _ = Describe("EventBus Integration", func() {
 			tt := &executableMockTool{name: "test_tool", description: "A test tool", execResult: tool.Result{Output: "ok"}}
 			eng := engine.New(engine.Config{ChatProvider: fp, Manifest: manifest, Tools: []tool.Tool{tt}})
 			var mu sync.Mutex
-			var providerErrors []*events.ProviderEvent
+			var providerErrors []*events.ProviderErrorEvent
 			eng.EventBus().Subscribe("provider.error", func(event any) {
-				if pe, ok := event.(*events.ProviderEvent); ok {
+				if pe, ok := event.(*events.ProviderErrorEvent); ok {
 					mu.Lock()
 					providerErrors = append(providerErrors, pe)
 					mu.Unlock()

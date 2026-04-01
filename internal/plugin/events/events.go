@@ -575,6 +575,142 @@ func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time)
 	}
 }
 
+// ProviderResponseEventData holds data for provider response events emitted
+// when a streaming provider call completes successfully.
+//
+// Expected: used as payload for ProviderResponseEvent.
+// Returns: struct with provider response fields.
+// Side effects: none.
+type ProviderResponseEventData struct {
+	SessionID       string
+	AgentID         string
+	ProviderName    string
+	ModelName       string
+	ResponseContent string
+	ToolCalls       int
+	DurationMS      int64
+}
+
+// ProviderResponseEvent represents a completed provider response event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the provider response details.
+//
+// Returns: struct for provider response events.
+// Side effects: none.
+type ProviderResponseEvent struct {
+	BaseEvent
+	Data ProviderResponseEventData
+}
+
+// NewProviderResponseEvent creates a new ProviderResponseEvent.
+//
+// Expected:
+//   - data contains the provider response metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderResponseEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderResponseEvent(data ProviderResponseEventData, ts ...time.Time) *ProviderResponseEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderResponseEvent{
+		BaseEvent: BaseEvent{eventType: "provider.response", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderErrorEventData holds data for provider error events emitted
+// when a provider call fails during streaming or failover.
+//
+// Expected: used as payload for ProviderErrorEvent.
+// Returns: struct with provider error fields.
+// Side effects: none.
+type ProviderErrorEventData struct {
+	SessionID    string
+	AgentID      string
+	ProviderName string
+	ModelName    string
+	Error        error
+	Phase        string
+}
+
+// MarshalJSON serialises ProviderErrorEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains provider error data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ProviderErrorEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID    string `json:"session_id,omitempty"`
+		AgentID      string `json:"agent_id,omitempty"`
+		ProviderName string `json:"provider_name"`
+		ModelName    string `json:"model_name,omitempty"`
+		Error        string `json:"error,omitempty"`
+		Phase        string `json:"phase,omitempty"`
+	}
+
+	data := payload{
+		SessionID:    d.SessionID,
+		AgentID:      d.AgentID,
+		ProviderName: d.ProviderName,
+		ModelName:    d.ModelName,
+		Phase:        d.Phase,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+
+	return json.Marshal(data)
+}
+
+// ProviderErrorEvent represents a provider error event.
+//
+// Expected:
+//   - Embeds BaseEvent.
+//   - Data contains the provider error details.
+//
+// Returns: struct for provider error events.
+// Side effects: none.
+type ProviderErrorEvent struct {
+	BaseEvent
+	Data ProviderErrorEventData
+}
+
+// NewProviderErrorEvent creates a new ProviderErrorEvent.
+//
+// Expected:
+//   - data contains the provider error metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderErrorEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderErrorEvent(data ProviderErrorEventData, ts ...time.Time) *ProviderErrorEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderErrorEvent{
+		BaseEvent: BaseEvent{eventType: "provider.error", timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -588,6 +724,8 @@ var (
 	_ Event = (*ContextWindowEvent)(nil)
 	_ Event = (*ToolReasoningEvent)(nil)
 	_ Event = (*ProviderRequestEvent)(nil)
+	_ Event = (*ProviderResponseEvent)(nil)
+	_ Event = (*ProviderErrorEvent)(nil)
 	_ Event = (*AgentSwitchedEvent)(nil)
 	_ Event = (*BackgroundTaskStartedEvent)(nil)
 	_ Event = (*BackgroundTaskCompletedEvent)(nil)

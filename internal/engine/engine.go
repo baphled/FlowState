@@ -103,9 +103,11 @@ func New(cfg Config) *Engine {
 		timeout = defaultStreamTimeout
 	}
 
+	bus := eventbus.NewEventBus()
+
 	var chain *hook.Chain
 	if cfg.FailoverManager != nil {
-		streamHook := failover.NewStreamHook(cfg.FailoverManager)
+		streamHook := failover.NewStreamHook(cfg.FailoverManager, bus, cfg.Manifest.ID)
 		chain = hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
 			return streamHook.Execute(next)
 		})
@@ -132,7 +134,7 @@ func New(cfg Config) *Engine {
 		agentRegistry:     cfg.AgentRegistry,
 		agentsFileLoader:  cfg.AgentsFileLoader,
 		agentOverrides:    make(map[string]string),
-		bus:               eventbus.NewEventBus(),
+		bus:               bus,
 		systemPromptDirty: true,
 	}
 }
@@ -582,7 +584,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	e.publishProviderRequestEvent(sessionID, req)
 	providerChunks, err := e.streamFromProvider(ctx, &req)
 	if err != nil {
-		e.publishProviderErrorEvent(sessionID, err)
+		e.publishProviderErrorEvent(sessionID, "stream_init", err)
 		return nil, err
 	}
 
@@ -658,12 +660,12 @@ func (e *Engine) streamWithToolLoop(
 	for {
 		toolCall, responseContent, done := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
 		if done {
-			e.storeResponse(ctx, responseContent)
+			e.completeResponse(ctx, sessionID, responseContent)
 			return
 		}
 
 		if toolCall == nil {
-			e.storeResponse(ctx, responseContent)
+			e.completeResponse(ctx, sessionID, responseContent)
 			return
 		}
 
@@ -707,7 +709,7 @@ func (e *Engine) streamWithToolLoop(
 		e.publishProviderRequestEvent(sessionID, toolReq)
 		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
 		if streamErr != nil {
-			e.publishProviderErrorEvent(sessionID, streamErr)
+			e.publishProviderErrorEvent(sessionID, "stream_init", streamErr)
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
@@ -1069,6 +1071,24 @@ func (e *Engine) storeResponse(ctx context.Context, content string) {
 	e.embedMessage(ctx, content)
 }
 
+// completeResponse stores the assistant response and publishes a provider response event.
+//
+// Expected:
+//   - ctx is a valid context for the operation.
+//   - sessionID identifies the current session.
+//   - content is the assistant's response text.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the response via storeResponse.
+//   - Publishes a provider.response event on the engine bus.
+func (e *Engine) completeResponse(ctx context.Context, sessionID string, content string) {
+	e.storeResponse(ctx, content)
+	e.publishProviderResponseEvent(sessionID, content)
+}
+
 // dualWriteToChainStore appends an assistant message to the chain store if one is configured.
 //
 // Expected:
@@ -1308,21 +1328,29 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 	}))
 }
 
-// publishProviderErrorEvent publishes a provider failure event to the engine bus.
+// publishProviderErrorEvent publishes a typed provider error event to the engine bus.
 //
 // Expected:
+//   - sessionID identifies the session where the error occurred.
+//   - phase describes the streaming phase when the error happened.
 //   - err describes the provider failure.
 //
 // Returns:
 //   - None.
 //
 // Side effects:
-//   - Publishes a provider error event on the engine bus.
-func (e *Engine) publishProviderErrorEvent(sessionID string, err error) {
-	e.bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+//   - Publishes a provider.error event on the engine bus.
+func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err error) {
+	if e.bus == nil {
+		return
+	}
+	e.bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
 		SessionID:    sessionID,
+		AgentID:      e.manifest.ID,
 		ProviderName: e.LastProvider(),
+		ModelName:    e.LastModel(),
 		Error:        err,
+		Phase:        phase,
 	}))
 }
 
@@ -1347,6 +1375,31 @@ func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.Chat
 		ProviderName: req.Provider,
 		ModelName:    req.Model,
 		Request:      req,
+	}))
+}
+
+// publishProviderResponseEvent publishes a provider response event to the engine bus
+// after a provider stream completes successfully.
+//
+// Expected:
+//   - sessionID identifies the session that received the response.
+//   - responseContent is the assembled response text from the stream.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes a provider.response event on the engine bus.
+func (e *Engine) publishProviderResponseEvent(sessionID string, responseContent string) {
+	if e.bus == nil {
+		return
+	}
+	e.bus.Publish("provider.response", events.NewProviderResponseEvent(events.ProviderResponseEventData{
+		SessionID:       sessionID,
+		AgentID:         e.manifest.ID,
+		ProviderName:    e.LastProvider(),
+		ModelName:       e.LastModel(),
+		ResponseContent: responseContent,
 	}))
 }
 

@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -102,7 +105,7 @@ var _ = Describe("StreamHook", func() {
 		health = failover.NewHealthManager()
 		timeout = 2 * time.Second
 		manager = failover.NewManager(registry, health, timeout)
-		sh = failover.NewStreamHook(manager)
+		sh = failover.NewStreamHook(manager, nil, "")
 	})
 
 	Describe("Execute", func() {
@@ -411,7 +414,7 @@ var _ = Describe("StreamHook", func() {
 			BeforeEach(func() {
 				shortTimeout := 50 * time.Millisecond
 				manager = failover.NewManager(registry, health, shortTimeout)
-				sh = failover.NewStreamHook(manager)
+				sh = failover.NewStreamHook(manager, nil, "")
 
 				registry.Register(&mockStreamProvider{
 					name: "slow",
@@ -478,6 +481,118 @@ var _ = Describe("StreamHook", func() {
 
 				Expect(capturedProvider).To(Equal("anthropic"))
 				Expect(capturedModel).To(Equal("claude-3"))
+			})
+		})
+
+		Context("when event bus is configured and a candidate fails synchronously", func() {
+			var (
+				bus      *eventbus.EventBus
+				captured []any
+				mu       sync.Mutex
+			)
+
+			BeforeEach(func() {
+				bus = eventbus.NewEventBus()
+				captured = nil
+				bus.Subscribe("provider.error", func(event any) {
+					mu.Lock()
+					defer mu.Unlock()
+					captured = append(captured, event)
+				})
+				sh = failover.NewStreamHook(manager, bus, "test-agent")
+
+				registry.Register(&mockStreamProvider{
+					name: "failing",
+					streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						return nil, errMockNotImplemented
+					},
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "failing", Model: "fail-model"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("publishes a provider error event with failover phase", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(captured).To(HaveLen(1))
+				evt, ok := captured[0].(*events.ProviderErrorEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Data.Phase).To(Equal("failover"))
+				Expect(evt.Data.ProviderName).To(Equal("failing"))
+				Expect(evt.Data.ModelName).To(Equal("fail-model"))
+				Expect(evt.Data.AgentID).To(Equal("test-agent"))
+				Expect(evt.Data.Error).To(MatchError(ContainSubstring("not implemented")))
+			})
+		})
+
+		Context("when event bus is configured and a candidate stream closes immediately", func() {
+			var (
+				bus      *eventbus.EventBus
+				captured []any
+				mu       sync.Mutex
+			)
+
+			BeforeEach(func() {
+				bus = eventbus.NewEventBus()
+				captured = nil
+				bus.Subscribe("provider.error", func(event any) {
+					mu.Lock()
+					defer mu.Unlock()
+					captured = append(captured, event)
+				})
+				sh = failover.NewStreamHook(manager, bus, "test-agent")
+
+				registry.Register(&mockStreamProvider{
+					name: "empty-stream",
+					streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						ch := make(chan provider.StreamChunk)
+						close(ch)
+						return ch, nil
+					},
+				})
+				registry.Register(&mockStreamProvider{
+					name: "fallback",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "Fallback", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "empty-stream", Model: "empty-model"},
+					{Provider: "fallback", Model: "fallback-model"},
+				})
+			})
+
+			It("publishes a provider error event for stream closed immediately", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(captured).To(HaveLen(1))
+				evt, ok := captured[0].(*events.ProviderErrorEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Data.Phase).To(Equal("failover"))
+				Expect(evt.Data.ProviderName).To(Equal("empty-stream"))
+				Expect(evt.Data.Error).To(MatchError(ContainSubstring("stream closed immediately")))
 			})
 		})
 	})

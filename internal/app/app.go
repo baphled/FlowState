@@ -1049,7 +1049,7 @@ func buildHookChain(
 	}
 	hooks = append(hooks, tracer.Hook())
 	if failoverMgr != nil {
-		streamHook := failover.NewStreamHook(failoverMgr)
+		streamHook := failover.NewStreamHook(failoverMgr, nil, "")
 		hooks = append(hooks, streamHook.Execute)
 	} else if failoverHk != nil {
 		hooks = append([]hook.Hook{failoverHookAdapter(failoverHk)}, hooks...)
