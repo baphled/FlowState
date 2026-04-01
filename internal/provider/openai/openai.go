@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/openaicompat"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -86,45 +87,8 @@ func (p *Provider) Name() string {
 // Side effects:
 //   - Spawns a goroutine to read from the OpenAI streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	ch := make(chan provider.StreamChunk, 16)
-
-	messages := make([]openaiAPI.ChatCompletionMessageParamUnion, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		switch m.Role {
-		case "user":
-			messages = append(messages, openaiAPI.UserMessage(m.Content))
-		case "assistant":
-			messages = append(messages, openaiAPI.AssistantMessage(m.Content))
-		case "system":
-			messages = append(messages, openaiAPI.SystemMessage(m.Content))
-		}
-	}
-
-	go func() {
-		defer close(ch)
-
-		stream := p.client.Chat.Completions.NewStreaming(ctx, openaiAPI.ChatCompletionNewParams{
-			Model:    req.Model,
-			Messages: messages,
-		})
-
-		for stream.Next() {
-			chunk := stream.Current()
-			if len(chunk.Choices) > 0 {
-				delta := chunk.Choices[0].Delta
-				ch <- provider.StreamChunk{
-					Content: delta.Content,
-					Done:    chunk.Choices[0].FinishReason != "",
-				}
-			}
-		}
-
-		if err := stream.Err(); err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-		}
-	}()
-
-	return ch, nil
+	params := openaicompat.BuildParams(req)
+	return openaicompat.RunStream(ctx, p.client, params), nil
 }
 
 // Chat sends a non-streaming chat request to the OpenAI API.
@@ -140,41 +104,12 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the OpenAI API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	messages := make([]openaiAPI.ChatCompletionMessageParamUnion, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		switch m.Role {
-		case "user":
-			messages = append(messages, openaiAPI.UserMessage(m.Content))
-		case "assistant":
-			messages = append(messages, openaiAPI.AssistantMessage(m.Content))
-		case "system":
-			messages = append(messages, openaiAPI.SystemMessage(m.Content))
-		}
-	}
-
-	resp, err := p.client.Chat.Completions.New(ctx, openaiAPI.ChatCompletionNewParams{
-		Model:    req.Model,
-		Messages: messages,
-	})
+	params := openaicompat.BuildParams(req)
+	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return provider.ChatResponse{}, fmt.Errorf("openai chat failed: %w", err)
 	}
-
-	if len(resp.Choices) == 0 {
-		return provider.ChatResponse{}, errors.New("no choices in response")
-	}
-
-	return provider.ChatResponse{
-		Message: provider.Message{
-			Role:    string(resp.Choices[0].Message.Role),
-			Content: resp.Choices[0].Message.Content,
-		},
-		Usage: provider.Usage{
-			PromptTokens:     int(resp.Usage.PromptTokens),
-			CompletionTokens: int(resp.Usage.CompletionTokens),
-			TotalTokens:      int(resp.Usage.TotalTokens),
-		},
-	}, nil
+	return openaicompat.ParseChatResponse(resp)
 }
 
 // Embed generates embeddings for the given input text via the OpenAI API.

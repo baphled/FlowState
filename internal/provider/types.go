@@ -2,8 +2,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrNoChoices is returned when an API response contains no completion choices.
+var ErrNoChoices = errors.New("no choices in response")
 
 // Message represents a chat message between user and assistant.
 type Message struct {
