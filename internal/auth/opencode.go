@@ -9,8 +9,10 @@ import (
 
 // OpenCodeAuth holds credentials loaded from OpenCode's auth.json.
 type OpenCodeAuth struct {
-	GitHubCopilot *ProviderAuth `json:"github-copilot,omitempty"`
 	Anthropic     *ProviderAuth `json:"anthropic,omitempty"`
+	GitHubCopilot *ProviderAuth `json:"github-copilot,omitempty"`
+	OpenZen       *ProviderAuth `json:"openzen,omitempty"`
+	ZAI           *ProviderAuth `json:"zai,omitempty"`
 }
 
 // ProviderAuth holds a single provider's authentication credentials.
@@ -54,7 +56,7 @@ func LoadOpenCodeAuthFrom(path string) (*OpenCodeAuth, error) {
 		return nil, fmt.Errorf("parsing opencode auth: %w", err)
 	}
 
-	if auth.GitHubCopilot == nil && auth.Anthropic == nil {
+	if auth.GitHubCopilot == nil && auth.Anthropic == nil && auth.ZAI == nil && auth.OpenZen == nil {
 		return nil, ErrNoCredentials
 	}
 

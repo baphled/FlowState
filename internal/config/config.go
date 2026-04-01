@@ -32,11 +32,13 @@ type AppConfig struct {
 
 // ProvidersConfig configures all available LLM providers.
 type ProvidersConfig struct {
+	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
 	Default   string         `json:"default" yaml:"default"`
+	GitHub    ProviderConfig `json:"github" yaml:"github"`
 	Ollama    ProviderConfig `json:"ollama" yaml:"ollama"`
 	OpenAI    ProviderConfig `json:"openai" yaml:"openai"`
-	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
-	GitHub    ProviderConfig `json:"github" yaml:"github"`
+	OpenZen   ProviderConfig `json:"openzen" yaml:"openzen"`
+	ZAI       ProviderConfig `json:"zai" yaml:"zai"`
 }
 
 // ProviderConfig holds configuration for a single LLM provider.

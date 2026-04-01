@@ -114,6 +114,46 @@ var _ = Describe("LoadOpenCodeAuth", func() {
 		})
 	})
 
+	Context("when auth.json contains ZAI and OpenZen credentials", func() {
+		It("loads ZAI and OpenZen credentials correctly", func() {
+			authPath := filepath.Join(tmpDir, "auth.json")
+			jsonContent := `{
+  "zai": {
+    "type": "oauth",
+    "access": "zai_access_token",
+    "refresh": "zai_refresh_token",
+    "expires": 1773994591282
+  },
+  "openzen": {
+    "type": "oauth",
+    "access": "openzen_access_token",
+    "refresh": "openzen_refresh_token",
+    "expires": 1773994591282
+  }
+}`
+
+			Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+			authData, err := auth.LoadOpenCodeAuthFrom(authPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(authData).NotTo(BeNil())
+			Expect(authData.ZAI).NotTo(BeNil())
+			Expect(authData.OpenZen).NotTo(BeNil())
+		})
+	})
+
+	Context("when auth.json contains no provider credentials", func() {
+		It("returns ErrNoCredentials", func() {
+			authPath := filepath.Join(tmpDir, "auth.json")
+			jsonContent := `{"other": {"type": "oauth"}}`
+			Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+			authData, err := auth.LoadOpenCodeAuthFrom(authPath)
+			Expect(err).To(MatchError(auth.ErrNoCredentials))
+			Expect(authData).To(BeNil())
+		})
+	})
+
 	Context("when auth.json contains invalid JSON", func() {
 		It("returns an error", func() {
 			authPath := filepath.Join(tmpDir, "auth.json")
