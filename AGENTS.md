@@ -324,7 +324,7 @@ make test          # Go tests
 
 ### Anthropic is Required
 
-The planner and executor agents require **Anthropic** (or GitHub Copilot with Claude models) for reliable tool calling and skill loading. Llama3.2 (Ollama) does not reliably follow `skill_load` tool call instructions — it outputs code-like text instead of making actual tool calls.
+The planner and executor agents require a provider with reliable tool calling support. **Anthropic**, **GitHub Copilot** (Claude models), **Z.AI**, and **OpenZen** all support tool calling correctly. Llama3.2 (Ollama) does not reliably follow `skill_load` tool call instructions — it outputs code-like text instead of making actual tool calls.
 
 ### Authentication
 
@@ -358,12 +358,14 @@ Claude then calls the `skill_load` tool to fetch each skill's SKILL.md content a
 
 ### Provider Priority
 
-FlowState builds a failback chain with providers in this order: **anthropic → github-copilot → openai → ollama**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
+FlowState builds a failback chain with providers in this order: **anthropic → github-copilot → openai → zai → openzen → ollama**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
 
 ### Agent Manifest Model Names
 
 Agent manifests in `~/.local/share/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names.
 
-### Known Limitation: Streaming Tool Call Arguments
+### Known Limitation: Anthropic Streaming Tool Call Arguments
 
-Anthropic's streaming API sends tool call arguments via `input_json_delta` events. The current `convertStreamEvent` implementation captures the tool call name and ID from `content_block_start` but does not accumulate argument JSON from subsequent delta events. This means `skill_load` tool calls execute with empty arguments, returning an error. Text-only responses from Claude work correctly. This will be resolved in a future update to the Anthropic streaming handler.
+Anthropic's streaming API sends tool call arguments via `input_json_delta` events. The current `convertStreamEvent` implementation captures the tool call name and ID from `content_block_start` but does not accumulate argument JSON from subsequent delta events. This means `skill_load` tool calls execute with empty arguments when routed through the Anthropic provider's streaming handler. Text-only responses from Claude work correctly.
+
+OpenAI-compatible providers (OpenAI, Z.AI, OpenZen) handle streaming tool calls correctly via the `openaicompat` package, which uses `ChatCompletionAccumulator` to reassemble fragmented tool call arguments before dispatching.
