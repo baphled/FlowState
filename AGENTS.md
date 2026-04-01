@@ -364,8 +364,8 @@ FlowState builds a failback chain with providers in this order: **anthropic → 
 
 Agent manifests in `~/.local/share/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names.
 
-### Known Limitation: Anthropic Streaming Tool Call Arguments
+### Anthropic Streaming Tool Call Arguments
 
-Anthropic's streaming API sends tool call arguments via `input_json_delta` events. The current `convertStreamEvent` implementation captures the tool call name and ID from `content_block_start` but does not accumulate argument JSON from subsequent delta events. This means `skill_load` tool calls execute with empty arguments when routed through the Anthropic provider's streaming handler. Text-only responses from Claude work correctly.
+Anthropic's streaming API sends tool call arguments via `input_json_delta` events across multiple chunks. The Anthropic provider handles this via `streamEventHandler` (`internal/provider/anthropic/streaming.go`), which accumulates `input_json_delta` fragments by block index and emits a complete `tool_call` chunk on `content_block_stop`.
 
 OpenAI-compatible providers (OpenAI, Z.AI, OpenZen) handle streaming tool calls correctly via the `openaicompat` package, which uses `ChatCompletionAccumulator` to reassemble fragmented tool call arguments before dispatching.
