@@ -516,7 +516,15 @@ func buildPropertyMap(properties map[string]tool.Property) map[string]interface{
 //   - Caches the built schemas for subsequent calls.
 func (e *Engine) buildToolSchemas() []provider.Tool {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
+	if e.cachedToolSchemas != nil {
+		cached := e.cachedToolSchemas
+		e.mu.RUnlock()
+		return cached
+	}
+	e.mu.RUnlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	if e.cachedToolSchemas != nil {
 		return e.cachedToolSchemas

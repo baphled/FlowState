@@ -3,6 +3,7 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -135,6 +136,54 @@ var _ = Describe("Engine caching", func() {
 
 			Expect(eng.HasTool("read")).To(BeTrue())
 			Expect(eng.HasTool("bash")).To(BeTrue())
+		})
+
+		It("does not race when ToolSchemas and AddTool are called concurrently", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools: []tool.Tool{&mockTool{
+					name:        "initial",
+					description: "Initial tool",
+					schema: tool.Schema{
+						Type:     "object",
+						Required: []string{"q"},
+						Properties: map[string]tool.Property{
+							"q": {Type: "string", Description: "query"},
+						},
+					},
+				}},
+			})
+
+			var wg sync.WaitGroup
+
+			for range 10 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_ = eng.ToolSchemas()
+				}()
+			}
+
+			for range 10 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					eng.AddTool(&mockTool{
+						name:        "tool",
+						description: "extra tool",
+						schema: tool.Schema{
+							Type:     "object",
+							Required: []string{"x"},
+							Properties: map[string]tool.Property{
+								"x": {Type: "string", Description: "param"},
+							},
+						},
+					})
+				}()
+			}
+
+			wg.Wait()
 		})
 	})
 
