@@ -26,7 +26,11 @@ func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessag
 		case "user":
 			result = append(result, openaiAPI.UserMessage(m.Content))
 		case "assistant":
-			result = append(result, openaiAPI.AssistantMessage(m.Content))
+			if len(m.ToolCalls) > 0 {
+				result = append(result, buildAssistantMessageWithToolCalls(m))
+			} else {
+				result = append(result, openaiAPI.AssistantMessage(m.Content))
+			}
 		case "system":
 			result = append(result, openaiAPI.SystemMessage(m.Content))
 		case "tool":
@@ -36,6 +40,43 @@ func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessag
 		}
 	}
 	return result
+}
+
+// buildAssistantMessageWithToolCalls constructs an assistant message parameter
+// that includes tool calls for the OpenAI wire format.
+//
+// Expected:
+//   - m is a provider Message with Role "assistant" and at least one ToolCall entry.
+//
+// Returns:
+//   - A ChatCompletionMessageParamUnion wrapping an assistant message with ToolCalls set.
+//
+// Side effects:
+//   - None.
+func buildAssistantMessageWithToolCalls(m provider.Message) openaiAPI.ChatCompletionMessageParamUnion {
+	toolCalls := make([]openaiAPI.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
+	for _, tc := range m.ToolCalls {
+		argsJSON, err := json.Marshal(tc.Arguments)
+		if err != nil {
+			argsJSON = []byte("{}")
+		}
+		toolCalls = append(toolCalls, openaiAPI.ChatCompletionMessageToolCallParam{
+			ID: tc.ID,
+			Function: openaiAPI.ChatCompletionMessageToolCallFunctionParam{
+				Name:      tc.Name,
+				Arguments: string(argsJSON),
+			},
+		})
+	}
+	msg := openaiAPI.ChatCompletionAssistantMessageParam{
+		ToolCalls: toolCalls,
+	}
+	if m.Content != "" {
+		msg.Content = openaiAPI.ChatCompletionAssistantMessageParamContentUnion{
+			OfString: openaiAPI.String(m.Content),
+		}
+	}
+	return openaiAPI.ChatCompletionMessageParamUnion{OfAssistant: &msg}
 }
 
 // BuildTools converts provider tools to OpenAI-compatible tool parameters.

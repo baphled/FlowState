@@ -54,6 +54,75 @@ var _ = Describe("Ollama Provider", func() {
 			}
 		})
 
+		Context("when assistant message in history has tool calls", func() {
+			var capturedMessages []map[string]interface{}
+
+			BeforeEach(func() {
+				capturedMessages = nil
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					msgs := req["messages"].([]interface{})
+					for _, m := range msgs {
+						capturedMessages = append(capturedMessages, m.(map[string]interface{}))
+					}
+
+					resp := map[string]interface{}{
+						"model": "llama3.2",
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "Tool call acknowledged",
+						},
+						"done":              true,
+						"prompt_eval_count": 5,
+						"eval_count":        5,
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("includes tool calls in the assistant message sent to Ollama", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model: "llama3.2",
+					Messages: []providerPkg.Message{
+						{Role: "user", Content: "What is the weather?"},
+						{
+							Role:    "assistant",
+							Content: "",
+							ToolCalls: []providerPkg.ToolCall{{
+								ID:        "call_weather",
+								Name:      "get_weather",
+								Arguments: map[string]interface{}{"location": "London"},
+							}},
+						},
+						{Role: "tool", Content: `{"temperature": "15C"}`,
+							ToolCalls: []providerPkg.ToolCall{{ID: "call_weather"}}},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(capturedMessages).To(HaveLen(3))
+				assistantMsg := capturedMessages[1]
+				Expect(assistantMsg["role"]).To(Equal("assistant"))
+				toolCalls, ok := assistantMsg["tool_calls"].([]interface{})
+				Expect(ok).To(BeTrue(), "assistant message should have tool_calls")
+				Expect(toolCalls).To(HaveLen(1))
+				fn := toolCalls[0].(map[string]interface{})["function"].(map[string]interface{})
+				Expect(fn["name"]).To(Equal("get_weather"))
+			})
+		})
+
 		Context("when server returns valid response", func() {
 			BeforeEach(func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +252,76 @@ var _ = Describe("Ollama Provider", func() {
 			if server != nil {
 				server.Close()
 			}
+		})
+
+		Context("when assistant message in history has tool calls", func() {
+			var capturedMessages []map[string]interface{}
+
+			BeforeEach(func() {
+				capturedMessages = nil
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					msgs := req["messages"].([]interface{})
+					for _, m := range msgs {
+						capturedMessages = append(capturedMessages, m.(map[string]interface{}))
+					}
+
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Done"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("includes tool calls in the assistant message sent to Ollama", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model: "llama3.2",
+					Messages: []providerPkg.Message{
+						{Role: "user", Content: "What is the weather?"},
+						{
+							Role:    "assistant",
+							Content: "",
+							ToolCalls: []providerPkg.ToolCall{{
+								ID:        "call_weather",
+								Name:      "get_weather",
+								Arguments: map[string]interface{}{"location": "London"},
+							}},
+						},
+						{Role: "tool", Content: `{"temperature": "15C"}`,
+							ToolCalls: []providerPkg.ToolCall{{ID: "call_weather"}}},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range ch {
+					_ = v
+				}
+
+				Expect(capturedMessages).To(HaveLen(3))
+				assistantMsg := capturedMessages[1]
+				Expect(assistantMsg["role"]).To(Equal("assistant"))
+				toolCalls, ok := assistantMsg["tool_calls"].([]interface{})
+				Expect(ok).To(BeTrue(), "assistant message should have tool_calls")
+				Expect(toolCalls).To(HaveLen(1))
+				fn := toolCalls[0].(map[string]interface{})["function"].(map[string]interface{})
+				Expect(fn["name"]).To(Equal("get_weather"))
+			})
 		})
 
 		Context("when tools are provided", func() {

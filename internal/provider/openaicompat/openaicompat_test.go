@@ -62,6 +62,42 @@ var _ = Describe("OpenAI Compat", func() {
 			Expect(result).To(BeEmpty())
 		})
 
+		It("preserves tool calls on assistant messages", func() {
+			msgs := []provider.Message{{
+				Role:    "assistant",
+				Content: "Let me check the weather",
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_abc",
+					Name:      "get_weather",
+					Arguments: map[string]interface{}{"city": "London"},
+				}},
+			}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+			toolCalls := result[0].GetToolCalls()
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ID).To(Equal("call_abc"))
+			Expect(toolCalls[0].Function.Name).To(Equal("get_weather"))
+		})
+
+		It("preserves tool calls on assistant message with empty content", func() {
+			msgs := []provider.Message{{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_xyz",
+					Name:      "search",
+					Arguments: map[string]interface{}{"query": "golang"},
+				}},
+			}}
+			result := openaicompat.BuildMessages(msgs)
+			Expect(result).To(HaveLen(1))
+			toolCalls := result[0].GetToolCalls()
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ID).To(Equal("call_xyz"))
+			Expect(toolCalls[0].Function.Name).To(Equal("search"))
+		})
+
 		It("converts multiple mixed messages", func() {
 			msgs := []provider.Message{
 				{Role: "system", Content: "be helpful"},

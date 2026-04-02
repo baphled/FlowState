@@ -90,14 +90,7 @@ func (p *Provider) Name() string {
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 16)
 
-	messages := make([]ollamaAPI.Message, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		messages = append(messages, ollamaAPI.Message{
-			Role:    m.Role,
-			Content: m.Content,
-		})
-	}
-
+	messages := convertMessages(req.Messages)
 	ollamaTools := buildOllamaTools(req.Tools)
 
 	go func() {
@@ -162,14 +155,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the Ollama API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	messages := make([]ollamaAPI.Message, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		messages = append(messages, ollamaAPI.Message{
-			Role:    m.Role,
-			Content: m.Content,
-		})
-	}
-
+	messages := convertMessages(req.Messages)
 	ollamaTools := buildOllamaTools(req.Tools)
 
 	chatReq := &ollamaAPI.ChatRequest{
@@ -281,6 +267,41 @@ func (p *Provider) Models() ([]provider.Model, error) {
 //   - None.
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// convertMessages converts provider messages to the Ollama API message format,
+// preserving tool calls on assistant messages.
+//
+// Expected:
+//   - msgs is a slice of provider Message values, any of which may carry ToolCalls.
+//
+// Returns:
+//   - An Ollama Message slice with Role, Content, and ToolCalls populated.
+//
+// Side effects:
+//   - None.
+func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
+	result := make([]ollamaAPI.Message, 0, len(msgs))
+	for _, m := range msgs {
+		ollamaMsg := ollamaAPI.Message{
+			Role:    m.Role,
+			Content: m.Content,
+		}
+		for _, tc := range m.ToolCalls {
+			args := ollamaAPI.NewToolCallFunctionArguments()
+			for k, v := range tc.Arguments {
+				args.Set(k, v)
+			}
+			ollamaMsg.ToolCalls = append(ollamaMsg.ToolCalls, ollamaAPI.ToolCall{
+				Function: ollamaAPI.ToolCallFunction{
+					Name:      tc.Name,
+					Arguments: args,
+				},
+			})
+		}
+		result = append(result, ollamaMsg)
+	}
+	return result
 }
 
 // buildOllamaTools converts provider tools to Ollama API tool definitions.
