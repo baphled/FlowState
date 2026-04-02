@@ -9,6 +9,7 @@ import (
 	"net/url"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	ollamaAPI "github.com/ollama/ollama/api"
 )
 
@@ -281,13 +282,14 @@ func boolPtr(b bool) *bool {
 // Side effects:
 //   - None.
 func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
-	result := make([]ollamaAPI.Message, 0, len(msgs))
-	for _, m := range msgs {
+	pairs := shared.ConvertMessagesToRolePairs(msgs)
+	result := make([]ollamaAPI.Message, 0, len(pairs))
+	for i, p := range pairs {
 		ollamaMsg := ollamaAPI.Message{
-			Role:    m.Role,
-			Content: m.Content,
+			Role:    p.Role,
+			Content: p.Content,
 		}
-		for _, tc := range m.ToolCalls {
+		for _, tc := range msgs[i].ToolCalls {
 			args := ollamaAPI.NewToolCallFunctionArguments()
 			for k, v := range tc.Arguments {
 				args.Set(k, v)

@@ -240,6 +240,68 @@ var _ = Describe("Ollama Provider", func() {
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		Context("when given a multi-role conversation", func() {
+			var capturedMessages []map[string]interface{}
+
+			BeforeEach(func() {
+				capturedMessages = nil
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					msgs := req["messages"].([]interface{})
+					for _, m := range msgs {
+						capturedMessages = append(capturedMessages, m.(map[string]interface{}))
+					}
+
+					resp := map[string]interface{}{
+						"model": "llama3.2",
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "Done",
+						},
+						"done":              true,
+						"prompt_eval_count": 5,
+						"eval_count":        5,
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("sends correct role and content for all message types", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model: "llama3.2",
+					Messages: []providerPkg.Message{
+						{Role: "system", Content: "You are helpful."},
+						{Role: "user", Content: "What is the weather?"},
+						{Role: "assistant", Content: "Let me check."},
+						{Role: "tool", Content: `{"temperature": "15C"}`},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(capturedMessages).To(HaveLen(4))
+				Expect(capturedMessages[0]["role"]).To(Equal("system"))
+				Expect(capturedMessages[0]["content"]).To(Equal("You are helpful."))
+				Expect(capturedMessages[1]["role"]).To(Equal("user"))
+				Expect(capturedMessages[1]["content"]).To(Equal("What is the weather?"))
+				Expect(capturedMessages[2]["role"]).To(Equal("assistant"))
+				Expect(capturedMessages[2]["content"]).To(Equal("Let me check."))
+				Expect(capturedMessages[3]["role"]).To(Equal("tool"))
+				Expect(capturedMessages[3]["content"]).To(Equal(`{"temperature": "15C"}`))
+			})
+		})
 	})
 
 	Describe("Stream", func() {
@@ -321,6 +383,69 @@ var _ = Describe("Ollama Provider", func() {
 				Expect(toolCalls).To(HaveLen(1))
 				fn := toolCalls[0].(map[string]interface{})["function"].(map[string]interface{})
 				Expect(fn["name"]).To(Equal("get_weather"))
+			})
+		})
+
+		Context("when given a multi-role conversation", func() {
+			var capturedMessages []map[string]interface{}
+
+			BeforeEach(func() {
+				capturedMessages = nil
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					var req map[string]interface{}
+					err = json.Unmarshal(body, &req)
+					Expect(err).NotTo(HaveOccurred())
+
+					msgs := req["messages"].([]interface{})
+					for _, m := range msgs {
+						capturedMessages = append(capturedMessages, m.(map[string]interface{}))
+					}
+
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Done"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("sends correct role and content for all message types", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model: "llama3.2",
+					Messages: []providerPkg.Message{
+						{Role: "system", Content: "You are helpful."},
+						{Role: "user", Content: "What is the weather?"},
+						{Role: "assistant", Content: "Let me check."},
+						{Role: "tool", Content: `{"temperature": "15C"}`},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				for v := range ch {
+					_ = v
+				}
+
+				Expect(capturedMessages).To(HaveLen(4))
+				Expect(capturedMessages[0]["role"]).To(Equal("system"))
+				Expect(capturedMessages[0]["content"]).To(Equal("You are helpful."))
+				Expect(capturedMessages[1]["role"]).To(Equal("user"))
+				Expect(capturedMessages[1]["content"]).To(Equal("What is the weather?"))
+				Expect(capturedMessages[2]["role"]).To(Equal("assistant"))
+				Expect(capturedMessages[2]["content"]).To(Equal("Let me check."))
+				Expect(capturedMessages[3]["role"]).To(Equal("tool"))
+				Expect(capturedMessages[3]["content"]).To(Equal(`{"temperature": "15C"}`))
 			})
 		})
 
