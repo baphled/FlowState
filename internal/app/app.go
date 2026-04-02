@@ -1084,9 +1084,13 @@ func buildHookChain(
 	}
 	hooks := []hook.Hook{
 		hook.LoggingHook(),
-		hook.LearningHook(learningStore),
-		hook.SkillAutoLoaderHook(cfg, manifestGetter),
 	}
+	if learningStore != nil {
+		hooks = append(hooks, hook.LearningHook(learningStore))
+	}
+	hooks = append(hooks,
+		hook.SkillAutoLoaderHook(cfg, manifestGetter),
+	)
 	if twc != nil {
 		hooks = append(hooks, hook.ToolWiringHook(manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
 	}

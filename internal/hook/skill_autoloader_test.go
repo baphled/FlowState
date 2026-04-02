@@ -353,4 +353,27 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
+	Context("when system message contains a static 'Your load_skills:' placeholder (no bracket)", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "Your load_skills: use skill_load when needed.\n\nYou are the planner agent."},
+					{Role: "user", Content: "help me plan"},
+				},
+			}
+		})
+
+		It("still injects the dynamic skills list because static placeholder lacks opening bracket", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["),
+				"dynamic injection should replace static placeholder")
+		})
+	})
+
 })

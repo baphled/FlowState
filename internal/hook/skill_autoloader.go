@@ -96,7 +96,7 @@ func buildLeanInjection(skills []string) string {
 //   - Mutates the first system message, or prepends a new system message if none exists.
 //   - No-ops when the system message already contains a load_skills directive.
 func injectLeanSkills(req *provider.ChatRequest, lean string) {
-	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Your load_skills:") {
+	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Your load_skills: [") {
 		return
 	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {
