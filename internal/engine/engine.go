@@ -601,8 +601,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		Tools:    e.buildToolSchemas(),
 	}
 
-	e.publishProviderRequestEvent(sessionID, req)
 	providerChunks, err := e.streamFromProvider(ctx, &req)
+	e.publishProviderRequestEvent(sessionID, req)
 	if err != nil {
 		e.publishProviderErrorEvent(sessionID, "stream_init", err)
 		return nil, err
@@ -726,8 +726,8 @@ func (e *Engine) streamWithToolLoop(
 			Messages: messages,
 			Tools:    e.buildToolSchemas(),
 		}
-		e.publishProviderRequestEvent(sessionID, toolReq)
 		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
+		e.publishProviderRequestEvent(sessionID, toolReq)
 		if streamErr != nil {
 			e.publishProviderErrorEvent(sessionID, "stream_init", streamErr)
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
