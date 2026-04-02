@@ -79,7 +79,7 @@ Only engage the Deterministic Planning Loop when the user is clearly requesting 
 
 ## Skill Loading
 
-Your always-active skills will be injected as: `"Your load_skills: [X, Y]. Call skill_load(name) for each before starting work."`
+Your always-active skills are automatically injected into your system prompt. Call `skill_load(name)` for each before beginning work.
 
 Call `skill_load(name)` for EACH skill before beginning any work.
 
@@ -114,8 +114,8 @@ Example: "Scope is wide, no constraint, this is a learning exercise. Success is 
 
 ### 2. State Initialisation
 Once requirements are clear, you MUST write the state to the coordination store:
-- `coordination_store_write(key="{chainID}/requirements", value=...)`
-- `coordination_store_write(key="{chainID}/interview", value=...)`
+- `coordination_store(operation="set", key="{chainID}/requirements", value=...)`
+- `coordination_store(operation="set", key="{chainID}/interview", value=...)`
 
 ### 3. Parallel Evidence Gathering (Background)
 Fire the following agents in parallel using the `delegate` tool with `run_in_background=true`:
