@@ -2,19 +2,19 @@
 package copilot
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
 var errTokenRequired = errors.New("GitHub token is required")
@@ -250,64 +250,17 @@ func fallbackModels() []provider.Model {
 // Side effects:
 //   - Makes an HTTP POST request to the Copilot chat completions endpoint.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
-	endpoint := p.baseURL + "/chat/completions"
-
-	payload := map[string]interface{}{
-		"model":    req.Model,
-		"messages": convertMessages(req.Messages),
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("marshalling request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("creating request: %w", err)
-	}
 	token, err := p.tokenManager.EnsureToken(ctx)
 	if err != nil {
 		return provider.ChatResponse{}, err
 	}
-	setHeaders(httpReq, token)
-
-	resp, err := p.client.Do(httpReq)
+	client := p.buildClient(token)
+	params := openaicompat.BuildParams(req)
+	resp, err := client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return provider.ChatResponse{}, fmt.Errorf("copilot chat: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			return provider.ChatResponse{}, fmt.Errorf("copilot chat: status %d", resp.StatusCode)
-		}
-		return provider.ChatResponse{}, fmt.Errorf("copilot chat: status %d: %s", resp.StatusCode, respBody)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("decoding response: %w", err)
-	}
-
-	if len(result.Choices) == 0 {
-		return provider.ChatResponse{}, errors.New("no choices in response")
-	}
-
-	return provider.ChatResponse{
-		Message: provider.Message{
-			Role:    result.Choices[0].Message.Role,
-			Content: result.Choices[0].Message.Content,
-		},
-	}, nil
+	return openaicompat.ParseChatResponse(resp)
 }
 
 // Stream sends a chat request to GitHub Copilot and streams the response.
@@ -322,58 +275,13 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 // Side effects:
 //   - Spawns a goroutine that makes an HTTP POST request and sends chunks to the channel.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	ch := make(chan provider.StreamChunk, 16)
-
-	go func() {
-		defer close(ch)
-
-		endpoint := p.baseURL + "/chat/completions"
-
-		payload := map[string]interface{}{
-			"model":    req.Model,
-			"messages": convertMessages(req.Messages),
-			"stream":   true,
-		}
-
-		body, err := json.Marshal(payload)
-		if err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-			return
-		}
-
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-			return
-		}
-		token, err := p.tokenManager.EnsureToken(ctx)
-		if err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-			return
-		}
-		setHeaders(httpReq, token)
-
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			respBody, readErr := io.ReadAll(resp.Body)
-			if readErr != nil {
-				ch <- provider.StreamChunk{Error: fmt.Errorf("status %d", resp.StatusCode), Done: true}
-				return
-			}
-			ch <- provider.StreamChunk{Error: fmt.Errorf("status %d: %s", resp.StatusCode, respBody), Done: true}
-			return
-		}
-
-		streamSSE(ctx, ch, resp.Body)
-	}()
-
-	return ch, nil
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	client := p.buildClient(token)
+	params := openaicompat.BuildParams(req)
+	return openaicompat.RunStream(ctx, client, params), nil
 }
 
 // Embed is not implemented for GitHub Copilot.
@@ -391,96 +299,29 @@ func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64,
 	return nil, ErrEmbedNotSupported
 }
 
-// streamSSE parses server-sent events from an SSE text/event-stream body and sends chunks to the channel.
+// buildClient constructs an openaiAPI.Client configured with the Copilot OAuth token
+// and all required Copilot-specific headers.
 //
 // Expected:
-//   - ctx is a non-nil context for cancellation.
-//   - ch is an open, writable channel for stream chunks.
-//   - body is an io.Reader positioned at the start of the SSE event stream.
-//
-// Side effects:
-//   - Sends StreamChunk values to ch.
-func streamSSE(ctx context.Context, ch chan<- provider.StreamChunk, body io.Reader) {
-	scanner := bufio.NewScanner(body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			ch <- provider.StreamChunk{Done: true}
-			return
-		}
-
-		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			continue
-		}
-
-		choice := extractChoice(event)
-		if choice == nil {
-			continue
-		}
-
-		if content := extractContent(choice); content != "" {
-			select {
-			case ch <- provider.StreamChunk{Content: content}:
-			case <-ctx.Done():
-				ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-				return
-			}
-		}
-
-		if finish, ok := choice["finish_reason"].(string); ok && finish != "" {
-			ch <- provider.StreamChunk{Done: true}
-			return
-		}
-	}
-}
-
-// extractChoice extracts the first choice from an SSE event.
-//
-// Expected:
-//   - event must be a valid SSE event map with a "choices" field.
+//   - token is a valid GitHub Copilot bearer token.
 //
 // Returns:
-//   - The first choice as a map, or nil if not found.
+//   - An openaiAPI.Client ready to make authenticated requests to the Copilot API.
 //
 // Side effects:
 //   - None.
-func extractChoice(event map[string]interface{}) map[string]interface{} {
-	choices, ok := event["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return nil
-	}
-	choice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return choice
-}
-
-// extractContent extracts text content from a choice delta.
-//
-// Expected:
-//   - choice must be a valid choice map with a "delta" field.
-//
-// Returns:
-//   - The content string, or empty string if not found.
-//
-// Side effects:
-//   - None.
-func extractContent(choice map[string]interface{}) string {
-	delta, ok := choice["delta"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	content, ok := delta["content"].(string)
-	if !ok {
-		return ""
-	}
-	return content
+func (p *Provider) buildClient(token string) openaiAPI.Client {
+	return openaiAPI.NewClient(
+		option.WithBaseURL(p.baseURL),
+		option.WithHeader("Authorization", "Bearer "+token),
+		option.WithHeader("Content-Type", headerContentType),
+		option.WithHeader("Accept", headerAccept),
+		option.WithHeader("Copilot-Integration-Id", copilotIntegrationID),
+		option.WithHeader("User-Agent", copilotUserAgent),
+		option.WithHeader("Editor-Version", copilotEditorVersion),
+		option.WithHeader("Editor-Plugin-Version", copilotPluginVersion),
+		option.WithHeader("Openai-Intent", "conversation-edits"),
+	)
 }
 
 // setHeaders sets the required HTTP headers for the Copilot API request.
@@ -503,25 +344,4 @@ func setHeaders(req *http.Request, token string) {
 	req.Header.Set("Editor-Version", copilotEditorVersion)
 	req.Header.Set("Editor-Plugin-Version", copilotPluginVersion)
 	req.Header.Set("Openai-Intent", "conversation-edits")
-}
-
-// convertMessages converts provider.Message slice to the Copilot API format.
-//
-// Expected:
-//   - msgs must be a slice of provider.Message values.
-//
-// Returns:
-//   - A slice of string maps suitable for the Copilot chat API.
-//
-// Side effects:
-//   - Allocates a new result slice.
-func convertMessages(msgs []provider.Message) []map[string]string {
-	result := make([]map[string]string, 0, len(msgs))
-	for _, m := range msgs {
-		result = append(result, map[string]string{
-			"role":    m.Role,
-			"content": m.Content,
-		})
-	}
-	return result
 }

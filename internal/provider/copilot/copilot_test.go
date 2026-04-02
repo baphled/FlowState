@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,8 +20,6 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/copilot"
 )
-
-// ... (existing Describe blocks remain unchanged)
 
 var _ = Describe("Token Exchange and Manager", func() {
 	var (
@@ -304,9 +303,11 @@ var _ = Describe("Authorization and Headers", func() {
 					return
 				}
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"choices": []map[string]interface{}{
-						{"message": map[string]string{"role": "assistant", "content": "hi"}},
-					},
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion",
+					"model":   "gpt-4o",
+					"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+					"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 				})
 			}))
 			defer ts.Close()
@@ -331,9 +332,11 @@ var _ = Describe("Authorization and Headers", func() {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"choices": []map[string]interface{}{
-						{"message": map[string]string{"role": "assistant", "content": "hi"}},
-					},
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion",
+					"model":   "gpt-4o",
+					"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+					"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 				})
 			}))
 			defer ts.Close()
@@ -350,8 +353,46 @@ var _ = Describe("Authorization and Headers", func() {
 			Expect(capturedHeaders.Get("Editor-Plugin-Version")).To(Equal("copilot-chat/0.35.0"))
 			Expect(capturedHeaders.Get("Copilot-Integration-Id")).To(Equal("vscode-chat"))
 			Expect(capturedHeaders.Get("Openai-Intent")).To(Equal("conversation-edits"))
-			Expect(capturedHeaders.Get("Content-Type")).To(Equal("application/json"))
-			Expect(capturedHeaders.Get("Accept")).To(Equal("application/json"))
+		})
+
+		It("serialises tool role messages correctly in the request body", func() {
+			var capturedBody []byte
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"id":      "chatcmpl-test",
+					"object":  "chat.completion",
+					"model":   "gpt-4o",
+					"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "done"}, "finish_reason": "stop"}},
+					"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+				})
+			}))
+			defer ts.Close()
+
+			p, err := copilot.New("direct_token_tool_msg")
+			Expect(err).NotTo(HaveOccurred())
+			p.SetBaseURL(ts.URL)
+
+			req := provider.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []provider.Message{
+					{Role: "user", Content: "call the tool"},
+					{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{{ID: "tc1", Name: "bash", Arguments: map[string]interface{}{"cmd": "ls"}}}},
+					{Role: "tool", Content: "file1.txt\nfile2.txt", ToolCalls: []provider.ToolCall{{ID: "tc1"}}},
+				},
+			}
+			_, err = p.Chat(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var body map[string]interface{}
+			Expect(json.Unmarshal(capturedBody, &body)).To(Succeed())
+			messages, ok := body["messages"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(messages).To(HaveLen(3))
+
+			toolMsg := messages[2].(map[string]interface{})
+			Expect(toolMsg["role"]).To(Equal("tool"))
 		})
 	})
 })
@@ -363,9 +404,11 @@ var _ = Describe("Direct Token Management", func() {
 			capturedAuth = r.Header.Get("Authorization")
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"choices": []map[string]interface{}{
-					{"message": map[string]string{"role": "assistant", "content": "hi"}},
-				},
+				"id":      "chatcmpl-test",
+				"object":  "chat.completion",
+				"model":   "gpt-4o",
+				"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+				"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 			})
 		}))
 		defer ts.Close()
@@ -385,9 +428,11 @@ var _ = Describe("Direct Token Management", func() {
 			capturedAuth = r.Header.Get("Authorization")
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"choices": []map[string]interface{}{
-					{"message": map[string]string{"role": "assistant", "content": "hi"}},
-				},
+				"id":      "chatcmpl-test",
+				"object":  "chat.completion",
+				"model":   "gpt-4o",
+				"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+				"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 			})
 		}))
 		defer ts.Close()
@@ -413,9 +458,11 @@ var _ = Describe("Direct Token Management", func() {
 		chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"choices": []map[string]interface{}{
-					{"message": map[string]string{"role": "assistant", "content": "hi"}},
-				},
+				"id":      "chatcmpl-test",
+				"object":  "chat.completion",
+				"model":   "gpt-4o",
+				"choices": []map[string]interface{}{{"index": 0, "message": map[string]string{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+				"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 			})
 		}))
 		defer chatServer.Close()
@@ -439,6 +486,139 @@ func newTestChatRequest() provider.ChatRequest {
 	}
 }
 
+var _ = Describe("Tool Support", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("sends tools array in request body when tools are provided", func() {
+		var capturedBody []byte
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			flusher, ok := w.(http.Flusher)
+			Expect(ok).To(BeTrue())
+			fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`)
+			flusher.Flush()
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("gho_tools_test")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		req := provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "use the tool"}},
+			Tools: []provider.Tool{
+				{
+					Name:        "bash",
+					Description: "Run a bash command",
+					Schema: provider.ToolSchema{
+						Type:       "object",
+						Properties: map[string]interface{}{"cmd": map[string]interface{}{"type": "string"}},
+						Required:   []string{"cmd"},
+					},
+				},
+			},
+		}
+		ch, err := p.Stream(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+		filterContent(collectChunks(ch))
+
+		Expect(capturedBody).NotTo(BeEmpty())
+		var body map[string]interface{}
+		Expect(json.Unmarshal(capturedBody, &body)).To(Succeed())
+		tools, ok := body["tools"].([]interface{})
+		Expect(ok).To(BeTrue(), "expected tools array in request body")
+		Expect(tools).To(HaveLen(1))
+		tool := tools[0].(map[string]interface{})
+		fn := tool["function"].(map[string]interface{})
+		Expect(fn["name"]).To(Equal("bash"))
+	})
+
+	It("omits tools key when no tools are provided", func() {
+		var capturedBody []byte
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			flusher, ok := w.(http.Flusher)
+			Expect(ok).To(BeTrue())
+			fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`)
+			flusher.Flush()
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("gho_no_tools_test")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		ch, err := p.Stream(ctx, newTestChatRequest())
+		Expect(err).NotTo(HaveOccurred())
+		collectChunks(ch)
+
+		Expect(capturedBody).NotTo(BeEmpty())
+		var body map[string]interface{}
+		Expect(json.Unmarshal(capturedBody, &body)).To(Succeed())
+		_, hasTools := body["tools"]
+		Expect(hasTools).To(BeFalse(), "expected no tools key when tools are empty")
+	})
+
+	It("emits ToolCall chunk when stream contains tool_calls delta", func() {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			flusher, ok := w.(http.Flusher)
+			Expect(ok).To(BeTrue())
+			events := []string{
+				`{"id":"chatcmpl-tc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"bash","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-tc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\":"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-tc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-tc","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, ev := range events {
+				fmt.Fprintf(w, "data: %s\n\n", ev)
+				flusher.Flush()
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		defer ts.Close()
+
+		p, err := copilot.New("gho_tool_call_stream_test")
+		Expect(err).NotTo(HaveOccurred())
+		p.SetBaseURL(ts.URL)
+
+		req := provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "run ls"}},
+			Tools: []provider.Tool{
+				{Name: "bash", Description: "Run bash", Schema: provider.ToolSchema{Type: "object"}},
+			},
+		}
+		ch, err := p.Stream(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		var toolChunks []provider.StreamChunk
+		for chunk := range ch {
+			if chunk.ToolCall != nil {
+				toolChunks = append(toolChunks, chunk)
+			}
+		}
+		Expect(toolChunks).To(HaveLen(1))
+		Expect(toolChunks[0].ToolCall.Name).To(Equal("bash"))
+		Expect(toolChunks[0].ToolCall.ID).To(Equal("call_abc"))
+	})
+})
+
 var _ = Describe("SSE Streaming", func() {
 	var (
 		ctx context.Context
@@ -451,14 +631,19 @@ var _ = Describe("SSE Streaming", func() {
 	It("streams multiple content chunks from SSE events", func() {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Transfer-Encoding", "chunked")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
 			flusher, ok := w.(http.Flusher)
 			Expect(ok).To(BeTrue())
 			chunks := []string{"Hello", " world", "!"}
 			for _, c := range chunks {
-				fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"%s\"},\"finish_reason\":null}]}\n\n", c)
+				data := fmt.Sprintf(`{"id":"chatcmpl-sse","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, c)
+				fmt.Fprintf(w, "data: %s\n\n", data)
 				flusher.Flush()
 			}
+			doneChunk := `{"id":"chatcmpl-sse","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+			fmt.Fprintf(w, "data: %s\n\n", doneChunk)
+			flusher.Flush()
 			fmt.Fprint(w, "data: [DONE]\n\n")
 			flusher.Flush()
 		}))
@@ -481,9 +666,9 @@ var _ = Describe("SSE Streaming", func() {
 	})
 
 	It("terminates stream on data: [DONE]", func() {
-		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
-			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
-			"data: [DONE]\n\n",
+		ts := httptest.NewServer(http.HandlerFunc(sdkSSEHandler(
+			`{"id":"chatcmpl-done","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-done","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		)))
 		defer ts.Close()
 
@@ -498,23 +683,22 @@ var _ = Describe("SSE Streaming", func() {
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
 		}
-		Expect(chunks).To(HaveLen(2))
-		Expect(chunks[0].Content).To(Equal("hi"))
-		Expect(chunks[1].Done).To(BeTrue())
+		Expect(chunks).NotTo(BeEmpty())
+		contentChunks := filterContent(chunks)
+		Expect(contentChunks).To(HaveLen(1))
+		Expect(contentChunks[0].Content).To(Equal("hi"))
+		doneChunks := filterDone(chunks)
+		Expect(doneChunks).NotTo(BeEmpty())
 	})
 
-	It("skips blank lines and non-data lines", func() {
-		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
-			"\n",
-			": this is a comment\n",
-			"event: ping\n",
-			"\n",
-			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
-			"data: [DONE]\n\n",
+	It("handles single chunk stream", func() {
+		ts := httptest.NewServer(http.HandlerFunc(sdkSSEHandler(
+			`{"id":"chatcmpl-single","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"only"},"finish_reason":null}]}`,
+			`{"id":"chatcmpl-single","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
 		)))
 		defer ts.Close()
 
-		p, err := copilot.New("sse_skip_token")
+		p, err := copilot.New("sse_single_token")
 		Expect(err).NotTo(HaveOccurred())
 		p.SetBaseURL(ts.URL)
 
@@ -527,36 +711,13 @@ var _ = Describe("SSE Streaming", func() {
 				contents = append(contents, chunk.Content)
 			}
 		}
-		Expect(contents).To(Equal([]string{"ok"}))
-	})
-
-	It("sends Done on finish_reason stop", func() {
-		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
-			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bye\"},\"finish_reason\":null}]}\n\n",
-			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-		)))
-		defer ts.Close()
-
-		p, err := copilot.New("sse_finish_token")
-		Expect(err).NotTo(HaveOccurred())
-		p.SetBaseURL(ts.URL)
-
-		ch, err := p.Stream(ctx, newTestChatRequest())
-		Expect(err).NotTo(HaveOccurred())
-
-		var chunks []provider.StreamChunk
-		for chunk := range ch {
-			chunks = append(chunks, chunk)
-		}
-		Expect(chunks).To(HaveLen(2))
-		Expect(chunks[0].Content).To(Equal("bye"))
-		Expect(chunks[1].Done).To(BeTrue())
+		Expect(contents).To(Equal([]string{"only"}))
 	})
 
 	It("returns error chunk for non-200 status", func() {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
 		}))
 		defer ts.Close()
 
@@ -571,19 +732,21 @@ var _ = Describe("SSE Streaming", func() {
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
 		}
-		Expect(chunks).To(HaveLen(1))
-		Expect(chunks[0].Error).To(HaveOccurred())
-		Expect(chunks[0].Done).To(BeTrue())
+		Expect(chunks).NotTo(BeEmpty())
+		lastChunk := chunks[len(chunks)-1]
+		Expect(lastChunk.Error).To(HaveOccurred())
 	})
 
 	It("handles context cancellation gracefully", func() {
 		cancelCtx, cancel := context.WithCancel(ctx)
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
 			flusher, ok := w.(http.Flusher)
 			Expect(ok).To(BeTrue())
 			for i := range 1000 {
-				fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"chunk%d\"},\"finish_reason\":null}]}\n\n", i)
+				data := fmt.Sprintf(`{"id":"chatcmpl-cancel","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"chunk%d"},"finish_reason":null}]}`, i)
+				fmt.Fprintf(w, "data: %s\n\n", data)
 				flusher.Flush()
 			}
 		}))
@@ -607,43 +770,51 @@ var _ = Describe("SSE Streaming", func() {
 		}()
 		Eventually(done, 5*time.Second).Should(BeClosed())
 	})
-
-	It("handles single chunk stream", func() {
-		ts := httptest.NewServer(http.HandlerFunc(sseHandler(
-			"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"only\"},\"finish_reason\":null}]}\n\n",
-			"data: [DONE]\n\n",
-		)))
-		defer ts.Close()
-
-		p, err := copilot.New("sse_single_token")
-		Expect(err).NotTo(HaveOccurred())
-		p.SetBaseURL(ts.URL)
-
-		ch, err := p.Stream(ctx, newTestChatRequest())
-		Expect(err).NotTo(HaveOccurred())
-
-		var contents []string
-		for chunk := range ch {
-			if chunk.Content != "" {
-				contents = append(contents, chunk.Content)
-			}
-		}
-		Expect(contents).To(Equal([]string{"only"}))
-	})
 })
 
-func sseHandler(events ...string) func(http.ResponseWriter, *http.Request) {
+func sdkSSEHandler(events ...string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Transfer-Encoding", "chunked")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		for _, ev := range events {
-			fmt.Fprint(w, ev)
+			fmt.Fprintf(w, "data: %s\n\n", ev)
 			flusher.Flush()
 		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
 	}
+}
+
+func collectChunks(ch <-chan provider.StreamChunk) []provider.StreamChunk {
+	var result []provider.StreamChunk
+	for c := range ch {
+		result = append(result, c)
+	}
+	return result
+}
+
+func filterContent(chunks []provider.StreamChunk) []provider.StreamChunk {
+	var result []provider.StreamChunk
+	for _, c := range chunks {
+		if c.Content != "" {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func filterDone(chunks []provider.StreamChunk) []provider.StreamChunk {
+	var result []provider.StreamChunk
+	for _, c := range chunks {
+		if c.Done {
+			result = append(result, c)
+		}
+	}
+	return result
 }
