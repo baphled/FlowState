@@ -15,6 +15,8 @@ always_active_skills:
 tools:
   - delegate
   - coordination_store
+  - skill_load
+  - todowrite
 can_delegate: true
 delegation_allowlist:
   - explorer

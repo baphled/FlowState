@@ -614,4 +614,61 @@ always_active_skills:
 			Expect(cfg.AlwaysActiveSkills).To(ContainElement("custom-skill-2"))
 		})
 	})
+
+	Describe("expandTilde", func() {
+		It("expands ~ alone to home directory", func() {
+			home, _ := os.UserHomeDir()
+			Expect(config.ExpandTildeForTest("~")).To(Equal(home))
+		})
+
+		It("expands ~/path to home directory with path", func() {
+			home, _ := os.UserHomeDir()
+			Expect(config.ExpandTildeForTest("~/foo/bar")).To(Equal(filepath.Join(home, "foo", "bar")))
+		})
+
+		It("leaves absolute paths unchanged", func() {
+			Expect(config.ExpandTildeForTest("/absolute/path")).To(Equal("/absolute/path"))
+		})
+
+		It("leaves relative paths unchanged", func() {
+			Expect(config.ExpandTildeForTest("relative/path")).To(Equal("relative/path"))
+		})
+
+		It("leaves empty string unchanged", func() {
+			Expect(config.ExpandTildeForTest("")).To(Equal(""))
+		})
+
+		It("does not expand tilde mid-string", func() {
+			Expect(config.ExpandTildeForTest("/foo/~/bar")).To(Equal("/foo/~/bar"))
+		})
+	})
+
+	Describe("expandPaths", func() {
+		It("expands tilde in all path fields", func() {
+			home, _ := os.UserHomeDir()
+			cfg := &config.AppConfig{
+				AgentDir: "~/.local/share/flowstate/agents",
+				SkillDir: "~/skills",
+				DataDir:  "~/.local/share/flowstate",
+			}
+			cfg.Plugins.Dir = "~/plugins"
+			config.ExpandPathsForTest(cfg)
+			Expect(cfg.AgentDir).To(Equal(filepath.Join(home, ".local", "share", "flowstate", "agents")))
+			Expect(cfg.SkillDir).To(Equal(filepath.Join(home, "skills")))
+			Expect(cfg.DataDir).To(Equal(filepath.Join(home, ".local", "share", "flowstate")))
+			Expect(cfg.Plugins.Dir).To(Equal(filepath.Join(home, "plugins")))
+		})
+
+		It("leaves absolute paths unchanged", func() {
+			cfg := &config.AppConfig{
+				AgentDir: "/absolute/agents",
+				SkillDir: "/absolute/skills",
+				DataDir:  "/absolute/data",
+			}
+			config.ExpandPathsForTest(cfg)
+			Expect(cfg.AgentDir).To(Equal("/absolute/agents"))
+			Expect(cfg.SkillDir).To(Equal("/absolute/skills"))
+			Expect(cfg.DataDir).To(Equal("/absolute/data"))
+		})
+	})
 })

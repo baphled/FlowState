@@ -274,7 +274,9 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 	cleanPath := filepath.Clean(path)
 	if _, err := os.Stat(cleanPath); err != nil {
 		if os.IsNotExist(err) {
-			return DefaultConfig(), nil
+			cfg := DefaultConfig()
+			expandPaths(cfg)
+			return cfg, nil
 		}
 		return nil, fmt.Errorf("stat config file %q: %w", cleanPath, err)
 	}
@@ -290,6 +292,7 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 	}
 
 	applyDefaults(cfg)
+	expandPaths(cfg)
 	return cfg, nil
 }
 
@@ -424,4 +427,46 @@ func applyProviderDefaults(cfg *ProviderConfig, defaults ProviderConfig) {
 	if cfg.OAuth.Scopes == "" {
 		cfg.OAuth.Scopes = defaults.OAuth.Scopes
 	}
+}
+
+// expandTilde expands a leading ~ or ~/ in a path to the user's home directory.
+//
+// Expected:
+//   - path is a filesystem path that may begin with ~ or ~/.
+//
+// Returns:
+//   - The expanded path, or the original path when no tilde prefix is present.
+//
+// Side effects:
+//   - None.
+func expandTilde(path string) string {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return home
+	}
+	if len(path) > 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// expandPaths expands tildes in all relevant AppConfig path fields.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig pointer.
+//
+// Side effects:
+//   - Modifies cfg in place.
+func expandPaths(cfg *AppConfig) {
+	cfg.AgentDir = expandTilde(cfg.AgentDir)
+	cfg.SkillDir = expandTilde(cfg.SkillDir)
+	cfg.DataDir = expandTilde(cfg.DataDir)
+	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)
 }
