@@ -247,3 +247,8 @@ func (i *Intent) CompletionChanForTest() <-chan streaming.CompletionNotification
 func FormatCompletionReminderForTest(msg BackgroundTaskCompletedMsg) string {
 	return formatCompletionReminder(msg)
 }
+
+// SplitToolSummaryForTest exposes splitToolSummary for test assertions.
+func SplitToolSummaryForTest(summary string) (name, input string) {
+	return splitToolSummary(summary)
+}

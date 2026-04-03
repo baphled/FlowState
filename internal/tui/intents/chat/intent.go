@@ -1811,13 +1811,15 @@ func isReadToolCall(name string) bool {
 // appropriate role and formatting the content based on the tool name.
 //
 // Expected:
-//   - toolName is the name of the tool that produced the result.
+//   - toolName is the name of the tool that produced the result, optionally in
+//     "name: primary-input" format (e.g. "bash: ls -la").
 //   - result is the raw string output from the tool.
 //   - isError indicates whether the tool execution produced an error.
 //
 // Returns:
 //   - A chat.Message with role "tool_error" for errors, "todo_update" for todowrite results,
-//     or "tool_result" for all other tools.
+//     or "tool_result" for all other tools. ToolName holds the raw name and ToolInput holds
+//     the primary argument when present.
 //
 // Side effects:
 //   - None.
@@ -1825,10 +1827,30 @@ func toolResultMessage(toolName, result string, isError bool) chat.Message {
 	if isError {
 		return chat.Message{Role: "tool_error", Content: result}
 	}
-	if toolName == "todowrite" {
+	rawName, toolInput := splitToolSummary(toolName)
+	if rawName == "todowrite" {
 		return chat.Message{Role: "todo_update", Content: widgets.FormatTodoList(result)}
 	}
-	return chat.Message{Role: "tool_result", Content: result, ToolName: toolName}
+	return chat.Message{Role: "tool_result", Content: result, ToolName: rawName, ToolInput: toolInput}
+}
+
+// splitToolSummary parses a formatted tool summary into a raw tool name and primary input.
+//
+// Expected:
+//   - summary is a string in the format "toolname: argument" or just "toolname".
+//
+// Returns:
+//   - name is the tool name (the part before ": ", or the whole string if no separator).
+//   - input is the primary argument (the part after ": ", or empty if no separator).
+//
+// Side effects:
+//   - None.
+func splitToolSummary(summary string) (name, input string) {
+	parts := strings.SplitN(summary, ": ", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return summary, ""
 }
 
 // toolCallArgKey returns the argument key for a given tool name.

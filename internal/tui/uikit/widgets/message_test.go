@@ -66,10 +66,10 @@ var _ = Describe("MessageWidget", func() {
 		})
 
 		Context("tool_call messages", func() {
-			It("includes the wrench emoji prefix", func() {
+			It("includes the tool-specific icon prefix", func() {
 				w := widgets.NewMessageWidget("tool_call", "bash", th)
 				output := w.Render(80)
-				Expect(output).To(ContainSubstring("🔧"))
+				Expect(output).To(ContainSubstring("$"))
 			})
 
 			It("includes the tool name as content", func() {
@@ -218,6 +218,41 @@ var _ = Describe("MessageWidget", func() {
 				w := widgets.NewMessageWidget("tool_result", "output data", th)
 				output := w.Render(80)
 				Expect(output).To(ContainSubstring("📤"))
+			})
+		})
+
+		Context("tool_result with ToolName and ToolInput set", func() {
+			It("renders tool_result with correct icon and input via BlockTool", func() {
+				w := widgets.NewMessageWidget("tool_result", "output text", th)
+				w.SetToolName("bash")
+				w.SetToolInput("ls -la")
+				result := w.Render(80)
+				Expect(result).To(ContainSubstring("$"))
+				Expect(result).To(ContainSubstring("ls -la"))
+			})
+		})
+
+		Context("tool_call with tool-specific icon", func() {
+			It("renders tool_call with tool-specific icon not wrench emoji", func() {
+				w := widgets.NewMessageWidget("tool_call", "bash: ls -la", th)
+				result := w.Render(80)
+				Expect(result).To(ContainSubstring("$"))
+				Expect(result).NotTo(ContainSubstring("🔧"))
+				Expect(result).To(ContainSubstring("bash: ls -la"))
+			})
+
+			It("renders tool_call with read icon for read tool", func() {
+				w := widgets.NewMessageWidget("tool_call", "read: /path/to/file", th)
+				result := w.Render(80)
+				Expect(result).To(ContainSubstring("→"))
+				Expect(result).NotTo(ContainSubstring("🔧"))
+			})
+
+			It("renders tool_call with default icon for unknown tool", func() {
+				w := widgets.NewMessageWidget("tool_call", "unknown_tool", th)
+				result := w.Render(80)
+				Expect(result).NotTo(ContainSubstring("🔧"))
+				Expect(result).To(ContainSubstring("unknown_tool"))
 			})
 		})
 
