@@ -8,6 +8,60 @@ import (
 )
 
 var _ = Describe("ToolCallWidget", func() {
+	DescribeTable("renders tool-specific icons",
+		func(name string, wantIcon string) {
+			w := widgets.NewToolCallWidget(name, "running")
+			output := w.Render()
+			Expect(output).To(ContainSubstring(wantIcon))
+		},
+		Entry("bash", "bash", "$"),
+		Entry("read", "read", "→"),
+		Entry("write", "write", "←"),
+		Entry("edit", "edit", "←"),
+		Entry("glob", "glob", "◆"),
+		Entry("grep", "grep", "?"),
+		Entry("task", "task", "│"),
+		Entry("call_omo_agent", "call_omo_agent", "│"),
+		Entry("skill_load", "skill_load", "→"),
+		Entry("web_search", "web_search", "🌐"),
+	)
+
+	Describe("Render", func() {
+		Context("when tool name is unknown", func() {
+			It("falls back to the default icon", func() {
+				w := widgets.NewToolCallWidget("database_query", "running")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("⚡"))
+			})
+		})
+
+		Context("when status is running", func() {
+			DescribeTable("renders tool-specific pending text",
+				func(name string, wantText string) {
+					w := widgets.NewToolCallWidget(name, "running")
+					output := w.Render()
+					Expect(output).To(ContainSubstring(wantText))
+				},
+				Entry("bash", "bash", "Writing command…"),
+				Entry("read", "read", "Reading…"),
+				Entry("write", "write", "Preparing write…"),
+				Entry("edit", "edit", "Preparing edit…"),
+				Entry("glob", "glob", "Finding files…"),
+				Entry("grep", "grep", "Searching…"),
+				Entry("task", "task", "Delegating…"),
+				Entry("call_omo_agent", "call_omo_agent", "Delegating…"),
+				Entry("skill_load", "skill_load", "Loading skill…"),
+				Entry("web_search", "web_search", "Fetching…"),
+			)
+
+			It("falls back to the default pending text for unknown tools", func() {
+				w := widgets.NewToolCallWidget("database_query", "running")
+				output := w.Render()
+				Expect(output).To(ContainSubstring("Running…"))
+			})
+		})
+	})
+
 	Describe("NewToolCallWidget", func() {
 		It("creates a widget with the given name and status", func() {
 			w := widgets.NewToolCallWidget("invoke_tool", "running")
@@ -20,8 +74,7 @@ var _ = Describe("ToolCallWidget", func() {
 			It("renders the tool name with running status", func() {
 				w := widgets.NewToolCallWidget("fetch_data", "running")
 				output := w.Render()
-				Expect(output).To(ContainSubstring("fetch_data"))
-				Expect(output).To(ContainSubstring("running"))
+				Expect(output).To(ContainSubstring("Running…"))
 			})
 
 			It("uses yellow styling for running status", func() {
@@ -82,8 +135,7 @@ var _ = Describe("ToolCallWidget", func() {
 			It("contains tool name and running status", func() {
 				w := widgets.NewToolCallWidget("fetch_api_data", "running")
 				output := w.Render()
-				Expect(output).To(ContainSubstring("fetch_api_data"))
-				Expect(output).To(ContainSubstring("running"))
+				Expect(output).To(ContainSubstring("Running…"))
 			})
 
 			It("includes the tool icon", func() {
@@ -113,7 +165,7 @@ var _ = Describe("ToolCallWidget", func() {
 			It("changes rendered status", func() {
 				w := widgets.NewToolCallWidget("process_data", "running")
 				runningOutput := w.Render()
-				Expect(runningOutput).To(ContainSubstring("running"))
+				Expect(runningOutput).To(ContainSubstring("Running…"))
 
 				complete := widgets.NewToolCallWidget("process_data", "complete")
 				completeOutput := complete.Render()

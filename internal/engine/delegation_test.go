@@ -550,17 +550,21 @@ var _ = Describe("Delegation", func() {
 				_, err := delegateTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
 
-				Eventually(func() int {
-					return bgManager.ActiveCount()
-				}).Should(BeNumerically(">=", 1))
-
 				tasks := bgManager.List()
 				Expect(tasks).To(HaveLen(1))
 				Expect(tasks[0].AgentID).To(Equal("qa-agent"))
 
 				Eventually(func() string {
-					return bgManager.List()[0].Status.Load()
+					tasks := bgManager.List()
+					if len(tasks) == 0 {
+						return ""
+					}
+					return tasks[0].Status.Load()
 				}).Should(Equal("completed"))
+
+				Eventually(func() int {
+					return bgManager.ActiveCount()
+				}).Should(Equal(0))
 			})
 
 			It("updates task status to completed when done", func() {

@@ -118,19 +118,18 @@ var _ = Describe("ChatView", func() {
 			view.SetStreaming(true, "processing...")
 			view.SetToolCall("web_search", "running")
 			content := view.RenderContent(80)
-			Expect(content).To(ContainSubstring("⚡"))
-			Expect(content).To(ContainSubstring("web_search"))
-			Expect(content).To(ContainSubstring("running"))
+			Expect(content).To(ContainSubstring("🌐"))
+			Expect(content).To(ContainSubstring("Fetching…"))
 		})
 
 		It("renders assistant text before tool call indicator during streaming", func() {
 			view.SetMarkdownRenderer(func(c string, _ int) string { return c })
 			view.SetStreaming(true, "")
-			view.HandleChunk("Hello from assistant", false, "", "file_read", "running")
+			view.HandleChunk("Hello from assistant", false, "", "bash", "running")
 			content := view.RenderContent(80)
 
 			textPos := strings.Index(content, "Hello from assistant")
-			toolCallPos := strings.Index(content, "file_read")
+			toolCallPos := strings.Index(content, "Writing command…")
 
 			Expect(textPos).To(BeNumerically(">=", 0), "assistant text should appear in content")
 			Expect(toolCallPos).To(BeNumerically(">=", 0), "tool call indicator should appear in content")

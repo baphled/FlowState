@@ -1,12 +1,19 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"regexp"
+	"strings"
+)
+
+var manifestHexColorPattern = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
 // Manifest defines the complete configuration for a FlowState agent.
 type Manifest struct {
 	SchemaVersion     string            `json:"schema_version" yaml:"schema_version"`
 	ID                string            `json:"id" yaml:"id"`
 	Name              string            `json:"name" yaml:"name"`
+	Color             string            `json:"color,omitempty" yaml:"color,omitempty"`
 	Complexity        string            `json:"complexity" yaml:"complexity"`
 	Metadata          Metadata          `json:"metadata" yaml:"metadata"`
 	Capabilities      Capabilities      `json:"capabilities" yaml:"capabilities"`
@@ -168,6 +175,14 @@ func (m *Manifest) Validate() error {
 	}
 	if m.Name == "" {
 		return &ValidationError{Field: "name", Message: "required"}
+	}
+	if m.SchemaVersion != "" && strings.TrimSpace(m.SchemaVersion) == "" {
+		return &ValidationError{Field: "schema_version", Message: "must not be blank"}
+	}
+	if m.Color != "" {
+		if !manifestHexColorPattern.MatchString(m.Color) {
+			return &ValidationError{Field: "color", Message: "must be empty or a valid hex colour (#RRGGBB)"}
+		}
 	}
 	return nil
 }

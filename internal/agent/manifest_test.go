@@ -65,6 +65,38 @@ var _ = Describe("Manifest", func() {
 			Expect(err.Error()).To(ContainSubstring("required"))
 		})
 
+		It("returns error when Color is not a valid hex value", func() {
+			manifest := &agent.Manifest{
+				ID:    "agent-with-invalid-colour",
+				Name:  "Agent With Invalid Colour",
+				Color: "teal",
+			}
+
+			err := manifest.Validate()
+
+			Expect(err).To(HaveOccurred())
+			var validationErr *agent.ValidationError
+			Expect(err).To(BeAssignableToTypeOf(validationErr))
+			Expect(err.Error()).To(ContainSubstring("color"))
+			Expect(err.Error()).To(ContainSubstring("valid hex colour"))
+		})
+
+		It("returns error when SchemaVersion contains only whitespace", func() {
+			manifest := &agent.Manifest{
+				SchemaVersion: "   ",
+				ID:            "agent-with-blank-schema-version",
+				Name:          "Agent With Blank Schema Version",
+			}
+
+			err := manifest.Validate()
+
+			Expect(err).To(HaveOccurred())
+			var validationErr *agent.ValidationError
+			Expect(err).To(BeAssignableToTypeOf(validationErr))
+			Expect(err.Error()).To(ContainSubstring("schema_version"))
+			Expect(err.Error()).To(ContainSubstring("must not be blank"))
+		})
+
 		It("returns ID error first when both ID and Name are empty", func() {
 			manifest := &agent.Manifest{
 				ID:   "",
