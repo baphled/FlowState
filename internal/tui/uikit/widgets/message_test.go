@@ -6,6 +6,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
@@ -200,6 +202,57 @@ var _ = Describe("MessageWidget", func() {
 				output := w.Render(80)
 				Expect(output).NotTo(ContainSubstring("[should-not-appear]"))
 				Expect(output).To(ContainSubstring("plain text"))
+			})
+		})
+
+		Context("tool_result with ToolName set", func() {
+			It("uses BlockTool for tool_result when ToolName is set", func() {
+				w := widgets.NewMessageWidget("tool_result", "output data", th)
+				w.SetToolName("bash")
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("bash"))
+				Expect(output).NotTo(ContainSubstring("📤"))
+			})
+
+			It("falls back to emoji prefix when ToolName is empty", func() {
+				w := widgets.NewMessageWidget("tool_result", "output data", th)
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("📤"))
+			})
+		})
+
+		Context("assistant messages with AgentColor", func() {
+			It("uses theme colour for assistant label when AgentColor is zero", func() {
+				w := widgets.NewMessageWidget("assistant", "hi", th)
+				w.SetMarkdownRenderer(func(c string, _ int) string { return c })
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("Assistant"))
+			})
+
+			It("uses AgentColor for assistant label when set", func() {
+				w := widgets.NewMessageWidget("assistant", "hi", th)
+				w.SetAgentColor(lipgloss.Color("#ff0000"))
+				w.SetMarkdownRenderer(func(c string, _ int) string { return c })
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("Assistant"))
+			})
+		})
+
+		Context("assistant messages with ModelID", func() {
+			It("renders model ID footer on assistant message when ModelID is set", func() {
+				w := widgets.NewMessageWidget("assistant", "response", th)
+				w.SetModelID("claude-sonnet-4-20250514")
+				w.SetMarkdownRenderer(func(c string, _ int) string { return c })
+				output := w.Render(80)
+				Expect(output).To(ContainSubstring("▣"))
+				Expect(output).To(ContainSubstring("claude-sonnet-4-20250514"))
+			})
+
+			It("does not render footer when ModelID is empty", func() {
+				w := widgets.NewMessageWidget("assistant", "response", th)
+				w.SetMarkdownRenderer(func(c string, _ int) string { return c })
+				output := w.Render(80)
+				Expect(output).NotTo(ContainSubstring("▣"))
 			})
 		})
 

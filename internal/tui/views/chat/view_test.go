@@ -6,6 +6,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
@@ -229,6 +231,52 @@ var _ = Describe("ChatView", func() {
 				Expect(msgs[0].Role).To(Equal("assistant"))
 				Expect(msgs[1].Role).To(Equal("system"))
 			})
+		})
+	})
+})
+
+var _ = Describe("ChatView agent and model metadata", func() {
+	var view *chat.View
+
+	BeforeEach(func() {
+		view = chat.NewView()
+		view.SetMarkdownRenderer(func(c string, _ int) string { return c })
+	})
+
+	Describe("SetAgentColor and SetModelID propagation", func() {
+		It("stamps AgentColor on messages created by FlushPartialResponse", func() {
+			view.SetAgentColor("205")
+			view.SetModelID("claude-sonnet-4-20250514")
+			view.SetStreaming(true, "hello from agent")
+			view.FlushPartialResponse()
+
+			msgs := view.Messages()
+			Expect(msgs).To(HaveLen(1))
+			Expect(msgs[0].AgentColor).To(Equal(lipgloss.Color("205")))
+			Expect(msgs[0].ModelID).To(Equal("claude-sonnet-4-20250514"))
+		})
+
+		It("renders model footer in content when ModelID is set", func() {
+			view.SetModelID("gpt-4o")
+			view.AddMessage(chat.Message{
+				Role:    "assistant",
+				Content: "hello",
+				ModelID: "gpt-4o",
+			})
+			content := view.RenderContent(80)
+			Expect(content).To(ContainSubstring("▣"))
+			Expect(content).To(ContainSubstring("gpt-4o"))
+		})
+
+		It("renders BlockTool for tool_result with ToolName", func() {
+			view.AddMessage(chat.Message{
+				Role:     "tool_result",
+				Content:  "file contents",
+				ToolName: "read",
+			})
+			content := view.RenderContent(80)
+			Expect(content).To(ContainSubstring("read"))
+			Expect(content).NotTo(ContainSubstring("📤"))
 		})
 	})
 })

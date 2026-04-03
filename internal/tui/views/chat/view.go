@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
@@ -15,8 +16,11 @@ const defaultRenderWidth = 80
 
 // Message represents a chat message with a role and content.
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolName   string         // set for tool_result messages
+	AgentColor lipgloss.Color // set for assistant messages (zero = use theme default)
+	ModelID    string         // set for assistant messages (empty = no footer)
 }
 
 // View represents the chat view component with messages and streaming state.
@@ -33,6 +37,8 @@ type View struct {
 	toolCallStatus    string
 	delegationInfo    *provider.DelegationInfo
 	tickFrame         int
+	agentColor        lipgloss.Color
+	modelID           string
 	cachedRenderer    *glamour.TermRenderer
 	cachedRenderWidth int
 	renderedMessages  []string
@@ -118,7 +124,7 @@ func (v *View) FlushPartialResponse() {
 	if v.response == "" {
 		return
 	}
-	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response})
+	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response, AgentColor: v.agentColor, ModelID: v.modelID})
 	v.response = ""
 }
 
@@ -190,8 +196,10 @@ func (v *View) finaliseChunk(content string, errMsg string) {
 	}
 	if fullContent != "" {
 		v.AddMessage(Message{
-			Role:    "assistant",
-			Content: fullContent,
+			Role:       "assistant",
+			Content:    fullContent,
+			AgentColor: v.agentColor,
+			ModelID:    v.modelID,
 		})
 	}
 	v.streaming = false
@@ -257,6 +265,28 @@ func (v *View) SetMarkdownRenderer(fn func(string, int) string) {
 	v.renderFunc = fn
 	v.cachedRenderer = nil
 	v.renderedMessages = nil
+}
+
+// SetAgentColor stores the colour for assistant messages created by this view.
+//
+// Expected:
+//   - c is a lipgloss.Color; zero value means use theme default.
+//
+// Side effects:
+//   - Updates the agentColor field for future assistant messages.
+func (v *View) SetAgentColor(c lipgloss.Color) {
+	v.agentColor = c
+}
+
+// SetModelID stores the model identifier for assistant message footers.
+//
+// Expected:
+//   - id is the model identifier string; empty means no footer.
+//
+// Side effects:
+//   - Updates the modelID field for future assistant messages.
+func (v *View) SetModelID(id string) {
+	v.modelID = id
 }
 
 // SetTheme sets the theme for the chat view.
@@ -377,6 +407,9 @@ func (v *View) RenderContent(width int) string {
 //   - None.
 func (v *View) renderMessage(msg Message, th theme.Theme, width int) string {
 	mw := widgets.NewMessageWidget(msg.Role, msg.Content, th)
+	mw.SetToolName(msg.ToolName)
+	mw.SetAgentColor(msg.AgentColor)
+	mw.SetModelID(msg.ModelID)
 	if v.renderFunc != nil {
 		mw.SetMarkdownRenderer(v.renderFunc)
 	} else {
@@ -457,6 +490,8 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 
 	if v.response != "" {
 		mw := widgets.NewMessageWidget("assistant", v.response, th)
+		mw.SetAgentColor(v.agentColor)
+		mw.SetModelID(v.modelID)
 		if v.renderFunc != nil {
 			mw.SetMarkdownRenderer(v.renderFunc)
 		} else {

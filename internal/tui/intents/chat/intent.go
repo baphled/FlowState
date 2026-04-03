@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -27,6 +28,7 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 	"github.com/baphled/flowstate/internal/tui/uikit/feedback"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
+	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/ui/terminal"
@@ -293,6 +295,7 @@ func (i *Intent) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 // Side effects:
 //   - Schedules the first SpinnerTickMsg.
 func (i *Intent) Init() tea.Cmd {
+	i.syncViewAgentMeta()
 	if i.sessionID != "" && i.sessionStore != nil {
 		if store, err := i.sessionStore.Load(i.sessionID); err != nil {
 			i.handleSessionLoaded(sessionbrowser.SessionLoadedMsg{SessionID: i.sessionID, Err: err})
@@ -876,7 +879,7 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
 	i.activeToolCall = ""
 	if partial := i.view.Response(); partial != "" {
-		i.view.AddMessage(chat.Message{Role: "assistant", Content: partial})
+		i.view.AddMessage(chat.Message{Role: "assistant", Content: partial, AgentColor: i.resolveCurrentAgentColor(), ModelID: i.modelName})
 	}
 	i.view.AddMessage(chat.Message{Role: "system", Content: msg.Content})
 	i.view.StartStreaming()
@@ -1412,6 +1415,7 @@ func (i *Intent) handleModelCommand(args string) string {
 	i.modelName = model
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
+	i.syncViewAgentMeta()
 	return "Switched to model: " + providerName + "/" + model
 }
 
@@ -1442,6 +1446,7 @@ func (i *Intent) handleAgentCommand(args string) string {
 	i.agentID = agentID
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
+	i.syncViewAgentMeta()
 	return "Switched to agent: " + agentID
 }
 
@@ -1682,6 +1687,7 @@ func (i *Intent) createNewSession() tea.Cmd {
 	i.sessionID = uuid.New().String()
 	i.engine.SetContextStore(recall.NewEmptyContextStore(""), i.sessionID)
 	i.view = chat.NewView()
+	i.syncViewAgentMeta()
 	i.refreshViewport()
 	i.syncStatusBar()
 	return nil
@@ -1822,7 +1828,7 @@ func toolResultMessage(toolName, result string, isError bool) chat.Message {
 	if toolName == "todowrite" {
 		return chat.Message{Role: "todo_update", Content: widgets.FormatTodoList(result)}
 	}
-	return chat.Message{Role: "tool_result", Content: result}
+	return chat.Message{Role: "tool_result", Content: result, ToolName: toolName}
 }
 
 // toolCallArgKey returns the argument key for a given tool name.
@@ -1872,6 +1878,7 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	}
 	i.engine.SetContextStore(msg.Store, msg.SessionID)
 	i.view = chat.NewView()
+	i.syncViewAgentMeta()
 	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {
 		switch {
@@ -1892,15 +1899,50 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 			}
 			i.view.AddMessage(toolResultMessage(lastToolCallName, sm.Message.Content, isError))
 		default:
-			i.view.AddMessage(chat.Message{
+			msg := chat.Message{
 				Role:    sm.Message.Role,
 				Content: sm.Message.Content,
-			})
+			}
+			if sm.Message.Role == "assistant" {
+				msg.AgentColor = i.resolveCurrentAgentColor()
+				msg.ModelID = i.modelName
+			}
+			i.view.AddMessage(msg)
 		}
 	}
 	i.refreshViewport()
 	i.syncStatusBar()
 	return nil
+}
+
+// resolveCurrentAgentColor returns the colour for the current agent manifest.
+//
+// Expected:
+//   - i.agentRegistry may be nil.
+//
+// Returns:
+//   - A lipgloss.Color from the manifest or zero value if unavailable.
+//
+// Side effects:
+//   - None.
+func (i *Intent) resolveCurrentAgentColor() lipgloss.Color {
+	if i.agentRegistry == nil {
+		return lipgloss.Color("")
+	}
+	manifest, ok := i.agentRegistry.Get(i.agentID)
+	if !ok {
+		return lipgloss.Color("")
+	}
+	return theme.ResolveAgentColor(*manifest, 0, theme.Default())
+}
+
+// syncViewAgentMeta updates the view with current agent colour and model ID.
+//
+// Side effects:
+//   - Sets agentColor and modelID on the chat view.
+func (i *Intent) syncViewAgentMeta() {
+	i.view.SetAgentColor(i.resolveCurrentAgentColor())
+	i.view.SetModelID(i.modelName)
 }
 
 // toggleAgent alternates the active agent between "planner" and "executor".
@@ -1930,6 +1972,7 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	i.agentID = next
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
+	i.syncViewAgentMeta()
 	return nil
 }
 
