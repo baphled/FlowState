@@ -40,6 +40,41 @@ var _ = Describe("streamEventHandler", func() {
 			})
 		})
 
+		Context("when receiving thinking block events", func() {
+			It("accumulates thinking deltas and emits them on stop", func() {
+				startEvent := anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 1,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "thinking",
+					},
+				}
+				handler.handleEvent(startEvent)
+
+				deltaEvent := anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 1,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:     "thinking_delta",
+						Thinking: "first part",
+					},
+				}
+				_, shouldSend := handler.handleEvent(deltaEvent)
+
+				Expect(shouldSend).To(BeFalse())
+
+				stopEvent := anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 1,
+				}
+
+				chunk, shouldSend := handler.handleEvent(stopEvent)
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.Thinking).To(Equal("first part"))
+			})
+		})
+
 		Context("when receiving a message_stop event", func() {
 			It("returns a done chunk", func() {
 				event := anthropicAPI.MessageStreamEventUnion{

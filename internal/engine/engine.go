@@ -690,29 +690,29 @@ func (e *Engine) streamWithToolLoop(
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) {
 	for {
-		toolCall, responseContent, done := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
-		if done {
-			e.completeResponse(ctx, sessionID, responseContent)
+		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
+		if result.done {
+			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
 		}
 
-		if toolCall == nil {
-			e.completeResponse(ctx, sessionID, responseContent)
+		if result.toolCall == nil {
+			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
 		}
 
-		if denied := e.checkToolPermission(toolCall, outChan); denied {
+		if denied := e.checkToolPermission(result.toolCall, outChan); denied {
 			return
 		}
 
-		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, toolCall)
+		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, result.toolCall)
 		if err != nil {
 			outChan <- provider.StreamChunk{Error: err, Done: true}
 			return
 		}
 
-		e.storeAssistantToolUse(toolCall, responseContent)
-		e.storeToolResult(toolCall.ID, toolResult)
+		e.storeAssistantToolUse(result.toolCall, result.responseContent)
+		e.storeToolResult(result.toolCall.ID, toolResult)
 
 		resultContent := toolResult.Output
 		isError := toolResult.Error != nil
@@ -727,7 +727,7 @@ func (e *Engine) streamWithToolLoop(
 			},
 		}
 
-		messages = e.appendToolResultToMessages(messages, toolCall, toolResult)
+		messages = e.appendToolResultToMessages(messages, result.toolCall, toolResult)
 
 		e.evictCompletedBackgroundTasks()
 
@@ -764,6 +764,14 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 	}
 }
 
+// streamChunkResult carries the assembled output from processStreamChunks.
+type streamChunkResult struct {
+	toolCall        *provider.ToolCall
+	responseContent string
+	thinkingContent string
+	done            bool
+}
+
 // processStreamChunks reads chunks from the provider stream until a tool call or completion.
 //
 // Expected:
@@ -781,17 +789,18 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 //   - Sends error chunks if context is cancelled.
 func (e *Engine) processStreamChunks(
 	ctx context.Context, sessionID string, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
-) (*provider.ToolCall, string, bool) {
+) streamChunkResult {
 	var responseContent strings.Builder
+	var thinkingContent strings.Builder
 
 	for {
 		select {
 		case <-ctx.Done():
 			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-			return nil, responseContent.String(), true
+			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
-				return nil, responseContent.String(), false
+				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String()}
 			}
 
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
@@ -804,14 +813,19 @@ func (e *Engine) processStreamChunks(
 					}))
 				}
 				outChan <- chunk
-				return chunk.ToolCall, responseContent.String(), false
+				return streamChunkResult{
+					toolCall:        chunk.ToolCall,
+					responseContent: responseContent.String(),
+					thinkingContent: thinkingContent.String(),
+				}
 			}
 
+			thinkingContent.WriteString(chunk.Thinking)
 			responseContent.WriteString(chunk.Content)
 			outChan <- chunk
 
 			if chunk.Done {
-				return nil, responseContent.String(), true
+				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 			}
 		}
 	}
@@ -1092,12 +1106,12 @@ func (e *Engine) embedMessage(ctx context.Context, content string) {
 //   - Appends a message to the context store if configured.
 //   - Dual-writes to the chain store if one is configured (assistant messages only).
 //   - Embeds the response if an embedding provider is configured.
-func (e *Engine) storeResponse(ctx context.Context, content string) {
-	if e.store == nil || content == "" {
+func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
+	if e.store == nil || (content == "" && thinking == "") {
 		return
 	}
 
-	assistantMsg := provider.Message{Role: "assistant", Content: content}
+	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking}
 	e.store.Append(assistantMsg)
 	e.dualWriteToChainStore(assistantMsg)
 	e.embedMessage(ctx, content)
@@ -1116,8 +1130,8 @@ func (e *Engine) storeResponse(ctx context.Context, content string) {
 // Side effects:
 //   - Stores the response via storeResponse.
 //   - Publishes a provider.response event on the engine bus.
-func (e *Engine) completeResponse(ctx context.Context, sessionID string, content string) {
-	e.storeResponse(ctx, content)
+func (e *Engine) completeResponse(ctx context.Context, sessionID string, content, thinking string) {
+	e.storeResponse(ctx, content, thinking)
 	e.publishProviderResponseEvent(sessionID, content)
 }
 

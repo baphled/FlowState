@@ -14,13 +14,14 @@ type Message struct {
 	Role      string
 	Content   string
 	ToolCalls []ToolCall
+	Thinking  string
 }
 
 // ToolCall represents a tool invocation request from the model.
 type ToolCall struct {
 	ID        string
 	Name      string
-	Arguments map[string]interface{}
+	Arguments map[string]any
 }
 
 // ToolResultInfo carries tool execution output in a stream chunk.
@@ -47,7 +48,7 @@ type Tool struct {
 // ToolSchema describes the input schema for a tool.
 type ToolSchema struct {
 	Type       string
-	Properties map[string]interface{}
+	Properties map[string]any
 	Required   []string
 }
 
@@ -91,7 +92,8 @@ type StreamChunk struct {
 	// Event carries a streaming.ProgressEvent or other streaming.Event implementation.
 	// Set by the streaming infrastructure (not by providers directly) to convey typed
 	// progress data to consumers such as SSE and WebSocket handlers.
-	Event interface{}
+	Event    any
+	Thinking string
 }
 
 // EmbedRequest contains the parameters for an embedding request.

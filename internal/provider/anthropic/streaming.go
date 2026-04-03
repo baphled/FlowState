@@ -18,6 +18,8 @@ import (
 type streamEventHandler struct {
 	toolArgsBuf      map[int64]*strings.Builder
 	pendingToolCalls map[int64]*provider.ToolCall
+	thinkingBuf      *strings.Builder
+	inThinkingBlock  bool
 }
 
 // newStreamEventHandler creates a handler for processing Anthropic streaming events.
@@ -31,6 +33,7 @@ func newStreamEventHandler() *streamEventHandler {
 	return &streamEventHandler{
 		toolArgsBuf:      make(map[int64]*strings.Builder),
 		pendingToolCalls: make(map[int64]*provider.ToolCall),
+		thinkingBuf:      &strings.Builder{},
 	}
 }
 
@@ -82,6 +85,10 @@ func (h *streamEventHandler) handleContentBlockStart(
 		}
 		h.toolArgsBuf[event.Index] = &strings.Builder{}
 	}
+	if event.ContentBlock.Type == "thinking" {
+		h.thinkingBuf.Reset()
+		h.inThinkingBlock = true
+	}
 	return provider.StreamChunk{}, false
 }
 
@@ -107,6 +114,9 @@ func (h *streamEventHandler) handleContentBlockDelta(
 			buf.WriteString(event.Delta.PartialJSON)
 		}
 	}
+	if event.Delta.Type == "thinking_delta" && h.inThinkingBlock {
+		h.thinkingBuf.WriteString(event.Delta.Thinking)
+	}
 	return provider.StreamChunk{}, false
 }
 
@@ -125,6 +135,12 @@ func (h *streamEventHandler) handleContentBlockDelta(
 func (h *streamEventHandler) handleContentBlockStop(
 	event anthropicAPI.MessageStreamEventUnion,
 ) (provider.StreamChunk, bool) {
+	if h.inThinkingBlock {
+		thinking := h.thinkingBuf.String()
+		h.thinkingBuf.Reset()
+		h.inThinkingBlock = false
+		return provider.StreamChunk{Thinking: thinking}, true
+	}
 	tc, hasTool := h.pendingToolCalls[event.Index]
 	if !hasTool {
 		return provider.StreamChunk{}, false
