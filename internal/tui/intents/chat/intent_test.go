@@ -714,6 +714,52 @@ var _ = Describe("ChatIntent", func() {
 			})
 		})
 
+		Context("when thinking content arrives during streaming", func() {
+			It("accumulates thinking chunks until the stream is done", func() {
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Thinking: "First thought. ", Done: false})
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Thinking: "Second thought.", Done: false})
+
+				Expect(intent.AllViewMessagesForTest()).NotTo(ContainElement(HaveField("Role", Equal("thinking"))))
+			})
+
+			It("adds a thinking message when the stream finishes", func() {
+				intent.SetStreamingForTest(true)
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Thinking: "First thought. "})
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Thinking: "Second thought.", Done: true})
+
+				messages := intent.AllViewMessagesForTest()
+				found := false
+				for _, msg := range messages {
+					if msg.Role == "thinking" {
+						found = true
+						Expect(msg.Content).To(Equal("First thought. Second thought."))
+					}
+				}
+				Expect(found).To(BeTrue())
+			})
+		})
+
+		Describe("Thinking Display Integration", func() {
+			BeforeEach(func() {
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+				intent.SetStreamingForTest(true)
+			})
+
+			It("renders 💭 content in the view after stream completes", func() {
+				intent.Update(chat.StreamChunkMsg{Thinking: "Some reasoning.", Done: false})
+				intent.Update(chat.StreamChunkMsg{Thinking: " More thinking.", Done: true})
+
+				Expect(intent.View()).To(ContainSubstring("💭"))
+				Expect(intent.View()).To(ContainSubstring("Some reasoning."))
+			})
+
+			It("does not render thinking content before completion", func() {
+				intent.Update(chat.StreamChunkMsg{Thinking: "Hidden thought.", Done: false})
+
+				Expect(intent.View()).NotTo(ContainSubstring("Hidden thought."))
+			})
+		})
+
 		Context("readStreamChunk behaviour", func() {
 			It("reads a single chunk from the stream channel", func() {
 				ch := make(chan provider.StreamChunk, 1)
@@ -739,6 +785,7 @@ var _ = Describe("ChatIntent", func() {
 				Expect(chunkMsg.Error).To(MatchError("stream error"))
 				Expect(chunkMsg.Done).To(BeTrue())
 			})
+
 		})
 
 		Context("sendMessage with streaming engine", func() {

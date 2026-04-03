@@ -157,3 +157,12 @@ All commits properly attributed via `AI_AGENT="Opencode" AI_MODEL="claude-sonnet
 - Both committed on feature/agent-platform
 - Added BlockTool for collapsed/expanded tool output rendering; keep styles prebuilt in constructor and use ToolIcon wrapper for shared icon mapping.
 - BlockTool collapsed view should stay single-line with truncated input; expanded view should reuse rounded left-border styling and clamp output lines.
+- Added Thinking plumbing across StreamChunk, Message, Anthropic streaming, and engine storage.
+- Anthropic thinking blocks use a dedicated buffer and emit Thinking on content_block_stop.
+- Engine now accumulates thinking separately, but stores it alongside assistant responses.
+- A result struct replaced multiple return values to satisfy lint limits and keep processStreamChunks readable.
+- Thinking chunks now accumulate in `Intent.activeThinking` and are only committed as a `thinking` message when the stream finishes.
+- `provider.StreamChunk` and `StreamChunkMsg` now both carry `Thinking`, so provider handlers can forward reasoning output without changing the streaming loop.
+- `thinking` is rendered as a muted tool-style message with a 💭 prefix in the chat message widget.
+- Thinking content must be stored raw in the chat view and only rendered with the 💭 prefix at widget render time.
+- Integration coverage should assert both the accumulated thinking message and the rendered view output to catch prefix regressions.

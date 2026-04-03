@@ -94,7 +94,7 @@ func (w *MessageWidget) Render(width int) string {
 
 		sb.WriteString(w.contentStyle.Render(content))
 
-	case "tool_call", "tool_result", "tool_error", "skill_load", "system", "todo_update":
+	case "tool_call", "tool_result", "tool_error", "skill_load", "system", "todo_update", "thinking":
 		sb.WriteString(w.renderToolMessage())
 
 	default:
@@ -110,7 +110,7 @@ func (w *MessageWidget) Render(width int) string {
 // renderToolMessage renders tool-related messages with appropriate styling and emoji.
 //
 // Expected:
-//   - w.role is one of: "tool_call", "tool_result", "tool_error", "skill_load", "system", "todo_update".
+//   - w.role is one of: "tool_call", "tool_result", "tool_error", "skill_load", "system", "todo_update", "thinking".
 //
 // Returns:
 //   - A styled string with emoji prefix and content.
@@ -131,6 +131,8 @@ func (w *MessageWidget) renderToolMessage() string {
 		return w.systemStyle.Render(w.content)
 	case "todo_update":
 		return w.todoStyle.Render(w.content)
+	case "thinking":
+		return w.systemStyle.Render("💭 " + w.content)
 	default:
 		return ""
 	}

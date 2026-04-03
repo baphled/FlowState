@@ -47,6 +47,7 @@ type StreamChunkMsg struct {
 	ToolResult     string
 	ToolIsError    bool
 	DelegationInfo *provider.DelegationInfo
+	Thinking       string
 	Next           tea.Cmd
 }
 
@@ -169,6 +170,7 @@ type Intent struct {
 	notificationManager notification.Manager
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
+	activeThinking string
 	streamCancel   context.CancelFunc
 	completionChan <-chan streaming.CompletionNotificationEvent
 	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
@@ -732,6 +734,8 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		}
 	}
 
+	i.appendThinking(msg.Thinking)
+
 	committedSkill := false
 	lastToolCall := ""
 	if msg.ToolCallName != "" {
@@ -765,11 +769,42 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
+	i.flushThinking(msg.Done)
+
 	if msg.Done && i.engine != nil {
 		contextResult := i.engine.LastContextResult()
 		i.tokenCount = contextResult.TokensUsed
 		i.syncStatusBar()
 	}
+}
+
+// appendThinking accumulates streaming thinking content for later display.
+//
+// Expected:
+//   - thinking is a partial reasoning fragment from the provider stream.
+//
+// Side effects:
+//   - Appends the fragment to the active thinking buffer when present.
+func (i *Intent) appendThinking(thinking string) {
+	if thinking == "" {
+		return
+	}
+	i.activeThinking += thinking
+}
+
+// flushThinking commits accumulated thinking content when streaming ends.
+//
+// Expected:
+//   - done is true when the stream has completed.
+//
+// Side effects:
+//   - Adds a thinking message to the chat view and clears the buffer when done.
+func (i *Intent) flushThinking(done bool) {
+	if !done || i.activeThinking == "" {
+		return
+	}
+	i.view.AddMessage(chat.Message{Role: "thinking", Content: i.activeThinking})
+	i.activeThinking = ""
 }
 
 // handleStreamChunkMsg processes a StreamChunkMsg and returns the appropriate tea.Cmd.
@@ -1096,6 +1131,7 @@ func (i *Intent) readNextChunk() tea.Msg {
 		ToolCallName:   toolCallName,
 		ToolStatus:     toolStatus,
 		DelegationInfo: chunk.DelegationInfo,
+		Thinking:       chunk.Thinking,
 	}
 
 	if chunk.ToolResult != nil {
@@ -1154,6 +1190,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		ToolCallName:   toolCallName,
 		ToolStatus:     toolStatus,
 		DelegationInfo: chunk.DelegationInfo,
+		Thinking:       chunk.Thinking,
 	}
 
 	if chunk.ToolResult != nil {
