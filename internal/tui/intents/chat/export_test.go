@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
@@ -256,4 +257,9 @@ func SplitToolSummaryForTest(summary string) (name, input string) {
 // SetModelNameForTest sets the model name for testing mid-stream model changes.
 func (i *Intent) SetModelNameForTest(name string) {
 	i.modelName = name
+}
+
+// RenderSessionContentForTest exposes renderSessionContent for external test assertions.
+func (i *Intent) RenderSessionContentForTest(sess *session.Session) string {
+	return i.renderSessionContent(sess)
 }

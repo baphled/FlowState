@@ -508,7 +508,8 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if sel := i.delegationPickerModal.Selected(); sel != nil {
 			i.delegationPickerModal = nil
-			i.sessionViewerModal = chat.NewSessionViewerModal(sel.ID, "", i.width, i.height)
+			content := i.renderSessionContent(sel)
+			i.sessionViewerModal = chat.NewSessionViewerModal(sel.ID, content, i.width, i.height)
 		}
 	}
 	return nil
@@ -1933,6 +1934,41 @@ func toolCallArgKey(name string) string {
 	default:
 		return ""
 	}
+}
+
+// renderSessionContent renders the messages of a child session into a displayable string.
+//
+// Expected:
+//   - sess is a non-nil session with populated Messages.
+//
+// Returns:
+//   - A rendered string of all session messages using the chat view pipeline.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderSessionContent(sess *session.Session) string {
+	v := chat.NewView()
+	v.SetDimensions(i.width, i.height)
+	for _, msg := range sess.Messages {
+		switch msg.Role {
+		case "tool_result":
+			v.AddMessage(chat.Message{
+				Role:      "tool_result",
+				Content:   msg.Content,
+				ToolName:  msg.ToolName,
+				ToolInput: msg.ToolInput,
+			})
+		case "tool_call":
+			summary := msg.ToolName
+			if msg.ToolInput != "" {
+				summary = msg.ToolName + ": " + msg.ToolInput
+			}
+			v.AddMessage(chat.Message{Role: "tool_call", Content: summary})
+		default:
+			v.AddMessage(chat.Message{Role: msg.Role, Content: msg.Content})
+		}
+	}
+	return v.RenderContent(i.width)
 }
 
 // handleSessionLoaded processes the result of an async session load.
