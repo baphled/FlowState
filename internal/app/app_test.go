@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
@@ -342,13 +343,18 @@ When to use: Testing purposes
 					{Name: "test-server", Command: "test-cmd", Enabled: true},
 				}
 
-				tools := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(2))
 				Expect(tools[0].Name()).To(Equal("echo"))
 				Expect(tools[1].Name()).To(Equal("fetch"))
 				Expect(client.connectCalls).To(HaveLen(1))
 				Expect(client.connectCalls[0].Name).To(Equal("test-server"))
+				Expect(results).To(HaveLen(1))
+				Expect(results[0].Name).To(Equal("test-server"))
+				Expect(results[0].Success).To(BeTrue())
+				Expect(results[0].Error).To(BeEmpty())
+				Expect(results[0].ToolCount).To(Equal(2))
 			})
 		})
 
@@ -358,10 +364,11 @@ When to use: Testing purposes
 					{Name: "disabled-server", Command: "test-cmd", Enabled: false},
 				}
 
-				tools := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(BeEmpty())
 				Expect(client.connectCalls).To(BeEmpty())
+				Expect(results).To(BeEmpty())
 			})
 		})
 
@@ -384,10 +391,22 @@ When to use: Testing purposes
 					{Name: "good-server", Command: "good-cmd", Enabled: true},
 				}
 
-				tools := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(1))
 				Expect(tools[0].Name()).To(Equal("good-tool"))
+
+				Expect(results).To(ContainElement(MatchFields(IgnoreExtras, Fields{
+					"Name":    Equal("bad-server"),
+					"Success": BeFalse(),
+					"Error":   ContainSubstring("connection refused"),
+				})))
+				Expect(results).To(ContainElement(MatchFields(IgnoreExtras, Fields{
+					"Name":      Equal("good-server"),
+					"Success":   BeTrue(),
+					"Error":     BeEmpty(),
+					"ToolCount": Equal(1),
+				})))
 			})
 		})
 
@@ -407,10 +426,20 @@ When to use: Testing purposes
 					{Name: "ok-server", Command: "cmd2", Enabled: true},
 				}
 
-				tools := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(1))
 				Expect(tools[0].Name()).To(Equal("working-tool"))
+				Expect(results).To(HaveLen(2))
+				// broken-server should be failure
+				Expect(results[0].Name).To(Equal("broken-server"))
+				Expect(results[0].Success).To(BeFalse())
+				Expect(results[0].Error).To(ContainSubstring("list tools failed"))
+				// ok-server should be success
+				Expect(results[1].Name).To(Equal("ok-server"))
+				Expect(results[1].Success).To(BeTrue())
+				Expect(results[1].Error).To(BeEmpty())
+				Expect(results[1].ToolCount).To(Equal(1))
 			})
 		})
 	})

@@ -41,7 +41,7 @@ var _ = Describe("DiscoverMCPServers", func() {
 				if s.Name == "flowstate-memory" {
 					found = true
 					Expect(s.Command).To(ContainSubstring("flowstate-memory-server"))
-					Expect(s.Enabled).To(BeFalse())
+					Expect(s.Enabled).To(BeTrue())
 				}
 			}
 			Expect(found).To(BeTrue())

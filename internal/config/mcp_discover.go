@@ -21,7 +21,7 @@ func DiscoverMCPServers() []MCPServerConfig {
 		servers = append(servers, MCPServerConfig{
 			Name:    "memory",
 			Command: path,
-			Enabled: false,
+			Enabled: true,
 		})
 	}
 
@@ -29,7 +29,7 @@ func DiscoverMCPServers() []MCPServerConfig {
 		servers = append(servers, MCPServerConfig{
 			Name:    "vault-rag",
 			Command: path,
-			Enabled: false,
+			Enabled: true,
 		})
 	}
 
@@ -37,7 +37,7 @@ func DiscoverMCPServers() []MCPServerConfig {
 		servers = append(servers, MCPServerConfig{
 			Name:    "flowstate-memory",
 			Command: path,
-			Enabled: false,
+			Enabled: true,
 		})
 	}
 
@@ -50,7 +50,7 @@ func DiscoverMCPServers() []MCPServerConfig {
 			Name:    "filesystem",
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", home},
-			Enabled: false,
+			Enabled: true,
 		})
 	}
 

@@ -58,6 +58,14 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 )
 
+// MCPConnectionResult contains the result of attempting to connect to an MCP server.
+type MCPConnectionResult struct {
+	Name      string
+	Success   bool
+	Error     string
+	ToolCount int
+}
+
 // App is the main application container holding all initialized components.
 type App struct {
 	Config            *config.AppConfig
@@ -448,7 +456,23 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	todoStore := todotool.NewMemoryStore()
 	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore)
 	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
-	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
+	tools, results := ConnectMCPServers(context.Background(), mcpMgr, allServers)
+	appTools = append(appTools, tools...)
+
+	// Log MCP connection summary
+	connected := 0
+	for _, r := range results {
+		if r.Success {
+			connected++
+		} else {
+			log.Printf("warning: MCP server %q: %v", r.Name, r.Error)
+		}
+	}
+	toolCount := 0
+	for _, r := range results {
+		toolCount += r.ToolCount
+	}
+	log.Printf("info: MCP servers: %d/%d connected (%d tools available)", connected, len(results), toolCount)
 	toolRegistry, permHandler := buildToolsSetup(appTools)
 	return toolPipelineResult{
 		mcpManager:        mcpMgr,
@@ -1031,8 +1055,13 @@ func buildToolsSetup(tools []tool.Tool) (*tool.Registry, tool.PermissionHandler)
 // Side effects:
 //   - Connects to MCP servers via the client.
 //   - Logs warnings for connection or tool listing failures.
-func ConnectMCPServers(ctx context.Context, client mcpclient.Client, servers []config.MCPServerConfig) []tool.Tool {
+func ConnectMCPServers(
+	ctx context.Context,
+	client mcpclient.Client,
+	servers []config.MCPServerConfig,
+) ([]tool.Tool, []MCPConnectionResult) {
 	var tools []tool.Tool
+	var results []MCPConnectionResult
 	for _, serverCfg := range servers {
 		if !serverCfg.Enabled {
 			continue
@@ -1045,18 +1074,36 @@ func ConnectMCPServers(ctx context.Context, client mcpclient.Client, servers []c
 		}
 		if err := client.Connect(ctx, mcpServerConfig); err != nil {
 			log.Printf("warning: MCP server %q failed to connect: %v", serverCfg.Name, err)
+			results = append(results, MCPConnectionResult{
+				Name:      serverCfg.Name,
+				Success:   false,
+				Error:     err.Error(),
+				ToolCount: 0,
+			})
 			continue
 		}
 		serverTools, err := client.ListTools(ctx, serverCfg.Name)
 		if err != nil {
 			log.Printf("warning: MCP server %q ListTools failed: %v", serverCfg.Name, err)
+			results = append(results, MCPConnectionResult{
+				Name:      serverCfg.Name,
+				Success:   false,
+				Error:     err.Error(),
+				ToolCount: 0,
+			})
 			continue
 		}
 		for _, t := range serverTools {
 			tools = append(tools, mcpproxy.NewProxy(client, serverCfg.Name, t))
 		}
+		results = append(results, MCPConnectionResult{
+			Name:      serverCfg.Name,
+			Success:   true,
+			Error:     "",
+			ToolCount: len(serverTools),
+		})
 	}
-	return tools
+	return tools, results
 }
 
 // mergeMCPServers merges discovered MCP servers with configured servers,
