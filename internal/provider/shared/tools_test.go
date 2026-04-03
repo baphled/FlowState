@@ -64,3 +64,22 @@ var _ = Describe("BuildBaseToolSchema", func() {
 		})
 	})
 })
+
+var _ = Describe("ParseToolArguments", func() {
+	It("parses a valid JSON string into a map", func() {
+		args := `{"foo": "bar", "num": 42}`
+		result := shared.ParseToolArguments(args)
+		Expect(result).To(HaveKeyWithValue("foo", "bar"))
+		Expect(result).To(HaveKeyWithValue("num", BeNumerically("==", 42)))
+	})
+
+	It("returns an empty map for an empty string", func() {
+		result := shared.ParseToolArguments("")
+		Expect(result).To(BeEmpty())
+	})
+
+	It("returns an empty map for invalid JSON", func() {
+		result := shared.ParseToolArguments("not a json")
+		Expect(result).To(BeEmpty())
+	})
+})

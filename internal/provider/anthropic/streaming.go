@@ -1,11 +1,11 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/shared"
 )
 
 // streamEventHandler accumulates tool call arguments across streaming events.
@@ -130,7 +130,7 @@ func (h *streamEventHandler) handleContentBlockStop(
 		return provider.StreamChunk{}, false
 	}
 	if buf, ok := h.toolArgsBuf[event.Index]; ok {
-		tc.Arguments = parseToolArguments(buf.String())
+		tc.Arguments = shared.ParseToolArguments(buf.String())
 	}
 	delete(h.pendingToolCalls, event.Index)
 	delete(h.toolArgsBuf, event.Index)
@@ -138,26 +138,4 @@ func (h *streamEventHandler) handleContentBlockStop(
 		EventType: "tool_call",
 		ToolCall:  tc,
 	}, true
-}
-
-// parseToolArguments deserialises a JSON string into a map of tool arguments.
-//
-// Expected:
-//   - raw is a valid JSON object string, or empty.
-//
-// Returns:
-//   - A map of argument key-value pairs on success.
-//   - nil if raw is empty or cannot be parsed.
-//
-// Side effects:
-//   - None.
-func parseToolArguments(raw string) map[string]interface{} {
-	if raw == "" {
-		return nil
-	}
-	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return nil
-	}
-	return args
 }

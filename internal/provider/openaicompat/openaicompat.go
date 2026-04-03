@@ -134,24 +134,6 @@ func BuildParams(req provider.ChatRequest) openaiAPI.ChatCompletionNewParams {
 	return params
 }
 
-// ParseToolCallArguments parses raw JSON tool call arguments into a map.
-//
-// Expected:
-//   - raw is a JSON string of tool call arguments.
-//
-// Returns:
-//   - A map of argument names to values, or an empty map on parse failure.
-//
-// Side effects:
-//   - None.
-func ParseToolCallArguments(raw string) map[string]interface{} {
-	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return map[string]interface{}{}
-	}
-	return args
-}
-
 // ExtractToolCalls converts OpenAI tool call objects to provider ToolCall objects.
 //
 // Expected:
@@ -172,7 +154,7 @@ func ExtractToolCalls(toolCalls []openaiAPI.ChatCompletionMessageToolCall) []pro
 		result = append(result, provider.ToolCall{
 			ID:        tc.ID,
 			Name:      tc.Function.Name,
-			Arguments: ParseToolCallArguments(tc.Function.Arguments),
+			Arguments: shared.ParseToolArguments(tc.Function.Arguments),
 		})
 	}
 	return result
@@ -202,24 +184,24 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 			if len(chunk.Choices) > 0 {
 				delta := chunk.Choices[0].Delta
 				if delta.Content != "" {
-					ch <- provider.StreamChunk{Content: delta.Content}
+					shared.SendChunk(ctx, ch, provider.StreamChunk{Content: delta.Content})
 				}
 			}
 			if tc, ok := acc.JustFinishedToolCall(); ok {
-				ch <- provider.StreamChunk{
+				shared.SendChunk(ctx, ch, provider.StreamChunk{
 					ToolCall: &provider.ToolCall{
 						ID:        tc.ID,
 						Name:      tc.Name,
-						Arguments: ParseToolCallArguments(tc.Arguments),
+						Arguments: shared.ParseToolArguments(tc.Arguments),
 					},
-				}
+				})
 			}
 			if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
-				ch <- provider.StreamChunk{Done: true}
+				shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
 			}
 		}
 		if err := stream.Err(); err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: err, Done: true})
 		}
 	}()
 	return ch

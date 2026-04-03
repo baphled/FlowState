@@ -1,6 +1,10 @@
 package shared
 
-import "github.com/baphled/flowstate/internal/provider"
+import (
+	"encoding/json"
+
+	"github.com/baphled/flowstate/internal/provider"
+)
 
 // BaseToolSchema holds the provider-agnostic fields extracted from a provider.Tool.
 // It serves as an intermediate representation used by each provider to build
@@ -31,4 +35,26 @@ func BuildBaseToolSchema(t provider.Tool) BaseToolSchema {
 		Properties:  t.Schema.Properties,
 		Required:    t.Schema.Required,
 	}
+}
+
+// ParseToolArguments unmarshals a JSON string into a map of tool arguments.
+//
+// Expected:
+//   - raw is a JSON object string, or empty.
+//
+// Returns:
+//   - A map of argument key-value pairs on success.
+//   - nil if raw is empty or cannot be parsed.
+//
+// Side effects:
+//   - None.
+func ParseToolArguments(raw string) map[string]interface{} {
+	if raw == "" {
+		return nil
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return nil
+	}
+	return args
 }
