@@ -490,13 +490,13 @@ func formatCompletionReminder(msg BackgroundTaskCompletedMsg) string {
 //   - msg is a tea.KeyMsg from the Bubble Tea event loop.
 //
 // Returns:
-//   - Nothing.
+//   - A tea.Cmd to execute, or nil if no command is needed.
 //
 // Side effects:
-//   - Updates modal state or closes modal based on key press.
-func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) {
+//   - Updates modal state or dispatches NavigateToDelegationMsg on Enter.
+func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	if i.delegationPickerModal == nil {
-		return
+		return nil
 	}
 	switch msg.String() {
 	case "esc":
@@ -508,10 +508,23 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) {
 	case "enter":
 		if sel := i.delegationPickerModal.Selected(); sel != nil {
 			i.delegationPickerModal = nil
-			viewer := chat.NewSessionViewerModal(sel.ID, "", i.width, i.height)
-			i.sessionViewerModal = viewer
+			viewIntent := NewSessionViewIntent(SessionViewIntentConfig{
+				SessionID: sel.ID,
+				Content:   "",
+				Width:     i.width,
+				Height:    i.height,
+			})
+			viewIntent.SetBreadcrumbPath("Chat > " + sel.ID[:8])
+			return func() tea.Msg {
+				return tuiintents.NavigateToDelegationMsg{
+					Intent:    viewIntent,
+					SessionID: sel.ID,
+					ChainID:   "",
+				}
+			}
 		}
 	}
+	return nil
 }
 
 // handleSessionViewerKeyMsg processes keyboard input for the session viewer modal.
@@ -661,8 +674,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if i.delegationPickerModal != nil {
-		i.handleDelegationKeyMsg(msg)
-		return nil
+		return i.handleDelegationKeyMsg(msg)
 	}
 	if i.handleModalKeyMsg(msg) {
 		return nil
