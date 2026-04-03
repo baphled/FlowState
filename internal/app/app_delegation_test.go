@@ -249,6 +249,35 @@ func TestWireDelegateToolIfEnabled_SkipsWhenCanDelegateFalse(t *testing.T) {
 		"agent without can_delegate should not have delegate tool")
 }
 
+func TestCreateDelegateEngine_HasChatProvider(t *testing.T) {
+	app := &App{
+		Registry:        agent.NewRegistry(),
+		defaultProvider: &mockProvider{name: "anthropic"},
+	}
+
+	explorerManifest := agent.Manifest{
+		ID:                "explorer",
+		Name:              "Explorer Agent",
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	app.Registry.Register(&explorerManifest)
+
+	providerReg := provider.NewRegistry()
+	providerReg.Register(&mockProvider{name: "ollama"})
+	app.providerRegistry = providerReg
+
+	coordinationStore := coordination.NewMemoryStore()
+
+	delegateEngine := app.createDelegateEngine(explorerManifest, coordinationStore)
+	require.NotNil(t, delegateEngine)
+
+	_, err := delegateEngine.Stream(context.Background(), "", "hello")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "no provider available",
+		"delegate engine should have a chat provider configured")
+}
+
 func TestCreateDelegateEngine_ReturnsIsolatedEngine(t *testing.T) {
 	// Given: App with registry containing target agent
 	app := &App{

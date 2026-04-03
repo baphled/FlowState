@@ -76,6 +76,7 @@ type App struct {
 	ollamaProvider    *ollama.Provider
 	metricsRegistry   *prometheus.Registry
 	Store             *plan.Store
+	defaultProvider   provider.Provider
 	backgroundManager *engine.BackgroundTaskManager
 }
 
@@ -277,6 +278,7 @@ func buildApp(params appBuildParams) *App {
 		providerRegistry: providerRegistry,
 		ollamaProvider:   ollamaProvider,
 		metricsRegistry:  runtime.metricsRegistry,
+		defaultProvider:  runtime.defaultProvider,
 	}
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
@@ -415,6 +417,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	)
 	return &runtimeComponents{
 		engine:          eng,
+		defaultProvider: tracedProvider,
 		discovery:       disc,
 		streamer:        streamer,
 		apiServer:       apiServer,
@@ -444,6 +447,7 @@ type setupEngineParams struct {
 // runtimeComponents groups the runtime values created during engine setup.
 type runtimeComponents struct {
 	engine          *engine.Engine
+	defaultProvider provider.Provider
 	discovery       *discovery.AgentDiscovery
 	streamer        streaming.Streamer
 	apiServer       *api.Server
@@ -617,6 +621,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
 	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil, nil)
 	eng := engine.New(engine.Config{
+		ChatProvider:  a.defaultProvider,
 		Registry:      a.providerRegistry,
 		AgentRegistry: a.Registry,
 		Manifest:      manifest,
