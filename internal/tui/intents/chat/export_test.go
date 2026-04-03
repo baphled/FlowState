@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
@@ -25,8 +26,8 @@ func FormatErrorMessageForTest(err error) string {
 }
 
 // SetStreamingForTest sets the streaming state for testing purposes.
-func (i *Intent) SetStreamingForTest(streaming bool) {
-	i.view.SetStreaming(streaming, "")
+func (i *Intent) SetStreamingForTest(isStreaming bool) {
+	i.view.SetStreaming(isStreaming, "")
 }
 
 // ProviderNameForTest returns the current provider name for test assertions.
@@ -220,4 +221,29 @@ func (i *Intent) NotificationsViewForTest() string {
 // StreamingEventMetaForTest exposes streamingEventMeta for test assertions.
 func StreamingEventMetaForTest(eventType string) (string, notification.Level) {
 	return streamingEventMeta(eventType)
+}
+
+// SetBackgroundManagerForTest sets the background manager for testing purposes.
+func (i *Intent) SetBackgroundManagerForTest(mgr *engine.BackgroundTaskManager) {
+	i.backgroundManager = mgr
+}
+
+// BackgroundManagerForTest returns the background manager for test assertions.
+func (i *Intent) BackgroundManagerForTest() *engine.BackgroundTaskManager {
+	return i.backgroundManager
+}
+
+// HandleBackgroundTaskCompletedForTest exposes handleBackgroundTaskCompleted for test assertions.
+func (i *Intent) HandleBackgroundTaskCompletedForTest(msg BackgroundTaskCompletedMsg) tea.Cmd {
+	return i.handleBackgroundTaskCompleted(msg)
+}
+
+// CompletionChanForTest returns the completion channel for test assertions.
+func (i *Intent) CompletionChanForTest() <-chan streaming.CompletionNotificationEvent {
+	return i.completionChan
+}
+
+// FormatCompletionReminderForTest exposes formatCompletionReminder for test assertions.
+func FormatCompletionReminderForTest(msg BackgroundTaskCompletedMsg) string {
+	return formatCompletionReminder(msg)
 }

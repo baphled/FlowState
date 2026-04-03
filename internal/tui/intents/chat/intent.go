@@ -173,6 +173,8 @@ type Intent struct {
 	activeThinking string
 	streamCancel   context.CancelFunc
 	completionChan <-chan streaming.CompletionNotificationEvent
+	// backgroundManager tracks active background delegation tasks.
+	backgroundManager *engine.BackgroundTaskManager
 	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
 	cachedScreenLayout    *layout.ScreenLayout
 	breadcrumbPath        string
@@ -267,6 +269,20 @@ func NewIntent(cfg IntentConfig) *Intent {
 //   - Stores the channel reference for use in Init().
 func (i *Intent) SetCompletionChannel(ch <-chan streaming.CompletionNotificationEvent) {
 	i.completionChan = ch
+}
+
+// SetBackgroundManager attaches the background task manager for tracking active delegations.
+//
+// Expected:
+//   - mgr is a non-nil BackgroundTaskManager from the core app.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the manager reference on the intent.
+func (i *Intent) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
+	i.backgroundManager = mgr
 }
 
 // Init returns the initial command for the intent.
@@ -384,31 +400,37 @@ func (i *Intent) waitForCompletion() tea.Cmd {
 	}
 }
 
-// handleBackgroundTaskCompleted formats a system-reminder message and re-triggers
-// the planner stream so it can collect background task results.
+// handleBackgroundTaskCompleted records a completed background task and
+// re-triggers the planner only when all delegated tasks have finished.
 //
 // Expected:
-//   - msg contains task completion details from a background delegation.
+//   - msg contains task completion details.
 //
 // Returns:
-//   - A tea.Cmd that starts a new stream with the system-reminder message.
+//   - A tea.Cmd that waits for further completions and optionally starts a new stream.
 //
 // Side effects:
-//   - Adds a system message to the chat view and starts streaming.
+//   - Adds a system message to the chat view.
+//   - Starts a new LLM stream when no background tasks remain.
 func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) tea.Cmd {
 	reminder := formatCompletionReminder(msg)
-
 	i.view.AddMessage(chat.Message{Role: "system", Content: reminder})
-	i.view.StartStreaming()
 	i.atBottom = true
 	i.refreshViewport()
 
-	i.cancelActiveStream()
-	ctx, cancel := context.WithCancel(context.Background())
-	i.streamCancel = cancel
+	var cmds []tea.Cmd
 
-	cmds := []tea.Cmd{
-		func() tea.Msg {
+	if i.completionChan != nil {
+		cmds = append(cmds, i.waitForCompletion())
+	}
+
+	allDone := i.backgroundManager == nil || i.backgroundManager.ActiveCount() == 0
+	if allDone {
+		i.view.StartStreaming()
+		i.cancelActiveStream()
+		ctx, cancel := context.WithCancel(context.Background())
+		i.streamCancel = cancel
+		cmds = append(cmds, func() tea.Msg {
 			var stream <-chan provider.StreamChunk
 			var err error
 			if i.sessionManager != nil {
@@ -421,11 +443,7 @@ func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) t
 				return StreamChunkMsg{Content: "", Error: err, Done: true}
 			}
 			return i.readNextChunkFrom(stream)
-		},
-	}
-
-	if i.completionChan != nil {
-		cmds = append(cmds, i.waitForCompletion())
+		})
 	}
 
 	return tea.Batch(cmds...)

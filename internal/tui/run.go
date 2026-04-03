@@ -45,6 +45,12 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 		SessionStore:  application.Sessions,
 		ModelResolver: application.Engine.FailoverManager(),
 	})
+	if bgMgr := application.BackgroundManager(); bgMgr != nil {
+		ch := make(chan streaming.CompletionNotificationEvent, 64)
+		bgMgr.SetCompletionSubscriber(ch)
+		chatIntent.SetCompletionChannel(ch)
+		chatIntent.SetBackgroundManager(bgMgr)
+	}
 	appShell := app.New(chatIntent, application)
 	chatIntent.SetApp(appShell)
 	p := tea.NewProgram(appShell, tea.WithAltScreen(), tea.WithMouseCellMotion())

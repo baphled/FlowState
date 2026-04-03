@@ -393,21 +393,20 @@ func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ str
 }
 
 // notifyCompletionSubscriber sends a completion notification to the subscriber
-// channel if one is configured. The send is non-blocking to prevent deadlocks.
+// channel if one is configured. The send blocks until the receiver consumes;
+// this is safe because callers run in goroutines and the channel is buffered
+// (capacity 64) so it will not block in practice.
 //
 // Expected:
 //   - notification is a populated CompletionNotificationEvent.
 //
 // Side effects:
-//   - Attempts a non-blocking send to the subscriber channel.
+//   - Sends the notification on the subscriber channel (blocking).
 func (m *BackgroundTaskManager) notifyCompletionSubscriber(notification streaming.CompletionNotificationEvent) {
 	if m.completionSub == nil {
 		return
 	}
-	select {
-	case m.completionSub <- notification:
-	default:
-	}
+	m.completionSub <- notification
 }
 
 // Get returns a snapshot copy of the task with the given identifier.
