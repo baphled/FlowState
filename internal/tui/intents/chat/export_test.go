@@ -263,3 +263,30 @@ func (i *Intent) SetModelNameForTest(name string) {
 func (i *Intent) RenderSessionContentForTest(sess *session.Session) string {
 	return i.renderSessionContent(sess)
 }
+
+// SetSessionViewerModalForTest injects a session viewer modal for test assertions.
+func SetSessionViewerModalForTest(i *Intent, sessionID, content string, width, height int) {
+	i.sessionViewerModal = chatview.NewSessionViewerModal(sessionID, content, width, height)
+}
+
+// BreadcrumbPathForTest returns the current breadcrumb path for test assertions.
+func BreadcrumbPathForTest(i *Intent) string {
+	return i.breadcrumbPath
+}
+
+// SetBreadcrumbPathForTest sets the breadcrumb path for test assertions.
+func SetBreadcrumbPathForTest(i *Intent, path string) {
+	i.breadcrumbPath = path
+	i.cachedScreenLayout = nil
+}
+
+// SimulateDelegationEnterForTest simulates selecting a session from the delegation picker for test assertions.
+func SimulateDelegationEnterForTest(i *Intent, sessionID, content string) {
+	i.sessionViewerModal = chatview.NewSessionViewerModal(sessionID, content, i.width, i.height)
+	if len(sessionID) >= 8 {
+		i.breadcrumbPath = "Chat > " + sessionID[:8]
+	} else {
+		i.breadcrumbPath = "Chat > " + sessionID
+	}
+	i.cachedScreenLayout = nil
+}

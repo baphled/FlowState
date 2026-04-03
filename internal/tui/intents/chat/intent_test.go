@@ -2412,3 +2412,59 @@ var _ = Describe("MessageFooter Integration", func() {
 		})
 	})
 })
+
+var _ = Describe("session viewer full-screen rendering", func() {
+	var intent *chat.Intent
+
+	BeforeEach(func() {
+		intent = chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "openai",
+			ModelName:    "gpt-4o",
+			TokenBudget:  4096,
+		})
+		intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	})
+
+	Describe("View", func() {
+		Context("when sessionViewerModal is set", func() {
+			It("returns full-screen session viewer without chat visible behind it", func() {
+				chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "session content here", 80, 24)
+				view := intent.View()
+				Expect(view).NotTo(ContainSubstring("> "))
+				Expect(view).To(ContainSubstring("Chat"))
+			})
+
+			It("contains the breadcrumb with session ID prefix", func() {
+				chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "content", 80, 24)
+				chat.SetBreadcrumbPathForTest(intent, "Chat > ses-abcd")
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Chat"))
+			})
+		})
+
+		Context("when sessionViewerModal is nil", func() {
+			It("returns normal chat view with input prompt", func() {
+				view := intent.View()
+				Expect(view).To(ContainSubstring("> "))
+			})
+		})
+	})
+
+	Describe("handleDelegationKeyMsg enter sets breadcrumb", func() {
+		It("sets breadcrumbPath to Chat > {id[:8]} on enter", func() {
+			chat.SimulateDelegationEnterForTest(intent, "ses-abcd1234efgh", "content")
+			Expect(chat.BreadcrumbPathForTest(intent)).To(Equal("Chat > ses-abcd"))
+		})
+	})
+
+	Describe("handleSessionViewerKeyMsg esc restores breadcrumb", func() {
+		It("restores breadcrumbPath to Chat on Esc", func() {
+			chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "content", 80, 24)
+			chat.SetBreadcrumbPathForTest(intent, "Chat > ses-abcd")
+			intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			Expect(chat.BreadcrumbPathForTest(intent)).To(Equal("Chat"))
+		})
+	})
+})

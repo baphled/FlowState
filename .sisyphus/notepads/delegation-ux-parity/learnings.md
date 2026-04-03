@@ -166,3 +166,201 @@ All commits properly attributed via `AI_AGENT="Opencode" AI_MODEL="claude-sonnet
 - `thinking` is rendered as a muted tool-style message with a 💭 prefix in the chat message widget.
 - Thinking content must be stored raw in the chat view and only rendered with the 💭 prefix at widget render time.
 - Integration coverage should assert both the accumulated thinking message and the rendered view output to catch prefix regressions.
+
+## [2026-04-03] Sessionviewer intent removal
+
+- Removed the dead `internal/tui/intents/sessionviewer/` package entirely.
+- The session viewer now lives only in `internal/tui/views/chat/session_viewer.go`, matching the view-first architecture.
+- Verified no external code depended on the intent package before deletion.
+- `go build ./...` and `make test` both passed after the removal.
+
+## Background Task Completion Wiring (2026-04-03)
+
+### Bugs Fixed
+1. **Completion channel never wired in run.go** — `chatIntent` was created without connecting to `BackgroundTaskManager`. Fixed by wiring `SetCompletionSubscriber`, `SetCompletionChannel`, and `SetBackgroundManager` after `NewIntent`.
+
+2. **LLM re-triggered on every single task completion** — `handleBackgroundTaskCompleted` immediately started a new LLM stream for each completion. Fixed by checking `backgroundManager.ActiveCount() == 0` before triggering. System messages still accumulate for each completion.
+
+3. **Non-blocking drop in notifyCompletionSubscriber** — The `select/default` pattern silently dropped notifications when the channel was busy. Changed to blocking send since callers run in goroutines and the channel is buffered (cap 64).
+
+### Key Pattern: `handleTaskCompletion` early return
+The `handleTaskCompletion` method in `background.go` returns early if `task.ParentSessionID == ""`. The `ParentSessionID` is set from `session.IDKey{}` in the context. Tests that need notifications must provide a context with `context.WithValue(ctx, session.IDKey{}, "session-id")`.
+
+### Architecture Note
+The `engine` package is already imported by the `chat` intent, so adding `*engine.BackgroundTaskManager` as a field doesn't create circular dependencies. The `streaming` package was already imported in `run.go`.
+
+### Test Pattern
+Used `export_test.go` pattern for exposing internal methods to tests. The Ginkgo test file follows the existing BDD structure with Describe/Context/It blocks.
+
+## Wire BlockTool and Agent Colour (2026-04-03)
+
+### Key patterns discovered:
+- `chat.Message` struct is the data carrier between intent → view → widget pipeline
+- View creates assistant messages internally (FlushPartialResponse, finaliseChunk) — needed agentColor/modelID fields on View itself to stamp them
+- `lipgloss.Color("")` is the zero value sentinel for "use theme default"
+- `theme.ResolveAgentColor(manifest, index, theme)` resolves agent colour from manifest or palette
+- Pre-existing BDD test failure: `Assistant_text_appears_before_tool_call_indicator_during_streaming` — ToolCallWidget doesn't include tool name when status="running"
+
+### Approach:
+1. Added ToolName/AgentColor/ModelID to chat.Message struct
+2. Added matching fields + setters to MessageWidget
+3. Updated MessageWidget.Render() — tool_result uses BlockTool when toolName set; assistant uses agentColor + modelID footer
+4. View stores agentColor/modelID and stamps them on internally-created messages
+5. Intent calls syncViewAgentMeta() at init and on every agent/model switch
+6. handleSessionLoaded stamps stored assistant messages with current agent colour
+
+### Testing:
+- 7 new test specs across message_test.go and view_test.go
+- All 485 specs pass (74 chat view + 185 widgets + 226 chat intent)
+- make check passes, lint clean
+
+## [2026-04-03] T31: Standalone MessageFooter widget
+
+### What was built
+- `internal/tui/uikit/widgets/message_footer.go` — standalone `MessageFooter` widget with `NewMessageFooter`, `SetMetadata`, `Render`, and unexported helpers `titleCase`, `formatDuration`, `itoa`
+- `internal/tui/uikit/widgets/message_footer_test.go` — 18 Ginkgo specs covering construction, rendering, duration formatting, mode title-casing, interrupted flag, and agentColor tinting
+- `MessageWidget` wired: replaced inline footer stub with `MessageFooter` call; added `footer *MessageFooter`, `mode string`, `duration time.Duration`, `interrupted bool` fields and `SetMode`, `SetDuration`, `SetInterrupted` setters
+
+### Key learnings
+- **Duration formatting**: `< 1s → Nms`, `< 60s → Ns`, `>= 60s → Nm Ns` — no external packages; pure integer arithmetic via `itoa` helper avoids `fmt.Sprintf`
+- **Intent stamps modelName onto history messages**: When loading session history, the chat intent stamps its current `modelName` onto assistant messages that have no `ModelID`. A test asserting `NotTo(ContainSubstring("▣"))` for a no-ModelID message will fail — the correct test is a positive assertion that `current-model` appears
+- **Docblock checker requires ALL sections on unexported functions too**: `Expected:`, `Returns:`, and `Side effects:` sections required on `titleCase`, `formatDuration`, `itoa` — not just exported functions/methods
+- **LSP errors are stale after file creation**: After writing `message_footer.go`, LSP still showed `undefined: widgets.NewMessageFooter` errors. These were stale — `go test` confirmed GREEN immediately
+- **`assistantLabelStyle` per-render construction is correct**: The label colour depends on `agentColor` (dynamic per-message), so `lipgloss.NewStyle()` is called each render — the field was added to the struct but per-render construction is intentional
+
+### Commit
+- `02da8e3 feat(tui): add per-message metadata footer widget`
+- All 208+ widget specs pass; `make check` exits 0
+
+
+### 2026-04-03 F1 Audit Learning
+- T21-T23 were completed as chat-local modals (`delegation_picker.go`, `session_viewer.go`) rather than the plan's dedicated intents/navigation model, which makes plan checkbox completion diverge from actual Must Have compliance.
+- Defining widgets is not enough for plan compliance: `CollapsibleDelegationBlock` and `BlockTool` both need end-to-end wiring into the active chat rendering path.
+
+## [2026-04-03] Full Intent Switch for Child Session Viewing (T28-T29)
+
+### What was built
+- `internal/tui/intents/chat/session_view_intent.go` — `SessionViewIntent` implementing `tuiintents.Intent` interface
+  - Read-only view: Up/Down/PgUp/PgDn/Home/End scroll, Esc returns to parent
+  - Breadcrumb set to `"Chat > {sessionID[:8]}"` on creation
+  - `SetBreadcrumbPath(path string)` method for custom breadcrumb path
+  - `Result()` returns `&IntentResult{Action: "navigate_parent"}` on Esc press
+- `internal/tui/intents/chat/session_view_intent_test.go` — 8 Ginkgo specs testing Init, Update, View, Result
+- Updated `internal/tui/intents/chat/intent.go`:
+  - `handleDelegationKeyMsg()` now returns `tea.Cmd` instead of void
+  - On Enter key: creates `SessionViewIntent`, sets breadcrumb path, dispatches `NavigateToDelegationMsg`
+  - Changed from modal overlay (previous `sessionViewerModal`) to full intent switch
+
+### Key learnings
+- **Intent interface**: `Update()` returns only `tea.Cmd`, not `(Model, Cmd)` like tea.Model
+- **Breadcrumb path**: Set BEFORE dispatching navigation message, stored in intent struct
+- **Navigation messages**: `NavigateToDelegationMsg{Intent, SessionID, ChainID}` pushes onto app stack; `NavigateToParentMsg` pops
+- **tea.KeyPgDn doesn't exist**: Use `tea.KeyPgDown` (same for PgUp)
+- **SessionViewerModal vs SessionViewIntent**: Previous T21-T23 used modal overlay; this T28-T29 uses full intent switch via navigation stack
+- **Result() mechanism**: Intent signals navigation back to parent by setting `Result()` with Action "navigate_parent" — app handles this via its Update loop
+
+### Test results
+- 8 new SessionViewIntent specs: PASS
+- 231 chat intent specs: PASS
+- All 485+ specs pass across codebase
+- Build: go build ./... ✓
+- make test ✓
+
+### Commit
+- `feat(tui): wire full intent switch for child session viewing`
+- Properly attributed via `AI_AGENT="Opencode" AI_MODEL="claude-sonnet-4-6" make ai-commit`
+
+## [2026-04-03] Session viewer architectural fix
+
+- Sessions are a VIEW STATE inside the chat intent, not a separate intent
+- SessionViewerModal (views/chat) is the right component — intent.go holds it as sessionViewerModal field
+- handleSessionViewerKeyMsg + renderModalOverlay are the correct wiring pattern
+- Deleted session_view_intent.go: it violated the App->Intents->Views rule
+- handleDelegationKeyMsg Enter case: set i.sessionViewerModal directly, never NavigateToDelegationMsg
+
+## [2026-04-03] Session message accumulation
+
+- session.Message now stores ToolName/ToolInput (omitempty JSON)
+- SendMessage wraps rawCh with accumCh goroutine that accumulates assistant/tool messages
+- appendSessionMessage acquires its own lock — SendMessage must NOT hold lock during accumulation
+- renderSessionContent maps session.Messages to chat.View messages using existing RenderContent pipeline
+- tool_result maps directly: Role=tool_result, ToolName, ToolInput (enables BlockTool rendering)
+- tool_call maps to summary string: "name: input"
+- Empty session → empty content string (not an error)
+- gocognit linter limit 20: extract accumulation goroutine to accumulateStream + processChunk helpers
+- revive argument-limit max 5: use accumState struct to carry mutable goroutine state
+- session_integration_test "preserves conversation history" had HaveLen(2) — must be HaveLen(4) now that assistant messages accumulate
+- scope-enum for commitlint: "session" is not a valid scope, use "core" or "tui" instead
+
+## [2026-04-03] Architecture review: delegation picker + stream accumulation
+
+Full review saved to: `.sisyphus/evidence/code-review-session-stream-arch.txt`
+
+### Issue 1 — Delegation picker always empty
+
+**Root cause confirmed**: `DelegateTool` (engine/delegation.go:76) has no
+`session.Manager` field and never calls `CreateWithParent()`. Both `executeSync`
+(line 621) and `executeAsync` (line 686) stamp a session ID into context but never
+register a `Session` record in the in-memory manager. `ChildSessions()` therefore
+returns empty.
+
+**Correct fix (in priority order)**:
+1. Define a narrow `ChildSessionCreator` interface in the `engine` package
+   (one method: `CreateWithParent(parentID, agentID) (*Session, error)`)
+2. Add `WithSessionCreator()` option setter to `DelegateTool`
+3. In `executeSync`: call `sessionCreator.CreateWithParent()` before generating
+   `delegateSessionID`; use the returned Session.ID as `delegateSessionID` so
+   the in-memory record and the recall file share the same ID
+4. In `BackgroundTaskManager.Launch`: call `sessionMgr.CreateWithParent()` at
+   task launch — sessionMgr is already present (background.go:94)
+
+**Architecture judgement**: Two storage systems (in-memory Manager + recall files)
+are correctly separated. No unification needed. A thin bridge (child session
+registration at delegation time) is all that is required.
+
+### Issue 2 — Stream accumulation in session.Manager
+
+**Layer violation confirmed**: `session.Manager` now contains `extractPrimaryArg`
+(manager.go:316) which understands tool display semantics (bash/read/write keys).
+This is presentation logic that belongs closer to the TUI, not in the session
+coordination layer.
+
+**Duplication confirmed**: `extractPrimaryArg` in manager.go duplicates
+`toolCallArgKey` in chat/intent.go with different implementation style (map vs
+switch). Both produce the same results.
+
+**Critical gap confirmed**: `SendMessage` accumulation covers parent sessions only.
+Delegation sessions call `target.engine.Stream()` directly, bypassing `SendMessage`
+entirely. So child session `Messages` will remain empty even after Issue 1 fix.
+
+**Recommended fix sequence** (DO NOT mix into same commit as Issue 1 fix):
+1. After Issue 1 is working: add stream wrapping in `executeSync` and
+   `executeBackgroundTask` to accumulate chunks into the child session's Messages
+2. Extract `extractPrimaryArg` + `toolCallArgKey` to `internal/tool/display` package
+3. (Later) Move `processChunk`/`accumulateStream` out of Manager to a standalone
+   `StreamAccumulator` — removes presentation concern from session layer
+
+### Key constraint for implementors
+- The child session ID used in `context.WithValue(ctx, session.IDKey{}, ...)` MUST
+  match the ID returned by `CreateWithParent()`. Generate the session first, then
+  use its ID as the delegation context value. Do not generate them independently.
+- `sessionIDFromContext(ctx)` helper already exists (background.go:269) for
+  extracting the parent session ID from context at delegation time.
+
+## [2026-04-03] Session viewer full-screen replace
+
+- sessionViewerModal replaces chat entirely via early return in View()
+- renderSessionViewerFullScreen uses ScreenLayout — same framing as main chat
+- RenderContent on SessionViewerModal gives raw scrollable text (no border)
+- breadcrumbPath set to "Chat > id[:8]" on enter, restored to "Chat" on Esc
+- cachedScreenLayout must be nil'd on enter/exit to force breadcrumb re-render
+- renderModalOverlay no longer handles sessionViewerModal — it's handled upstream
+
+## [2026-04-03] Ranks 1–4: delegation session registration and stream accumulation
+
+Rank 3: internal/tool/display - PrimaryArgKey/Summary deduplicate toolCallArgKey, toolCallSummary, extractPrimaryArg
+Rank 4: internal/session/accumulator.go - AccumulateStream extracted from Manager, MessageAppender interface
+Rank 1: DelegateTool.WithSessionCreator + RegisterSession + ChildSessionLister wired in run.go
+Rank 2: delegation streams wrapped with AccumulateStream via WithMessageAppender
+Key: RegisterSession must be called in run.go BEFORE first delegation fires; CreateWithParent fails if parent not in Manager
+Key: use child session ID from CreateWithParent as delegateSessionID to align in-memory + recall stores

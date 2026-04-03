@@ -511,6 +511,8 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			i.delegationPickerModal = nil
 			content := i.renderSessionContent(sel)
 			i.sessionViewerModal = chat.NewSessionViewerModal(sel.ID, content, i.width, i.height)
+			i.breadcrumbPath = "Chat > " + sel.ID[:8]
+			i.cachedScreenLayout = nil
 		}
 	}
 	return nil
@@ -533,6 +535,8 @@ func (i *Intent) handleSessionViewerKeyMsg(msg tea.KeyMsg) {
 	switch msg.String() {
 	case "esc":
 		i.sessionViewerModal = nil
+		i.breadcrumbPath = "Chat"
+		i.cachedScreenLayout = nil
 	case "up", "k":
 		i.sessionViewerModal.ScrollUp()
 	case "down", "j":
@@ -1287,6 +1291,10 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 //   - Syncs streaming state into the StatusBar.
 //   - Updates status indicator based on streaming state.
 func (i *Intent) View() string {
+	if i.sessionViewerModal != nil {
+		return i.renderSessionViewerFullScreen()
+	}
+
 	i.statusBar.SetStreaming(i.view.IsStreaming(), i.tickFrame)
 	i.updateStatusIndicator()
 
@@ -1335,10 +1343,6 @@ func (i *Intent) View() string {
 // Side effects:
 //   - None.
 func (i *Intent) renderModalOverlay(baseView string) string {
-	if i.sessionViewerModal != nil {
-		modalContent := i.sessionViewerModal.Render(i.width, i.height)
-		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
-	}
 	if i.delegationPickerModal != nil {
 		modalContent := i.delegationPickerModal.Render(i.width, i.height)
 		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
@@ -1352,6 +1356,27 @@ func (i *Intent) renderModalOverlay(baseView string) string {
 		return feedback.RenderOverlay(baseView, modalContent, i.width, i.height, themes.NewDefaultTheme())
 	}
 	return baseView
+}
+
+// renderSessionViewerFullScreen renders the session viewer as a full-screen view,
+// replacing the chat entirely.
+//
+// Expected:
+//   - i.sessionViewerModal is non-nil.
+//
+// Returns:
+//   - A full-screen ScreenLayout render with breadcrumb and help bar.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderSessionViewerFullScreen() string {
+	content := i.sessionViewerModal.RenderContent(i.width, i.height)
+	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
+		WithBreadcrumbs(i.breadcrumbPath).
+		WithContent(content).
+		WithHelp("↑/↓ k/j: scroll  ·  Esc: back to chat").
+		WithFooterSeparator(true)
+	return sl.Render()
 }
 
 // renderInputLine renders the current input with a "> " prompt on the first line

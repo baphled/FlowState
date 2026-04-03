@@ -74,6 +74,34 @@ func (m *SessionViewerModal) ScrollDown() {
 	}
 }
 
+// RenderContent returns the scrollable text lines for the current viewport
+// without any border, header, or footer decoration.
+//
+// Expected:
+//   - width and height are terminal dimensions.
+//
+// Returns:
+//   - The visible content lines joined by newlines.
+//
+// Side effects:
+//   - None.
+func (m *SessionViewerModal) RenderContent(width, height int) string {
+	_ = width
+	lines := strings.Split(m.content, "\n")
+	contentHeight := height - 10
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+	visibleLines := make([]string, 0, contentHeight)
+	for idx := m.offset; idx < len(lines) && len(visibleLines) < contentHeight; idx++ {
+		visibleLines = append(visibleLines, lines[idx])
+	}
+	for len(visibleLines) < contentHeight {
+		visibleLines = append(visibleLines, "")
+	}
+	return strings.Join(visibleLines, "\n")
+}
+
 // Render returns the modal content string.
 //
 // Expected:

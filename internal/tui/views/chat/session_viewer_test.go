@@ -8,6 +8,37 @@ import (
 )
 
 var _ = Describe("SessionViewerModal", func() {
+	Describe("RenderContent", func() {
+		It("returns visible lines without border", func() {
+			viewer := chat.NewSessionViewerModal("ses-abc123", "line1\nline2\nline3", 80, 24)
+			result := viewer.RenderContent(80, 24)
+			Expect(result).To(ContainSubstring("line1"))
+			Expect(result).NotTo(ContainSubstring("╭"))
+			Expect(result).NotTo(ContainSubstring("╰"))
+		})
+
+		It("returns visible lines without header or footer", func() {
+			viewer := chat.NewSessionViewerModal("ses-abc123", "hello", 80, 24)
+			result := viewer.RenderContent(80, 24)
+			Expect(result).NotTo(ContainSubstring("Session:"))
+			Expect(result).NotTo(ContainSubstring("↑/↓ scroll"))
+		})
+
+		It("respects offset when scrolled", func() {
+			content := "line1\nline2\nline3\nline4\nline5"
+			viewer := chat.NewSessionViewerModal("ses-1", content, 80, 5)
+			viewer.ScrollDown()
+			result := viewer.RenderContent(80, 5)
+			Expect(result).To(ContainSubstring("line2"))
+		})
+
+		It("returns empty-padded lines for short content", func() {
+			viewer := chat.NewSessionViewerModal("ses-1", "only one line", 80, 24)
+			result := viewer.RenderContent(80, 24)
+			Expect(result).To(ContainSubstring("only one line"))
+		})
+	})
+
 	Describe("NewSessionViewerModal", func() {
 		It("creates a viewer with given session ID and content", func() {
 			viewer := chat.NewSessionViewerModal("ses-abc123", "test content", 80, 24)
