@@ -87,6 +87,7 @@ type DelegateTool struct {
 	registry           *agent.Registry
 	sessionCreator     ChildSessionCreator
 	messageAppender    session.MessageAppender
+	sessionManager     *session.Manager
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -277,7 +278,22 @@ func (d *DelegateTool) WithMessageAppender(a session.MessageAppender) *DelegateT
 	return d
 }
 
-// ResolveByNameOrAlias looks up an agent ID using the registry by name or alias.
+// WithSessionManager sets the session manager for registering synthetic sessions.
+//
+// Expected:
+//   - mgr is a valid session.Manager or nil.
+//
+// Returns:
+//   - The DelegateTool instance for chaining.
+//
+// Side effects:
+//   - Sets the sessionManager field.
+func (d *DelegateTool) WithSessionManager(mgr *session.Manager) *DelegateTool {
+	d.sessionManager = mgr
+	return d
+}
+
+// ResolveByNameOrAlias returns the agent ID for a given name or alias.
 //
 // Expected:
 //   - name is a non-empty string identifying an agent.
@@ -669,11 +685,19 @@ func (d *DelegateTool) wrapWithAccumulator(rawCh <-chan provider.StreamChunk, se
 func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) string {
 	parentID := sessionIDFromContext(ctx)
 	if d.sessionCreator == nil || parentID == "" {
-		return fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+		syntheticID := fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+		if d.sessionManager != nil {
+			d.sessionManager.RegisterSession(syntheticID, agentID)
+		}
+		return syntheticID
 	}
 	childSess, err := d.sessionCreator.CreateWithParent(parentID, agentID)
 	if err != nil {
-		return fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+		syntheticID := fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+		if d.sessionManager != nil {
+			d.sessionManager.RegisterSession(syntheticID, agentID)
+		}
+		return syntheticID
 	}
 	return childSess.ID
 }

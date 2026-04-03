@@ -645,6 +645,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	if a.sessionManager != nil {
 		delegateTool.WithSessionCreator(a.sessionManager)
 		delegateTool.WithMessageAppender(a.sessionManager)
+		delegateTool.WithSessionManager(a.sessionManager)
 	}
 
 	eng.AddTool(delegateTool)
