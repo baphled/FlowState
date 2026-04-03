@@ -376,6 +376,56 @@ func findDelegateTool(t *testing.T, eng *engine.Engine) *engine.DelegateTool {
 	return &engine.DelegateTool{}
 }
 
+func TestWireDelegateToolIfEnabled_DelegateEnginesInheritModelPreference(t *testing.T) {
+	app := &App{
+		Registry:        agent.NewRegistry(),
+		defaultProvider: &mockProvider{name: "anthropic"},
+	}
+
+	coordinatorManifest := agent.Manifest{
+		ID:   "coordinator",
+		Name: "Coordinator",
+		Delegation: agent.Delegation{
+			CanDelegate: true,
+		},
+	}
+
+	explorerManifest := agent.Manifest{
+		ID:                "explorer",
+		Name:              "Explorer Agent",
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	app.Registry.Register(&coordinatorManifest)
+	app.Registry.Register(&explorerManifest)
+
+	providerReg := provider.NewRegistry()
+	providerReg.Register(&mockProvider{name: "anthropic"})
+	app.providerRegistry = providerReg
+
+	coordinatorEngine := engine.New(engine.Config{
+		Manifest:      coordinatorManifest,
+		AgentRegistry: app.Registry,
+		Registry:      providerReg,
+		Tools:         []tool.Tool{&mockTool{name: "test"}},
+	})
+	coordinatorEngine.SetModelPreference("anthropic", "claude-sonnet-4")
+
+	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+
+	delegateTool, found := coordinatorEngine.GetDelegateTool()
+	require.True(t, found, "coordinator should have delegate tool")
+
+	engines := delegateTool.Engines()
+	require.Contains(t, engines, "explorer", "delegate engines should include explorer")
+
+	explorerEngine := engines["explorer"]
+	assert.Equal(t, "claude-sonnet-4", explorerEngine.LastModel(),
+		"delegate engine should inherit the coordinator's model preference")
+	assert.Equal(t, "anthropic", explorerEngine.LastProvider(),
+		"delegate engine should inherit the coordinator's provider preference")
+}
+
 func TestWireDelegateToolIfEnabled_WiresRegistry(t *testing.T) {
 	// Given: App with registry containing coordinator and target agents
 	app := &App{

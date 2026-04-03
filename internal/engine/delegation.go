@@ -1275,6 +1275,17 @@ func containsSkillMarker(prompt, marker string) bool {
 	return strings.Contains(prompt, marker+"\n") || strings.HasSuffix(prompt, marker)
 }
 
+// Engines returns the delegate engine map keyed by agent ID.
+//
+// Returns:
+//   - A map of agent ID to Engine for each delegation target.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) Engines() map[string]*Engine {
+	return d.engines
+}
+
 // containsAgent reports whether agentID appears in the allowlist slice.
 //
 // Expected:

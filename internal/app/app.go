@@ -571,6 +571,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 			continue
 		}
 		targetEngine := a.createDelegateEngine(*agentManifest, coordinationStore)
+		targetEngine.SetModelPreference(eng.LastProvider(), eng.LastModel())
 		engines[agentManifest.ID] = targetEngine
 	}
 
