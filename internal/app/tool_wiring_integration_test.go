@@ -2,13 +2,13 @@ package app
 
 import (
 	"context"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // spyProvider captures the ChatRequest sent to the provider for assertion in tests.
@@ -33,173 +33,125 @@ func (s *spyProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float
 }
 func (s *spyProvider) Models() ([]provider.Model, error) { return nil, nil }
 
-// TestToolWiringIntegration_DelegateToolAppearsInProviderRequest verifies that when
-// the engine streams as a planner agent (can_delegate=true), the delegate tool
-// appears in the ChatRequest tools list sent to the provider.
-func TestToolWiringIntegration_DelegateToolAppearsInProviderRequest(t *testing.T) {
-	executorManifest := agent.Manifest{
-		ID:   "executor",
-		Name: "Executor",
-		Delegation: agent.Delegation{
-			CanDelegate: false,
-		},
-	}
+var _ = Describe("Tool wiring integration", func() {
+	var (
+		executorManifest agent.Manifest
+		agentReg         *agent.Registry
+		spy              *spyProvider
+		providerReg      *provider.Registry
+		application      *App
+		eng              *engine.Engine
+		ensureToolsFn    func(agent.Manifest)
+	)
 
-	plannerManifest := agent.Manifest{
-		ID:   "planner",
-		Name: "Planner",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	agentReg := agent.NewRegistry()
-	agentReg.Register(&executorManifest)
-	agentReg.Register(&plannerManifest)
-
-	spy := &spyProvider{name: "spy"}
-	providerReg := provider.NewRegistry()
-	providerReg.Register(spy)
-
-	application := &App{
-		Registry:         agentReg,
-		providerRegistry: providerReg,
-	}
-
-	var eng *engine.Engine
-	var ensureToolsFn func(agent.Manifest)
-
-	twc := &toolWiringCallbacks{
-		hasTool: func(name string) bool {
-			if eng == nil {
-				return false
-			}
-			return eng.HasTool(name)
-		},
-		ensureTools: func(m agent.Manifest) {
-			if ensureToolsFn != nil {
-				ensureToolsFn(m)
-			}
-		},
-		schemaRebuilder: func() []provider.Tool {
-			if eng == nil {
-				return nil
-			}
-			return eng.ToolSchemas()
-		},
-	}
-
-	hookChain := buildHookChain(nil, func() agent.Manifest {
-		if eng != nil {
-			return eng.Manifest()
+	buildTestEngine := func(manifest agent.Manifest) {
+		twc := &toolWiringCallbacks{
+			hasTool: func(name string) bool {
+				if eng == nil {
+					return false
+				}
+				return eng.HasTool(name)
+			},
+			ensureTools: func(m agent.Manifest) {
+				if ensureToolsFn != nil {
+					ensureToolsFn(m)
+				}
+			},
+			schemaRebuilder: func() []provider.Tool {
+				if eng == nil {
+					return nil
+				}
+				return eng.ToolSchemas()
+			},
 		}
-		return executorManifest
-	}, nil, nil, twc)
 
-	eng = engine.New(engine.Config{
-		Manifest:      executorManifest,
-		AgentRegistry: agentReg,
-		Registry:      providerReg,
-		ChatProvider:  spy,
-		HookChain:     hookChain,
+		hookChain := buildHookChain(nil, func() agent.Manifest {
+			if eng != nil {
+				return eng.Manifest()
+			}
+			return executorManifest
+		}, nil, nil, twc)
+
+		eng = engine.New(engine.Config{
+			Manifest:      manifest,
+			AgentRegistry: agentReg,
+			Registry:      providerReg,
+			ChatProvider:  spy,
+			HookChain:     hookChain,
+		})
+
+		application.wireDelegateToolIfEnabled(eng, executorManifest)
+
+		ensureToolsFn = func(m agent.Manifest) {
+			application.wireDelegateToolIfEnabled(eng, m)
+		}
+	}
+
+	BeforeEach(func() {
+		executorManifest = agent.Manifest{
+			ID:   "executor",
+			Name: "Executor",
+			Delegation: agent.Delegation{
+				CanDelegate: false,
+			},
+		}
+
+		agentReg = agent.NewRegistry()
+		agentReg.Register(&executorManifest)
+
+		spy = &spyProvider{name: "spy"}
+		providerReg = provider.NewRegistry()
+		providerReg.Register(spy)
+
+		application = &App{
+			Registry:         agentReg,
+			providerRegistry: providerReg,
+		}
 	})
 
-	application.wireDelegateToolIfEnabled(eng, executorManifest)
-
-	ensureToolsFn = func(m agent.Manifest) {
-		application.wireDelegateToolIfEnabled(eng, m)
-	}
-
-	_, err := eng.Stream(context.Background(), "planner", "hello")
-	require.NoError(t, err)
-
-	require.NotNil(t, spy.capturedRequest, "spy provider should have received a request")
-
-	toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
-	for _, tool := range spy.capturedRequest.Tools {
-		toolNames = append(toolNames, tool.Name)
-	}
-	assert.Contains(t, toolNames, "delegate",
-		"provider request tools should contain 'delegate' when streaming as planner agent (can_delegate=true); got: %v", toolNames)
-}
-
-// TestToolWiringIntegration_ExecutorReceivesNoDelegateToolInRequest verifies that
-// when streaming as executor (can_delegate=false), the delegate tool is NOT included
-// in the ChatRequest tools list.
-func TestToolWiringIntegration_ExecutorReceivesNoDelegateToolInRequest(t *testing.T) {
-	executorManifest := agent.Manifest{
-		ID:   "executor",
-		Name: "Executor",
-		Delegation: agent.Delegation{
-			CanDelegate: false,
-		},
-	}
-
-	agentReg := agent.NewRegistry()
-	agentReg.Register(&executorManifest)
-
-	spy := &spyProvider{name: "spy"}
-	providerReg := provider.NewRegistry()
-	providerReg.Register(spy)
-
-	application := &App{
-		Registry:         agentReg,
-		providerRegistry: providerReg,
-	}
-
-	var eng *engine.Engine
-	var ensureToolsFn func(agent.Manifest)
-
-	twc := &toolWiringCallbacks{
-		hasTool: func(name string) bool {
-			if eng == nil {
-				return false
+	Context("when streaming as planner agent with can_delegate=true", func() {
+		BeforeEach(func() {
+			plannerManifest := agent.Manifest{
+				ID:   "planner",
+				Name: "Planner",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
 			}
-			return eng.HasTool(name)
-		},
-		ensureTools: func(m agent.Manifest) {
-			if ensureToolsFn != nil {
-				ensureToolsFn(m)
-			}
-		},
-		schemaRebuilder: func() []provider.Tool {
-			if eng == nil {
-				return nil
-			}
-			return eng.ToolSchemas()
-		},
-	}
+			agentReg.Register(&plannerManifest)
+			buildTestEngine(executorManifest)
+		})
 
-	hookChain := buildHookChain(nil, func() agent.Manifest {
-		if eng != nil {
-			return eng.Manifest()
-		}
-		return executorManifest
-	}, nil, nil, twc)
+		It("includes the delegate tool in the provider request", func() {
+			_, err := eng.Stream(context.Background(), "planner", "hello")
+			Expect(err).NotTo(HaveOccurred())
 
-	eng = engine.New(engine.Config{
-		Manifest:      executorManifest,
-		AgentRegistry: agentReg,
-		Registry:      providerReg,
-		ChatProvider:  spy,
-		HookChain:     hookChain,
+			Expect(spy.capturedRequest).NotTo(BeNil())
+
+			toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, tool := range spy.capturedRequest.Tools {
+				toolNames = append(toolNames, tool.Name)
+			}
+			Expect(toolNames).To(ContainElement("delegate"))
+		})
 	})
 
-	application.wireDelegateToolIfEnabled(eng, executorManifest)
+	Context("when streaming as executor agent with can_delegate=false", func() {
+		BeforeEach(func() {
+			buildTestEngine(executorManifest)
+		})
 
-	ensureToolsFn = func(m agent.Manifest) {
-		application.wireDelegateToolIfEnabled(eng, m)
-	}
+		It("does not include the delegate tool in the provider request", func() {
+			_, err := eng.Stream(context.Background(), "executor", "hello")
+			Expect(err).NotTo(HaveOccurred())
 
-	_, err := eng.Stream(context.Background(), "executor", "hello")
-	require.NoError(t, err)
+			Expect(spy.capturedRequest).NotTo(BeNil())
 
-	require.NotNil(t, spy.capturedRequest, "spy provider should have received a request")
-
-	toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
-	for _, tool := range spy.capturedRequest.Tools {
-		toolNames = append(toolNames, tool.Name)
-	}
-	assert.NotContains(t, toolNames, "delegate",
-		"executor agent (can_delegate=false) should not have delegate tool in request; got: %v", toolNames)
-}
+			toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, tool := range spy.capturedRequest.Tools {
+				toolNames = append(toolNames, tool.Name)
+			}
+			Expect(toolNames).NotTo(ContainElement("delegate"))
+		})
+	})
+})

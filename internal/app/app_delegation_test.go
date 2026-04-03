@@ -3,15 +3,15 @@ package app
 import (
 	"context"
 	"errors"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // mockProvider is a simple mock implementation of provider.Provider for testing.
@@ -45,431 +45,377 @@ func (m *mockTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error)
 	return tool.Result{}, nil
 }
 
-func TestWireDelegateToolIfEnabled_CreatesIsolatedEngines(t *testing.T) {
-	// Given: App with registry containing coordinator and target agents
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	// Register coordinator (delegator) and two target agents
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer Agent",
-		Capabilities: agent.Capabilities{
-			Tools: []string{"read", "bash"},
-		},
-	}
-
-	analystManifest := agent.Manifest{
-		ID:   "analyst",
-		Name: "Analyst Agent",
-		Capabilities: agent.Capabilities{
-			Tools: []string{"read", "bash", "write"},
-		},
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-	app.Registry.Register(&analystManifest)
-
-	// And: A provider registry with test providers
-	providerReg := provider.NewRegistry()
-	anthropicProvider := &mockProvider{name: "anthropic"}
-	ollamaProvider := &mockProvider{name: "ollama"}
-	openaiProvider := &mockProvider{name: "openai"}
-	providerReg.Register(anthropicProvider)
-	providerReg.Register(ollamaProvider)
-	providerReg.Register(openaiProvider)
-	app.providerRegistry = providerReg
-
-	// And: A simple coordinator engine
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-		Tools:         []tool.Tool{&mockTool{name: "test"}},
-	})
-
-	// When: We wire the delegate tool
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
-
-	// Then: The delegate tool should exist
-	require.True(t, coordinatorEngine.HasTool("delegate"), "coordinator should have delegate tool")
-
-	// And: The delegate tool should have created different engines for each target
-	// We verify this by checking that each target gets its own manifest
-	// The key verification: the engines map has entries for each target
-	// and each engine has the CORRECT manifest (not the coordinator's)
-	delegateTool := findDelegateTool(t, coordinatorEngine)
-	require.NotNil(t, delegateTool, "delegate tool should exist")
-	_ = delegateTool // Use to avoid unused variable
-}
-
-func TestWireDelegateToolIfEnabled_TargetEnginesHaveCorrectManifest(t *testing.T) {
-	// Given: App with registry containing coordinator and target agents
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer Agent",
-		Capabilities: agent.Capabilities{
-			Tools: []string{"read", "bash"},
-		},
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-
-	// And: A provider registry
-	providerReg := provider.NewRegistry()
-	ollamaProvider := &mockProvider{name: "ollama"}
-	providerReg.Register(ollamaProvider)
-	app.providerRegistry = providerReg
-
-	// And: A simple coordinator engine
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-		Tools:         []tool.Tool{&mockTool{name: "test"}},
-	})
-
-	// When: We wire the delegate tool - this creates delegate engines internally
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
-
-	// Then: The coordinator manifest should be unchanged
-	coordinatorManifestAfter := coordinatorEngine.Manifest()
-	assert.Equal(t, "coordinator", coordinatorManifestAfter.ID,
-		"coordinator manifest should be preserved after delegation wiring")
-	assert.Equal(t, "Coordinator", coordinatorManifestAfter.Name)
-}
-
-func TestWireDelegateToolIfEnabled_CoordinatorStatePreserved(t *testing.T) {
-	// Given: App with registry containing coordinator and target agents
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer Agent",
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-
-	// And: A provider registry
-	providerReg := provider.NewRegistry()
-	anthropicProvider := &mockProvider{name: "anthropic"}
-	ollamaProvider := &mockProvider{name: "ollama"}
-	providerReg.Register(anthropicProvider)
-	providerReg.Register(ollamaProvider)
-	app.providerRegistry = providerReg
-
-	// And: A simple coordinator engine
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-		Tools:         []tool.Tool{&mockTool{name: "test"}},
-	})
-
-	// When: We wire the delegate tool
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
-
-	// Then: Verify coordinator engine manifest is unchanged after delegation setup
-	coordinatorManifestAfter := coordinatorEngine.Manifest()
-	assert.Equal(t, "coordinator", coordinatorManifestAfter.ID,
-		"coordinator manifest should be preserved after delegation wiring")
-	assert.Equal(t, "Coordinator", coordinatorManifestAfter.Name)
-
-	// And: The delegate tool should exist on coordinator
-	require.True(t, coordinatorEngine.HasTool("delegate"), "coordinator should have delegate tool")
-}
-
-func TestWireDelegateToolIfEnabled_SkipsWhenCanDelegateFalse(t *testing.T) {
-	// Given: App with registry containing a non-delegating agent
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	noDelegationManifest := agent.Manifest{
-		ID:   "standalone",
-		Name: "Standalone Agent",
-		Delegation: agent.Delegation{
-			CanDelegate: false, // This agent cannot delegate
-		},
-	}
-
-	app.Registry.Register(&noDelegationManifest)
-
-	// And: A provider registry
-	providerReg := provider.NewRegistry()
-	app.providerRegistry = providerReg
-
-	// And: A simple engine
-	testEngine := engine.New(engine.Config{
-		Manifest:      noDelegationManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-		Tools:         []tool.Tool{&mockTool{name: "test"}},
-	})
-
-	// When: We wire the delegate tool
-	app.wireDelegateToolIfEnabled(testEngine, noDelegationManifest)
-
-	// Then: The delegate tool should NOT exist
-	assert.False(t, testEngine.HasTool("delegate"),
-		"agent without can_delegate should not have delegate tool")
-}
-
-func TestCreateDelegateEngine_HasChatProvider(t *testing.T) {
-	app := &App{
-		Registry:        agent.NewRegistry(),
-		defaultProvider: &mockProvider{name: "anthropic"},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:                "explorer",
-		Name:              "Explorer Agent",
-		ContextManagement: agent.DefaultContextManagement(),
-	}
-
-	app.Registry.Register(&explorerManifest)
-
-	providerReg := provider.NewRegistry()
-	providerReg.Register(&mockProvider{name: "ollama"})
-	app.providerRegistry = providerReg
-
-	coordinationStore := coordination.NewMemoryStore()
-
-	delegateEngine := app.createDelegateEngine(explorerManifest, coordinationStore)
-	require.NotNil(t, delegateEngine)
-
-	_, err := delegateEngine.Stream(context.Background(), "", "hello")
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "no provider available",
-		"delegate engine should have a chat provider configured")
-}
-
-func TestCreateDelegateEngine_ReturnsIsolatedEngine(t *testing.T) {
-	// Given: App with registry containing target agent
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer Agent",
-		Capabilities: agent.Capabilities{
-			Tools: []string{"read", "bash"},
-		},
-	}
-
-	app.Registry.Register(&explorerManifest)
-
-	// And: A provider registry
-	providerReg := provider.NewRegistry()
-	ollamaProvider := &mockProvider{name: "ollama"}
-	providerReg.Register(ollamaProvider)
-	app.providerRegistry = providerReg
-
-	// And: A coordination store for testing
-	coordinationStore := coordination.NewMemoryStore()
-
-	// When: We create a delegate engine for the target
-	delegateEngine := app.createDelegateEngine(explorerManifest, coordinationStore)
-
-	// Then: The engine should have the target's manifest
-	require.NotNil(t, delegateEngine, "delegate engine should be created")
-	manifest := delegateEngine.Manifest()
-	assert.Equal(t, "explorer", manifest.ID,
-		"delegate engine should have target manifest ID")
-	assert.Equal(t, "Explorer Agent", manifest.Name)
-}
-
-// TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery verifies that embedding-based
-// routing is activated when an Ollama provider is available during app setup.
-func TestWireDelegateToolIfEnabled_WiresEmbeddingDiscovery(t *testing.T) {
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer",
-		Capabilities: agent.Capabilities{
-			CapabilityDescription: "explores and investigates systems",
-		},
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-
-	providerReg := provider.NewRegistry()
-	embedProvider := &mockProvider{name: "ollama"}
-	providerReg.Register(embedProvider)
-	app.providerRegistry = providerReg
-	app.ollamaProvider = nil
-
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-	})
-
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
-
-	require.True(t, coordinatorEngine.HasTool("delegate"))
-	delegateTool, found := coordinatorEngine.GetDelegateTool()
-	require.True(t, found)
-	assert.True(t, delegateTool.HasEmbeddingDiscovery())
-}
-
 // findDelegateTool extracts the DelegateTool from an engine for testing.
-// Since we can't access private fields, we verify through behavior:
-// - The delegate tool should exist (HasTool returns true)
-// - The coordinator manifest is preserved after calling wireDelegateToolIfEnabled.
-func findDelegateTool(t *testing.T, eng *engine.Engine) *engine.DelegateTool {
-	t.Helper()
-	// We can't easily access the private engines map, but we verify through
-	// the public API: the coordinator engine should have the delegate tool
-	// and its manifest should remain unchanged after delegation wiring
+func findDelegateTool(eng *engine.Engine) *engine.DelegateTool {
 	if !eng.HasTool("delegate") {
 		return nil
 	}
-	// Return a minimal struct - actual verification is done through behavior
 	return &engine.DelegateTool{}
 }
 
-func TestWireDelegateToolIfEnabled_DelegateEnginesInheritModelPreference(t *testing.T) {
-	app := &App{
-		Registry:        agent.NewRegistry(),
-		defaultProvider: &mockProvider{name: "anthropic"},
-	}
+var _ = Describe("wireDelegateToolIfEnabled", func() {
+	var (
+		application *App
+		providerReg *provider.Registry
+	)
 
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:                "explorer",
-		Name:              "Explorer Agent",
-		ContextManagement: agent.DefaultContextManagement(),
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-
-	providerReg := provider.NewRegistry()
-	providerReg.Register(&mockProvider{name: "anthropic"})
-	app.providerRegistry = providerReg
-
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
-		Tools:         []tool.Tool{&mockTool{name: "test"}},
-	})
-	coordinatorEngine.SetModelPreference("anthropic", "claude-sonnet-4")
-
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
-
-	delegateTool, found := coordinatorEngine.GetDelegateTool()
-	require.True(t, found, "coordinator should have delegate tool")
-
-	engines := delegateTool.Engines()
-	require.Contains(t, engines, "explorer", "delegate engines should include explorer")
-
-	explorerEngine := engines["explorer"]
-	assert.Equal(t, "claude-sonnet-4", explorerEngine.LastModel(),
-		"delegate engine should inherit the coordinator's model preference")
-	assert.Equal(t, "anthropic", explorerEngine.LastProvider(),
-		"delegate engine should inherit the coordinator's provider preference")
-}
-
-func TestWireDelegateToolIfEnabled_WiresRegistry(t *testing.T) {
-	// Given: App with registry containing coordinator and target agents
-	app := &App{
-		Registry: agent.NewRegistry(),
-	}
-
-	coordinatorManifest := agent.Manifest{
-		ID:   "coordinator",
-		Name: "Coordinator",
-		Delegation: agent.Delegation{
-			CanDelegate: true,
-		},
-	}
-
-	explorerManifest := agent.Manifest{
-		ID:   "explorer",
-		Name: "Explorer",
-		Capabilities: agent.Capabilities{
-			CapabilityDescription: "explores systems",
-		},
-	}
-
-	app.Registry.Register(&coordinatorManifest)
-	app.Registry.Register(&explorerManifest)
-
-	providerReg := provider.NewRegistry()
-	providerReg.Register(&mockProvider{name: "ollama"})
-	app.providerRegistry = providerReg
-
-	coordinatorEngine := engine.New(engine.Config{
-		Manifest:      coordinatorManifest,
-		AgentRegistry: app.Registry,
-		Registry:      providerReg,
+	BeforeEach(func() {
+		application = &App{
+			Registry: agent.NewRegistry(),
+		}
 	})
 
-	// When: We wire the delegate tool
-	app.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+	Context("when coordinator has can_delegate=true", func() {
+		var (
+			coordinatorManifest agent.Manifest
+			coordinatorEngine   *engine.Engine
+		)
 
-	// Then: The delegate tool should be wired with the registry
-	require.True(t, coordinatorEngine.HasTool("delegate"))
-	delegateTool, found := coordinatorEngine.GetDelegateTool()
-	require.True(t, found, "delegate tool should be found")
+		BeforeEach(func() {
+			coordinatorManifest = agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
 
-	// And: Registry-based resolution should work (explorer exists in registry)
-	_, err := delegateTool.ResolveByNameOrAlias("explorer")
-	require.NoError(t, err, "should be able to resolve agent by name from registry")
-}
+			explorerManifest := agent.Manifest{
+				ID:   "explorer",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			analystManifest := agent.Manifest{
+				ID:   "analyst",
+				Name: "Analyst Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash", "write"},
+				},
+			}
+
+			application.Registry.Register(&coordinatorManifest)
+			application.Registry.Register(&explorerManifest)
+			application.Registry.Register(&analystManifest)
+
+			providerReg = provider.NewRegistry()
+			providerReg.Register(&mockProvider{name: "anthropic"})
+			providerReg.Register(&mockProvider{name: "ollama"})
+			providerReg.Register(&mockProvider{name: "openai"})
+			application.providerRegistry = providerReg
+
+			coordinatorEngine = engine.New(engine.Config{
+				Manifest:      coordinatorManifest,
+				AgentRegistry: application.Registry,
+				Registry:      providerReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+		})
+
+		It("creates isolated engines for each target", func() {
+			application.wireDelegateToolIfEnabled(coordinatorEngine, coordinatorManifest)
+
+			Expect(coordinatorEngine.HasTool("delegate")).To(BeTrue())
+
+			delegateTool := findDelegateTool(coordinatorEngine)
+			Expect(delegateTool).NotTo(BeNil())
+		})
+
+		It("preserves the coordinator manifest after wiring", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-single",
+				Name: "Explorer Agent Single",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			singleApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			singleProviderReg := provider.NewRegistry()
+			singleProviderReg.Register(&mockProvider{name: "ollama"})
+			singleApp.providerRegistry = singleProviderReg
+
+			singleCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			singleApp.Registry.Register(&singleCoordManifest)
+			singleApp.Registry.Register(&explorerManifest)
+
+			singleEngine := engine.New(engine.Config{
+				Manifest:      singleCoordManifest,
+				AgentRegistry: singleApp.Registry,
+				Registry:      singleProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			singleApp.wireDelegateToolIfEnabled(singleEngine, singleCoordManifest)
+
+			coordinatorManifestAfter := singleEngine.Manifest()
+			Expect(coordinatorManifestAfter.ID).To(Equal("coordinator"))
+			Expect(coordinatorManifestAfter.Name).To(Equal("Coordinator"))
+		})
+
+		It("preserves coordinator state after delegation setup", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-state",
+				Name: "Explorer Agent",
+			}
+
+			stateApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			stateProviderReg := provider.NewRegistry()
+			stateProviderReg.Register(&mockProvider{name: "anthropic"})
+			stateProviderReg.Register(&mockProvider{name: "ollama"})
+			stateApp.providerRegistry = stateProviderReg
+
+			stateCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			stateApp.Registry.Register(&stateCoordManifest)
+			stateApp.Registry.Register(&explorerManifest)
+
+			stateEngine := engine.New(engine.Config{
+				Manifest:      stateCoordManifest,
+				AgentRegistry: stateApp.Registry,
+				Registry:      stateProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			stateApp.wireDelegateToolIfEnabled(stateEngine, stateCoordManifest)
+
+			coordinatorManifestAfter := stateEngine.Manifest()
+			Expect(coordinatorManifestAfter.ID).To(Equal("coordinator"))
+			Expect(coordinatorManifestAfter.Name).To(Equal("Coordinator"))
+			Expect(stateEngine.HasTool("delegate")).To(BeTrue())
+		})
+
+		It("delegate engines inherit the coordinator's model preference", func() {
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-pref",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			prefApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			prefProviderReg := provider.NewRegistry()
+			prefProviderReg.Register(&mockProvider{name: "anthropic"})
+			prefApp.providerRegistry = prefProviderReg
+
+			prefCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			prefApp.Registry.Register(&prefCoordManifest)
+			prefApp.Registry.Register(&explorerManifest)
+
+			prefEngine := engine.New(engine.Config{
+				Manifest:      prefCoordManifest,
+				AgentRegistry: prefApp.Registry,
+				Registry:      prefProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+			prefEngine.SetModelPreference("anthropic", "claude-sonnet-4")
+
+			prefApp.wireDelegateToolIfEnabled(prefEngine, prefCoordManifest)
+
+			delegateTool, found := prefEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			engines := delegateTool.Engines()
+			Expect(engines).To(HaveKey("explorer-pref"))
+
+			explorerEngine := engines["explorer-pref"]
+			Expect(explorerEngine.LastModel()).To(Equal("claude-sonnet-4"))
+			Expect(explorerEngine.LastProvider()).To(Equal("anthropic"))
+		})
+
+		It("wires the agent registry for name-based resolution", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-reg",
+				Name: "Explorer",
+				Capabilities: agent.Capabilities{
+					CapabilityDescription: "explores systems",
+				},
+			}
+
+			regApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			regProviderReg := provider.NewRegistry()
+			regProviderReg.Register(&mockProvider{name: "ollama"})
+			regApp.providerRegistry = regProviderReg
+
+			regCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			regApp.Registry.Register(&regCoordManifest)
+			regApp.Registry.Register(&explorerManifest)
+
+			regEngine := engine.New(engine.Config{
+				Manifest:      regCoordManifest,
+				AgentRegistry: regApp.Registry,
+				Registry:      regProviderReg,
+			})
+
+			regApp.wireDelegateToolIfEnabled(regEngine, regCoordManifest)
+
+			Expect(regEngine.HasTool("delegate")).To(BeTrue())
+			delegateTool, found := regEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			_, err := delegateTool.ResolveByNameOrAlias("explorer-reg")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("wires embedding discovery when Ollama provider is available", func() {
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-embed",
+				Name: "Explorer",
+				Capabilities: agent.Capabilities{
+					CapabilityDescription: "explores and investigates systems",
+				},
+			}
+
+			embedApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+			embedProviderReg := provider.NewRegistry()
+			embedProviderReg.Register(&mockProvider{name: "ollama"})
+			embedApp.providerRegistry = embedProviderReg
+			embedApp.ollamaProvider = nil
+
+			embedCoordManifest := agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			embedApp.Registry.Register(&embedCoordManifest)
+			embedApp.Registry.Register(&explorerManifest)
+
+			embedEngine := engine.New(engine.Config{
+				Manifest:      embedCoordManifest,
+				AgentRegistry: embedApp.Registry,
+				Registry:      embedProviderReg,
+			})
+
+			embedApp.wireDelegateToolIfEnabled(embedEngine, embedCoordManifest)
+
+			Expect(embedEngine.HasTool("delegate")).To(BeTrue())
+			delegateTool, found := embedEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			Expect(delegateTool.HasEmbeddingDiscovery()).To(BeTrue())
+		})
+	})
+
+	Context("when agent has can_delegate=false", func() {
+		It("does not wire the delegate tool", func() {
+			noDelegationManifest := agent.Manifest{
+				ID:   "standalone",
+				Name: "Standalone Agent",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+
+			application.Registry.Register(&noDelegationManifest)
+
+			providerReg = provider.NewRegistry()
+			application.providerRegistry = providerReg
+
+			testEngine := engine.New(engine.Config{
+				Manifest:      noDelegationManifest,
+				AgentRegistry: application.Registry,
+				Registry:      providerReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			application.wireDelegateToolIfEnabled(testEngine, noDelegationManifest)
+
+			Expect(testEngine.HasTool("delegate")).To(BeFalse())
+		})
+	})
+
+	Describe("createDelegateEngine", func() {
+		It("creates an engine with a chat provider configured", func() {
+			delegateApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-chat",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			delegateApp.Registry.Register(&explorerManifest)
+
+			delegateProviderReg := provider.NewRegistry()
+			delegateProviderReg.Register(&mockProvider{name: "ollama"})
+			delegateApp.providerRegistry = delegateProviderReg
+
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine := delegateApp.createDelegateEngine(explorerManifest, coordinationStore)
+			Expect(delegateEngine).NotTo(BeNil())
+
+			_, err := delegateEngine.Stream(context.Background(), "", "hello")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).NotTo(ContainSubstring("no provider available"))
+		})
+
+		It("returns an isolated engine with the target manifest", func() {
+			isolatedApp := &App{
+				Registry: agent.NewRegistry(),
+			}
+
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-isolated",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "bash"},
+				},
+			}
+
+			isolatedApp.Registry.Register(&explorerManifest)
+
+			isolatedProviderReg := provider.NewRegistry()
+			isolatedProviderReg.Register(&mockProvider{name: "ollama"})
+			isolatedApp.providerRegistry = isolatedProviderReg
+
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore)
+
+			Expect(delegateEngine).NotTo(BeNil())
+			manifest := delegateEngine.Manifest()
+			Expect(manifest.ID).To(Equal("explorer-isolated"))
+			Expect(manifest.Name).To(Equal("Explorer Agent"))
+		})
+	})
+})
