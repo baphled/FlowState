@@ -15,6 +15,7 @@ type SwitchToIntentMsg struct {
 
 // NavigateToDelegationMsg signals navigation into a child delegation session.
 type NavigateToDelegationMsg struct {
+	Intent    Intent
 	SessionID string
 	ChainID   string
 }

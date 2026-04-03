@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
@@ -116,6 +117,12 @@ type SessionLister interface {
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
+// SessionChildLister lists child sessions for a given parent session ID.
+type SessionChildLister interface {
+	// ChildSessions returns child sessions for the given parent session ID.
+	ChildSessions(parentID string) ([]*session.Session, error)
+}
+
 // SessionManager manages active chat sessions and message delivery.
 type SessionManager interface {
 	// EnsureSession makes sure the session exists for the provided agent.
@@ -126,18 +133,19 @@ type SessionManager interface {
 
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
-	App            AppShell
-	Engine         *engine.Engine
-	Streamer       Streamer
-	SessionManager SessionManager
-	AgentID        string
-	SessionID      string
-	ProviderName   string
-	ModelName      string
-	TokenBudget    int
-	AgentRegistry  *agent.Registry
-	SessionStore   SessionLister
-	ModelResolver  contextpkg.ModelResolver // Optional: enables dynamic model context limits
+	App                AppShell
+	Engine             *engine.Engine
+	Streamer           Streamer
+	SessionManager     SessionManager
+	AgentID            string
+	SessionID          string
+	ProviderName       string
+	ModelName          string
+	TokenBudget        int
+	AgentRegistry      *agent.Registry
+	SessionStore       SessionLister
+	ModelResolver      contextpkg.ModelResolver // Optional: enables dynamic model context limits
+	ChildSessionLister SessionChildLister
 }
 
 // Intent handles chat interactions in the TUI.
@@ -167,6 +175,7 @@ type Intent struct {
 	atBottom            bool
 	agentRegistry       *agent.Registry
 	sessionStore        SessionLister
+	childSessionLister  SessionChildLister
 	view                *chat.View
 	loadingModal        *feedback.Modal
 	errorModal          *feedback.Modal
@@ -255,6 +264,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		atBottom:            true,
 		agentRegistry:       cfg.AgentRegistry,
 		sessionStore:        cfg.SessionStore,
+		childSessionLister:  cfg.ChildSessionLister,
 		view:                chat.NewView(),
 		notifications:       notification.NewComponent(notifManager),
 		notificationManager: notifManager,
@@ -585,9 +595,13 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 // Side effects:
 //   - Updates the viewport position on mouse wheel events.
 //   - Updates atBottom flag based on new scroll position.
+//   - Toggles active delegation block on left click.
 func (i *Intent) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 	if !i.vpReady || i.msgViewport == nil {
 		return nil
+	}
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		i.view.ToggleActiveDelegationBlock()
 	}
 	vp, cmd := i.msgViewport.Update(msg)
 	i.msgViewport = &vp
@@ -1688,7 +1702,15 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 // Side effects:
 //   - Sets delegationPickerModal on the intent.
 func (i *Intent) openDelegationPicker() tea.Cmd {
-	modal := chat.NewDelegationPickerModal(nil, i.width, i.height)
+	var sessions []*session.Session
+	if i.childSessionLister != nil {
+		var err error
+		sessions, err = i.childSessionLister.ChildSessions(i.sessionID)
+		if err != nil {
+			sessions = nil
+		}
+	}
+	modal := chat.NewDelegationPickerModal(sessions, i.width, i.height)
 	i.delegationPickerModal = modal
 	return nil
 }
