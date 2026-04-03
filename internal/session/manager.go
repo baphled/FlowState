@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,8 @@ type Message struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	AgentID   string    `json:"agent_id"`
+	ToolName  string    `json:"tool_name,omitempty"`
+	ToolInput string    `json:"tool_input,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -299,6 +302,142 @@ func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
 	return sessionTree(m.sessions, root, make(map[string]bool)), nil
 }
 
+// extractPrimaryArg returns the primary display argument for a named tool call.
+//
+// Expected:
+//   - name is a known tool identifier.
+//   - args contains the tool call arguments map.
+//
+// Returns:
+//   - The string value of the primary argument key, or empty string for unknown tools.
+//
+// Side effects:
+//   - None.
+func extractPrimaryArg(name string, args map[string]any) string {
+	keys := map[string]string{
+		"bash":       "command",
+		"read":       "filePath",
+		"write":      "filePath",
+		"edit":       "filePath",
+		"glob":       "pattern",
+		"grep":       "pattern",
+		"skill_load": "name",
+	}
+	key, ok := keys[name]
+	if !ok {
+		return ""
+	}
+	if v, ok := args[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// appendSessionMessage safely appends a message to the named session's history.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - msg contains the message to append (ID and Timestamp will be assigned here).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Acquires the manager lock and appends msg to the session's Messages slice.
+func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return
+	}
+	msg.ID = uuid.New().String()
+	msg.Timestamp = time.Now()
+	sess.Messages = append(sess.Messages, msg)
+}
+
+// accumState holds mutable state for the stream accumulation goroutine.
+type accumState struct {
+	sessionID     string
+	agentID       string
+	contentBuf    strings.Builder
+	lastToolName  string
+	lastToolInput string
+}
+
+// processChunk handles a single stream chunk, updating state and persisting messages.
+//
+// Expected:
+//   - chunk is the next chunk from the raw stream.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - May call appendSessionMessage to persist accumulated content to session history.
+//   - Mutates s.contentBuf, s.lastToolName, and s.lastToolInput in place.
+func (m *Manager) processChunk(s *accumState, chunk provider.StreamChunk) {
+	switch {
+	case chunk.ToolCall != nil:
+		if s.contentBuf.Len() > 0 {
+			m.appendSessionMessage(s.sessionID, Message{
+				Role:    "assistant",
+				Content: s.contentBuf.String(),
+				AgentID: s.agentID,
+			})
+			s.contentBuf.Reset()
+		}
+		s.lastToolName = chunk.ToolCall.Name
+		s.lastToolInput = extractPrimaryArg(chunk.ToolCall.Name, chunk.ToolCall.Arguments)
+	case chunk.ToolResult != nil:
+		m.appendSessionMessage(s.sessionID, Message{
+			Role:      "tool_result",
+			Content:   chunk.ToolResult.Content,
+			ToolName:  s.lastToolName,
+			ToolInput: s.lastToolInput,
+			AgentID:   s.agentID,
+		})
+	case chunk.Done:
+		if s.contentBuf.Len() > 0 {
+			m.appendSessionMessage(s.sessionID, Message{
+				Role:    "assistant",
+				Content: s.contentBuf.String(),
+				AgentID: s.agentID,
+			})
+			s.contentBuf.Reset()
+		}
+	default:
+		if chunk.Content != "" {
+			s.contentBuf.WriteString(chunk.Content)
+		}
+	}
+}
+
+// accumulateStream wraps rawCh with a goroutine that records assistant and tool
+// messages into session history while forwarding every chunk to the returned channel.
+//
+// Expected:
+//   - sessionID and agentID are valid identifiers for the active session.
+//   - rawCh is the stream channel returned by the streamer.
+//
+// Returns:
+//   - A new channel that receives the same chunks as rawCh.
+//
+// Side effects:
+//   - Spawns a goroutine that appends messages to the session via appendSessionMessage.
+func (m *Manager) accumulateStream(sessionID, agentID string, rawCh <-chan provider.StreamChunk) <-chan provider.StreamChunk {
+	accumCh := make(chan provider.StreamChunk, 64)
+	go func() {
+		defer close(accumCh)
+		s := &accumState{sessionID: sessionID, agentID: agentID}
+		for chunk := range rawCh {
+			m.processChunk(s, chunk)
+			accumCh <- chunk
+		}
+	}()
+	return accumCh
+}
+
 // SendMessage sends a message to the session and streams the response.
 // Expected:
 //   - ctx is valid for the lifetime of the streaming request.
@@ -311,6 +450,7 @@ func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
 //
 // Side effects:
 //   - Appends the user message to the session history.
+//   - Accumulates assistant and tool messages from the stream into session history.
 //   - Updates the session timestamp.
 //   - Delegates streaming to the configured provider.
 func (m *Manager) SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error) {
@@ -329,19 +469,22 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		Timestamp: time.Now(),
 	})
 	sess.UpdatedAt = time.Now()
+	agentID := sess.AgentID
 	m.mu.Unlock()
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
-	rawCh, err := m.streamer.Stream(ctx, sess.AgentID, message)
+	rawCh, err := m.streamer.Stream(ctx, agentID, message)
 	if err != nil {
 		return nil, err
 	}
+
+	accumCh := m.accumulateStream(sessionID, agentID, rawCh)
 
 	if m.recorder != nil {
 		teedCh := make(chan provider.StreamChunk, 64)
 		go func() {
 			defer close(teedCh)
-			for chunk := range rawCh {
+			for chunk := range accumCh {
 				m.recorder.RecordChunk(sessionID, chunk)
 				teedCh <- chunk
 			}
@@ -349,7 +492,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		return teedCh, nil
 	}
 
-	return rawCh, nil
+	return accumCh, nil
 }
 
 // CloseSession marks a session as completed.
