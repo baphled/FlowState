@@ -6,6 +6,7 @@ import (
 
 	"context"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -24,8 +25,16 @@ var _ = Describe("PhaseDetect", func() {
 	)
 
 	Describe("PhaseDetectorHook", func() {
-		It("stores detected phase in context", func() {
-			phaseDetectorHook := hook.PhaseDetectorHook()
+		harnessManifest := func() agent.Manifest {
+			return agent.Manifest{HarnessEnabled: true}
+		}
+
+		nonHarnessManifest := func() agent.Manifest {
+			return agent.Manifest{HarnessEnabled: false}
+		}
+
+		It("stores detected phase in context when harness is enabled", func() {
+			phaseDetectorHook := hook.PhaseDetectorHook(harnessManifest)
 			baseHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 				phase := hook.PhaseFromContext(ctx)
 				Expect(phase).To(Equal(hook.PhaseGeneration))
@@ -44,7 +53,7 @@ var _ = Describe("PhaseDetect", func() {
 		})
 
 		It("detects interview phase and stores in context", func() {
-			phaseDetectorHook := hook.PhaseDetectorHook()
+			phaseDetectorHook := hook.PhaseDetectorHook(harnessManifest)
 			baseHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 				phase := hook.PhaseFromContext(ctx)
 				Expect(phase).To(Equal(hook.PhaseInterview))
@@ -62,8 +71,8 @@ var _ = Describe("PhaseDetect", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("passes through to next handler", func() {
-			phaseDetectorHook := hook.PhaseDetectorHook()
+		It("passes through to next handler when harness is enabled", func() {
+			phaseDetectorHook := hook.PhaseDetectorHook(harnessManifest)
 			called := false
 			baseHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 				called = true
@@ -80,6 +89,58 @@ var _ = Describe("PhaseDetect", func() {
 			_, err := wrappedHandler(context.Background(), req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(called).To(BeTrue())
+		})
+
+		It("is a no-op when harness is disabled", func() {
+			phaseDetectorHook := hook.PhaseDetectorHook(nonHarnessManifest)
+			baseHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				phase := hook.PhaseFromContext(ctx)
+				Expect(phase).To(Equal(hook.PhaseUnknown))
+				return make(chan provider.StreamChunk), nil
+			}
+
+			wrappedHandler := phaseDetectorHook(baseHandler)
+			req := &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "---\nid: test\n---\nContent"},
+				},
+			}
+
+			_, err := wrappedHandler(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("evaluates harness status at request time not build time", func() {
+			enabled := false
+			dynamicManifest := func() agent.Manifest {
+				return agent.Manifest{HarnessEnabled: enabled}
+			}
+
+			phaseDetectorHook := hook.PhaseDetectorHook(dynamicManifest)
+			req := &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "---\nid: test\n---\nContent"},
+				},
+			}
+
+			baseHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				phase := hook.PhaseFromContext(ctx)
+				Expect(phase).To(Equal(hook.PhaseUnknown))
+				return make(chan provider.StreamChunk), nil
+			}
+			wrappedHandler := phaseDetectorHook(baseHandler)
+			_, err := wrappedHandler(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
+
+			enabled = true
+			activeHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				phase := hook.PhaseFromContext(ctx)
+				Expect(phase).To(Equal(hook.PhaseGeneration))
+				return make(chan provider.StreamChunk), nil
+			}
+			wrappedHandler = phaseDetectorHook(activeHandler)
+			_, err = wrappedHandler(context.Background(), req)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

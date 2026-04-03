@@ -82,7 +82,7 @@ var _ = Describe("Harness wiring", func() {
 		})
 
 		Context("when HarnessEnabled is false", func() {
-			It("returns a chain without harness hooks", func() {
+			It("always includes harness hooks that no-op at request time", func() {
 				manifestGetter := func() agent.Manifest {
 					return agent.Manifest{HarnessEnabled: false}
 				}
@@ -90,12 +90,12 @@ var _ = Describe("Harness wiring", func() {
 				chain := app.BuildHookChainForTest(learningStore, manifestGetter)
 
 				Expect(chain).NotTo(BeNil())
-				Expect(chain.Len()).To(Equal(4))
+				Expect(chain.Len()).To(Equal(6))
 			})
 		})
 
 		Context("when HarnessEnabled is true", func() {
-			It("includes PhaseDetectorHook before ContextInjectionHook", func() {
+			It("includes PhaseDetectorHook and ContextInjectionHook", func() {
 				manifestGetter := func() agent.Manifest {
 					return agent.Manifest{HarnessEnabled: true}
 				}

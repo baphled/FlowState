@@ -92,6 +92,9 @@ func ContextInjectionHook(manifestGetter func() agent.Manifest, projectRoot stri
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 			manifest := manifestGetter()
+			if !manifest.HarnessEnabled {
+				return next(ctx, req)
+			}
 			if !strings.Contains(strings.ToLower(manifest.ID), "planner") {
 				return next(ctx, req)
 			}

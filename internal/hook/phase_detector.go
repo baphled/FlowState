@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -52,14 +53,21 @@ func DetectPhase(text string) PlanPhase {
 
 // PhaseDetectorHook returns a hook that detects the plan phase and stores it in context.
 //
+// Expected:
+//   - manifestGetter returns the current agent manifest on each call.
+//
 // Returns:
 //   - A Hook that detects phase from the user message and stores it via context.WithValue.
+//   - When the active manifest has HarnessEnabled=false, the hook is a no-op.
 //
 // Side effects:
 //   - Stores the detected phase in the context passed to the next handler.
-func PhaseDetectorHook() Hook {
+func PhaseDetectorHook(manifestGetter func() agent.Manifest) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			if !manifestGetter().HarnessEnabled {
+				return next(ctx, req)
+			}
 			userMsg := extractUserMessage(req.Messages)
 			phase := DetectPhase(userMsg)
 			ctx = context.WithValue(ctx, planPhaseKey, phase)

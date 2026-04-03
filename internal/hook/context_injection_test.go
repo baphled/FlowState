@@ -13,8 +13,10 @@ import (
 )
 
 var _ = Describe("ContextInjection", func() {
-	makeManifest := func(id string) func() agent.Manifest {
-		return func() agent.Manifest { return agent.Manifest{ID: id} }
+	makeManifest := func(id string, harnessEnabled bool) func() agent.Manifest {
+		return func() agent.Manifest {
+			return agent.Manifest{ID: id, HarnessEnabled: harnessEnabled}
+		}
 	}
 
 	makeReq := func(hasAssistant bool) *provider.ChatRequest {
@@ -32,7 +34,7 @@ var _ = Describe("ContextInjection", func() {
 	})
 
 	It("injects context for planner agent first message", func() {
-		h := hook.ContextInjectionHook(makeManifest("planner"), "/tmp")
+		h := hook.ContextInjectionHook(makeManifest("planner", true), "/tmp")
 		req := makeReq(false)
 		_, err := h(noop)(context.Background(), req)
 		Expect(err).NotTo(HaveOccurred())
@@ -40,7 +42,7 @@ var _ = Describe("ContextInjection", func() {
 	})
 
 	It("does not inject for non-planner agent", func() {
-		h := hook.ContextInjectionHook(makeManifest("executor"), "/tmp")
+		h := hook.ContextInjectionHook(makeManifest("executor", true), "/tmp")
 		req := makeReq(false)
 		_, err := h(noop)(context.Background(), req)
 		Expect(err).NotTo(HaveOccurred())
@@ -48,7 +50,7 @@ var _ = Describe("ContextInjection", func() {
 	})
 
 	It("does not inject on continuation messages", func() {
-		h := hook.ContextInjectionHook(makeManifest("planner"), "/tmp")
+		h := hook.ContextInjectionHook(makeManifest("planner", true), "/tmp")
 		req := makeReq(true)
 		_, err := h(noop)(context.Background(), req)
 		Expect(err).NotTo(HaveOccurred())
@@ -56,7 +58,7 @@ var _ = Describe("ContextInjection", func() {
 	})
 
 	It("is idempotent when already injected", func() {
-		h := hook.ContextInjectionHook(makeManifest("planner"), "/tmp")
+		h := hook.ContextInjectionHook(makeManifest("planner", true), "/tmp")
 		req := &provider.ChatRequest{
 			Messages: []provider.Message{
 				{Role: "system", Content: "## Codebase Context\nalready here"},
@@ -67,5 +69,33 @@ var _ = Describe("ContextInjection", func() {
 		Expect(err).NotTo(HaveOccurred())
 		count := strings.Count(req.Messages[0].Content, "## Codebase Context")
 		Expect(count).To(Equal(1))
+	})
+
+	It("is a no-op when harness is disabled", func() {
+		h := hook.ContextInjectionHook(makeManifest("planner", false), "/tmp")
+		req := makeReq(false)
+		_, err := h(noop)(context.Background(), req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Messages[0].Content).NotTo(ContainSubstring("## Codebase Context"))
+	})
+
+	It("evaluates harness status at request time not build time", func() {
+		enabled := false
+		dynamicManifest := func() agent.Manifest {
+			return agent.Manifest{ID: "planner", HarnessEnabled: enabled}
+		}
+
+		h := hook.ContextInjectionHook(dynamicManifest, "/tmp")
+
+		req := makeReq(false)
+		_, err := h(noop)(context.Background(), req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Messages[0].Content).NotTo(ContainSubstring("## Codebase Context"))
+
+		enabled = true
+		req = makeReq(false)
+		_, err = h(noop)(context.Background(), req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Messages[0].Content).To(ContainSubstring("## Codebase Context"))
 	})
 })

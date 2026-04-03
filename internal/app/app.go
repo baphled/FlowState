@@ -1094,14 +1094,15 @@ func buildHookChain(
 	if twc != nil {
 		hooks = append(hooks, hook.ToolWiringHook(manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
 	}
-	if manifestGetter().HarnessEnabled {
-		projectRoot, err := os.Getwd()
-		if err != nil {
-			projectRoot = "."
-		}
-		hooks = append(hooks, hook.PhaseDetectorHook(), hook.ContextInjectionHook(manifestGetter, projectRoot))
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		projectRoot = "."
 	}
-	hooks = append(hooks, tracer.Hook())
+	hooks = append(hooks,
+		hook.PhaseDetectorHook(manifestGetter),
+		hook.ContextInjectionHook(manifestGetter, projectRoot),
+		tracer.Hook(),
+	)
 	if failoverMgr != nil {
 		streamHook := failover.NewStreamHook(failoverMgr, nil, "")
 		hooks = append(hooks, streamHook.Execute)
