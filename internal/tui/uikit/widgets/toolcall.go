@@ -116,6 +116,20 @@ func toolIcon(name string) string {
 	}
 }
 
+// ToolIcon returns the icon character for the given tool name.
+//
+// Expected:
+//   - name is a tool name string, which may be empty or unknown.
+//
+// Returns:
+//   - The semantic icon for the tool, or defaultToolIcon for unknown names.
+//
+// Side effects:
+//   - None.
+func ToolIcon(name string) string {
+	return toolIcon(name)
+}
+
 // toolPendingText returns the pending status text for the named tool.
 //
 // Expected:

@@ -139,3 +139,21 @@ All commits properly attributed via `AI_AGENT="Opencode" AI_MODEL="claude-sonnet
 **Commits created:**
 1. feat(api): add session hierarchy endpoints
 2. feat(api): add background task endpoints
+
+## [2026-04-03] T32: Agent colour system
+
+- Added Manifest.Color with JSON/YAML tags and hex validation in Validate()
+- Added schema_version blank-string validation alongside existing required-field checks
+- Added internal/tui/uikit/theme/agent_colors.go with package-level AgentColorPalette and ResolveAgentColor()
+- Resolver uses manifest colour only when it matches #RRGGBB; otherwise it cycles the pre-allocated palette
+- Theme package imports internal/agent directly; no theme.Default() call at package init
+- make check is currently blocked by unrelated vet failure in internal/provider/anthropic/streaming_test.go (chunk.Thinking undefined)
+
+## [2026-04-03] T28+T29: Tool icons and pending text
+
+- toolIcon() maps tool names to semantic icons; default ⚡ preserves existing tests
+- toolPendingText() map var, pending text shown instead of [running] label when status="running"
+- Boy Scout cleanup: styles pre-allocated in constructor, status/icon constants extracted
+- Both committed on feature/agent-platform
+- Added BlockTool for collapsed/expanded tool output rendering; keep styles prebuilt in constructor and use ToolIcon wrapper for shared icon mapping.
+- BlockTool collapsed view should stay single-line with truncated input; expanded view should reuse rounded left-border styling and clamp output lines.
