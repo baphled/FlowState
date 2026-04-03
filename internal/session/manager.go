@@ -3,14 +3,12 @@ package session
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
-	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/google/uuid"
 )
 
@@ -326,111 +324,6 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	sess.Messages = append(sess.Messages, msg)
 }
 
-// primaryArgValue returns the string value of the primary display argument for the given tool call.
-//
-// Expected:
-//   - name is a tool identifier.
-//   - args contains the tool call argument map.
-//
-// Returns:
-//   - The string value of the primary argument, or an empty string when absent.
-//
-// Side effects:
-//   - None.
-func primaryArgValue(name string, args map[string]any) string {
-	key := tooldisplay.PrimaryArgKey(name)
-	if key == "" {
-		return ""
-	}
-	v, ok := args[key].(string)
-	if !ok {
-		return ""
-	}
-	return v
-}
-
-// accumState holds mutable state for the stream accumulation goroutine.
-type accumState struct {
-	sessionID     string
-	agentID       string
-	contentBuf    strings.Builder
-	lastToolName  string
-	lastToolInput string
-}
-
-// processChunk handles a single stream chunk, updating state and persisting messages.
-//
-// Expected:
-//   - chunk is the next chunk from the raw stream.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - May call appendSessionMessage to persist accumulated content to session history.
-//   - Mutates s.contentBuf, s.lastToolName, and s.lastToolInput in place.
-func (m *Manager) processChunk(s *accumState, chunk provider.StreamChunk) {
-	switch {
-	case chunk.ToolCall != nil:
-		if s.contentBuf.Len() > 0 {
-			m.appendSessionMessage(s.sessionID, Message{
-				Role:    "assistant",
-				Content: s.contentBuf.String(),
-				AgentID: s.agentID,
-			})
-			s.contentBuf.Reset()
-		}
-		s.lastToolName = chunk.ToolCall.Name
-		s.lastToolInput = primaryArgValue(chunk.ToolCall.Name, chunk.ToolCall.Arguments)
-	case chunk.ToolResult != nil:
-		m.appendSessionMessage(s.sessionID, Message{
-			Role:      "tool_result",
-			Content:   chunk.ToolResult.Content,
-			ToolName:  s.lastToolName,
-			ToolInput: s.lastToolInput,
-			AgentID:   s.agentID,
-		})
-	case chunk.Done:
-		if s.contentBuf.Len() > 0 {
-			m.appendSessionMessage(s.sessionID, Message{
-				Role:    "assistant",
-				Content: s.contentBuf.String(),
-				AgentID: s.agentID,
-			})
-			s.contentBuf.Reset()
-		}
-	default:
-		if chunk.Content != "" {
-			s.contentBuf.WriteString(chunk.Content)
-		}
-	}
-}
-
-// accumulateStream wraps rawCh with a goroutine that records assistant and tool
-// messages into session history while forwarding every chunk to the returned channel.
-//
-// Expected:
-//   - sessionID and agentID are valid identifiers for the active session.
-//   - rawCh is the stream channel returned by the streamer.
-//
-// Returns:
-//   - A new channel that receives the same chunks as rawCh.
-//
-// Side effects:
-//   - Spawns a goroutine that appends messages to the session via appendSessionMessage.
-func (m *Manager) accumulateStream(sessionID, agentID string, rawCh <-chan provider.StreamChunk) <-chan provider.StreamChunk {
-	accumCh := make(chan provider.StreamChunk, 64)
-	go func() {
-		defer close(accumCh)
-		s := &accumState{sessionID: sessionID, agentID: agentID}
-		for chunk := range rawCh {
-			m.processChunk(s, chunk)
-			accumCh <- chunk
-		}
-	}()
-	return accumCh
-}
-
 // SendMessage sends a message to the session and streams the response.
 // Expected:
 //   - ctx is valid for the lifetime of the streaming request.
@@ -471,7 +364,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		return nil, err
 	}
 
-	accumCh := m.accumulateStream(sessionID, agentID, rawCh)
+	accumCh := AccumulateStream(m, sessionID, agentID, rawCh)
 
 	if m.recorder != nil {
 		teedCh := make(chan provider.StreamChunk, 64)
