@@ -28,21 +28,22 @@ type Message struct {
 type View struct {
 	theme.Aware
 
-	width             int
-	height            int
-	messages          []Message
-	streaming         bool
-	response          string
-	renderFunc        func(string, int) string
-	toolCallName      string
-	toolCallStatus    string
-	delegationInfo    *provider.DelegationInfo
-	tickFrame         int
-	agentColor        lipgloss.Color
-	modelID           string
-	cachedRenderer    *glamour.TermRenderer
-	cachedRenderWidth int
-	renderedMessages  []string
+	width                 int
+	height                int
+	messages              []Message
+	streaming             bool
+	response              string
+	renderFunc            func(string, int) string
+	toolCallName          string
+	toolCallStatus        string
+	delegationInfo        *provider.DelegationInfo
+	activeDelegationBlock *CollapsibleDelegationBlock
+	tickFrame             int
+	agentColor            lipgloss.Color
+	modelID               string
+	cachedRenderer        *glamour.TermRenderer
+	cachedRenderWidth     int
+	renderedMessages      []string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -454,10 +455,10 @@ func (v *View) HandleDelegation(info *provider.DelegationInfo) {
 	case "completed", "failed":
 		v.delegationInfo = nil
 		v.FlushPartialResponse()
-		widget := NewDelegationStatusWidget(info, v.Theme())
+		block := NewCollapsibleDelegationBlock(info, v.Theme())
 		v.AddMessage(Message{
 			Role:    "system",
-			Content: widget.Render(),
+			Content: block.Render(),
 		})
 	default:
 		// Active delegation
@@ -484,9 +485,11 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 	}
 
 	if v.delegationInfo != nil {
-		widget := NewDelegationStatusWidget(v.delegationInfo, th)
-		widget.SetFrame(v.tickFrame)
-		sb.WriteString(widget.Render())
+		if v.activeDelegationBlock == nil {
+			v.activeDelegationBlock = NewCollapsibleDelegationBlock(v.delegationInfo, th)
+		}
+		v.activeDelegationBlock.SetFrame(v.tickFrame)
+		sb.WriteString(v.activeDelegationBlock.Render())
 		sb.WriteString("\n")
 	}
 
@@ -507,6 +510,26 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 		sb.WriteString(tcw.Render())
 		sb.WriteString("\n")
 	}
+}
+
+// ToggleActiveDelegationBlock toggles the collapsed state of the active delegation block.
+//
+// Expected:
+//   - Called when user clicks on the delegation block area.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Toggles the collapsed state of the current active delegation block, if any.
+func (v *View) ToggleActiveDelegationBlock() {
+	if v.delegationInfo == nil {
+		return
+	}
+	if v.activeDelegationBlock == nil {
+		v.activeDelegationBlock = NewCollapsibleDelegationBlock(v.delegationInfo, v.Theme())
+	}
+	v.activeDelegationBlock.Toggle()
 }
 
 // ResultSend represents the result of sending a chat message.
