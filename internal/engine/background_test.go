@@ -9,7 +9,19 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 )
+
+// fakeStreamer is a minimal streaming.Streamer implementation for tests.
+type fakeStreamer struct{}
+
+func (f *fakeStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
+}
 
 var _ = Describe("BackgroundTaskManager", func() {
 	var manager *engine.BackgroundTaskManager
@@ -472,6 +484,117 @@ var _ = Describe("BackgroundTaskManager", func() {
 				})
 
 				Expect(task.ConcurrencyKey).To(Equal("my-agent"))
+			})
+		})
+	})
+
+	Describe("ParentSessionID threading", func() {
+		Context("when session ID is in context", func() {
+			It("sets ParentSessionID on the task", func() {
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "ses-123")
+				task := manager.Launch(ctx, "sess-task", "agent-1", "session test", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+
+				Expect(task.ParentSessionID).To(Equal("ses-123"))
+			})
+		})
+
+		Context("when no session ID is in context", func() {
+			It("leaves ParentSessionID empty", func() {
+				ctx := context.Background()
+				task := manager.Launch(ctx, "no-sess-task", "agent-1", "no session test", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+
+				Expect(task.ParentSessionID).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("Completion notification injection", func() {
+		Context("when session manager and parent session ID are set", func() {
+			It("injects a completion notification into the session manager", func() {
+				streamer := &fakeStreamer{}
+				sessionMgr := session.NewManager(streamer)
+				manager.WithSessionManager(sessionMgr)
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "notif-sess")
+				manager.Launch(ctx, "notif-task", "agent-1", "notification test", func(ctx context.Context) (string, error) {
+					return "task output", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("notif-task")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				notifications, err := sessionMgr.GetNotifications("notif-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(HaveLen(1))
+				Expect(notifications[0].TaskID).To(Equal("notif-task"))
+				Expect(notifications[0].Agent).To(Equal("agent-1"))
+				Expect(notifications[0].Status).To(Equal("completed"))
+			})
+		})
+
+		Context("when session manager is nil", func() {
+			It("does not panic", func() {
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "no-mgr-sess")
+				manager.Launch(ctx, "no-mgr-task", "agent-1", "no manager test", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("no-mgr-task")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+			})
+		})
+	})
+
+	Describe("CompletionSubscriber", func() {
+		Context("when a task completes", func() {
+			It("sends a notification on the subscriber channel", func() {
+				ch := make(chan streaming.CompletionNotificationEvent, 1)
+				manager.SetCompletionSubscriber(ch)
+
+				streamer := &fakeStreamer{}
+				sessionMgr := session.NewManager(streamer)
+				manager.WithSessionManager(sessionMgr)
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "sub-sess")
+				manager.Launch(ctx, "sub-task", "agent-1", "subscriber test", func(ctx context.Context) (string, error) {
+					return "sub output", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("sub-task")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				var notif streaming.CompletionNotificationEvent
+				Eventually(ch, "2s", "50ms").Should(Receive(&notif))
+				Expect(notif.TaskID).To(Equal("sub-task"))
+				Expect(notif.Agent).To(Equal("agent-1"))
+			})
+		})
+
+		Context("when no subscriber is set", func() {
+			It("does not block completion", func() {
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "no-sub-sess")
+				streamer := &fakeStreamer{}
+				sessionMgr := session.NewManager(streamer)
+				manager.WithSessionManager(sessionMgr)
+
+				manager.Launch(ctx, "no-sub-task", "agent-1", "no subscriber test", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("no-sub-task")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
 			})
 		})
 	})

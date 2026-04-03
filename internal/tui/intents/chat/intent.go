@@ -59,6 +59,16 @@ type SessionSavedMsg struct {
 	Err error
 }
 
+// BackgroundTaskCompletedMsg carries a background task completion notification
+// into the Bubble Tea event loop so the planner can be re-triggered.
+type BackgroundTaskCompletedMsg struct {
+	TaskID      string
+	Agent       string
+	Description string
+	Duration    string
+	Status      string
+}
+
 // tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
 //
 // Returns:
@@ -160,6 +170,7 @@ type Intent struct {
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
 	streamCancel   context.CancelFunc
+	completionChan <-chan streaming.CompletionNotificationEvent
 	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
 	cachedScreenLayout    *layout.ScreenLayout
 	breadcrumbPath        string
@@ -243,6 +254,19 @@ func NewIntent(cfg IntentConfig) *Intent {
 	}
 }
 
+// SetCompletionChannel attaches a channel that receives background task completion
+// notifications. The chat intent listens on this channel via a tea.Cmd and
+// re-triggers the planner when a notification arrives.
+//
+// Expected:
+//   - ch is a buffered channel or nil to disable notifications.
+//
+// Side effects:
+//   - Stores the channel reference for use in Init().
+func (i *Intent) SetCompletionChannel(ch <-chan streaming.CompletionNotificationEvent) {
+	i.completionChan = ch
+}
+
 // Init returns the initial command for the intent.
 //
 // Returns:
@@ -262,7 +286,11 @@ func (i *Intent) Init() tea.Cmd {
 	if runningInTests {
 		return nil
 	}
-	return tea.Batch(tickSpinner(), i.notifications.Init())
+	cmds := []tea.Cmd{tickSpinner(), i.notifications.Init()}
+	if i.completionChan != nil {
+		cmds = append(cmds, i.waitForCompletion())
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -294,25 +322,131 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case SessionSavedMsg:
 		return nil
 	case SpinnerTickMsg:
-		if i.view.IsStreaming() {
-			i.tickFrame++
-			i.view.SetTickFrame(i.tickFrame)
-		}
-		if i.loadingModal != nil {
-			i.loadingModal.AdvanceSpinner()
-		}
-		if i.view.IsStreaming() || i.loadingModal != nil {
-			return tickSpinner()
-		}
-		return nil
+		return i.handleSpinnerTick()
 	case notification.TickMsg:
 		return i.notifications.Update(msg)
 	case sessionbrowser.SessionSelectedMsg:
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
 		return i.handleSessionLoaded(msg)
+	case BackgroundTaskCompletedMsg:
+		return i.handleBackgroundTaskCompleted(msg)
 	}
 	return nil
+}
+
+// handleSpinnerTick advances spinner animations for streaming and loading states.
+//
+// Returns:
+//   - A tea.Cmd to schedule the next tick if animations are active, or nil.
+//
+// Side effects:
+//   - Advances the tick frame and spinner animations.
+func (i *Intent) handleSpinnerTick() tea.Cmd {
+	if i.view.IsStreaming() {
+		i.tickFrame++
+		i.view.SetTickFrame(i.tickFrame)
+	}
+	if i.loadingModal != nil {
+		i.loadingModal.AdvanceSpinner()
+	}
+	if i.view.IsStreaming() || i.loadingModal != nil {
+		return tickSpinner()
+	}
+	return nil
+}
+
+// waitForCompletion returns a tea.Cmd that blocks until a background task
+// completion notification arrives on the completion channel, then converts it
+// to a BackgroundTaskCompletedMsg for the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd that blocks on the completion channel.
+//
+// Side effects:
+//   - None until the returned Cmd is executed by the Bubble Tea runtime.
+func (i *Intent) waitForCompletion() tea.Cmd {
+	ch := i.completionChan
+	return func() tea.Msg {
+		notif, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return BackgroundTaskCompletedMsg{
+			TaskID:      notif.TaskID,
+			Agent:       notif.Agent,
+			Description: notif.Description,
+			Duration:    notif.Duration.String(),
+			Status:      notif.Status,
+		}
+	}
+}
+
+// handleBackgroundTaskCompleted formats a system-reminder message and re-triggers
+// the planner stream so it can collect background task results.
+//
+// Expected:
+//   - msg contains task completion details from a background delegation.
+//
+// Returns:
+//   - A tea.Cmd that starts a new stream with the system-reminder message.
+//
+// Side effects:
+//   - Adds a system message to the chat view and starts streaming.
+func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) tea.Cmd {
+	reminder := formatCompletionReminder(msg)
+
+	i.view.AddMessage(chat.Message{Role: "system", Content: reminder})
+	i.view.StartStreaming()
+	i.atBottom = true
+	i.refreshViewport()
+
+	i.cancelActiveStream()
+	ctx, cancel := context.WithCancel(context.Background())
+	i.streamCancel = cancel
+
+	cmds := []tea.Cmd{
+		func() tea.Msg {
+			var stream <-chan provider.StreamChunk
+			var err error
+			if i.sessionManager != nil {
+				i.sessionManager.EnsureSession(i.sessionID, i.agentID)
+				stream, err = i.sessionManager.SendMessage(ctx, i.sessionID, reminder)
+			} else {
+				stream, err = i.streamer.Stream(ctx, i.agentID, reminder)
+			}
+			if err != nil {
+				return StreamChunkMsg{Content: "", Error: err, Done: true}
+			}
+			return i.readNextChunkFrom(stream)
+		},
+	}
+
+	if i.completionChan != nil {
+		cmds = append(cmds, i.waitForCompletion())
+	}
+
+	return tea.Batch(cmds...)
+}
+
+// formatCompletionReminder builds the system-reminder message for a completed background task.
+//
+// Expected:
+//   - msg contains task completion details.
+//
+// Returns:
+//   - A formatted system-reminder string for the planner.
+//
+// Side effects:
+//   - None.
+func formatCompletionReminder(msg BackgroundTaskCompletedMsg) string {
+	return fmt.Sprintf(
+		"<system-reminder>\n[BACKGROUND TASK COMPLETE]\n"+
+			"Task %s (%s) completed in %s.\n"+
+			"Use background_output(task_id=%q) to retrieve the result.\n"+
+			"</system-reminder>",
+		msg.TaskID, msg.Agent, msg.Duration, msg.TaskID,
+	)
 }
 
 // handleDelegationKeyMsg processes keyboard input for the delegation picker modal.

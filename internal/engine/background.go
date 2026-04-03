@@ -85,14 +85,15 @@ type ConcurrencyConfig struct {
 
 // BackgroundTaskManager tracks parallel delegation tasks with per-key and total concurrency limits.
 type BackgroundTaskManager struct {
-	tasks      map[string]*BackgroundTask
-	mu         sync.RWMutex
-	config     ConcurrencyConfig
-	perKeySems map[string]chan struct{}
-	totalSem   chan struct{}
-	semsMu     sync.Mutex
-	sessionMgr *session.Manager
-	eventBus   *eventbus.EventBus
+	tasks         map[string]*BackgroundTask
+	mu            sync.RWMutex
+	config        ConcurrencyConfig
+	perKeySems    map[string]chan struct{}
+	totalSem      chan struct{}
+	semsMu        sync.Mutex
+	sessionMgr    *session.Manager
+	eventBus      *eventbus.EventBus
+	completionSub chan<- streaming.CompletionNotificationEvent
 }
 
 // NewBackgroundTaskManager creates a new task manager with per-key concurrency limiting.
@@ -140,6 +141,19 @@ func (m *BackgroundTaskManager) WithSessionManager(mgr *session.Manager) *Backgr
 //   - Stores the event bus reference for later use.
 func (m *BackgroundTaskManager) SetEventBus(bus *eventbus.EventBus) {
 	m.eventBus = bus
+}
+
+// SetCompletionSubscriber registers a channel that receives completion notifications
+// when background tasks finish. This enables Bubble Tea message bridging so the
+// TUI can react to task completions.
+//
+// Expected:
+//   - ch is a buffered channel or nil to disable subscriber notifications.
+//
+// Side effects:
+//   - Stores the channel reference for later use in handleTaskCompletion.
+func (m *BackgroundTaskManager) SetCompletionSubscriber(ch chan<- streaming.CompletionNotificationEvent) {
+	m.completionSub = ch
 }
 
 // emitTaskStarted emits a background task started event if the event bus is configured.
@@ -252,14 +266,16 @@ func (m *BackgroundTaskManager) Launch(
 ) *BackgroundTask {
 	taskCtx, cancel := context.WithCancel(ctx)
 	concurrencyKey := agentID
+	parentSessionID := sessionIDFromContext(ctx)
 
 	task := &BackgroundTask{
-		ID:             id,
-		AgentID:        agentID,
-		Description:    desc,
-		StartedAt:      time.Now().UTC(),
-		cancel:         cancel,
-		ConcurrencyKey: concurrencyKey,
+		ID:              id,
+		AgentID:         agentID,
+		Description:     desc,
+		StartedAt:       time.Now().UTC(),
+		cancel:          cancel,
+		ConcurrencyKey:  concurrencyKey,
+		ParentSessionID: parentSessionID,
 	}
 	task.Status.store("pending")
 
@@ -356,16 +372,41 @@ func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ str
 		m.emitTaskCompleted(task)
 	}
 
-	if m.sessionMgr != nil && task.ParentSessionID != "" {
-		notification := streaming.CompletionNotificationEvent{
-			TaskID:      task.ID,
-			Description: task.Description,
-			Agent:       task.AgentID,
-			Duration:    completedAt.Sub(task.StartedAt),
-			Status:      task.Status.Load(),
-			Result:      task.Result,
-		}
+	if task.ParentSessionID == "" {
+		return
+	}
+
+	notification := streaming.CompletionNotificationEvent{
+		TaskID:      task.ID,
+		Description: task.Description,
+		Agent:       task.AgentID,
+		Duration:    completedAt.Sub(task.StartedAt),
+		Status:      task.Status.Load(),
+		Result:      task.Result,
+	}
+
+	if m.sessionMgr != nil {
 		m.injectCompletionNotification(task.ParentSessionID, notification)
+	}
+
+	m.notifyCompletionSubscriber(notification)
+}
+
+// notifyCompletionSubscriber sends a completion notification to the subscriber
+// channel if one is configured. The send is non-blocking to prevent deadlocks.
+//
+// Expected:
+//   - notification is a populated CompletionNotificationEvent.
+//
+// Side effects:
+//   - Attempts a non-blocking send to the subscriber channel.
+func (m *BackgroundTaskManager) notifyCompletionSubscriber(notification streaming.CompletionNotificationEvent) {
+	if m.completionSub == nil {
+		return
+	}
+	select {
+	case m.completionSub <- notification:
+	default:
 	}
 }
 

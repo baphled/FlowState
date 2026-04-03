@@ -78,6 +78,7 @@ type App struct {
 	Store             *plan.Store
 	defaultProvider   provider.Provider
 	backgroundManager *engine.BackgroundTaskManager
+	sessionManager    *session.Manager
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -279,6 +280,7 @@ func buildApp(params appBuildParams) *App {
 		ollamaProvider:   ollamaProvider,
 		metricsRegistry:  runtime.metricsRegistry,
 		defaultProvider:  runtime.defaultProvider,
+		sessionManager:   runtime.sessionManager,
 	}
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
@@ -371,18 +373,9 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	if err != nil {
 		return nil, err
 	}
+	tp := buildToolPipeline(params.cfg)
+	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
-	mcpMgr := mcpclient.NewManager()
-	todoStore := todotool.NewMemoryStore()
-	appTools := buildTools(skill.NewFileSkillLoader(params.cfg.SkillDir), todoStore)
-	allServers := mergeMCPServers(params.cfg.MCPServers, config.DiscoverMCPServers())
-	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
-	toolRegistry, permHandler := buildToolsSetup(appTools)
-	if params.failoverManager != nil {
-		if prefs := buildConfigProviderPreferences(params.cfg); len(prefs) > 0 {
-			params.failoverManager.SetBasePreferences(prefs)
-		}
-	}
 	eng, setEnsureTools := createEngine(engineParams{
 		defaultProvider:    tracedProvider,
 		ollamaProvider:     params.ollamaProvider,
@@ -392,9 +385,9 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		alwaysActiveSkills: params.alwaysActiveSkills,
 		contextStore:       contextStore,
 		learningStore:      params.learningStore,
-		appTools:           appTools,
-		toolRegistry:       toolRegistry,
-		permissionHandler:  permHandler,
+		appTools:           tp.tools,
+		toolRegistry:       tp.toolRegistry,
+		permissionHandler:  tp.permissionHandler,
 		agentsFileLoader:   buildAgentsFileLoader(),
 		tokenCounter:       ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
 		failoverHook:       params.failoverHook,
@@ -411,7 +404,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		params.skills,
 		api.WithSessions(params.sessionStore),
 		api.WithSessionManager(sessionMgr),
-		api.WithTodoStore(todoStore),
+		api.WithTodoStore(tp.todoStore),
 		api.WithMetricsHandler(promhttp.HandlerFor(metricsReg, promhttp.HandlerOpts{})),
 		api.WithEventBus(eng.EventBus()),
 	)
@@ -422,11 +415,65 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		streamer:        streamer,
 		apiServer:       apiServer,
 		metricsRegistry: metricsReg,
-		mcpManager:      mcpMgr,
-		todoStore:       todoStore,
+		mcpManager:      tp.mcpManager,
+		todoStore:       tp.todoStore,
 		sessionRecorder: sessRecorder,
 		setEnsureTools:  setEnsureTools,
+		sessionManager:  sessionMgr,
 	}, nil
+}
+
+// toolPipelineResult groups the outputs of buildToolPipeline.
+type toolPipelineResult struct {
+	mcpManager        mcpclient.Client
+	todoStore         todotool.Store
+	tools             []tool.Tool
+	toolRegistry      *tool.Registry
+	permissionHandler tool.PermissionHandler
+}
+
+// buildToolPipeline creates the MCP manager, todo store, and tool registry
+// needed by the engine.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig.
+//
+// Returns:
+//   - A toolPipelineResult containing all assembled dependencies.
+//
+// Side effects:
+//   - Connects to configured MCP servers.
+func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
+	mcpMgr := mcpclient.NewManager()
+	todoStore := todotool.NewMemoryStore()
+	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore)
+	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
+	appTools = append(appTools, ConnectMCPServers(context.Background(), mcpMgr, allServers)...)
+	toolRegistry, permHandler := buildToolsSetup(appTools)
+	return toolPipelineResult{
+		mcpManager:        mcpMgr,
+		todoStore:         todoStore,
+		tools:             appTools,
+		toolRegistry:      toolRegistry,
+		permissionHandler: permHandler,
+	}
+}
+
+// applyFailoverPreferences sets base preferences on the failover manager when configured.
+//
+// Expected:
+//   - failoverManager may be nil.
+//   - cfg is a non-nil AppConfig.
+//
+// Side effects:
+//   - Sets base preferences on the failover manager if non-nil and preferences exist.
+func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.AppConfig) {
+	if failoverManager == nil {
+		return
+	}
+	if prefs := buildConfigProviderPreferences(cfg); len(prefs) > 0 {
+		failoverManager.SetBasePreferences(prefs)
+	}
 }
 
 // setupEngineParams groups the inputs required to initialise the application runtime.
@@ -456,6 +503,7 @@ type runtimeComponents struct {
 	todoStore       todotool.Store
 	sessionRecorder *sessionrecorder.Recorder
 	setEnsureTools  func(func(agent.Manifest))
+	sessionManager  *session.Manager
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -562,6 +610,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	}
 
 	bgManager := engine.NewBackgroundTaskManager()
+	bgManager.WithSessionManager(a.sessionManager)
 	coordinationStore := coordination.NewMemoryStore()
 
 	allAgents := a.Registry.List()
@@ -2031,6 +2080,17 @@ func BuildHookChainForTestWithFailover(
 	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
 	fh := failover.NewHook(chain, health)
 	return buildHookChain(learningStore, manifestGetter, fh, nil, nil)
+}
+
+// SessionMgr returns the session manager for the TUI layer.
+//
+// Returns:
+//   - The session Manager, or nil if not configured.
+//
+// Side effects:
+//   - None.
+func (a *App) SessionMgr() *session.Manager {
+	return a.sessionManager
 }
 
 // SetBackgroundManager sets the background task manager.
