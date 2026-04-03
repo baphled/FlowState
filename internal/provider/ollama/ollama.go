@@ -65,6 +65,11 @@ func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 	}, nil
 }
 
+const (
+	defaultMaxTokens = 4096
+	providerName     = "ollama"
+)
+
 // Name returns the provider name.
 //
 // Returns:
@@ -73,7 +78,7 @@ func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 // Side effects:
 //   - None.
 func (p *Provider) Name() string {
-	return "ollama"
+	return providerName
 }
 
 // Stream sends a streaming chat request to the Ollama API.
@@ -119,7 +124,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 						return ctx.Err()
 					}
 				}
-				ch <- provider.StreamChunk{Done: true}
+				shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
 				return nil
 			}
 			chunk := provider.StreamChunk{
@@ -132,7 +137,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 			return nil
 		})
 		if err != nil {
-			ch <- provider.StreamChunk{Error: err, Done: true}
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: err, Done: true})
 		}
 	}()
 
@@ -241,10 +246,10 @@ func (p *Provider) Models() ([]provider.Model, error) {
 
 	models := make([]provider.Model, 0, len(resp.Models))
 	for i := range resp.Models {
-		contextLen := 4096
+		contextLen := defaultMaxTokens
 		models = append(models, provider.Model{
 			ID:            resp.Models[i].Name,
-			Provider:      "ollama",
+			Provider:      providerName,
 			ContextLength: contextLen,
 		})
 	}
