@@ -362,19 +362,11 @@ func applyDefaults(cfg *AppConfig) {
 		cfg.Plugins.Failover.Tiers = defaults.Plugins.Failover.Tiers
 	}
 
-	// Apply harness defaults: Enabled defaults to true unless explicitly disabled.
-	// YAML unmarshals missing bool as false, so we need to handle this carefully.
-	// If Enabled is not explicitly set to false, default to true.
 	if !cfg.Harness.Enabled {
 		cfg.Harness.Enabled = true
 	}
 
-	// Default MCP servers to enabled if not explicitly disabled
 	for i := range cfg.MCPServers {
-		// Note: YAML unmarshals missing bool as false.
-		// Per spec, MCPServers default to enabled: true unless explicitly set to false in config.
-		// Since we cannot distinguish "not set" from "explicitly false", we default all to true.
-		// Users who want disabled servers must use YAML: enabled: false
 		if !cfg.MCPServers[i].Enabled {
 			cfg.MCPServers[i].Enabled = true
 		}
