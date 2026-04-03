@@ -25,10 +25,23 @@ func SendChunk(
 	chunk provider.StreamChunk,
 ) bool {
 	select {
+	case <-ctx.Done():
+		select {
+		case ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}:
+		default:
+		}
+		return false
+	default:
+	}
+
+	select {
 	case ch <- chunk:
 		return true
 	case <-ctx.Done():
-		ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
+		select {
+		case ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}:
+		default:
+		}
 		return false
 	}
 }

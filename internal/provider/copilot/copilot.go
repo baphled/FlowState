@@ -25,7 +25,6 @@ var ErrEmbedNotSupported = errors.New("embedding is not supported by GitHub Copi
 const (
 	providerName         = "github-copilot"
 	defaultBaseURL       = "https://api.githubcopilot.com"
-	tokenExchangeBaseURL = "https://api.github.com"
 	headerAccept         = "application/json"
 	headerContentType    = "application/json"
 	defaultContextLength = 128000
@@ -291,7 +290,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 //   - req is an EmbedRequest (unused).
 //
 // Returns:
-//   - nil and nil; embedding is not supported by this provider.
+//   - nil and ErrEmbedNotSupported; embedding is not supported by this provider.
 //
 // Side effects:
 //   - None.

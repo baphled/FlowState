@@ -40,5 +40,16 @@ var _ = Describe("SendChunk", func() {
 			Expect(received.Done).To(BeTrue())
 			Expect(errors.Is(received.Error, context.Canceled)).To(BeTrue())
 		})
+
+		It("does not block when the channel is full", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			ch := make(chan provider.StreamChunk) // unbuffered = always full
+
+			result := shared.SendChunk(ctx, ch, provider.StreamChunk{Content: "hello"})
+
+			Expect(result).To(BeFalse())
+		})
 	})
 })
