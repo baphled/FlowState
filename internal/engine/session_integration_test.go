@@ -65,8 +65,8 @@ func (c *cachedProvider) recordAndForward(innerCh <-chan provider.StreamChunk) <
 
 func (c *cachedProvider) replayFromCache(cached []provider.StreamChunk) <-chan provider.StreamChunk {
 	ch := make(chan provider.StreamChunk, len(cached))
-	for _, chunk := range cached {
-		ch <- chunk
+	for i := range cached {
+		ch <- cached[i]
 	}
 	close(ch)
 	return ch
@@ -625,8 +625,8 @@ func (p *contextCapturingProvider) Stream(ctx context.Context, _ provider.ChatRe
 		p.captureFn(ctx)
 	}
 	ch := make(chan provider.StreamChunk, len(p.chunks))
-	for _, chunk := range p.chunks {
-		ch <- chunk
+	for i := range p.chunks {
+		ch <- p.chunks[i]
 	}
 	close(ch)
 	return ch, nil

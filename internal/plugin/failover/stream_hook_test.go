@@ -45,8 +45,8 @@ func successStreamFn(chunks ...provider.StreamChunk) func(context.Context, provi
 		ch := make(chan provider.StreamChunk, len(chunks))
 		go func() {
 			defer close(ch)
-			for _, c := range chunks {
-				ch <- c
+			for i := range chunks {
+				ch <- chunks[i]
 			}
 		}()
 		return ch, nil

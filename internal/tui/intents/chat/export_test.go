@@ -252,3 +252,8 @@ func FormatCompletionReminderForTest(msg BackgroundTaskCompletedMsg) string {
 func SplitToolSummaryForTest(summary string) (name, input string) {
 	return splitToolSummary(summary)
 }
+
+// SetModelNameForTest sets the model name for testing mid-stream model changes.
+func (i *Intent) SetModelNameForTest(name string) {
+	i.modelName = name
+}

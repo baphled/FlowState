@@ -51,6 +51,8 @@ type StreamChunkMsg struct {
 	DelegationInfo *provider.DelegationInfo
 	Thinking       string
 	Next           tea.Cmd
+	// ModelID is the model that produced this chunk, stamped by the engine at stream time.
+	ModelID string
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -757,26 +759,7 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	i.appendThinking(msg.Thinking)
 
-	committedSkill := false
-	lastToolCall := ""
-	if msg.ToolCallName != "" {
-		i.activeToolCall = msg.ToolCallName
-		if strings.HasPrefix(msg.ToolCallName, "skill:") {
-			committedSkill = true
-		}
-	} else if i.activeToolCall != "" {
-		lastToolCall = i.activeToolCall
-		role := "tool_call"
-		content := i.activeToolCall
-		if strings.HasPrefix(i.activeToolCall, "skill:") {
-			role = "skill_load"
-			content = strings.TrimPrefix(i.activeToolCall, "skill:")
-			committedSkill = true
-		}
-		i.view.FlushPartialResponse()
-		i.view.AddMessage(chat.Message{Role: role, Content: content})
-		i.activeToolCall = ""
-	}
+	lastToolCall, committedSkill := i.commitToolCall(msg)
 
 	suppressResult := isReadToolCall(lastToolCall) && !msg.ToolIsError
 	if msg.ToolResult != "" && !committedSkill && !suppressResult {
@@ -788,15 +771,69 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 		i.notifications.AddDelegationNotification(msg.DelegationInfo)
 	}
 
+	if msg.Done && msg.ModelID != "" {
+		i.view.SetModelID(msg.ModelID)
+	}
+
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
-	i.flushThinking(msg.Done)
-
-	if msg.Done && i.engine != nil {
-		contextResult := i.engine.LastContextResult()
-		i.tokenCount = contextResult.TokensUsed
-		i.syncStatusBar()
+	if msg.Done && msg.ModelID != "" {
+		i.view.SetModelID(i.modelName)
 	}
+
+	i.flushThinking(msg.Done)
+	i.finaliseStreamIfDone(msg)
+}
+
+// commitToolCall advances the active tool-call state machine for the given chunk.
+//
+// Expected:
+//   - msg carries the current streaming chunk with tool-call metadata.
+//
+// Returns:
+//   - lastToolCall: the tool-call name that was just committed, if any.
+//   - committedSkill: true when the committed call was a skill_load.
+//
+// Side effects:
+//   - Mutates i.activeToolCall.
+//   - May call i.view.FlushPartialResponse and i.view.AddMessage.
+func (i *Intent) commitToolCall(msg StreamChunkMsg) (lastToolCall string, committedSkill bool) {
+	if msg.ToolCallName != "" {
+		i.activeToolCall = msg.ToolCallName
+		committedSkill = strings.HasPrefix(msg.ToolCallName, "skill:")
+		return "", committedSkill
+	}
+	if i.activeToolCall == "" {
+		return "", false
+	}
+	lastToolCall = i.activeToolCall
+	role := "tool_call"
+	content := i.activeToolCall
+	if strings.HasPrefix(i.activeToolCall, "skill:") {
+		role = "skill_load"
+		content = strings.TrimPrefix(i.activeToolCall, "skill:")
+		committedSkill = true
+	}
+	i.view.FlushPartialResponse()
+	i.view.AddMessage(chat.Message{Role: role, Content: content})
+	i.activeToolCall = ""
+	return lastToolCall, committedSkill
+}
+
+// finaliseStreamIfDone updates token counts and the status bar when the stream ends.
+//
+// Expected:
+//   - msg is the current streaming chunk.
+//
+// Side effects:
+//   - Updates i.tokenCount and calls i.syncStatusBar when msg.Done is true.
+func (i *Intent) finaliseStreamIfDone(msg StreamChunkMsg) {
+	if !msg.Done || i.engine == nil {
+		return
+	}
+	contextResult := i.engine.LastContextResult()
+	i.tokenCount = contextResult.TokensUsed
+	i.syncStatusBar()
 }
 
 // appendThinking accumulates streaming thinking content for later display.
@@ -1153,6 +1190,7 @@ func (i *Intent) readNextChunk() tea.Msg {
 		ToolStatus:     toolStatus,
 		DelegationInfo: chunk.DelegationInfo,
 		Thinking:       chunk.Thinking,
+		ModelID:        chunk.ModelID,
 	}
 
 	if chunk.ToolResult != nil {
@@ -1212,6 +1250,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		ToolStatus:     toolStatus,
 		DelegationInfo: chunk.DelegationInfo,
 		Thinking:       chunk.Thinking,
+		ModelID:        chunk.ModelID,
 	}
 
 	if chunk.ToolResult != nil {
@@ -1903,38 +1942,72 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	i.syncViewAgentMeta()
 	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {
-		switch {
-		case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
-			for _, tc := range sm.Message.ToolCalls {
-				lastToolCallName = tc.Name
-				role := "tool_call"
-				content := toolCallSummary(tc.Name, tc.Arguments)
-				if tc.Name == "skill_load" {
-					role = "skill_load"
-				}
-				i.view.AddMessage(chat.Message{Role: role, Content: content})
-			}
-		case sm.Message.Role == "tool":
-			isError := strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:")
-			if isReadToolCall(lastToolCallName) && !isError {
-				continue
-			}
-			i.view.AddMessage(toolResultMessage(lastToolCallName, sm.Message.Content, isError))
-		default:
-			msg := chat.Message{
-				Role:    sm.Message.Role,
-				Content: sm.Message.Content,
-			}
-			if sm.Message.Role == "assistant" {
-				msg.AgentColor = i.resolveCurrentAgentColor()
-				msg.ModelID = i.modelName
-			}
-			i.view.AddMessage(msg)
-		}
+		lastToolCallName = i.replayStoredMessage(sm, lastToolCallName)
 	}
 	i.refreshViewport()
 	i.syncStatusBar()
 	return nil
+}
+
+// replayStoredMessage adds a single stored message to the chat view during session restore.
+//
+// Expected:
+//   - sm is a stored message from the context store.
+//   - lastToolCallName is the name of the most recently replayed tool call, if any.
+//
+// Returns:
+//   - The updated lastToolCallName after processing sm.
+//
+// Side effects:
+//   - May call i.view.AddMessage.
+func (i *Intent) replayStoredMessage(sm recall.StoredMessage, lastToolCallName string) string {
+	switch {
+	case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
+		for _, tc := range sm.Message.ToolCalls {
+			lastToolCallName = tc.Name
+			role := "tool_call"
+			content := toolCallSummary(tc.Name, tc.Arguments)
+			if tc.Name == "skill_load" {
+				role = "skill_load"
+			}
+			i.view.AddMessage(chat.Message{Role: role, Content: content})
+		}
+	case sm.Message.Role == "tool":
+		isError := strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:")
+		if !isReadToolCall(lastToolCallName) || isError {
+			i.view.AddMessage(toolResultMessage(lastToolCallName, sm.Message.Content, isError))
+		}
+	default:
+		i.view.AddMessage(i.buildAssistantViewMessage(sm))
+	}
+	return lastToolCallName
+}
+
+// buildAssistantViewMessage constructs a chat.Message for a stored assistant or user message.
+//
+// Expected:
+//   - sm.Message.Role is "assistant" or another non-tool role.
+//
+// Returns:
+//   - A chat.Message populated with role, content, and assistant-specific metadata.
+//
+// Side effects:
+//   - None.
+func (i *Intent) buildAssistantViewMessage(sm recall.StoredMessage) chat.Message {
+	msg := chat.Message{
+		Role:    sm.Message.Role,
+		Content: sm.Message.Content,
+	}
+	if sm.Message.Role != "assistant" {
+		return msg
+	}
+	msg.AgentColor = i.resolveCurrentAgentColor()
+	if sm.Message.ModelID == "" {
+		msg.ModelID = i.modelName
+	} else {
+		msg.ModelID = sm.Message.ModelID
+	}
+	return msg
 }
 
 // resolveCurrentAgentColor returns the colour for the current agent manifest.

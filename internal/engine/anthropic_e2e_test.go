@@ -143,8 +143,8 @@ func (r *replayProvider) Name() string { return "replay-anthropic" }
 
 func (r *replayProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, len(r.chunks))
-	for _, c := range r.chunks {
-		ch <- c
+	for i := range r.chunks {
+		ch <- r.chunks[i]
 	}
 	close(ch)
 	return ch, nil

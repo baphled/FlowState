@@ -706,8 +706,8 @@ func (m *mockStreamer) Stream(ctx context.Context, agentID string, message strin
 	m.mu.Unlock()
 
 	ch := make(chan provider.StreamChunk, len(chunks))
-	for _, c := range chunks {
-		ch <- c
+	for i := range chunks {
+		ch <- chunks[i]
 	}
 	close(ch)
 

@@ -46,8 +46,8 @@ func (m *mockProvider) Stream(_ context.Context, req provider.ChatRequest) (<-ch
 	ch := make(chan provider.StreamChunk, len(m.streamChunks))
 	go func() {
 		defer close(ch)
-		for _, chunk := range m.streamChunks {
-			ch <- chunk
+		for i := range m.streamChunks {
+			ch <- m.streamChunks[i]
 		}
 	}()
 	return ch, nil

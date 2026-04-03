@@ -24,8 +24,8 @@ func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan pro
 		return nil, m.err
 	}
 	ch := make(chan provider.StreamChunk, len(m.chunks))
-	for _, c := range m.chunks {
-		ch <- c
+	for i := range m.chunks {
+		ch <- m.chunks[i]
 	}
 	close(ch)
 	return ch, nil
@@ -102,8 +102,8 @@ func (m *mockHarness) StreamEvaluate(
 	}
 	if len(m.streamChunks) > 0 {
 		ch := make(chan provider.StreamChunk, len(m.streamChunks))
-		for _, c := range m.streamChunks {
-			ch <- c
+		for i := range m.streamChunks {
+			ch <- m.streamChunks[i]
 		}
 		close(ch)
 		return ch, nil

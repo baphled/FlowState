@@ -42,8 +42,8 @@ func (m *chunkMockStreamer) Stream(_ context.Context, _, _ string) (<-chan provi
 	m.callCount++
 	go func() {
 		defer close(ch)
-		for _, c := range chunks {
-			ch <- c
+		for i := range chunks {
+			ch <- chunks[i]
 		}
 	}()
 	return ch, nil
@@ -569,9 +569,9 @@ func drainChunks(ch <-chan provider.StreamChunk) []provider.StreamChunk {
 
 func filterContentChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
-	for _, c := range chunks {
-		if c.Content != "" && !c.Done && c.Error == nil && c.EventType == "" {
-			filtered = append(filtered, c)
+	for i := range chunks {
+		if chunks[i].Content != "" && !chunks[i].Done && chunks[i].Error == nil && chunks[i].EventType == "" {
+			filtered = append(filtered, chunks[i])
 		}
 	}
 	return filtered
@@ -579,9 +579,9 @@ func filterContentChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 
 func filterRetryChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
-	for _, c := range chunks {
-		if c.EventType == "harness_retry" {
-			filtered = append(filtered, c)
+	for i := range chunks {
+		if chunks[i].EventType == "harness_retry" {
+			filtered = append(filtered, chunks[i])
 		}
 	}
 	return filtered
@@ -589,9 +589,9 @@ func filterRetryChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 
 func filterDoneChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
-	for _, c := range chunks {
-		if c.Done {
-			filtered = append(filtered, c)
+	for i := range chunks {
+		if chunks[i].Done {
+			filtered = append(filtered, chunks[i])
 		}
 	}
 	return filtered
@@ -599,9 +599,9 @@ func filterDoneChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 
 func filterErrorChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
-	for _, c := range chunks {
-		if c.Error != nil {
-			filtered = append(filtered, c)
+	for i := range chunks {
+		if chunks[i].Error != nil {
+			filtered = append(filtered, chunks[i])
 		}
 	}
 	return filtered
@@ -609,9 +609,9 @@ func filterErrorChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 
 func filterEventChunks(chunks []provider.StreamChunk, eventType string) []provider.StreamChunk {
 	var filtered []provider.StreamChunk
-	for _, c := range chunks {
-		if c.EventType == eventType {
-			filtered = append(filtered, c)
+	for i := range chunks {
+		if chunks[i].EventType == eventType {
+			filtered = append(filtered, chunks[i])
 		}
 	}
 	return filtered

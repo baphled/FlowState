@@ -450,8 +450,8 @@ func (p *multiChunkProvider) Chat(_ context.Context, _ provider.ChatRequest) (pr
 
 func (p *multiChunkProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, len(p.chunks))
-	for _, chunk := range p.chunks {
-		ch <- chunk
+	for i := range p.chunks {
+		ch <- p.chunks[i]
 	}
 	close(ch)
 	return ch, nil

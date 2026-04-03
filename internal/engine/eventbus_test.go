@@ -424,8 +424,8 @@ func (p *failOnSecondCallProvider) Stream(_ context.Context, _ provider.ChatRequ
 	ch := make(chan provider.StreamChunk, len(p.firstChunks))
 	go func() {
 		defer close(ch)
-		for _, c := range p.firstChunks {
-			ch <- c
+		for i := range p.firstChunks {
+			ch <- p.firstChunks[i]
 		}
 	}()
 	return ch, nil

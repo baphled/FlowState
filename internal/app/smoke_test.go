@@ -36,8 +36,8 @@ func (p *scriptedProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-
 	ch := make(chan provider.StreamChunk, len(p.streamChunks)+2)
 	go func() {
 		defer close(ch)
-		for _, chunk := range p.streamChunks {
-			ch <- chunk
+		for i := range p.streamChunks {
+			ch <- p.streamChunks[i]
 		}
 	}()
 	return ch, nil

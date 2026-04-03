@@ -796,12 +796,14 @@ func (e *Engine) processStreamChunks(
 	for {
 		select {
 		case <-ctx.Done():
-			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true}
+			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
 				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String()}
 			}
+
+			chunk.ModelID = e.LastModel()
 
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
 				if e.bus != nil && responseContent.Len() > 0 {

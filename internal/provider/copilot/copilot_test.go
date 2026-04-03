@@ -801,9 +801,9 @@ func collectChunks(ch <-chan provider.StreamChunk) []provider.StreamChunk {
 
 func filterContent(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var result []provider.StreamChunk
-	for _, c := range chunks {
-		if c.Content != "" {
-			result = append(result, c)
+	for i := range chunks {
+		if chunks[i].Content != "" {
+			result = append(result, chunks[i])
 		}
 	}
 	return result
@@ -811,9 +811,9 @@ func filterContent(chunks []provider.StreamChunk) []provider.StreamChunk {
 
 func filterDone(chunks []provider.StreamChunk) []provider.StreamChunk {
 	var result []provider.StreamChunk
-	for _, c := range chunks {
-		if c.Done {
-			result = append(result, c)
+	for i := range chunks {
+		if chunks[i].Done {
+			result = append(result, chunks[i])
 		}
 	}
 	return result

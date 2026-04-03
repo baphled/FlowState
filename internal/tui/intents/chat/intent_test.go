@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
+	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
 var _ = Describe("ChatIntent", func() {
@@ -1735,8 +1736,8 @@ func (p *streamingStubProvider) Chat(_ context.Context, _ provider.ChatRequest) 
 
 func (p *streamingStubProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, len(p.chunks))
-	for _, chunk := range p.chunks {
-		ch <- chunk
+	for i := range p.chunks {
+		ch <- p.chunks[i]
 	}
 	close(ch)
 	return ch, nil
@@ -2229,5 +2230,98 @@ var _ = Describe("read tool suppression on session reload", func() {
 			}
 		}
 		Expect(found).To(BeTrue(), "read tool error should still be visible on reload")
+	})
+})
+
+var _ = Describe("model ID stamping", func() {
+	var (
+		eng          *engine.Engine
+		reg          *provider.Registry
+		sessionStore *stubSessionLister
+	)
+
+	BeforeEach(func() {
+		reg = provider.NewRegistry()
+		reg.Register(&streamingStubProvider{
+			providerName: "test-provider",
+			chunks:       []provider.StreamChunk{},
+		})
+		eng = engine.New(engine.Config{
+			Registry: reg,
+			Manifest: stubManifestWithProvider("test-provider", "test-model"),
+		})
+		sessionStore = &stubSessionLister{}
+	})
+
+	It("stamps messages with the model active at stream start, not the current model", func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+
+		i := chat.NewIntent(chat.IntentConfig{
+			Engine:       eng,
+			Streamer:     eng,
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "test-provider",
+			ModelName:    "model-A",
+			TokenBudget:  4096,
+			SessionStore: sessionStore,
+		})
+
+		i.SetStreamingForTest(true)
+		i.HandleStreamChunkForTest(chat.StreamChunkMsg{Content: "hello", Done: false})
+
+		i.SetModelNameForTest("model-B")
+
+		i.HandleStreamChunkForTest(chat.StreamChunkMsg{Content: " world", Done: true, ModelID: "model-A"})
+
+		messages := i.AllViewMessagesForTest()
+		var assistantMsg *chatview.Message
+		for idx := range messages {
+			if messages[idx].Role == "assistant" {
+				assistantMsg = &messages[idx]
+				break
+			}
+		}
+		Expect(assistantMsg).NotTo(BeNil())
+		Expect(assistantMsg.ModelID).To(Equal("model-A"))
+	})
+
+	It("does not overwrite existing ModelID when loading session history", func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{Role: "user", Content: "hello"})
+		store.Append(provider.Message{Role: "assistant", Content: "hi there", ModelID: "original-model"})
+
+		sessionStore.loadStore = store
+
+		i := chat.NewIntent(chat.IntentConfig{
+			Engine:       eng,
+			Streamer:     eng,
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "test-provider",
+			ModelName:    "current-model",
+			TokenBudget:  4096,
+			SessionStore: sessionStore,
+		})
+
+		i.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "test-session",
+			Store:     store,
+		})
+
+		messages := i.AllViewMessagesForTest()
+		var assistantMsg *chatview.Message
+		for idx := range messages {
+			if messages[idx].Role == "assistant" {
+				assistantMsg = &messages[idx]
+				break
+			}
+		}
+		Expect(assistantMsg).NotTo(BeNil())
+		Expect(assistantMsg.ModelID).To(Equal("original-model"))
 	})
 })

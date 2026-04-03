@@ -95,10 +95,10 @@ func (s *StreamingToolOutputSteps) theStreamIsProcessed() error {
 // Side effects:
 //   - None.
 func (s *StreamingToolOutputSteps) theToolResultShouldBeVisibleInTheChat() error {
-	for _, chunk := range s.chunks {
-		if chunk.EventType == "tool_result" && chunk.ToolResult != nil && chunk.ToolResult.Content != "" {
+	for i := range s.chunks {
+		if s.chunks[i].EventType == "tool_result" && s.chunks[i].ToolResult != nil && s.chunks[i].ToolResult.Content != "" {
 			s.hasToolResult = true
-			s.toolResultText = chunk.ToolResult.Content
+			s.toolResultText = s.chunks[i].ToolResult.Content
 			return nil
 		}
 	}

@@ -38,8 +38,8 @@ func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan pro
 		return nil, m.err
 	}
 	ch := make(chan provider.StreamChunk, len(m.chunks))
-	for _, c := range m.chunks {
-		ch <- c
+	for i := range m.chunks {
+		ch <- m.chunks[i]
 	}
 	close(ch)
 	return ch, nil

@@ -15,6 +15,8 @@ type Message struct {
 	Content   string
 	ToolCalls []ToolCall
 	Thinking  string
+	// ModelID identifies the model that generated this message, if known.
+	ModelID string
 }
 
 // ToolCall represents a tool invocation request from the model.
@@ -94,6 +96,8 @@ type StreamChunk struct {
 	// progress data to consumers such as SSE and WebSocket handlers.
 	Event    any
 	Thinking string
+	// ModelID is the model that produced this chunk, stamped by the engine at stream time.
+	ModelID string
 }
 
 // EmbedRequest contains the parameters for an embedding request.

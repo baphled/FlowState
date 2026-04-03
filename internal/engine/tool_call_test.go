@@ -55,8 +55,8 @@ func (p *streamSequenceProvider) Stream(_ context.Context, _ provider.ChatReques
 	ch := make(chan provider.StreamChunk, len(chunks))
 	go func() {
 		defer close(ch)
-		for _, chunk := range chunks {
-			ch <- chunk
+		for i := range chunks {
+			ch <- chunks[i]
 		}
 	}()
 	return ch, nil

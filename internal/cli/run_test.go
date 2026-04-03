@@ -31,8 +31,8 @@ func (p *runTestProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-c
 	chunks := make(chan provider.StreamChunk, len(p.streamChunks))
 	go func() {
 		defer close(chunks)
-		for _, chunk := range p.streamChunks {
-			chunks <- chunk
+		for i := range p.streamChunks {
+			chunks <- p.streamChunks[i]
 		}
 	}()
 	return chunks, nil
