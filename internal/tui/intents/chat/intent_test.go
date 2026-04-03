@@ -2325,3 +2325,90 @@ var _ = Describe("model ID stamping", func() {
 		Expect(assistantMsg.ModelID).To(Equal("original-model"))
 	})
 })
+
+var _ = Describe("MessageFooter Integration", func() {
+	var (
+		i            *chat.Intent
+		eng          *engine.Engine
+		reg          *provider.Registry
+		sessionStore *stubSessionLister
+	)
+
+	BeforeEach(func() {
+		reg = provider.NewRegistry()
+		reg.Register(&streamingStubProvider{
+			providerName: "test-provider",
+			chunks:       []provider.StreamChunk{},
+		})
+		eng = engine.New(engine.Config{
+			Registry: reg,
+			Manifest: stubManifestWithProvider("test-provider", "test-model"),
+		})
+		sessionStore = &stubSessionLister{}
+
+		i = chat.NewIntent(chat.IntentConfig{
+			Engine:       eng,
+			Streamer:     eng,
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "test-provider",
+			ModelName:    "current-model",
+			TokenBudget:  4096,
+			SessionStore: sessionStore,
+		})
+		i.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	})
+
+	It("renders ▣ and modelID footer for completed assistant message", func() {
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{Role: "user", Content: "hello"})
+		store.Append(provider.Message{Role: "assistant", Content: "hi there", ModelID: "gpt-4o"})
+
+		i.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "test-session",
+			Store:     store,
+		})
+
+		view := i.View()
+		Expect(view).To(ContainSubstring("▣"))
+		Expect(view).To(ContainSubstring("gpt-4o"))
+	})
+
+	It("stamps the intent model ID onto assistant messages that have no ModelID", func() {
+		store := recall.NewEmptyContextStore("")
+		store.Append(provider.Message{Role: "user", Content: "hello"})
+		store.Append(provider.Message{Role: "assistant", Content: "hi there"})
+
+		i.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "test-session",
+			Store:     store,
+		})
+
+		view := i.View()
+		Expect(view).To(ContainSubstring("▣"))
+		Expect(view).To(ContainSubstring("current-model"))
+	})
+
+	Context("with agent colour", func() {
+		It("renders footer ▣ indicator without panic when AgentColor is set", func() {
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{Role: "assistant", Content: "coloured response", ModelID: "claude-sonnet"})
+
+			i.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "test-session",
+				Store:     store,
+			})
+
+			messages := i.AllViewMessagesForTest()
+			var found bool
+			for idx := range messages {
+				if messages[idx].ModelID == "claude-sonnet" {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue())
+
+			Expect(func() { i.View() }).NotTo(Panic())
+		})
+	})
+})

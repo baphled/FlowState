@@ -2,6 +2,7 @@ package widgets
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -11,20 +12,26 @@ import (
 // MessageWidget renders a styled chat message with role differentiation.
 type MessageWidget struct {
 	theme.Aware
-	role         string
-	content      string
-	renderFunc   func(string, int) string
-	toolName     string
-	agentColor   lipgloss.Color
-	modelID      string
-	labelStyle   lipgloss.Style
-	contentStyle lipgloss.Style
-	toolStyle    lipgloss.Style
-	resultStyle  lipgloss.Style
-	errorStyle   lipgloss.Style
-	skillStyle   lipgloss.Style
-	systemStyle  lipgloss.Style
-	todoStyle    lipgloss.Style
+	role                string
+	content             string
+	renderFunc          func(string, int) string
+	toolName            string
+	toolInput           string
+	agentColor          lipgloss.Color
+	modelID             string
+	mode                string
+	duration            time.Duration
+	interrupted         bool
+	footer              *MessageFooter
+	labelStyle          lipgloss.Style
+	assistantLabelStyle lipgloss.Style
+	contentStyle        lipgloss.Style
+	toolStyle           lipgloss.Style
+	resultStyle         lipgloss.Style
+	errorStyle          lipgloss.Style
+	skillStyle          lipgloss.Style
+	systemStyle         lipgloss.Style
+	todoStyle           lipgloss.Style
 }
 
 // NewMessageWidget creates a new message widget for the given role and content.
@@ -54,6 +61,8 @@ func NewMessageWidget(role, content string, th theme.Theme) *MessageWidget {
 	if th != nil {
 		w.SetTheme(th)
 		w.labelStyle = lipgloss.NewStyle().Foreground(th.PrimaryColor()).Bold(true)
+		w.assistantLabelStyle = lipgloss.NewStyle().Foreground(th.SecondaryColor()).Bold(true)
+		w.footer = NewMessageFooter(th)
 	}
 	return w
 }
@@ -78,6 +87,18 @@ func (w *MessageWidget) SetMarkdownRenderer(fn func(string, int) string) {
 //   - Updates the toolName field.
 func (w *MessageWidget) SetToolName(name string) { w.toolName = name }
 
+// SetToolInput sets the primary argument for tool_result BlockTool rendering.
+//
+// Expected:
+//   - input is the primary argument passed to the tool (may be empty).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Updates the toolInput field.
+func (w *MessageWidget) SetToolInput(input string) { w.toolInput = input }
+
 // SetAgentColor sets the agent colour for assistant messages.
 //
 // Expected:
@@ -95,6 +116,33 @@ func (w *MessageWidget) SetAgentColor(c lipgloss.Color) { w.agentColor = c }
 // Side effects:
 //   - Updates the modelID field.
 func (w *MessageWidget) SetModelID(id string) { w.modelID = id }
+
+// SetMode sets the agent mode for assistant message footers.
+//
+// Expected:
+//   - mode is the agent mode (e.g. "chat", "build", "plan"); empty omits the mode segment.
+//
+// Side effects:
+//   - Updates the mode field.
+func (w *MessageWidget) SetMode(mode string) { w.mode = mode }
+
+// SetDuration sets the response generation duration for assistant message footers.
+//
+// Expected:
+//   - d is a non-negative time.Duration.
+//
+// Side effects:
+//   - Updates the duration field.
+func (w *MessageWidget) SetDuration(d time.Duration) { w.duration = d }
+
+// SetInterrupted marks the message as interrupted for assistant message footers.
+//
+// Expected:
+//   - b is true when the message response was cut short, false otherwise.
+//
+// Side effects:
+//   - Updates the interrupted field.
+func (w *MessageWidget) SetInterrupted(b bool) { w.interrupted = b }
 
 // Render returns the styled message as a string.
 //
@@ -117,8 +165,8 @@ func (w *MessageWidget) Render(width int) string {
 		if w.agentColor != lipgloss.Color("") {
 			labelColor = w.agentColor
 		}
-		assistantLabel := lipgloss.NewStyle().Foreground(labelColor).Bold(true)
-		sb.WriteString(assistantLabel.Render("Assistant"))
+		label := lipgloss.NewStyle().Foreground(labelColor).Bold(true)
+		sb.WriteString(label.Render("Assistant"))
 		sb.WriteString("\n")
 
 		content := w.content
@@ -128,10 +176,10 @@ func (w *MessageWidget) Render(width int) string {
 
 		sb.WriteString(w.contentStyle.Render(content))
 
-		if w.modelID != "" {
-			footerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+		if w.modelID != "" && w.footer != nil {
+			w.footer.SetMetadata(w.mode, w.modelID, w.duration, w.interrupted, w.agentColor)
 			sb.WriteString("\n")
-			sb.WriteString(footerStyle.Render("▣ " + w.modelID))
+			sb.WriteString(w.footer.Render())
 		}
 
 	case "tool_call", "tool_result", "tool_error", "skill_load", "system", "todo_update", "thinking":
@@ -160,10 +208,11 @@ func (w *MessageWidget) Render(width int) string {
 func (w *MessageWidget) renderToolMessage() string {
 	switch w.role {
 	case "tool_call":
-		return w.toolStyle.Render("🔧 " + w.content)
+		icon := ToolIcon(strings.SplitN(w.content, ": ", 2)[0])
+		return w.toolStyle.Render(icon + " " + w.content)
 	case "tool_result":
 		if w.toolName != "" {
-			return NewBlockTool(w.toolName, "", w.content).Render()
+			return NewBlockTool(w.toolName, w.toolInput, w.content).Render()
 		}
 		return w.resultStyle.Render("📤 " + w.content)
 	case "tool_error":
