@@ -85,6 +85,7 @@ type DelegateTool struct {
 	skillResolver      SkillResolver
 	categoryResolver   *CategoryResolver
 	registry           *agent.Registry
+	sessionCreator     ChildSessionCreator
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -239,6 +240,23 @@ func (d *DelegateTool) WithCategoryResolver(r *CategoryResolver) *DelegateTool {
 //   - Replaces any previously configured registry.
 func (d *DelegateTool) WithRegistry(reg *agent.Registry) *DelegateTool {
 	d.registry = reg
+	return d
+}
+
+// WithSessionCreator sets the session creator used to register child sessions
+// when delegation fires. When set, executeSync calls CreateWithParent using the
+// parent session ID extracted from context.
+//
+// Expected:
+//   - c is a valid ChildSessionCreator, or nil to disable child session registration.
+//
+// Returns:
+//   - The DelegateTool for method chaining.
+//
+// Side effects:
+//   - Replaces any previously configured session creator.
+func (d *DelegateTool) WithSessionCreator(c ChildSessionCreator) *DelegateTool {
+	d.sessionCreator = c
 	return d
 }
 
@@ -596,6 +614,32 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 	return loadSkills, nil
 }
 
+// createChildSession registers a child session for the delegation and returns its ID.
+// When a sessionCreator is configured and a parent session ID is present in ctx,
+// it calls CreateWithParent to produce a traceable child session.
+// On any error (including parent not found) it falls back to a synthetic ID.
+//
+// Expected:
+//   - ctx may carry a parent session ID via session.IDKey{}.
+//   - agentID identifies the delegated agent.
+//
+// Returns:
+//   - The child session ID to use as the delegation context value.
+//
+// Side effects:
+//   - May call sessionCreator.CreateWithParent, storing a new session in memory.
+func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) string {
+	parentID := sessionIDFromContext(ctx)
+	if d.sessionCreator == nil || parentID == "" {
+		return fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+	}
+	childSess, err := d.sessionCreator.CreateWithParent(parentID, agentID)
+	if err != nil {
+		return fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+	}
+	return childSess.ID
+}
+
 // executeSync runs delegation synchronously, blocking until complete.
 //
 // Expected:
@@ -618,7 +662,7 @@ func (d *DelegateTool) executeSync(
 ) (tool.Result, error) {
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
-	delegateSessionID := fmt.Sprintf("delegate-%s-%d", target.agentID, time.Now().UTC().UnixNano())
+	delegateSessionID := d.createChildSession(ctx, target.agentID)
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
 
 	chunks, err := target.engine.Stream(delegateCtx, target.agentID, target.message)

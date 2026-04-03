@@ -32,18 +32,23 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 		func() string { return sessionID },
 		session.IDKey{},
 	)
+	if mgr := application.SessionMgr(); mgr != nil {
+		mgr.RegisterSession(sessionID, agentID)
+	}
+
 	chatIntent := chat.NewIntent(chat.IntentConfig{
-		App:           nil,
-		Engine:        application.Engine,
-		Streamer:      sessionStreamer,
-		AgentID:       agentID,
-		SessionID:     sessionID,
-		ModelName:     application.Engine.LastModel(),
-		ProviderName:  application.Engine.LastProvider(),
-		TokenBudget:   application.Engine.ModelContextLimit(),
-		AgentRegistry: application.Registry,
-		SessionStore:  application.Sessions,
-		ModelResolver: application.Engine.FailoverManager(),
+		App:                nil,
+		Engine:             application.Engine,
+		Streamer:           sessionStreamer,
+		AgentID:            agentID,
+		SessionID:          sessionID,
+		ModelName:          application.Engine.LastModel(),
+		ProviderName:       application.Engine.LastProvider(),
+		TokenBudget:        application.Engine.ModelContextLimit(),
+		AgentRegistry:      application.Registry,
+		SessionStore:       application.Sessions,
+		ModelResolver:      application.Engine.FailoverManager(),
+		ChildSessionLister: application.SessionMgr(),
 	})
 	if bgMgr := application.BackgroundManager(); bgMgr != nil {
 		ch := make(chan streaming.CompletionNotificationEvent, 64)

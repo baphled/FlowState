@@ -675,6 +675,35 @@ var _ = Describe("Manager", func() {
 			})
 		})
 	})
+
+	Describe("RegisterSession", func() {
+		It("makes the session visible via GetSession", func() {
+			mgr.RegisterSession("known-id", "known-agent")
+			sess, err := mgr.GetSession("known-id")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.ID).To(Equal("known-id"))
+			Expect(sess.AgentID).To(Equal("known-agent"))
+		})
+
+		It("is a no-op when the session already exists", func() {
+			original, err := mgr.CreateSession("original-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.RegisterSession(original.ID, "different-agent")
+
+			retrieved, err := mgr.GetSession(original.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(retrieved.AgentID).To(Equal("original-agent"))
+		})
+
+		It("allows CreateWithParent to succeed after registration", func() {
+			mgr.RegisterSession("parent-id", "parent-agent")
+
+			child, err := mgr.CreateWithParent("parent-id", "child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child.ParentID).To(Equal("parent-id"))
+		})
+	})
 })
 
 type mockStreamer struct {

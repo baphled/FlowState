@@ -108,6 +108,39 @@ func (m *Manager) SetRecorder(r Recorder) {
 	m.recorder = r
 }
 
+// RegisterSession upserts a session with the given ID into the in-memory store.
+// When a session with the same ID already exists, the call is a no-op.
+// This allows the TUI's main session (whose ID is determined externally) to be
+// registered before any child delegation fires.
+//
+// Expected:
+//   - id is the externally generated session identifier.
+//   - agentID identifies the agent that owns the session.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores a new session in memory when id is not already present.
+func (m *Manager) RegisterSession(id, agentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[id]; ok {
+		return
+	}
+	now := time.Now()
+	m.sessions[id] = &Session{
+		ID:                id,
+		AgentID:           agentID,
+		Status:            string(StatusActive),
+		Depth:             0,
+		CoordinationStore: coordination.NewMemoryStore(),
+		Messages:          make([]Message, 0),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+}
+
 // CreateSession creates a new session for the given agent ID.
 // Expected:
 //   - agentID identifies the agent that owns the session.

@@ -642,6 +642,10 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		WithModelLister(a.ListModels)
 	delegateTool.WithCategoryResolver(resolver)
 
+	if a.sessionManager != nil {
+		delegateTool.WithSessionCreator(a.sessionManager)
+	}
+
 	eng.AddTool(delegateTool)
 
 	eng.AddTool(engine.NewBackgroundOutputTool(bgManager))

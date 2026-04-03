@@ -616,6 +616,80 @@ var _ = Describe("Session Integration", Label("integration"), func() {
 	})
 })
 
+var _ = Describe("DelegateTool.WithSessionCreator", func() {
+	var (
+		targetProvider *mockProvider
+		targetManifest agent.Manifest
+		targetEngine   *engine.Engine
+	)
+
+	BeforeEach(func() {
+		targetProvider = &mockProvider{
+			name: "target-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "Target response", Done: true},
+			},
+		}
+		targetManifest = agent.Manifest{
+			ID:                "target-agent",
+			Name:              "Target Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are the target."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		targetEngine = engine.New(engine.Config{
+			ChatProvider: targetProvider,
+			Manifest:     targetManifest,
+		})
+	})
+
+	It("creates a child session via sessionCreator when parent is registered", func() {
+		mgr := session.NewManager(targetEngine)
+		mgr.RegisterSession("parent-session", "orchestrator-agent")
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"target-agent": targetEngine},
+			agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+			"orchestrator-agent",
+		)
+		delegateTool.WithSessionCreator(mgr)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-session")
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "target-agent",
+				"message":       "Hello target",
+			},
+		}
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+
+		children, err := mgr.ChildSessions("parent-session")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(children).NotTo(BeEmpty())
+		Expect(children[0].AgentID).To(Equal("target-agent"))
+	})
+
+	It("accepts nil sessionCreator without panicking", func() {
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"target-agent": targetEngine},
+			agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+			"orchestrator-agent",
+		)
+
+		ctx := context.Background()
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "target-agent",
+				"message":       "Hello target",
+			},
+		}
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 type contextCapturingProvider struct {
 	name      string
 	chunks    []provider.StreamChunk
