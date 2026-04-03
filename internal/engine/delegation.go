@@ -86,6 +86,7 @@ type DelegateTool struct {
 	categoryResolver   *CategoryResolver
 	registry           *agent.Registry
 	sessionCreator     ChildSessionCreator
+	messageAppender    session.MessageAppender
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -257,6 +258,22 @@ func (d *DelegateTool) WithRegistry(reg *agent.Registry) *DelegateTool {
 //   - Replaces any previously configured session creator.
 func (d *DelegateTool) WithSessionCreator(c ChildSessionCreator) *DelegateTool {
 	d.sessionCreator = c
+	return d
+}
+
+// WithMessageAppender sets the message appender used to accumulate delegation
+// stream chunks into the child session's message history.
+//
+// Expected:
+//   - a is a valid session.MessageAppender, or nil to disable message accumulation.
+//
+// Returns:
+//   - The DelegateTool for method chaining.
+//
+// Side effects:
+//   - Replaces any previously configured message appender.
+func (d *DelegateTool) WithMessageAppender(a session.MessageAppender) *DelegateTool {
+	d.messageAppender = a
 	return d
 }
 
@@ -614,6 +631,27 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 	return loadSkills, nil
 }
 
+// wrapWithAccumulator wraps the raw chunk stream through session.AccumulateStream
+// when a messageAppender is configured, storing accumulated messages into the
+// child session identified by sessionID.
+//
+// Expected:
+//   - rawCh is the stream from target.engine.Stream.
+//   - sessionID is the child session identifier returned by createChildSession.
+//   - agentID identifies the delegated agent.
+//
+// Returns:
+//   - The (possibly wrapped) chunk channel.
+//
+// Side effects:
+//   - When messageAppender is set, spawns a goroutine that calls AppendMessage.
+func (d *DelegateTool) wrapWithAccumulator(rawCh <-chan provider.StreamChunk, sessionID, agentID string) <-chan provider.StreamChunk {
+	if d.messageAppender == nil {
+		return rawCh
+	}
+	return session.AccumulateStream(d.messageAppender, sessionID, agentID, rawCh)
+}
+
 // createChildSession registers a child session for the delegation and returns its ID.
 // When a sessionCreator is configured and a parent session ID is present in ctx,
 // it calls CreateWithParent to produce a traceable child session.
@@ -673,6 +711,8 @@ func (d *DelegateTool) executeSync(
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
 	}
+
+	chunks = d.wrapWithAccumulator(chunks, delegateSessionID, target.agentID)
 
 	result, err := d.collectWithProgress(ctx, chunks, time.Now())
 	if err != nil {
@@ -767,6 +807,8 @@ func (d *DelegateTool) executeBackgroundTask(
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		return "", fmt.Errorf("delegation failed: %w", err)
 	}
+
+	chunks = d.wrapWithAccumulator(chunks, sessionIDFromContext(ctx), target.agentID)
 
 	result, err := d.collectDelegationResult(chunks)
 	if err != nil {

@@ -690,6 +690,100 @@ var _ = Describe("DelegateTool.WithSessionCreator", func() {
 	})
 })
 
+var _ = Describe("DelegateTool.WithMessageAppender", func() {
+	var (
+		targetProvider *mockProvider
+		targetManifest agent.Manifest
+		targetEngine   *engine.Engine
+	)
+
+	BeforeEach(func() {
+		targetProvider = &mockProvider{
+			name: "target-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "Delegated reply"},
+				{Done: true},
+			},
+		}
+		targetManifest = agent.Manifest{
+			ID:                "target-agent",
+			Name:              "Target Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are the target."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		targetEngine = engine.New(engine.Config{
+			ChatProvider: targetProvider,
+			Manifest:     targetManifest,
+		})
+	})
+
+	It("accumulates delegation stream chunks into the child session messages", func() {
+		mgr := session.NewManager(targetEngine)
+		mgr.RegisterSession("parent-sess", "orchestrator-agent")
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"target-agent": targetEngine},
+			agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+			"orchestrator-agent",
+		)
+		delegateTool.WithSessionCreator(mgr)
+		delegateTool.WithMessageAppender(mgr)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess")
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "target-agent",
+				"message":       "Do something",
+			},
+		}
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+
+		children, err := mgr.ChildSessions("parent-sess")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(children).NotTo(BeEmpty())
+
+		child := children[0]
+		Eventually(func() int {
+			sess, _ := mgr.GetSession(child.ID)
+			if sess == nil {
+				return 0
+			}
+			return len(sess.Messages)
+		}).Should(BeNumerically(">", 0))
+
+		sess, err := mgr.GetSession(child.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sess.Messages).NotTo(BeEmpty())
+		Expect(sess.Messages[0].Role).To(Equal("assistant"))
+		Expect(sess.Messages[0].Content).To(Equal("Delegated reply"))
+	})
+
+	It("accepts nil messageAppender without panicking", func() {
+		mgr := session.NewManager(targetEngine)
+		mgr.RegisterSession("parent-sess2", "orchestrator-agent")
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"target-agent": targetEngine},
+			agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+			"orchestrator-agent",
+		)
+		delegateTool.WithSessionCreator(mgr)
+
+		ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess2")
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "target-agent",
+				"message":       "Do something",
+			},
+		}
+		_, err := delegateTool.Execute(ctx, input)
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 type contextCapturingProvider struct {
 	name      string
 	chunks    []provider.StreamChunk
