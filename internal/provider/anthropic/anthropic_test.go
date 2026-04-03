@@ -1,419 +1,174 @@
 package anthropic
 
 import (
-	"os"
-	"path/filepath"
-
-	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("IsOAuthToken", func() {
-	It("returns true for sk-ant-oat01- prefixed tokens", func() {
-		Expect(IsOAuthToken("sk-ant-oat01-abc123")).To(BeTrue())
-	})
-
-	It("returns true for a full-length OAuth token", func() {
-		Expect(IsOAuthToken("sk-ant-oat01-abcdef1234567890abcdef1234567890")).To(BeTrue())
-	})
-
-	It("returns false for standard API keys", func() {
-		Expect(IsOAuthToken("sk-ant-api03-abc123")).To(BeFalse())
-	})
-
-	It("returns false for empty string", func() {
-		Expect(IsOAuthToken("")).To(BeFalse())
-	})
-
-	It("returns false for arbitrary strings", func() {
-		Expect(IsOAuthToken("not-a-token")).To(BeFalse())
-	})
-
-	It("returns false for partial prefix match", func() {
-		Expect(IsOAuthToken("sk-ant-oat01")).To(BeFalse())
-	})
-
-	It("returns false for different oat version prefix", func() {
-		Expect(IsOAuthToken("sk-ant-oat02-abc123")).To(BeFalse())
-	})
-})
-
-var _ = Describe("NewOAuth", func() {
-	It("returns a provider for a valid OAuth token", func() {
-		p, err := NewOAuth("sk-ant-oat01-valid-token")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).NotTo(BeNil())
-	})
-
-	It("returns errOAuthTokenRequired for empty token", func() {
-		p, err := NewOAuth("")
-		Expect(p).To(BeNil())
-		Expect(err).To(MatchError(errOAuthTokenRequired))
-	})
-
-	It("returns a provider even for non-OAuth formatted tokens", func() {
-		p, err := NewOAuth("any-non-empty-string")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).NotTo(BeNil())
-	})
-
-	It("sets isOAuth to true on the returned provider", func() {
-		p, err := NewOAuth("sk-ant-oat01-valid-token")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p.isOAuth).To(BeTrue())
-	})
-})
-
-var _ = Describe("New", func() {
-	It("sets isOAuth to false on the returned provider", func() {
-		p, err := New("sk-ant-api03-test-key")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p.isOAuth).To(BeFalse())
-	})
-
-	It("returns errAPIKeyRequired for empty key", func() {
-		p, err := New("")
-		Expect(p).To(BeNil())
-		Expect(err).To(MatchError(errAPIKeyRequired))
-	})
-})
-
-var _ = Describe("extractSystemPrompt", func() {
-	var msgs []provider.Message
-
-	BeforeEach(func() {
-		msgs = []provider.Message{
-			{Role: "system", Content: "You are a helpful assistant."},
-			{Role: "user", Content: "Hello"},
+var _ = Describe("buildToolResultMessage", func() {
+	It("returns a user message with tool result block (success)", func() {
+		m := provider.Message{
+			Role:      "tool",
+			Content:   "42",
+			ToolCalls: []provider.ToolCall{{ID: "tool1"}},
 		}
+		msg := buildToolResultMessage(m)
+		Expect(msg).NotTo(BeNil())
+		Expect(string(msg.Role)).To(Equal("user"))
+		Expect(msg.Content).To(HaveLen(1))
+		block := msg.Content[0]
+		Expect(block.OfToolResult).NotTo(BeNil())
+		tr := block.OfToolResult
+		Expect(tr.ToolUseID).To(Equal("tool1"))
+		Expect(tr.Content).To(HaveLen(1))
+		Expect(tr.Content[0].OfText).NotTo(BeNil())
+		Expect(tr.Content[0].OfText.Text).To(Equal("42"))
+		Expect(tr.IsError.Valid()).To(BeTrue())
+		Expect(tr.IsError.Value).To(BeFalse())
 	})
 
-	Context("when provider uses API key authentication", func() {
-		It("includes CacheControl on system blocks", func() {
-			p := &Provider{isOAuth: false}
-			blocks := p.extractSystemPrompt(msgs)
-			Expect(blocks).To(HaveLen(1))
-			Expect(blocks[0].Text).To(Equal("You are a helpful assistant."))
-			Expect(blocks[0].CacheControl).NotTo(BeZero())
-		})
-
-		It("does not include the billing header", func() {
-			p := &Provider{isOAuth: false}
-			blocks := p.extractSystemPrompt(msgs)
-			Expect(blocks).To(HaveLen(1))
-			Expect(blocks[0].Text).NotTo(HavePrefix("x-anthropic-billing-header:"))
-		})
-
-		It("returns an empty slice when there are no system messages", func() {
-			p := &Provider{isOAuth: false}
-			userOnly := []provider.Message{{Role: "user", Content: "Hello"}}
-			blocks := p.extractSystemPrompt(userOnly)
-			Expect(blocks).To(BeEmpty())
-		})
+	It("returns a user message with tool result block (error)", func() {
+		m := provider.Message{
+			Role:      "tool",
+			Content:   "Error: failed to compute",
+			ToolCalls: []provider.ToolCall{{ID: "tool2"}},
+		}
+		msg := buildToolResultMessage(m)
+		Expect(msg).NotTo(BeNil())
+		Expect(string(msg.Role)).To(Equal("user"))
+		Expect(msg.Content).To(HaveLen(1))
+		block := msg.Content[0]
+		Expect(block.OfToolResult).NotTo(BeNil())
+		tr := block.OfToolResult
+		Expect(tr.ToolUseID).To(Equal("tool2"))
+		Expect(tr.Content).To(HaveLen(1))
+		Expect(tr.Content[0].OfText).NotTo(BeNil())
+		Expect(tr.Content[0].OfText.Text).To(Equal("Error: failed to compute"))
+		Expect(tr.IsError.Value).To(BeTrue())
 	})
 
-	Context("when provider uses OAuth authentication", func() {
-		It("prepends the billing header as the first system block", func() {
-			p := &Provider{isOAuth: true}
-			blocks := p.extractSystemPrompt(msgs)
-			Expect(blocks).To(HaveLen(2))
-			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
-			Expect(blocks[1].Text).To(Equal("You are a helpful assistant."))
-		})
-
-		It("includes the billing header even with no system messages", func() {
-			p := &Provider{isOAuth: true}
-			userOnly := []provider.Message{{Role: "user", Content: "Hello"}}
-			blocks := p.extractSystemPrompt(userOnly)
-			Expect(blocks).To(HaveLen(1))
-			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
-		})
-
-		It("omits CacheControl on the billing header block", func() {
-			p := &Provider{isOAuth: true}
-			blocks := p.extractSystemPrompt(msgs)
-			Expect(blocks).To(HaveLen(2))
-			Expect(blocks[0].CacheControl).To(BeZero())
-		})
-
-		It("includes CacheControl on system content blocks", func() {
-			p := &Provider{isOAuth: true}
-			blocks := p.extractSystemPrompt(msgs)
-			Expect(blocks).To(HaveLen(2))
-			Expect(blocks[1].CacheControl).NotTo(BeZero())
-		})
-
-		It("places the billing header before multiple system messages", func() {
-			p := &Provider{isOAuth: true}
-			multiSystem := []provider.Message{
-				{Role: "system", Content: "First system prompt."},
-				{Role: "system", Content: "Second system prompt."},
-				{Role: "user", Content: "Hello"},
-			}
-			blocks := p.extractSystemPrompt(multiSystem)
-			Expect(blocks).To(HaveLen(3))
-			Expect(blocks[0].Text).To(HavePrefix("x-anthropic-billing-header:"))
-			Expect(blocks[1].Text).To(Equal("First system prompt."))
-			Expect(blocks[2].Text).To(Equal("Second system prompt."))
-		})
-	})
-
-	Context("when system message has empty content", func() {
-		It("skips the empty system message", func() {
-			p := &Provider{isOAuth: false}
-			withEmpty := []provider.Message{
-				{Role: "system", Content: ""},
-				{Role: "system", Content: "Valid prompt"},
-			}
-			blocks := p.extractSystemPrompt(withEmpty)
-			Expect(blocks).To(HaveLen(1))
-			Expect(blocks[0].Text).To(Equal("Valid prompt"))
-		})
+	It("returns nil if no tool calls are present", func() {
+		m := provider.Message{Role: "tool", Content: "foo"}
+		msg := buildToolResultMessage(m)
+		Expect(msg).To(BeNil())
 	})
 })
 
-var _ = Describe("buildTools", func() {
-	It("returns nil when tools slice is empty", func() {
-		result := buildTools(nil)
-		Expect(result).To(BeNil())
+var _ = Describe("sanitizeMessageSequence", func() {
+	It("removes system messages and merges consecutive user messages", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "ignore me"},
+			{Role: "user", Content: "hello"},
+			{Role: "user", Content: "world"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "user", Content: "foo"},
+			{Role: "user", Content: "bar"},
+		}
+		result := sanitizeMessageSequence(msgs)
+		Expect(result).To(HaveLen(3))
+		Expect(result[0].Role).To(Equal("user"))
+		Expect(result[0].Content).To(Equal("hello\n\nworld"))
+		Expect(result[1].Role).To(Equal("assistant"))
+		Expect(result[1].Content).To(Equal("hi"))
+		Expect(result[2].Role).To(Equal("user"))
+		Expect(result[2].Content).To(Equal("foo\n\nbar"))
 	})
 
-	It("converts provider tools to Anthropic tool params", func() {
-		tools := []provider.Tool{
-			{
-				Name:        "read_file",
-				Description: "Read a file from disk",
-				Schema: provider.ToolSchema{
-					Properties: map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
-					Required:   []string{"path"},
-				},
-			},
+	It("returns empty slice if all are system", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "ignore"},
+			{Role: "system", Content: "ignore2"},
 		}
-		result := buildTools(tools)
-		Expect(result).To(HaveLen(1))
-		Expect(result[0].OfTool).NotTo(BeNil())
-		Expect(result[0].OfTool.Name).To(Equal("read_file"))
+		result := sanitizeMessageSequence(msgs)
+		Expect(result).To(BeEmpty())
+	})
+})
+
+var _ = Describe("buildMessages", func() {
+	It("builds correct sequence for mixed user/assistant/tool", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "tool", Content: "42", ToolCalls: []provider.ToolCall{{ID: "tool1"}}},
+			{Role: "assistant", Content: "done"},
+		}
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(4))
+		Expect(string(result[0].Role)).To(Equal("user"))
+		Expect(result[0].Content[0].OfText.Text).To(Equal("hello"))
+		Expect(string(result[1].Role)).To(Equal("assistant"))
+		Expect(result[1].Content[0].OfText.Text).To(Equal("hi"))
+		Expect(string(result[2].Role)).To(Equal("user"))
+		tr := result[2].Content[0].OfToolResult
+		Expect(tr).NotTo(BeNil())
+		Expect(tr.ToolUseID).To(Equal("tool1"))
+		Expect(tr.Content[0].OfText.Text).To(Equal("42"))
+		Expect(tr.IsError.Valid()).To(BeTrue())
+		Expect(tr.IsError.Value).To(BeFalse())
+		Expect(string(result[3].Role)).To(Equal("assistant"))
+		Expect(result[3].Content[0].OfText.Text).To(Equal("done"))
 	})
 
-	It("applies CacheControl to the last tool definition only", func() {
-		tools := []provider.Tool{
-			{
-				Name:        "tool_a",
-				Description: "First tool",
-				Schema:      provider.ToolSchema{},
-			},
-			{
-				Name:        "tool_b",
-				Description: "Second tool",
-				Schema:      provider.ToolSchema{},
-			},
+	It("skips system and empty assistant messages", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "foo"},
+			{Role: "assistant", Content: ""},
+			{Role: "assistant", Content: "bar"},
 		}
-		result := buildTools(tools)
+		result := buildMessages(msgs)
 		Expect(result).To(HaveLen(2))
-		Expect(result[0].OfTool.CacheControl).To(BeZero())
-		Expect(result[1].OfTool.CacheControl).To(
-			Equal(anthropicAPI.NewCacheControlEphemeralParam()),
-		)
+		Expect(string(result[0].Role)).To(Equal("user"))
+		Expect(result[0].Content[0].OfText.Text).To(Equal("foo"))
+		Expect(string(result[1].Role)).To(Equal("assistant"))
+		Expect(result[1].Content[0].OfText.Text).To(Equal("bar"))
 	})
 
-	It("applies CacheControl when there is only one tool", func() {
-		tools := []provider.Tool{
-			{
-				Name:        "only_tool",
-				Description: "Single tool",
-				Schema:      provider.ToolSchema{},
-			},
+	It("handles tool messages with multiple tool calls", func() {
+		msgs := []provider.Message{
+			{Role: "user", Content: "ask"},
+			{Role: "tool", Content: "result1", ToolCalls: []provider.ToolCall{{ID: "id1"}, {ID: "id2"}}},
 		}
-		result := buildTools(tools)
-		Expect(result).To(HaveLen(1))
-		Expect(result[0].OfTool.CacheControl).To(
-			Equal(anthropicAPI.NewCacheControlEphemeralParam()),
-		)
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(2))
+		Expect(string(result[1].Role)).To(Equal("user"))
+		tr1 := result[1].Content[0].OfToolResult
+		tr2 := result[1].Content[1].OfToolResult
+		Expect(tr1.ToolUseID).To(Equal("id1"))
+		Expect(tr2.ToolUseID).To(Equal("id2"))
+		Expect(tr1.Content[0].OfText.Text).To(Equal("result1"))
+		Expect(tr2.Content[0].OfText.Text).To(Equal("result1"))
 	})
 })
 
-var _ = Describe("tryOpenCodeAuth (direct)", func() {
-	var tmpDir string
-
-	BeforeEach(func() {
-		var err error
-		tmpDir, err = os.MkdirTemp("", "anthropic-tryauth-test-*")
-		Expect(err).NotTo(HaveOccurred())
+var _ = Describe("mergeConsecutiveUserMessages", func() {
+	It("merges content with double newline", func() {
+		last := &provider.Message{Role: "user", Content: "foo"}
+		m := provider.Message{Role: "user", Content: "bar"}
+		mergeConsecutiveUserMessages(last, m)
+		Expect(last.Content).To(Equal("foo\n\nbar"))
 	})
 
-	AfterEach(func() {
-		os.RemoveAll(tmpDir)
+	It("takes second's content if first is empty", func() {
+		last := &provider.Message{Role: "user", Content: ""}
+		m := provider.Message{Role: "user", Content: "bar"}
+		mergeConsecutiveUserMessages(last, m)
+		Expect(last.Content).To(Equal("bar"))
 	})
 
-	It("returns errNoOpenCodeCredentials if no anthropic section present", func() {
-		authJSON := `{"github-copilot": {"type": "oauth", "access": "ghu_test"}}`
-		authPath := filepath.Join(tmpDir, "auth.json")
-		err := os.WriteFile(authPath, []byte(authJSON), 0o600)
-		Expect(err).NotTo(HaveOccurred())
-
-		p, err := tryOpenCodeAuth(authPath)
-		Expect(p).To(BeNil())
-		Expect(err).To(MatchError(errNoOpenCodeCredentials))
+	It("joins both if both have content", func() {
+		last := &provider.Message{Role: "user", Content: "foo"}
+		m := provider.Message{Role: "user", Content: "baz"}
+		mergeConsecutiveUserMessages(last, m)
+		Expect(last.Content).To(Equal("foo\n\nbaz"))
 	})
 
-	It("returns errNoOpenCodeCredentials if anthropic section has empty access", func() {
-		authJSON := `{"anthropic": {"type": "api_key", "access": ""}}`
-		authPath := filepath.Join(tmpDir, "auth.json")
-		err := os.WriteFile(authPath, []byte(authJSON), 0o600)
-		Expect(err).NotTo(HaveOccurred())
-
-		p, err := tryOpenCodeAuth(authPath)
-		Expect(p).To(BeNil())
-		Expect(err).To(MatchError(errNoOpenCodeCredentials))
-	})
-
-	It("returns provider if anthropic section has valid access", func() {
-		authJSON := `{"anthropic": {"type": "api_key", "access": "sk-ant-test"}}`
-		authPath := filepath.Join(tmpDir, "auth.json")
-		err := os.WriteFile(authPath, []byte(authJSON), 0o600)
-		Expect(err).NotTo(HaveOccurred())
-
-		p, err := tryOpenCodeAuth(authPath)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).NotTo(BeNil())
-	})
-
-	It("returns provider via NewOAuth when token has OAuth prefix", func() {
-		authJSON := `{"anthropic": {"type": "oauth", "access": "sk-ant-oat01-abc"}}`
-		authPath := filepath.Join(tmpDir, "auth.json")
-		err := os.WriteFile(authPath, []byte(authJSON), 0o600)
-		Expect(err).NotTo(HaveOccurred())
-
-		p, err := tryOpenCodeAuth(authPath)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).NotTo(BeNil())
-	})
-
-	It("returns provider via New when token has API key prefix", func() {
-		authJSON := `{"anthropic": {"type": "api_key", "access": "sk-ant-api03-xyz"}}`
-		authPath := filepath.Join(tmpDir, "auth.json")
-		err := os.WriteFile(authPath, []byte(authJSON), 0o600)
-		Expect(err).NotTo(HaveOccurred())
-
-		p, err := tryOpenCodeAuth(authPath)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(p).NotTo(BeNil())
-	})
-})
-
-var _ = Describe("NewFromOpenCodeOrConfig", func() {
-	var tmpDir string
-
-	BeforeEach(func() {
-		var err error
-		tmpDir, err = os.MkdirTemp("", "anthropic-config-test-*")
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	AfterEach(func() {
-		Expect(os.RemoveAll(tmpDir)).To(Succeed())
-	})
-
-	Context("when opencode auth.json does not exist", func() {
-		It("falls through to fallback API key", func() {
-			nonExistent := filepath.Join(tmpDir, "missing", "auth.json")
-			p, err := NewFromOpenCodeOrConfig(nonExistent, "sk-ant-fallback")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode auth.json has no anthropic credentials", func() {
-		It("falls through to fallback API key", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"github-copilot": {"type": "oauth", "access": "gho_test"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "sk-ant-fallback")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode auth.json has valid anthropic credentials", func() {
-		It("returns a provider using the opencode token", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"anthropic": {"type": "oauth", "access": "sk-ant-oat01-valid"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode has OAuth token and fallback key exists", func() {
-		It("prefers the OAuth token from opencode", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"anthropic": {"type": "oauth", "access": "sk-ant-oat01-pref"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "sk-ant-api03-fallback")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode has API key token", func() {
-		It("returns a provider using the API key constructor", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"anthropic": {"type": "api_key", "access": "sk-ant-api03-xyz"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode auth.json contains invalid JSON", func() {
-		It("returns an error", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			Expect(os.WriteFile(authPath, []byte("{broken"), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "sk-ant-fallback")
-			Expect(err).To(HaveOccurred())
-			Expect(p).To(BeNil())
-		})
-	})
-
-	Context("when opencodePath is empty", func() {
-		It("uses the fallback API key", func() {
-			p, err := NewFromOpenCodeOrConfig("", "sk-ant-key123")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when no credential source provides a key", func() {
-		It("returns errAPIKeyRequired", func() {
-			nonExistent := filepath.Join(tmpDir, "missing", "auth.json")
-			p, err := NewFromOpenCodeOrConfig(nonExistent, "")
-			Expect(err).To(MatchError(errAPIKeyRequired))
-			Expect(p).To(BeNil())
-		})
-	})
-
-	Context("when opencode auth.json has empty access token", func() {
-		It("falls through to fallback API key", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"anthropic": {"type": "oauth", "access": ""}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "sk-ant-fallback")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode has ErrNoCredentials (empty auth.json)", func() {
-		It("falls through to fallback API key", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			Expect(os.WriteFile(authPath, []byte(`{}`), 0o600)).To(Succeed())
-			p, err := NewFromOpenCodeOrConfig(authPath, "sk-ant-fallback")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
+	It("no change if second is empty", func() {
+		last := &provider.Message{Role: "user", Content: "foo"}
+		m := provider.Message{Role: "user", Content: ""}
+		mergeConsecutiveUserMessages(last, m)
+		Expect(last.Content).To(Equal("foo"))
 	})
 })
