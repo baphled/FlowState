@@ -493,7 +493,7 @@ func formatCompletionReminder(msg BackgroundTaskCompletedMsg) string {
 //   - A tea.Cmd to execute, or nil if no command is needed.
 //
 // Side effects:
-//   - Updates modal state or dispatches NavigateToDelegationMsg on Enter.
+//   - Updates modal state or sets sessionViewerModal on Enter.
 func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	if i.delegationPickerModal == nil {
 		return nil
@@ -508,20 +508,7 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if sel := i.delegationPickerModal.Selected(); sel != nil {
 			i.delegationPickerModal = nil
-			viewIntent := NewSessionViewIntent(SessionViewIntentConfig{
-				SessionID: sel.ID,
-				Content:   "",
-				Width:     i.width,
-				Height:    i.height,
-			})
-			viewIntent.SetBreadcrumbPath("Chat > " + sel.ID[:8])
-			return func() tea.Msg {
-				return tuiintents.NavigateToDelegationMsg{
-					Intent:    viewIntent,
-					SessionID: sel.ID,
-					ChainID:   "",
-				}
-			}
+			i.sessionViewerModal = chat.NewSessionViewerModal(sel.ID, "", i.width, i.height)
 		}
 	}
 	return nil
