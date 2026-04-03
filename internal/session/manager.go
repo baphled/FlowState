@@ -10,6 +10,7 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
+	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/google/uuid"
 )
 
@@ -302,37 +303,6 @@ func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
 	return sessionTree(m.sessions, root, make(map[string]bool)), nil
 }
 
-// extractPrimaryArg returns the primary display argument for a named tool call.
-//
-// Expected:
-//   - name is a known tool identifier.
-//   - args contains the tool call arguments map.
-//
-// Returns:
-//   - The string value of the primary argument key, or empty string for unknown tools.
-//
-// Side effects:
-//   - None.
-func extractPrimaryArg(name string, args map[string]any) string {
-	keys := map[string]string{
-		"bash":       "command",
-		"read":       "filePath",
-		"write":      "filePath",
-		"edit":       "filePath",
-		"glob":       "pattern",
-		"grep":       "pattern",
-		"skill_load": "name",
-	}
-	key, ok := keys[name]
-	if !ok {
-		return ""
-	}
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
 // appendSessionMessage safely appends a message to the named session's history.
 //
 // Expected:
@@ -354,6 +324,29 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	msg.ID = uuid.New().String()
 	msg.Timestamp = time.Now()
 	sess.Messages = append(sess.Messages, msg)
+}
+
+// primaryArgValue returns the string value of the primary display argument for the given tool call.
+//
+// Expected:
+//   - name is a tool identifier.
+//   - args contains the tool call argument map.
+//
+// Returns:
+//   - The string value of the primary argument, or an empty string when absent.
+//
+// Side effects:
+//   - None.
+func primaryArgValue(name string, args map[string]any) string {
+	key := tooldisplay.PrimaryArgKey(name)
+	if key == "" {
+		return ""
+	}
+	v, ok := args[key].(string)
+	if !ok {
+		return ""
+	}
+	return v
 }
 
 // accumState holds mutable state for the stream accumulation goroutine.
@@ -388,7 +381,7 @@ func (m *Manager) processChunk(s *accumState, chunk provider.StreamChunk) {
 			s.contentBuf.Reset()
 		}
 		s.lastToolName = chunk.ToolCall.Name
-		s.lastToolInput = extractPrimaryArg(chunk.ToolCall.Name, chunk.ToolCall.Arguments)
+		s.lastToolInput = primaryArgValue(chunk.ToolCall.Name, chunk.ToolCall.Arguments)
 	case chunk.ToolResult != nil:
 		m.appendSessionMessage(s.sessionID, Message{
 			Role:      "tool_result",

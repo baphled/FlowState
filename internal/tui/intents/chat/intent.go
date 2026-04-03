@@ -22,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
@@ -1803,21 +1804,7 @@ func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
 // Side effects:
 //   - None.
 func toolCallSummary(name string, args map[string]interface{}) string {
-	argKey := toolCallArgKey(name)
-	if argKey == "" {
-		return name
-	}
-
-	arg, ok := args[argKey].(string)
-	if !ok || arg == "" {
-		return name
-	}
-
-	if name == "bash" && len(arg) > 80 {
-		arg = arg[:80] + "..."
-	}
-
-	return fmt.Sprintf("%s: %s", name, arg)
+	return tooldisplay.Summary(name, args)
 }
 
 // extractToolInfo extracts the tool call name and status from a provider.ToolCall.
@@ -1908,32 +1895,6 @@ func splitToolSummary(summary string) (name, input string) {
 		return parts[0], parts[1]
 	}
 	return summary, ""
-}
-
-// toolCallArgKey returns the argument key for a given tool name.
-//
-// Expected:
-//   - name is a valid tool name.
-//
-// Returns:
-//   - The argument key for the tool (e.g., "command" for bash, "filePath" for read).
-//   - An empty string if the tool is not recognized.
-//
-// Side effects:
-//   - None.
-func toolCallArgKey(name string) string {
-	switch name {
-	case "bash":
-		return "command"
-	case "read", "write", "edit":
-		return "filePath"
-	case "glob", "grep":
-		return "pattern"
-	case "skill_load":
-		return "name"
-	default:
-		return ""
-	}
 }
 
 // renderSessionContent renders the messages of a child session into a displayable string.

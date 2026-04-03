@@ -1,6 +1,6 @@
 package session
 
-// ExtractPrimaryArgForTest exposes extractPrimaryArg for external test assertions.
+// ExtractPrimaryArgForTest exposes the shared tool display logic for external test assertions.
 func ExtractPrimaryArgForTest(name string, args map[string]any) string {
-	return extractPrimaryArg(name, args)
+	return primaryArgValue(name, args)
 }
