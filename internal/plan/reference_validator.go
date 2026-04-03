@@ -28,7 +28,7 @@ func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*Val
 	refRegex := regexp.MustCompile("`([^`]+\\.go[^`]*)`")
 	matches := refRegex.FindAllStringSubmatch(planText, -1)
 	if len(matches) == 0 {
-		return result, nil // No refs: valid, score 1.0
+		return result, nil
 	}
 
 	totalRefs := len(matches)

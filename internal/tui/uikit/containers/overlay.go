@@ -40,7 +40,7 @@ func NewOverlay(width, height int) *Overlay {
 		width:   width,
 		height:  height,
 		dimmed:  false,
-		dimChar: ' ', // Default to space for clean modal backgrounds
+		dimChar: ' ',
 	}
 	overlay.SetTheme(theme.Default())
 	return overlay
@@ -85,7 +85,7 @@ func (o *Overlay) Dimmed() *Overlay {
 //   - None.
 func (o *Overlay) DimmedWith(char rune) *Overlay {
 	o.dimChar = char
-	o.dimmed = true // Automatically enable dimming when custom char is set
+	o.dimmed = true
 	return o
 }
 

@@ -66,7 +66,7 @@ func NewConfirmModal(title, message string) *ConfirmModal {
 		title:     title,
 		message:   message,
 		variant:   ConfirmDefault,
-		theme:     nil, // Will use default theme in getTheme()
+		theme:     nil,
 		visible:   true,
 		confirmed: false,
 		width:     100,

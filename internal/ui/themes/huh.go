@@ -30,7 +30,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		Text:        lipgloss.NewStyle().Foreground(palette.Foreground),
 	}
 
-	// Focused field styles
 	focusedStyles := huh.FieldStyles{
 		Base: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -46,7 +45,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		ErrorMessage: lipgloss.NewStyle().
 			Foreground(palette.Error),
 
-		// Select styles
 		SelectSelector: lipgloss.NewStyle().
 			Foreground(palette.Primary).
 			Bold(true),
@@ -57,7 +55,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		PrevIndicator: lipgloss.NewStyle().
 			Foreground(palette.ForegroundMuted),
 
-		// Multi-select styles
 		MultiSelectSelector: lipgloss.NewStyle().
 			Foreground(palette.Primary),
 		SelectedOption: lipgloss.NewStyle().
@@ -70,10 +67,8 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		UnselectedPrefix: lipgloss.NewStyle().
 			Foreground(palette.ForegroundMuted),
 
-		// Text input styles
 		TextInput: textInputStyles,
 
-		// Confirm button styles
 		FocusedButton: lipgloss.NewStyle().
 			Foreground(palette.Background).
 			Background(palette.Primary).
@@ -84,7 +79,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Background(palette.BackgroundAlt).
 			Padding(0, 1),
 
-		// Card styles
 		Card: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(palette.Border).
@@ -96,7 +90,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Foreground(palette.Primary),
 	}
 
-	// Blurred field styles (less prominent)
 	blurredStyles := huh.FieldStyles{
 		Base: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -111,7 +104,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		ErrorMessage: lipgloss.NewStyle().
 			Foreground(palette.Error),
 
-		// Select styles (blurred)
 		SelectSelector: lipgloss.NewStyle().
 			Foreground(palette.ForegroundDim),
 		Option: lipgloss.NewStyle().
@@ -121,7 +113,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		PrevIndicator: lipgloss.NewStyle().
 			Foreground(palette.ForegroundMuted),
 
-		// Multi-select styles (blurred)
 		MultiSelectSelector: lipgloss.NewStyle().
 			Foreground(palette.ForegroundDim),
 		SelectedOption: lipgloss.NewStyle().
@@ -133,7 +124,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 		UnselectedPrefix: lipgloss.NewStyle().
 			Foreground(palette.ForegroundMuted),
 
-		// Text input styles (blurred)
 		TextInput: huh.TextInputStyles{
 			Cursor:      lipgloss.NewStyle().Foreground(palette.ForegroundDim),
 			Placeholder: lipgloss.NewStyle().Foreground(palette.ForegroundMuted),
@@ -141,7 +131,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Text:        lipgloss.NewStyle().Foreground(palette.ForegroundDim),
 		},
 
-		// Confirm button styles (blurred)
 		FocusedButton: lipgloss.NewStyle().
 			Foreground(palette.ForegroundDim).
 			Background(palette.BackgroundAlt).
@@ -151,7 +140,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Background(palette.BackgroundAlt).
 			Padding(0, 1),
 
-		// Card styles (blurred)
 		Card: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(palette.Border).
@@ -162,12 +150,10 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Foreground(palette.ForegroundDim),
 	}
 
-	// Form styles
 	formStyles := huh.FormStyles{
 		Base: lipgloss.NewStyle(),
 	}
 
-	// Group styles
 	groupStyles := huh.GroupStyles{
 		Base: lipgloss.NewStyle(),
 		Title: lipgloss.NewStyle().
@@ -179,7 +165,6 @@ func GenerateHuhTheme(theme Theme) *huh.Theme {
 			Padding(0, 0, 1, 0),
 	}
 
-	// Help styles
 	helpStyles := help.Styles{
 		ShortKey: lipgloss.NewStyle().
 			Foreground(palette.Primary).

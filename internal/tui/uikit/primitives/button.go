@@ -51,7 +51,7 @@ func NewButton(label string, th theme.Theme) *Button {
 		variant:  ButtonSecondary,
 		focused:  false,
 		disabled: false,
-		width:    0, // 0 means auto-width based on label
+		width:    0,
 	}
 	if th != nil {
 		b.SetTheme(th)

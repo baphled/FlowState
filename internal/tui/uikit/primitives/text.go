@@ -78,7 +78,7 @@ func NewText(content string, th theme.Theme) *Text {
 		content:   content,
 		textStyle: TextBody,
 		bold:      false,
-		width:     0, // 0 means no width constraint
+		width:     0,
 	}
 	if th != nil {
 		t.SetTheme(th)
@@ -285,11 +285,9 @@ func (t *Text) Render() string {
 func (t *Text) buildStyle() lipgloss.Style {
 	style := lipgloss.NewStyle()
 
-	// Apply custom foreground if set, otherwise use semantic color
 	if t.customForeground != nil {
 		style = style.Foreground(*t.customForeground)
 	} else {
-		// Apply semantic color based on text style
 		switch t.textStyle {
 		case TextTitle:
 			style = style.Foreground(t.PrimaryColor())
@@ -310,33 +308,26 @@ func (t *Text) buildStyle() lipgloss.Style {
 		}
 	}
 
-	// Apply bold based on style or explicit setting
-	// Title style always gets bold unless overridden
 	if t.textStyle == TextTitle {
 		style = style.Bold(true)
 	}
 
-	// Apply bold if requested
 	if t.bold {
 		style = style.Bold(true)
 	}
 
-	// Apply italic if requested
 	if t.italic {
 		style = style.Italic(true)
 	}
 
-	// Apply width constraint if set
 	if t.width > 0 {
 		style = style.Width(t.width)
 	}
 
-	// Apply alignment if width is set (alignment requires width)
 	if t.width > 0 && t.align != 0 {
 		style = style.Align(t.align)
 	}
 
-	// Apply margins if set
 	if t.marginTop > 0 {
 		style = style.MarginTop(t.marginTop)
 	}

@@ -63,7 +63,7 @@ type DetailView struct {
 //   - None.
 func NewDetailView(th theme.Theme) *DetailView {
 	dv := &DetailView{
-		width: 0, // 0 means no width constraint
+		width: 0,
 		items: make([]item, 0),
 	}
 	if th != nil {
@@ -251,22 +251,19 @@ func (dv *DetailView) Render() string {
 
 	var parts []string
 
-	// Render title if present
 	if dv.title != "" {
 		titleStyle := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(dv.PrimaryColor())
-		parts = append(parts, titleStyle.Render(dv.title), "") // Blank line after title
+		parts = append(parts, titleStyle.Render(dv.title), "")
 	}
 
-	// Track if we need spacing before sections
 	lastWasSection := false
 	firstItem := true
 
 	for _, itm := range dv.items {
 		switch itm.kind {
 		case itemSection:
-			// Add blank line before section (unless it's first item or follows another section)
 			if !firstItem && !lastWasSection {
 				parts = append(parts, "")
 			}
@@ -327,18 +324,16 @@ func (dv *DetailView) renderField(label, value string) string {
 		Bold(true).
 		Foreground(dv.MutedColor())
 
-	// Apply text wrapping if width is set
 	displayValue := value
 	if dv.width > 0 {
-		displayValue = dv.wrapText(value, dv.width-len(label)-2) // Account for "Label: "
+		displayValue = dv.wrapText(value, dv.width-len(label)-2)
 	}
 
-	// Handle multi-line values
 	if strings.Contains(displayValue, "\n") {
 		lines := strings.Split(displayValue, "\n")
 		var b strings.Builder
 		b.WriteString(labelStyle.Render(label+":") + " " + lines[0])
-		indent := strings.Repeat(" ", len(label)+2) // Indent continuation lines
+		indent := strings.Repeat(" ", len(label)+2)
 		for _, line := range lines[1:] {
 			b.WriteString("\n" + indent + line)
 		}

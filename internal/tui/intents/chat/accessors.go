@@ -17,7 +17,7 @@ func (i *Intent) AtBottom() bool {
 // Side effects: None (read-only accessor).
 func (i *Intent) ViewportYOffset() int {
 	if i.msgViewport == nil {
-		return -1 // Return -1 to indicate nil viewport
+		return -1
 	}
 	return i.msgViewport.YOffset
 }

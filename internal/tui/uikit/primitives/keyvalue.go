@@ -169,7 +169,6 @@ func (kv *KeyValue) Render() string {
 	lines := make([]string, 0, len(kv.pairs))
 	for _, pair := range kv.pairs {
 		if pair.label == "" && pair.value == "" {
-			// Blank line for spacing
 			lines = append(lines, "")
 			continue
 		}

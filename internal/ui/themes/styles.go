@@ -126,7 +126,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			BorderForeground(palette.Border).
 			Faint(true),
 
-		// Inputs
 		InputBase: lipgloss.NewStyle().
 			Padding(0, 1).
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -155,7 +154,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Italic(true).
 			MarginTop(1),
 
-		// Cards/Panels
 		CardBase: lipgloss.NewStyle().
 			Padding(1, 2).
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -174,7 +172,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Foreground(palette.ForegroundDim).
 			MarginTop(1),
 
-		// Lists
 		ListItem: lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(palette.Foreground),
@@ -192,7 +189,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderForeground(palette.Primary),
 
-		// Messages
 		ErrorBox: lipgloss.NewStyle().
 			Padding(1, 2).
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -221,7 +217,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Background(palette.BackgroundCard).
 			Foreground(palette.Info),
 
-		// Headers
 		HeaderMain: lipgloss.NewStyle().
 			Foreground(palette.Primary).
 			Bold(true).
@@ -240,7 +235,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Bold(true).
 			MarginBottom(1),
 
-		// Progress
 		ProgressBar: lipgloss.NewStyle().
 			Foreground(palette.Primary).
 			Background(palette.BackgroundAlt),
@@ -249,7 +243,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Foreground(palette.ForegroundDim).
 			MarginLeft(2),
 
-		// Badges/Tags
 		Badge: lipgloss.NewStyle().
 			Padding(0, 1).
 			MarginRight(1).
@@ -284,7 +277,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			Foreground(palette.Foreground).
 			Bold(true),
 
-		// Key Badges
 		KeyBadge: lipgloss.NewStyle().
 			Padding(0, 1).
 			Background(palette.BackgroundAlt).
@@ -294,7 +286,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 		KeyBadgeHint: lipgloss.NewStyle().
 			Foreground(palette.ForegroundDim),
 
-		// Modal styles
 		ModalBase: lipgloss.NewStyle().
 			Padding(1, 2).
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -316,7 +307,6 @@ func GenerateStyles(palette *ColorPalette) *StyleSet {
 			BorderForeground(palette.Error).
 			Background(palette.BackgroundCard),
 
-		// Text styles
 		ErrorText: lipgloss.NewStyle().
 			Foreground(palette.Error).
 			Bold(true),

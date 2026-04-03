@@ -80,7 +80,7 @@ func NewScreenLayout(info *terminal.Info) *ScreenLayout {
 	}
 
 	return &ScreenLayout{
-		ShowLogo:            false, // Logo must be explicitly set
+		ShowLogo:            false,
 		LogoSpacing:         2,
 		ShowHeader:          false,
 		ShowFooter:          true,
@@ -333,7 +333,7 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 				WithTheme(theme)
 			bar.SetCrumbs(crumbs)
 			breadcrumbOutput := bar.View()
-			parts = append(parts, breadcrumbOutput, "") // Blank line after breadcrumbs
+			parts = append(parts, breadcrumbOutput, "")
 		}
 
 		if sl.Title != "" {
@@ -350,7 +350,7 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 				parts = append(parts, styledSubtitle)
 			}
 
-			parts = append(parts, "") // Blank line after title
+			parts = append(parts, "")
 		}
 	}
 

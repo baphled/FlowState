@@ -461,9 +461,8 @@ func (v *View) HandleDelegation(info *provider.DelegationInfo) {
 			Content: block.Render(),
 		})
 	default:
-		// Active delegation
 		v.delegationInfo = info
-		v.streaming = true // Consider delegation as streaming/active
+		v.streaming = true
 	}
 }
 

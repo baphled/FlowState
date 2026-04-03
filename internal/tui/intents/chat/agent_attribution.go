@@ -26,12 +26,12 @@ type AgentAttributionRenderer struct {
 func NewAgentAttributionRenderer() *AgentAttributionRenderer {
 	return &AgentAttributionRenderer{
 		styles: map[string]lipgloss.Style{
-			"planner":     lipgloss.NewStyle().Foreground(lipgloss.Color("#5fb3b3")).Bold(true),   // Teal
-			"executor":    lipgloss.NewStyle().Foreground(lipgloss.Color("#d9a66c")).Bold(true),   // Orange/Gold
-			"researcher":  lipgloss.NewStyle().Foreground(lipgloss.Color("#6cb56c")).Bold(true),   // Green
-			"reviewer":    lipgloss.NewStyle().Foreground(lipgloss.Color("#a99bd1")).Bold(true),   // Purple
-			"coordinator": lipgloss.NewStyle().Foreground(lipgloss.Color("#6ab0d3")).Bold(true),   // Blue
-			"system":      lipgloss.NewStyle().Foreground(lipgloss.Color("#5e6673")).Italic(true), // Muted
+			"planner":     lipgloss.NewStyle().Foreground(lipgloss.Color("#5fb3b3")).Bold(true),
+			"executor":    lipgloss.NewStyle().Foreground(lipgloss.Color("#d9a66c")).Bold(true),
+			"researcher":  lipgloss.NewStyle().Foreground(lipgloss.Color("#6cb56c")).Bold(true),
+			"reviewer":    lipgloss.NewStyle().Foreground(lipgloss.Color("#a99bd1")).Bold(true),
+			"coordinator": lipgloss.NewStyle().Foreground(lipgloss.Color("#6ab0d3")).Bold(true),
+			"system":      lipgloss.NewStyle().Foreground(lipgloss.Color("#5e6673")).Italic(true),
 		},
 	}
 }

@@ -106,18 +106,15 @@ func (b *Badge) Variant(v BadgeVariant) *Badge {
 // Side effects:
 //   - None.
 func (b *Badge) Render() string {
-	// BadgeHelpKey has special two-part rendering
 	if b.variant == BadgeHelpKey {
 		return b.renderHelpKey()
 	}
 
 	style := b.buildStyle()
 
-	// Format content based on variant
 	var content string
 	switch b.variant {
 	case BadgeKey:
-		// Key badge: [key] or [key → action]
 		if b.value != "" {
 			content = "[" + b.label + " → " + b.value + "]"
 		} else {
@@ -152,7 +149,6 @@ func (b *Badge) renderHelpKey() string {
 		hintStyle = lipgloss.NewStyle().
 			Foreground(palette.ForegroundDim)
 	} else {
-		// Fallback styling when no theme is provided
 		keyStyle = lipgloss.NewStyle().
 			Padding(0, 1).
 			Bold(true)
@@ -174,13 +170,11 @@ func (b *Badge) buildStyle() lipgloss.Style {
 
 	switch b.variant {
 	case BadgeKey:
-		// Key badges: Accent color, bold, no background
 		style = style.
 			Foreground(b.AccentColor()).
 			Bold(true)
 
 	case BadgeStatus:
-		// Status badges: Colored text with subtle background
 		style = style.
 			Foreground(b.SuccessColor()).
 			Background(b.Theme().BackgroundColor()).
@@ -189,7 +183,6 @@ func (b *Badge) buildStyle() lipgloss.Style {
 			BorderForeground(b.SuccessColor())
 
 	case BadgeTag:
-		// Tag badges: Pill-style with background
 		style = style.
 			Foreground(b.Theme().BackgroundColor()).
 			Background(b.SecondaryColor()).
@@ -198,7 +191,6 @@ func (b *Badge) buildStyle() lipgloss.Style {
 			Bold(false)
 
 	case BadgeDefault:
-		// Default badges: Muted style
 		style = style.
 			Foreground(b.MutedColor()).
 			Padding(0, 1)
@@ -848,7 +840,6 @@ func RenderHelpFooter(th theme.Theme, badges ...*Badge) string {
 		parts = append(parts, badge.Render())
 	}
 
-	// Join with spacing between badges
 	separator := "  "
 	if th != nil {
 		palette := th.Palette()

@@ -63,8 +63,8 @@ func NewDetailModal(title, content string) *DetailModal {
 	return &DetailModal{
 		title:        title,
 		content:      content,
-		footerBadges: nil, // Will use default footer
-		theme:        nil, // Will use default theme in getTheme()
+		footerBadges: nil,
+		theme:        nil,
 		visible:      true,
 		width:        80,
 		height:       24,
@@ -150,7 +150,7 @@ func (m *DetailModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.ready = false // Force viewport recreation on resize
+		m.ready = false
 		return m, nil
 
 	case tea.KeyMsg:
@@ -285,7 +285,7 @@ func (m *DetailModal) IsVisible() bool {
 //   - None.
 func (m *DetailModal) Show() {
 	m.visible = true
-	m.ready = false // Reset viewport when showing
+	m.ready = false
 }
 
 // Hide hides the modal.
@@ -306,7 +306,7 @@ func (m *DetailModal) Hide() {
 func (m *DetailModal) SetDimensions(width, height int) {
 	m.width = width
 	m.height = height
-	m.ready = false // Reset viewport when dimensions change
+	m.ready = false
 }
 
 // SetContent updates the content being displayed.
@@ -318,7 +318,7 @@ func (m *DetailModal) SetDimensions(width, height int) {
 //   - None.
 func (m *DetailModal) SetContent(content string) {
 	m.content = content
-	m.ready = false // Reset viewport when content changes
+	m.ready = false
 }
 
 // SetTitle updates the title being displayed.

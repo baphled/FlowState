@@ -273,7 +273,6 @@ func (g *ButtonGroup) Render() string {
 		return ""
 	}
 
-	// Render each button with appropriate focus state
 	var renderedButtons []string
 	for i, btn := range g.buttons {
 		focused := i == g.focusedIndex
@@ -281,7 +280,6 @@ func (g *ButtonGroup) Render() string {
 		renderedButtons = append(renderedButtons, rendered)
 	}
 
-	// Join buttons based on layout
 	if g.horizontal {
 		return lipgloss.JoinHorizontal(lipgloss.Top, renderedButtons...)
 	}

@@ -246,7 +246,7 @@ func renderShadow(lines []string, th theme.Theme) []string {
 	shadowChar := "░"
 	shadowColor := th.MutedColor()
 	if th == nil {
-		shadowColor = lipgloss.Color("#5e6673") // ForegroundMuted fallback
+		shadowColor = lipgloss.Color("#5e6673")
 	}
 	for i := range lines {
 		if i > 0 {
