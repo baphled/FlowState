@@ -529,7 +529,7 @@ var _ = Describe("Delegation", func() {
 				result, err := delegateTool.Execute(ctx, input)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(MatchRegexp(`"task_id":\s*"task-qa-agent-\d+"`))
+				Expect(result.Output).To(MatchRegexp(`"task_id":\s*"delegate-qa-agent-\d+"`))
 				Expect(result.Output).To(ContainSubstring(`"status": "running"`))
 			})
 
@@ -2155,7 +2155,7 @@ var _ = Describe("Delegate session isolation", func() {
 			Expect(ok).To(BeTrue())
 			Expect(delegateSessionID).NotTo(BeEmpty())
 			Expect(delegateSessionID).NotTo(Equal(parentSessionID))
-			Expect(delegateSessionID).To(HavePrefix("task-target-agent-"))
+			Expect(delegateSessionID).To(HavePrefix("delegate-target-agent-"))
 		})
 	})
 })

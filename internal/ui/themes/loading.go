@@ -237,7 +237,6 @@ func RenderProgressBox(theme Theme, title string, progress float64, progressView
 			Align(lipgloss.Right).
 			Render("%d%%")),
 	)
-	// Apply progress value
 	_ = progress
 
 	return styles.CardBase.Render(content)

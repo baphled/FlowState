@@ -762,7 +762,10 @@ func (d *DelegateTool) executeAsync(
 		return tool.Result{}, errBackgroundModeDisabled
 	}
 
-	taskID := fmt.Sprintf("task-%s-%d", target.agentID, time.Now().UTC().UnixNano())
+	taskID := d.createChildSession(ctx, target.agentID)
+	if taskID == "" {
+		taskID = fmt.Sprintf("task-%s-%d", target.agentID, time.Now().UTC().UnixNano())
+	}
 
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
