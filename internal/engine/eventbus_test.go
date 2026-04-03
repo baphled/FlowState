@@ -12,6 +12,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
@@ -49,6 +50,55 @@ var _ = Describe("EventBus Integration", func() {
 		It("returns the same EventBus instance on repeated calls", func() {
 			eng := engine.New(engine.Config{ChatProvider: chatProvider, Manifest: manifest})
 			Expect(eng.EventBus()).To(BeIdenticalTo(eng.EventBus()))
+		})
+	})
+
+	Describe("Config.EventBus injection", func() {
+		Context("when Config.EventBus is provided", func() {
+			It("uses the provided EventBus instead of creating a new one", func() {
+				sharedBus := eventbus.NewEventBus()
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					EventBus:     sharedBus,
+				})
+				Expect(eng.EventBus()).To(BeIdenticalTo(sharedBus))
+			})
+
+			It("delivers events to subscribers on the provided bus", func() {
+				sharedBus := eventbus.NewEventBus()
+				var mu sync.Mutex
+				var received []events.SessionEventData
+				sharedBus.Subscribe("session.created", func(event any) {
+					if se, ok := event.(*events.SessionEvent); ok {
+						mu.Lock()
+						received = append(received, se.Data)
+						mu.Unlock()
+					}
+				})
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					EventBus:     sharedBus,
+				})
+				store := newTempFileContextStore()
+				DeferCleanup(func() { cleanupStore(store) })
+				eng.SetContextStore(store, "shared-session")
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].SessionID).To(Equal("shared-session"))
+			})
+		})
+
+		Context("when Config.EventBus is nil", func() {
+			It("creates a new EventBus as fallback", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+				Expect(eng.EventBus()).NotTo(BeNil())
+			})
 		})
 	})
 

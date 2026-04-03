@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -381,7 +383,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 			coordinationStore := coordination.NewMemoryStore()
 
-			delegateEngine := delegateApp.createDelegateEngine(explorerManifest, coordinationStore)
+			delegateEngine := delegateApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
 			Expect(delegateEngine).NotTo(BeNil())
 
 			_, err := delegateEngine.Stream(context.Background(), "", "hello")
@@ -410,12 +412,88 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 			coordinationStore := coordination.NewMemoryStore()
 
-			delegateEngine := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore)
+			delegateEngine := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
 
 			Expect(delegateEngine).NotTo(BeNil())
 			manifest := delegateEngine.Manifest()
 			Expect(manifest.ID).To(Equal("explorer-isolated"))
 			Expect(manifest.Name).To(Equal("Explorer Agent"))
+		})
+
+		It("shares the provided event bus with the delegate engine", func() {
+			busApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			busProviderReg := provider.NewRegistry()
+			busProviderReg.Register(&mockProvider{name: "anthropic"})
+			busApp.providerRegistry = busProviderReg
+
+			explorerManifest := agent.Manifest{
+				ID:                "explorer-bus",
+				Name:              "Explorer Agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			busApp.Registry.Register(&explorerManifest)
+
+			parentBus := eventbus.NewEventBus()
+			coordinationStore := coordination.NewMemoryStore()
+
+			delegateEngine := busApp.createDelegateEngine(explorerManifest, coordinationStore, parentBus)
+			Expect(delegateEngine.EventBus()).To(BeIdenticalTo(parentBus))
+		})
+	})
+
+	Describe("delegate engine event bus sharing", func() {
+		It("delivers delegate engine events to the coordinator's bus subscribers", func() {
+			busApp := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: &mockProvider{name: "anthropic"},
+			}
+			busProviderReg := provider.NewRegistry()
+			busProviderReg.Register(&mockProvider{name: "anthropic"})
+			busApp.providerRegistry = busProviderReg
+
+			explorerManifest := agent.Manifest{
+				ID:   "explorer-events",
+				Name: "Explorer Agent",
+			}
+			coordManifest := agent.Manifest{
+				ID:   "coordinator-events",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			busApp.Registry.Register(&coordManifest)
+			busApp.Registry.Register(&explorerManifest)
+
+			coordinatorEngine := engine.New(engine.Config{
+				Manifest:      coordManifest,
+				AgentRegistry: busApp.Registry,
+				Registry:      busProviderReg,
+				Tools:         []tool.Tool{&mockTool{name: "test"}},
+			})
+
+			var mu sync.Mutex
+			var receivedTopics []string
+			coordinatorEngine.EventBus().Subscribe("session.created", func(_ any) {
+				mu.Lock()
+				receivedTopics = append(receivedTopics, "session.created")
+				mu.Unlock()
+			})
+
+			busApp.wireDelegateToolIfEnabled(coordinatorEngine, coordManifest)
+
+			delegateTool, found := coordinatorEngine.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			engines := delegateTool.Engines()
+			Expect(engines).To(HaveKey("explorer-events"))
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(engines["explorer-events"].EventBus()).To(BeIdenticalTo(coordinatorEngine.EventBus()))
 		})
 	})
 })

@@ -570,7 +570,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		if agentManifest.ID == manifest.ID {
 			continue
 		}
-		targetEngine := a.createDelegateEngine(*agentManifest, coordinationStore)
+		targetEngine := a.createDelegateEngine(*agentManifest, coordinationStore, eng.EventBus())
 		targetEngine.SetModelPreference(eng.LastProvider(), eng.LastModel())
 		engines[agentManifest.ID] = targetEngine
 	}
@@ -612,6 +612,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Expected:
 //   - manifest is the target agent's manifest with model preferences and capabilities.
 //   - store is the shared coordination store for cross-agent communication.
+//   - bus is the parent engine's event bus so delegate events are visible to the same subscribers.
 //
 // Returns:
 //   - An Engine instance configured for the target agent.
@@ -619,7 +620,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 //
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
-func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store) *engine.Engine {
+func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus) *engine.Engine {
 	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil, nil)
 	eng := engine.New(engine.Config{
 		ChatProvider:  a.defaultProvider,
@@ -628,6 +629,7 @@ func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.S
 		Manifest:      manifest,
 		Tools:         a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:     hookChain,
+		EventBus:      bus,
 	})
 	return eng
 }

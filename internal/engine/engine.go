@@ -80,6 +80,7 @@ type Config struct {
 	ToolRegistry      *tool.Registry
 	PermissionHandler tool.PermissionHandler
 	AgentsFileLoader  *agent.AgentsFileLoader
+	EventBus          *eventbus.EventBus
 }
 
 // New creates a new Engine from the given configuration.
@@ -103,7 +104,10 @@ func New(cfg Config) *Engine {
 		timeout = defaultStreamTimeout
 	}
 
-	bus := eventbus.NewEventBus()
+	bus := cfg.EventBus
+	if bus == nil {
+		bus = eventbus.NewEventBus()
+	}
 
 	var chain *hook.Chain
 	if cfg.HookChain != nil {
