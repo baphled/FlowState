@@ -638,7 +638,7 @@ func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	}
 	if !i.vpReady {
 		vp := viewport.New(msg.Width, vpHeight)
-		i.msgViewport = &vp // Take address of local, stored on heap due to escape analysis
+		i.msgViewport = &vp
 		i.msgViewport.SetContent("")
 		i.vpReady = true
 	} else {
