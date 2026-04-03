@@ -21,6 +21,7 @@ type DelegationStatusWidget struct {
 	statusStyle lipgloss.Style
 	errorStyle  lipgloss.Style
 	stylesReady bool
+	thinking    string
 }
 
 // NewDelegationStatusWidget creates a new delegation status widget.
@@ -48,6 +49,24 @@ func NewDelegationStatusWidget(info *provider.DelegationInfo, t theme.Theme) *De
 		w.errorStyle = lipgloss.NewStyle().Foreground(palette.Error)
 		w.stylesReady = true
 	}
+	return w
+}
+
+// NewDelegationStatusWidgetWithThinking creates a new delegation status widget with an active thinking string.
+//
+// Expected:
+//   - info may be nil when the widget should render empty.
+//   - t is a valid theme value.
+//   - thinking is a non-empty string describing the current thinking step.
+//
+// Returns:
+//   - A widget configured with the current theme, spinner frames, and thinking text.
+//
+// Side effects:
+//   - None.
+func NewDelegationStatusWidgetWithThinking(info *provider.DelegationInfo, t theme.Theme, thinking string) *DelegationStatusWidget {
+	w := NewDelegationStatusWidget(info, t)
+	w.thinking = thinking
 	return w
 }
 
@@ -119,7 +138,9 @@ func (w *DelegationStatusWidget) Render() string {
 	if w.info.Description != "" {
 		parts = append(parts, dimStyle.Render("- "+w.info.Description))
 	}
-
+	if w.thinking != "" {
+		parts = append(parts, activeStyle.Render(w.thinking))
+	}
 	return strings.Join(parts, " ")
 }
 

@@ -19,6 +19,7 @@ type Message struct {
 	Role       string
 	Content    string
 	ToolName   string         // set for tool_result messages
+	ToolInput  string         // set for tool_result messages (primary argument)
 	AgentColor lipgloss.Color // set for assistant messages (zero = use theme default)
 	ModelID    string         // set for assistant messages (empty = no footer)
 }
@@ -408,6 +409,7 @@ func (v *View) RenderContent(width int) string {
 func (v *View) renderMessage(msg Message, th theme.Theme, width int) string {
 	mw := widgets.NewMessageWidget(msg.Role, msg.Content, th)
 	mw.SetToolName(msg.ToolName)
+	mw.SetToolInput(msg.ToolInput)
 	mw.SetAgentColor(msg.AgentColor)
 	mw.SetModelID(msg.ModelID)
 	if v.renderFunc != nil {
