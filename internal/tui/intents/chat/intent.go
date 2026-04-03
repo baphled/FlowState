@@ -777,10 +777,6 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
-	if msg.Done && msg.ModelID != "" {
-		i.view.SetModelID(i.modelName)
-	}
-
 	i.flushThinking(msg.Done)
 	i.finaliseStreamIfDone(msg)
 }
