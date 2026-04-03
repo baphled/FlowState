@@ -516,6 +516,73 @@ var _ = Describe("Ollama Provider", func() {
 			})
 		})
 
+		Context("characterisation: buildOllamaTools maps name, description, and required via shared.BuildBaseToolSchema", func() {
+			var capturedReq map[string]interface{}
+
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					Expect(err).NotTo(HaveOccurred())
+
+					err = json.Unmarshal(body, &capturedReq)
+					Expect(err).NotTo(HaveOccurred())
+
+					w.Header().Set("Content-Type", "application/x-ndjson")
+					resp := map[string]interface{}{
+						"model":   "llama3.2",
+						"message": map[string]interface{}{"role": "assistant", "content": "Done"},
+						"done":    true,
+					}
+					data, _ := json.Marshal(resp)
+					_, _ = w.Write(data)
+					_, _ = w.Write([]byte("\n"))
+				}))
+
+				var err error
+				provider, err = ollama.NewWithClient(server.URL, server.Client())
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("sends correct name, description, and required fields for each tool", func() {
+				ctx := context.Background()
+				ch, err := provider.Stream(ctx, providerPkg.ChatRequest{
+					Model:    "llama3.2",
+					Messages: []providerPkg.Message{{Role: "user", Content: "help"}},
+					Tools: []providerPkg.Tool{
+						{
+							Name:        "search",
+							Description: "Search for items",
+							Schema: providerPkg.ToolSchema{
+								Type: "object",
+								Properties: map[string]interface{}{
+									"query": map[string]interface{}{"type": "string"},
+									"limit": map[string]interface{}{"type": "integer"},
+								},
+								Required: []string{"query", "limit"},
+							},
+						},
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				tools, ok := capturedReq["tools"].([]interface{})
+				Expect(ok).To(BeTrue(), "tools should be present in request")
+				Expect(tools).To(HaveLen(1))
+
+				tool := tools[0].(map[string]interface{})
+				fn := tool["function"].(map[string]interface{})
+				Expect(fn["name"]).To(Equal("search"))
+				Expect(fn["description"]).To(Equal("Search for items"))
+
+				params := fn["parameters"].(map[string]interface{})
+				required := params["required"].([]interface{})
+				Expect(required).To(ConsistOf("query", "limit"))
+			})
+		})
+
 		Context("when server returns tool call response", func() {
 			BeforeEach(func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

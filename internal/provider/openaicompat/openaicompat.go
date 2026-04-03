@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/baphled/flowstate/internal/provider"
+	shared "github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 )
 
@@ -20,22 +21,23 @@ import (
 //   - None.
 func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessageParamUnion {
 	result := make([]openaiAPI.ChatCompletionMessageParamUnion, 0, len(messages))
-	for i := range messages {
+	pairs := shared.ConvertMessagesToRolePairs(messages)
+	for i, pair := range pairs {
 		m := messages[i]
-		switch m.Role {
+		switch pair.Role {
 		case "user":
-			result = append(result, openaiAPI.UserMessage(m.Content))
+			result = append(result, openaiAPI.UserMessage(pair.Content))
 		case "assistant":
 			if len(m.ToolCalls) > 0 {
 				result = append(result, buildAssistantMessageWithToolCalls(m))
 			} else {
-				result = append(result, openaiAPI.AssistantMessage(m.Content))
+				result = append(result, openaiAPI.AssistantMessage(pair.Content))
 			}
 		case "system":
-			result = append(result, openaiAPI.SystemMessage(m.Content))
+			result = append(result, openaiAPI.SystemMessage(pair.Content))
 		case "tool":
 			if len(m.ToolCalls) > 0 {
-				result = append(result, openaiAPI.ToolMessage(m.Content, m.ToolCalls[0].ID))
+				result = append(result, openaiAPI.ToolMessage(pair.Content, m.ToolCalls[0].ID))
 			}
 		}
 	}
@@ -95,14 +97,15 @@ func BuildTools(tools []provider.Tool) []openaiAPI.ChatCompletionToolParam {
 	}
 	result := make([]openaiAPI.ChatCompletionToolParam, 0, len(tools))
 	for _, t := range tools {
+		base := shared.BuildBaseToolSchema(t)
 		result = append(result, openaiAPI.ChatCompletionToolParam{
 			Function: openaiAPI.FunctionDefinitionParam{
-				Name:        t.Name,
-				Description: openaiAPI.String(t.Description),
+				Name:        base.Name,
+				Description: openaiAPI.String(base.Description),
 				Parameters: openaiAPI.FunctionParameters{
 					"type":       t.Schema.Type,
-					"properties": t.Schema.Properties,
-					"required":   t.Schema.Required,
+					"properties": base.Properties,
+					"required":   base.Required,
 				},
 			},
 		})

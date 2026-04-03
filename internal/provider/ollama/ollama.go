@@ -115,10 +115,8 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 							Arguments: tc.Function.Arguments.ToMap(),
 						},
 					}
-					select {
-					case <-ctx.Done():
+					if !shared.SendChunk(ctx, ch, chunk) {
 						return ctx.Err()
-					case ch <- chunk:
 					}
 				}
 				ch <- provider.StreamChunk{Done: true}
@@ -128,10 +126,8 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 				Content: resp.Message.Content,
 				Done:    resp.Done,
 			}
-			select {
-			case <-ctx.Done():
+			if !shared.SendChunk(ctx, ch, chunk) {
 				return ctx.Err()
-			case ch <- chunk:
 			}
 			return nil
 		})
@@ -319,6 +315,7 @@ func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
 func buildOllamaTools(tools []provider.Tool) ollamaAPI.Tools {
 	result := make(ollamaAPI.Tools, len(tools))
 	for i, t := range tools {
+		base := shared.BuildBaseToolSchema(t)
 		props := ollamaAPI.NewToolPropertiesMap()
 		for key, val := range t.Schema.Properties {
 			if propMap, ok := val.(map[string]interface{}); ok {
@@ -335,12 +332,12 @@ func buildOllamaTools(tools []provider.Tool) ollamaAPI.Tools {
 		result[i] = ollamaAPI.Tool{
 			Type: "function",
 			Function: ollamaAPI.ToolFunction{
-				Name:        t.Name,
-				Description: t.Description,
+				Name:        base.Name,
+				Description: base.Description,
 				Parameters: ollamaAPI.ToolFunctionParameters{
 					Type:       t.Schema.Type,
 					Properties: props,
-					Required:   t.Schema.Required,
+					Required:   base.Required,
 				},
 			},
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
+	shared "github.com/baphled/flowstate/internal/provider/shared"
 )
 
 // ErrNotSupported is returned when an unsupported operation is attempted.
@@ -342,7 +343,7 @@ func (p *Provider) streamMessages(
 		if !shouldSend {
 			continue
 		}
-		if !sendChunk(ctx, ch, chunk) {
+		if !shared.SendChunk(ctx, ch, chunk) {
 			return
 		}
 		if chunk.Done {
@@ -743,12 +744,13 @@ func buildTools(
 		[]anthropicAPI.ToolUnionParam, 0, len(tools),
 	)
 	for _, t := range tools {
+		base := shared.BuildBaseToolSchema(t)
 		toolParam := anthropicAPI.ToolParam{
-			Name:        t.Name,
-			Description: anthropicAPI.String(t.Description),
+			Name:        base.Name,
+			Description: anthropicAPI.String(base.Description),
 			InputSchema: anthropicAPI.ToolInputSchemaParam{
-				Properties: t.Schema.Properties,
-				Required:   t.Schema.Required,
+				Properties: base.Properties,
+				Required:   base.Required,
 			},
 		}
 		result = append(result, anthropicAPI.ToolUnionParam{

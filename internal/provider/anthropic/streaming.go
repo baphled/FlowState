@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -161,31 +160,4 @@ func parseToolArguments(raw string) map[string]interface{} {
 		return nil
 	}
 	return args
-}
-
-// sendChunk sends a StreamChunk to the channel, respecting context cancellation.
-//
-// Expected:
-//   - ctx is a valid context.
-//   - ch is an open, non-nil channel.
-//   - chunk is the StreamChunk to send.
-//
-// Returns:
-//   - true if the chunk was sent successfully.
-//   - false if the context was cancelled (an error chunk is sent instead).
-//
-// Side effects:
-//   - May send an error chunk if the context is cancelled.
-func sendChunk(
-	ctx context.Context,
-	ch chan<- provider.StreamChunk,
-	chunk provider.StreamChunk,
-) bool {
-	select {
-	case ch <- chunk:
-		return true
-	case <-ctx.Done():
-		ch <- provider.StreamChunk{Error: ctx.Err(), Done: true}
-		return false
-	}
 }

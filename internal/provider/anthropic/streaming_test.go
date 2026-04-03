@@ -5,6 +5,7 @@ import (
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/baphled/flowstate/internal/provider"
+	shared "github.com/baphled/flowstate/internal/provider/shared"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -281,7 +282,7 @@ var _ = Describe("streamEventHandler", func() {
 			ctx, cancel := createTestContext()
 			defer cancel()
 
-			sent := sendChunk(ctx, ch, provider.StreamChunk{Content: "hello"})
+			sent := shared.SendChunk(ctx, ch, provider.StreamChunk{Content: "hello"})
 
 			Expect(sent).To(BeTrue())
 			Expect(<-ch).To(Equal(provider.StreamChunk{Content: "hello"}))

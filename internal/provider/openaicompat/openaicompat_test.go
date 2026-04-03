@@ -13,6 +13,45 @@ import (
 
 var _ = Describe("OpenAI Compat", func() {
 	Describe("BuildMessages", func() {
+		Context("characterisation: role and content mapping", func() {
+			It("maps user role and content to OpenAI UserMessage", func() {
+				msgs := []provider.Message{{Role: "user", Content: "hello world"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("hello world"))
+			})
+
+			It("maps assistant role and content to OpenAI AssistantMessage", func() {
+				msgs := []provider.Message{{Role: "assistant", Content: "hi there"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfAssistant).NotTo(BeNil())
+				Expect(result[0].OfAssistant.Content.OfString.Value).To(Equal("hi there"))
+			})
+
+			It("maps system role and content to OpenAI SystemMessage", func() {
+				msgs := []provider.Message{{Role: "system", Content: "you are helpful"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfSystem).NotTo(BeNil())
+				Expect(result[0].OfSystem.Content.OfString.Value).To(Equal("you are helpful"))
+			})
+
+			It("maps tool role using ToolCalls[0].ID for the OpenAI ToolMessage", func() {
+				msgs := []provider.Message{{
+					Role:      "tool",
+					Content:   "tool result",
+					ToolCalls: []provider.ToolCall{{ID: "call_123"}},
+				}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfTool).NotTo(BeNil())
+				Expect(result[0].OfTool.Content.OfString.Value).To(Equal("tool result"))
+				Expect(result[0].OfTool.ToolCallID).To(Equal("call_123"))
+			})
+		})
+
 		It("converts user messages correctly", func() {
 			msgs := []provider.Message{{Role: "user", Content: "hello"}}
 			result := openaicompat.BuildMessages(msgs)
@@ -110,6 +149,31 @@ var _ = Describe("OpenAI Compat", func() {
 	})
 
 	Describe("BuildTools", func() {
+		Context("characterisation: multi-property schema mapping", func() {
+			It("preserves all properties and required fields in the OpenAI parameters wrapper", func() {
+				tools := []provider.Tool{{
+					Name:        "search",
+					Description: "Search for items",
+					Schema: provider.ToolSchema{
+						Type: "object",
+						Properties: map[string]interface{}{
+							"query": map[string]interface{}{"type": "string"},
+							"limit": map[string]interface{}{"type": "integer"},
+						},
+						Required: []string{"query", "limit"},
+					},
+				}}
+				result := openaicompat.BuildTools(tools)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].Function.Name).To(Equal("search"))
+				Expect(result[0].Function.Description.Value).To(Equal("Search for items"))
+				params := result[0].Function.Parameters
+				Expect(params).To(HaveKey("properties"))
+				Expect(params).To(HaveKey("required"))
+				Expect(params["required"]).To(ConsistOf("query", "limit"))
+			})
+		})
+
 		It("returns nil for empty tools slice", func() {
 			result := openaicompat.BuildTools([]provider.Tool{})
 			Expect(result).To(BeNil())
