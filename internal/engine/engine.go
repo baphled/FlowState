@@ -106,13 +106,13 @@ func New(cfg Config) *Engine {
 	bus := eventbus.NewEventBus()
 
 	var chain *hook.Chain
-	if cfg.FailoverManager != nil {
+	if cfg.HookChain != nil {
+		chain = cfg.HookChain
+	} else if cfg.FailoverManager != nil {
 		streamHook := failover.NewStreamHook(cfg.FailoverManager, bus, cfg.Manifest.ID)
 		chain = hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
 			return streamHook.Execute(next)
 		})
-	} else if cfg.HookChain != nil {
-		chain = cfg.HookChain
 	}
 
 	return &Engine{

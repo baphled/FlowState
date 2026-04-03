@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
@@ -166,6 +167,103 @@ var _ = Describe("Engine", func() {
 			})
 
 			Expect(eng).NotTo(BeNil())
+		})
+
+		Context("when both HookChain and FailoverManager are provided", func() {
+			var (
+				registry *provider.Registry
+				manager  *failover.Manager
+				hookRan  bool
+			)
+
+			BeforeEach(func() {
+				hookRan = false
+
+				primaryProvider := &mockProvider{
+					name: "primary",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+
+				registry = provider.NewRegistry()
+				registry.Register(primaryProvider)
+
+				health := failover.NewHealthManager()
+				manager = failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "primary", Model: "primary-model"},
+				})
+			})
+
+			It("preserves the full hook chain instead of replacing it", func() {
+				markerHook := func(next hook.HandlerFunc) hook.HandlerFunc {
+					return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						hookRan = true
+						return next(ctx, req)
+					}
+				}
+
+				chain := hook.NewChain(markerHook, hook.LoggingHook())
+
+				eng := engine.New(engine.Config{
+					Registry:        registry,
+					FailoverManager: manager,
+					HookChain:       chain,
+					Manifest:        manifest,
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).NotTo(BeEmpty())
+				Expect(hookRan).To(BeTrue())
+			})
+		})
+
+		Context("when only FailoverManager is provided without HookChain", func() {
+			It("creates a minimal failover stream hook chain", func() {
+				primaryProvider := &mockProvider{
+					name: "primary",
+					streamChunks: []provider.StreamChunk{
+						{Content: "response", Done: true},
+					},
+				}
+
+				registry := provider.NewRegistry()
+				registry.Register(primaryProvider)
+
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "primary", Model: "primary-model"},
+				})
+
+				eng := engine.New(engine.Config{
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
+				})
+
+				Expect(eng).NotTo(BeNil())
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(received).NotTo(BeEmpty())
+			})
 		})
 	})
 
