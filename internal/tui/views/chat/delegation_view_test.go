@@ -76,4 +76,13 @@ var _ = Describe("DelegationStatusWidget", func() {
 		// Spinner frame 1 is ⠙
 		Expect(rendered).To(ContainSubstring("⠙"))
 	})
+
+	It("renders the model name even if provider is missing (Fix E)", func() {
+		info.ModelName = "claude-opus-4.5"
+		info.ProviderName = ""
+		widget := chat.NewDelegationStatusWidget(info, th)
+		rendered := widget.Render()
+		Expect(rendered).To(ContainSubstring("claude-opus-4.5"))
+		// Should not panic or omit model name if provider is empty
+	})
 })
