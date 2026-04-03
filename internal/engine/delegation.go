@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -617,7 +618,10 @@ func (d *DelegateTool) executeSync(
 ) (tool.Result, error) {
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
-	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
+	delegateSessionID := fmt.Sprintf("delegate-%s-%d", target.agentID, time.Now().UTC().UnixNano())
+	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
+
+	chunks, err := target.engine.Stream(delegateCtx, target.agentID, target.message)
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
@@ -679,7 +683,8 @@ func (d *DelegateTool) executeAsync(
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
 	d.backgroundManager.Launch(ctx, taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
-		result, err := d.executeBackgroundTask(ctx, target, baseInfo, outChan, hasOutput)
+		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
+		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, outChan, hasOutput)
 		if err != nil {
 			return "", err
 		}

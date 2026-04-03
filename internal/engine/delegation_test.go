@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -2036,6 +2037,121 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
 			Expect(err.Error()).To(ContainSubstring("message"))
 			Expect(err.Error()).To(ContainSubstring("explorer"))
+		})
+	})
+})
+
+// sessionCapture holds a captured context for session ID verification.
+type sessionCapture struct {
+	ctx context.Context
+}
+
+var _ = Describe("Delegate session isolation", func() {
+	var (
+		capture       *sessionCapture
+		targetEngine  *engine.Engine
+		engines       map[string]*engine.Engine
+		delegationCfg agent.Delegation
+	)
+
+	BeforeEach(func() {
+		capture = &sessionCapture{}
+
+		capturingProvider := &contextCapturingProvider{
+			name: "ctx-capture-provider",
+			chunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+			captureFn: func(ctx context.Context) {
+				capture.ctx = ctx
+			},
+		}
+
+		targetManifest := agent.Manifest{
+			ID:                "target-agent",
+			Name:              "Target Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are a target."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		targetEngine = engine.New(engine.Config{
+			ChatProvider: capturingProvider,
+			Manifest:     targetManifest,
+		})
+
+		engines = map[string]*engine.Engine{
+			"target-agent": targetEngine,
+		}
+
+		delegationCfg = agent.Delegation{CanDelegate: true}
+	})
+
+	Describe("synchronous delegation", func() {
+		It("uses a delegate-specific session ID different from the parent", func() {
+			parentSessionID := "parent-session-abc"
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parentSessionID)
+			delegateTool := engine.NewDelegateTool(engines, delegationCfg, "orchestrator")
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "target-agent",
+					"message":       "Do work",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("delegate response"))
+			Expect(capture.ctx).NotTo(BeNil())
+
+			delegateSessionID, ok := capture.ctx.Value(session.IDKey{}).(string)
+			Expect(ok).To(BeTrue())
+			Expect(delegateSessionID).NotTo(BeEmpty())
+			Expect(delegateSessionID).NotTo(Equal(parentSessionID))
+			Expect(delegateSessionID).To(HavePrefix("delegate-target-agent-"))
+		})
+	})
+
+	Describe("asynchronous delegation", func() {
+		It("uses the task ID as the delegate session ID", func() {
+			parentSessionID := "parent-session-xyz"
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parentSessionID)
+			bgManager := engine.NewBackgroundTaskManager()
+
+			delegateTool := engine.NewDelegateToolWithBackground(
+				engines, delegationCfg, "orchestrator", bgManager, nil,
+			)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "target-agent",
+					"message":           "Do async work",
+					"run_in_background": true,
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("task_id"))
+
+			Eventually(func() string {
+				tasks := bgManager.List()
+				if len(tasks) == 0 {
+					return ""
+				}
+				return tasks[0].Status.Load()
+			}, "3s", "50ms").Should(Equal("completed"))
+
+			Expect(capture.ctx).NotTo(BeNil())
+
+			delegateSessionID, ok := capture.ctx.Value(session.IDKey{}).(string)
+			Expect(ok).To(BeTrue())
+			Expect(delegateSessionID).NotTo(BeEmpty())
+			Expect(delegateSessionID).NotTo(Equal(parentSessionID))
+			Expect(delegateSessionID).To(HavePrefix("task-target-agent-"))
 		})
 	})
 })
