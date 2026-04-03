@@ -1,11 +1,17 @@
 package openaicompat_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -260,29 +266,6 @@ var _ = Describe("OpenAI Compat", func() {
 		})
 	})
 
-	Describe("ParseToolCallArguments", func() {
-		It("parses valid JSON into map", func() {
-			result := openaicompat.ParseToolCallArguments(`{"key":"value","num":42}`)
-			Expect(result).To(HaveKeyWithValue("key", "value"))
-			Expect(result).To(HaveKeyWithValue("num", BeNumerically("==", 42)))
-		})
-
-		It("returns empty map for invalid JSON", func() {
-			result := openaicompat.ParseToolCallArguments("not json")
-			Expect(result).To(BeEmpty())
-		})
-
-		It("returns empty map for empty string", func() {
-			result := openaicompat.ParseToolCallArguments("")
-			Expect(result).To(BeEmpty())
-		})
-
-		It("parses nested JSON structures", func() {
-			result := openaicompat.ParseToolCallArguments(`{"outer":{"inner":"deep"}}`)
-			Expect(result).To(HaveKey("outer"))
-		})
-	})
-
 	Describe("ExtractToolCalls", func() {
 		It("returns nil for empty slice", func() {
 			result := openaicompat.ExtractToolCalls([]openaiAPI.ChatCompletionMessageToolCall{})
@@ -370,6 +353,163 @@ var _ = Describe("OpenAI Compat", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Message.ToolCalls).To(BeNil())
 		})
+	})
+})
+
+// ---
+// RunStream streaming specs.
+var _ = Describe("RunStream", func() {
+	var server *httptest.Server
+
+	AfterEach(func() {
+		if server != nil {
+			server.Close()
+		}
+	})
+
+	It("streams text content chunks", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":" world!"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Hello"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(HaveLen(3))
+		Expect(chunks[0].Content).To(Equal("Hello"))
+		Expect(chunks[1].Content).To(Equal(" world!"))
+		Expect(chunks[2].Done).To(BeTrue())
+	})
+
+	It("streams tool call chunks", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(HaveLen(2))
+		Expect(chunks[0].ToolCall).NotTo(BeNil())
+		Expect(chunks[0].ToolCall.ID).To(Equal("call_abc"))
+		Expect(chunks[0].ToolCall.Name).To(Equal("get_weather"))
+		Expect(chunks[0].ToolCall.Arguments).To(HaveKeyWithValue("city", "London"))
+		Expect(chunks[1].Done).To(BeTrue())
+	})
+
+	It("propagates server errors", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			resp := map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": "internal server error",
+					"type":    "server_error",
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "fail"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var lastChunk provider.StreamChunk
+		for chunk := range ch {
+			lastChunk = chunk
+		}
+		Expect(lastChunk.Error).To(HaveOccurred())
+		Expect(lastChunk.Done).To(BeTrue())
+	})
+
+	It("respects context cancellation", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			for range 10 {
+				fmt.Fprintf(w, "data: %s\n\n", `{"id":"chatcmpl-3","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"chunk"},"finish_reason":null}]}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "cancel"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var gotCancel bool
+		for chunk := range ch {
+			if chunk.Error != nil && ctx.Err() != nil {
+				gotCancel = true
+			}
+		}
+		Expect(gotCancel).To(BeTrue())
+	})
+
+	It("handles empty stream", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "empty"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var chunks []provider.StreamChunk
+		for chunk := range ch {
+			chunks = append(chunks, chunk)
+		}
+		Expect(chunks).To(BeEmpty())
 	})
 })
 
