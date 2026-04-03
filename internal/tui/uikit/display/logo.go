@@ -308,14 +308,12 @@ func (l *Logo) render() string {
 //   - None.
 func (l *Logo) applyFadeStyle(text string, theme themes.Theme) string {
 	if l.fadeProgress >= 1.0 {
-		// Full opacity - use primary accent color
 		return lipgloss.NewStyle().
 			Foreground(theme.AccentColor()).
 			Bold(true).
 			Render(text)
 	}
 
-	// Fading in - adjust opacity by making it faint
 	return lipgloss.NewStyle().
 		Foreground(theme.AccentColor()).
 		Bold(true).
@@ -352,6 +350,5 @@ func (l *Logo) GetHeight() int {
 // Side effects:
 //   - None.
 func (l *Logo) GetWidth() int {
-	// The logo art is 88 characters wide
 	return 88
 }

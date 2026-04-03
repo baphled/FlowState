@@ -47,7 +47,6 @@ const (
 func NewThemedSpinnerWithType(theme Theme, spinnerType SpinnerType) spinner.Model {
 	s := spinner.New()
 
-	// Map SpinnerType to bubbles/spinner types
 	switch spinnerType {
 	case SpinnerDot:
 		s.Spinner = spinner.Dot
@@ -75,7 +74,6 @@ func NewThemedSpinnerWithType(theme Theme, spinnerType SpinnerType) spinner.Mode
 		s.Spinner = spinner.Dot
 	}
 
-	// Apply theme color if available
 	if theme != nil {
 		palette := theme.Palette()
 		s.Style = lipgloss.NewStyle().Foreground(palette.Primary)
