@@ -20,6 +20,7 @@ import (
 type App struct {
 	intent           tuiintents.Intent
 	modal            tuiintents.Intent // active modal overlay, nil when no modal
+	intentStack      []tuiintents.Intent
 	providerRegistry *provider.Registry
 	width            int
 	height           int
@@ -80,6 +81,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if _, ok := msg.(tuiintents.DismissModalMsg); ok {
 		a.modal = nil
+		return a, nil
+	}
+	if ndMsg, ok := msg.(tuiintents.NavigateToDelegationMsg); ok && ndMsg.Intent != nil {
+		a.intentStack = append(a.intentStack, a.intent)
+		a.intent = ndMsg.Intent
+		return a, nil
+	}
+	if _, ok := msg.(tuiintents.NavigateToParentMsg); ok {
+		if len(a.intentStack) > 0 {
+			a.intent = a.intentStack[len(a.intentStack)-1]
+			a.intentStack = a.intentStack[:len(a.intentStack)-1]
+		}
 		return a, nil
 	}
 	if sim, ok := msg.(tuiintents.SwitchToIntentMsg); ok && sim.Intent != nil {
