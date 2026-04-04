@@ -711,6 +711,177 @@ func NewProviderErrorEvent(data ProviderErrorEventData, ts ...time.Time) *Provid
 	}
 }
 
+// SessionResumedEventData holds data for session resumed events.
+type SessionResumedEventData struct {
+	SessionID string
+	UserID    string
+	Action    string
+	Details   map[string]any
+}
+
+// SessionResumedEvent represents a session resumed event.
+type SessionResumedEvent struct {
+	BaseEvent
+	Data SessionResumedEventData `json:"data"`
+}
+
+// NewSessionResumedEvent creates a new SessionResumedEvent.
+//
+// Expected:
+//   - data contains the session resumed metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A SessionResumedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewSessionResumedEvent(data SessionResumedEventData, ts ...time.Time) *SessionResumedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &SessionResumedEvent{
+		BaseEvent: BaseEvent{eventType: "session.resumed", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolExecuteErrorEventData holds data for tool execution error events.
+type ToolExecuteErrorEventData struct {
+	SessionID string
+	ToolName  string
+	Args      map[string]any
+	Error     error
+}
+
+// MarshalJSON serialises ToolExecuteErrorEventData while preserving error messages.
+//
+// Expected:
+//   - The receiver contains tool execution error data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (d ToolExecuteErrorEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID string         `json:"session_id,omitempty"`
+		ToolName  string         `json:"tool_name"`
+		Args      map[string]any `json:"args,omitempty"`
+		Error     string         `json:"error,omitempty"`
+	}
+	data := payload{SessionID: d.SessionID, ToolName: d.ToolName, Args: d.Args}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+	return json.Marshal(data)
+}
+
+// ToolExecuteErrorEvent represents a tool execution error event.
+type ToolExecuteErrorEvent struct {
+	BaseEvent
+	Data ToolExecuteErrorEventData
+}
+
+// NewToolExecuteErrorEvent creates a new ToolExecuteErrorEvent.
+//
+// Expected:
+//   - data contains the tool execution error metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolExecuteErrorEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewToolExecuteErrorEvent(data ToolExecuteErrorEventData, ts ...time.Time) *ToolExecuteErrorEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolExecuteErrorEvent{
+		BaseEvent: BaseEvent{eventType: "tool.execute.error", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ToolExecuteResultEventData holds data for tool execution result events.
+type ToolExecuteResultEventData struct {
+	SessionID string         `json:"session_id,omitempty"`
+	ToolName  string         `json:"tool_name"`
+	Args      map[string]any `json:"args,omitempty"`
+	Result    any            `json:"result,omitempty"`
+}
+
+// ToolExecuteResultEvent represents a tool execution result event.
+type ToolExecuteResultEvent struct {
+	BaseEvent
+	Data ToolExecuteResultEventData
+}
+
+// NewToolExecuteResultEvent creates a new ToolExecuteResultEvent.
+//
+// Expected:
+//   - data contains the tool execution result metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolExecuteResultEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewToolExecuteResultEvent(data ToolExecuteResultEventData, ts ...time.Time) *ToolExecuteResultEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolExecuteResultEvent{
+		BaseEvent: BaseEvent{eventType: "tool.execute.result", timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderRequestRetryEventData holds data for provider request retry events.
+type ProviderRequestRetryEventData struct {
+	SessionID    string `json:"session_id,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	ProviderName string `json:"provider_name"`
+	ModelName    string `json:"model_name,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Attempt      int    `json:"attempt"`
+}
+
+// ProviderRequestRetryEvent represents a provider request retry event.
+type ProviderRequestRetryEvent struct {
+	BaseEvent
+	Data ProviderRequestRetryEventData
+}
+
+// NewProviderRequestRetryEvent creates a new ProviderRequestRetryEvent.
+//
+// Expected:
+//   - data contains the provider request retry metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ProviderRequestRetryEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time.Time) *ProviderRequestRetryEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderRequestRetryEvent{
+		BaseEvent: BaseEvent{eventType: "provider.request.retry", timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -730,4 +901,8 @@ var (
 	_ Event = (*BackgroundTaskStartedEvent)(nil)
 	_ Event = (*BackgroundTaskCompletedEvent)(nil)
 	_ Event = (*BackgroundTaskFailedEvent)(nil)
+	_ Event = (*SessionResumedEvent)(nil)
+	_ Event = (*ToolExecuteErrorEvent)(nil)
+	_ Event = (*ToolExecuteResultEvent)(nil)
+	_ Event = (*ProviderRequestRetryEvent)(nil)
 )
