@@ -20,12 +20,20 @@
 //   - context.window.built
 //   - tool.execute.before
 //   - tool.execute.after
+//   - tool.execute.error
+//   - tool.execute.result
 //   - provider.error
 //   - provider.request
+//   - provider.request.retry
 //   - provider.response
 //   - session.created
 //   - session.ended
+//   - session.resumed
 //   - provider.rate_limited
+//   - plugin.event
+//   - background.task.started
+//   - background.task.completed
+//   - background.task.failed
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
@@ -48,4 +56,9 @@ const (
 	EventToolExecuteError     = "tool.execute.error"
 	EventToolExecuteResult    = "tool.execute.result"
 	EventProviderRequestRetry = "provider.request.retry"
+	EventPluginEvent          = "plugin.event"
+
+	EventBackgroundTaskStarted   = "background.task.started"
+	EventBackgroundTaskCompleted = "background.task.completed"
+	EventBackgroundTaskFailed    = "background.task.failed"
 )
