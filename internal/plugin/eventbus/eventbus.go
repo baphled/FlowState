@@ -85,8 +85,15 @@ func (b *EventBus) Unsubscribe(eventType string, handler EventHandler) {
 func (b *EventBus) Publish(eventType string, event any) {
 	b.mu.RLock()
 	handlers := append([]EventHandler(nil), b.handlers[eventType]...)
+	var wildcards []EventHandler
+	if eventType != "*" {
+		wildcards = append([]EventHandler(nil), b.handlers["*"]...)
+	}
 	b.mu.RUnlock()
 	for _, handler := range handlers {
+		handler(event)
+	}
+	for _, handler := range wildcards {
 		handler(event)
 	}
 }

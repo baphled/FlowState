@@ -76,4 +76,35 @@ var _ = Describe("EventBus", func() {
 	It("does not panic if publishing to an event type with no handlers", func() {
 		Expect(func() { bus.Publish("bar", 123) }).NotTo(Panic())
 	})
+
+	It("delivers all published events to handlers subscribed with \"*\"", func() {
+		var received []any
+		bus.Subscribe("*", func(e any) { received = append(received, e) })
+		bus.Publish("foo", 1)
+		bus.Publish("bar", 2)
+		bus.Publish("baz", 3)
+		Expect(received).To(ConsistOf(1, 2, 3))
+	})
+
+	It("delivers events to a handler subscribed to both \"*\" and a specific event type (double receive)", func() {
+		var received []any
+		h := func(e any) { received = append(received, e) }
+		bus.Subscribe("*", h)
+		bus.Subscribe("foo", h)
+		bus.Publish("foo", 123)
+		bus.Publish("bar", 456)
+		// Handler should receive "foo" event twice (once for "*" and once for "foo"), and "bar" event once (for "*")
+		Expect(received).To(ConsistOf(123, 123, 456))
+	})
+
+	It("does not deliver events to handlers after unsubscribing from \"*\"", func() {
+		var received []any
+		h := func(e any) { received = append(received, e) }
+		bus.Subscribe("*", h)
+		bus.Publish("foo", 1)
+		bus.Unsubscribe("*", h)
+		bus.Publish("bar", 2)
+		Expect(received).To(ConsistOf(1))
+	})
+
 })
