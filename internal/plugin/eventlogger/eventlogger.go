@@ -17,16 +17,21 @@ import (
 // These must match the exact event names published by the engine and plugin
 // subsystems (e.g. "session.created", not "session").
 var subscribedEventTypes = []string{
-	"session.created",
-	"session.ended",
-	"tool.execute.before",
-	"tool.execute.after",
-	"provider.error",
-	"provider.rate_limited",
-	"prompt.generated",
-	"context.window.built",
-	"tool.reasoning",
-	"provider.request",
+	events.EventSessionCreated,
+	events.EventSessionEnded,
+	events.EventToolExecuteBefore,
+	events.EventToolExecuteAfter,
+	events.EventProviderError,
+	events.EventProviderRateLimited,
+	events.EventPromptGenerated,
+	events.EventContextWindowBuilt,
+	events.EventToolReasoning,
+	events.EventProviderRequest,
+	events.EventProviderResponse,
+	events.EventAgentSwitched,
+	events.EventTypeBackgroundTaskStarted,
+	events.EventTypeBackgroundTaskCompleted,
+	events.EventTypeBackgroundTaskFailed,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.
@@ -227,6 +232,18 @@ func extractEventData(ev events.Event) any {
 	case *events.ToolReasoningEvent:
 		return e.Data
 	case *events.ProviderRequestEvent:
+		return e.Data
+	case *events.ProviderResponseEvent:
+		return e.Data
+	case *events.AgentSwitchedEvent:
+		return e.Data
+	case *events.ProviderErrorEvent:
+		return e.Data
+	case *events.BackgroundTaskStartedEvent:
+		return e.Data
+	case *events.BackgroundTaskCompletedEvent:
+		return e.Data
+	case *events.BackgroundTaskFailedEvent:
 		return e.Data
 	default:
 		return ev
