@@ -60,5 +60,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ss := &ScrollingSteps{}
 	RegisterScrollingSteps(ctx, ss)
 	RegisterPluginSteps(ctx)
+	RegisterDelegationSessionSteps(ctx)
 	s.RegisterSteps(ctx)
 }

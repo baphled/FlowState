@@ -53,6 +53,10 @@ func (p *delegationSessionProvider) Stream(_ context.Context, _ provider.ChatReq
 
 // Chat returns a mock assistant message for planning tests.
 //
+// Expected:
+//   - ctx is a valid context.
+//   - req is a ChatRequest.
+//
 // Returns:
 //   - A ChatResponse with assistant content.
 //   - nil error always.
@@ -66,6 +70,10 @@ func (p *delegationSessionProvider) Chat(_ context.Context, _ provider.ChatReque
 }
 
 // Embed returns a nil embedding slice.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - req is an EmbedRequest.
 //
 // Returns:
 //   - nil slice and nil error always.
@@ -97,6 +105,16 @@ type DelegationSessionStepDefinitions struct {
 	delegatedChild  *session.Session
 }
 
+// buildDelegationTargetEngine creates a test engine for the given agent ID.
+//
+// Expected:
+//   - agentID is a non-empty agent identifier.
+//
+// Returns:
+//   - A configured Engine instance backed by a mock provider.
+//
+// Side effects:
+//   - None.
 func buildDelegationTargetEngine(agentID string) *engine.Engine {
 	p := &delegationSessionProvider{agentName: agentID}
 	manifest := agent.Manifest{
@@ -146,6 +164,16 @@ func RegisterDelegationSessionSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the delegated session should reference the parent session$`, d.theDelegatedSessionShouldReferenceTheParentSession)
 }
 
+// aCoordinatorAgentIsConfigured sets up a coordinator agent with delegation enabled.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) aCoordinatorAgentIsConfigured() error {
 	d.parentSessionID = "coordinator-session"
 	d.mgr.RegisterSession(d.parentSessionID, "coordinator")
@@ -161,10 +189,30 @@ func (d *DelegationSessionStepDefinitions) aCoordinatorAgentIsConfigured() error
 	return nil
 }
 
+// delegationIsEnabled asserts that delegation is configured on the tool.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) delegationIsEnabled() error {
 	return nil
 }
 
+// theCoordinatorHasDelegatedToAnAgent runs a single delegation.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) theCoordinatorHasDelegatedToAnAgent() error {
 	ctx := context.WithValue(context.Background(), session.IDKey{}, d.parentSessionID)
 	input := tool.Input{
@@ -178,6 +226,16 @@ func (d *DelegationSessionStepDefinitions) theCoordinatorHasDelegatedToAnAgent()
 	return err
 }
 
+// theCoordinatorHasDelegatedToNDifferentAgents delegates to n different agents.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) theCoordinatorHasDelegatedToNDifferentAgents(n int) error {
 	for i := range n {
 		agentID := fmt.Sprintf("worker-agent-%d", i)
@@ -214,14 +272,44 @@ func (d *DelegationSessionStepDefinitions) theCoordinatorHasDelegatedToNDifferen
 	return nil
 }
 
+// theCoordinatorHasDelegatedToAnAgentWithMessages delegates and waits for messages.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) theCoordinatorHasDelegatedToAnAgentWithMessages() error {
 	return d.theCoordinatorHasDelegatedToAnAgent()
 }
 
+// noDelegationHasOccurred ensures the picker has no registered child sessions.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) noDelegationHasOccurred() error {
 	return nil
 }
 
+// iOpenTheDelegationPicker collects the child sessions from the manager.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) iOpenTheDelegationPicker() error {
 	children, err := d.mgr.ChildSessions(d.parentSessionID)
 	if err != nil {
@@ -231,6 +319,16 @@ func (d *DelegationSessionStepDefinitions) iOpenTheDelegationPicker() error {
 	return nil
 }
 
+// iInspectTheDelegatedSession retrieves the first delegated child session.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) iInspectTheDelegatedSession() error {
 	children, err := d.mgr.ChildSessions(d.parentSessionID)
 	if err != nil {
@@ -261,6 +359,16 @@ func (d *DelegationSessionStepDefinitions) iInspectTheDelegatedSession() error {
 	return nil
 }
 
+// iShouldSeeNDelegatedSessions asserts the expected number of child sessions.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) iShouldSeeNDelegatedSessions(n int) error {
 	if len(d.childSessions) != n {
 		return fmt.Errorf("expected %d delegated sessions, got %d", n, len(d.childSessions))
@@ -268,6 +376,16 @@ func (d *DelegationSessionStepDefinitions) iShouldSeeNDelegatedSessions(n int) e
 	return nil
 }
 
+// thePickerShouldBeEmpty asserts that no child sessions are registered.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) thePickerShouldBeEmpty() error {
 	if len(d.childSessions) != 0 {
 		return fmt.Errorf("expected picker to be empty, got %d sessions", len(d.childSessions))
@@ -275,6 +393,16 @@ func (d *DelegationSessionStepDefinitions) thePickerShouldBeEmpty() error {
 	return nil
 }
 
+// theSessionShouldContainTheAgentsMessages asserts the child session has messages.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) theSessionShouldContainTheAgentsMessages() error {
 	if d.delegatedChild == nil {
 		return errors.New("no delegated session inspected")
@@ -285,6 +413,16 @@ func (d *DelegationSessionStepDefinitions) theSessionShouldContainTheAgentsMessa
 	return nil
 }
 
+// theDelegatedSessionShouldReferenceTheParentSession asserts the ParentID is set.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - nil on success, or an error if the assertion fails.
+//
+// Side effects:
+//   - May update step state fields.
 func (d *DelegationSessionStepDefinitions) theDelegatedSessionShouldReferenceTheParentSession() error {
 	children, err := d.mgr.ChildSessions(d.parentSessionID)
 	if err != nil {

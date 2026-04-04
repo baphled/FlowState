@@ -684,22 +684,21 @@ func (d *DelegateTool) wrapWithAccumulator(rawCh <-chan provider.StreamChunk, se
 //   - May call sessionCreator.CreateWithParent, storing a new session in memory.
 func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) string {
 	parentID := sessionIDFromContext(ctx)
-	if d.sessionCreator == nil || parentID == "" {
-		syntheticID := fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
-		if d.sessionManager != nil {
-			d.sessionManager.RegisterSession(syntheticID, agentID)
+	if d.sessionCreator != nil && parentID != "" {
+		if child, err := d.sessionCreator.CreateWithParent(parentID, agentID); err == nil {
+			return child.ID
 		}
-		return syntheticID
 	}
-	childSess, err := d.sessionCreator.CreateWithParent(parentID, agentID)
-	if err != nil {
-		syntheticID := fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
-		if d.sessionManager != nil {
-			d.sessionManager.RegisterSession(syntheticID, agentID)
+	if d.sessionManager != nil && parentID != "" {
+		if child, err := d.sessionManager.CreateWithParent(parentID, agentID); err == nil {
+			return child.ID
 		}
-		return syntheticID
 	}
-	return childSess.ID
+	syntheticID := fmt.Sprintf("delegate-%s-%d", agentID, time.Now().UTC().UnixNano())
+	if d.sessionManager != nil {
+		d.sessionManager.RegisterSession(syntheticID, agentID)
+	}
+	return syntheticID
 }
 
 // executeSync runs delegation synchronously, blocking until complete.

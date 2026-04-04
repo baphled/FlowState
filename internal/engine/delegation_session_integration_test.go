@@ -210,4 +210,44 @@ var _ = Describe("DelegateTool session registration", Label("integration"), func
 			Expect(children[0].AgentID).To(Equal("target-agent"))
 		})
 	})
+	Context("when only sessionManager is set and context has parentID", func() {
+		It("registers child session via sessionManager.CreateWithParent fallback", func() {
+			mgr.RegisterSession("parent-session-mgr-only", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionManager(mgr)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-session-mgr-only")
+			_, err := delegateTool.Execute(ctx, delegationInput())
+			Expect(err).NotTo(HaveOccurred())
+
+			children, err := mgr.ChildSessions("parent-session-mgr-only")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).NotTo(BeEmpty())
+			Expect(children[0].AgentID).To(Equal("target-agent"))
+			Expect(children[0].ParentID).To(Equal("parent-session-mgr-only"))
+		})
+	})
+
+	Context("when only sessionManager is set and context has no parentID", func() {
+		It("registers synthetic session without parent link", func() {
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionManager(mgr)
+
+			ctx := context.Background()
+			_, err := delegateTool.Execute(ctx, delegationInput())
+			Expect(err).NotTo(HaveOccurred())
+
+			sessions := mgr.ListSessions()
+			Expect(sessions).NotTo(BeEmpty())
+		})
+	})
 })
