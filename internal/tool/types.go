@@ -23,8 +23,10 @@ type Input struct {
 
 // Result represents the result of a tool execution.
 type Result struct {
-	Output string
-	Error  error
+	Output   string
+	Error    error
+	Title    string                 // Title is a human-readable label for UI display.
+	Metadata map[string]interface{} // Metadata holds optional key-value data such as session ID and model name.
 }
 
 // Schema describes the schema of a tool's input parameters.
