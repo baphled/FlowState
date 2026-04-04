@@ -115,6 +115,212 @@ var _ = Describe("AccumulateStream", func() {
 		Expect(appender.sessionIDs).To(ContainElement("my-session"))
 		Expect(appender.messages[0].AgentID).To(Equal("my-agent"))
 	})
+
+	Context("when a tool call chunk arrives", func() {
+		It("stores a tool_call message with the tool name", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "bash",
+					Arguments: map[string]any{"command": "ls -la"},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].Content).To(Equal("bash"))
+			Expect(toolCalls[0].ToolName).To(Equal("bash"))
+			Expect(toolCalls[0].ToolInput).To(Equal("ls -la"))
+		})
+
+		It("stores tool_call message before the tool_result message", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "bash",
+					Arguments: map[string]any{"command": "ls -la"},
+				},
+			}
+			rawCh <- provider.StreamChunk{
+				ToolResult: &provider.ToolResultInfo{Content: "file1.go"},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			roles := make([]string, 0, len(appender.messages))
+			for _, m := range appender.messages {
+				roles = append(roles, m.Role)
+			}
+			Expect(roles).To(ContainElements("tool_call", "tool_result"))
+			toolCallIdx := -1
+			toolResultIdx := -1
+			for idx, role := range roles {
+				if role == "tool_call" {
+					toolCallIdx = idx
+				}
+				if role == "tool_result" {
+					toolResultIdx = idx
+				}
+			}
+			Expect(toolCallIdx).To(BeNumerically("<", toolResultIdx))
+		})
+	})
+
+	Context("when a tool result is an error", func() {
+		It("stores a tool_error message when IsError is true", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "bash",
+					Arguments: map[string]any{"command": "bad-command"},
+				},
+			}
+			rawCh <- provider.StreamChunk{
+				ToolResult: &provider.ToolResultInfo{Content: "command not found", IsError: true},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolErrors []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_error" {
+					toolErrors = append(toolErrors, m)
+				}
+			}
+			Expect(toolErrors).To(HaveLen(1))
+			Expect(toolErrors[0].Content).To(Equal("command not found"))
+		})
+	})
+
+	Context("when thinking content arrives", func() {
+		It("stores a thinking message", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Thinking: "I need to analyse this..."}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "thinking" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(HaveLen(1))
+			Expect(thinkingMsgs[0].Content).To(Equal("I need to analyse this..."))
+		})
+
+		It("accumulates multiple thinking chunks into one message", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "First thought."}
+			rawCh <- provider.StreamChunk{Thinking: " Second thought."}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "thinking" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(HaveLen(1))
+			Expect(thinkingMsgs[0].Content).To(Equal("First thought. Second thought."))
+		})
+	})
+
+	Context("when delegation info arrives", func() {
+		It("stores a delegation message when status is completed", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "build-agent",
+					Status:      "completed",
+					ModelName:   "claude-3-5-sonnet",
+					ToolCalls:   3,
+					LastTool:    "bash",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var delegationMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "delegation" {
+					delegationMsgs = append(delegationMsgs, m)
+				}
+			}
+			Expect(delegationMsgs).To(HaveLen(1))
+			Expect(delegationMsgs[0].Content).To(ContainSubstring("build-agent"))
+		})
+
+		It("stores a delegation message when status is failed", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "worker-agent",
+					Status:      "failed",
+					ModelName:   "gpt-4o",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var delegationMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "delegation" {
+					delegationMsgs = append(delegationMsgs, m)
+				}
+			}
+			Expect(delegationMsgs).To(HaveLen(1))
+			Expect(delegationMsgs[0].Content).To(ContainSubstring("worker-agent"))
+		})
+
+		It("does not store a delegation message when status is pending", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "build-agent",
+					Status:      "pending",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			for _, m := range appender.messages {
+				Expect(m.Role).NotTo(Equal("delegation"))
+			}
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {

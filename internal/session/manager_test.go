@@ -704,6 +704,57 @@ var _ = Describe("Manager", func() {
 			Expect(child.ParentID).To(Equal("parent-id"))
 		})
 	})
+
+	Describe("RestoreSessions", func() {
+		Context("when restoring sessions that do not yet exist", func() {
+			It("registers each session into the manager", func() {
+				sessions := []*session.Session{
+					{ID: "restored-1", AgentID: "agent-a", Status: "active"},
+					{ID: "restored-2", AgentID: "agent-b", Status: "completed"},
+				}
+
+				mgr.RestoreSessions(sessions)
+
+				sess, err := mgr.GetSession("restored-1")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.ID).To(Equal("restored-1"))
+
+				sess, err = mgr.GetSession("restored-2")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.ID).To(Equal("restored-2"))
+			})
+		})
+
+		Context("when a session already exists with the same ID", func() {
+			It("skips the duplicate and keeps the original", func() {
+				mgr.RegisterSession("existing-id", "original-agent")
+
+				mgr.RestoreSessions([]*session.Session{
+					{ID: "existing-id", AgentID: "replacement-agent", Status: "active"},
+				})
+
+				sess, err := mgr.GetSession("existing-id")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.AgentID).To(Equal("original-agent"))
+			})
+		})
+
+		Context("after RestoreSessions with parent-child relationships", func() {
+			It("returns child sessions via ChildSessions", func() {
+				sessions := []*session.Session{
+					{ID: "parent-sess", AgentID: "parent-agent", Status: "active"},
+					{ID: "child-sess", ParentID: "parent-sess", AgentID: "child-agent", Status: "active"},
+				}
+
+				mgr.RestoreSessions(sessions)
+
+				children, err := mgr.ChildSessions("parent-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(children).To(HaveLen(1))
+				Expect(children[0].ID).To(Equal("child-sess"))
+			})
+		})
+	})
 })
 
 type mockStreamer struct {

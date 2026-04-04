@@ -288,6 +288,27 @@ func (m *Manager) ListSessions() []*Summary {
 	return summaries
 }
 
+// RestoreSessions registers persisted sessions into the manager.
+// Sessions that already exist (same ID) are skipped.
+//
+// Expected:
+//   - sessions is a slice of Sessions loaded from disk persistence.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Adds each new session to the in-memory store under its ID.
+func (m *Manager) RestoreSessions(sessions []*Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sess := range sessions {
+		if _, ok := m.sessions[sess.ID]; !ok {
+			m.sessions[sess.ID] = sess
+		}
+	}
+}
+
 // ChildSessions returns the direct child sessions for the given parent session identifier.
 // Expected:
 //   - parentID identifies the parent session to inspect.
