@@ -2428,23 +2428,23 @@ var _ = Describe("session viewer full-screen rendering", func() {
 	})
 
 	Describe("View", func() {
-		Context("when sessionViewerModal is set", func() {
+		Context("when session viewer is active", func() {
 			It("returns full-screen session viewer without chat visible behind it", func() {
-				chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "session content here", 80, 24)
+				chat.SetSessionViewerForTest(intent, "ses-abcd1234", "session content here", 80, 24)
 				view := intent.View()
 				Expect(view).NotTo(ContainSubstring("> "))
 				Expect(view).To(ContainSubstring("Chat"))
 			})
 
 			It("contains the breadcrumb with session ID prefix", func() {
-				chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "content", 80, 24)
+				chat.SetSessionViewerForTest(intent, "ses-abcd1234", "content", 80, 24)
 				chat.SetBreadcrumbPathForTest(intent, "Chat > ses-abcd")
 				view := intent.View()
 				Expect(view).To(ContainSubstring("Chat"))
 			})
 		})
 
-		Context("when sessionViewerModal is nil", func() {
+		Context("when session viewer is not active", func() {
 			It("returns normal chat view with input prompt", func() {
 				view := intent.View()
 				Expect(view).To(ContainSubstring("> "))
@@ -2461,10 +2461,75 @@ var _ = Describe("session viewer full-screen rendering", func() {
 
 	Describe("handleSessionViewerKeyMsg esc restores breadcrumb", func() {
 		It("restores breadcrumbPath to Chat on Esc", func() {
-			chat.SetSessionViewerModalForTest(intent, "ses-abcd1234", "content", 80, 24)
+			chat.SetSessionViewerForTest(intent, "ses-abcd1234", "content", 80, 24)
 			chat.SetBreadcrumbPathForTest(intent, "Chat > ses-abcd")
 			intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
 			Expect(chat.BreadcrumbPathForTest(intent)).To(Equal("Chat"))
+		})
+
+		It("deactivates the session viewer on Esc", func() {
+			chat.SetSessionViewerForTest(intent, "ses-abcd1234", "content", 80, 24)
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+			intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeFalse())
+		})
+	})
+
+	Describe("session viewer navigation", func() {
+		BeforeEach(func() {
+			content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+			chat.SetSessionViewerForTest(intent, "ses-abcd1234", content, 80, 24)
+		})
+
+		It("PgDown scrolls the session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("PgUp scrolls the session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+			intent.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("Down key scrolls the session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("Up key scrolls the session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("Home key moves to top of session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyHome})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("End key moves to bottom of session viewport", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnd})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("j key scrolls down in session viewer", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+
+		It("k key scrolls up in session viewer", func() {
+			intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+		})
+	})
+
+	Describe("window resize while session viewer is active", func() {
+		It("resizes the session viewport on window size change", func() {
+			chat.SetSessionViewerForTest(intent, "ses-abcd1234", "content", 80, 24)
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
+			view := intent.View()
+			Expect(view).NotTo(BeEmpty())
 		})
 	})
 })

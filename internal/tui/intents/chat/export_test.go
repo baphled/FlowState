@@ -264,9 +264,22 @@ func (i *Intent) RenderSessionContentForTest(sess *session.Session) string {
 	return i.renderSessionContent(sess)
 }
 
-// SetSessionViewerModalForTest injects a session viewer modal for test assertions.
-func SetSessionViewerModalForTest(i *Intent, sessionID, content string, width, height int) {
-	i.sessionViewerModal = chatview.NewSessionViewerModal(sessionID, content, width, height)
+// SetSessionViewerForTest injects a session viewer viewport for test assertions.
+func SetSessionViewerForTest(i *Intent, sessionID, content string, width, height int) {
+	svpHeight := height - 6
+	if svpHeight < 1 {
+		svpHeight = 1
+	}
+	vp := viewport.New(width, svpHeight)
+	vp.SetContent(content)
+	i.sessionViewport = &vp
+	i.sessionViewerActive = true
+	i.sessionViewerID = sessionID
+}
+
+// IsSessionViewerActive returns whether the session viewer is currently active.
+func IsSessionViewerActive(i *Intent) bool {
+	return i.sessionViewerActive
 }
 
 // BreadcrumbPathForTest returns the current breadcrumb path for test assertions.
@@ -282,7 +295,15 @@ func SetBreadcrumbPathForTest(i *Intent, path string) {
 
 // SimulateDelegationEnterForTest simulates selecting a session from the delegation picker for test assertions.
 func SimulateDelegationEnterForTest(i *Intent, sessionID, content string) {
-	i.sessionViewerModal = chatview.NewSessionViewerModal(sessionID, content, i.width, i.height)
+	svpHeight := i.height - 6
+	if svpHeight < 1 {
+		svpHeight = 1
+	}
+	vp := viewport.New(i.width, svpHeight)
+	vp.SetContent(content)
+	i.sessionViewport = &vp
+	i.sessionViewerActive = true
+	i.sessionViewerID = sessionID
 	if len(sessionID) >= 8 {
 		i.breadcrumbPath = "Chat > " + sessionID[:8]
 	} else {

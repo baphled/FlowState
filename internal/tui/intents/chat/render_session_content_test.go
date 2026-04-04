@@ -87,4 +87,99 @@ var _ = Describe("renderSessionContent", func() {
 			Expect(result).NotTo(BeEmpty())
 		})
 	})
+
+	Context("with a tool_error message", func() {
+		It("renders tool_error content", func() {
+			sess := &session.Session{
+				ID:      "sess-toole",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{
+						Role:    "tool_error",
+						Content: "command not found",
+						AgentID: "test-agent",
+					},
+				},
+			}
+			result := intent.RenderSessionContentForTest(sess)
+			Expect(result).NotTo(BeEmpty())
+			Expect(result).To(ContainSubstring("command not found"))
+		})
+	})
+
+	Context("with a thinking message", func() {
+		It("renders thinking content", func() {
+			sess := &session.Session{
+				ID:      "sess-think",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{
+						Role:    "thinking",
+						Content: "I need to analyse this carefully",
+						AgentID: "test-agent",
+					},
+				},
+			}
+			result := intent.RenderSessionContentForTest(sess)
+			Expect(result).NotTo(BeEmpty())
+			Expect(result).To(ContainSubstring("I need to analyse this carefully"))
+		})
+	})
+
+	Context("with a delegation message", func() {
+		It("renders delegation content", func() {
+			sess := &session.Session{
+				ID:      "sess-deleg",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{
+						Role:    "delegation",
+						Content: "│ build-agent [completed]\n  Model: claude-3-5-sonnet\n  3 tool calls (last: bash)",
+						AgentID: "test-agent",
+					},
+				},
+			}
+			result := intent.RenderSessionContentForTest(sess)
+			Expect(result).NotTo(BeEmpty())
+			Expect(result).To(ContainSubstring("build-agent"))
+		})
+	})
+
+	Context("with a skill_load message", func() {
+		It("renders skill_load content", func() {
+			sess := &session.Session{
+				ID:      "sess-skill",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{
+						Role:    "skill_load",
+						Content: "golang",
+						AgentID: "test-agent",
+					},
+				},
+			}
+			result := intent.RenderSessionContentForTest(sess)
+			Expect(result).NotTo(BeEmpty())
+			Expect(result).To(ContainSubstring("golang"))
+		})
+	})
+
+	Context("with a todo_update message", func() {
+		It("renders todo_update content", func() {
+			sess := &session.Session{
+				ID:      "sess-todo",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{
+						Role:    "todo_update",
+						Content: "- [x] Task completed",
+						AgentID: "test-agent",
+					},
+				},
+			}
+			result := intent.RenderSessionContentForTest(sess)
+			Expect(result).NotTo(BeEmpty())
+			Expect(result).To(ContainSubstring("Task completed"))
+		})
+	})
 })

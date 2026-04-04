@@ -193,7 +193,9 @@ type Intent struct {
 	cachedScreenLayout    *layout.ScreenLayout
 	breadcrumbPath        string
 	delegationPickerModal *chat.DelegationPickerModal
-	sessionViewerModal    *chat.SessionViewerModal
+	sessionViewport       *viewport.Model
+	sessionViewerActive   bool
+	sessionViewerID       string
 }
 
 var runningInTests bool
@@ -510,7 +512,15 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		if sel := i.delegationPickerModal.Selected(); sel != nil {
 			i.delegationPickerModal = nil
 			content := i.renderSessionContent(sel)
-			i.sessionViewerModal = chat.NewSessionViewerModal(sel.ID, content, i.width, i.height)
+			svpHeight := i.height - 6
+			if svpHeight < 1 {
+				svpHeight = 1
+			}
+			vp := viewport.New(i.width, svpHeight)
+			vp.SetContent(content)
+			i.sessionViewport = &vp
+			i.sessionViewerActive = true
+			i.sessionViewerID = sel.ID
 			i.breadcrumbPath = "Chat > " + sel.ID[:8]
 			i.cachedScreenLayout = nil
 		}
@@ -518,30 +528,45 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// handleSessionViewerKeyMsg processes keyboard input for the session viewer modal.
+// handleSessionViewerKeyMsg processes keyboard input for the session viewer.
 //
 // Expected:
 //   - msg is a tea.KeyMsg from the Bubble Tea event loop.
 //
 // Returns:
-//   - Nothing.
+//   - A tea.Cmd and true if the key was consumed, or nil and false otherwise.
 //
 // Side effects:
-//   - Updates modal state or closes modal based on key press.
-func (i *Intent) handleSessionViewerKeyMsg(msg tea.KeyMsg) {
-	if i.sessionViewerModal == nil {
-		return
+//   - Closes session viewer on Esc; forwards scroll keys to sessionViewport.
+func (i *Intent) handleSessionViewerKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
+	if !i.sessionViewerActive || i.sessionViewport == nil {
+		return nil, false
 	}
-	switch msg.String() {
-	case "esc":
-		i.sessionViewerModal = nil
+	if msg.String() == "esc" {
+		i.sessionViewerActive = false
+		i.sessionViewport = nil
+		i.sessionViewerID = ""
 		i.breadcrumbPath = "Chat"
 		i.cachedScreenLayout = nil
-	case "up", "k":
-		i.sessionViewerModal.ScrollUp()
-	case "down", "j":
-		i.sessionViewerModal.ScrollDown()
+		return nil, true
 	}
+	switch msg.Type {
+	case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+		vp, cmd := i.sessionViewport.Update(msg)
+		i.sessionViewport = &vp
+		return cmd, true
+	}
+	switch msg.String() {
+	case "k":
+		vp, cmd := i.sessionViewport.Update(tea.KeyMsg{Type: tea.KeyUp})
+		i.sessionViewport = &vp
+		return cmd, true
+	case "j":
+		vp, cmd := i.sessionViewport.Update(tea.KeyMsg{Type: tea.KeyDown})
+		i.sessionViewport = &vp
+		return cmd, true
+	}
+	return nil, true
 }
 
 // handleModalKeyMsg processes keyboard input when a feedback modal is active.
@@ -603,6 +628,11 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 //   - Updates atBottom flag based on new scroll position.
 //   - Toggles active delegation block on left click.
 func (i *Intent) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
+	if i.sessionViewerActive && i.sessionViewport != nil {
+		vp, cmd := i.sessionViewport.Update(msg)
+		i.sessionViewport = &vp
+		return cmd
+	}
 	if !i.vpReady || i.msgViewport == nil {
 		return nil
 	}
@@ -645,6 +675,14 @@ func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 		i.msgViewport.Width = msg.Width
 		i.msgViewport.Height = vpHeight
 	}
+	if i.sessionViewerActive && i.sessionViewport != nil {
+		svpHeight := msg.Height - 6
+		if svpHeight < 1 {
+			svpHeight = 1
+		}
+		i.sessionViewport.Width = msg.Width
+		i.sessionViewport.Height = svpHeight
+	}
 	i.cachedScreenLayout = layout.NewScreenLayout(&terminal.Info{Width: msg.Width, Height: msg.Height}).
 		WithBreadcrumbs("Chat").
 		WithFooterSeparator(true)
@@ -662,9 +700,9 @@ func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 // Side effects:
 //   - Updates input or returns a quit command based on key input.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
-	if i.sessionViewerModal != nil {
-		i.handleSessionViewerKeyMsg(msg)
-		return nil
+	if i.sessionViewerActive {
+		cmd, _ := i.handleSessionViewerKeyMsg(msg)
+		return cmd
 	}
 	if i.delegationPickerModal != nil {
 		return i.handleDelegationKeyMsg(msg)
@@ -1291,7 +1329,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 //   - Syncs streaming state into the StatusBar.
 //   - Updates status indicator based on streaming state.
 func (i *Intent) View() string {
-	if i.sessionViewerModal != nil {
+	if i.sessionViewerActive {
 		return i.renderSessionViewerFullScreen()
 	}
 
@@ -1362,7 +1400,7 @@ func (i *Intent) renderModalOverlay(baseView string) string {
 // replacing the chat entirely.
 //
 // Expected:
-//   - i.sessionViewerModal is non-nil.
+//   - i.sessionViewerActive is true and i.sessionViewport is non-nil.
 //
 // Returns:
 //   - A full-screen ScreenLayout render with breadcrumb and help bar.
@@ -1370,11 +1408,14 @@ func (i *Intent) renderModalOverlay(baseView string) string {
 // Side effects:
 //   - None.
 func (i *Intent) renderSessionViewerFullScreen() string {
-	content := i.sessionViewerModal.RenderContent(i.width, i.height)
+	var content string
+	if i.sessionViewport != nil {
+		content = i.sessionViewport.View()
+	}
 	sl := layout.NewScreenLayout(&terminal.Info{Width: i.width, Height: i.height}).
 		WithBreadcrumbs(i.breadcrumbPath).
 		WithContent(content).
-		WithHelp("↑/↓ k/j: scroll  ·  Esc: back to chat").
+		WithHelp("↑/↓ k/j PgUp/PgDn: scroll  ·  Home/End  ·  Esc: back to chat  ·  Ctrl+C: quit").
 		WithFooterSeparator(true)
 	return sl.Render()
 }
@@ -1950,6 +1991,16 @@ func (i *Intent) renderSessionContent(sess *session.Session) string {
 				summary = msg.ToolName + ": " + msg.ToolInput
 			}
 			v.AddMessage(chat.Message{Role: "tool_call", Content: summary})
+		case "tool_error":
+			v.AddMessage(chat.Message{Role: "tool_error", Content: msg.Content})
+		case "thinking":
+			v.AddMessage(chat.Message{Role: "thinking", Content: msg.Content})
+		case "delegation":
+			v.AddMessage(chat.Message{Role: "system", Content: msg.Content})
+		case "skill_load":
+			v.AddMessage(chat.Message{Role: "skill_load", Content: msg.Content})
+		case "todo_update":
+			v.AddMessage(chat.Message{Role: "todo_update", Content: msg.Content})
 		default:
 			v.AddMessage(chat.Message{Role: msg.Role, Content: msg.Content})
 		}
