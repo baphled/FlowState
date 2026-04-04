@@ -343,7 +343,7 @@ When to use: Testing purposes
 					{Name: "test-server", Command: "test-cmd", Enabled: true},
 				}
 
-				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(2))
 				Expect(tools[0].Name()).To(Equal("echo"))
@@ -364,7 +364,7 @@ When to use: Testing purposes
 					{Name: "disabled-server", Command: "test-cmd", Enabled: false},
 				}
 
-				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(BeEmpty())
 				Expect(client.connectCalls).To(BeEmpty())
@@ -391,7 +391,7 @@ When to use: Testing purposes
 					{Name: "good-server", Command: "good-cmd", Enabled: true},
 				}
 
-				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(1))
 				Expect(tools[0].Name()).To(Equal("good-tool"))
@@ -426,7 +426,7 @@ When to use: Testing purposes
 					{Name: "ok-server", Command: "cmd2", Enabled: true},
 				}
 
-				tools, results := app.ConnectMCPServers(context.Background(), client, servers)
+				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
 
 				Expect(tools).To(HaveLen(1))
 				Expect(tools[0].Name()).To(Equal("working-tool"))

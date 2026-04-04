@@ -363,6 +363,7 @@ type engineParams struct {
 	tokenCounter       ctxstore.TokenCounter
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
+	mcpServerTools     map[string][]string
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -438,6 +439,7 @@ type toolPipelineResult struct {
 	tools             []tool.Tool
 	toolRegistry      *tool.Registry
 	permissionHandler tool.PermissionHandler
+	mcpServerTools    map[string][]string
 }
 
 // buildToolPipeline creates the MCP manager, todo store, and tool registry
@@ -456,7 +458,7 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	todoStore := todotool.NewMemoryStore()
 	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore)
 	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
-	tools, results := ConnectMCPServers(context.Background(), mcpMgr, allServers)
+	tools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, tools...)
 
 	// Log MCP connection summary
@@ -480,6 +482,7 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 		tools:             appTools,
 		toolRegistry:      toolRegistry,
 		permissionHandler: permHandler,
+		mcpServerTools:    serverToolNames,
 	}
 }
 
@@ -585,6 +588,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		PermissionHandler: params.permissionHandler,
 		AgentsFileLoader:  params.agentsFileLoader,
 		TokenCounter:      params.tokenCounter,
+		MCPServerTools:    params.mcpServerTools,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -1051,6 +1055,9 @@ func buildToolsSetup(tools []tool.Tool) (*tool.Registry, tool.PermissionHandler)
 //
 // Returns:
 //   - A slice of tool.Tool implementations backed by connected MCP servers.
+//   - A slice of MCPConnectionResult describing each connection attempt.
+//   - A map from server name to the names of tools it exposes, for use by the engine
+//     when resolving Capabilities.MCPServers declarations.
 //
 // Side effects:
 //   - Connects to MCP servers via the client.
@@ -1059,9 +1066,10 @@ func ConnectMCPServers(
 	ctx context.Context,
 	client mcpclient.Client,
 	servers []config.MCPServerConfig,
-) ([]tool.Tool, []MCPConnectionResult) {
+) ([]tool.Tool, []MCPConnectionResult, map[string][]string) {
 	var tools []tool.Tool
 	var results []MCPConnectionResult
+	serverToolNames := make(map[string][]string)
 	for _, serverCfg := range servers {
 		if !serverCfg.Enabled {
 			continue
@@ -1093,9 +1101,12 @@ func ConnectMCPServers(
 			})
 			continue
 		}
+		names := make([]string, 0, len(serverTools))
 		for _, t := range serverTools {
 			tools = append(tools, mcpproxy.NewProxy(client, serverCfg.Name, t))
+			names = append(names, t.Name)
 		}
+		serverToolNames[serverCfg.Name] = names
 		results = append(results, MCPConnectionResult{
 			Name:      serverCfg.Name,
 			Success:   true,
@@ -1103,7 +1114,7 @@ func ConnectMCPServers(
 			ToolCount: len(serverTools),
 		})
 	}
-	return tools, results
+	return tools, results, serverToolNames
 }
 
 // mergeMCPServers merges discovered MCP servers with configured servers,
@@ -1772,6 +1783,21 @@ func BuildHookChainForTest(
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
 	return buildHookChain(learningStore, manifestGetter, nil, nil, nil)
+}
+
+// MergeMCPServersForTest is a test helper that exposes mergeMCPServers for testing.
+//
+// Expected:
+//   - configured is the user-defined server list from config.
+//   - discovered is the auto-detected server list.
+//
+// Returns:
+//   - A merged slice with configured servers taking precedence over discovered ones.
+//
+// Side effects:
+//   - None.
+func MergeMCPServersForTest(configured, discovered []config.MCPServerConfig) []config.MCPServerConfig {
+	return mergeMCPServers(configured, discovered)
 }
 
 // selectDefaultManifest selects the default agent manifest from the registry.

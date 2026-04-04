@@ -45,6 +45,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			&mockTool{name: "background_output", description: "Get background output"},
 			&mockTool{name: "background_cancel", description: "Cancel background tasks"},
 			&mockTool{name: "coordination_store", description: "Coordination store"},
+			&mockTool{name: "create_entities", description: "Create entities in memory"},
+			&mockTool{name: "search_nodes", description: "Search nodes in memory"},
 		}
 	})
 
@@ -263,6 +265,150 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
 				Expect(names).To(ConsistOf("bash", "read", "write", "coordination_store"))
+			})
+		})
+	})
+
+	Describe("buildToolSchemas respects MCPServers capability", func() {
+		Context("when manifest declares mcp_servers, it includes all tools from those servers", func() {
+			It("exposes tools declared in the manifest tools list plus all tools from matching MCP servers", func() {
+				manifest := agent.Manifest{
+					ID:   "mcp-agent",
+					Name: "MCP Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are an MCP agent.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash"},
+						MCPServers: []string{"memory"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory": {"create_entities", "search_nodes"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ContainElements("bash", "create_entities", "search_nodes"))
+				Expect(names).NotTo(ContainElement("web"))
+				Expect(names).NotTo(ContainElement("read"))
+				Expect(names).NotTo(ContainElement("write"))
+			})
+		})
+
+		Context("when manifest declares mcp_servers but tools list is empty", func() {
+			It("exposes all tools for backward compatibility", func() {
+				manifest := agent.Manifest{
+					ID:   "mcp-only-agent",
+					Name: "MCP Only Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are an MCP only agent.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{},
+						MCPServers: []string{"memory"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory": {"create_entities", "search_nodes"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				Expect(chatProvider.capturedRequest.Tools).To(HaveLen(len(allTools)))
+			})
+		})
+
+		Context("when manifest declares unknown mcp_server", func() {
+			It("silently ignores the unknown server and only exposes declared tools", func() {
+				manifest := agent.Manifest{
+					ID:   "unknown-mcp-agent",
+					Name: "Unknown MCP Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are an agent with an unknown MCP server.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash"},
+						MCPServers: []string{"nonexistent"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory": {"create_entities", "search_nodes"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("bash"))
+			})
+		})
+
+		Context("when manifest declares both tools and mcp_servers", func() {
+			It("merges tools from both sources", func() {
+				manifest := agent.Manifest{
+					ID:   "merged-agent",
+					Name: "Merged Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a merged agent.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash", "web"},
+						MCPServers: []string{"memory"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory": {"create_entities", "search_nodes"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("bash", "web", "create_entities", "search_nodes"))
 			})
 		})
 	})

@@ -211,7 +211,7 @@ func (i *Intent) AtBottomForTest() bool {
 
 // NotificationManagerForTest returns the notification manager for test assertions.
 func (i *Intent) NotificationManagerForTest() notification.Manager {
-	return i.notificationManager
+	return i.notifications.Manager()
 }
 
 // NotificationsViewForTest returns the rendered notification view for test assertions.
@@ -289,4 +289,11 @@ func SimulateDelegationEnterForTest(i *Intent, sessionID, content string) {
 		i.breadcrumbPath = "Chat > " + sessionID
 	}
 	i.cachedScreenLayout = nil
+}
+
+// WaitForCompletionForTest executes the waitForCompletion command synchronously
+// and returns the resulting tea.Msg, enabling direct inspection in tests.
+func (i *Intent) WaitForCompletionForTest() tea.Msg {
+	cmd := i.waitForCompletion()
+	return cmd()
 }

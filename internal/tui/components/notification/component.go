@@ -45,6 +45,17 @@ func (c *Component) SetWidth(width int) {
 	c.width = width
 }
 
+// Manager returns the underlying notification Manager.
+//
+// Returns:
+//   - The Manager instance backing this Component.
+//
+// Side effects:
+//   - None.
+func (c *Component) Manager() Manager {
+	return c.manager
+}
+
 // Init returns a tick command to drive notification expiry.
 //
 // Expected:

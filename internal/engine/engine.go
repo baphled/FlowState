@@ -51,6 +51,7 @@ type Engine struct {
 	preferredProvider string
 	preferredModel    string
 	bus               *eventbus.EventBus
+	mcpServerTools    map[string][]string
 
 	cachedSystemPrompt string
 	systemPromptDirty  bool
@@ -81,6 +82,10 @@ type Config struct {
 	PermissionHandler tool.PermissionHandler
 	AgentsFileLoader  *agent.AgentsFileLoader
 	EventBus          *eventbus.EventBus
+	// MCPServerTools maps MCP server names to the tool names they expose.
+	// Used by buildAllowedToolSet to auto-include tools from servers declared
+	// in Capabilities.MCPServers without requiring agents to list individual tool names.
+	MCPServerTools map[string][]string
 }
 
 // New creates a new Engine from the given configuration.
@@ -140,6 +145,7 @@ func New(cfg Config) *Engine {
 		agentOverrides:    make(map[string]string),
 		bus:               bus,
 		systemPromptDirty: true,
+		mcpServerTools:    cfg.MCPServerTools,
 	}
 }
 
@@ -450,10 +456,12 @@ func (e *Engine) appendDelegationSections(base string) string {
 //
 // Expected:
 //   - e.manifest is the current agent manifest.
+//   - e.mcpServerTools maps server names to their available tool names.
 //
 // Returns:
 //   - A map of allowed tool names, or nil when the manifest does not restrict tools
 //     (empty Capabilities.Tools means all tools are allowed for backward compatibility).
+//   - Tools from declared MCPServers are merged into the allowed set when Tools is non-empty.
 //
 // Side effects:
 //   - None.
@@ -475,6 +483,12 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 			allowed["background_cancel"] = true
 		default:
 			allowed[mt] = true
+		}
+	}
+
+	for _, serverName := range e.manifest.Capabilities.MCPServers {
+		for _, toolName := range e.mcpServerTools[serverName] {
+			allowed[toolName] = true
 		}
 	}
 
@@ -1149,9 +1163,8 @@ func (e *Engine) dualWriteToChainStore(msg provider.Message) {
 	if e.chainStore == nil {
 		return
 	}
-	agentID := e.manifest.ID
-	if err := e.chainStore.Append(agentID, msg); err != nil {
-		slog.Warn("chain store dual-write failed", "agentID", agentID, "error", err)
+	if err := e.chainStore.Append(e.manifest.ID, msg); err != nil {
+		slog.Warn("chain store dual-write failed", "agentID", e.manifest.ID, "error", err)
 	}
 }
 

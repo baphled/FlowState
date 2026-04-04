@@ -815,3 +815,158 @@ func (p *contextCapturingProvider) Embed(_ context.Context, _ provider.EmbedRequ
 func (p *contextCapturingProvider) Models() ([]provider.Model, error) {
 	return nil, nil
 }
+
+var _ = Describe("Session manager wiring", Label("integration"), func() {
+	Describe("BackgroundTaskManager.WithSessionManager", func() {
+		Context("when session manager is wired and a task completes", func() {
+			It("injects a completion notification into the session", func() {
+				targetProvider := &mockProvider{
+					name:         "wiring-provider",
+					streamChunks: []provider.StreamChunk{{Content: "wired", Done: true}},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: targetProvider,
+					Manifest: agent.Manifest{
+						ID:                "wiring-agent",
+						Name:              "Wiring Agent",
+						Instructions:      agent.Instructions{SystemPrompt: "You help with wiring tests."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				mgr := session.NewManager(eng)
+				mgr.RegisterSession("wiring-parent-sess", "coordinator")
+
+				taskManager := engine.NewBackgroundTaskManager()
+				taskManager.WithSessionManager(mgr)
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "wiring-parent-sess")
+				taskManager.Launch(ctx, "wiring-task", "wiring-agent", "wiring test",
+					func(_ context.Context) (string, error) {
+						return "wired result", nil
+					},
+				)
+
+				Eventually(func() string {
+					task, found := taskManager.Get("wiring-task")
+					if !found {
+						return ""
+					}
+					return task.Status.Load()
+				}).Should(Equal("completed"))
+
+				notifications, err := mgr.GetNotifications("wiring-parent-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(notifications).To(HaveLen(1))
+				Expect(notifications[0].TaskID).To(Equal("wiring-task"))
+				Expect(notifications[0].Status).To(Equal("completed"))
+			})
+		})
+
+		Context("when session manager is nil", func() {
+			It("does not crash when task completes with no session manager", func() {
+				taskManager := engine.NewBackgroundTaskManager()
+
+				ctx := context.Background()
+				taskManager.Launch(ctx, "no-mgr-wiring", "some-agent", "no mgr test",
+					func(_ context.Context) (string, error) {
+						return "ok", nil
+					},
+				)
+
+				Eventually(func() string {
+					task, found := taskManager.Get("no-mgr-wiring")
+					if !found {
+						return ""
+					}
+					return task.Status.Load()
+				}).Should(Equal("completed"))
+			})
+		})
+	})
+
+	Describe("DelegateTool.WithSessionManager child session creation", func() {
+		Context("when sessionManager is set and parent is registered in context", func() {
+			It("creates a child session via CreateWithParent", func() {
+				targetProvider := &mockProvider{
+					name:         "mgr-wiring-provider",
+					streamChunks: []provider.StreamChunk{{Content: "mgr wired", Done: true}},
+				}
+				targetEng := engine.New(engine.Config{
+					ChatProvider: targetProvider,
+					Manifest: agent.Manifest{
+						ID:                "mgr-wiring-agent",
+						Name:              "Manager Wiring Agent",
+						Instructions:      agent.Instructions{SystemPrompt: "You help wire the session manager."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				mgr := session.NewManager(targetEng)
+				mgr.RegisterSession("mgr-parent-sess", "coordinator")
+
+				delegateTool := engine.NewDelegateTool(
+					map[string]*engine.Engine{"mgr-wiring-agent": targetEng},
+					agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"mgr-wiring-agent"}},
+					"coordinator",
+				)
+				delegateTool.WithSessionManager(mgr)
+
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "mgr-wiring-agent",
+						"message":       "test wiring",
+					},
+				}
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "mgr-parent-sess")
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				children, err := mgr.ChildSessions("mgr-parent-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(children).NotTo(BeEmpty())
+				Expect(children[0].AgentID).To(Equal("mgr-wiring-agent"))
+				Expect(children[0].ParentID).To(Equal("mgr-parent-sess"))
+			})
+		})
+
+		Context("when sessionManager is set and no parent ID in context", func() {
+			It("registers a synthetic session without panicking", func() {
+				targetProvider := &mockProvider{
+					name:         "mgr-synth-provider",
+					streamChunks: []provider.StreamChunk{{Content: "synth response", Done: true}},
+				}
+				targetEng := engine.New(engine.Config{
+					ChatProvider: targetProvider,
+					Manifest: agent.Manifest{
+						ID:                "mgr-synth-agent",
+						Name:              "Synth Agent",
+						Instructions:      agent.Instructions{SystemPrompt: "Synth agent."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				mgr := session.NewManager(targetEng)
+
+				delegateTool := engine.NewDelegateTool(
+					map[string]*engine.Engine{"mgr-synth-agent": targetEng},
+					agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"mgr-synth-agent"}},
+					"coordinator",
+				)
+				delegateTool.WithSessionManager(mgr)
+
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "mgr-synth-agent",
+						"message":       "synthetic session test",
+					},
+				}
+				ctx := context.Background()
+				_, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				sessions := mgr.ListSessions()
+				Expect(sessions).NotTo(BeEmpty())
+			})
+		})
+	})
+})
