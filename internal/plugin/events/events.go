@@ -742,7 +742,7 @@ func NewSessionResumedEvent(data SessionResumedEventData, ts ...time.Time) *Sess
 		t = ts[0]
 	}
 	return &SessionResumedEvent{
-		BaseEvent: BaseEvent{eventType: "session.resumed", timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventSessionResumed, timestamp: t},
 		Data:      data,
 	}
 }
@@ -803,7 +803,7 @@ func NewToolExecuteErrorEvent(data ToolExecuteErrorEventData, ts ...time.Time) *
 		t = ts[0]
 	}
 	return &ToolExecuteErrorEvent{
-		BaseEvent: BaseEvent{eventType: "tool.execute.error", timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventToolExecuteError, timestamp: t},
 		Data:      data,
 	}
 }
@@ -839,7 +839,7 @@ func NewToolExecuteResultEvent(data ToolExecuteResultEventData, ts ...time.Time)
 		t = ts[0]
 	}
 	return &ToolExecuteResultEvent{
-		BaseEvent: BaseEvent{eventType: "tool.execute.result", timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventToolExecuteResult, timestamp: t},
 		Data:      data,
 	}
 }
@@ -877,7 +877,7 @@ func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time
 		t = ts[0]
 	}
 	return &ProviderRequestRetryEvent{
-		BaseEvent: BaseEvent{eventType: "provider.request.retry", timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventProviderRequestRetry, timestamp: t},
 		Data:      data,
 	}
 }

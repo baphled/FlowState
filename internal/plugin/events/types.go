@@ -31,9 +31,6 @@
 //   - session.resumed
 //   - provider.rate_limited
 //   - plugin.event
-//   - background.task.started
-//   - background.task.completed
-//   - background.task.failed
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
@@ -57,8 +54,4 @@ const (
 	EventToolExecuteResult    = "tool.execute.result"
 	EventProviderRequestRetry = "provider.request.retry"
 	EventPluginEvent          = "plugin.event"
-
-	EventBackgroundTaskStarted   = "background.task.started"
-	EventBackgroundTaskCompleted = "background.task.completed"
-	EventBackgroundTaskFailed    = "background.task.failed"
 )
