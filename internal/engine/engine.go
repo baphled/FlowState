@@ -704,6 +704,7 @@ func (e *Engine) streamWithToolLoop(
 	ctx context.Context, sessionID string, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) {
+	attempt := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
 		if result.done {
@@ -743,20 +744,12 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		messages = e.appendToolResultToMessages(messages, result.toolCall, toolResult)
-
 		e.evictCompletedBackgroundTasks()
 
+		attempt++
 		var streamErr error
-		toolReq := provider.ChatRequest{
-			Provider: e.LastProvider(),
-			Model:    e.LastModel(),
-			Messages: messages,
-			Tools:    e.buildToolSchemas(),
-		}
-		providerChunks, streamErr = e.streamFromProvider(ctx, &toolReq)
-		e.publishProviderRequestEvent(sessionID, toolReq)
+		providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 		if streamErr != nil {
-			e.publishProviderErrorEvent(sessionID, "stream_init", streamErr)
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
@@ -777,6 +770,46 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 	if bm != nil {
 		bm.EvictCompleted()
 	}
+}
+
+// retryStreamForToolResult publishes a retry event and opens a new provider stream
+// after a tool call completes, continuing the tool loop.
+//
+// Expected:
+//   - sessionID identifies the current session.
+//   - messages includes the updated conversation with the tool result appended.
+//   - attempt is the 1-based retry counter for observability.
+//
+// Returns:
+//   - A channel of provider stream chunks for the next loop iteration.
+//   - An error if the new stream cannot be initialised.
+//
+// Side effects:
+//   - Publishes provider.request.retry and provider.request events on the bus.
+func (e *Engine) retryStreamForToolResult(
+	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
+) (<-chan provider.StreamChunk, error) {
+	e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
+		SessionID:    sessionID,
+		AgentID:      e.manifest.ID,
+		ProviderName: e.LastProvider(),
+		ModelName:    e.LastModel(),
+		Reason:       "tool_loop_retry",
+		Attempt:      attempt,
+	}))
+	toolReq := provider.ChatRequest{
+		Provider: e.LastProvider(),
+		Model:    e.LastModel(),
+		Messages: messages,
+		Tools:    e.buildToolSchemas(),
+	}
+	chunks, streamErr := e.streamFromProvider(ctx, &toolReq)
+	e.publishProviderRequestEvent(sessionID, toolReq)
+	if streamErr != nil {
+		e.publishProviderErrorEvent(sessionID, "stream_init", streamErr)
+		return nil, streamErr
+	}
+	return chunks, nil
 }
 
 // streamChunkResult carries the assembled output from processStreamChunks.
@@ -1390,6 +1423,21 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 		Result:    result,
 		Error:     execErr,
 	}))
+	if execErr == nil {
+		e.bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
+			SessionID: sessionID,
+			ToolName:  toolName,
+			Args:      args,
+			Result:    result,
+		}))
+	} else {
+		e.bus.Publish(events.EventToolExecuteError, events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
+			SessionID: sessionID,
+			ToolName:  toolName,
+			Args:      args,
+			Error:     execErr,
+		}))
+	}
 }
 
 // publishProviderErrorEvent publishes a typed provider error event to the engine bus.
