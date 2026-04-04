@@ -219,6 +219,135 @@ var _ = Describe("EventLogger", func() {
 			Expect(logger.Close()).To(Succeed())
 			logger = nil
 		})
+
+		It("Close() returns nil when called before Start()", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Close()).To(Succeed())
+			logger = nil
+		})
+	})
+
+	Describe("new event type subscriptions", func() {
+		It("writes a provider.response event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("provider.response", events.NewProviderResponseEvent(events.ProviderResponseEventData{
+				SessionID:    "s1",
+				ProviderName: "test",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("provider.response"))
+		})
+
+		It("writes an agent.switched event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("agent.switched", events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
+				SessionID: "s1",
+				FromAgent: "a",
+				ToAgent:   "b",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("agent.switched"))
+		})
+
+		It("writes a background.task.started event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.started", events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.started"))
+		})
+
+		It("writes a background.task.completed event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.completed", events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.completed"))
+		})
+
+		It("writes a background.task.failed event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish("background.task.failed", events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
+				SessionID: "s1",
+				TaskID:    "t1",
+				Name:      "task",
+				Error:     "something went wrong",
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("background.task.failed"))
+		})
+	})
+
+	Describe("unsubscribed event types", func() {
+		It("does not write events for unsubscribed event types", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+			bus.Publish("unknown.event.type", "payload")
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nonEmptyLines(data)).To(BeEmpty())
+		})
 	})
 })
 
