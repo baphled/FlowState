@@ -398,6 +398,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		appTools:           tp.tools,
 		toolRegistry:       tp.toolRegistry,
 		permissionHandler:  tp.permissionHandler,
+		mcpServerTools:     tp.mcpServerTools,
 		agentsFileLoader:   buildAgentsFileLoader(),
 		tokenCounter:       ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
 		failoverHook:       params.failoverHook,

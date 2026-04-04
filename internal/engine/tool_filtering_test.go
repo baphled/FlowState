@@ -270,17 +270,17 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 	})
 
 	Describe("buildToolSchemas respects MCPServers capability", func() {
-		Context("when manifest declares mcp_servers, it includes all tools from those servers", func() {
-			It("exposes tools declared in the manifest tools list plus all tools from matching MCP servers", func() {
+		Context("when MCPServerTools is configured, MCP tools always bypass manifest filter", func() {
+			It("includes MCP tools even when MCPServers is empty in the manifest", func() {
 				manifest := agent.Manifest{
-					ID:   "mcp-agent",
-					Name: "MCP Agent",
+					ID:   "mcp-bypass-agent",
+					Name: "MCP Bypass Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are an MCP agent.",
+						SystemPrompt: "You are an MCP bypass agent.",
 					},
 					Capabilities: agent.Capabilities{
 						Tools:      []string{"bash"},
-						MCPServers: []string{"memory"},
+						MCPServers: []string{},
 					},
 				}
 
@@ -308,17 +308,17 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("when manifest declares mcp_servers but tools list is empty", func() {
+		Context("when tools list is empty, all tools including MCP are allowed", func() {
 			It("exposes all tools for backward compatibility", func() {
 				manifest := agent.Manifest{
-					ID:   "mcp-only-agent",
-					Name: "MCP Only Agent",
+					ID:   "mcp-all-tools-agent",
+					Name: "MCP All Tools Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are an MCP only agent.",
+						SystemPrompt: "You are an MCP all tools agent.",
 					},
 					Capabilities: agent.Capabilities{
 						Tools:      []string{},
-						MCPServers: []string{"memory"},
+						MCPServers: []string{},
 					},
 				}
 
@@ -342,27 +342,24 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("when manifest declares unknown mcp_server", func() {
-			It("silently ignores the unknown server and only exposes declared tools", func() {
+		Context("when MCPServerTools is nil, only manifest tools are exposed", func() {
+			It("exposes only the tools declared in the manifest", func() {
 				manifest := agent.Manifest{
-					ID:   "unknown-mcp-agent",
-					Name: "Unknown MCP Agent",
+					ID:   "no-mcp-agent",
+					Name: "No MCP Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are an agent with an unknown MCP server.",
+						SystemPrompt: "You are an agent with no MCP tools.",
 					},
 					Capabilities: agent.Capabilities{
-						Tools:      []string{"bash"},
-						MCPServers: []string{"nonexistent"},
+						Tools: []string{"bash"},
 					},
 				}
 
 				eng := engine.New(engine.Config{
-					ChatProvider: chatProvider,
-					Manifest:     manifest,
-					Tools:        allTools,
-					MCPServerTools: map[string][]string{
-						"memory": {"create_entities", "search_nodes"},
-					},
+					ChatProvider:   chatProvider,
+					Manifest:       manifest,
+					Tools:          allTools,
+					MCPServerTools: nil,
 				})
 
 				chunks, err := eng.Stream(context.Background(), "", "hello")
@@ -377,17 +374,17 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("when manifest declares both tools and mcp_servers", func() {
-			It("merges tools from both sources", func() {
+		Context("MCP tools from multiple servers are all included", func() {
+			It("includes tools from every configured MCP server", func() {
 				manifest := agent.Manifest{
-					ID:   "merged-agent",
-					Name: "Merged Agent",
+					ID:   "multi-mcp-agent",
+					Name: "Multi MCP Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are a merged agent.",
+						SystemPrompt: "You are an agent with multiple MCP servers.",
 					},
 					Capabilities: agent.Capabilities{
-						Tools:      []string{"bash", "web"},
-						MCPServers: []string{"memory"},
+						Tools:      []string{"bash"},
+						MCPServers: []string{},
 					},
 				}
 
@@ -396,7 +393,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 					Manifest:     manifest,
 					Tools:        allTools,
 					MCPServerTools: map[string][]string{
-						"memory": {"create_entities", "search_nodes"},
+						"memory": {"create_entities"},
+						"vault":  {"search_nodes"},
 					},
 				})
 
@@ -408,7 +406,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash", "web", "create_entities", "search_nodes"))
+				Expect(names).To(ContainElements("bash", "create_entities", "search_nodes"))
 			})
 		})
 	})

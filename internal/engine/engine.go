@@ -461,7 +461,8 @@ func (e *Engine) appendDelegationSections(base string) string {
 // Returns:
 //   - A map of allowed tool names, or nil when the manifest does not restrict tools
 //     (empty Capabilities.Tools means all tools are allowed for backward compatibility).
-//   - Tools from declared MCPServers are merged into the allowed set when Tools is non-empty.
+//   - All MCP server tools unconditionally bypass manifest filtering because they are
+//     user-configured external tools; the manifest only controls built-in tool access.
 //
 // Side effects:
 //   - None.
@@ -486,9 +487,9 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 		}
 	}
 
-	for _, serverName := range e.manifest.Capabilities.MCPServers {
-		for _, toolName := range e.mcpServerTools[serverName] {
-			allowed[toolName] = true
+	for _, toolNames := range e.mcpServerTools {
+		for _, name := range toolNames {
+			allowed[name] = true
 		}
 	}
 
