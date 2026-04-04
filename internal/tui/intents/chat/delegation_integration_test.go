@@ -21,6 +21,10 @@ func (f *fakeChildSessionLister) ChildSessions(_ string) ([]*session.Session, er
 	return f.sessions, f.err
 }
 
+func (f *fakeChildSessionLister) AllSessions() ([]*session.Session, error) {
+	return f.sessions, f.err
+}
+
 func newDelegationTestIntent(lister chat.SessionChildLister) *chat.Intent {
 	return chat.NewIntent(chat.IntentConfig{
 		AgentID:            "test-agent",
@@ -371,6 +375,40 @@ var _ = Describe("Delegation Integration", Label("integration"), func() {
 
 			view := intent.View()
 			Expect(view).To(ContainSubstring("planner"))
+		})
+
+		It("shows all child sessions from session manager, not just current session's children", func() {
+			sessions := []*session.Session{
+				{ID: "child-run1-aaa", AgentID: "librarian", ParentID: "session-run1-parent", Status: "completed"},
+				{ID: "child-run2-bbb", AgentID: "explorer", ParentID: "session-run2-parent", Status: "completed"},
+				{ID: "child-run3-ccc", AgentID: "oracle", ParentID: "session-run3-parent", Status: "completed"},
+			}
+			lister := &fakeChildSessionLister{sessions: sessions}
+			intent := newDelegationTestIntent(lister)
+
+			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
+			view := intent.View()
+			Expect(view).To(ContainSubstring("librarian"))
+			Expect(view).To(ContainSubstring("explorer"))
+			Expect(view).To(ContainSubstring("oracle"))
+		})
+
+		It("shows restored sessions from previous runs alongside new delegations", func() {
+			sessions := []*session.Session{
+				{ID: "child-prev-run-aaa", AgentID: "librarian", ParentID: "session-old-run-111", Status: "completed"},
+				{ID: "child-prev-run-bbb", AgentID: "explorer", ParentID: "session-old-run-222", Status: "completed"},
+				{ID: "child-current-ccc", AgentID: "oracle", ParentID: "parent-session", Status: "active"},
+			}
+			lister := &fakeChildSessionLister{sessions: sessions}
+			intent := newDelegationTestIntent(lister)
+
+			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+
+			view := intent.View()
+			Expect(view).To(ContainSubstring("librarian"))
+			Expect(view).To(ContainSubstring("explorer"))
+			Expect(view).To(ContainSubstring("oracle"))
 		})
 	})
 })

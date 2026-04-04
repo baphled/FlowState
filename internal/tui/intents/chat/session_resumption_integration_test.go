@@ -19,10 +19,15 @@ func makeChildSession(id, agentID, status string) *session.Session {
 
 type stubChildSessionLister struct {
 	sessions []*session.Session
+	err      error
 }
 
 func (s *stubChildSessionLister) ChildSessions(_ string) ([]*session.Session, error) {
-	return s.sessions, nil
+	return s.sessions, s.err
+}
+
+func (s *stubChildSessionLister) AllSessions() ([]*session.Session, error) {
+	return s.sessions, s.err
 }
 
 func newResumptionIntent(parentID string, children []*session.Session) *chat.Intent {

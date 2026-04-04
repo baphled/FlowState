@@ -176,6 +176,70 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("AllSessions", func() {
+		Context("when no child sessions exist", func() {
+			It("returns an empty slice", func() {
+				result, err := mgr.AllSessions()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEmpty())
+			})
+		})
+
+		Context("when sessions with parent IDs exist from multiple runs", func() {
+			It("returns only sessions that have a parent ID", func() {
+				root, err := mgr.CreateSession("root-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				child1, err := mgr.CreateWithParent(root.ID, "librarian")
+				Expect(err).NotTo(HaveOccurred())
+
+				child2, err := mgr.CreateWithParent(root.ID, "explorer")
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := mgr.AllSessions()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(2))
+				ids := []string{result[0].ID, result[1].ID}
+				Expect(ids).To(ContainElement(child1.ID))
+				Expect(ids).To(ContainElement(child2.ID))
+			})
+
+			It("does not include root sessions without a parent ID", func() {
+				_, err := mgr.CreateSession("root-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := mgr.AllSessions()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEmpty())
+			})
+
+			It("returns children from different parent sessions", func() {
+				parent1, err := mgr.CreateSession("parent-agent-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				parent2, err := mgr.CreateSession("parent-agent-2")
+				Expect(err).NotTo(HaveOccurred())
+
+				child1, err := mgr.CreateWithParent(parent1.ID, "librarian")
+				Expect(err).NotTo(HaveOccurred())
+
+				child2, err := mgr.CreateWithParent(parent2.ID, "explorer")
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := mgr.AllSessions()
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(2))
+				ids := []string{result[0].ID, result[1].ID}
+				Expect(ids).To(ContainElement(child1.ID))
+				Expect(ids).To(ContainElement(child2.ID))
+			})
+		})
+	})
+
 	Describe("GetSession", func() {
 		Context("when the session exists", func() {
 			It("returns the session", func() {

@@ -60,6 +60,10 @@ type StreamChunkMsg struct {
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
 type SpinnerTickMsg struct{}
 
+// SessionViewerTickMsg is sent periodically to refresh the live session viewer
+// whilst it is active, so the child session content updates in real-time.
+type SessionViewerTickMsg struct{}
+
 // SessionSavedMsg signals completion of an async session save operation.
 type SessionSavedMsg struct {
 	// Err holds any error that occurred during saving, or nil on success.
@@ -86,6 +90,20 @@ type BackgroundTaskCompletedMsg struct {
 func tickSpinner() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
 		return SpinnerTickMsg{}
+	})
+}
+
+// tickSessionViewer returns a Cmd that fires a SessionViewerTickMsg after 500ms,
+// driving periodic refresh of the live session viewer.
+//
+// Returns:
+//   - A tea.Cmd that sends SessionViewerTickMsg after 500ms.
+//
+// Side effects:
+//   - None.
+func tickSessionViewer() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return SessionViewerTickMsg{}
 	})
 }
 
@@ -118,10 +136,12 @@ type SessionLister interface {
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
-// SessionChildLister lists child sessions for a given parent session ID.
+// SessionChildLister lists child sessions visible to the session manager.
 type SessionChildLister interface {
 	// ChildSessions returns child sessions for the given parent session ID.
 	ChildSessions(parentID string) ([]*session.Session, error)
+	// AllSessions returns every session that has a parent, regardless of which run created it.
+	AllSessions() ([]*session.Session, error)
 }
 
 // SessionManager manages active chat sessions and message delivery.
@@ -312,9 +332,7 @@ func (i *Intent) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 func (i *Intent) Init() tea.Cmd {
 	i.syncViewAgentMeta()
 	if i.sessionID != "" && i.sessionStore != nil {
-		if store, err := i.sessionStore.Load(i.sessionID); err != nil {
-			i.handleSessionLoaded(sessionbrowser.SessionLoadedMsg{SessionID: i.sessionID, Err: err})
-		} else {
+		if store, err := i.sessionStore.Load(i.sessionID); err == nil {
 			i.handleSessionLoaded(sessionbrowser.SessionLoadedMsg{SessionID: i.sessionID, Store: store})
 		}
 	}
@@ -359,6 +377,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case SpinnerTickMsg:
 		return i.handleSpinnerTick()
+	case SessionViewerTickMsg:
+		return i.handleSessionViewerTick()
 	case notification.TickMsg:
 		return i.notifications.Update(msg)
 	case sessionbrowser.SessionSelectedMsg:
@@ -390,6 +410,33 @@ func (i *Intent) handleSpinnerTick() tea.Cmd {
 		return tickSpinner()
 	}
 	return nil
+}
+
+// handleSessionViewerTick refreshes the live session viewer with the latest
+// child session content and schedules the next tick.
+//
+// Returns:
+//   - A tea.Cmd to schedule the next tick, or nil when the viewer is no longer active.
+//
+// Side effects:
+//   - Updates sessionViewport content and scrolls to the bottom on each tick.
+func (i *Intent) handleSessionViewerTick() tea.Cmd {
+	if !i.sessionViewerActive || i.sessionViewport == nil || i.childSessionLister == nil {
+		return nil
+	}
+	sessions, err := i.childSessionLister.ChildSessions(i.sessionID)
+	if err != nil {
+		return tickSessionViewer()
+	}
+	for _, sess := range sessions {
+		if sess.ID == i.sessionViewerID {
+			content := i.renderSessionContent(sess)
+			i.sessionViewport.SetContent(content)
+			i.sessionViewport.GotoBottom()
+			break
+		}
+	}
+	return tickSessionViewer()
 }
 
 // waitForCompletion returns a tea.Cmd that blocks until a background task
@@ -518,11 +565,13 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			}
 			vp := viewport.New(i.width, svpHeight)
 			vp.SetContent(content)
+			vp.GotoBottom()
 			i.sessionViewport = &vp
 			i.sessionViewerActive = true
 			i.sessionViewerID = sel.ID
 			i.breadcrumbPath = "Chat > " + sel.ID[:8]
 			i.cachedScreenLayout = nil
+			return tickSessionViewer()
 		}
 	}
 	return nil
@@ -1772,7 +1821,7 @@ func (i *Intent) openDelegationPicker() tea.Cmd {
 	var sessions []*session.Session
 	if i.childSessionLister != nil {
 		var err error
-		sessions, err = i.childSessionLister.ChildSessions(i.sessionID)
+		sessions, err = i.childSessionLister.AllSessions()
 		if err != nil {
 			sessions = nil
 		}
@@ -2034,6 +2083,7 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	for _, sm := range msg.Store.GetStoredMessages() {
 		lastToolCallName = i.replayStoredMessage(sm, lastToolCallName)
 	}
+	i.atBottom = true
 	i.refreshViewport()
 	i.syncStatusBar()
 	return nil

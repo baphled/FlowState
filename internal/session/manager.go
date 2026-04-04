@@ -309,6 +309,28 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 	}
 }
 
+// AllSessions returns every session that has a parent, regardless of which parent session spawned it.
+//
+// Returns:
+//   - A slice containing all sessions that carry a non-empty ParentID.
+//   - A nil error on success.
+//
+// Side effects:
+//   - Acquires a read lock while scanning the session store.
+func (m *Manager) AllSessions() ([]*Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]*Session, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		if sess.ParentID != "" {
+			result = append(result, sess)
+		}
+	}
+
+	return result, nil
+}
+
 // ChildSessions returns the direct child sessions for the given parent session identifier.
 // Expected:
 //   - parentID identifies the parent session to inspect.
