@@ -300,6 +300,7 @@ func buildApp(params appBuildParams) *App {
 	}
 
 	app.setAgentOverridesFromConfig(cfg, runtime.engine)
+	app.restorePersistedSessions()
 	app.wireDelegateToolIfEnabled(runtime.engine, selectDefaultManifest(agentRegistry, cfg.DefaultAgent))
 	if runtime.setEnsureTools != nil {
 		runtime.setEnsureTools(func(m agent.Manifest) {
@@ -676,6 +677,11 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		delegateTool.WithSessionManager(a.sessionManager)
 	}
 
+	if a.Config != nil {
+		delegateTool.WithStoreFactory(newDelegateStoreFactory(a.SessionsDir()))
+		delegateTool.WithSessionsDir(a.SessionsDir())
+	}
+
 	eng.AddTool(delegateTool)
 
 	eng.AddTool(engine.NewBackgroundOutputTool(bgManager))
@@ -856,6 +862,30 @@ func (a *App) SkillsDir() string {
 //   - None.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
+}
+
+// restorePersistedSessions loads session metadata from disk and registers the
+// sessions into the session manager so that child sessions created before the
+// last restart are available after restart.
+//
+// Expected:
+//   - a.sessionManager is non-nil.
+//   - a.Config is non-nil and provides DataDir.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Reads .meta.json files from SessionsDir and calls RestoreSessions.
+func (a *App) restorePersistedSessions() {
+	if a.sessionManager == nil {
+		return
+	}
+	restored, err := session.LoadSessionsFromDirectory(a.SessionsDir())
+	if err != nil {
+		return
+	}
+	a.sessionManager.RestoreSessions(restored)
 }
 
 // ConfigPath returns the path to the configuration file.

@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -35,6 +36,12 @@ var (
 )
 
 const maxDelegationFailures = 3
+
+// DelegateStoreFactory creates file-backed context stores for delegation sessions.
+type DelegateStoreFactory interface {
+	// CreateSessionStore creates a file-backed context store for the given session ID.
+	CreateSessionStore(sessionID string) (*recall.FileContextStore, error)
+}
 
 // streamOutputKeyType identifies the context key used for streaming output.
 type streamOutputKeyType struct{}
@@ -88,6 +95,8 @@ type DelegateTool struct {
 	sessionCreator     ChildSessionCreator
 	messageAppender    session.MessageAppender
 	sessionManager     *session.Manager
+	storeFactory       DelegateStoreFactory
+	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -99,6 +108,9 @@ type delegationTarget struct {
 	chainID          string
 	resolvedModel    string
 	resolvedProvider string
+	requestedSession string // requestedSession carries the caller-supplied session_id for resumption.
+	denyDelegate     bool   // denyDelegate is true when the target agent lacks the "delegate" tool permission.
+	denyTodoWrite    bool   // denyTodoWrite is true when the target agent lacks the "todowrite" tool permission.
 }
 
 // delegationParams groups the parsed delegation input fields.
@@ -291,6 +303,90 @@ func (d *DelegateTool) WithMessageAppender(a session.MessageAppender) *DelegateT
 func (d *DelegateTool) WithSessionManager(mgr *session.Manager) *DelegateTool {
 	d.sessionManager = mgr
 	return d
+}
+
+// WithStoreFactory sets an optional factory for creating file-backed stores
+// for delegation sessions. When nil (default), delegation sessions use
+// in-memory accumulation only.
+//
+// Expected:
+//   - f is a valid DelegateStoreFactory or nil to disable file persistence.
+//
+// Returns:
+//   - The DelegateTool instance for chaining.
+//
+// Side effects:
+//   - Sets the storeFactory field used during executeSync and executeBackgroundTask.
+func (d *DelegateTool) WithStoreFactory(f DelegateStoreFactory) *DelegateTool {
+	d.storeFactory = f
+	return d
+}
+
+// WithSessionsDir sets the directory where session metadata files are persisted.
+// When non-empty, createChildSession will write a .meta.json file after creating
+// each child session so that sessions survive application restarts.
+//
+// Expected:
+//   - dir is an absolute path to the sessions directory, or empty to disable persistence.
+//
+// Returns:
+//   - The DelegateTool instance for chaining.
+//
+// Side effects:
+//   - Sets the sessionsDir field used by persistSessionMetadata.
+func (d *DelegateTool) WithSessionsDir(dir string) *DelegateTool {
+	d.sessionsDir = dir
+	return d
+}
+
+// persistSessionMetadata writes session metadata to disk on a best-effort basis.
+// Errors are silently discarded so that persistence failures never block delegation.
+//
+// Expected:
+//   - sess is the child session to persist.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Calls session.PersistSession when sessionsDir is non-empty.
+func (d *DelegateTool) persistSessionMetadata(sess *session.Session) {
+	if d.sessionsDir == "" {
+		return
+	}
+	if err := session.PersistSession(d.sessionsDir, sess); err != nil {
+		return
+	}
+}
+
+// attachSessionStore creates a FileContextStore via the factory (if set) and
+// attaches it to the target engine. Returns a cleanup function that flushes
+// and closes the store. When no factory is configured, returns a no-op closer.
+//
+// Expected:
+//   - eng is the delegation target engine.
+//   - sessionID is the child session identifier.
+//
+// Returns:
+//   - A cleanup function that must be called after the delegation stream is fully consumed.
+//
+// Side effects:
+//   - When factory is set, calls SetContextStore on the engine, closing any previous store first.
+func (d *DelegateTool) attachSessionStore(eng *Engine, sessionID string) func() {
+	if d.storeFactory == nil {
+		return func() {}
+	}
+	if existing := eng.ContextStore(); existing != nil {
+		existing.Close()
+	}
+	store, err := d.storeFactory.CreateSessionStore(sessionID)
+	if err != nil {
+		return func() {}
+	}
+	eng.SetContextStore(store, sessionID)
+	return func() {
+		store.Close()
+	}
 }
 
 // ResolveByNameOrAlias returns the agent ID for a given name or alias.
@@ -686,11 +782,13 @@ func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) s
 	parentID := sessionIDFromContext(ctx)
 	if d.sessionCreator != nil && parentID != "" {
 		if child, err := d.sessionCreator.CreateWithParent(parentID, agentID); err == nil {
+			d.persistSessionMetadata(child)
 			return child.ID
 		}
 	}
 	if d.sessionManager != nil && parentID != "" {
 		if child, err := d.sessionManager.CreateWithParent(parentID, agentID); err == nil {
+			d.persistSessionMetadata(child)
 			return child.ID
 		}
 	}
@@ -699,6 +797,109 @@ func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) s
 		d.sessionManager.RegisterSession(syntheticID, agentID)
 	}
 	return syntheticID
+}
+
+// resolveOrCreateSession returns an existing session when sessionID is found in the manager,
+// or creates a new child session when not found or sessionID is empty.
+//
+// Expected:
+//   - ctx may carry a parent session ID for new child session creation.
+//   - agentID identifies the agent for the delegation.
+//   - sessionID is the optional caller-supplied session to resume; empty means create new.
+//
+// Returns:
+//   - The session ID to use for the delegation context.
+//
+// Side effects:
+//   - May call sessionManager.GetSession or createChildSession.
+func (d *DelegateTool) resolveOrCreateSession(ctx context.Context, agentID, sessionID string) string {
+	if sessionID != "" && d.sessionManager != nil {
+		if sess, err := d.sessionManager.GetSession(sessionID); err == nil {
+			return sess.ID
+		}
+	}
+	return d.createChildSession(ctx, agentID)
+}
+
+// agentHasToolPermission reports whether the named agent is permitted to use toolName.
+// When no registry is configured, all tools are permitted.
+// When the agent's tool list is empty, all tools are permitted for backward compatibility.
+//
+// Expected:
+//   - agentID identifies the agent to inspect.
+//   - toolName is the name of the tool to check permission for.
+//
+// Returns:
+//   - true when the agent may use the tool or when permissive defaults apply.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) agentHasToolPermission(agentID, toolName string) bool {
+	if d.registry == nil {
+		return true
+	}
+	manifest, ok := d.registry.Get(agentID)
+	if !ok {
+		return true
+	}
+	if len(manifest.Capabilities.Tools) == 0 {
+		return true
+	}
+	for _, t := range manifest.Capabilities.Tools {
+		if t == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// AgentHasToolPermission is the exported form of agentHasToolPermission for testing.
+//
+// Expected:
+//   - agentID identifies the agent to inspect.
+//   - toolName is the name of the tool to check permission for.
+//
+// Returns:
+//   - true when the agent may use the tool or when permissive defaults apply.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) AgentHasToolPermission(agentID, toolName string) bool {
+	return d.agentHasToolPermission(agentID, toolName)
+}
+
+// formatDelegationOutput produces the OpenCode-compatible output format for delegation results.
+// The output includes a resumable task_id header followed by the agent response in a task_result block.
+//
+// Expected:
+//   - sessionID is the child session identifier for resumption.
+//   - text is the aggregated response from the delegated agent.
+//
+// Returns:
+//   - A formatted string with the session ID and response wrapped in a task_result block.
+//
+// Side effects:
+//   - None.
+func formatDelegationOutput(sessionID, text string) string {
+	return fmt.Sprintf(
+		"task_id: %s (for resuming to continue this task if needed)\n\n<task_result>\n%s\n</task_result>",
+		sessionID, text,
+	)
+}
+
+// FormatDelegationOutput is the exported form of formatDelegationOutput for testing.
+//
+// Expected:
+//   - sessionID is the child session identifier for resumption.
+//   - text is the aggregated response from the delegated agent.
+//
+// Returns:
+//   - A formatted string with the session ID and response wrapped in a task_result block.
+//
+// Side effects:
+//   - None.
+func FormatDelegationOutput(sessionID, text string) string {
+	return formatDelegationOutput(sessionID, text)
 }
 
 // executeSync runs delegation synchronously, blocking until complete.
@@ -723,7 +924,9 @@ func (d *DelegateTool) executeSync(
 ) (tool.Result, error) {
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
-	delegateSessionID := d.createChildSession(ctx, target.agentID)
+	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession)
+	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
+	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
 
 	chunks, err := target.engine.Stream(delegateCtx, target.agentID, target.message)
@@ -750,14 +953,24 @@ func (d *DelegateTool) executeSync(
 
 	d.circuitBreaker.RecordSuccess()
 	completedAt := time.Now().UTC()
-	baseInfo.ModelName = target.engine.LastModel()
-	baseInfo.ProviderName = target.engine.LastProvider()
+	modelName := target.engine.LastModel()
+	providerName := target.engine.LastProvider()
+	baseInfo.ModelName = modelName
+	baseInfo.ProviderName = providerName
 	baseInfo.ToolCalls = result.toolCalls
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
 
-	return tool.Result{Output: result.response}, nil
+	return tool.Result{
+		Output: formatDelegationOutput(delegateSessionID, result.response),
+		Title:  target.message,
+		Metadata: map[string]interface{}{
+			"sessionId": delegateSessionID,
+			"model":     modelName,
+			"provider":  providerName,
+		},
+	}, nil
 }
 
 // executeAsync runs delegation asynchronously, returning immediately with a task ID.
@@ -801,7 +1014,13 @@ func (d *DelegateTool) executeAsync(
 		return result, nil
 	})
 
-	return tool.Result{Output: fmt.Sprintf(`{"task_id": %q, "status": "running"}`, taskID)}, nil
+	return tool.Result{
+		Output: fmt.Sprintf(`{"task_id": %q, "status": "running"}`, taskID),
+		Title:  target.message,
+		Metadata: map[string]interface{}{
+			"sessionId": taskID,
+		},
+	}, nil
 }
 
 // executeBackgroundTask performs the actual delegation within a background goroutine.
@@ -825,8 +1044,11 @@ func (d *DelegateTool) executeBackgroundTask(
 	outChan chan<- provider.StreamChunk,
 	hasOutput bool,
 ) (string, error) {
+	closeStore := d.attachSessionStore(target.engine, sessionIDFromContext(ctx))
+
 	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
 	if err != nil {
+		closeStore()
 		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
 		baseInfo.CompletedAt = &completedAt
@@ -837,6 +1059,7 @@ func (d *DelegateTool) executeBackgroundTask(
 	chunks = d.wrapWithAccumulator(chunks, sessionIDFromContext(ctx), target.agentID)
 
 	result, err := d.collectDelegationResult(chunks)
+	closeStore()
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
@@ -929,6 +1152,9 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		chainID:          chainID,
 		resolvedModel:    resolvedModel,
 		resolvedProvider: resolvedProvider,
+		requestedSession: params.sessionID,
+		denyDelegate:     !d.agentHasToolPermission(targetAgentID, "delegate"),
+		denyTodoWrite:    !d.agentHasToolPermission(targetAgentID, "todowrite"),
 	}, nil
 }
 

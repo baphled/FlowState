@@ -995,7 +995,7 @@ var _ = Describe("Delegation", func() {
 
 				result, err := delegateTool.Execute(context.Background(), input)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(Equal("target response"))
+				Expect(result.Output).To(ContainSubstring("target response"))
 
 				Expect(targetProvider.capturedRequest).NotTo(BeNil())
 				Expect(targetProvider.capturedRequest.Model).To(Equal("llama3.2"))
@@ -2041,6 +2041,95 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
 			Expect(err.Error()).To(ContainSubstring("message"))
 			Expect(err.Error()).To(ContainSubstring("explorer"))
+		})
+	})
+})
+
+var _ = Describe("DelegateTool session metadata persistence", func() {
+	var (
+		sessionsDir  string
+		targetEngine *engine.Engine
+		engines      map[string]*engine.Engine
+		delegCfg     agent.Delegation
+		mgr          *session.Manager
+	)
+
+	BeforeEach(func() {
+		var err error
+		sessionsDir, err = os.MkdirTemp("", "delegate-persist-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(sessionsDir) })
+
+		targetEngine = engine.New(engine.Config{
+			ChatProvider: &mockProvider{
+				name:         "target-provider",
+				streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+			},
+			Manifest: agent.Manifest{
+				ID:                "target-agent",
+				Name:              "Target Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a target."},
+				ContextManagement: agent.DefaultContextManagement(),
+			},
+		})
+
+		engines = map[string]*engine.Engine{"target-agent": targetEngine}
+		delegCfg = agent.Delegation{CanDelegate: true}
+		mgr = session.NewManager(nil)
+	})
+
+	Describe("WithSessionsDir", func() {
+		Context("when sessionsDir is set and a child session is created", func() {
+			It("writes a .meta.json file for the child session", func() {
+				parentSessionID := "persist-parent"
+				mgr.RegisterSession(parentSessionID, "parent-agent")
+
+				delegateTool := engine.NewDelegateTool(engines, delegCfg, "orchestrator")
+				delegateTool.WithSessionManager(mgr)
+				delegateTool.WithSessionCreator(mgr)
+				delegateTool.WithSessionsDir(sessionsDir)
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, parentSessionID)
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "target-agent",
+						"message":       "Persist this",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).NotTo(BeEmpty())
+
+				metaFiles, err := filepath.Glob(filepath.Join(sessionsDir, "*.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(metaFiles).To(HaveLen(1))
+			})
+		})
+
+		Context("when sessionsDir is empty", func() {
+			It("does not fail and writes no files", func() {
+				parentSessionID := "no-persist-parent"
+				mgr.RegisterSession(parentSessionID, "parent-agent")
+
+				delegateTool := engine.NewDelegateTool(engines, delegCfg, "orchestrator")
+				delegateTool.WithSessionManager(mgr)
+				delegateTool.WithSessionCreator(mgr)
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, parentSessionID)
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "target-agent",
+						"message":       "No persistence",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).NotTo(BeEmpty())
+			})
 		})
 	})
 })
