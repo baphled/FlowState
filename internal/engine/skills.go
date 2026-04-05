@@ -17,7 +17,7 @@ import (
 // Side effects:
 //   - Reads skill files from the skillsDir directory.
 func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []string) []skill.Skill {
-	merged := MergeSkillNames(appLevel, agentLevel)
+	merged := mergeSkillNames(appLevel, agentLevel)
 	if len(merged) == 0 {
 		return nil
 	}
@@ -31,7 +31,7 @@ func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []st
 	return filterSkillsByName(allSkills, merged)
 }
 
-// MergeSkillNames combines application-level and agent-level skill names, removing duplicates.
+// mergeSkillNames combines application-level and agent-level skill names, removing duplicates.
 //
 // Expected:
 //   - appLevel contains application-level skill names.
@@ -42,7 +42,7 @@ func LoadAlwaysActiveSkills(skillsDir string, appLevel []string, agentLevel []st
 //
 // Side effects:
 //   - None.
-func MergeSkillNames(appLevel []string, agentLevel []string) []string {
+func mergeSkillNames(appLevel []string, agentLevel []string) []string {
 	seen := make(map[string]bool)
 	var result []string
 
