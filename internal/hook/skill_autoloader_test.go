@@ -54,7 +54,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("prepends lean skill names to the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -70,7 +70,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 		It("includes baseline skills regardless of prompt content", func() {
 			request.Messages[1].Content = "something unrelated"
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -82,7 +82,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("includes agent always-active skills", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -107,7 +107,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("includes keyword-matched skills in the injection", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -128,7 +128,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("creates a system message with lean injection", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -162,7 +162,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(handler)
 
 			resultChan, err := wrapped(ctx, request)
@@ -189,7 +189,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("uses the expected lean format", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -216,7 +216,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("does not double-inject skills into the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -241,7 +241,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("skips skill injection entirely", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -263,7 +263,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(handler)
 
 			_, err := wrapped(ctx, request)
@@ -283,7 +283,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("injects skills as normal", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -322,7 +322,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("does not inject anything into the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -344,7 +344,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil)
 			wrapped := autoloader(handler)
 
 			_, err := wrapped(ctx, request)
@@ -364,7 +364,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("still injects the dynamic skills list because static placeholder lacks opening bracket", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest })
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)

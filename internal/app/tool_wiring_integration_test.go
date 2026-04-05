@@ -65,12 +65,15 @@ var _ = Describe("Tool wiring integration", func() {
 			},
 		}
 
-		hookChain := buildHookChain(nil, func() agent.Manifest {
-			if eng != nil {
-				return eng.Manifest()
-			}
-			return executorManifest
-		}, nil, nil, twc)
+		hookChain := buildHookChain(hookChainConfig{
+			manifestGetter: func() agent.Manifest {
+				if eng != nil {
+					return eng.Manifest()
+				}
+				return executorManifest
+			},
+			twc: twc,
+		})
 
 		eng = engine.New(engine.Config{
 			Manifest:      manifest,

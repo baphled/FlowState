@@ -315,6 +315,94 @@ var _ = Describe("Recorder", func() {
 		})
 	})
 
+	Describe("BackgroundTask event data extraction", func() {
+		It("writes BackgroundTaskStartedEvent data field, not the raw event", func() {
+			Expect(recorder.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish(events.EventTypeBackgroundTaskStarted, events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
+				TaskID: "task-started-1",
+				Name:   "my-background-task",
+				Status: "running",
+			}, ts))
+
+			globalFile := filepath.Join(tmpDir, "global.jsonl")
+			Expect(globalFile).To(BeAnExistingFile())
+
+			data, err := os.ReadFile(globalFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["kind"]).To(Equal("event"))
+			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskStarted))
+			payload, ok := entry["data"].(map[string]any)
+			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
+			Expect(payload["TaskID"]).To(Equal("task-started-1"))
+		})
+
+		It("writes BackgroundTaskCompletedEvent data field, not the raw event", func() {
+			Expect(recorder.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish(events.EventTypeBackgroundTaskCompleted, events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
+				TaskID: "task-completed-1",
+				Name:   "my-background-task",
+				Status: "completed",
+			}, ts))
+
+			globalFile := filepath.Join(tmpDir, "global.jsonl")
+			Expect(globalFile).To(BeAnExistingFile())
+
+			data, err := os.ReadFile(globalFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["kind"]).To(Equal("event"))
+			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskCompleted))
+			payload, ok := entry["data"].(map[string]any)
+			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
+			Expect(payload["TaskID"]).To(Equal("task-completed-1"))
+		})
+
+		It("writes BackgroundTaskFailedEvent data field, not the raw event", func() {
+			Expect(recorder.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
+			bus.Publish(events.EventTypeBackgroundTaskFailed, events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
+				TaskID: "task-failed-1",
+				Name:   "my-background-task",
+				Status: "failed",
+				Error:  "context deadline exceeded",
+			}, ts))
+
+			globalFile := filepath.Join(tmpDir, "global.jsonl")
+			Expect(globalFile).To(BeAnExistingFile())
+
+			data, err := os.ReadFile(globalFile)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["kind"]).To(Equal("event"))
+			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskFailed))
+			payload, ok := entry["data"].(map[string]any)
+			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
+			Expect(payload["TaskID"]).To(Equal("task-failed-1"))
+			Expect(payload["Error"]).To(Equal("context deadline exceeded"))
+		})
+	})
+
 	Describe("sequence numbers across events and chunks", func() {
 		It("maintains a monotonic sequence across mixed events and chunks", func() {
 			Expect(recorder.Start(bus)).To(Succeed())

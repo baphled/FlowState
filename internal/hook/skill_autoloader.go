@@ -14,6 +14,10 @@ import (
 // Expected:
 //   - config is a non-nil SkillAutoLoaderConfig.
 //   - manifestGetter is called per-request to get the current agent manifest.
+//   - bakedSkillNames is the union of app-level and agent-level always-active skill names
+//     already injected into the system prompt via BuildSystemPrompt. When non-nil, any
+//     skill in this set is stripped from the lean injection to avoid duplication.
+//     Pass nil to disable deduplication (backwards compatible).
 //
 // Returns:
 //   - A Hook that prepends "Your load_skills: [...]" to the system message on the first
@@ -24,7 +28,7 @@ import (
 //   - Passes through without mutation on continuation messages (assistant reply present),
 //     tool-call follow-ups (load_skills already injected), or when skill selection yields
 //     no skills (empty baseline, no agent skills, no keyword matches).
-func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() agent.Manifest) Hook {
+func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() agent.Manifest, bakedSkillNames []string) Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 			if containsAssistantMessage(req.Messages) {
@@ -42,11 +46,44 @@ func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() ag
 			if len(selection.Skills) == 0 {
 				return next(ctx, req)
 			}
-			lean := buildLeanInjection(selection.Skills)
+			remaining := stripBakedSkills(selection.Skills, bakedSkillNames)
+			if len(remaining) == 0 {
+				return next(ctx, req)
+			}
+			lean := buildLeanInjection(remaining)
 			injectLeanSkills(req, lean)
 			return next(ctx, req)
 		}
 	}
+}
+
+// stripBakedSkills returns a filtered copy of skills, removing any name that appears
+// in bakedNames. When bakedNames is nil or empty the original slice is returned unchanged.
+//
+// Expected:
+//   - skills is the full selected skill list.
+//   - bakedNames is the pre-computed set of skills already baked into BuildSystemPrompt.
+//
+// Returns:
+//   - A slice of skill names not present in bakedNames.
+//
+// Side effects:
+//   - None.
+func stripBakedSkills(skills []string, bakedNames []string) []string {
+	if len(bakedNames) == 0 {
+		return skills
+	}
+	bakedSet := make(map[string]bool, len(bakedNames))
+	for _, name := range bakedNames {
+		bakedSet[name] = true
+	}
+	var remaining []string
+	for _, name := range skills {
+		if !bakedSet[name] {
+			remaining = append(remaining, name)
+		}
+	}
+	return remaining
 }
 
 // containsAssistantMessage checks whether any message in the slice has the assistant role.

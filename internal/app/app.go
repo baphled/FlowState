@@ -549,13 +549,23 @@ type runtimeComponents struct {
 func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest))) {
 	var eng *engine.Engine
 	var ensureToolsFn func(agent.Manifest)
-	hookChain := buildHookChain(params.learningStore, func() agent.Manifest {
-		if eng != nil {
-			return eng.Manifest()
-		}
-		return params.defaultManifest
-	}, params.failoverHook, params.failoverManager,
-		&toolWiringCallbacks{
+	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
+	for i := range params.alwaysActiveSkills {
+		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
+	}
+
+	hookChain := buildHookChain(hookChainConfig{
+		learningStore: params.learningStore,
+		manifestGetter: func() agent.Manifest {
+			if eng != nil {
+				return eng.Manifest()
+			}
+			return params.defaultManifest
+		},
+		bakedSkillNames: bakedNames,
+		failoverHk:      params.failoverHook,
+		failoverMgr:     params.failoverManager,
+		twc: &toolWiringCallbacks{
 			hasTool: func(name string) bool {
 				if eng == nil {
 					return false
@@ -574,7 +584,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 				return eng.ToolSchemas()
 			},
 		},
-	)
+	})
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
@@ -711,7 +721,10 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
 func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus) *engine.Engine {
-	hookChain := buildHookChain(a.Learning, func() agent.Manifest { return manifest }, nil, nil, nil)
+	hookChain := buildHookChain(hookChainConfig{
+		learningStore:  a.Learning,
+		manifestGetter: func() agent.Manifest { return manifest },
+	})
 	eng := engine.New(engine.Config{
 		ChatProvider:  a.defaultProvider,
 		Registry:      a.providerRegistry,
@@ -1207,29 +1220,34 @@ type toolWiringCallbacks struct {
 	schemaRebuilder func() []provider.Tool
 }
 
+// hookChainConfig groups parameters for buildHookChain to stay within the argument-limit.
+type hookChainConfig struct {
+	learningStore   *learning.JSONFileStore
+	manifestGetter  func() agent.Manifest
+	bakedSkillNames []string
+	failoverHk      *failover.Hook
+	failoverMgr     *failover.Manager
+	twc             *toolWiringCallbacks
+}
+
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
 // When failoverMgr is non-nil, a StreamHook is appended LAST so provider failover wraps
 // the base handler. When only failoverHk is set (legacy path), it is prepended first.
 //
 // Expected:
-//   - learningStore is a non-nil JSONFileStore for persisting learning data.
-//   - manifestGetter returns the current agent manifest for skill selection.
-//   - failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
-//   - failoverMgr may be nil; when non-nil, a StreamHook is appended LAST.
-//   - twc may be nil; when non-nil, a ToolWiringHook is appended after SkillAutoLoader.
+//   - params.learningStore is a non-nil JSONFileStore for persisting learning data.
+//   - params.manifestGetter returns the current agent manifest for skill selection.
+//   - params.bakedSkillNames are skill names already baked into BuildSystemPrompt. May be nil.
+//   - params.failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
+//   - params.failoverMgr may be nil; when non-nil, a StreamHook is appended LAST.
+//   - params.twc may be nil; when non-nil, a ToolWiringHook is appended after SkillAutoLoader.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
 //
 // Side effects:
 //   - Reads skill-autoloader.yaml from the config directory if it exists.
-func buildHookChain(
-	learningStore *learning.JSONFileStore,
-	manifestGetter func() agent.Manifest,
-	failoverHk *failover.Hook,
-	failoverMgr *failover.Manager,
-	twc *toolWiringCallbacks,
-) *hook.Chain {
+func buildHookChain(params hookChainConfig) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
 	if err != nil {
 		cfg = hook.DefaultSkillAutoLoaderConfig()
@@ -1237,29 +1255,30 @@ func buildHookChain(
 	hooks := []hook.Hook{
 		hook.LoggingHook(),
 	}
-	if learningStore != nil {
-		hooks = append(hooks, hook.LearningHook(learningStore))
+	if params.learningStore != nil {
+		hooks = append(hooks, hook.LearningHook(params.learningStore))
 	}
 	hooks = append(hooks,
-		hook.SkillAutoLoaderHook(cfg, manifestGetter),
+		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames),
 	)
-	if twc != nil {
-		hooks = append(hooks, hook.ToolWiringHook(manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
+	if params.twc != nil {
+		twc := params.twc
+		hooks = append(hooks, hook.ToolWiringHook(params.manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
 	}
 	projectRoot, err := os.Getwd()
 	if err != nil {
 		projectRoot = "."
 	}
 	hooks = append(hooks,
-		hook.PhaseDetectorHook(manifestGetter),
-		hook.ContextInjectionHook(manifestGetter, projectRoot),
+		hook.PhaseDetectorHook(params.manifestGetter),
+		hook.ContextInjectionHook(params.manifestGetter, projectRoot),
 		tracer.Hook(),
 	)
-	if failoverMgr != nil {
-		streamHook := failover.NewStreamHook(failoverMgr, nil, "")
+	if params.failoverMgr != nil {
+		streamHook := failover.NewStreamHook(params.failoverMgr, nil, "")
 		hooks = append(hooks, streamHook.Execute)
-	} else if failoverHk != nil {
-		hooks = append([]hook.Hook{failoverHookAdapter(failoverHk)}, hooks...)
+	} else if params.failoverHk != nil {
+		hooks = append([]hook.Hook{failoverHookAdapter(params.failoverHk)}, hooks...)
 	}
 	return hook.NewChain(hooks...)
 }
@@ -1823,7 +1842,10 @@ func BuildHookChainForTest(
 	learningStore *learning.JSONFileStore,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
-	return buildHookChain(learningStore, manifestGetter, nil, nil, nil)
+	return buildHookChain(hookChainConfig{
+		learningStore:  learningStore,
+		manifestGetter: manifestGetter,
+	})
 }
 
 // MergeMCPServersForTest is a test helper that exposes mergeMCPServers for testing.
@@ -2199,7 +2221,11 @@ func BuildHookChainForTestWithFailover(
 	health := failover.NewHealthManager()
 	chain := failover.NewFallbackChain(defaultFailoverProviders(), defaultFailoverTiers())
 	fh := failover.NewHook(chain, health)
-	return buildHookChain(learningStore, manifestGetter, fh, nil, nil)
+	return buildHookChain(hookChainConfig{
+		learningStore:  learningStore,
+		manifestGetter: manifestGetter,
+		failoverHk:     fh,
+	})
 }
 
 // SessionMgr returns the session manager for the TUI layer.
