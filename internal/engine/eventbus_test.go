@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -378,6 +379,112 @@ var _ = Describe("EventBus Integration", func() {
 			Expect(requestEvents[0].Data.AgentID).To(Equal("test-agent"))
 			Expect(requestEvents[1].Data.AgentID).To(Equal("test-agent"))
 			Expect(requestEvents[1].Data.Request.Messages).NotTo(BeEmpty())
+		})
+	})
+
+	Describe("agent.switched events", func() {
+		Context("when Stream triggers a manifest switch", func() {
+			It("includes the session ID from context in the agent.switched event", func() {
+				initialManifest := agent.Manifest{
+					ID:   "initial-agent",
+					Name: "Initial Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the initial agent.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				switchedManifest := agent.Manifest{
+					ID:   "switched-agent",
+					Name: "Switched Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the switched agent.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				registry := agent.NewRegistry()
+				registry.Register(&switchedManifest)
+
+				eng := engine.New(engine.Config{
+					ChatProvider:  chatProvider,
+					Manifest:      initialManifest,
+					AgentRegistry: registry,
+				})
+
+				var mu sync.Mutex
+				var switchedEvents []*events.AgentSwitchedEvent
+				eng.EventBus().Subscribe(events.EventAgentSwitched, func(event any) {
+					if se, ok := event.(*events.AgentSwitchedEvent); ok {
+						mu.Lock()
+						switchedEvents = append(switchedEvents, se)
+						mu.Unlock()
+					}
+				})
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "test-session-id")
+				chunks, err := eng.Stream(ctx, "switched-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain channel
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(switchedEvents).To(HaveLen(1))
+				Expect(switchedEvents[0].Data.SessionID).To(Equal("test-session-id"))
+				Expect(switchedEvents[0].Data.FromAgent).To(Equal("initial-agent"))
+				Expect(switchedEvents[0].Data.ToAgent).To(Equal("switched-agent"))
+			})
+		})
+
+		Context("when SetManifest is called after Stream has established a session", func() {
+			It("includes the last known session ID in the agent.switched event", func() {
+				initialManifest := agent.Manifest{
+					ID:   "base-agent",
+					Name: "Base Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the base agent.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				newManifest := agent.Manifest{
+					ID:   "new-agent",
+					Name: "New Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the new agent.",
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     initialManifest,
+				})
+
+				var mu sync.Mutex
+				var switchedEvents []*events.AgentSwitchedEvent
+				eng.EventBus().Subscribe(events.EventAgentSwitched, func(event any) {
+					if se, ok := event.(*events.AgentSwitchedEvent); ok {
+						mu.Lock()
+						switchedEvents = append(switchedEvents, se)
+						mu.Unlock()
+					}
+				})
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "established-session-id")
+				chunks, err := eng.Stream(ctx, "", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain channel
+				}
+
+				eng.SetManifest(newManifest)
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(switchedEvents).To(HaveLen(1))
+				Expect(switchedEvents[0].Data.SessionID).To(Equal("established-session-id"))
+				Expect(switchedEvents[0].Data.FromAgent).To(Equal("base-agent"))
+				Expect(switchedEvents[0].Data.ToAgent).To(Equal("new-agent"))
+			})
 		})
 	})
 

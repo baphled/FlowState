@@ -59,6 +59,7 @@ type Engine struct {
 	cachedAgentFiles   []agent.InstructionFile
 	agentFilesCached   bool
 	skipAgentFiles     bool
+	currentSessionID   string
 
 	mu sync.RWMutex
 }
@@ -312,6 +313,7 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.manifest = manifest
 	e.systemPromptDirty = true
 	e.cachedToolSchemas = nil
+	sessionID := e.currentSessionID
 
 	if dt, ok := e.getDelegateToolLocked(); ok {
 		dt.SetDelegation(manifest.Delegation)
@@ -321,6 +323,7 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 
 	if e.bus != nil && oldID != manifest.ID && oldID != "" {
 		e.bus.Publish(events.EventAgentSwitched, events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
+			SessionID: sessionID,
 			FromAgent: oldID,
 			ToAgent:   manifest.ID,
 		}))
@@ -601,6 +604,10 @@ func (e *Engine) ToolSchemas() []provider.Tool {
 //   - Spawns a goroutine to process the stream and handle tool calls.
 func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	sessionID := sessionIDFromContext(ctx)
+
+	e.mu.Lock()
+	e.currentSessionID = sessionID
+	e.mu.Unlock()
 
 	if agentID != "" && e.agentRegistry != nil {
 		if manifest, found := e.agentRegistry.Get(agentID); found {
