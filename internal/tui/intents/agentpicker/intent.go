@@ -175,3 +175,17 @@ func (i *Intent) Result() *intents.IntentResult {
 func (i *Intent) SelectedAgent() int {
 	return i.selectedAgent
 }
+
+// SetOnSelect replaces the callback invoked when the user confirms an agent selection.
+//
+// Expected:
+//   - fn is a non-nil function accepting the selected agent ID.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Replaces i.onSelect.
+func (i *Intent) SetOnSelect(fn func(agentID string)) {
+	i.onSelect = fn
+}

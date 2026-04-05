@@ -10,7 +10,7 @@ import (
 )
 
 // SeedAgentsDir copies all *.md files from the source filesystem to the destination directory.
-// It always overwrites existing files to ensure embedded manifests stay current.
+// Files that already exist in destDir are skipped so that custom agent manifests are preserved.
 //
 // Expected:
 //   - srcFS is a valid fs.FS containing an "agents" subdirectory with .md files.
@@ -22,7 +22,7 @@ import (
 //
 // Side effects:
 //   - Creates destDir if it does not exist.
-//   - Copies each .md file from srcFS to destDir, overwriting existing files.
+//   - Copies each .md file from srcFS to destDir only when the destination file does not already exist.
 func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 	agentsDir, err := fs.Sub(srcFS, "agents")
 	if err != nil {
@@ -59,7 +59,9 @@ func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 	return nil
 }
 
-// copySingleFile copies a single file from srcFS to destPath, properly managing resources.
+// copySingleFile copies a single file from srcFS to destPath when the destination
+// does not already exist. Existing files are left untouched so that custom agent
+// manifests placed by the user are preserved across restarts.
 //
 // Expected:
 //   - srcFS is a valid fs.FS.
@@ -68,22 +70,25 @@ func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 //
 // Returns:
 //   - An error if opening source, creating destination, or copying data fails.
-//   - nil on success.
+//   - nil on success, including when destPath already exists.
 //
 // Side effects:
-//   - Creates or overwrites the file at destPath.
+//   - Creates destPath when it does not exist.
 func copySingleFile(srcFS fs.FS, filename, destPath string) error {
+	dstFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if os.IsExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("creating destination file %s: %w", destPath, err)
+	}
+	defer dstFile.Close()
+
 	srcFile, err := srcFS.Open(filename)
 	if err != nil {
 		return fmt.Errorf("opening source file %s: %w", filename, err)
 	}
 	defer srcFile.Close()
-
-	dstFile, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("creating destination file %s: %w", destPath, err)
-	}
-	defer dstFile.Close()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return fmt.Errorf("copying %s: %w", filename, err)

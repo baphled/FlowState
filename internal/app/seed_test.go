@@ -68,12 +68,12 @@ var _ = Describe("SeedAgentsDir", func() {
 	})
 
 	Context("when destination directory already has files", func() {
-		It("overwrites existing files with source content", func() {
+		It("preserves existing files and does not overwrite them", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			staleContent := "---\nid: general\nname: Stale General\n---\n"
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
+			customContent := "---\nid: general\nname: My Custom General\n---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(customContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
@@ -81,16 +81,15 @@ var _ = Describe("SeedAgentsDir", func() {
 
 			content, err := os.ReadFile(filepath.Join(agentsDest, "general.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring("name: General"))
-			Expect(string(content)).NotTo(ContainSubstring("Stale"))
+			Expect(string(content)).To(ContainSubstring("My Custom General"))
 		})
 
-		It("copies all files including previously missing ones", func() {
+		It("copies missing files while preserving existing ones", func() {
 			agentsDest := filepath.Join(destDir, "agents")
 			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
 
-			staleContent := "---\nid: general\nname: Stale General\n---\n"
-			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
+			customContent := "---\nid: general\nname: My Custom General\n---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDest, "general.md"), []byte(customContent), 0o600)).To(Succeed())
 
 			err := app.SeedAgentsDir(srcFS, agentsDest)
 
@@ -102,11 +101,27 @@ var _ = Describe("SeedAgentsDir", func() {
 
 			content, err := os.ReadFile(filepath.Join(agentsDest, "general.md"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(string(content)).To(ContainSubstring("name: General"))
+			Expect(string(content)).To(ContainSubstring("My Custom General"))
 
 			content, err = os.ReadFile(filepath.Join(agentsDest, "coder.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(content)).To(ContainSubstring("id: coder"))
+		})
+
+		It("preserves a custom agent file that has no embedded counterpart", func() {
+			agentsDest := filepath.Join(destDir, "agents")
+			Expect(os.MkdirAll(agentsDest, 0o755)).To(Succeed())
+
+			customContent := "---\nid: my-custom\nname: My Custom Agent\n---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDest, "my-custom.md"), []byte(customContent), 0o600)).To(Succeed())
+
+			err := app.SeedAgentsDir(srcFS, agentsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+
+			content, err := os.ReadFile(filepath.Join(agentsDest, "my-custom.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("My Custom Agent"))
 		})
 	})
 
