@@ -7,7 +7,7 @@ aliases:
   - investigate
   - codebase
   - research
-complexity: medium
+complexity: low
 capabilities:
   tools:
     - bash

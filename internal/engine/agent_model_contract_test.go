@@ -28,12 +28,12 @@ type agentContract struct {
 // FlowState agent to its complexity tier and expected abstract model descriptor.
 var builtInAgentContracts = []agentContract{
 	{agentID: "planner", expectedComplexity: "deep", expectedDescriptor: "reasoning"},
-	{agentID: "plan-writer", expectedComplexity: "deep", expectedDescriptor: "reasoning"},
-	{agentID: "plan-reviewer", expectedComplexity: "deep", expectedDescriptor: "reasoning"},
+	{agentID: "plan-writer", expectedComplexity: "medium", expectedDescriptor: "balanced"},
+	{agentID: "plan-reviewer", expectedComplexity: "medium", expectedDescriptor: "balanced"},
 	{agentID: "executor", expectedComplexity: "deep", expectedDescriptor: "reasoning"},
 	{agentID: "analyst", expectedComplexity: "deep", expectedDescriptor: "reasoning"},
-	{agentID: "explorer", expectedComplexity: "medium", expectedDescriptor: "balanced"},
-	{agentID: "librarian", expectedComplexity: "medium", expectedDescriptor: "balanced"},
+	{agentID: "explorer", expectedComplexity: "low", expectedDescriptor: "fast"},
+	{agentID: "librarian", expectedComplexity: "low", expectedDescriptor: "fast"},
 }
 
 var _ = Describe("Agent Model Routing Contract", Label("integration", "contract"), func() {
@@ -78,9 +78,28 @@ var _ = Describe("Agent Model Routing Contract", Label("integration", "contract"
 		It("explorer and librarian agents are no longer silently unmapped", func() {
 			resolver := engine.NewCategoryResolver(nil)
 
-			cfg, err := resolver.Resolve("medium")
+			cfg, err := resolver.Resolve("low")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cfg.Model).To(Equal("balanced"))
+			Expect(cfg.Model).To(Equal("fast"))
+		})
+	})
+
+	Describe("low tier regression guard", func() {
+		It("DefaultCategoryRouting contains the 'low' entry (regression guard)", func() {
+			routing := engine.DefaultCategoryRouting()
+
+			_, ok := routing["low"]
+
+			Expect(ok).To(BeTrue())
+		})
+
+		It("DefaultCategoryRouting resolves 'low' to 'fast'", func() {
+			resolver := engine.NewCategoryResolver(nil)
+
+			cfg, err := resolver.Resolve("low")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Model).To(Equal("fast"))
 		})
 	})
 

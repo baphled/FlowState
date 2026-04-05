@@ -6,7 +6,7 @@ aliases:
   - review
   - reviewer
   - validation
-complexity: deep
+complexity: medium
 capabilities:
   tools:
     - bash

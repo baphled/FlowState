@@ -6,7 +6,7 @@ aliases:
   - writing
   - plan-generation
   - writer
-complexity: deep
+complexity: medium
 capabilities:
   tools:
     - bash

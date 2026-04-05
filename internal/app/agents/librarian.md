@@ -7,7 +7,7 @@ aliases:
   - documentation
   - docs
   - external-refs
-complexity: medium
+complexity: low
 capabilities:
   tools:
     - web

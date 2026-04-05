@@ -56,5 +56,15 @@ var _ = Describe("CategoryResolver", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.Model).NotTo(BeEmpty())
 		})
+
+		It("resolves low category to fast descriptor", func() {
+			resolver := engine.NewCategoryResolver(nil)
+			cfg, err := resolver.Resolve("low")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Model).To(Equal("fast"))
+			Expect(cfg.Temperature).To(Equal(0.2))
+			Expect(cfg.MaxTokens).To(Equal(2048))
+		})
 	})
 })
