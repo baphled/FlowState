@@ -296,6 +296,12 @@ func extractEventData(ev events.Event) any {
 		return e.Data
 	case *events.ToolReasoningEvent:
 		return e.Data
+	case *events.BackgroundTaskStartedEvent:
+		return e.Data
+	case *events.BackgroundTaskCompletedEvent:
+		return e.Data
+	case *events.BackgroundTaskFailedEvent:
+		return e.Data
 	default:
 		return ev
 	}
