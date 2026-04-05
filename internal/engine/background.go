@@ -174,7 +174,7 @@ func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
 		Name:      task.Description,
 		Status:    "running",
 	})
-	m.eventBus.Publish(events.EventTypeBackgroundTaskStarted, event)
+	m.eventBus.Publish(events.EventBackgroundTaskStarted, event)
 }
 
 // emitTaskCompleted emits a background task completed event if the event bus is configured.
@@ -195,7 +195,7 @@ func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
 		Name:      task.Description,
 		Status:    "completed",
 	})
-	m.eventBus.Publish(events.EventTypeBackgroundTaskCompleted, event)
+	m.eventBus.Publish(events.EventBackgroundTaskCompleted, event)
 }
 
 // emitTaskFailed emits a background task failed event if the event bus is configured.
@@ -221,7 +221,7 @@ func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
 		Status:    "failed",
 		Error:     errMsg,
 	})
-	m.eventBus.Publish(events.EventTypeBackgroundTaskFailed, event)
+	m.eventBus.Publish(events.EventBackgroundTaskFailed, event)
 }
 
 // injectCompletionNotification sends a completion notification to the parent session.

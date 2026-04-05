@@ -504,13 +504,6 @@ type BackgroundTaskEventData struct {
 	Error     string // non-empty if failed
 }
 
-// Event type constants for background task lifecycle.
-const (
-	EventTypeBackgroundTaskStarted   = "background.task.started"
-	EventTypeBackgroundTaskCompleted = "background.task.completed"
-	EventTypeBackgroundTaskFailed    = "background.task.failed"
-)
-
 // BackgroundTaskStartedEvent represents a background task start event.
 type BackgroundTaskStartedEvent struct {
 	BaseEvent
@@ -534,7 +527,7 @@ func NewBackgroundTaskStartedEvent(data BackgroundTaskEventData, ts ...time.Time
 		t = ts[0]
 	}
 	return &BackgroundTaskStartedEvent{
-		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskStarted, timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskStarted, timestamp: t},
 		Data:      data,
 	}
 }
@@ -562,7 +555,7 @@ func NewBackgroundTaskCompletedEvent(data BackgroundTaskEventData, ts ...time.Ti
 		t = ts[0]
 	}
 	return &BackgroundTaskCompletedEvent{
-		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskCompleted, timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskCompleted, timestamp: t},
 		Data:      data,
 	}
 }
@@ -590,7 +583,7 @@ func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time)
 		t = ts[0]
 	}
 	return &BackgroundTaskFailedEvent{
-		BaseEvent: BaseEvent{eventType: EventTypeBackgroundTaskFailed, timestamp: t},
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskFailed, timestamp: t},
 		Data:      data,
 	}
 }

@@ -29,9 +29,9 @@ var subscribedEventTypes = []string{
 	events.EventProviderRequest,
 	events.EventProviderResponse,
 	events.EventAgentSwitched,
-	events.EventTypeBackgroundTaskStarted,
-	events.EventTypeBackgroundTaskCompleted,
-	events.EventTypeBackgroundTaskFailed,
+	events.EventBackgroundTaskStarted,
+	events.EventBackgroundTaskCompleted,
+	events.EventBackgroundTaskFailed,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.

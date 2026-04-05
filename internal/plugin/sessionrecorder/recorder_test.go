@@ -320,7 +320,7 @@ var _ = Describe("Recorder", func() {
 			Expect(recorder.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
-			bus.Publish(events.EventTypeBackgroundTaskStarted, events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
+			bus.Publish(events.EventBackgroundTaskStarted, events.NewBackgroundTaskStartedEvent(events.BackgroundTaskEventData{
 				TaskID: "task-started-1",
 				Name:   "my-background-task",
 				Status: "running",
@@ -338,7 +338,7 @@ var _ = Describe("Recorder", func() {
 			var entry map[string]any
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["kind"]).To(Equal("event"))
-			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskStarted))
+			Expect(entry["event_type"]).To(Equal(events.EventBackgroundTaskStarted))
 			payload, ok := entry["data"].(map[string]any)
 			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
 			Expect(payload["TaskID"]).To(Equal("task-started-1"))
@@ -348,7 +348,7 @@ var _ = Describe("Recorder", func() {
 			Expect(recorder.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
-			bus.Publish(events.EventTypeBackgroundTaskCompleted, events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
+			bus.Publish(events.EventBackgroundTaskCompleted, events.NewBackgroundTaskCompletedEvent(events.BackgroundTaskEventData{
 				TaskID: "task-completed-1",
 				Name:   "my-background-task",
 				Status: "completed",
@@ -366,7 +366,7 @@ var _ = Describe("Recorder", func() {
 			var entry map[string]any
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["kind"]).To(Equal("event"))
-			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskCompleted))
+			Expect(entry["event_type"]).To(Equal(events.EventBackgroundTaskCompleted))
 			payload, ok := entry["data"].(map[string]any)
 			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
 			Expect(payload["TaskID"]).To(Equal("task-completed-1"))
@@ -376,7 +376,7 @@ var _ = Describe("Recorder", func() {
 			Expect(recorder.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
-			bus.Publish(events.EventTypeBackgroundTaskFailed, events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
+			bus.Publish(events.EventBackgroundTaskFailed, events.NewBackgroundTaskFailedEvent(events.BackgroundTaskEventData{
 				TaskID: "task-failed-1",
 				Name:   "my-background-task",
 				Status: "failed",
@@ -395,7 +395,7 @@ var _ = Describe("Recorder", func() {
 			var entry map[string]any
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["kind"]).To(Equal("event"))
-			Expect(entry["event_type"]).To(Equal(events.EventTypeBackgroundTaskFailed))
+			Expect(entry["event_type"]).To(Equal(events.EventBackgroundTaskFailed))
 			payload, ok := entry["data"].(map[string]any)
 			Expect(ok).To(BeTrue(), "data should be a JSON object (BackgroundTaskEventData), not a raw event")
 			Expect(payload["TaskID"]).To(Equal("task-failed-1"))

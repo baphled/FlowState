@@ -31,27 +31,33 @@
 //   - session.resumed
 //   - provider.rate_limited
 //   - plugin.event
+//   - background.task.started
+//   - background.task.completed
+//   - background.task.failed
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
 
 // Event type constants for the FlowState event system.
 const (
-	EventAgentSwitched        = "agent.switched"
-	EventToolReasoning        = "tool.reasoning"
-	EventPromptGenerated      = "prompt.generated"
-	EventContextWindowBuilt   = "context.window.built"
-	EventToolExecuteBefore    = "tool.execute.before"
-	EventToolExecuteAfter     = "tool.execute.after"
-	EventProviderError        = "provider.error"
-	EventProviderRequest      = "provider.request"
-	EventProviderResponse     = "provider.response"
-	EventSessionCreated       = "session.created"
-	EventSessionEnded         = "session.ended"
-	EventProviderRateLimited  = "provider.rate_limited"
-	EventSessionResumed       = "session.resumed"
-	EventToolExecuteError     = "tool.execute.error"
-	EventToolExecuteResult    = "tool.execute.result"
-	EventProviderRequestRetry = "provider.request.retry"
-	EventPluginEvent          = "plugin.event"
+	EventAgentSwitched           = "agent.switched"
+	EventToolReasoning           = "tool.reasoning"
+	EventPromptGenerated         = "prompt.generated"
+	EventContextWindowBuilt      = "context.window.built"
+	EventToolExecuteBefore       = "tool.execute.before"
+	EventToolExecuteAfter        = "tool.execute.after"
+	EventProviderError           = "provider.error"
+	EventProviderRequest         = "provider.request"
+	EventProviderResponse        = "provider.response"
+	EventSessionCreated          = "session.created"
+	EventSessionEnded            = "session.ended"
+	EventProviderRateLimited     = "provider.rate_limited"
+	EventSessionResumed          = "session.resumed"
+	EventToolExecuteError        = "tool.execute.error"
+	EventToolExecuteResult       = "tool.execute.result"
+	EventProviderRequestRetry    = "provider.request.retry"
+	EventPluginEvent             = "plugin.event"
+	EventBackgroundTaskStarted   = "background.task.started"
+	EventBackgroundTaskCompleted = "background.task.completed"
+	EventBackgroundTaskFailed    = "background.task.failed"
 )
