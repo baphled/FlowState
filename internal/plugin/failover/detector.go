@@ -89,7 +89,7 @@ func (d *RateLimitDetector) HandleError(event any) {
 			data.ModelName,
 			time.Now().Add(1*time.Hour),
 		)
-		d.bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
+		d.bus.Publish(events.EventProviderRateLimited, events.NewProviderEvent(events.ProviderEventData{
 			ProviderName: data.ProviderName,
 		}))
 	}

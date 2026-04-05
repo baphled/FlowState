@@ -320,7 +320,7 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Unlock()
 
 	if e.bus != nil && oldID != manifest.ID && oldID != "" {
-		e.bus.Publish("agent.switched", events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
+		e.bus.Publish(events.EventAgentSwitched, events.NewAgentSwitchedEvent(events.AgentSwitchedEventData{
 			FromAgent: oldID,
 			ToAgent:   manifest.ID,
 		}))
@@ -855,7 +855,7 @@ func (e *Engine) processStreamChunks(
 
 			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
 				if e.bus != nil && responseContent.Len() > 0 {
-					e.bus.Publish("tool.reasoning", events.NewToolReasoningEvent(events.ToolReasoningEventData{
+					e.bus.Publish(events.EventToolReasoning, events.NewToolReasoningEvent(events.ToolReasoningEventData{
 						SessionID:        sessionID,
 						AgentID:          e.manifest.ID,
 						ToolName:         chunk.ToolCall.Name,
@@ -1106,14 +1106,14 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	e.lastContextResult = result
 
 	if e.bus != nil {
-		e.bus.Publish("prompt.generated", events.NewPromptEvent(events.PromptEventData{
+		e.bus.Publish(events.EventPromptGenerated, events.NewPromptEvent(events.PromptEventData{
 			SessionID:  sessionID,
 			AgentID:    e.manifest.ID,
 			FullPrompt: manifestCopy.Instructions.SystemPrompt,
 			TokenCount: result.TokensUsed,
 			Truncated:  result.Truncated,
 		}))
-		e.bus.Publish("context.window.built", events.NewContextWindowEvent(events.ContextWindowEventData{
+		e.bus.Publish(events.EventContextWindowBuilt, events.NewContextWindowEvent(events.ContextWindowEventData{
 			SessionID:       sessionID,
 			AgentID:         e.manifest.ID,
 			TokenBudget:     tokenBudget,
@@ -1377,7 +1377,16 @@ func (e *Engine) getDelegateToolLocked() (*DelegateTool, bool) {
 // Side effects:
 //   - Publishes an event on the engine bus when one is configured.
 func (e *Engine) publishSessionEvent(sessionID string, action string) {
-	e.bus.Publish("session."+action, events.NewSessionEvent(events.SessionEventData{
+	var topic string
+	switch action {
+	case "created":
+		topic = events.EventSessionCreated
+	case "ended":
+		topic = events.EventSessionEnded
+	default:
+		topic = "session." + action
+	}
+	e.bus.Publish(topic, events.NewSessionEvent(events.SessionEventData{
 		SessionID: sessionID,
 		Action:    action,
 	}))
@@ -1395,7 +1404,7 @@ func (e *Engine) publishSessionEvent(sessionID string, action string) {
 // Side effects:
 //   - Publishes a tool execution start event on the engine bus.
 func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args map[string]interface{}) {
-	e.bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
+	e.bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
 		SessionID: sessionID,
 		ToolName:  toolName,
 		Args:      args,
@@ -1416,7 +1425,7 @@ func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args 
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
 func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error) {
-	e.bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
+	e.bus.Publish(events.EventToolExecuteAfter, events.NewToolEvent(events.ToolEventData{
 		SessionID: sessionID,
 		ToolName:  toolName,
 		Args:      args,
@@ -1456,7 +1465,7 @@ func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err e
 	if e.bus == nil {
 		return
 	}
-	e.bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
+	e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(events.ProviderErrorEventData{
 		SessionID:    sessionID,
 		AgentID:      e.manifest.ID,
 		ProviderName: e.LastProvider(),
@@ -1481,7 +1490,7 @@ func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.Chat
 	if e.bus == nil {
 		return
 	}
-	e.bus.Publish("provider.request", events.NewProviderRequestEvent(events.ProviderRequestEventData{
+	e.bus.Publish(events.EventProviderRequest, events.NewProviderRequestEvent(events.ProviderRequestEventData{
 		SessionID:    sessionID,
 		AgentID:      e.manifest.ID,
 		ProviderName: req.Provider,
@@ -1506,7 +1515,7 @@ func (e *Engine) publishProviderResponseEvent(sessionID string, responseContent 
 	if e.bus == nil {
 		return
 	}
-	e.bus.Publish("provider.response", events.NewProviderResponseEvent(events.ProviderResponseEventData{
+	e.bus.Publish(events.EventProviderResponse, events.NewProviderResponseEvent(events.ProviderResponseEventData{
 		SessionID:       sessionID,
 		AgentID:         e.manifest.ID,
 		ProviderName:    e.LastProvider(),

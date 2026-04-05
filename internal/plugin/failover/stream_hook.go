@@ -217,7 +217,7 @@ func (sh *StreamHook) publishFailoverError(candidate provider.ModelPreference, e
 	if sh.eventBus == nil {
 		return
 	}
-	sh.eventBus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
+	sh.eventBus.Publish(events.EventProviderError, events.NewProviderErrorEvent(events.ProviderErrorEventData{
 		AgentID:      sh.agentID,
 		ProviderName: candidate.Provider,
 		ModelName:    candidate.Model,
