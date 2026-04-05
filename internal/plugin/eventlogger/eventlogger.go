@@ -30,6 +30,7 @@ var subscribedEventTypes = []string{
 	events.EventToolReasoning,
 	events.EventProviderRequest,
 	events.EventProviderResponse,
+	events.EventProviderRequestRetry,
 	events.EventAgentSwitched,
 	events.EventBackgroundTaskStarted,
 	events.EventBackgroundTaskCompleted,
@@ -227,6 +228,9 @@ func extractEventData(ev events.Event) any {
 	if data, ok := extractBackgroundTaskData(ev); ok {
 		return data
 	}
+	if data, ok := extractProviderEventData(ev); ok {
+		return data
+	}
 	switch e := ev.(type) {
 	case *events.SessionEvent:
 		return e.Data
@@ -242,16 +246,31 @@ func extractEventData(ev events.Event) any {
 		return e.Data
 	case *events.ToolReasoningEvent:
 		return e.Data
-	case *events.ProviderRequestEvent:
-		return e.Data
-	case *events.ProviderResponseEvent:
-		return e.Data
 	case *events.AgentSwitchedEvent:
-		return e.Data
-	case *events.ProviderErrorEvent:
 		return e.Data
 	default:
 		return ev
+	}
+}
+
+// extractProviderEventData returns the data payload from provider request, response,
+// retry, and error events, returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised provider event type.
+// Side effects: none.
+func extractProviderEventData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.ProviderRequestEvent:
+		return e.Data, true
+	case *events.ProviderResponseEvent:
+		return e.Data, true
+	case *events.ProviderRequestRetryEvent:
+		return e.Data, true
+	case *events.ProviderErrorEvent:
+		return e.Data, true
+	default:
+		return nil, false
 	}
 }
 
