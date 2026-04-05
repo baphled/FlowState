@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -82,6 +83,28 @@ var _ = Describe("DelegationProgress", func() {
 			}
 
 			Expect(foundProgressEvent).To(BeTrue(), "expected to find at least one ProgressEvent with tool calls > 0")
+		})
+
+		It("exits the collect loop when context is cancelled mid-stream", func() {
+			chunks := make(chan provider.StreamChunk)
+			ctx, cancel := context.WithCancel(context.Background())
+			outChan := make(chan provider.StreamChunk, 10)
+			ctxWithOut := engine.WithStreamOutput(ctx, outChan)
+
+			dt := engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{}, "orchestrator")
+
+			started := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				close(started)
+				_, _ = engine.CollectWithProgressForTest(ctxWithOut, dt, chunks, time.Now())
+			}()
+
+			<-started
+			cancel()
+
+			Eventually(done, 2*time.Second).Should(BeClosed(), "collectWithProgress must exit when ctx is cancelled")
 		})
 
 		It("emits progress every 5 tool calls", func() {

@@ -1399,6 +1399,8 @@ func (d *DelegateTool) collectWithProgress(
 
 	for {
 		select {
+		case <-ctx.Done():
+			return delegationResult{}, ctx.Err()
 		case chunk, ok := <-chunks:
 			if !ok {
 				return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool}, nil
