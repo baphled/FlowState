@@ -11,7 +11,6 @@ import (
 
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
-	"gopkg.in/yaml.v3"
 )
 
 // Streamer is the interface for streaming AI responses.
@@ -890,27 +889,6 @@ func streamPlan(
 	return planText, nil
 }
 
-// tasksFromPlanText extracts and normalises tasks from a plan's markdown body.
-//
-// Expected:
-//   - planText contains a plan with YAML frontmatter delimiters.
-//
-// Returns:
-//   - A slice of Task values parsed from the markdown body.
-//
-// Side effects:
-//   - None.
-func tasksFromPlanText(planText string) []Task {
-	parts := strings.SplitN(planText, "---", 3)
-	if len(parts) < 3 {
-		return []Task{}
-	}
-	tasks := parseTasksFromMarkdown(parts[2])
-	for i := range tasks {
-		tasks[i].Dependencies = normalizeDependencies(tasks[i].Dependencies)
-	}
-	return tasks
-}
 
 // normalizeDependencies removes empty and "none" entries from a dependency list.
 //
@@ -1133,27 +1111,3 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 	return combined, nil
 }
 
-// parseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.
-//
-// Expected:
-//   - planText contains a plan with YAML frontmatter delimited by "---".
-//
-// Returns:
-//   - A File struct populated from the YAML frontmatter.
-//   - An error if the frontmatter is missing or cannot be unmarshalled.
-//
-// Side effects:
-//   - None.
-func parseFile(planText string) (*File, error) {
-	parts := strings.SplitN(planText, "---", 3)
-	if len(parts) < 3 {
-		return nil, errors.New("missing YAML frontmatter")
-	}
-
-	var file File
-	if err := yaml.Unmarshal([]byte(parts[1]), &file); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal YAML: %w", err)
-	}
-
-	return &file, nil
-}
