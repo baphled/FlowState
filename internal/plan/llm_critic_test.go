@@ -303,7 +303,7 @@ var _ = Describe("LLMCritic", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: failingCriticResponse()}
 				critic := newTestCritic(true)
-				harness := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv))
+				harness := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv), plan.WithMaxRetries(3))
 				streamer := &mockStreamer{responses: []string{
 					loadValidPlan(),
 					loadValidPlan(),

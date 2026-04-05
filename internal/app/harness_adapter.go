@@ -97,6 +97,10 @@ func createHarnessStreamer(
 	}
 
 	var opts []plan.HarnessOption
+	if cfg.MaxRetries > 0 {
+		opts = append(opts, plan.WithMaxRetries(cfg.MaxRetries))
+	}
+
 	if cfg.CriticEnabled && p != nil {
 		critic, err := plan.NewLLMCritic(true, "claude-sonnet-4-6")
 		if err == nil {

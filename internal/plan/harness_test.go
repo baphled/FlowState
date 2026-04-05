@@ -83,8 +83,9 @@ var _ = Describe("Harness", func() {
 	})
 
 	It("retries after invalid output and returns a valid plan", func() {
+		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(2))
 		streamer := &mockStreamer{responses: []string{invalidPlan(), loadValidPlan()}}
-		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+		result, err := harnessWithRetry.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
 		Expect(result.AttemptCount).To(Equal(2))
@@ -93,8 +94,9 @@ var _ = Describe("Harness", func() {
 	})
 
 	It("returns best-effort results after exhausting retries", func() {
+		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(3))
 		streamer := &mockStreamer{responses: []string{invalidPlan(), invalidPlan(), invalidPlan()}}
-		result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+		result, err := harnessWithRetry.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
 		Expect(result.AttemptCount).To(Equal(3))
@@ -144,6 +146,7 @@ var _ = Describe("StreamEvaluate", func() {
 
 	Context("when the first attempt fails validation", func() {
 		It("emits a harness_retry event and retries", func() {
+			harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(2))
 			invalidChunks := []provider.StreamChunk{
 				{Content: invalidPlan()},
 				{Done: true},
@@ -151,14 +154,14 @@ var _ = Describe("StreamEvaluate", func() {
 			validChunks := validPlanChunks()
 			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{invalidChunks, validChunks}}
 
-			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			outCh, err := harnessWithRetry.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
 			Expect(err).NotTo(HaveOccurred())
 
 			received := drainChunks(outCh)
 			retryChunks := filterRetryChunks(received)
 			Expect(retryChunks).To(HaveLen(1))
 			Expect(retryChunks[0].EventType).To(Equal("harness_retry"))
-			Expect(retryChunks[0].Content).To(ContainSubstring("attempt 1/3"))
+			Expect(retryChunks[0].Content).To(ContainSubstring("attempt 1/2"))
 			Expect(streamer.callCount).To(Equal(2))
 		})
 	})
@@ -373,6 +376,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 	})
 
 	type eventExpectation struct {
+		maxRetries       int
 		attemptStarts    int
 		completePresent  bool
 		expectedValid    bool
@@ -381,7 +385,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 
 	DescribeTable("harness events across retry scenarios",
 		func(buildStreamer func() *chunkMockStreamer, expected eventExpectation) {
-			harness := plan.NewHarness(projectRoot)
+			harness := plan.NewHarness(projectRoot, plan.WithMaxRetries(expected.maxRetries))
 			streamer := buildStreamer()
 
 			outCh, err := harness.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
@@ -417,6 +421,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 				}}
 			},
 			eventExpectation{
+				maxRetries:       1,
 				attemptStarts:    1,
 				completePresent:  true,
 				expectedValid:    true,
@@ -431,6 +436,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 				}}
 			},
 			eventExpectation{
+				maxRetries:       2,
 				attemptStarts:    2,
 				completePresent:  true,
 				expectedValid:    true,
@@ -446,6 +452,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 				}}
 			},
 			eventExpectation{
+				maxRetries:       3,
 				attemptStarts:    3,
 				completePresent:  true,
 				expectedValid:    false,
@@ -459,6 +466,7 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 				}}
 			},
 			eventExpectation{
+				maxRetries:       1,
 				attemptStarts:    1,
 				completePresent:  false,
 				expectedValid:    false,
@@ -466,6 +474,26 @@ var _ = Describe("StreamEvaluate event matrix", func() {
 			},
 		),
 	)
+})
+
+var _ = Describe("Harness with WithMaxRetries", func() {
+	var projectRoot string
+
+	BeforeEach(func() {
+		projectRoot = projectRootFromWorkingDir()
+	})
+
+	Context("when maxRetries is 1", func() {
+		It("stops after one failed attempt and does not retry", func() {
+			harness := plan.NewHarness(projectRoot, plan.WithMaxRetries(1))
+			streamer := &mockStreamer{responses: []string{invalidPlan()}}
+			result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result.AttemptCount).To(Equal(1))
+			Expect(streamer.callCount).To(Equal(1))
+		})
+	})
 })
 
 var _ = Describe("ValidatorChain", func() {

@@ -74,6 +74,24 @@ func WithVoter(voter *ConsistencyVoter) HarnessOption {
 	}
 }
 
+// WithMaxRetries sets the maximum number of evaluation attempts on the harness.
+//
+// Expected:
+//   - n is a positive integer. Values less than 1 are ignored.
+//
+// Returns:
+//   - A HarnessOption that sets the maxRetries field.
+//
+// Side effects:
+//   - None.
+func WithMaxRetries(n int) HarnessOption {
+	return func(h *Harness) {
+		if n >= 1 {
+			h.maxRetries = n
+		}
+	}
+}
+
 // Harness wraps a Streamer with validate-retry logic and optional LLM critic.
 type Harness struct {
 	maxRetries         int
@@ -99,7 +117,7 @@ type Harness struct {
 //   - None.
 func NewHarness(projectRoot string, opts ...HarnessOption) *Harness {
 	h := &Harness{
-		maxRetries:         3,
+		maxRetries:         1,
 		projectRoot:        projectRoot,
 		schemaValidator:    &SchemaValidator{},
 		assertionValidator: &AssertionValidator{},

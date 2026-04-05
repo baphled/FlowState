@@ -79,12 +79,15 @@ type MCPServerConfig struct {
 //
 // Each field controls an optional layer of the harness. By default,
 // the harness is enabled but the critic and voting are disabled.
+// MaxRetries controls how many evaluation attempts the harness makes
+// before returning a best-effort result; defaults to 1.
 type HarnessConfig struct {
 	Enabled            bool   `json:"enabled" yaml:"enabled"`
 	ProjectRoot        string `json:"project_root" yaml:"project_root"`
 	CriticEnabled      bool   `json:"critic_enabled" yaml:"critic_enabled"`
 	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
 	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
+	MaxRetries         int    `json:"harness_max_retries" yaml:"harness_max_retries"`
 }
 
 // AgentOverrideConfig holds per-agent configuration overrides.
@@ -199,6 +202,7 @@ func DefaultConfig() *AppConfig {
 			CriticEnabled:      false,
 			VotingEnabled:      false,
 			IncrementalEnabled: false,
+			MaxRetries:         1,
 		},
 		Plugins: PluginsConfig{
 			Failover: FailoverConfig{
@@ -364,6 +368,9 @@ func applyDefaults(cfg *AppConfig) {
 
 	if !cfg.Harness.Enabled {
 		cfg.Harness.Enabled = true
+	}
+	if cfg.Harness.MaxRetries == 0 {
+		cfg.Harness.MaxRetries = defaults.Harness.MaxRetries
 	}
 
 	for i := range cfg.MCPServers {

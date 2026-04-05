@@ -64,11 +64,12 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("retries on invalid plan and succeeds", func() {
+		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(2))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), loadValidPlan()},
 		}
 
-		result, err := harness.Evaluate(ctx, streamer, "planner", "Generate a plan")
+		result, err := harnessWithRetry.Evaluate(ctx, streamer, "planner", "Generate a plan")
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -79,11 +80,12 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("returns best-effort after max retries", func() {
+		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(3))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), invalidPlan(), invalidPlan()},
 		}
 
-		result, err := harness.Evaluate(ctx, streamer, "planner", "Generate a plan")
+		result, err := harnessWithRetry.Evaluate(ctx, streamer, "planner", "Generate a plan")
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
