@@ -1412,14 +1412,24 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 		}
 	})
 	bus.Subscribe("tool.execute.before", func(msg any) {
-		if args, ok := msg.(*external.ToolExecArgs); ok {
+		if toolEvt, ok := msg.(*events.ToolEvent); ok {
+			args := &external.ToolExecArgs{
+				Name: toolEvt.Data.ToolName,
+				Args: toolEvt.Data.Args,
+			}
+			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.before", "tool", toolEvt.Data.ToolName)
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecBefore, args); err != nil {
 				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.before", "error", err)
 			}
 		}
 	})
 	bus.Subscribe("tool.execute.after", func(msg any) {
-		if args, ok := msg.(*external.ToolExecArgs); ok {
+		if toolEvt, ok := msg.(*events.ToolEvent); ok {
+			args := &external.ToolExecArgs{
+				Name: toolEvt.Data.ToolName,
+				Args: toolEvt.Data.Args,
+			}
+			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.after", "tool", toolEvt.Data.ToolName)
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
 				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.after", "error", err)
 			}
