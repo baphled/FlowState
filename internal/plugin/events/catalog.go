@@ -331,12 +331,12 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool",
 		Struct:      "ToolEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusDeprecated,
 		Delivery:    "fire-and-forget",
-		Notes: "DEPRECATED: Subscribers are being migrated to tool.execute.result" +
-			" and tool.execute.error (T14). Engine still publishes during the transition window." +
+		Notes: "DEPRECATED: Subscribers migrated to tool.execute.result and tool.execute.error (T14)." +
+			" Engine still publishes during the transition window." +
 			" DIVERGENCE: EventType() returns \"tool\" but topic is \"tool.execute.after\".",
 	},
 	{
@@ -345,11 +345,11 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool.execute.error",
 		Struct:      "ToolExecuteErrorEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"(T14 will add subscribers)"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
-		Notes:       "Replacement for tool.execute.after for error paths. Subscribers to be wired in T14.",
+		Notes:       "Replacement for tool.execute.after for error paths.",
 	},
 	{
 		Topic:       EventToolExecuteResult,
@@ -357,11 +357,11 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool.execute.result",
 		Struct:      "ToolExecuteResultEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"(T14 will add subscribers)"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
-		Notes:       "Replacement for tool.execute.after for success paths. Subscribers to be wired in T14.",
+		Notes:       "Replacement for tool.execute.after for success paths.",
 	},
 	{
 		Topic:       EventToolReasoning,

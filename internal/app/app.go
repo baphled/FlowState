@@ -1455,7 +1455,7 @@ func startBusPlugins(registry *pluginpkg.Registry, bus *eventbus.EventBus) {
 //   - None.
 //
 // Side effects:
-//   - Subscribes to "plugin.event", "tool.execute.before", and "tool.execute.after" events on the bus.
+//   - Subscribes to "plugin.event", "tool.execute.before", "tool.execute.result", and "tool.execute.error" events on the bus.
 //   - Logs warnings if plugin hook dispatch errors occur.
 func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.EventBus) {
 	bus.Subscribe(events.EventPluginEvent, func(msg any) {
@@ -1477,15 +1477,27 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 			}
 		}
 	})
-	bus.Subscribe(events.EventToolExecuteAfter, func(msg any) {
-		if toolEvt, ok := msg.(*events.ToolEvent); ok {
+	bus.Subscribe(events.EventToolExecuteResult, func(msg any) {
+		if toolEvt, ok := msg.(*events.ToolExecuteResultEvent); ok {
 			args := &external.ToolExecArgs{
 				Name: toolEvt.Data.ToolName,
 				Args: toolEvt.Data.Args,
 			}
-			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.after", "tool", toolEvt.Data.ToolName)
+			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.result", "tool", toolEvt.Data.ToolName)
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
-				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.after", "error", err)
+				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.result", "error", err)
+			}
+		}
+	})
+	bus.Subscribe(events.EventToolExecuteError, func(msg any) {
+		if toolEvt, ok := msg.(*events.ToolExecuteErrorEvent); ok {
+			args := &external.ToolExecArgs{
+				Name: toolEvt.Data.ToolName,
+				Args: toolEvt.Data.Args,
+			}
+			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.error", "tool", toolEvt.Data.ToolName)
+			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
+				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.error", "error", err)
 			}
 		}
 	})

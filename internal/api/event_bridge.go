@@ -16,7 +16,7 @@ type busHandler struct {
 //
 // Expected: sessionID is the active API session; out is a buffered WSChunkMsg channel.
 // Returns: unsubscribe function — call it via defer in the WebSocket handler.
-// Side effects: subscribes to tool.execute.before, tool.execute.after, provider.rate_limited.
+// Side effects: subscribes to tool.execute.before, tool.execute.result, tool.execute.error, provider.rate_limited.
 func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) func() {
 	if s.eventBus == nil {
 		return func() {}
@@ -24,7 +24,8 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 
 	handlers := []busHandler{
 		{eventType: "tool.execute.before", handler: newToolBeforeHandler(sessionID, out)},
-		{eventType: "tool.execute.after", handler: newToolAfterHandler(sessionID, out)},
+		{eventType: "tool.execute.result", handler: newToolResultHandler(sessionID, out)},
+		{eventType: "tool.execute.error", handler: newToolErrorHandler(sessionID, out)},
 		{eventType: "provider.rate_limited", handler: newRateLimitHandler(out)},
 	}
 
@@ -61,25 +62,49 @@ func newToolBeforeHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Even
 	}
 }
 
-// newToolAfterHandler creates an EventHandler that forwards sanitised tool.execute.after
+// newToolResultHandler creates an EventHandler that forwards sanitised tool.execute.result
 // events to the out channel when the session ID matches.
 //
 // Expected: sessionID is the connection's session; out accepts WSChunkMsg values.
-// Returns: an eventbus.EventHandler for tool.execute.after events.
+// Returns: an eventbus.EventHandler for tool.execute.result events.
 // Side effects: sends to out channel on matching events.
-func newToolAfterHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+func newToolResultHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
 	return func(msg any) {
-		te, ok := msg.(*events.ToolEvent)
+		te, ok := msg.(*events.ToolExecuteResultEvent)
 		if !ok || te.Data.SessionID != sessionID {
 			return
 		}
 		sanitised := map[string]any{
-			"event_type": "tool.execute.after",
+			"event_type": "tool.execute.result",
 			"tool_name":  te.Data.ToolName,
-			"ok":         te.Data.Error == nil,
+			"ok":         true,
 		}
 		select {
-		case out <- WSChunkMsg{EventType: "tool.execute.after", EventData: sanitised}:
+		case out <- WSChunkMsg{EventType: "tool.execute.result", EventData: sanitised}:
+		default:
+		}
+	}
+}
+
+// newToolErrorHandler creates an EventHandler that forwards sanitised tool.execute.error
+// events to the out channel when the session ID matches.
+//
+// Expected: sessionID is the connection's session; out accepts WSChunkMsg values.
+// Returns: an eventbus.EventHandler for tool.execute.error events.
+// Side effects: sends to out channel on matching events.
+func newToolErrorHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+	return func(msg any) {
+		te, ok := msg.(*events.ToolExecuteErrorEvent)
+		if !ok || te.Data.SessionID != sessionID {
+			return
+		}
+		sanitised := map[string]any{
+			"event_type": "tool.execute.error",
+			"tool_name":  te.Data.ToolName,
+			"ok":         false,
+		}
+		select {
+		case out <- WSChunkMsg{EventType: "tool.execute.error", EventData: sanitised}:
 		default:
 		}
 	}

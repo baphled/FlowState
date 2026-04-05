@@ -54,22 +54,22 @@ var _ = Describe("subscribeSessionBus", func() {
 			Expect(data["tool_name"]).To(Equal("read"))
 		})
 
-		It("forwards tool.execute.after events with ok status", func() {
-			bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
+		It("forwards tool.execute.result events with ok status", func() {
+			bus.Publish("tool.execute.result", events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
 				SessionID: "sess-1",
 				ToolName:  "read",
 			}))
 
 			var msg api.WSChunkMsg
 			Eventually(out, 2*time.Second).Should(Receive(&msg))
-			Expect(msg.EventType).To(Equal("tool.execute.after"))
+			Expect(msg.EventType).To(Equal("tool.execute.result"))
 			data := msg.EventData.(map[string]any)
 			Expect(data["tool_name"]).To(Equal("read"))
 			Expect(data["ok"]).To(BeTrue())
 		})
 
-		It("forwards tool.execute.after events with error status", func() {
-			bus.Publish("tool.execute.after", events.NewToolEvent(events.ToolEventData{
+		It("forwards tool.execute.error events with error status", func() {
+			bus.Publish("tool.execute.error", events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
 				SessionID: "sess-1",
 				ToolName:  "write",
 				Error:     someError("permission denied"),

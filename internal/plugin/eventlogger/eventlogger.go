@@ -20,7 +20,8 @@ var subscribedEventTypes = []string{
 	events.EventSessionCreated,
 	events.EventSessionEnded,
 	events.EventToolExecuteBefore,
-	events.EventToolExecuteAfter,
+	events.EventToolExecuteResult,
+	events.EventToolExecuteError,
 	events.EventProviderError,
 	events.EventProviderRateLimited,
 	events.EventPromptGenerated,
@@ -218,6 +219,12 @@ func buildLogEntry(event any) logEntry {
 // Returns: the event's data payload.
 // Side effects: none.
 func extractEventData(ev events.Event) any {
+	if data, ok := extractToolExecuteData(ev); ok {
+		return data
+	}
+	if data, ok := extractBackgroundTaskData(ev); ok {
+		return data
+	}
 	switch e := ev.(type) {
 	case *events.SessionEvent:
 		return e.Data
@@ -239,14 +246,44 @@ func extractEventData(ev events.Event) any {
 		return e.Data
 	case *events.ProviderErrorEvent:
 		return e.Data
-	case *events.BackgroundTaskStartedEvent:
-		return e.Data
-	case *events.BackgroundTaskCompletedEvent:
-		return e.Data
-	case *events.BackgroundTaskFailedEvent:
-		return e.Data
 	default:
 		return ev
+	}
+}
+
+// extractToolExecuteData returns the data payload from tool execution result and error
+// events, returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised tool execution type.
+// Side effects: none.
+func extractToolExecuteData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.ToolExecuteResultEvent:
+		return e.Data, true
+	case *events.ToolExecuteErrorEvent:
+		return e.Data, true
+	default:
+		return nil, false
+	}
+}
+
+// extractBackgroundTaskData returns the data payload from background task events,
+// returning (data, true) when matched and (nil, false) otherwise.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised background task type.
+// Side effects: none.
+func extractBackgroundTaskData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.BackgroundTaskStartedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskCompletedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskFailedEvent:
+		return e.Data, true
+	default:
+		return nil, false
 	}
 }
 
