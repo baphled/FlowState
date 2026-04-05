@@ -615,6 +615,64 @@ always_active_skills:
 		})
 	})
 
+	Describe("AgentDirs", func() {
+		It("defaults to nil in DefaultConfig", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.AgentDirs).To(BeEmpty())
+		})
+
+		It("parses agent_dirs from YAML", func() {
+			configContent := `
+agent_dirs:
+  - /custom/agents/a
+  - /custom/agents/b
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err := os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.AgentDirs).To(Equal([]string{"/custom/agents/a", "/custom/agents/b"}))
+		})
+
+		It("expands tilde in each AgentDirs entry", func() {
+			home, _ := os.UserHomeDir()
+			configContent := `
+agent_dirs:
+  - ~/my-agents
+  - ~/other-agents
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err := os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.AgentDirs).To(Equal([]string{
+				filepath.Join(home, "my-agents"),
+				filepath.Join(home, "other-agents"),
+			}))
+		})
+
+		It("leaves AgentDirs nil when not specified in YAML", func() {
+			configContent := `
+log_level: info
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err := os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.AgentDirs).To(BeEmpty())
+		})
+	})
+
 	Describe("expandTilde", func() {
 		It("expands ~ alone to home directory", func() {
 			home, _ := os.UserHomeDir()

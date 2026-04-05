@@ -62,4 +62,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterPluginSteps(ctx)
 	RegisterDelegationSessionSteps(ctx)
 	s.RegisterSteps(ctx)
+	s.RegisterAgentLayeringSteps(ctx)
 }

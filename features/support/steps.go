@@ -139,6 +139,10 @@ type StepDefinitions struct {
 	// Markdown agent test fields
 	markdownFilePath string
 	loadedManifest   *agent.Manifest
+
+	// Layered agent discovery test fields
+	primaryAgentDir string
+	extraAgentDir   string
 }
 
 // TestApp represents a test application instance.

@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +10,11 @@ import (
 	"sort"
 	"strings"
 )
+
+// ErrAgentDirNotFound indicates that a directory passed to DiscoverMerge does
+// not exist on disk. Callers merging optional extra directories can inspect
+// this error via errors.Is to decide whether to log and continue or fail hard.
+var ErrAgentDirNotFound = errors.New("agent directory not found")
 
 // Registry manages a collection of agent manifests.
 type Registry struct {
@@ -58,6 +64,59 @@ func (r *Registry) Discover(dir string) error {
 	}
 
 	r.manifests = make(map[string]*Manifest)
+	for _, path := range manifestPaths {
+		manifest, err := LoadManifest(path)
+		if err != nil {
+			log.Printf("skipping agent manifest %s: %v", path, err)
+			continue
+		}
+		if err := manifest.Validate(); err != nil {
+			log.Printf("skipping invalid agent manifest %s: %v", path, err)
+			continue
+		}
+		r.manifests[manifest.ID] = manifest
+	}
+
+	return nil
+}
+
+// DiscoverMerge scans dir for agent manifests and merges them into the registry
+// without resetting existing entries. Agents with the same ID as an existing entry
+// are replaced; agents with new IDs are added. Calling DiscoverMerge after Discover
+// therefore gives the merged directory higher precedence.
+//
+// Returns ErrAgentDirNotFound (via errors.Is) when dir does not exist, so callers
+// can decide whether to skip or fail.
+//
+// Expected:
+//   - dir is a path to a directory (need not exist for optional extra dirs).
+//
+// Returns:
+//   - nil on success, including when the directory is empty.
+//   - A wrapped ErrAgentDirNotFound when dir does not exist.
+//   - An error if the directory cannot be read.
+//
+// Side effects:
+//   - Reads from the filesystem.
+//   - Adds or replaces entries in the registry manifest map.
+func (r *Registry) DiscoverMerge(dir string) error {
+	cleanDir := filepath.Clean(dir)
+	info, err := os.Stat(cleanDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %q", ErrAgentDirNotFound, cleanDir)
+		}
+		return fmt.Errorf("stat agent directory %q: %w", cleanDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("agent directory %q is not a directory", cleanDir)
+	}
+
+	manifestPaths, err := discoverManifestPaths(cleanDir)
+	if err != nil {
+		return err
+	}
+
 	for _, path := range manifestPaths {
 		manifest, err := LoadManifest(path)
 		if err != nil {

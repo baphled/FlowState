@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -331,6 +332,116 @@ description: MD Agent
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(registry.List()).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("DiscoverMerge", func() {
+		Context("merging into an empty registry", func() {
+			It("adds agents from the directory", func() {
+				content := `{"schema_version": "1", "id": "new-agent", "name": "New Agent"}`
+				err := os.WriteFile(filepath.Join(tempDir, "new-agent.json"), []byte(content), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				manifest, ok := registry.Get("new-agent")
+				Expect(ok).To(BeTrue())
+				Expect(manifest.Name).To(Equal("New Agent"))
+			})
+		})
+
+		Context("merging into a registry with existing agents", func() {
+			BeforeEach(func() {
+				registry.Register(&agent.Manifest{ID: "existing", Name: "Existing Agent"})
+			})
+
+			It("adds new agents without losing existing ones", func() {
+				content := `{"schema_version": "1", "id": "beta", "name": "Beta Agent"}`
+				err := os.WriteFile(filepath.Join(tempDir, "beta.json"), []byte(content), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				_, existingOK := registry.Get("existing")
+				Expect(existingOK).To(BeTrue())
+				_, betaOK := registry.Get("beta")
+				Expect(betaOK).To(BeTrue())
+			})
+
+			It("replaces an agent with the same ID so the merged entry wins", func() {
+				registry.Register(&agent.Manifest{ID: "planner", Name: "Bundled Planner"})
+
+				content := `{"schema_version": "1", "id": "planner", "name": "User Planner"}`
+				err := os.WriteFile(filepath.Join(tempDir, "planner.json"), []byte(content), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				manifest, ok := registry.Get("planner")
+				Expect(ok).To(BeTrue())
+				Expect(manifest.Name).To(Equal("User Planner"))
+			})
+		})
+
+		Context("with an empty directory", func() {
+			It("is a no-op and returns nil", func() {
+				registry.Register(&agent.Manifest{ID: "alpha", Name: "Alpha"})
+
+				err := registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				_, ok := registry.Get("alpha")
+				Expect(ok).To(BeTrue())
+			})
+		})
+
+		Context("with a missing directory", func() {
+			It("returns an error satisfying errors.Is(err, ErrAgentDirNotFound)", func() {
+				err := registry.DiscoverMerge("/nonexistent/path/for/test")
+
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, agent.ErrAgentDirNotFound)).To(BeTrue())
+			})
+		})
+
+		Context("with invalid manifests in the directory", func() {
+			It("skips them and returns nil", func() {
+				invalid := `{invalid json`
+				err := os.WriteFile(filepath.Join(tempDir, "invalid.json"), []byte(invalid), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				valid := `{"schema_version": "1", "id": "valid-agent", "name": "Valid"}`
+				err = os.WriteFile(filepath.Join(tempDir, "valid.json"), []byte(valid), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				_, ok := registry.Get("valid-agent")
+				Expect(ok).To(BeTrue())
+			})
+		})
+
+		Context("when both .md and .json exist for the same ID", func() {
+			It("uses the .md file (markdown takes precedence)", func() {
+				jsonContent := `{"schema_version": "1", "id": "explorer", "name": "Explorer JSON"}`
+				err := os.WriteFile(filepath.Join(tempDir, "explorer.json"), []byte(jsonContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				mdContent := "---\nid: explorer\nname: Explorer Markdown\nschema_version: \"1\"\n---\n"
+				err = os.WriteFile(filepath.Join(tempDir, "explorer.md"), []byte(mdContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = registry.DiscoverMerge(tempDir)
+
+				Expect(err).NotTo(HaveOccurred())
+				manifest, ok := registry.Get("explorer")
+				Expect(ok).To(BeTrue())
+				Expect(manifest.Name).To(Equal("Explorer Markdown"))
 			})
 		})
 	})

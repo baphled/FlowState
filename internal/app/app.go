@@ -1961,7 +1961,11 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 	return agent.Manifest{ID: "default", Name: "Default Agent"}
 }
 
-// setupAgentRegistry creates and populates an agent registry by discovering agents in the configured directory.
+// setupAgentRegistry creates and populates an agent registry using layered discovery.
+//
+// The primary directory (AgentDir) is discovered first via Discover. Each entry in
+// AgentDirs is then merged in order via DiscoverMerge, so later entries override
+// earlier ones on ID clash. Missing AgentDirs entries are skipped with a log message.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with a valid AgentDir path.
@@ -1970,21 +1974,32 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 //   - A populated agent.Registry containing discovered agents.
 //
 // Side effects:
-//   - Reads agent manifest files from the configured agent directory.
-//   - Logs a warning if agent discovery fails.
+//   - Reads agent manifest files from the configured directories.
+//   - Logs warnings when discovery or merge operations encounter errors.
 func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
-	agentRegistry := agent.NewRegistry()
-	if err := agentRegistry.Discover(cfg.AgentDir); err != nil {
+	r := agent.NewRegistry()
+
+	if err := r.Discover(cfg.AgentDir); err != nil {
 		log.Printf("warning: discovering agents in %q: %v", cfg.AgentDir, err)
-	} else {
-		manifests := agentRegistry.List()
-		if len(manifests) == 0 {
-			log.Printf("warning: no agents discovered in %q", cfg.AgentDir)
-		} else {
-			log.Printf("info: discovered %d agent(s) in %q", len(manifests), cfg.AgentDir)
+	}
+
+	for _, dir := range cfg.AgentDirs {
+		if err := r.DiscoverMerge(dir); err != nil {
+			if errors.Is(err, agent.ErrAgentDirNotFound) {
+				log.Printf("info: skipping missing agent dir %q", dir)
+				continue
+			}
+			log.Printf("warning: merging agents from %q: %v", dir, err)
 		}
 	}
-	return agentRegistry
+
+	manifests := r.List()
+	if len(manifests) == 0 {
+		log.Printf("warning: no agents discovered")
+	} else {
+		log.Printf("info: %d agent(s) in registry", len(manifests))
+	}
+	return r
 }
 
 // createDataStores initialises the session and learning data stores.

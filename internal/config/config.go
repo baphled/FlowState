@@ -15,8 +15,12 @@ type Config = AppConfig
 
 // AppConfig holds the complete application configuration.
 type AppConfig struct {
-	Providers          ProvidersConfig                  `json:"providers" yaml:"providers"`
-	AgentDir           string                           `json:"agent_dir" yaml:"agent_dir"`
+	Providers ProvidersConfig `json:"providers" yaml:"providers"`
+	AgentDir  string          `json:"agent_dir" yaml:"agent_dir"`
+	// AgentDirs lists user-defined agent directories merged into the registry after
+	// AgentDir. Agents in later directories override agents with the same ID from
+	// earlier directories and from AgentDir. Tilde paths (~/...) are expanded at load time.
+	AgentDirs          []string                         `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDir           string                           `json:"skill_dir" yaml:"skill_dir"`
 	DataDir            string                           `json:"data_dir" yaml:"data_dir"`
 	LogLevel           string                           `json:"log_level" yaml:"log_level"`
@@ -468,4 +472,7 @@ func expandPaths(cfg *AppConfig) {
 	cfg.SkillDir = expandTilde(cfg.SkillDir)
 	cfg.DataDir = expandTilde(cfg.DataDir)
 	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)
+	for i, dir := range cfg.AgentDirs {
+		cfg.AgentDirs[i] = expandTilde(dir)
+	}
 }
