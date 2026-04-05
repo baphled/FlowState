@@ -16,17 +16,17 @@ type busHandler struct {
 //
 // Expected: sessionID is the active API session; out is a buffered WSChunkMsg channel.
 // Returns: unsubscribe function — call it via defer in the WebSocket handler.
-// Side effects: subscribes to tool.execute.before, tool.execute.result, tool.execute.error, provider.rate_limited.
+// Side effects: subscribes to EventToolExecuteBefore, EventToolExecuteResult, EventToolExecuteError, EventProviderRateLimited.
 func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) func() {
 	if s.eventBus == nil {
 		return func() {}
 	}
 
 	handlers := []busHandler{
-		{eventType: "tool.execute.before", handler: newToolBeforeHandler(sessionID, out)},
-		{eventType: "tool.execute.result", handler: newToolResultHandler(sessionID, out)},
-		{eventType: "tool.execute.error", handler: newToolErrorHandler(sessionID, out)},
-		{eventType: "provider.rate_limited", handler: newRateLimitHandler(out)},
+		{eventType: events.EventToolExecuteBefore, handler: newToolBeforeHandler(sessionID, out)},
+		{eventType: events.EventToolExecuteResult, handler: newToolResultHandler(sessionID, out)},
+		{eventType: events.EventToolExecuteError, handler: newToolErrorHandler(sessionID, out)},
+		{eventType: events.EventProviderRateLimited, handler: newRateLimitHandler(out)},
 	}
 
 	for _, h := range handlers {
@@ -53,8 +53,8 @@ func newToolBeforeHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Even
 			return
 		}
 		select {
-		case out <- WSChunkMsg{EventType: "tool.execute.before", EventData: map[string]string{
-			"event_type": "tool.execute.before",
+		case out <- WSChunkMsg{EventType: events.EventToolExecuteBefore, EventData: map[string]string{
+			"event_type": events.EventToolExecuteBefore,
 			"tool_name":  te.Data.ToolName,
 		}}:
 		default:
@@ -75,12 +75,12 @@ func newToolResultHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Even
 			return
 		}
 		sanitised := map[string]any{
-			"event_type": "tool.execute.result",
+			"event_type": events.EventToolExecuteResult,
 			"tool_name":  te.Data.ToolName,
 			"ok":         true,
 		}
 		select {
-		case out <- WSChunkMsg{EventType: "tool.execute.result", EventData: sanitised}:
+		case out <- WSChunkMsg{EventType: events.EventToolExecuteResult, EventData: sanitised}:
 		default:
 		}
 	}
@@ -99,12 +99,12 @@ func newToolErrorHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Event
 			return
 		}
 		sanitised := map[string]any{
-			"event_type": "tool.execute.error",
+			"event_type": events.EventToolExecuteError,
 			"tool_name":  te.Data.ToolName,
 			"ok":         false,
 		}
 		select {
-		case out <- WSChunkMsg{EventType: "tool.execute.error", EventData: sanitised}:
+		case out <- WSChunkMsg{EventType: events.EventToolExecuteError, EventData: sanitised}:
 		default:
 		}
 	}
@@ -124,8 +124,8 @@ func newRateLimitHandler(out chan<- WSChunkMsg) eventbus.EventHandler {
 			return
 		}
 		select {
-		case out <- WSChunkMsg{EventType: "provider.rate_limited", EventData: map[string]string{
-			"event_type": "provider.rate_limited",
+		case out <- WSChunkMsg{EventType: events.EventProviderRateLimited, EventData: map[string]string{
+			"event_type": events.EventProviderRateLimited,
 			"provider":   pe.Data.ProviderName,
 		}}:
 		default:
