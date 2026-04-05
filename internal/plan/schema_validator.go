@@ -8,18 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ValidationResult contains the outcome of schema validation for a plan document.
-//
-// Valid is true if the plan passes all required checks. Errors lists fatal issues
-// that prevent use. Warnings lists non-fatal issues. Score is a float from 0.0
-// (completely invalid) to 1.0 (perfect).
-type ValidationResult struct {
-	Valid    bool     // True if the plan is valid
-	Errors   []string // Fatal errors
-	Warnings []string // Non-fatal warnings
-	Score    float64  // 0.0 (invalid) to 1.0 (perfect)
-}
-
 // SchemaValidator validates plan documents for required structure and content.
 type SchemaValidator struct{}
 

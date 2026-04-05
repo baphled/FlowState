@@ -63,4 +63,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterDelegationSessionSteps(ctx)
 	s.RegisterSteps(ctx)
 	s.RegisterAgentLayeringSteps(ctx)
+	initPlanHarnessE2ESteps(ctx)
+	initPlanRejectionLoopSteps(ctx)
 }

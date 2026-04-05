@@ -529,8 +529,14 @@ var _ = Describe("BackgroundTaskManager", func() {
 					return t.Status.Load()
 				}, "2s", "50ms").Should(Equal("completed"))
 
-				notifications, err := sessionMgr.GetNotifications("notif-sess")
-				Expect(err).NotTo(HaveOccurred())
+				var notifications []streaming.CompletionNotificationEvent
+				var err error
+				Eventually(func() []streaming.CompletionNotificationEvent {
+					notifications, err = sessionMgr.GetNotifications("notif-sess")
+					Expect(err).NotTo(HaveOccurred())
+					return notifications
+				}, "2s", "50ms").Should(HaveLen(1))
+
 				Expect(notifications).To(HaveLen(1))
 				Expect(notifications[0].TaskID).To(Equal("notif-task"))
 				Expect(notifications[0].Agent).To(Equal("agent-1"))

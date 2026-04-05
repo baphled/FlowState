@@ -98,6 +98,26 @@ type ReviewResult struct {
 	Suggestions    []string `json:"suggestions,omitempty" yaml:"suggestions,omitempty"`
 }
 
+// ValidationResult contains the outcome of schema validation for a plan document.
+//
+// Valid is true if the plan passes all required checks. Errors lists fatal issues
+// that prevent use. Warnings lists non-fatal issues. Score is a float from 0.0
+// (completely invalid) to 1.0 (perfect).
+type ValidationResult struct {
+	Valid    bool     // True if the plan is valid
+	Errors   []string // Fatal errors
+	Warnings []string // Non-fatal warnings
+	Score    float64  // 0.0 (invalid) to 1.0 (perfect)
+}
+
+// EvaluationResult holds the outcome of a harness evaluation.
+type EvaluationResult struct {
+	PlanText         string
+	ValidationResult *ValidationResult
+	AttemptCount     int
+	FinalScore       float64
+}
+
 // Frontmatter represents the YAML frontmatter of a plan markdown file.
 //
 // This struct is used for parsing the frontmatter section only, before

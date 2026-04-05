@@ -2,6 +2,8 @@ package coordination
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -20,6 +22,8 @@ type Store interface {
 	List(prefix string) ([]string, error)
 	// Delete removes the value associated with the given key.
 	Delete(key string) error
+	// Increment atomically increments the integer counter stored at key and returns the new value.
+	Increment(key string) (int, error)
 }
 
 // MemoryStore is an in-memory implementation of Store using a map
@@ -136,4 +140,37 @@ func (s *MemoryStore) Delete(key string) error {
 	delete(s.data, key)
 
 	return nil
+}
+
+// Increment atomically increments the integer counter stored at key and returns the new value.
+//
+// Expected:
+//   - key is a non-empty string identifying the counter entry.
+//
+// Returns:
+//   - The new counter value and nil error on success.
+//   - 0 and an error if the existing value cannot be parsed as an integer.
+//
+// Side effects:
+//   - Creates the counter at 1 if the key does not exist.
+//   - Updates the stored value to the incremented count.
+func (s *MemoryStore) Increment(key string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := 0
+
+	if val, exists := s.data[key]; exists {
+		n, err := strconv.Atoi(string(val))
+		if err != nil {
+			return 0, fmt.Errorf("parsing counter at %q: %w", key, err)
+		}
+
+		current = n
+	}
+
+	current++
+	s.data[key] = []byte(strconv.Itoa(current))
+
+	return current, nil
 }

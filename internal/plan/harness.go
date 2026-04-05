@@ -20,14 +20,6 @@ type Streamer interface {
 	Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error)
 }
 
-// EvaluationResult holds the outcome of a harness evaluation.
-type EvaluationResult struct {
-	PlanText         string
-	ValidationResult *ValidationResult
-	AttemptCount     int
-	FinalScore       float64
-}
-
 // HarnessOption configures optional behaviour on a Harness.
 //
 // Expected:
