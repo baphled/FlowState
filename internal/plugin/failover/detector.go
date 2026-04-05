@@ -61,7 +61,7 @@ func NewRateLimitDetector(bus *eventbus.EventBus, health RateLimitAware) *RateLi
 		bus:    bus,
 		health: health,
 	}
-	bus.Subscribe("provider.error", detector.HandleError)
+	bus.Subscribe(events.EventProviderError, detector.HandleError)
 	return detector
 }
 

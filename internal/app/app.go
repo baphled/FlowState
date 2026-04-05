@@ -1458,14 +1458,14 @@ func startBusPlugins(registry *pluginpkg.Registry, bus *eventbus.EventBus) {
 //   - Subscribes to "plugin.event", "tool.execute.before", and "tool.execute.after" events on the bus.
 //   - Logs warnings if plugin hook dispatch errors occur.
 func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.EventBus) {
-	bus.Subscribe("plugin.event", func(msg any) {
+	bus.Subscribe(events.EventPluginEvent, func(msg any) {
 		if evt, ok := msg.(pluginpkg.Event); ok {
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.EventType, evt); err != nil {
 				slog.Warn("plugin hook dispatch error", "hook", "event", "error", err)
 			}
 		}
 	})
-	bus.Subscribe("tool.execute.before", func(msg any) {
+	bus.Subscribe(events.EventToolExecuteBefore, func(msg any) {
 		if toolEvt, ok := msg.(*events.ToolEvent); ok {
 			args := &external.ToolExecArgs{
 				Name: toolEvt.Data.ToolName,
@@ -1477,7 +1477,7 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 			}
 		}
 	})
-	bus.Subscribe("tool.execute.after", func(msg any) {
+	bus.Subscribe(events.EventToolExecuteAfter, func(msg any) {
 		if toolEvt, ok := msg.(*events.ToolEvent); ok {
 			args := &external.ToolExecArgs{
 				Name: toolEvt.Data.ToolName,
@@ -1504,7 +1504,7 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 // Side effects:
 //   - Subscribes a logging handler to "provider.rate_limited" on the bus.
 func subscribeRateLimitLogger(bus *eventbus.EventBus) {
-	bus.Subscribe("provider.rate_limited", func(msg any) {
+	bus.Subscribe(events.EventProviderRateLimited, func(msg any) {
 		if pe, ok := msg.(*events.ProviderEvent); ok {
 			slog.Warn("provider rate-limited", "provider", pe.Data.ProviderName)
 		}

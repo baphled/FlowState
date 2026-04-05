@@ -17,21 +17,21 @@ import (
 
 // subscribedEventTypes lists all event type strings the recorder subscribes to.
 var subscribedEventTypes = []string{
-	"session.created",
-	"session.ended",
-	"tool.execute.before",
-	"tool.execute.after",
-	"provider.error",
-	"provider.rate_limited",
-	"provider.request",
-	"provider.response",
-	"agent.switched",
-	"prompt.generated",
-	"context.window.built",
-	"tool.reasoning",
-	"background.task.started",
-	"background.task.completed",
-	"background.task.failed",
+	events.EventSessionCreated,
+	events.EventSessionEnded,
+	events.EventToolExecuteBefore,
+	events.EventToolExecuteAfter,
+	events.EventProviderError,
+	events.EventProviderRateLimited,
+	events.EventProviderRequest,
+	events.EventProviderResponse,
+	events.EventAgentSwitched,
+	events.EventPromptGenerated,
+	events.EventContextWindowBuilt,
+	events.EventToolReasoning,
+	events.EventBackgroundTaskStarted,
+	events.EventBackgroundTaskCompleted,
+	events.EventBackgroundTaskFailed,
 }
 
 // defaultSessionID is used for events that do not carry a session identifier.
