@@ -19,6 +19,7 @@ import (
 var subscribedEventTypes = []string{
 	events.EventSessionCreated,
 	events.EventSessionEnded,
+	events.EventSessionResumed,
 	events.EventToolExecuteBefore,
 	events.EventToolExecuteResult,
 	events.EventToolExecuteError,
@@ -285,6 +286,8 @@ func extractEventData(ev events.Event) any {
 	switch e := ev.(type) {
 	case *events.SessionEvent:
 		return e.Data
+	case *events.SessionResumedEvent:
+		return e.Data
 	case *events.ToolEvent:
 		return e.Data
 	case *events.ProviderEvent:
@@ -354,9 +357,54 @@ func extractSessionID(ev events.Event) string {
 	if id, ok := extractToolExecuteSessionID(ev); ok {
 		return id
 	}
+	if id, ok := extractSessionLifecycleID(ev); ok {
+		return id
+	}
+	return extractProviderAndContextSessionID(ev)
+}
+
+// extractSessionLifecycleID returns the session ID from session lifecycle events,
+// returning ("", false) for unrecognised types.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: session ID and whether the event was a recognised session lifecycle type.
+// Side effects: none.
+func extractSessionLifecycleID(ev events.Event) (string, bool) {
 	switch e := ev.(type) {
 	case *events.SessionEvent:
+		return e.Data.SessionID, true
+	case *events.SessionResumedEvent:
+		return e.Data.SessionID, true
+	case *events.AgentSwitchedEvent:
+		return agentSwitchedSessionID(e), true
+	default:
+		return "", false
+	}
+}
+
+// agentSwitchedSessionID extracts the most specific session ID from an AgentSwitchedEvent.
+//
+// Expected: e is a non-nil AgentSwitchedEvent.
+// Returns: the first non-empty ID from SessionID, ToAgent, or FromAgent.
+// Side effects: none.
+func agentSwitchedSessionID(e *events.AgentSwitchedEvent) string {
+	if e.Data.SessionID != "" {
 		return e.Data.SessionID
+	}
+	if e.Data.ToAgent != "" {
+		return e.Data.ToAgent
+	}
+	return e.Data.FromAgent
+}
+
+// extractProviderAndContextSessionID returns the session ID from provider, tool,
+// and context events, or an empty string for unrecognised types.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: session ID string, or empty if not present.
+// Side effects: none.
+func extractProviderAndContextSessionID(ev events.Event) string {
+	switch e := ev.(type) {
 	case *events.ToolEvent:
 		return e.Data.SessionID
 	case *events.ProviderEvent:
@@ -367,14 +415,6 @@ func extractSessionID(ev events.Event) string {
 		return e.Data.SessionID
 	case *events.ProviderErrorEvent:
 		return e.Data.SessionID
-	case *events.AgentSwitchedEvent:
-		if e.Data.SessionID != "" {
-			return e.Data.SessionID
-		}
-		if e.Data.ToAgent != "" {
-			return e.Data.ToAgent
-		}
-		return e.Data.FromAgent
 	case *events.PromptEvent:
 		return e.Data.SessionID
 	case *events.ContextWindowEvent:

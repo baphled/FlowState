@@ -19,6 +19,7 @@ import (
 var subscribedEventTypes = []string{
 	events.EventSessionCreated,
 	events.EventSessionEnded,
+	events.EventSessionResumed,
 	events.EventToolExecuteBefore,
 	events.EventToolExecuteResult,
 	events.EventToolExecuteError,
@@ -227,6 +228,8 @@ func extractEventData(ev events.Event) any {
 	}
 	switch e := ev.(type) {
 	case *events.SessionEvent:
+		return e.Data
+	case *events.SessionResumedEvent:
 		return e.Data
 	case *events.ToolEvent:
 		return e.Data

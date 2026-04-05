@@ -5,6 +5,8 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	flowapp "github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/app"
@@ -12,6 +14,26 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
+
+// publishResumedEvent publishes a session.resumed event on bus when sessionID is non-empty.
+//
+// Expected:
+//   - bus may be nil; when nil the call is a no-op.
+//   - sessionID is the identifier of the session being resumed.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Publishes events.EventSessionResumed on bus when both bus and sessionID are non-nil/non-empty.
+func publishResumedEvent(bus *eventbus.EventBus, sessionID string) {
+	if bus == nil || sessionID == "" {
+		return
+	}
+	bus.Publish(events.EventSessionResumed, events.NewSessionResumedEvent(events.SessionResumedEventData{
+		SessionID: sessionID,
+	}))
+}
 
 // Run starts the FlowState TUI with the given application and session context.
 //
@@ -25,12 +47,15 @@ import (
 //
 // Side effects:
 //   - Launches a full-screen terminal UI that blocks until the user exits.
+//   - Publishes session.resumed on the engine EventBus when sessionID is non-empty.
 func Run(application *flowapp.App, agentID string, sessionID string) error {
 	if agentID != "" && application.Registry != nil {
 		if manifest, ok := application.Registry.Get(agentID); ok {
 			application.Engine.SetManifest(*manifest)
 		}
 	}
+
+	publishResumedEvent(application.Engine.EventBus(), sessionID)
 
 	if mgr := application.SessionMgr(); mgr != nil {
 		mgr.RegisterSession(sessionID, agentID)
