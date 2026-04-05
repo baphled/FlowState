@@ -224,6 +224,27 @@ func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
 	m.eventBus.Publish(events.EventBackgroundTaskFailed, event)
 }
 
+// emitTaskCancelled emits a background task cancelled event if the event bus is configured.
+//
+// Expected:
+//   - task is a populated BackgroundTask.
+//   - The event bus may be nil when event emission is disabled.
+//
+// Side effects:
+//   - Publishes a background task cancelled event when an event bus is configured.
+func (m *BackgroundTaskManager) emitTaskCancelled(task *BackgroundTask) {
+	if m.eventBus == nil {
+		return
+	}
+	event := events.NewBackgroundTaskCancelledEvent(events.BackgroundTaskEventData{
+		SessionID: task.ParentSessionID,
+		TaskID:    task.ID,
+		Name:      task.Description,
+		Status:    "cancelled",
+	})
+	m.eventBus.Publish(events.EventBackgroundTaskCancelled, event)
+}
+
 // injectCompletionNotification sends a completion notification to the parent session.
 // Errors are intentionally not checked as notification delivery is best-effort.
 //
@@ -443,19 +464,23 @@ func (m *BackgroundTaskManager) Get(id string) (BackgroundTask, bool) {
 //   - Calls the context cancel function for the task.
 func (m *BackgroundTaskManager) Cancel(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	task, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return errTaskNotFound
 	}
 
 	status := task.Status.Load()
 	if status != "pending" && status != "running" {
+		m.mu.Unlock()
 		return errTaskNotCancellable
 	}
 
 	task.cancel()
+	m.mu.Unlock()
+
+	m.emitTaskCancelled(task)
 	return nil
 }
 
@@ -468,16 +493,23 @@ func (m *BackgroundTaskManager) Cancel(id string) error {
 //   - Calls the context cancel function for each active task.
 func (m *BackgroundTaskManager) CancelAll() []string {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	cancelledIDs := make([]string, 0)
+	var cancelledTasks []*BackgroundTask
 
 	for id, task := range m.tasks {
 		status := task.Status.Load()
 		if status == "pending" || status == "running" {
 			task.cancel()
 			cancelledIDs = append(cancelledIDs, id)
+			cancelledTasks = append(cancelledTasks, task)
 		}
+	}
+
+	m.mu.Unlock()
+
+	for _, task := range cancelledTasks {
+		m.emitTaskCancelled(task)
 	}
 
 	return cancelledIDs

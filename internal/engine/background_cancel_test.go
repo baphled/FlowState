@@ -3,9 +3,12 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/tool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -215,6 +218,122 @@ var _ = Describe("BackgroundCancelTool", func() {
 
 				_, err := bctTool.Execute(ctx, input)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+})
+
+var _ = Describe("BackgroundTaskManager cancel event emission", func() {
+	var (
+		manager *engine.BackgroundTaskManager
+		bus     *eventbus.EventBus
+		ctx     context.Context
+	)
+
+	BeforeEach(func() {
+		manager = engine.NewBackgroundTaskManager()
+		bus = eventbus.NewEventBus()
+		manager.SetEventBus(bus)
+		ctx = context.Background()
+	})
+
+	Describe("Cancel", func() {
+		Context("when a running task is cancelled by ID", func() {
+			It("publishes a background.task.cancelled event", func() {
+				var mu sync.Mutex
+				var received []*events.BackgroundTaskCancelledEvent
+
+				bus.Subscribe(events.EventBackgroundTaskCancelled, func(ev any) {
+					if e, ok := ev.(*events.BackgroundTaskCancelledEvent); ok {
+						mu.Lock()
+						received = append(received, e)
+						mu.Unlock()
+					}
+				})
+
+				task := manager.Launch(ctx, "cancel-task-1", "agent-1", "test cancel task", func(c context.Context) (string, error) {
+					time.Sleep(500 * time.Millisecond)
+					return "result", nil
+				})
+
+				err := manager.Cancel(task.ID)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() int {
+					mu.Lock()
+					defer mu.Unlock()
+					return len(received)
+				}).Should(Equal(1))
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received[0].EventType()).To(Equal(events.EventBackgroundTaskCancelled))
+				Expect(received[0].Data.TaskID).To(Equal(task.ID))
+			})
+		})
+	})
+
+	Describe("CancelAll", func() {
+		Context("when multiple running tasks are cancelled", func() {
+			It("publishes a background.task.cancelled event for each task", func() {
+				var mu sync.Mutex
+				var received []*events.BackgroundTaskCancelledEvent
+
+				bus.Subscribe(events.EventBackgroundTaskCancelled, func(ev any) {
+					if e, ok := ev.(*events.BackgroundTaskCancelledEvent); ok {
+						mu.Lock()
+						received = append(received, e)
+						mu.Unlock()
+					}
+				})
+
+				manager.Launch(ctx, "cancel-all-1", "agent-1", "task one", func(c context.Context) (string, error) {
+					time.Sleep(500 * time.Millisecond)
+					return "result", nil
+				})
+
+				manager.Launch(ctx, "cancel-all-2", "agent-2", "task two", func(c context.Context) (string, error) {
+					time.Sleep(500 * time.Millisecond)
+					return "result", nil
+				})
+
+				cancelledIDs := manager.CancelAll()
+				Expect(cancelledIDs).To(HaveLen(2))
+
+				Eventually(func() int {
+					mu.Lock()
+					defer mu.Unlock()
+					return len(received)
+				}).Should(Equal(2))
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received[0].EventType()).To(Equal(events.EventBackgroundTaskCancelled))
+				Expect(received[1].EventType()).To(Equal(events.EventBackgroundTaskCancelled))
+			})
+		})
+
+		Context("when no tasks are running", func() {
+			It("does not publish any cancelled events", func() {
+				var mu sync.Mutex
+				var received []*events.BackgroundTaskCancelledEvent
+
+				bus.Subscribe(events.EventBackgroundTaskCancelled, func(ev any) {
+					if e, ok := ev.(*events.BackgroundTaskCancelledEvent); ok {
+						mu.Lock()
+						received = append(received, e)
+						mu.Unlock()
+					}
+				})
+
+				cancelledIDs := manager.CancelAll()
+				Expect(cancelledIDs).To(BeEmpty())
+
+				Consistently(func() int {
+					mu.Lock()
+					defer mu.Unlock()
+					return len(received)
+				}).Should(BeZero())
 			})
 		})
 	})

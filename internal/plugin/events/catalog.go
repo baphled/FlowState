@@ -175,6 +175,17 @@ var Catalog = []EventCatalogEntry{
 		Delivery:    "fire-and-forget",
 	},
 	{
+		Topic:       EventBackgroundTaskCancelled,
+		Constant:    "EventBackgroundTaskCancelled",
+		EventType:   "background.task.cancelled",
+		Struct:      "BackgroundTaskCancelledEvent",
+		Publishers:  []string{"engine/background.go"},
+		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
 		Topic:       EventContextWindowBuilt,
 		Constant:    "EventContextWindowBuilt",
 		EventType:   "context.window",

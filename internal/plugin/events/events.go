@@ -588,6 +588,34 @@ func NewBackgroundTaskFailedEvent(data BackgroundTaskEventData, ts ...time.Time)
 	}
 }
 
+// BackgroundTaskCancelledEvent represents a background task cancellation event.
+type BackgroundTaskCancelledEvent struct {
+	BaseEvent
+	Data BackgroundTaskEventData
+}
+
+// NewBackgroundTaskCancelledEvent creates a new background task cancelled event.
+//
+// Expected:
+//   - data contains the background task metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A BackgroundTaskCancelledEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewBackgroundTaskCancelledEvent(data BackgroundTaskEventData, ts ...time.Time) *BackgroundTaskCancelledEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &BackgroundTaskCancelledEvent{
+		BaseEvent: BaseEvent{eventType: EventBackgroundTaskCancelled, timestamp: t},
+		Data:      data,
+	}
+}
+
 // ProviderResponseEventData holds data for provider response events emitted
 // when a streaming provider call completes successfully.
 //
@@ -914,6 +942,7 @@ var (
 	_ Event = (*BackgroundTaskStartedEvent)(nil)
 	_ Event = (*BackgroundTaskCompletedEvent)(nil)
 	_ Event = (*BackgroundTaskFailedEvent)(nil)
+	_ Event = (*BackgroundTaskCancelledEvent)(nil)
 	_ Event = (*SessionResumedEvent)(nil)
 	_ Event = (*ToolExecuteErrorEvent)(nil)
 	_ Event = (*ToolExecuteResultEvent)(nil)

@@ -34,6 +34,7 @@ var subscribedEventTypes = []string{
 	events.EventBackgroundTaskStarted,
 	events.EventBackgroundTaskCompleted,
 	events.EventBackgroundTaskFailed,
+	events.EventBackgroundTaskCancelled,
 }
 
 // defaultSessionID is used for events that do not carry a session identifier.
@@ -341,6 +342,8 @@ func extractBackgroundTaskData(ev events.Event) (any, bool) {
 	case *events.BackgroundTaskCompletedEvent:
 		return e.Data, true
 	case *events.BackgroundTaskFailedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskCancelledEvent:
 		return e.Data, true
 	default:
 		return nil, false

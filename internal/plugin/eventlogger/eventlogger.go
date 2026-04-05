@@ -34,6 +34,7 @@ var subscribedEventTypes = []string{
 	events.EventBackgroundTaskStarted,
 	events.EventBackgroundTaskCompleted,
 	events.EventBackgroundTaskFailed,
+	events.EventBackgroundTaskCancelled,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.
@@ -284,6 +285,8 @@ func extractBackgroundTaskData(ev events.Event) (any, bool) {
 	case *events.BackgroundTaskCompletedEvent:
 		return e.Data, true
 	case *events.BackgroundTaskFailedEvent:
+		return e.Data, true
+	case *events.BackgroundTaskCancelledEvent:
 		return e.Data, true
 	default:
 		return nil, false

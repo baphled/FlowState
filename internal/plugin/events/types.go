@@ -60,4 +60,5 @@ const (
 	EventBackgroundTaskStarted   = "background.task.started"
 	EventBackgroundTaskCompleted = "background.task.completed"
 	EventBackgroundTaskFailed    = "background.task.failed"
+	EventBackgroundTaskCancelled = "background.task.cancelled"
 )
