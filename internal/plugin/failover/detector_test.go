@@ -3,7 +3,6 @@ package failover_test
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,14 +42,11 @@ var _ = Describe("RateLimitDetector", func() {
 		detector = failover.NewRateLimitDetector(bus, health)
 	})
 
-	Describe("detects 429 status and marks rate-limited", func() {
-		It("detects HTTP 429 status code and marks provider as rate-limited", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+	Describe("detects rate-limit errors and marks rate-limited", func() {
+		It("detects rate_limit error message and marks provider as rate-limited", func() {
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
-				Response: map[string]any{
-					"status_code": 429,
-				},
-				Error: nil,
+				Error:        errors.New("rate_limit exceeded"),
 			})
 
 			detector.HandleError(providerEvent)
@@ -58,13 +54,10 @@ var _ = Describe("RateLimitDetector", func() {
 			Expect(health.IsRateLimited("anthropic", "")).To(BeTrue())
 		})
 
-		It("detects HTTP 503 status code and marks provider as rate-limited", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+		It("detects too many requests error and marks provider as rate-limited", func() {
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "openai",
-				Response: map[string]any{
-					"status_code": 503,
-				},
-				Error: nil,
+				Error:        errors.New("too many requests, please retry"),
 			})
 
 			detector.HandleError(providerEvent)
@@ -72,17 +65,11 @@ var _ = Describe("RateLimitDetector", func() {
 			Expect(health.IsRateLimited("openai", "")).To(BeTrue())
 		})
 
-		It("extracts model from request and marks rate-limited with model", func() {
-			req := &provider.ChatRequest{
-				Model: "claude-3-5-sonnet-20241022",
-			}
-
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+		It("uses ModelName field and marks rate-limited with model", func() {
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
-				Request:      req,
-				Response: map[string]any{
-					"status_code": 429,
-				},
+				ModelName:    "claude-3-5-sonnet-20241022",
+				Error:        errors.New("rate_limit exceeded"),
 			})
 
 			detector.HandleError(providerEvent)
@@ -90,16 +77,10 @@ var _ = Describe("RateLimitDetector", func() {
 			Expect(health.IsRateLimited("anthropic", "claude-3-5-sonnet-20241022")).To(BeTrue())
 		})
 
-		It("extracts retry-after header and sets expiry time", func() {
-			headers := http.Header{}
-			headers.Set("Retry-After", "30")
-
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+		It("detects quota exceeded error and marks provider as rate-limited", func() {
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
-				Response: map[string]any{
-					"status_code": 429,
-					"headers":     headers,
-				},
+				Error:        errors.New("quota exceeded"),
 			})
 
 			detector.HandleError(providerEvent)
@@ -111,7 +92,7 @@ var _ = Describe("RateLimitDetector", func() {
 
 	Describe("detects rate-limit keywords in error messages", func() {
 		It("detects 'rate_limit' in error message", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("rate_limit exceeded"),
 			})
@@ -122,7 +103,7 @@ var _ = Describe("RateLimitDetector", func() {
 		})
 
 		It("detects 'rate limit' (with space) in error message", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("rate limit exceeded for this model"),
 			})
@@ -133,7 +114,7 @@ var _ = Describe("RateLimitDetector", func() {
 		})
 
 		It("detects 'quota exceeded' in error message", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "openai",
 				Error:        errors.New("quota exceeded"),
 			})
@@ -144,7 +125,7 @@ var _ = Describe("RateLimitDetector", func() {
 		})
 
 		It("detects 'too many requests' in error message", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "github-copilot",
 				Error:        errors.New("too many requests, please try again later"),
 			})
@@ -155,7 +136,7 @@ var _ = Describe("RateLimitDetector", func() {
 		})
 
 		It("detects 'free usage exceeded' in error message", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("free usage exceeded"),
 			})
@@ -166,7 +147,7 @@ var _ = Describe("RateLimitDetector", func() {
 		})
 
 		It("does not mark healthy for non-rate-limit errors", func() {
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("invalid request: missing parameter"),
 			})
@@ -185,11 +166,9 @@ var _ = Describe("RateLimitDetector", func() {
 				publishedEvent = event.(*events.ProviderEvent)
 			})
 
-			providerEvent := events.NewProviderEvent(events.ProviderEventData{
+			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
-				Response: map[string]any{
-					"status_code": 429,
-				},
+				Error:        errors.New("rate_limit exceeded"),
 			})
 
 			detector.HandleError(providerEvent)

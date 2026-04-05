@@ -1,6 +1,7 @@
 package failover_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -67,11 +68,9 @@ var _ = Describe("RateLimitPlugin", func() {
 
 			Expect(starter.Start(bus)).To(Succeed())
 
-			bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+			bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
-				Response: map[string]any{
-					"status_code": 429,
-				},
+				Error:        errors.New("rate_limit exceeded"),
 			}))
 
 			Expect(health.IsRateLimited("anthropic", "")).To(BeTrue())

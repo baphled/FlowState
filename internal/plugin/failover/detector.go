@@ -3,8 +3,6 @@ package failover
 import (
 	"context"
 	"errors"
-	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -69,87 +67,32 @@ func NewRateLimitDetector(bus *eventbus.EventBus, health RateLimitAware) *RateLi
 
 // HandleError processes provider error events and detects rate-limit conditions.
 //
-// HandleError extracts provider event data from the event, checks for rate-limit
-// signals (HTTP 429/503, retry-after header, rate-limit keywords in error message),
-// and marks the provider as rate-limited in the HealthManager. If a rate-limit is
-// detected, it publishes a "provider.rate_limited" event.
+// HandleError extracts provider error event data from the event, checks for rate-limit
+// signals (rate-limit keywords in error message), and marks the provider as rate-limited
+// in the HealthManager. If a rate-limit is detected, it publishes a "provider.rate_limited"
+// event.
 //
-// Expected: event is a *events.ProviderEvent.
+// Expected: event is a *events.ProviderErrorEvent.
 // Returns: none.
 // Side effects: may update health state and publish events.
 func (d *RateLimitDetector) HandleError(event any) {
-	providerEvent, ok := event.(*events.ProviderEvent)
+	providerErrorEvent, ok := event.(*events.ProviderErrorEvent)
 	if !ok {
 		return
 	}
 
-	data := providerEvent.Data
-	retryAfter := d.extractRetryAfter(data.Response)
+	data := providerErrorEvent.Data
 
-	if d.isRateLimitedError(data.Error) || d.hasRateLimitStatus(data.Response) {
+	if d.isRateLimitedError(data.Error) {
 		d.health.MarkRateLimited(
 			data.ProviderName,
-			d.extractModel(data.Request),
-			retryAfter,
+			data.ModelName,
+			time.Now().Add(1*time.Hour),
 		)
 		d.bus.Publish("provider.rate_limited", events.NewProviderEvent(events.ProviderEventData{
 			ProviderName: data.ProviderName,
 		}))
 	}
-}
-
-// extractRetryAfter extracts retry-after duration from the response if available.
-//
-// Expected: response may be any type.
-// Returns: time.Time of the retry-after if parseable, otherwise time.Now() + 1 hour.
-// Side effects: none.
-func (d *RateLimitDetector) extractRetryAfter(response any) time.Time {
-	if response == nil {
-		return time.Now().Add(1 * time.Hour)
-	}
-
-	respMap, ok := response.(map[string]any)
-	if !ok {
-		return time.Now().Add(1 * time.Hour)
-	}
-
-	headers, ok := respMap["headers"].(http.Header)
-	if !ok {
-		return time.Now().Add(1 * time.Hour)
-	}
-
-	retryAfter := headers.Get("Retry-After")
-	if retryAfter == "" {
-		return time.Now().Add(1 * time.Hour)
-	}
-
-	if seconds, err := strconv.Atoi(retryAfter); err == nil {
-		return time.Now().Add(time.Duration(seconds) * time.Second)
-	}
-
-	if t, err := time.Parse(time.RFC1123, retryAfter); err == nil {
-		return t
-	}
-
-	return time.Now().Add(1 * time.Hour)
-}
-
-// extractModel extracts the model name from the request if available.
-//
-// Expected: request may be any type.
-// Returns: empty string if not extractable, otherwise model name.
-// Side effects: none.
-func (d *RateLimitDetector) extractModel(request any) string {
-	if request == nil {
-		return ""
-	}
-
-	req, ok := request.(*provider.ChatRequest)
-	if !ok {
-		return ""
-	}
-
-	return req.Model
 }
 
 // isRateLimitedError checks if the error indicates a rate-limit condition.
@@ -180,29 +123,6 @@ func (d *RateLimitDetector) isRateLimitedError(err error) bool {
 	}
 
 	return false
-}
-
-// hasRateLimitStatus checks if the response indicates a rate-limit HTTP status.
-//
-// Expected: response may be any type.
-// Returns: true if response contains HTTP 429 or 503 status code.
-// Side effects: none.
-func (d *RateLimitDetector) hasRateLimitStatus(response any) bool {
-	if response == nil {
-		return false
-	}
-
-	respMap, ok := response.(map[string]any)
-	if !ok {
-		return false
-	}
-
-	statusCode, ok := respMap["status_code"].(int)
-	if !ok {
-		return false
-	}
-
-	return statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable
 }
 
 // Hook implements ChatParamsHook to automatically switch providers on rate-limit.

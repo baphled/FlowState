@@ -131,7 +131,7 @@ var _ = Describe("Recorder", func() {
 			Expect(recorder.Start(bus)).To(Succeed())
 
 			ts := time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
-			bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+			bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				SessionID:    "sess-pe",
 				ProviderName: "anthropic",
 			}, ts))
@@ -148,7 +148,7 @@ var _ = Describe("Recorder", func() {
 			var entry map[string]any
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["kind"]).To(Equal("event"))
-			Expect(entry["event_type"]).To(Equal("provider"))
+			Expect(entry["event_type"]).To(Equal("provider.error"))
 		})
 
 		It("writes provider response events to the correct per-session file", func() {

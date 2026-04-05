@@ -46,21 +46,21 @@ var _ = Describe("DetectorEventType", func() {
 				"*ProviderEvent must NOT satisfy *ProviderErrorEvent type assertion")
 		})
 
-		It("silently drops *ProviderErrorEvent — the type the engine actually publishes — leaving health unchanged", func() {
-			errorEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
+		It("does NOT handle a *ProviderEvent published as provider.error — the wrong type silently passes through", func() {
+			genericEvent := events.NewProviderEvent(events.ProviderEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("rate_limit exceeded"),
 			})
 
-			detector.HandleError(errorEvent)
+			detector.HandleError(genericEvent)
 
 			Expect(health.IsRateLimited("anthropic", "")).To(BeFalse(),
-				"current buggy handler must drop *ProviderErrorEvent because it asserts *ProviderEvent instead")
+				"handler must not mark rate-limited when given *ProviderEvent — only *ProviderErrorEvent is accepted")
 		})
 	})
 
 	Describe("verification: ProviderErrorEvent is handled correctly after fix", func() {
-		PIt("marks provider as rate-limited when a *ProviderErrorEvent with rate-limit error is published", func() {
+		It("marks provider as rate-limited when a *ProviderErrorEvent with rate-limit error is published", func() {
 			errorEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("rate_limit exceeded"),
@@ -72,7 +72,7 @@ var _ = Describe("DetectorEventType", func() {
 				"handler must process *ProviderErrorEvent and mark the provider rate-limited")
 		})
 
-		PIt("marks provider+model as rate-limited using ModelName from ProviderErrorEventData", func() {
+		It("marks provider+model as rate-limited using ModelName from ProviderErrorEventData", func() {
 			errorEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				ModelName:    "claude-sonnet-4-6",
@@ -85,7 +85,7 @@ var _ = Describe("DetectorEventType", func() {
 				"handler must use ModelName field from ProviderErrorEventData for rate-limit key")
 		})
 
-		PIt("does not mark rate-limited when error does not contain rate-limit keywords", func() {
+		It("does not mark rate-limited when error does not contain rate-limit keywords", func() {
 			errorEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("invalid request: missing parameter"),
@@ -97,7 +97,7 @@ var _ = Describe("DetectorEventType", func() {
 				"handler must not mark rate-limited for non-rate-limit errors")
 		})
 
-		PIt("publishes provider.rate_limited event when rate-limit detected via ProviderErrorEvent", func() {
+		It("publishes provider.rate_limited event when rate-limit detected via ProviderErrorEvent", func() {
 			var published *events.ProviderEvent
 			bus.Subscribe("provider.rate_limited", func(event any) {
 				published = event.(*events.ProviderEvent)

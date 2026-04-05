@@ -78,7 +78,7 @@ var _ = Describe("EventLogger", func() {
 			bus.Publish("tool.execute.before", events.NewToolEvent(events.ToolEventData{
 				ToolName: "bash", Args: map[string]any{"cmd": "ls"},
 			}, ts))
-			bus.Publish("provider.error", events.NewProviderEvent(events.ProviderEventData{
+			bus.Publish("provider.error", events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 			}, ts))
 
