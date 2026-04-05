@@ -183,6 +183,7 @@ type Intent struct {
 	statusBar           *layout.StatusBar
 	statusIndicator     *widgets.StatusIndicator
 	tokenCount          int
+	responseTokenCount  int
 	tokenCounter        contextpkg.TokenCounter
 	providerName        string
 	modelName           string
@@ -883,8 +884,10 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
 
+	i.accumulateResponseTokens(msg.Content)
 	i.flushThinking(msg.Done)
 	i.finaliseStreamIfDone(msg)
+	i.syncStatusBar()
 }
 
 // commitToolCall advances the active tool-call state machine for the given chunk.
@@ -922,20 +925,34 @@ func (i *Intent) commitToolCall(msg StreamChunkMsg) (lastToolCall string, commit
 	return lastToolCall, committedSkill
 }
 
-// finaliseStreamIfDone updates token counts and the status bar when the stream ends.
+// accumulateResponseTokens counts tokens in the content fragment and adds them to the
+// running response token total, enabling live status bar updates during streaming.
+//
+// Expected:
+//   - content is a partial response fragment from the provider stream.
+//
+// Side effects:
+//   - Increments i.responseTokenCount by the token count of the fragment.
+func (i *Intent) accumulateResponseTokens(content string) {
+	if content == "" {
+		return
+	}
+	i.responseTokenCount += i.tokenCounter.Count(content)
+}
+
+// finaliseStreamIfDone sets the authoritative prompt token count when the stream ends.
 //
 // Expected:
 //   - msg is the current streaming chunk.
 //
 // Side effects:
-//   - Updates i.tokenCount and calls i.syncStatusBar when msg.Done is true.
+//   - Updates i.tokenCount from the engine context result when msg.Done is true.
 func (i *Intent) finaliseStreamIfDone(msg StreamChunkMsg) {
 	if !msg.Done || i.engine == nil {
 		return
 	}
 	contextResult := i.engine.LastContextResult()
 	i.tokenCount = contextResult.TokensUsed
-	i.syncStatusBar()
 }
 
 // appendThinking accumulates streaming thinking content for later display.
@@ -1138,13 +1155,13 @@ func (i *Intent) saveSession() tea.Cmd {
 // syncStatusBar updates the StatusBar with the current intent state.
 //
 // Side effects:
-//   - Updates the StatusBar with provider, model, and token information.
+//   - Updates the StatusBar with provider, model, and combined token information.
 func (i *Intent) syncStatusBar() {
 	i.statusBar.Update(layout.StatusBarMsg{
 		Provider:    i.providerName,
 		Model:       i.modelName,
 		AgentID:     i.agentID,
-		TokensUsed:  i.tokenCount,
+		TokensUsed:  i.tokenCount + i.responseTokenCount,
 		TokenBudget: i.tokenBudget,
 	})
 }
@@ -1245,6 +1262,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
 	i.view.StartStreaming()
 	i.atBottom = true
+	i.responseTokenCount = 0
 	i.refreshViewport()
 
 	i.cancelActiveStream()
@@ -2345,15 +2363,16 @@ func (i *Intent) Height() int {
 	return i.height
 }
 
-// TokenCount returns the authoritative token count set when streaming completes.
+// TokenCount returns the combined prompt and response token count.
 //
 // Returns:
-//   - The current token count.
+//   - The sum of prompt tokens (set from engine at stream completion) and response
+//     tokens accumulated during streaming.
 //
 // Side effects:
 //   - None.
 func (i *Intent) TokenCount() int {
-	return i.tokenCount
+	return i.tokenCount + i.responseTokenCount
 }
 
 // SetApp sets the TUI app shell reference for navigation.

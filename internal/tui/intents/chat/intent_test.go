@@ -539,19 +539,19 @@ var _ = Describe("ChatIntent", func() {
 			Expect(intent.TokenCount()).To(Equal(0))
 		})
 
-		It("stays at zero during streaming chunks", func() {
+		It("accumulates response tokens as streaming chunks arrive", func() {
 			for range 5 {
 				intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			}
-			Expect(intent.TokenCount()).To(Equal(0))
+			Expect(intent.TokenCount()).To(BeNumerically(">", 0))
 		})
 
-		It("does not increment token count across intermediate chunks", func() {
+		It("increments token count with each intermediate chunk", func() {
 			intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			first := intent.TokenCount()
 			intent.Update(chat.StreamChunkMsg{Content: "hello world ", Done: false})
 			second := intent.TokenCount()
-			Expect(second).To(Equal(first))
+			Expect(second).To(BeNumerically(">", first))
 		})
 
 		It("renders token count in View after streaming", func() {

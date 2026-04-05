@@ -318,3 +318,13 @@ func (i *Intent) WaitForCompletionForTest() tea.Msg {
 	cmd := i.waitForCompletion()
 	return cmd()
 }
+
+// ResponseTokenCountForTest returns the accumulated response token count for test assertions.
+func (i *Intent) ResponseTokenCountForTest() int {
+	return i.responseTokenCount
+}
+
+// SyncStatusBarForTest exposes syncStatusBar for test assertions.
+func (i *Intent) SyncStatusBarForTest() {
+	i.syncStatusBar()
+}
