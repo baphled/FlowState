@@ -1,0 +1,296 @@
+ok  	github.com/baphled/flowstate/internal/plugin	1.066s
+ok  	github.com/baphled/flowstate/internal/plugin/builtin/all	1.026s
+ok  	github.com/baphled/flowstate/internal/plugin/eventbus	1.052s
+ok  	github.com/baphled/flowstate/internal/plugin/eventlogger	1.054s
+ok  	github.com/baphled/flowstate/internal/plugin/events	1.106s
+ok  	github.com/baphled/flowstate/internal/plugin/external	13.162s
+ok  	github.com/baphled/flowstate/internal/plugin/failover	1.138s
+ok  	github.com/baphled/flowstate/internal/plugin/manifest	1.037s
+ok  	github.com/baphled/flowstate/internal/plugin/sessionrecorder	1.046s
+Running Suite: Engine Suite - /home/baphled/Projects/FlowState.git/agent-platform/internal/engine
+=================================================================================================
+Random Seed: [1m1775407916[0m
+
+Will run [1m384[0m of [1m384[0m specs
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=mgr-wiring-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=mgr-synth-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=ctx-capture-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=ctx-capture-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=seq-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=seq-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=simple-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=error-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=sync-fail-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=sync-fail-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=ctx-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=explorer-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=child-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=child-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=child-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=child-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=slow-target model="" messages=2
+[38;5;10m•[0m==================
+WARNING: DATA RACE
+Write at 0x00c0003d0508 by goroutine 403:
+  github.com/baphled/flowstate/internal/engine_test.(*slowDelegateProvider).Stream()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background_delegate_pipeline_integration_test.go:418 +0x68
+  github.com/baphled/flowstate/internal/engine.(*Engine).streamFromProvider.(*Engine).baseStreamHandler.func1()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/engine.go:685 +0x1d8
+  github.com/baphled/flowstate/internal/engine.(*Engine).streamFromProvider()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/engine.go:666 +0x2e5
+  github.com/baphled/flowstate/internal/engine.(*Engine).Stream()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/engine.go:631 +0x608
+  github.com/baphled/flowstate/internal/engine.(*DelegateTool).executeBackgroundTask()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/delegation.go:1049 +0x109
+  github.com/baphled/flowstate/internal/engine.(*DelegateTool).executeAsync.func1()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/delegation.go:1010 +0x2ce
+  github.com/baphled/flowstate/internal/engine.(*BackgroundTaskManager).executeTask()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background.go:335 +0x305
+  github.com/baphled/flowstate/internal/engine.(*BackgroundTaskManager).Launch.func1()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background.go:288 +0xc8
+
+Previous read at 0x00c0003d0508 by goroutine 402:
+  github.com/baphled/flowstate/internal/engine_test.(*slowDelegateProvider).release()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background_delegate_pipeline_integration_test.go:443 +0xc49
+  github.com/baphled/flowstate/internal/engine_test.init.func4.2.1.2()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background_delegate_pipeline_integration_test.go:130 +0xc3c
+  github.com/onsi/ginkgo/v2/internal.extractBodyFunction.func3()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/node.go:585 +0x2e
+  github.com/onsi/ginkgo/v2/internal.(*Suite).runNode.func3()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/suite.go:946 +0x699
+
+Goroutine 403 (running) created at:
+  github.com/baphled/flowstate/internal/engine.(*BackgroundTaskManager).Launch()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background.go:286 +0x6ef
+  github.com/baphled/flowstate/internal/engine.(*DelegateTool).executeAsync()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/delegation.go:1008 +0x816
+  github.com/baphled/flowstate/internal/engine.(*DelegateTool).Execute()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/delegation.go:606 +0x96a
+  github.com/baphled/flowstate/internal/engine_test.init.func4.2.1.2()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/background_delegate_pipeline_integration_test.go:123 +0x988
+  github.com/onsi/ginkgo/v2/internal.extractBodyFunction.func3()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/node.go:585 +0x2e
+  github.com/onsi/ginkgo/v2/internal.(*Suite).runNode.func3()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/suite.go:946 +0x699
+
+Goroutine 402 (finished) created at:
+  github.com/onsi/ginkgo/v2/internal.(*Suite).runNode()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/suite.go:911 +0x1312
+  github.com/onsi/ginkgo/v2/internal.(*group).attemptSpec()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/group.go:234 +0x1624
+  github.com/onsi/ginkgo/v2/internal.(*group).run()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/group.go:384 +0x1364
+  github.com/onsi/ginkgo/v2/internal.(*Suite).runSpecs()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/suite.go:519 +0x15ae
+  github.com/onsi/ginkgo/v2/internal.(*Suite).Run()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/internal/suite.go:136 +0x764
+  github.com/onsi/ginkgo/v2.RunSpecs()
+      /home/baphled/go/pkg/mod/github.com/onsi/ginkgo/v2@v2.28.1/core_dsl.go:315 +0xf91
+  github.com/baphled/flowstate/internal/engine_test.TestEngine()
+      /home/baphled/Projects/FlowState.git/agent-platform/internal/engine/suite_test.go:12 +0x4d
+  testing.tRunner()
+      /usr/lib/go/src/testing/testing.go:2036 +0x21c
+  testing.(*T).Run.gowrap1()
+      /usr/lib/go/src/testing/testing.go:2101 +0x38
+==================
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=fail-on-second model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=fail-on-second model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=fail-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=fail-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=fail-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine stream request provider=fail-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=success-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=ollama model=llama3.2 messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=broken-provider model=broken-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=broken-provider model=broken-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=broken-a model=model-a messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=sync-broken model=broken-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=provider-a model=model-a messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=provider-b model=model-b messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:56 INFO engine tool call tool=test_tool
+2026/04/05 17:51:56 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=explorer-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=explorer-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:56 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=thinking-provider model=thinking-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=thinking-provider model=thinking-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=thinking-provider model=thinking-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=thinking-provider model=thinking-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+2026/04/05 17:51:58 INFO engine tool call tool=second_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=6
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=search_context
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=2
+2026/04/05 17:51:58 INFO engine tool call tool=test_tool
+2026/04/05 17:51:58 INFO engine stream request provider=test-chat-provider model="" messages=4
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=primary model=primary-model messages=2
+2026/04/05 17:51:58 [hook] request started with 2 messages
+2026/04/05 17:51:58 [hook] request completed in 24.055µs
+[38;5;10m•[0m2026/04/05 17:51:58 INFO engine stream request provider=primary model=primary-model messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine context window tokenBudget=4096 messages=2
+2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=slow-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=primary model=primary-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=primary model=primary-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=primary model=primary-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=slow model=slow-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=primary model=primary-model messages=2
+2026/04/05 17:51:59 INFO engine stream request provider=primary model=primary-model messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine context window tokenBudget=4096 messages=2
+2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=ollama model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=ollama model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=ollama model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=anthropic model=claude-sonnet-4-6 messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=ollama model=llama3.2 messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=anthropic model=claude-sonnet-4-6 messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=anthropic model=claude-opus messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=qa-provider model="" messages=2
+2026/04/05 17:51:59 INFO engine stream request provider=replay-anthropic model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-provider model="" messages=2
+2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-chat-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=test-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=target-provider model="" messages=2
+[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=replay-anthropic model="" messages=2
+[38;5;10m•[0m2026/04/05 17:51:59 INFO engine stream request provider=tool-call-seq-provider model="" messages=2
+2026/04/05 17:51:59 INFO engine tool call tool=bash
+2026/04/05 17:51:59 INFO engine stream request provider=tool-call-seq-provider model="" messages=4
+[38;5;10m•[0m
+
+[38;5;10m[1mRan 384 of 384 Specs in 3.800 seconds[0m
+[38;5;10m[1mSUCCESS![0m -- [38;5;10m[1m384 Passed[0m | [38;5;9m[1m0 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m
+--- FAIL: TestEngine (3.82s)
+    testing.go:1712: race detected during execution of test
+FAIL
+FAIL	github.com/baphled/flowstate/internal/engine	3.847s
+ok  	github.com/baphled/flowstate/internal/app	17.303s
+ok  	github.com/baphled/flowstate/internal/api	1.567s
+FAIL
