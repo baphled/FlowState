@@ -83,6 +83,20 @@ func (a *PluginEventAdapter) RegisterPluginSubscription(pluginName string, patte
 	return nil
 }
 
+// UnregisterPlugin removes all subscriptions and the handler for the named plugin.
+//
+// Expected:
+//   - pluginName is the unique identifier used when the plugin subscribed.
+//
+// Returns: none.
+// Side effects: removes the plugin's entries from subscriptions and handlers maps.
+func (a *PluginEventAdapter) UnregisterPlugin(pluginName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.subscriptions, pluginName)
+	delete(a.handlers, pluginName)
+}
+
 // resolvePatterns resolves namespace patterns against the event catalog.
 // "provider.*" matches all events with a "provider." prefix.
 // Returns an error if no catalog entries match a pattern.
