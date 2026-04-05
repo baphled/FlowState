@@ -10,6 +10,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -70,7 +71,7 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 			return bddCtx, err
 		}
 		h.projectRoot = filepath.Join(cwd, "..", "..")
-		h.harness = plan.NewHarness(h.projectRoot)
+		h.harness = plan.NewHarness(h.projectRoot, validation.DefaultValidators()...)
 		h.evaluationResult = nil
 		h.validationResult = nil
 		h.planText = ""
@@ -384,7 +385,7 @@ func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
 	if h.planText == "" {
 		return errors.New("no plan text configured — Given step must set up the plan document first")
 	}
-	validator := &plan.SchemaValidator{}
+	validator := &validation.SchemaValidator{}
 	result, _ := validator.Validate(h.planText)
 	h.validationResult = result
 	return nil

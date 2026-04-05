@@ -1,17 +1,18 @@
-package plan_test
+package validation_test
 
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 )
 
 var _ = Describe("AssertionValidator", func() {
-	var validator *plan.AssertionValidator
+	var validator *validation.AssertionValidator
 
 	BeforeEach(func() {
-		validator = &plan.AssertionValidator{}
+		validator = &validation.AssertionValidator{}
 	})
 
 	It("validates a correct plan with proper dependencies", func() {

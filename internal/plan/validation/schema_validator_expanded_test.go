@@ -1,17 +1,17 @@
-package plan_test
+package validation_test
 
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 )
 
 var _ = Describe("SchemaValidator Expanded Fields", func() {
-	var validator *plan.SchemaValidator
+	var validator *validation.SchemaValidator
 
 	BeforeEach(func() {
-		validator = &plan.SchemaValidator{}
+		validator = &validation.SchemaValidator{}
 	})
 
 	Context("when plan has all expanded fields", func() {

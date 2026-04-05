@@ -7,6 +7,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 )
@@ -114,6 +115,7 @@ func createHarnessStreamer(
 		opts = append(opts, plan.WithVoter(voter))
 	}
 
+	opts = append(validation.DefaultValidators(), opts...)
 	harness := plan.NewHarness(projectRoot, opts...)
 	return streaming.NewHarnessStreamer(inner, &harnessAdapter{harness: harness}, registry)
 }

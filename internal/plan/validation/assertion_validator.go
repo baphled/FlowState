@@ -1,7 +1,9 @@
-package plan
+package validation
 
 import (
 	"fmt"
+
+	"github.com/baphled/flowstate/internal/plan"
 )
 
 // AssertionValidator performs semantic validation on a plan File.
@@ -17,7 +19,7 @@ type AssertionValidator struct{}
 // Score is 1.0 if all checks pass, and is reduced for each violation.
 //
 // Expected:
-//   - plan is a valid File with tasks.
+//   - planFile is a valid File with tasks.
 //
 // Returns:
 //   - A ValidationResult with errors and score.
@@ -25,15 +27,15 @@ type AssertionValidator struct{}
 //
 // Side effects:
 //   - None.
-func (v *AssertionValidator) Validate(plan *File) (*ValidationResult, error) {
-	result := &ValidationResult{Score: 1.0}
+func (v *AssertionValidator) Validate(planFile *plan.File) (*plan.ValidationResult, error) {
+	result := &plan.ValidationResult{Score: 1.0}
 	titleSet := make(map[string]struct{})
 	titleToIdx := make(map[string]int)
 
-	v.checkDuplicateTitles(plan, result, titleSet, titleToIdx)
-	v.checkInvalidDependencies(plan, result, titleSet)
-	v.checkCircularDependencies(plan, result, titleToIdx)
-	v.checkMissingEffort(plan, result)
+	v.checkDuplicateTitles(planFile, result, titleSet, titleToIdx)
+	v.checkInvalidDependencies(planFile, result, titleSet)
+	v.checkCircularDependencies(planFile, result, titleToIdx)
+	v.checkMissingEffort(planFile, result)
 
 	v.normalizeScore(result)
 	result.Valid = len(result.Errors) == 0
@@ -46,20 +48,20 @@ func (v *AssertionValidator) Validate(plan *File) (*ValidationResult, error) {
 // checkDuplicateTitles checks for duplicate task titles and updates the result accordingly.
 //
 // Expected:
-//   - plan contains tasks with titles.
+//   - planFile contains tasks with titles.
 //   - titleSet and titleToIdx are empty maps.
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score.
 //   - Populates titleSet and titleToIdx maps.
 func (v *AssertionValidator) checkDuplicateTitles(
-	plan *File,
-	result *ValidationResult,
+	planFile *plan.File,
+	result *plan.ValidationResult,
 	titleSet map[string]struct{},
 	titleToIdx map[string]int,
 ) {
-	for i := range plan.Tasks {
-		task := &plan.Tasks[i]
+	for i := range planFile.Tasks {
+		task := &planFile.Tasks[i]
 		title := task.Title
 		if _, exists := titleSet[title]; exists {
 			result.Errors = append(result.Errors, fmt.Sprintf("duplicate task title: %q", title))
@@ -74,14 +76,14 @@ func (v *AssertionValidator) checkDuplicateTitles(
 // checkInvalidDependencies checks for references to non-existent task titles.
 //
 // Expected:
-//   - plan contains tasks with dependencies.
+//   - planFile contains tasks with dependencies.
 //   - titleSet contains all valid task titles.
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score.
-func (v *AssertionValidator) checkInvalidDependencies(plan *File, result *ValidationResult, titleSet map[string]struct{}) {
-	for i := range plan.Tasks {
-		task := &plan.Tasks[i]
+func (v *AssertionValidator) checkInvalidDependencies(planFile *plan.File, result *plan.ValidationResult, titleSet map[string]struct{}) {
+	for i := range planFile.Tasks {
+		task := &planFile.Tasks[i]
 		for _, dep := range task.Dependencies {
 			if _, ok := titleSet[dep]; !ok {
 				result.Errors = append(result.Errors, fmt.Sprintf("unknown dependency: %q in task %q", dep, task.Title))
@@ -94,12 +96,12 @@ func (v *AssertionValidator) checkInvalidDependencies(plan *File, result *Valida
 // checkCircularDependencies detects cycles in the task dependency graph using depth-first search.
 //
 // Expected:
-//   - plan contains tasks with dependencies.
+//   - planFile contains tasks with dependencies.
 //   - titleToIdx maps all task titles to their indices.
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score if a cycle is found.
-func (v *AssertionValidator) checkCircularDependencies(plan *File, result *ValidationResult, titleToIdx map[string]int) {
+func (v *AssertionValidator) checkCircularDependencies(planFile *plan.File, result *plan.ValidationResult, titleToIdx map[string]int) {
 	visited := make(map[string]bool)
 	stack := make(map[string]bool)
 
@@ -118,7 +120,7 @@ func (v *AssertionValidator) checkCircularDependencies(plan *File, result *Valid
 			stack[title] = false
 			return false
 		}
-		task := &plan.Tasks[taskIdx]
+		task := &planFile.Tasks[taskIdx]
 		for _, dep := range task.Dependencies {
 			if visit(dep) {
 				return true
@@ -128,8 +130,8 @@ func (v *AssertionValidator) checkCircularDependencies(plan *File, result *Valid
 		return false
 	}
 
-	for i := range plan.Tasks {
-		task := &plan.Tasks[i]
+	for i := range planFile.Tasks {
+		task := &planFile.Tasks[i]
 		if visit(task.Title) {
 			result.Errors = append(result.Errors, "circular dependency detected")
 			result.Score -= 0.3
@@ -141,13 +143,13 @@ func (v *AssertionValidator) checkCircularDependencies(plan *File, result *Valid
 // checkMissingEffort checks that all tasks have an estimated effort value.
 //
 // Expected:
-//   - plan contains tasks.
+//   - planFile contains tasks.
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score for tasks without effort.
-func (v *AssertionValidator) checkMissingEffort(plan *File, result *ValidationResult) {
-	for i := range plan.Tasks {
-		task := &plan.Tasks[i]
+func (v *AssertionValidator) checkMissingEffort(planFile *plan.File, result *plan.ValidationResult) {
+	for i := range planFile.Tasks {
+		task := &planFile.Tasks[i]
 		if task.EstimatedEffort == "" {
 			result.Errors = append(result.Errors, fmt.Sprintf("missing estimated effort for task %q", task.Title))
 			result.Score -= 0.1
@@ -162,7 +164,7 @@ func (v *AssertionValidator) checkMissingEffort(plan *File, result *ValidationRe
 //
 // Side effects:
 //   - Modifies result by clamping the Score field.
-func (v *AssertionValidator) normalizeScore(result *ValidationResult) {
+func (v *AssertionValidator) normalizeScore(result *plan.ValidationResult) {
 	if result.Score < 0.0 {
 		result.Score = 0.0
 	}

@@ -287,7 +287,7 @@ var _ = Describe("LLMCritic", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: validCriticResponse()}
 				critic := newTestCritic(true)
-				harness := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv))
+				harness := newTestHarness(projectRoot, plan.WithCritic(critic, criticProv))
 				streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 				Expect(err).NotTo(HaveOccurred())
@@ -303,7 +303,7 @@ var _ = Describe("LLMCritic", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: failingCriticResponse()}
 				critic := newTestCritic(true)
-				harness := plan.NewHarness(projectRoot, plan.WithCritic(critic, criticProv), plan.WithMaxRetries(3))
+				harness := newTestHarness(projectRoot, plan.WithCritic(critic, criticProv), plan.WithMaxRetries(3))
 				streamer := &mockStreamer{responses: []string{
 					loadValidPlan(),
 					loadValidPlan(),
@@ -319,7 +319,7 @@ var _ = Describe("LLMCritic", func() {
 		Context("when critic is not configured", func() {
 			It("skips critic and returns on validation pass alone", func() {
 				projectRoot := projectRootFromWorkingDir()
-				harness := plan.NewHarness(projectRoot)
+				harness := newTestHarness(projectRoot)
 				streamer := &mockStreamer{responses: []string{loadValidPlan()}}
 				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 				Expect(err).NotTo(HaveOccurred())

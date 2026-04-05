@@ -44,7 +44,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 		cwd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred())
 		projectRoot = filepath.Join(cwd, "..", "..")
-		harness = plan.NewHarness(projectRoot)
+		harness = newTestHarness(projectRoot)
 		ctx = context.Background()
 	})
 
@@ -64,7 +64,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("retries on invalid plan and succeeds", func() {
-		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(2))
+		harnessWithRetry := newTestHarness(projectRoot, plan.WithMaxRetries(2))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), loadValidPlan()},
 		}
@@ -80,7 +80,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("returns best-effort after max retries", func() {
-		harnessWithRetry := plan.NewHarness(projectRoot, plan.WithMaxRetries(3))
+		harnessWithRetry := newTestHarness(projectRoot, plan.WithMaxRetries(3))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), invalidPlan(), invalidPlan()},
 		}
@@ -130,7 +130,7 @@ func BenchmarkHarnessOverhead(b *testing.B) {
 		b.Fatal(err)
 	}
 	projectRoot := filepath.Join(cwd, "..", "..")
-	harness := plan.NewHarness(projectRoot)
+	harness := newTestHarness(projectRoot)
 	data, err := os.ReadFile("testdata/valid_plan.md")
 	if err != nil {
 		b.Fatal(err)

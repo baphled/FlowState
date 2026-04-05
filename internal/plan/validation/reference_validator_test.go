@@ -1,4 +1,4 @@
-package plan_test
+package validation_test
 
 import (
 	"os"
@@ -7,26 +7,26 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 )
 
 var _ = Describe("ReferenceValidator", func() {
 	var (
-		validator   *plan.ReferenceValidator
+		validator   *validation.ReferenceValidator
 		projectRoot string
 	)
 
 	BeforeEach(func() {
-		validator = &plan.ReferenceValidator{}
+		validator = &validation.ReferenceValidator{}
 		cwd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred())
-		projectRoot, err = filepath.Abs(filepath.Join(cwd, "..", ".."))
+		projectRoot, err = filepath.Abs(filepath.Join(cwd, "..", "..", ".."))
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	Describe("valid references", func() {
 		It("returns valid when all refs exist", func() {
-			planText := "This plan references `internal/plan/schema_validator.go` for validation."
+			planText := "This plan references `internal/plan/validation/schema_validator.go` for validation."
 
 			result, err := validator.Validate(planText, projectRoot)
 			Expect(err).NotTo(HaveOccurred())
@@ -58,7 +58,7 @@ var _ = Describe("ReferenceValidator", func() {
 
 	Describe("mixed references", func() {
 		It("returns invalid and score < 1.0 when some refs are invalid", func() {
-			planText := "Valid: `internal/plan/schema_validator.go`, Invalid: `internal/foo/nonexistent.go`"
+			planText := "Valid: `internal/plan/validation/schema_validator.go`, Invalid: `internal/foo/nonexistent.go`"
 			result, err := validator.Validate(planText, projectRoot)
 			Expect(err).To(HaveOccurred())
 			Expect(result.Valid).To(BeFalse())

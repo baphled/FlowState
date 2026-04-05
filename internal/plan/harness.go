@@ -83,13 +83,28 @@ func WithMaxRetries(n int) HarnessOption {
 	}
 }
 
+// schemaValidation validates plan documents for required structure and content.
+type schemaValidation interface {
+	Validate(planText string) (*ValidationResult, error)
+}
+
+// assertionValidation performs semantic validation on a plan File.
+type assertionValidation interface {
+	Validate(planFile *File) (*ValidationResult, error)
+}
+
+// referenceValidation checks that file references in plan text exist under the project root.
+type referenceValidation interface {
+	Validate(planText string, projectRoot string) (*ValidationResult, error)
+}
+
 // Harness wraps a Streamer with validate-retry logic and optional LLM critic.
 type Harness struct {
 	maxRetries         int
 	projectRoot        string
-	schemaValidator    *SchemaValidator
-	assertionValidator *AssertionValidator
-	referenceValidator *ReferenceValidator
+	schemaValidator    schemaValidation
+	assertionValidator assertionValidation
+	referenceValidator referenceValidation
 	critic             *LLMCritic
 	criticProvider     provider.Provider
 	voter              *ConsistencyVoter
@@ -108,16 +123,55 @@ type Harness struct {
 //   - None.
 func NewHarness(projectRoot string, opts ...HarnessOption) *Harness {
 	h := &Harness{
-		maxRetries:         1,
-		projectRoot:        projectRoot,
-		schemaValidator:    &SchemaValidator{},
-		assertionValidator: &AssertionValidator{},
-		referenceValidator: &ReferenceValidator{},
+		maxRetries:  1,
+		projectRoot: projectRoot,
 	}
 	for _, opt := range opts {
 		opt(h)
 	}
 	return h
+}
+
+// WithSchemaValidator sets the schema validator used by the harness.
+//
+// Expected:
+//   - v implements the schemaValidation interface.
+//
+// Returns:
+//   - A HarnessOption that sets the schema validator.
+//
+// Side effects:
+//   - None.
+func WithSchemaValidator(v schemaValidation) HarnessOption {
+	return func(h *Harness) { h.schemaValidator = v }
+}
+
+// WithAssertionValidator sets the assertion validator used by the harness.
+//
+// Expected:
+//   - v implements the assertionValidation interface.
+//
+// Returns:
+//   - A HarnessOption that sets the assertion validator.
+//
+// Side effects:
+//   - None.
+func WithAssertionValidator(v assertionValidation) HarnessOption {
+	return func(h *Harness) { h.assertionValidator = v }
+}
+
+// WithReferenceValidator sets the reference validator used by the harness.
+//
+// Expected:
+//   - v implements the referenceValidation interface.
+//
+// Returns:
+//   - A HarnessOption that sets the reference validator.
+//
+// Side effects:
+//   - None.
+func WithReferenceValidator(v referenceValidation) HarnessOption {
+	return func(h *Harness) { h.referenceValidator = v }
 }
 
 // StreamEvaluate runs the plan harness over a streaming response, forwarding chunks in real-time.
@@ -501,8 +555,8 @@ func (h *Harness) validatePlan(planText string) *ValidationResult {
 		return schemaResult
 	}
 
-	plan := &File{Tasks: tasksFromPlanText(planText)}
-	assertionResult, assertionErr := h.assertionValidator.Validate(plan)
+	planFile := &File{Tasks: tasksFromPlanText(planText)}
+	assertionResult, assertionErr := h.assertionValidator.Validate(planFile)
 	if assertionErr != nil && assertionResult != nil {
 		assertionResult.Warnings = append(assertionResult.Warnings, assertionErr.Error())
 	}
@@ -889,7 +943,6 @@ func streamPlan(
 	return planText, nil
 }
 
-
 // normalizeDependencies removes empty and "none" entries from a dependency list.
 //
 // Expected:
@@ -1012,102 +1065,3 @@ func appendFeedback(message string, feedback string) string {
 	}
 	return message + "\n\n" + feedback
 }
-
-// ValidatorChain composes schema, assertion, and reference validators with short-circuit logic and weighted scoring.
-type ValidatorChain struct {
-	schemaValidator    *SchemaValidator
-	assertionValidator *AssertionValidator
-	referenceValidator *ReferenceValidator
-	projectRoot        string
-}
-
-// NewValidatorChain creates a ValidatorChain with all validators.
-//
-// Expected:
-//   - projectRoot is the absolute path to the project root directory.
-//
-// Returns:
-//   - A configured ValidatorChain with schema, assertion, and reference validators.
-//
-// Side effects:
-//   - None.
-func NewValidatorChain(projectRoot string) *ValidatorChain {
-	return &ValidatorChain{
-		schemaValidator:    &SchemaValidator{},
-		assertionValidator: &AssertionValidator{},
-		referenceValidator: &ReferenceValidator{},
-		projectRoot:        projectRoot,
-	}
-}
-
-// Validate runs schema, assertion, and reference validation with short-circuit and weighted scoring.
-//
-// Expected:
-//   - planText contains a plan with YAML frontmatter and markdown body.
-//
-// Returns:
-//   - A ValidationResult with aggregated errors, warnings, and a weighted score.
-//   - An error if any validator encounters a fatal failure.
-//
-// Side effects:
-//   - None.
-func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
-	schemaResult, schemaErr := v.schemaValidator.Validate(planText)
-	if schemaErr != nil {
-		return schemaResult, schemaErr
-	}
-	if !schemaResult.Valid {
-		return schemaResult, nil
-	}
-
-	file, err := parseFile(planText)
-	if err != nil {
-		return &ValidationResult{Valid: false, Errors: []string{fmt.Sprintf("failed to parse plan: %v", err)}}, nil
-	}
-	assertionResult, assertionErr := v.assertionValidator.Validate(file)
-	if assertionErr != nil {
-		return assertionResult, assertionErr
-	}
-
-	referenceResult, referenceErr := v.referenceValidator.Validate(planText, v.projectRoot)
-	if referenceErr != nil {
-		return referenceResult, referenceErr
-	}
-
-	combined := &ValidationResult{Valid: true, Score: 1.0}
-	results := []*ValidationResult{schemaResult, assertionResult, referenceResult}
-	count := 0
-	scoreSum := 0.0
-
-	for _, result := range results {
-		if result == nil {
-			continue
-		}
-		count++
-		scoreSum += result.Score
-		if !result.Valid {
-			combined.Valid = false
-		}
-		combined.Errors = append(combined.Errors, result.Errors...)
-		combined.Warnings = append(combined.Warnings, result.Warnings...)
-	}
-
-	if count == 0 {
-		combined.Score = 0.0
-	} else {
-		combined.Score = scoreSum / float64(count)
-	}
-
-	if combined.Score < 0.0 {
-		combined.Score = 0.0
-	}
-	if combined.Score > 1.0 {
-		combined.Score = 1.0
-	}
-	if len(combined.Errors) > 0 {
-		combined.Valid = false
-	}
-
-	return combined, nil
-}
-

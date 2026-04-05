@@ -1,4 +1,4 @@
-package plan_test
+package validation_test
 
 import (
 	"os"
@@ -6,18 +6,18 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/validation"
 )
 
 var _ = Describe("SchemaValidator", func() {
-	var validator *plan.SchemaValidator
+	var validator *validation.SchemaValidator
 
 	BeforeEach(func() {
-		validator = &plan.SchemaValidator{}
+		validator = &validation.SchemaValidator{}
 	})
 
 	It("validates a correct plan (valid_plan.md)", func() {
-		data, err := os.ReadFile("testdata/valid_plan.md")
+		data, err := os.ReadFile("../testdata/valid_plan.md")
 		Expect(err).NotTo(HaveOccurred())
 		result, err := validator.Validate(string(data))
 		Expect(err).NotTo(HaveOccurred())
@@ -33,7 +33,7 @@ var _ = Describe("SchemaValidator", func() {
 	})
 
 	It("fails on missing frontmatter (invalid_missing_frontmatter.md)", func() {
-		data, err := os.ReadFile("testdata/invalid_missing_frontmatter.md")
+		data, err := os.ReadFile("../testdata/invalid_missing_frontmatter.md")
 		Expect(err).NotTo(HaveOccurred())
 		result, err := validator.Validate(string(data))
 		Expect(err).To(HaveOccurred())
@@ -42,7 +42,7 @@ var _ = Describe("SchemaValidator", func() {
 	})
 
 	It("fails on bad YAML (invalid_bad_yaml.md)", func() {
-		data, err := os.ReadFile("testdata/invalid_bad_yaml.md")
+		data, err := os.ReadFile("../testdata/invalid_bad_yaml.md")
 		Expect(err).NotTo(HaveOccurred())
 		result, err := validator.Validate(string(data))
 		Expect(err).To(HaveOccurred())
@@ -51,7 +51,7 @@ var _ = Describe("SchemaValidator", func() {
 	})
 
 	It("fails on missing tasks (invalid_missing_tasks.md)", func() {
-		data, err := os.ReadFile("testdata/invalid_missing_tasks.md")
+		data, err := os.ReadFile("../testdata/invalid_missing_tasks.md")
 		Expect(err).NotTo(HaveOccurred())
 		result, err := validator.Validate(string(data))
 		Expect(err).To(HaveOccurred())
@@ -86,7 +86,7 @@ var _ = Describe("SchemaValidator", func() {
 	})
 
 	It("returns valid with score 1.0 for well-formed plan", func() {
-		data, err := os.ReadFile("testdata/valid_plan.md")
+		data, err := os.ReadFile("../testdata/valid_plan.md")
 		Expect(err).NotTo(HaveOccurred())
 		result, err := validator.Validate(string(data))
 		Expect(err).NotTo(HaveOccurred())

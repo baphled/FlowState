@@ -1,4 +1,4 @@
-package plan
+package validation
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/plan"
 )
 
 // ReferenceValidator checks that all Go file references in plan text exist under the project root.
@@ -23,8 +25,8 @@ type ReferenceValidator struct{}
 //
 // Side effects:
 //   - Accesses the filesystem to check file existence.
-func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*ValidationResult, error) {
-	result := &ValidationResult{Valid: true, Score: 1.0}
+func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*plan.ValidationResult, error) {
+	result := &plan.ValidationResult{Valid: true, Score: 1.0}
 	refRegex := regexp.MustCompile("`([^`]+\\.go[^`]*)`")
 	matches := refRegex.FindAllStringSubmatch(planText, -1)
 	if len(matches) == 0 {
@@ -54,7 +56,7 @@ func (v *ReferenceValidator) Validate(planText string, projectRoot string) (*Val
 // Side effects:
 //   - Modifies result by appending errors for invalid references.
 //   - Accesses the filesystem to check file existence.
-func (v *ReferenceValidator) validateReferences(matches [][]string, projectRoot string, result *ValidationResult) int {
+func (v *ReferenceValidator) validateReferences(matches [][]string, projectRoot string, result *plan.ValidationResult) int {
 	validRefs := 0
 	projRootAbs, err := filepath.Abs(projectRoot)
 	if err != nil {
@@ -102,7 +104,7 @@ func extractRef(refWithLine string) string {
 // Side effects:
 //   - Modifies result by appending errors for invalid references.
 //   - Accesses the filesystem to check file existence.
-func (v *ReferenceValidator) validateReference(ref, projectRoot, projRootAbs string, result *ValidationResult) bool {
+func (v *ReferenceValidator) validateReference(ref, projectRoot, projRootAbs string, result *plan.ValidationResult) bool {
 	absPath := filepath.Clean(filepath.Join(projectRoot, ref))
 	absPath, err := filepath.Abs(absPath)
 	if err != nil {
@@ -151,7 +153,7 @@ func isUnderProjectRoot(absPath, projRootAbs string) bool {
 //
 // Side effects:
 //   - Modifies result by setting the Valid field and Score.
-func (v *ReferenceValidator) calculateScore(result *ValidationResult, validRefs, totalRefs int) {
+func (v *ReferenceValidator) calculateScore(result *plan.ValidationResult, validRefs, totalRefs int) {
 	if validRefs < totalRefs {
 		result.Valid = false
 		result.Score = float64(validRefs) / float64(totalRefs)

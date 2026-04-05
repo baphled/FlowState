@@ -1,10 +1,11 @@
-package plan
+package validation
 
 import (
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/plan"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,8 +23,8 @@ type SchemaValidator struct{}
 //
 // Side effects:
 //   - None.
-func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
-	result := &ValidationResult{Score: 1.0}
+func (v *SchemaValidator) Validate(planText string) (*plan.ValidationResult, error) {
+	result := &plan.ValidationResult{Score: 1.0}
 	if strings.TrimSpace(planText) == "" {
 		result.Valid = false
 		result.Errors = append(result.Errors, "plan is empty")
@@ -39,7 +40,7 @@ func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 		return result, errors.New("missing YAML frontmatter")
 	}
 
-	var fm Frontmatter
+	var fm plan.Frontmatter
 	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
 		result.Valid = false
 		result.Errors = append(result.Errors, "invalid YAML frontmatter")
@@ -56,8 +57,7 @@ func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 		result.Score -= 0.3
 	}
 
-	tasks := parseTasksFromMarkdown(parts[2])
-	if len(tasks) == 0 {
+	if !hasTaskHeaders(parts[2]) {
 		result.Errors = append(result.Errors, "no tasks found")
 		result.Score -= 0.4
 	}
@@ -90,8 +90,8 @@ func (v *SchemaValidator) Validate(planText string) (*ValidationResult, error) {
 //
 // Side effects:
 //   - Appends warnings to result.Warnings for missing optional fields.
-func (v *SchemaValidator) validateExpandedFields(yamlContent string, result *ValidationResult) {
-	var file File
+func (v *SchemaValidator) validateExpandedFields(yamlContent string, result *plan.ValidationResult) {
+	var file plan.File
 	if err := yaml.Unmarshal([]byte(yamlContent), &file); err != nil {
 		return
 	}
@@ -115,4 +115,25 @@ func (v *SchemaValidator) validateExpandedFields(yamlContent string, result *Val
 	if strings.TrimSpace(file.VerificationStrategy) == "" {
 		result.Warnings = append(result.Warnings, "plan missing VerificationStrategy")
 	}
+}
+
+// hasTaskHeaders reports whether the markdown body contains any level-2 headers
+// that indicate task definitions. This is equivalent to checking whether
+// parseTasksFromMarkdown would return a non-empty slice.
+//
+// Expected:
+//   - markdown is the body of a plan document (after frontmatter).
+//
+// Returns:
+//   - true if any "## " header line exists, false otherwise.
+//
+// Side effects:
+//   - None.
+func hasTaskHeaders(markdown string) bool {
+	for _, line := range strings.Split(markdown, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			return true
+		}
+	}
+	return false
 }
