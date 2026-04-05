@@ -145,6 +145,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		learningStore:      learningStore,
 		failoverHook:       pluginFailoverHook(pluginRT),
 		failoverManager:    pluginFailoverManager(pluginRT),
+		dispatcher:         pluginDispatcher(pluginRT),
 	})
 	if err != nil {
 		return nil, err
@@ -365,6 +366,7 @@ type engineParams struct {
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
 	mcpServerTools     map[string][]string
+	dispatcher         *external.Dispatcher
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -403,6 +405,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		tokenCounter:       ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
 		failoverHook:       params.failoverHook,
 		failoverManager:    params.failoverManager,
+		dispatcher:         params.dispatcher,
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -518,6 +521,7 @@ type setupEngineParams struct {
 	learningStore      *learning.JSONFileStore
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
+	dispatcher         *external.Dispatcher
 }
 
 // runtimeComponents groups the runtime values created during engine setup.
@@ -565,6 +569,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		bakedSkillNames: bakedNames,
 		failoverHk:      params.failoverHook,
 		failoverMgr:     params.failoverManager,
+		dispatcher:      params.dispatcher,
 		twc: &toolWiringCallbacks{
 			hasTool: func(name string) bool {
 				if eng == nil {
@@ -1228,6 +1233,7 @@ type hookChainConfig struct {
 	failoverHk      *failover.Hook
 	failoverMgr     *failover.Manager
 	twc             *toolWiringCallbacks
+	dispatcher      *external.Dispatcher
 }
 
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
@@ -1261,6 +1267,17 @@ func buildHookChain(params hookChainConfig) *hook.Chain {
 	hooks = append(hooks,
 		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames),
 	)
+	if params.dispatcher != nil {
+		d := params.dispatcher
+		hooks = append(hooks, func(next hook.HandlerFunc) hook.HandlerFunc {
+			return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				if err := d.Dispatch(ctx, pluginpkg.ChatParams, req); err != nil {
+					slog.Warn("chat.params dispatch error", "error", err)
+				}
+				return next(ctx, req)
+			}
+		})
+	}
 	if params.twc != nil {
 		twc := params.twc
 		hooks = append(hooks, hook.ToolWiringHook(params.manifestGetter, twc.hasTool, twc.ensureTools, twc.schemaRebuilder))
@@ -1334,6 +1351,24 @@ func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
 		return nil
 	}
 	return rt.failoverHook
+}
+
+// pluginDispatcher returns the external dispatcher from the plugin runtime, or nil
+// when the runtime is not initialised.
+//
+// Expected:
+//   - rt may be nil; when nil the function returns nil.
+//
+// Returns:
+//   - The external dispatcher, or nil when rt is nil.
+//
+// Side effects:
+//   - None.
+func pluginDispatcher(rt *pluginRuntime) *external.Dispatcher {
+	if rt == nil {
+		return nil
+	}
+	return rt.dispatcher
 }
 
 // startCorePluginSubscriptions wires the event logger, rate-limit detector, and
@@ -1845,6 +1880,31 @@ func BuildHookChainForTest(
 	return buildHookChain(hookChainConfig{
 		learningStore:  learningStore,
 		manifestGetter: manifestGetter,
+	})
+}
+
+// BuildHookChainWithDispatcherForTest is a test helper that exposes buildHookChain with a
+// dispatcher for testing the chat.params dispatch path.
+//
+// Expected:
+//   - learningStore may be nil.
+//   - manifestGetter returns the current agent manifest for hook selection.
+//   - dispatcher may be nil; when non-nil, a chat.params hook is inserted after SkillAutoLoaderHook.
+//
+// Returns:
+//   - A fully configured hook.Chain for inspection in tests.
+//
+// Side effects:
+//   - None.
+func BuildHookChainWithDispatcherForTest(
+	learningStore *learning.JSONFileStore,
+	manifestGetter func() agent.Manifest,
+	dispatcher *external.Dispatcher,
+) *hook.Chain {
+	return buildHookChain(hookChainConfig{
+		learningStore:  learningStore,
+		manifestGetter: manifestGetter,
+		dispatcher:     dispatcher,
 	})
 }
 
