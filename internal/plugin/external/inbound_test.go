@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/plugin/adapter"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/external"
 )
 
@@ -47,6 +48,48 @@ var _ = Describe("InboundHandler", func() {
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("must not start with 'ext.'"))
+			})
+		})
+
+		Context("namespace separation enforcement", func() {
+			It("accepts a plugin-scoped custom event name and publishes under ext.{plugin}.{name}", func() {
+				var received any
+				bus.Subscribe("ext.my-plugin.custom-event", func(event any) {
+					received = event
+				})
+
+				err := handler.HandleNotification("custom-event", json.RawMessage(`{"x":1}`))
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(received).NotTo(BeNil())
+			})
+
+			It("rejects an event name that matches an internal catalog topic", func() {
+				internalTopic := events.Catalog[0].Topic
+
+				var published bool
+				bus.Subscribe(internalTopic, func(_ any) {
+					published = true
+				})
+
+				err := handler.HandleNotification(internalTopic, json.RawMessage(`{}`))
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("cannot publish to internal topic"))
+				Expect(published).To(BeFalse())
+			})
+
+			It("rejects session.created specifically — a well-known internal topic", func() {
+				var published bool
+				bus.Subscribe("session.created", func(_ any) {
+					published = true
+				})
+
+				err := handler.HandleNotification("session.created", json.RawMessage(`{}`))
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("cannot publish to internal topic"))
+				Expect(published).To(BeFalse())
 			})
 		})
 

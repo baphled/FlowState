@@ -87,6 +87,44 @@ type EventCatalogEntry struct {
 	Notes string
 }
 
+// NamespaceRules documents the topic namespace policy enforced at the inbound
+// plugin boundary (internal/plugin/external.InboundHandler).
+//
+// External plugins publish events via the JSON-RPC notifications/event method.
+// The inbound handler enforces the following rules:
+//
+//   - The "ext.*" namespace is reserved exclusively for external plugin events.
+//     External plugins publish as "ext.{plugin-name}.{event-name}".
+//     A plugin named "my-plugin" sending "ping" produces the topic
+//     "ext.my-plugin.ping" on the EventBus.
+//
+//   - All other topic prefixes (agent.*, background.*, context.*, plugin.*,
+//     prompt.*, provider.*, session.*, tool.*) are reserved for internal
+//     FlowState events. External plugins CANNOT publish directly to these topics.
+//
+//   - Attempting to use an "ext.*" prefixed name is also rejected to prevent
+//     double-prefixing (e.g. "ext.foo" → would produce "ext.plugin.ext.foo").
+//
+// Enforcement: internal/plugin/external.isInternalTopic checks the eventName
+// against every Topic field in Catalog before allowing the publish to proceed.
+// This check lives at the adapter boundary, NOT inside the EventBus itself.
+var NamespaceRules = struct {
+	ExternalPrefix     string
+	InternalNamespaces []string
+}{
+	ExternalPrefix: "ext.",
+	InternalNamespaces: []string{
+		"agent.",
+		"background.",
+		"context.",
+		"plugin.",
+		"prompt.",
+		"provider.",
+		"session.",
+		"tool.",
+	},
+}
+
 // Catalog is the canonical list of all event types in the FlowState event system.
 //
 // Entries are ordered by topic prefix grouping: agent, background, context,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/plugin/adapter"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 )
 
 // InboundHandler processes inbound JSON-RPC notifications and requests from
@@ -53,14 +54,20 @@ func NewInboundHandler(pluginName string, bus *eventbus.EventBus, adp *adapter.P
 //
 // Expected:
 //   - eventName must not start with "ext." — that prefix is reserved for the bus routing scheme.
+//   - eventName must not match any internal catalog topic — those are reserved for FlowState core.
 //   - data is the raw JSON payload to publish.
 //
-// Returns: an error if the event name starts with "ext." or the rate limit is exceeded; nil on success.
+// Returns: an error if the event name starts with "ext.", matches an internal topic, or the rate
+// limit is exceeded; nil on success.
 //
 // Side effects: Publishes an event to the EventBus; logs a warning on rate limit exceed.
 func (h *InboundHandler) HandleNotification(eventName string, data json.RawMessage) error {
 	if strings.HasPrefix(eventName, "ext.") {
 		return fmt.Errorf("event name must not start with 'ext.': %q", eventName)
+	}
+
+	if isInternalTopic(eventName) {
+		return fmt.Errorf("cannot publish to internal topic %q from external plugin", eventName)
 	}
 
 	if !h.consumeToken() {
@@ -72,6 +79,24 @@ func (h *InboundHandler) HandleNotification(eventName string, data json.RawMessa
 	h.bus.Publish(topic, data)
 
 	return nil
+}
+
+// isInternalTopic reports whether the given topic string matches any entry in
+// the FlowState event catalog.
+//
+// Expected: topic is a non-empty string provided by an external plugin.
+//
+// Returns: true if the topic matches a catalog entry; false otherwise.
+//
+// Side effects: None.
+func isInternalTopic(topic string) bool {
+	for i := range events.Catalog {
+		if events.Catalog[i].Topic == topic {
+			return true
+		}
+	}
+
+	return false
 }
 
 // HandleSubscribe processes an events/subscribe request by registering the
