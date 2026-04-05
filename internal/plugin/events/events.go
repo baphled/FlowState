@@ -82,6 +82,10 @@ type SessionEvent struct {
 
 // NewSessionEvent creates a new SessionEvent.
 //
+// KNOWN DIVERGENCE: EventType() returns "session" but this event is published
+// to topic "session.created" or "session.ended" depending on the action.
+// Do not change EventType() — it affects serialised JSONL format.
+//
 // Expected:
 //   - Sets eventType to "session".
 //   - Sets timestamp to now if zero.
@@ -160,6 +164,10 @@ type ToolEvent struct {
 
 // NewToolEvent creates a new ToolEvent.
 //
+// KNOWN DIVERGENCE: EventType() returns "tool" but this event is published
+// to topic "tool.execute.before" or "tool.execute.after" depending on the phase.
+// Do not change EventType() — it affects serialised JSONL format.
+//
 // Expected:
 //   - Sets eventType to "tool".
 //   - Sets timestamp to now if zero.
@@ -237,6 +245,10 @@ type ProviderEvent struct {
 }
 
 // NewProviderEvent creates a new ProviderEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "provider" but this event is published
+// to topic "provider.rate_limited".
+// Do not change EventType() — it affects serialised JSONL format.
 //
 // Expected:
 //   - Sets eventType to "provider".
@@ -365,6 +377,10 @@ type PromptEvent struct {
 
 // NewPromptEvent creates a new PromptEvent.
 //
+// KNOWN DIVERGENCE: EventType() returns "prompt" but this event is published
+// to topic "prompt.generated".
+// Do not change EventType() — it affects serialised JSONL format.
+//
 // Expected:
 //   - Sets eventType to "prompt".
 //   - Sets timestamp to now if not provided.
@@ -412,6 +428,10 @@ type ContextWindowEvent struct {
 }
 
 // NewContextWindowEvent creates a new ContextWindowEvent.
+//
+// KNOWN DIVERGENCE: EventType() returns "context.window" but this event is published
+// to topic "context.window.built".
+// Do not change EventType() — it affects serialised JSONL format.
 //
 // Expected:
 //   - Sets eventType to "context.window".
