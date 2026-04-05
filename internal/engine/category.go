@@ -47,5 +47,10 @@ func DefaultCategoryRouting() map[string]CategoryConfig {
 			Temperature: 0.8,
 			MaxTokens:   4096,
 		},
+		"medium": {
+			Model:       "balanced",
+			Temperature: 0.5,
+			MaxTokens:   2048,
+		},
 	}
 }

@@ -24,6 +24,16 @@ var _ = Describe("CategoryResolver", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
+		It("resolves medium category to balanced descriptor", func() {
+			resolver := engine.NewCategoryResolver(nil)
+			cfg, err := resolver.Resolve("medium")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Model).To(Equal("balanced"))
+			Expect(cfg.Temperature).To(Equal(0.5))
+			Expect(cfg.MaxTokens).To(Equal(2048))
+		})
+
 		It("applies user config overrides", func() {
 			overrides := map[string]engine.CategoryConfig{
 				"quick": {Model: "gpt-4.1", Provider: "openai"},
