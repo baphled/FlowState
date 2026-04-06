@@ -18,7 +18,7 @@ import (
 
 const (
 	providerName         = "zai"
-	defaultBaseURL       = "https://api.z.ai"
+	defaultBaseURL       = "https://api.z.ai/api/paas/v4"
 	defaultContextLength = 128000
 	defaultEmbedModel    = "embedding-3"
 )

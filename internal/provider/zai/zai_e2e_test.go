@@ -38,7 +38,7 @@ func createRealZAIProvider() *openaiAPI.Client {
 
 	client := openaiAPI.NewClient(
 		option.WithAPIKey(apiKey),
-		option.WithBaseURL("https://api.z.ai"),
+		option.WithBaseURL("https://api.z.ai/api/paas/v4"),
 	)
 	return &client
 }
