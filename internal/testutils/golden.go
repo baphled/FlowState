@@ -26,6 +26,15 @@ type goldenRecording struct {
 }
 
 // ConvertGoldenChunks converts a slice of goldenChunks to provider.StreamChunks.
+//
+// Expected:
+//   - chunks: A slice of serialisable golden chunks.
+//
+// Returns:
+//   - A slice of provider.StreamChunks with deserialised content.
+//
+// Side effects:
+//   - None.
 func ConvertGoldenChunks(chunks []goldenChunk) []provider.StreamChunk {
 	result := make([]provider.StreamChunk, len(chunks))
 	for i := range chunks {
@@ -47,7 +56,16 @@ func ConvertGoldenChunks(chunks []goldenChunk) []provider.StreamChunk {
 	return result
 }
 
-// ConvertToGoldenChunks converts a slice of provider.StreamChunks to goldenChunks for serialisation.
+// convertToGoldenChunks converts a slice of provider.StreamChunks to goldenChunks for serialisation.
+//
+// Expected:
+//   - chunks: A slice of provider.StreamChunks.
+//
+// Returns:
+//   - A slice of serialisable golden chunks.
+//
+// Side effects:
+//   - None.
 func convertToGoldenChunks(chunks []provider.StreamChunk) []goldenChunk {
 	result := make([]goldenChunk, len(chunks))
 	for i := range chunks {
@@ -66,6 +84,15 @@ func convertToGoldenChunks(chunks []provider.StreamChunk) []goldenChunk {
 }
 
 // errorString returns the error message as a string, or empty if err is nil.
+//
+// Expected:
+//   - err: An error value (may be nil).
+//
+// Returns:
+//   - The error message as a string, or empty string if err is nil.
+//
+// Side effects:
+//   - None.
 func errorString(err error) string {
 	if err == nil {
 		return ""
@@ -79,12 +106,29 @@ type GoldenPlayer struct {
 }
 
 // NewGoldenPlayer creates a new GoldenPlayer for the given golden file path.
+//
+// Expected:
+//   - path: File path to the golden recording JSON file.
+//
+// Returns:
+//   - A new GoldenPlayer instance ready to load the golden file.
+//
+// Side effects:
+//   - None.
 func NewGoldenPlayer(path string) *GoldenPlayer {
 	return &GoldenPlayer{path: path}
 }
 
 // Load reads the golden file and returns the deserialised chunks.
-// Returns an error if the file does not exist or is invalid JSON.
+//
+// Expected:
+//   - The golden file path was set via NewGoldenPlayer.
+//
+// Returns:
+//   - A slice of deserialised provider.StreamChunks and an error if reading or unmarshalling fails.
+//
+// Side effects:
+//   - Reads the file from disk.
 func (g *GoldenPlayer) Load() ([]provider.StreamChunk, error) {
 	data, err := os.ReadFile(g.path)
 	if err != nil {
@@ -105,12 +149,30 @@ type GoldenRecorder struct {
 }
 
 // NewGoldenRecorder creates a new GoldenRecorder for the given path.
+//
+// Expected:
+//   - path: File path where the golden recording JSON should be saved.
+//
+// Returns:
+//   - A new GoldenRecorder instance ready to save chunks.
+//
+// Side effects:
+//   - None.
 func NewGoldenRecorder(path string) *GoldenRecorder {
 	return &GoldenRecorder{path: path}
 }
 
 // Save writes the chunks to the golden file in JSON format.
-// Creates intermediate directories if needed.
+//
+// Expected:
+//   - chunks: A slice of provider.StreamChunks to serialise.
+//
+// Returns:
+//   - An error if JSON marshalling, directory creation, or file writing fails.
+//
+// Side effects:
+//   - Creates intermediate directories if needed.
+//   - Writes a JSON file to disk at the path specified in NewGoldenRecorder.
 func (g *GoldenRecorder) Save(chunks []provider.StreamChunk) error {
 	golden := convertToGoldenChunks(chunks)
 	recording := goldenRecording{Chunks: golden}
