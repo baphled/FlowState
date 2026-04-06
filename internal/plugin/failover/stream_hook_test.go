@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 type mockStreamProvider struct {
@@ -593,6 +594,62 @@ var _ = Describe("StreamHook", func() {
 				Expect(evt.Data.Phase).To(Equal("failover"))
 				Expect(evt.Data.ProviderName).To(Equal("empty-stream"))
 				Expect(evt.Data.Error).To(MatchError(ContainSubstring("stream closed immediately")))
+			})
+		})
+
+		Context("child session failover with fresh FailoverManager", func() {
+			It("publishes failover events with correct SessionID from context", func() {
+				// Child sessions get their own fresh FailoverManager to avoid state coupling
+				bus := eventbus.NewEventBus()
+				var captured []any
+				var mu sync.Mutex
+
+				bus.Subscribe(events.EventProviderError, func(msg any) {
+					mu.Lock()
+					defer mu.Unlock()
+					captured = append(captured, msg)
+				})
+
+				// Simulate child session with its own manager
+				childManager := failover.NewManager(registry, health, 5*time.Minute)
+				childManager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "failing", Model: "child-model"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+
+				childSessionID := "child-session-123"
+				ctx := context.WithValue(context.Background(), session.IDKey{}, childSessionID)
+
+				sh := failover.NewStreamHook(childManager, bus, "child-agent")
+
+				registry.Register(&mockStreamProvider{
+					name: "failing",
+					streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						return nil, fmt.Errorf("child session failover test")
+					},
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(ctx, &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for v := range ch {
+					_ = v
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(captured).To(HaveLen(1))
+				evt, ok := captured[0].(*events.ProviderErrorEvent)
+				Expect(ok).To(BeTrue())
+				Expect(evt.Data.SessionID).To(Equal(childSessionID))
+				Expect(evt.Data.AgentID).To(Equal("child-agent"))
+				Expect(evt.Data.Phase).To(Equal("failover"))
 			})
 		})
 	})

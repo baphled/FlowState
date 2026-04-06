@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 const replayBufferSize = 16
@@ -104,26 +105,26 @@ func (sh *StreamHook) attemptCandidate(
 	if err != nil {
 		cancel()
 		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, err)
-		sh.publishFailoverError(candidate, err)
+		sh.publishFailoverError(ctx, candidate, err)
 		return nil, err
 	}
 
 	firstChunk, ok, peekErr := peekFirstChunk(timeoutCtx, ch, candidate.Provider)
 	if peekErr != nil {
 		cancel()
-		sh.publishFailoverError(candidate, peekErr)
+		sh.publishFailoverError(ctx, candidate, peekErr)
 		return nil, peekErr
 	}
 	if !ok {
 		cancel()
 		closeErr := fmt.Errorf("provider %s: stream closed immediately", candidate.Provider)
-		sh.publishFailoverError(candidate, closeErr)
+		sh.publishFailoverError(ctx, candidate, closeErr)
 		return nil, closeErr
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
 		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
-		sh.publishFailoverError(candidate, firstChunk.Error)
+		sh.publishFailoverError(ctx, candidate, firstChunk.Error)
 		return nil, firstChunk.Error
 	}
 
@@ -205,6 +206,7 @@ func streamWithReplay(
 // candidate fails, provided the event bus is configured.
 //
 // Expected:
+//   - ctx is the context which may contain the session ID.
 //   - candidate identifies the failed provider/model pair.
 //   - err describes the failure.
 //
@@ -213,11 +215,19 @@ func streamWithReplay(
 //
 // Side effects:
 //   - Publishes a provider.error event on the event bus when non-nil.
-func (sh *StreamHook) publishFailoverError(candidate provider.ModelPreference, err error) {
+func (sh *StreamHook) publishFailoverError(ctx context.Context, candidate provider.ModelPreference, err error) {
 	if sh.eventBus == nil {
 		return
 	}
+
+	// Extract session ID from context if available
+	sessionID := ""
+	if id, ok := ctx.Value(session.IDKey{}).(string); ok {
+		sessionID = id
+	}
+
 	sh.eventBus.Publish(events.EventProviderError, events.NewProviderErrorEvent(events.ProviderErrorEventData{
+		SessionID:    sessionID,
 		AgentID:      sh.agentID,
 		ProviderName: candidate.Provider,
 		ModelName:    candidate.Model,

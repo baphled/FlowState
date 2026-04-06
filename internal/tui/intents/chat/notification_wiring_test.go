@@ -255,4 +255,13 @@ var _ = Describe("notification wiring", func() {
 			Expect(view).To(ContainSubstring("test notification"))
 		})
 	})
+
+	Describe("Provider failover event subscriptions", func() {
+		// Tests to verify that failover events are properly subscribed and displayed as notifications
+		It("can be extended in the future with event bus tests", func() {
+			// Placeholder for integration tests that require a full engine with EventBus
+			// See internal/plugin/failover/stream_hook_test.go for EventBus test patterns
+			Expect(intent).NotTo(BeNil())
+		})
+	})
 })

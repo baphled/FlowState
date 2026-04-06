@@ -328,3 +328,18 @@ func (i *Intent) ResponseTokenCountForTest() int {
 func (i *Intent) SyncStatusBarForTest() {
 	i.syncStatusBar()
 }
+
+// EventNotifChanForTest returns the event bus notification channel for test assertions.
+func (i *Intent) EventNotifChanForTest() chan EventBusNotificationMsg {
+	return i.eventNotifChan
+}
+
+// SetEventNotifChanForTest sets the event bus notification channel for testing.
+func (i *Intent) SetEventNotifChanForTest(ch chan EventBusNotificationMsg) {
+	i.eventNotifChan = ch
+}
+
+// HandleEventBusNotificationForTest exposes handleEventBusNotification for test assertions.
+func (i *Intent) HandleEventBusNotificationForTest(msg EventBusNotificationMsg) tea.Cmd {
+	return i.handleEventBusNotification(msg)
+}

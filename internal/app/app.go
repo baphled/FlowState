@@ -558,6 +558,10 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
 	}
 
+	// Create the event bus early so it can be passed to the hook chain
+	// and used for failover event publishing.
+	appEventBus := eventbus.NewEventBus()
+
 	hookChain := buildHookChain(hookChainConfig{
 		learningStore: params.learningStore,
 		manifestGetter: func() agent.Manifest {
@@ -570,25 +574,9 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		failoverHk:      params.failoverHook,
 		failoverMgr:     params.failoverManager,
 		dispatcher:      params.dispatcher,
-		twc: &toolWiringCallbacks{
-			hasTool: func(name string) bool {
-				if eng == nil {
-					return false
-				}
-				return eng.HasTool(name)
-			},
-			ensureTools: func(m agent.Manifest) {
-				if ensureToolsFn != nil {
-					ensureToolsFn(m)
-				}
-			},
-			schemaRebuilder: func() []provider.Tool {
-				if eng == nil {
-					return nil
-				}
-				return eng.ToolSchemas()
-			},
-		},
+		eventBus:        appEventBus,
+		agentID:         params.defaultManifest.ID,
+		twc:             buildToolWiringCallbacks(&eng, &ensureToolsFn),
 	})
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
@@ -606,11 +594,46 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		AgentsFileLoader:  params.agentsFileLoader,
 		TokenCounter:      params.tokenCounter,
 		MCPServerTools:    params.mcpServerTools,
+		EventBus:          appEventBus,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
 	}
 	return eng, setEnsureTools
+}
+
+// buildToolWiringCallbacks constructs the tool wiring callbacks for the hook chain.
+// It captures the engine and ensureToolsFn references to lazily initialise tools.
+//
+// Expected:
+//   - engPtr is a non-nil pointer to an engine pointer (for deferred initialisation).
+//   - ensureToolsFnPtr is a non-nil pointer to an ensureTools function pointer.
+//
+// Returns:
+//   - A toolWiringCallbacks struct with all callbacks wired and ready for use.
+//
+// Side effects:
+//   - None; callbacks are closures that capture the pointers for deferred use.
+func buildToolWiringCallbacks(engPtr **engine.Engine, ensureToolsFnPtr *func(agent.Manifest)) *toolWiringCallbacks {
+	return &toolWiringCallbacks{
+		hasTool: func(name string) bool {
+			if *engPtr == nil {
+				return false
+			}
+			return (*engPtr).HasTool(name)
+		},
+		ensureTools: func(m agent.Manifest) {
+			if *ensureToolsFnPtr != nil {
+				(*ensureToolsFnPtr)(m)
+			}
+		},
+		schemaRebuilder: func() []provider.Tool {
+			if *engPtr == nil {
+				return nil
+			}
+			return (*engPtr).ToolSchemas()
+		},
+	}
 }
 
 // setAgentOverridesFromConfig extracts agent overrides from the app config and applies them to the engine.
@@ -755,15 +778,31 @@ func (a *App) createDelegateEngine(
 	hookChain := buildHookChain(hookChainConfig{
 		learningStore:  a.Learning,
 		manifestGetter: func() agent.Manifest { return manifest },
+		eventBus:       bus,
+		agentID:        manifest.ID,
 	})
+
+	// Create a new failover manager for the child engine from shared components.
+	// Each child gets its own manager instance to avoid sharing mutable state
+	// (override, lastProvider, lastModel) between parent and children.
+	var childFailoverMgr *failover.Manager
+	if a.plugins != nil && a.plugins.healthManager != nil {
+		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
+		// Copy base preferences from parent failover manager if available.
+		if a.plugins.failoverManager != nil {
+			childFailoverMgr.SetBasePreferences(a.plugins.failoverManager.Preferences())
+		}
+	}
+
 	eng := engine.New(engine.Config{
-		ChatProvider:  a.defaultProvider,
-		Registry:      a.providerRegistry,
-		AgentRegistry: a.Registry,
-		Manifest:      manifest,
-		Tools:         a.buildToolsForManifestWithStore(manifest, store),
-		HookChain:     hookChain,
-		EventBus:      bus,
+		ChatProvider:    a.defaultProvider,
+		Registry:        a.providerRegistry,
+		AgentRegistry:   a.Registry,
+		Manifest:        manifest,
+		Tools:           a.buildToolsForManifestWithStore(manifest, store),
+		HookChain:       hookChain,
+		EventBus:        bus,
+		FailoverManager: childFailoverMgr,
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
@@ -1264,6 +1303,8 @@ type hookChainConfig struct {
 	failoverMgr     *failover.Manager
 	twc             *toolWiringCallbacks
 	dispatcher      *external.Dispatcher
+	eventBus        *eventbus.EventBus
+	agentID         string
 }
 
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
@@ -1322,7 +1363,7 @@ func buildHookChain(params hookChainConfig) *hook.Chain {
 		tracer.Hook(),
 	)
 	if params.failoverMgr != nil {
-		streamHook := failover.NewStreamHook(params.failoverMgr, nil, "")
+		streamHook := failover.NewStreamHook(params.failoverMgr, params.eventBus, params.agentID)
 		hooks = append(hooks, streamHook.Execute)
 	} else if params.failoverHk != nil {
 		hooks = append([]hook.Hook{failoverHookAdapter(params.failoverHk)}, hooks...)

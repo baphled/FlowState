@@ -18,6 +18,7 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
@@ -78,6 +79,16 @@ type BackgroundTaskCompletedMsg struct {
 	Description string
 	Duration    string
 	Status      string
+}
+
+// EventBusNotificationMsg bridges event bus notifications into the Bubble Tea
+// event loop. Event bus handlers run on arbitrary goroutines; this message
+// carries the event payload safely into Update() for processing on the main
+// goroutine.
+type EventBusNotificationMsg struct {
+	ProviderError *events.ProviderErrorEvent
+	RateLimited   *events.ProviderEvent
+	ToolError     *events.ToolExecuteErrorEvent
 }
 
 // tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
@@ -217,6 +228,8 @@ type Intent struct {
 	sessionViewport       *viewport.Model
 	sessionViewerActive   bool
 	sessionViewerID       string
+	// eventNotifChan bridges event bus notifications into the Bubble Tea loop.
+	eventNotifChan chan EventBusNotificationMsg
 }
 
 var runningInTests bool
@@ -342,10 +355,115 @@ func (i *Intent) Init() tea.Cmd {
 		return nil
 	}
 	cmds := []tea.Cmd{tickSpinner(), i.notifications.Init()}
+	if i.engine != nil && i.engine.EventBus() != nil {
+		i.subscribeToFailoverEvents()
+		cmds = append(cmds, i.waitForEventBusNotification())
+	}
 	if i.completionChan != nil {
 		cmds = append(cmds, i.waitForCompletion())
 	}
 	return tea.Batch(cmds...)
+}
+
+// subscribeToFailoverEvents subscribes to provider and tool error events on the
+// engine event bus, pushing them onto the eventNotifChan channel. A companion
+// tea.Cmd (waitForEventBusNotification) reads from the channel and delivers
+// EventBusNotificationMsg into the Bubble Tea Update loop, ensuring all
+// notification state mutations happen on the main goroutine.
+//
+// Expected:
+//   - i.engine is initialised with a non-nil event bus.
+//   - i.sessionID is the current session identifier.
+//
+// Side effects:
+//   - Creates eventNotifChan.
+//   - Subscribes event handlers to the engine event bus.
+func (i *Intent) subscribeToFailoverEvents() {
+	if i.engine == nil || i.engine.EventBus() == nil {
+		return
+	}
+
+	i.eventNotifChan = make(chan EventBusNotificationMsg, 16)
+	bus := i.engine.EventBus()
+
+	bus.Subscribe(events.EventProviderError, func(msg any) {
+		evt, ok := msg.(*events.ProviderErrorEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{ProviderError: evt}:
+		default:
+		}
+	})
+
+	bus.Subscribe(events.EventProviderRateLimited, func(msg any) {
+		evt, ok := msg.(*events.ProviderEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{RateLimited: evt}:
+		default:
+		}
+	})
+
+	bus.Subscribe(events.EventToolExecuteError, func(msg any) {
+		evt, ok := msg.(*events.ToolExecuteErrorEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{ToolError: evt}:
+		default:
+		}
+	})
+}
+
+// waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
+// notification arrives on the channel, converting it into an
+// EventBusNotificationMsg for the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd that blocks on the eventNotifChan channel.
+//
+// Side effects:
+//   - None until the returned Cmd is executed by the Bubble Tea runtime.
+func (i *Intent) waitForEventBusNotification() tea.Cmd {
+	ch := i.eventNotifChan
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
+}
+
+// handleEventBusNotification processes an event bus notification on the main
+// goroutine, delegating to the notification Component and refreshing the
+// viewport so the notification renders immediately.
+//
+// Expected:
+//   - msg contains exactly one non-nil event payload.
+//
+// Returns:
+//   - A tea.Cmd that re-enqueues the wait for the next event bus notification.
+//
+// Side effects:
+//   - Adds a notification via the Component.
+//   - Refreshes the viewport.
+func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd {
+	switch {
+	case msg.ProviderError != nil:
+		i.notifications.AddProviderErrorNotification(msg.ProviderError)
+	case msg.RateLimited != nil:
+		i.notifications.AddProviderRateLimitedNotification(msg.RateLimited)
+	case msg.ToolError != nil:
+		i.notifications.AddToolExecuteErrorNotification(msg.ToolError)
+	}
+	i.refreshViewport()
+	return i.waitForEventBusNotification()
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -388,6 +506,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return i.handleSessionLoaded(msg)
 	case BackgroundTaskCompletedMsg:
 		return i.handleBackgroundTaskCompleted(msg)
+	case EventBusNotificationMsg:
+		return i.handleEventBusNotification(msg)
 	}
 	return nil
 }
@@ -710,12 +830,7 @@ func (i *Intent) handleWindowSize(msg tea.WindowSizeMsg) tea.Cmd {
 	i.width = msg.Width
 	i.height = msg.Height
 	i.notifications.SetWidth(msg.Width)
-	extraLines := i.inputLineCount() - 1
-	footerHeight := 8 + extraLines
-	vpHeight := msg.Height - footerHeight
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
+	vpHeight := i.computeViewportHeight()
 	if !i.vpReady {
 		vp := viewport.New(msg.Width, vpHeight)
 		i.msgViewport = &vp
@@ -830,21 +945,50 @@ func (i *Intent) inputLineCount() int {
 	return strings.Count(i.input, "\n") + 1
 }
 
-// updateViewportForInput adjusts the viewport height to account for multiline input.
+// notificationHeight returns the number of terminal lines occupied by the
+// active notification overlay, including the trailing newline separator.
+//
+// Returns:
+//   - 0 when no notifications are active, or the line count plus one otherwise.
 //
 // Side effects:
-//   - Updates msgViewport.Height based on input line count.
+//   - None.
+func (i *Intent) notificationHeight() int {
+	view := i.notifications.View()
+	if view == "" {
+		return 0
+	}
+	return lipgloss.Height(view) + 1
+}
+
+// computeViewportHeight returns the viewport height that accounts for the
+// footer, multiline input, and any active notification overlay.
+//
+// Returns:
+//   - The number of lines available for the message viewport (minimum 1).
+//
+// Side effects:
+//   - None.
+func (i *Intent) computeViewportHeight() int {
+	extraLines := i.inputLineCount() - 1
+	footerHeight := 8 + extraLines
+	vpHeight := i.height - footerHeight - i.notificationHeight()
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	return vpHeight
+}
+
+// updateViewportForInput adjusts the viewport height to account for multiline
+// input and active notifications.
+//
+// Side effects:
+//   - Updates msgViewport.Height.
 func (i *Intent) updateViewportForInput() {
 	if !i.vpReady {
 		return
 	}
-	extraLines := i.inputLineCount() - 1
-	footerHeight := 8 + extraLines
-	vpHeight := i.height - footerHeight
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	i.msgViewport.Height = vpHeight
+	i.msgViewport.Height = i.computeViewportHeight()
 }
 
 // handleStreamChunk processes a streaming response chunk.
@@ -1167,13 +1311,16 @@ func (i *Intent) syncStatusBar() {
 }
 
 // refreshViewport rebuilds the message viewport content and conditionally scrolls to the bottom.
+// The viewport height is recalculated to account for any active notification overlay.
 //
 // Side effects:
+//   - Adjusts msgViewport.Height for active notifications.
 //   - Updates msgViewport content and scrolls to latest message if atBottom is true.
 func (i *Intent) refreshViewport() {
 	if !i.vpReady || i.msgViewport == nil {
 		return
 	}
+	i.msgViewport.Height = i.computeViewportHeight()
 	i.view.SetDimensions(i.width, i.msgViewport.Height)
 	content := i.view.RenderContent(i.width)
 	i.msgViewport.SetContent(content)

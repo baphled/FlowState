@@ -1,8 +1,10 @@
 package notification
 
 import (
+	"strconv"
 	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -228,4 +230,78 @@ func (c *Component) AddDelegationNotification(info *provider.DelegationInfo) {
 			CreatedAt: time.Now(),
 		})
 	}
+}
+
+// AddProviderErrorNotification adds a notification for a provider error event.
+//
+// Expected:
+//   - event is a non-nil ProviderErrorEvent.
+//   - event.Data.SessionID matches the current session.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Adds a Notification to the manager.
+func (c *Component) AddProviderErrorNotification(event *events.ProviderErrorEvent) {
+	errorMsg := "Unknown error"
+	if event.Data.Error != nil {
+		errorMsg = event.Data.Error.Error()
+	}
+	c.manager.Add(Notification{
+		ID:        "provider-error-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Provider Error",
+		Message:   event.Data.ProviderName + ": " + errorMsg,
+		Level:     LevelError,
+		Duration:  8 * time.Second,
+		CreatedAt: time.Now(),
+	})
+}
+
+// AddProviderRateLimitedNotification adds a notification for a provider rate limit event.
+//
+// Expected:
+//   - event is a non-nil ProviderEvent.
+//   - event.Data.SessionID matches the current session.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Adds a Notification to the manager.
+func (c *Component) AddProviderRateLimitedNotification(event *events.ProviderEvent) {
+	c.manager.Add(Notification{
+		ID:        "provider-rate-limited-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Rate Limited",
+		Message:   event.Data.ProviderName + " is rate limited",
+		Level:     LevelWarning,
+		Duration:  5 * time.Second,
+		CreatedAt: time.Now(),
+	})
+}
+
+// AddToolExecuteErrorNotification adds a notification for a tool execution error event.
+//
+// Expected:
+//   - event is a non-nil ToolExecuteErrorEvent.
+//   - event.Data.SessionID matches the current session.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Adds a Notification to the manager.
+func (c *Component) AddToolExecuteErrorNotification(event *events.ToolExecuteErrorEvent) {
+	errorMsg := "Unknown error"
+	if event.Data.Error != nil {
+		errorMsg = event.Data.Error.Error()
+	}
+	c.manager.Add(Notification{
+		ID:        "tool-error-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Tool Error",
+		Message:   event.Data.ToolName + ": " + errorMsg,
+		Level:     LevelError,
+		Duration:  8 * time.Second,
+		CreatedAt: time.Now(),
+	})
 }
