@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -104,7 +105,7 @@ func (sh *StreamHook) attemptCandidate(
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
 		cancel()
-		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, err)
+		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, err)
 		sh.publishFailoverError(ctx, candidate, err)
 		return nil, err
 	}
@@ -123,7 +124,7 @@ func (sh *StreamHook) attemptCandidate(
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
-		CheckAndMarkRateLimited(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
+		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
 		sh.publishFailoverError(ctx, candidate, firstChunk.Error)
 		return nil, firstChunk.Error
 	}
@@ -200,6 +201,29 @@ func streamWithReplay(
 		}
 	}()
 	return replayCh
+}
+
+// markProviderHealth marks a provider as unavailable for a cooldown determined by
+// the error type. It applies differentiated durations: non-retriable errors use 24-hour
+// cooldown; retriable errors use error-type-specific durations from CooldownForErrorType.
+//
+// Expected:
+//   - health is non-nil.
+//   - err may be nil (no-op).
+//
+// Side effects:
+//   - May update HealthManager state.
+func markProviderHealth(health RateLimitAware, providerName, model string, err error) {
+	if err == nil {
+		return
+	}
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		cooldown := CooldownForErrorType(provErr.ErrorType)
+		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
+		return
+	}
+	CheckAndMarkRateLimited(health, providerName, model, err)
 }
 
 // publishFailoverError publishes a provider error event when a failover

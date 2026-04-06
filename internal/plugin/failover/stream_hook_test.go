@@ -653,4 +653,111 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 	})
+
+	Describe("differentiated error handling", func() {
+		var (
+			health   *failover.HealthManager
+			manager  *failover.Manager
+			registry *provider.Registry
+			sh       *failover.StreamHook
+		)
+
+		BeforeEach(func() {
+			registry = provider.NewRegistry()
+			health = failover.NewHealthManager()
+			manager = failover.NewManager(registry, health, 2*time.Second)
+			sh = failover.NewStreamHook(manager, nil, "")
+		})
+
+		Context("when sync error is a provider.Error with billing type", func() {
+			BeforeEach(func() {
+				billingErr := &provider.Error{
+					ErrorType: provider.ErrorTypeBilling,
+					Provider:  "zai",
+					Message:   "insufficient balance",
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "zai",
+					streamFn: syncErrorStreamFn(billingErr),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "zai", Model: "glm-5"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("marks the provider as unavailable", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue())
+			})
+		})
+
+		Context("when sync error is a provider.Error with rate_limit type", func() {
+			BeforeEach(func() {
+				rateLimitErr := &provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "rate limited",
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(rateLimitErr),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("marks the provider as unavailable", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+			})
+		})
+
+		Context("when sync error is a plain string containing rate_limit keyword", func() {
+			BeforeEach(func() {
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("rate_limit exceeded")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("still marks the provider via legacy detection", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+			})
+		})
+	})
 })
