@@ -85,7 +85,10 @@ func theFinalPlanIsSaved() error { return godog.ErrPending }
 //
 // Side effects:
 //   - None.
-func thePlanReviewerRejectsConsecutiveTimes(_ int) error { return godog.ErrPending }
+func thePlanReviewerRejectsConsecutiveTimes(n int) error {
+	_ = n
+	return godog.ErrPending
+}
 
 // theDelegateToolReturnsMaxRejectionsError is a pending step stub for rejection loop scenarios.
 //

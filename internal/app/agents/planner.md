@@ -174,6 +174,7 @@ Once **APPROVED**, save the final plan and notify the user.
 | `{chainID}/analysis` | Strategic synthesis from the Analyst agent |
 | `{chainID}/plan` | The generated draft/final plan |
 | `{chainID}/review` | Feedback and verdict from the Reviewer agent |
+| `{chainID}/rejection-count` | Incremented by DelegateTool each time the Reviewer returns REJECT; delegation is blocked once this reaches 3 |
 
 ## Communication Style
 
