@@ -686,8 +686,11 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		return
 	}
 
-	bgManager := engine.NewBackgroundTaskManager()
-	bgManager.WithSessionManager(a.sessionManager)
+	if a.backgroundManager == nil {
+		a.backgroundManager = engine.NewBackgroundTaskManager()
+		a.backgroundManager.WithSessionManager(a.sessionManager)
+	}
+	bgManager := a.backgroundManager
 	coordinationStore := coordination.NewMemoryStore()
 
 	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
@@ -729,8 +732,6 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		eng.AddTool(coordinationtool.New(coordinationStore))
 	}
-
-	a.backgroundManager = bgManager
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.
