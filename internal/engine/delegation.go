@@ -33,6 +33,7 @@ var (
 	errDepthLimitExceeded       = errors.New("depth limit exceeded: maximum delegation depth reached")
 	errBudgetLimitExceeded      = errors.New("budget limit exceeded: maximum concurrent delegations reached")
 	errAgentNotInAllowlist      = errors.New("agent not in delegation allowlist")
+	errMaxRejectionsExhausted   = errors.New("max rejections exhausted: plan reviewer rejected too many times")
 )
 
 const maxDelegationFailures = 3
@@ -98,6 +99,7 @@ type DelegateTool struct {
 	storeFactory       DelegateStoreFactory
 	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
 	streamers          map[string]streaming.Streamer
+	rejectionTracker   *delegation.RejectionTracker
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -171,6 +173,22 @@ func (d *DelegateTool) WithStreamers(streamers map[string]streaming.Streamer) *D
 	return d
 }
 
+// WithRejectionTracker configures a RejectionTracker that enforces the maximum
+// number of plan-reviewer rejections per delegation chain.
+//
+// Expected:
+//   - tracker is a non-nil RejectionTracker backed by the delegation coordination store.
+//
+// Returns:
+//   - The DelegateTool for chaining.
+//
+// Side effects:
+//   - Sets the rejectionTracker field on the DelegateTool.
+func (d *DelegateTool) WithRejectionTracker(tracker *delegation.RejectionTracker) *DelegateTool {
+	d.rejectionTracker = tracker
+	return d
+}
+
 // resolveStreamer returns the Streamer for agentID, falling back to eng when none is registered.
 //
 // Expected:
@@ -220,7 +238,25 @@ func NewDelegateToolWithBackground(
 		coordinationStore: coordinationStore,
 		circuitBreaker:    delegation.NewCircuitBreaker(maxDelegationFailures),
 		spawnLimits:       delegation.DefaultSpawnLimits(),
+		rejectionTracker:  newRejectionTrackerIfPresent(coordinationStore),
 	}
+}
+
+// newRejectionTrackerIfPresent returns a RejectionTracker when store is non-nil, otherwise nil.
+//
+// Expected:
+//   - store may be nil.
+//
+// Returns:
+//   - A RejectionTracker backed by store, or nil.
+//
+// Side effects:
+//   - None.
+func newRejectionTrackerIfPresent(store coordination.Store) *delegation.RejectionTracker {
+	if store == nil {
+		return nil
+	}
+	return delegation.NewRejectionTracker(store, 0)
 }
 
 // SetEmbeddingDiscovery sets the embedding-based discovery for agent matching.
@@ -612,6 +648,10 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	target, err := d.resolveTargetWithOptions(ctx, params)
 	if err != nil {
 		return tool.Result{}, err
+	}
+
+	if rejErr := d.checkRejectionLimit(ctx, target.chainID); rejErr != nil {
+		return tool.Result{}, rejErr
 	}
 
 	outChan, hasOutput := streamOutputFromContext(ctx)
@@ -1398,6 +1438,33 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 	}
 
 	return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool}, nil
+}
+
+// checkRejectionLimit returns errMaxRejectionsExhausted when the rejection
+// count for chainID has reached or exceeded the maximum configured on the tracker.
+// Returns nil when no tracker is configured or the limit has not been reached.
+//
+// Expected:
+//   - chainID identifies the current delegation chain.
+//
+// Returns:
+//   - errMaxRejectionsExhausted when the limit is exhausted.
+//   - nil otherwise.
+//
+// Side effects:
+//   - Reads the coordination store via the rejection tracker.
+func (d *DelegateTool) checkRejectionLimit(ctx context.Context, chainID string) error {
+	if d.rejectionTracker == nil || chainID == "" {
+		return nil
+	}
+	exhausted, err := d.rejectionTracker.ExhaustedFor(ctx, chainID)
+	if err != nil {
+		return fmt.Errorf("checking rejection limit: %w", err)
+	}
+	if exhausted {
+		return errMaxRejectionsExhausted
+	}
+	return nil
 }
 
 // newDelegationChainID returns a unique identifier for a delegation chain.
