@@ -213,5 +213,58 @@ var _ = Describe("BackgroundOutputTool", func() {
 				Expect(output["full_session"]).To(BeTrue())
 			})
 		})
+
+		Context("regression: multiple sequential background_output calls", func() {
+			It("successfully retrieves multiple different tasks without eviction conflicts", func() {
+				// Launch two background tasks
+				task1 := manager.Launch(ctx, "task-1", "agent-1", "first task", func(ctx context.Context) (string, error) {
+					return "result 1", nil
+				})
+				task2 := manager.Launch(ctx, "task-2", "agent-2", "second task", func(ctx context.Context) (string, error) {
+					return "result 2", nil
+				})
+
+				// Wait for both to complete
+				Eventually(func() string {
+					t, _ := manager.Get(task1.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+				Eventually(func() string {
+					t, _ := manager.Get(task2.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				// First background_output call
+				input1 := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task1.ID,
+					},
+				}
+				result1, err1 := botTool.Execute(ctx, input1)
+				Expect(err1).NotTo(HaveOccurred())
+				Expect(result1.Output).NotTo(BeEmpty())
+
+				// Simulate eviction (as would happen after each tool result in the engine)
+				manager.EvictCompleted()
+
+				// Second background_output call should succeed (task2 is still not accessed)
+				// but it should NOT have been evicted by the first call
+				input2 := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task2.ID,
+					},
+				}
+				result2, err2 := botTool.Execute(ctx, input2)
+				Expect(err2).NotTo(HaveOccurred())
+				Expect(result2.Output).NotTo(BeEmpty())
+
+				// Verify task2 is now marked as accessed
+				task2Updated, found := manager.Get(task2.ID)
+				Expect(found).To(BeTrue())
+				Expect(task2Updated.Status.Load()).To(Equal("completed"))
+			})
+		})
 	})
 })

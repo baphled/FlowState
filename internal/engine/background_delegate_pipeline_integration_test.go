@@ -256,7 +256,7 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 
 	Describe("EvictCompleted clears terminal tasks", func() {
 		Context("when tasks are completed and EvictCompleted is called", func() {
-			It("removes completed tasks from the list but leaves pending/running tasks", func() {
+			It("removes completed and accessed tasks from the list but leaves pending/running tasks", func() {
 				manager := engine.NewBackgroundTaskManager()
 
 				manager.Launch(
@@ -294,6 +294,10 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 					return t.Status.Load()
 				}, 2*time.Second, 10*time.Millisecond).Should(Equal("completed"))
 
+				// Mark tasks as accessed (as would happen when background_output retrieves them)
+				manager.MarkAccessed("evict-done-1")
+				manager.MarkAccessed("evict-done-2")
+
 				manager.EvictCompleted()
 
 				Expect(manager.List()).To(BeEmpty())
@@ -302,7 +306,7 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 		})
 
 		Context("when a mix of terminal and active tasks exist", func() {
-			It("only removes terminal tasks and preserves active ones", func() {
+			It("only removes accessed terminal tasks and preserves active/unaccessed ones", func() {
 				manager := engine.NewBackgroundTaskManager()
 
 				release := make(chan struct{})
@@ -350,6 +354,9 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 					}
 					return t.Status.Load()
 				}, 2*time.Second, 10*time.Millisecond).Should(Equal("running"))
+
+				// Mark terminal task as accessed
+				manager.MarkAccessed("evict-terminal")
 
 				manager.EvictCompleted()
 

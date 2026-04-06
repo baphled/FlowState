@@ -109,6 +109,9 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 		return tool.Result{}, fmt.Errorf("task not found: %s", taskID)
 	}
 
+	// Mark task as accessed so it can be evicted after user retrieval
+	b.manager.MarkAccessed(taskID)
+
 	block := false
 	if raw, ok := input.Arguments["block"].(bool); ok {
 		block = raw

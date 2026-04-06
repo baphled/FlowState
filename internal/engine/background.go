@@ -27,6 +27,7 @@ import (
 //   - cancel: Context cancellation function for this task.
 //   - ConcurrencyKey: Key used for concurrency limiting (e.g., provider+model).
 //   - ParentSessionID: ID of the parent session for notification purposes.
+//   - accessed: Whether the task has been retrieved via background_output (used to track eligibility for eviction).
 //
 // Note: Status is managed atomically to allow concurrent reads and updates
 //
@@ -43,6 +44,7 @@ type BackgroundTask struct {
 	cancel          context.CancelFunc
 	ConcurrencyKey  string
 	ParentSessionID string
+	accessed        bool
 }
 
 // atomicValue provides atomic string operations.
@@ -545,21 +547,44 @@ func (m *BackgroundTaskManager) List() []BackgroundTask {
 	return tasks
 }
 
-// EvictCompleted removes all terminal-state tasks (completed, failed, cancelled)
-// from the internal task map. Running and pending tasks are not affected.
+// MarkAccessed marks a task as accessed (retrieved via background_output).
+// Only accessed terminal tasks are eligible for eviction.
+//
+// Expected:
+//   - taskID identifies an existing task.
 //
 // Returns:
 //   - None.
 //
 // Side effects:
-//   - Deletes terminal tasks from the tasks map under write lock.
+//   - Sets the accessed flag on the identified task under write lock.
+func (m *BackgroundTaskManager) MarkAccessed(taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if task, ok := m.tasks[taskID]; ok {
+		task.accessed = true
+	}
+}
+
+// EvictCompleted removes terminal-state tasks (completed, failed, cancelled)
+// that have been accessed (retrieved via background_output) from the internal task map.
+// This prevents premature eviction while ensuring memory is eventually freed after retrieval.
+// Running, pending, and unaccessed tasks are not affected.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Deletes accessed terminal tasks from the tasks map under write lock.
 func (m *BackgroundTaskManager) EvictCompleted() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for id, task := range m.tasks {
 		status := task.Status.Load()
-		if status == "completed" || status == "failed" || status == "cancelled" {
+		// Only evict if: terminal state AND accessed by user (via background_output)
+		if task.accessed && (status == "completed" || status == "failed" || status == "cancelled") {
 			delete(m.tasks, id)
 		}
 	}
