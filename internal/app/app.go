@@ -357,6 +357,7 @@ type engineParams struct {
 	defaultManifest    agent.Manifest
 	alwaysActiveSkills []skill.Skill
 	contextStore       *recall.FileContextStore
+	chainStore         recall.ChainContextStore
 	learningStore      *learning.JSONFileStore
 	appTools           []tool.Tool
 	toolRegistry       *tool.Registry
@@ -388,6 +389,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	tp := buildToolPipeline(params.cfg)
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
+	chainStore := createChainStore(params.cfg)
 	eng, setEnsureTools := createEngine(engineParams{
 		defaultProvider:    tracedProvider,
 		ollamaProvider:     params.ollamaProvider,
@@ -396,6 +398,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		defaultManifest:    params.defaultManifest,
 		alwaysActiveSkills: params.alwaysActiveSkills,
 		contextStore:       contextStore,
+		chainStore:         chainStore,
 		learningStore:      params.learningStore,
 		appTools:           tp.tools,
 		toolRegistry:       tp.toolRegistry,
@@ -599,6 +602,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		Manifest:          params.defaultManifest,
 		Skills:            params.alwaysActiveSkills,
 		Store:             params.contextStore,
+		ChainStore:        params.chainStore,
 		HookChain:         hookChain,
 		Tools:             params.appTools,
 		ToolRegistry:      params.toolRegistry,
@@ -730,6 +734,12 @@ func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.S
 		learningStore:  a.Learning,
 		manifestGetter: func() agent.Manifest { return manifest },
 	})
+
+	var chainStore recall.ChainContextStore
+	if a.Engine != nil {
+		chainStore = a.Engine.ChainStore()
+	}
+
 	eng := engine.New(engine.Config{
 		ChatProvider:  a.defaultProvider,
 		Registry:      a.providerRegistry,
@@ -737,6 +747,7 @@ func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.S
 		Manifest:      manifest,
 		Tools:         a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:     hookChain,
+		ChainStore:    chainStore,
 		EventBus:      bus,
 	})
 	return eng
@@ -764,6 +775,15 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		tools = append(tools, coordinationtool.New(store))
+	}
+
+	if a.Engine != nil {
+		contextStore := a.Engine.ContextStore()
+		if contextStore != nil && a.ollamaProvider != nil {
+			tokenCounter := ctxstore.NewTiktokenCounter()
+			factory := recall.NewRecallToolFactory(contextStore, a.ollamaProvider, tokenCounter, a.Config.Providers.Ollama.Model)
+			tools = append(tools, factory.ToolsWithChainStore(a.Engine.ChainStore())...)
+		}
 	}
 
 	return tools
@@ -2036,6 +2056,15 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //   - None; creates an in-memory context store with no file I/O.
 func createContextStore(cfg *config.AppConfig) *recall.FileContextStore {
 	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model)
+}
+
+func createChainStore(cfg *config.AppConfig) recall.ChainContextStore {
+	chainPath := filepath.Join(cfg.DataDir, "chain_store.json")
+	store, err := recall.NewFileChainStore(chainPath)
+	if err != nil {
+		return recall.NewInMemoryChainStore(nil)
+	}
+	return store
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.

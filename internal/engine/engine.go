@@ -624,8 +624,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
-		e.store.Append(userMsg)
-		e.embedMessage(ctx, message)
+		msgID := e.store.AppendReturningID(userMsg)
+		e.embedMessage(ctx, message, msgID)
 	}
 
 	req := provider.ChatRequest{
@@ -1134,22 +1134,37 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	return result.Messages
 }
 
-// embedMessage sends the message content to the embedding provider if configured.
+// embedMessage sends the message content to the embedding provider if configured and stores the vector.
 //
 // Expected:
 //   - ctx is a valid context for the operation.
 //   - content is the message text to embed.
+//   - msgID is the unique identifier of the stored message.
 //
 // Side effects:
-//   - Calls the embedding provider if configured; errors are silently ignored.
-func (e *Engine) embedMessage(ctx context.Context, content string) {
-	if e.embeddingProvider == nil {
+//   - Calls the embedding provider if configured and stores the vector.
+//   - Publishes a recall.embedding.stored event if the event bus is configured.
+func (e *Engine) embedMessage(ctx context.Context, content string, msgID string) {
+	if e.embeddingProvider == nil || e.store == nil {
 		return
 	}
 
-	_, err := e.embeddingProvider.Embed(ctx, provider.EmbedRequest{Input: content})
+	start := time.Now()
+	vec, err := e.embeddingProvider.Embed(ctx, provider.EmbedRequest{Input: content})
 	if err != nil {
 		return
+	}
+
+	dimensions := len(vec)
+	e.store.StoreEmbedding(msgID, vec, e.store.GetModel(), dimensions)
+
+	if e.bus != nil {
+		e.bus.Publish(events.EventRecallEmbeddingStored, events.NewRecallEmbeddingStoredEvent(events.RecallEmbeddingStoredEventData{
+			SessionID:  e.currentSessionID,
+			MessageID:  msgID,
+			Dimensions: dimensions,
+			LatencyMS:  time.Since(start).Milliseconds(),
+		}))
 	}
 }
 
@@ -1169,9 +1184,9 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 	}
 
 	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking}
-	e.store.Append(assistantMsg)
+	msgID := e.store.AppendReturningID(assistantMsg)
 	e.dualWriteToChainStore(assistantMsg)
-	e.embedMessage(ctx, content)
+	e.embedMessage(ctx, content, msgID)
 }
 
 // completeResponse stores the assistant response and publishes a provider response event.
@@ -1238,6 +1253,17 @@ func (e *Engine) SetContextStore(store *recall.FileContextStore, sessionID strin
 //   - None.
 func (e *Engine) ContextStore() *recall.FileContextStore {
 	return e.store
+}
+
+// ChainStore returns the current chain context store.
+//
+// Returns:
+//   - The ChainContextStore currently attached to this engine, or nil.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ChainStore() recall.ChainContextStore {
+	return e.chainStore
 }
 
 // LoadedSkills returns the skills stored when the engine was created.

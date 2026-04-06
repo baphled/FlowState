@@ -923,6 +923,99 @@ func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time
 	}
 }
 
+type RecallEmbeddingStoredEventData struct {
+	SessionID  string
+	MessageID  string
+	Dimensions int
+	LatencyMS  int64
+}
+
+type RecallEmbeddingStoredEvent struct {
+	BaseEvent
+	Data RecallEmbeddingStoredEventData
+}
+
+func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...time.Time) *RecallEmbeddingStoredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallEmbeddingStoredEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallEmbeddingStored, timestamp: t},
+		Data:      data,
+	}
+}
+
+type RecallSearchEventData struct {
+	SessionID string
+	Query     string
+	Results   int
+	LatencyMS int64
+}
+
+type RecallSearchEvent struct {
+	BaseEvent
+	Data RecallSearchEventData
+}
+
+func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSearchEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallSearchEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallSearched, timestamp: t},
+		Data:      data,
+	}
+}
+
+type RecallChainSearchEventData struct {
+	SessionID string
+	AgentID   string
+	Query     string
+	Results   int
+	LatencyMS int64
+}
+
+type RecallChainSearchEvent struct {
+	BaseEvent
+	Data RecallChainSearchEventData
+}
+
+func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time) *RecallChainSearchEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallChainSearchEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallChainSearched, timestamp: t},
+		Data:      data,
+	}
+}
+
+type RecallSummarizedEventData struct {
+	SessionID      string
+	OriginalTokens int
+	SummaryTokens  int
+	LatencyMS      int64
+}
+
+type RecallSummarizedEvent struct {
+	BaseEvent
+	Data RecallSummarizedEventData
+}
+
+func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *RecallSummarizedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallSummarizedEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallSummarized, timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -947,4 +1040,8 @@ var (
 	_ Event = (*ToolExecuteErrorEvent)(nil)
 	_ Event = (*ToolExecuteResultEvent)(nil)
 	_ Event = (*ProviderRequestRetryEvent)(nil)
+	_ Event = (*RecallEmbeddingStoredEvent)(nil)
+	_ Event = (*RecallSearchEvent)(nil)
+	_ Event = (*RecallChainSearchEvent)(nil)
+	_ Event = (*RecallSummarizedEvent)(nil)
 )
