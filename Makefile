@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
 
 # Binary name
 BINARY_NAME=flowstate
@@ -269,6 +269,30 @@ parse-recording: ## Parse a session recording timeline (ID=<session-id>)
 		exit 1; \
 	fi
 	@python3 scripts/parse-recording.py "$(ID)" $(OPTS)
+
+session-history: ## Show session conversation history (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-history ID=<session-uuid>"; \
+		echo ""; \
+		echo "Short view (default). For detailed: make session-history-detail ID=<uuid>"; \
+		echo "For latest session: make session-history OPTS=--latest"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" $(OPTS)
+
+session-history-detail: ## Show detailed session history with full content (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-history-detail ID=<session-uuid>"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" --detail $(OPTS)
+
+session-ids: ## Extract all IDs from a session (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make session-ids ID=<session-uuid>"; \
+		exit 1; \
+	fi
+	@python3 scripts/session-history.py "$(ID)" --ids-only
 
 #
 # Help
