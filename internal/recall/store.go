@@ -236,15 +236,32 @@ func (s *FileContextStore) persist() error {
 //   - Persists to disk when pendingWrites reaches flushThreshold.
 //   - Starts a timer to auto-flush after flushInterval if below threshold.
 func (s *FileContextStore) Append(msg provider.Message) {
+	s.AppendReturningID(msg)
+}
+
+// AppendReturningID adds a message to the store with batched persistence and returns the message ID.
+//
+// Expected:
+//   - msg is a valid provider.Message to store.
+//
+// Returns:
+//   - The unique ID assigned to the stored message.
+//
+// Side effects:
+//   - Evicts the oldest message if the store exceeds its maximum size.
+//   - Persists to disk when pendingWrites reaches flushThreshold.
+//   - Starts a timer to auto-flush after flushInterval if below threshold.
+func (s *FileContextStore) AppendReturningID(msg provider.Message) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.closed {
-		return
+		return ""
 	}
 
+	id := uuid.New().String()
 	sm := StoredMessage{
-		ID:       uuid.New().String(),
+		ID:       id,
 		Message:  msg,
 		Embedded: false,
 	}
@@ -261,6 +278,8 @@ func (s *FileContextStore) Append(msg provider.Message) {
 	} else {
 		s.resetFlushTimer()
 	}
+
+	return id
 }
 
 // flushLocked persists pending messages to disk and resets the write counter.

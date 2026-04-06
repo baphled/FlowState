@@ -17,6 +17,9 @@ const (
 	EventTypeStatusTransition       = "status_transition"
 	EventTypePlanArtifact           = "plan_artifact"
 	EventTypeReviewVerdict          = "review_verdict"
+	EventTypeRecallSearch           = "recall_search"
+	EventTypeRecallChainSearch      = "recall_chain_search"
+	EventTypeRecallSummarized       = "recall_summarized"
 )
 
 // Event represents a discrete typed occurrence within the streaming pipeline.
@@ -364,6 +367,51 @@ func (e ReviewVerdictEvent) MarshalJSON() ([]byte, error) {
 	return marshalWithType(e.Type(), alias(e))
 }
 
+// RecallSearchEvent represents a semantic search result from recall.
+type RecallSearchEvent struct {
+	Query     string `json:"query"`
+	Results   int    `json:"results"`
+	LatencyMS int64  `json:"latencyMs"`
+	AgentID   string `json:"agentId"`
+}
+
+func (e RecallSearchEvent) Type() string { return EventTypeRecallSearch }
+
+func (e RecallSearchEvent) MarshalJSON() ([]byte, error) {
+	type alias RecallSearchEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
+// RecallChainSearchEvent represents a cross-agent chain search result from recall.
+type RecallChainSearchEvent struct {
+	Query     string `json:"query"`
+	Results   int    `json:"results"`
+	LatencyMS int64  `json:"latencyMs"`
+	AgentID   string `json:"agentId"`
+}
+
+func (e RecallChainSearchEvent) Type() string { return EventTypeRecallChainSearch }
+
+func (e RecallChainSearchEvent) MarshalJSON() ([]byte, error) {
+	type alias RecallChainSearchEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
+// RecallSummarizedEvent represents a context summarization result.
+type RecallSummarizedEvent struct {
+	OriginalTokens int    `json:"originalTokens"`
+	SummaryTokens  int    `json:"summaryTokens"`
+	LatencyMS      int64  `json:"latencyMs"`
+	AgentID        string `json:"agentId"`
+}
+
+func (e RecallSummarizedEvent) Type() string { return EventTypeRecallSummarized }
+
+func (e RecallSummarizedEvent) MarshalJSON() ([]byte, error) {
+	type alias RecallSummarizedEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
 // MarshalEvent serialises an event to JSON with a type discriminator field.
 //
 // Expected:
@@ -417,6 +465,12 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		return unmarshalTyped[PlanArtifactEvent](data)
 	case EventTypeReviewVerdict:
 		return unmarshalTyped[ReviewVerdictEvent](data)
+	case EventTypeRecallSearch:
+		return unmarshalTyped[RecallSearchEvent](data)
+	case EventTypeRecallChainSearch:
+		return unmarshalTyped[RecallChainSearchEvent](data)
+	case EventTypeRecallSummarized:
+		return unmarshalTyped[RecallSummarizedEvent](data)
 	default:
 		return nil, fmt.Errorf("unknown event type: %q", peek.Type)
 	}
