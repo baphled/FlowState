@@ -20,7 +20,7 @@ type Streamer interface {
 	Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error)
 }
 
-// HarnessOption configures optional behaviour on a Harness.
+// Option configures optional behaviour on a Harness.
 //
 // Expected:
 //   - Each option mutates the harness during construction only.
@@ -30,7 +30,7 @@ type Streamer interface {
 //
 // Side effects:
 //   - None.
-type HarnessOption func(*Harness)
+type Option func(*Harness)
 
 // WithCritic attaches an LLM critic and its provider to the harness.
 //
@@ -39,11 +39,11 @@ type HarnessOption func(*Harness)
 //   - p is a valid provider for critic chat completions.
 //
 // Returns:
-//   - A HarnessOption that sets the critic and provider fields.
+//   - A Option that sets the critic and provider fields.
 //
 // Side effects:
 //   - None.
-func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
+func WithCritic(critic *LLMCritic, p provider.Provider) Option {
 	return func(h *Harness) {
 		h.critic = critic
 		h.criticProvider = p
@@ -56,11 +56,11 @@ func WithCritic(critic *LLMCritic, p provider.Provider) HarnessOption {
 //   - voter is a configured ConsistencyVoter (may be nil for no voting).
 //
 // Returns:
-//   - A HarnessOption that sets the voter field.
+//   - A Option that sets the voter field.
 //
 // Side effects:
 //   - None.
-func WithVoter(voter *ConsistencyVoter) HarnessOption {
+func WithVoter(voter *ConsistencyVoter) Option {
 	return func(h *Harness) {
 		h.voter = voter
 	}
@@ -72,11 +72,11 @@ func WithVoter(voter *ConsistencyVoter) HarnessOption {
 //   - n is a positive integer. Values less than 1 are ignored.
 //
 // Returns:
-//   - A HarnessOption that sets the maxRetries field.
+//   - A Option that sets the maxRetries field.
 //
 // Side effects:
 //   - None.
-func WithMaxRetries(n int) HarnessOption {
+func WithMaxRetries(n int) Option {
 	return func(h *Harness) {
 		if n >= 1 {
 			h.maxRetries = n
@@ -115,14 +115,14 @@ type Harness struct {
 //
 // Expected:
 //   - projectRoot is the absolute path to the project root directory.
-//   - opts are optional HarnessOption values (e.g. WithCritic).
+//   - opts are optional Option values (e.g. WithCritic).
 //
 // Returns:
 //   - A configured Harness with schema, assertion, and reference validators.
 //
 // Side effects:
 //   - None.
-func NewHarness(projectRoot string, opts ...HarnessOption) *Harness {
+func NewHarness(projectRoot string, opts ...Option) *Harness {
 	h := &Harness{
 		maxRetries:  1,
 		projectRoot: projectRoot,
@@ -139,11 +139,11 @@ func NewHarness(projectRoot string, opts ...HarnessOption) *Harness {
 //   - v implements the schemaValidation interface.
 //
 // Returns:
-//   - A HarnessOption that sets the schema validator.
+//   - A Option that sets the schema validator.
 //
 // Side effects:
 //   - None.
-func WithSchemaValidator(v schemaValidation) HarnessOption {
+func WithSchemaValidator(v schemaValidation) Option {
 	return func(h *Harness) { h.schemaValidator = v }
 }
 
@@ -153,11 +153,11 @@ func WithSchemaValidator(v schemaValidation) HarnessOption {
 //   - v implements the assertionValidation interface.
 //
 // Returns:
-//   - A HarnessOption that sets the assertion validator.
+//   - A Option that sets the assertion validator.
 //
 // Side effects:
 //   - None.
-func WithAssertionValidator(v assertionValidation) HarnessOption {
+func WithAssertionValidator(v assertionValidation) Option {
 	return func(h *Harness) { h.assertionValidator = v }
 }
 
@@ -167,11 +167,11 @@ func WithAssertionValidator(v assertionValidation) HarnessOption {
 //   - v implements the referenceValidation interface.
 //
 // Returns:
-//   - A HarnessOption that sets the reference validator.
+//   - A Option that sets the reference validator.
 //
 // Side effects:
 //   - None.
-func WithReferenceValidator(v referenceValidation) HarnessOption {
+func WithReferenceValidator(v referenceValidation) Option {
 	return func(h *Harness) { h.referenceValidator = v }
 }
 

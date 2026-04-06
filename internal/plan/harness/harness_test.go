@@ -562,7 +562,7 @@ func projectRootFromWorkingDir() string {
 	return root
 }
 
-func newTestHarness(projectRoot string, opts ...harness.HarnessOption) *harness.Harness {
+func newTestHarness(projectRoot string, opts ...harness.Option) *harness.Harness {
 	return harness.NewHarness(projectRoot, append(validation.DefaultValidators(), opts...)...)
 }
 

@@ -43,12 +43,12 @@ func NewEmbeddingGrounder() *EmbeddingGrounder {
 //   - An error if the project root cannot be read.
 //
 // Side effects:
-//   - Reads Go source files from projectRoot and calls embedProvider.Embed for each.
+//   - Reads Go source files from projectRoot and searches for query string matches.
 func (g *EmbeddingGrounder) InjectContext(
-	ctx context.Context,
+	_ context.Context,
 	projectRoot string,
 	query string,
-	embedProvider provider.Provider,
+	_ provider.Provider,
 ) (string, error) {
 	files, err := os.ReadDir(projectRoot)
 	if err != nil {
@@ -66,7 +66,6 @@ func (g *EmbeddingGrounder) InjectContext(
 		if err != nil {
 			continue
 		}
-		_, _ = embedProvider.Embed(ctx, provider.EmbedRequest{Input: string(b)})
 		if strings.Contains(string(b), query) {
 			return "### Relevant Code\n" + string(b), nil
 		}

@@ -98,7 +98,7 @@ func createHarnessStreamer(
 		}
 	}
 
-	var opts []harness.HarnessOption
+	var opts []harness.Option
 	if cfg.MaxRetries > 0 {
 		opts = append(opts, harness.WithMaxRetries(cfg.MaxRetries))
 	}
