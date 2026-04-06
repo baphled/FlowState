@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -128,6 +129,41 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 				}, 2*time.Second, 10*time.Millisecond).Should(BeNumerically(">", 0))
 
 				slow.release()
+			})
+
+			Context("when parent context is cancelled after launch", func() {
+				It("background task completes and is NOT cancelled", func() {
+					ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, "delegate-pipeline-sess"))
+					DeferCleanup(cancel)
+
+					input := tool.Input{
+						Name: "delegate",
+						Arguments: map[string]interface{}{
+							"subagent_type":     "target-agent",
+							"message":           "cancel after launch",
+							"run_in_background": true,
+						},
+					}
+
+					result, err := delegateTool.Execute(ctx, input)
+					Expect(err).NotTo(HaveOccurred())
+
+					var launched struct {
+						TaskID string `json:"task_id"`
+					}
+					Expect(json.Unmarshal([]byte(result.Output), &launched)).To(Succeed())
+					Expect(launched.TaskID).NotTo(BeEmpty())
+
+					cancel()
+
+					Eventually(func() string {
+						task, found := backgroundMgr.Get(launched.TaskID)
+						if !found {
+							return ""
+						}
+						return task.Status.Load()
+					}, 2*time.Second, 10*time.Millisecond).Should(Equal("completed"))
+				})
 			})
 		})
 

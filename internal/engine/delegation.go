@@ -1160,7 +1160,7 @@ func (d *DelegateTool) executeAsync(
 
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
-	d.backgroundManager.Launch(ctx, taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
+	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
 		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, outChan, hasOutput)
 		if err != nil {
