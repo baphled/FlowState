@@ -7,6 +7,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/plan/validation"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -14,18 +15,18 @@ import (
 
 // harnessAdapter wraps a Harness to satisfy streaming.PlanEvaluator.
 //
-// This adapter bridges the plan.Streamer and streaming.Streamer interfaces
+// This adapter bridges the harness.Streamer and streaming.Streamer interfaces
 // which are structurally identical but defined in separate packages to
 // avoid import cycles.
 type harnessAdapter struct {
-	harness *plan.Harness
+	h *harness.Harness
 }
 
-// Evaluate delegates to the wrapped Harness, converting the streaming.Streamer to plan.Streamer.
+// Evaluate delegates to the wrapped Harness, converting the streaming.Streamer to harness.Streamer.
 //
 // Expected:
 //   - ctx is a valid context for the evaluation.
-//   - streamer satisfies both streaming.Streamer and plan.Streamer (same method set).
+//   - streamer satisfies both streaming.Streamer and harness.Streamer (same method set).
 //   - agentID identifies the agent being evaluated.
 //   - message is the user's input text.
 //
@@ -41,14 +42,14 @@ func (a *harnessAdapter) Evaluate(
 	agentID string,
 	message string,
 ) (*plan.EvaluationResult, error) {
-	return a.harness.Evaluate(ctx, streamer, agentID, message)
+	return a.h.Evaluate(ctx, streamer, agentID, message)
 }
 
 // StreamEvaluate delegates to the wrapped Harness, forwarding response chunks live.
 //
 // Expected:
 //   - ctx is a valid context for the evaluation.
-//   - streamer satisfies both streaming.Streamer and plan.Streamer (same method set).
+//   - streamer satisfies both streaming.Streamer and harness.Streamer (same method set).
 //   - agentID identifies the agent being evaluated.
 //   - message is the user's input text.
 //
@@ -64,7 +65,7 @@ func (a *harnessAdapter) StreamEvaluate(
 	agentID string,
 	message string,
 ) (<-chan provider.StreamChunk, error) {
-	return a.harness.StreamEvaluate(ctx, streamer, agentID, message)
+	return a.h.StreamEvaluate(ctx, streamer, agentID, message)
 }
 
 // createHarnessStreamer builds a HarnessStreamer wrapping the engine with plan
@@ -97,27 +98,27 @@ func createHarnessStreamer(
 		}
 	}
 
-	var opts []plan.HarnessOption
+	var opts []harness.HarnessOption
 	if cfg.MaxRetries > 0 {
-		opts = append(opts, plan.WithMaxRetries(cfg.MaxRetries))
+		opts = append(opts, harness.WithMaxRetries(cfg.MaxRetries))
 	}
 
 	if cfg.CriticEnabled && p != nil {
-		critic, err := plan.NewLLMCritic(true, "claude-sonnet-4-6")
+		critic, err := harness.NewLLMCritic(true, "claude-sonnet-4-6")
 		if err == nil {
-			opts = append(opts, plan.WithCritic(critic, p))
+			opts = append(opts, harness.WithCritic(critic, p))
 		}
 	}
 
 	if cfg.VotingEnabled {
-		voterCfg := plan.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.8}
-		voter := plan.NewConsistencyVoter(voterCfg, projectRoot)
-		opts = append(opts, plan.WithVoter(voter))
+		voterCfg := harness.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.8}
+		voter := harness.NewConsistencyVoter(voterCfg, projectRoot)
+		opts = append(opts, harness.WithVoter(voter))
 	}
 
 	opts = append(validation.DefaultValidators(), opts...)
-	harness := plan.NewHarness(projectRoot, opts...)
-	return streaming.NewHarnessStreamer(inner, &harnessAdapter{harness: harness}, registry)
+	h := harness.NewHarness(projectRoot, opts...)
+	return streaming.NewHarnessStreamer(inner, &harnessAdapter{h: h}, registry)
 }
 
 // CreateHarnessStreamerForTest is a test helper that exposes createHarnessStreamer for

@@ -1,4 +1,4 @@
-package plan
+package harness
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/plan"
 	promptpkg "github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -84,7 +85,7 @@ func NewLLMCritic(enabled bool, model string) (*LLMCritic, error) {
 //
 // Expected:
 //   - ctx is a valid context for cancellation.
-//   - plan is the structured plan (may be nil if parsing failed).
+//   - planData is the structured plan (may be nil if parsing failed).
 //   - planText is the raw plan text preserving rationale and risks.
 //   - validatorResult is the Go validator outcome (may be nil).
 //   - llmProvider is a valid provider for chat completions.
@@ -97,9 +98,9 @@ func NewLLMCritic(enabled bool, model string) (*LLMCritic, error) {
 //   - Sends a chat request to the LLM provider when enabled.
 func (c *LLMCritic) Review(
 	ctx context.Context,
-	plan *File,
+	planData *plan.File,
 	planText string,
-	validatorResult *ValidationResult,
+	validatorResult *plan.ValidationResult,
 	llmProvider provider.Provider,
 ) (*CriticResult, error) {
 	if !c.enabled {
@@ -109,7 +110,7 @@ func (c *LLMCritic) Review(
 		}, nil
 	}
 
-	userContent := buildCriticUserMessage(plan, planText, validatorResult)
+	userContent := buildCriticUserMessage(planData, planText, validatorResult)
 
 	req := provider.ChatRequest{
 		Model: c.model,
@@ -138,7 +139,7 @@ func (c *LLMCritic) Review(
 //
 // Side effects:
 //   - None.
-func buildCriticUserMessage(plan *File, planText string, validatorResult *ValidationResult) string {
+func buildCriticUserMessage(planData *plan.File, planText string, validatorResult *plan.ValidationResult) string {
 	var b strings.Builder
 	b.WriteString("## Plan Text\n\n")
 	b.WriteString(planText)
@@ -156,8 +157,8 @@ func buildCriticUserMessage(plan *File, planText string, validatorResult *Valida
 		}
 	}
 
-	if plan != nil {
-		fmt.Fprintf(&b, "\n\n## Plan Metadata\n\nID: %s\nTitle: %s\nTasks: %d\n", plan.ID, plan.Title, len(plan.Tasks))
+	if planData != nil {
+		fmt.Fprintf(&b, "\n\n## Plan Metadata\n\nID: %s\nTitle: %s\nTasks: %d\n", planData.ID, planData.Title, len(planData.Tasks))
 	}
 
 	return b.String()

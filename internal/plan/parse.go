@@ -443,7 +443,7 @@ func parseWave(line string, task *Task) {
 	}
 }
 
-// tasksFromPlanText extracts and normalises tasks from a plan's markdown body.
+// TasksFromPlanText extracts and normalises tasks from a plan's markdown body.
 //
 // Expected:
 //   - planText contains a plan with YAML frontmatter delimiters.
@@ -453,7 +453,7 @@ func parseWave(line string, task *Task) {
 //
 // Side effects:
 //   - None.
-func tasksFromPlanText(planText string) []Task {
+func TasksFromPlanText(planText string) []Task {
 	parts := strings.SplitN(planText, "---", 3)
 	if len(parts) < 3 {
 		return []Task{}
@@ -465,7 +465,7 @@ func tasksFromPlanText(planText string) []Task {
 	return tasks
 }
 
-// parseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.
+// ParseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.
 //
 // Expected:
 //   - planText contains a plan with YAML frontmatter delimited by "---".
@@ -476,19 +476,7 @@ func tasksFromPlanText(planText string) []Task {
 //
 // Side effects:
 //   - None.
-
-// parseFile extracts and unmarshals YAML frontmatter from a plan text into a File struct.
-//
-// Expected:
-//   - planText contains a plan with YAML frontmatter delimited by "---".
-//
-// Returns:
-//   - A File struct populated from the YAML frontmatter.
-//   - An error if the frontmatter is missing or cannot be unmarshalled.
-//
-// Side effects:
-//   - None.
-func parseFile(planText string) (*File, error) {
+func ParseFile(planText string) (*File, error) {
 	parts := strings.SplitN(planText, "---", 3)
 	if len(parts) < 3 {
 		return nil, errors.New("missing YAML frontmatter")
@@ -500,4 +488,33 @@ func parseFile(planText string) (*File, error) {
 	}
 
 	return &file, nil
+}
+
+// normalizeDependencies removes empty and "none" entries from a dependency list.
+//
+// Expected:
+//   - deps is a string slice of dependency identifiers (may contain empty or "none" values).
+//
+// Returns:
+//   - A cleaned slice with empty and "none" entries removed.
+//
+// Side effects:
+//   - None.
+func normalizeDependencies(deps []string) []string {
+	if len(deps) == 0 {
+		return deps
+	}
+
+	cleaned := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		trimmed := strings.TrimSpace(dep)
+		if trimmed == "" {
+			continue
+		}
+		if strings.EqualFold(trimmed, "none") {
+			continue
+		}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
 }

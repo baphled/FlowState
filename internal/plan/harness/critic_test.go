@@ -1,4 +1,4 @@
-package plan_test
+package harness_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -67,8 +67,8 @@ func (m *capturingChatProvider) Models() ([]provider.Model, error) {
 	panic("capturingChatProvider.Models must not be called in LLMCritic tests")
 }
 
-func newTestCritic(enabled bool) *plan.LLMCritic {
-	critic, err := plan.NewLLMCritic(enabled, "mock-model")
+func newTestCritic(enabled bool) *harness.LLMCritic {
+	critic, err := harness.NewLLMCritic(enabled, "mock-model")
 	Expect(err).NotTo(HaveOccurred())
 	return critic
 }
@@ -117,7 +117,7 @@ var _ = Describe("LLMCritic", func() {
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, capProvider)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Verdict).To(Equal(plan.VerdictDisabled))
+				Expect(result.Verdict).To(Equal(harness.VerdictDisabled))
 				Expect(result.Confidence).To(Equal(1.0))
 				Expect(capProvider.called).To(BeFalse())
 			})
@@ -130,7 +130,7 @@ var _ = Describe("LLMCritic", func() {
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Verdict).To(Equal(plan.VerdictPass))
+				Expect(result.Verdict).To(Equal(harness.VerdictPass))
 				Expect(result.Confidence).To(Equal(0.95))
 				Expect(result.RubricResults).To(HaveLen(6))
 				Expect(result.RubricResults).To(HaveKeyWithValue("FEASIBILITY", "PASS"))
@@ -151,7 +151,7 @@ var _ = Describe("LLMCritic", func() {
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Verdict).To(Equal(plan.VerdictFail))
+				Expect(result.Verdict).To(Equal(harness.VerdictFail))
 				Expect(result.Confidence).To(Equal(0.80))
 				Expect(result.RubricResults).To(HaveLen(6))
 				Expect(result.RubricResults).To(HaveKeyWithValue("CONSISTENCY", "FAIL"))
@@ -276,7 +276,7 @@ var _ = Describe("LLMCritic", func() {
 				mockProv := &mockChatProvider{response: response}
 				result, err := critic.Review(ctx, nil, "# Plan text", nil, mockProv)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Verdict).To(Equal(plan.VerdictPass))
+				Expect(result.Verdict).To(Equal(harness.VerdictPass))
 			})
 		})
 	})
@@ -287,9 +287,9 @@ var _ = Describe("LLMCritic", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: validCriticResponse()}
 				critic := newTestCritic(true)
-				harness := newTestHarness(projectRoot, plan.WithCritic(critic, criticProv))
+				h := newTestHarness(projectRoot, harness.WithCritic(critic, criticProv))
 				streamer := &mockStreamer{responses: []string{loadValidPlan()}}
-				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+				result, err := h.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
 				Expect(result.AttemptCount).To(Equal(1))
@@ -303,13 +303,13 @@ var _ = Describe("LLMCritic", func() {
 				projectRoot := projectRootFromWorkingDir()
 				criticProv := &mockChatProvider{response: failingCriticResponse()}
 				critic := newTestCritic(true)
-				harness := newTestHarness(projectRoot, plan.WithCritic(critic, criticProv), plan.WithMaxRetries(3))
+				h := newTestHarness(projectRoot, harness.WithCritic(critic, criticProv), harness.WithMaxRetries(3))
 				streamer := &mockStreamer{responses: []string{
 					loadValidPlan(),
 					loadValidPlan(),
 					loadValidPlan(),
 				}}
-				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+				result, err := h.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
 				Expect(result.AttemptCount).To(BeNumerically(">", 1))
@@ -319,9 +319,9 @@ var _ = Describe("LLMCritic", func() {
 		Context("when critic is not configured", func() {
 			It("skips critic and returns on validation pass alone", func() {
 				projectRoot := projectRootFromWorkingDir()
-				harness := newTestHarness(projectRoot)
+				h := newTestHarness(projectRoot)
 				streamer := &mockStreamer{responses: []string{loadValidPlan()}}
-				result, err := harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+				result, err := h.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
 				Expect(result.AttemptCount).To(Equal(1))

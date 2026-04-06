@@ -10,13 +10,14 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/plan/validation"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
 // HarnessStepDefinitions holds state for harness BDD scenarios.
 type HarnessStepDefinitions struct {
-	harness          *plan.Harness
+	harness          *harness.Harness
 	evaluationResult *plan.EvaluationResult
 	validationResult *plan.ValidationResult
 	projectRoot      string
@@ -71,7 +72,7 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 			return bddCtx, err
 		}
 		h.projectRoot = filepath.Join(cwd, "..", "..")
-		h.harness = plan.NewHarness(h.projectRoot, validation.DefaultValidators()...)
+		h.harness = harness.NewHarness(h.projectRoot, validation.DefaultValidators()...)
 		h.evaluationResult = nil
 		h.validationResult = nil
 		h.planText = ""

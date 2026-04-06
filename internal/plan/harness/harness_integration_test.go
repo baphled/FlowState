@@ -1,4 +1,4 @@
-package plan_test
+package harness_test
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -35,7 +35,7 @@ func (m *integrationMockStreamer) Stream(_ context.Context, _, _ string) (<-chan
 
 var _ = Describe("Integration", Label("integration"), func() {
 	var (
-		harness     *plan.Harness
+		h           *harness.Harness
 		ctx         context.Context
 		projectRoot string
 	)
@@ -43,8 +43,8 @@ var _ = Describe("Integration", Label("integration"), func() {
 	BeforeEach(func() {
 		cwd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred())
-		projectRoot = filepath.Join(cwd, "..", "..")
-		harness = newTestHarness(projectRoot)
+		projectRoot = filepath.Join(cwd, "..", "..", "..")
+		h = newTestHarness(projectRoot)
 		ctx = context.Background()
 	})
 
@@ -52,7 +52,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 		validPlan := loadValidPlan()
 		streamer := &integrationMockStreamer{responses: []string{validPlan}}
 
-		result, err := harness.Evaluate(ctx, streamer, "planner", "Generate a plan")
+		result, err := h.Evaluate(ctx, streamer, "planner", "Generate a plan")
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -64,7 +64,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("retries on invalid plan and succeeds", func() {
-		harnessWithRetry := newTestHarness(projectRoot, plan.WithMaxRetries(2))
+		harnessWithRetry := newTestHarness(projectRoot, harness.WithMaxRetries(2))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), loadValidPlan()},
 		}
@@ -80,7 +80,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 	})
 
 	It("returns best-effort after max retries", func() {
-		harnessWithRetry := newTestHarness(projectRoot, plan.WithMaxRetries(3))
+		harnessWithRetry := newTestHarness(projectRoot, harness.WithMaxRetries(3))
 		streamer := &integrationMockStreamer{
 			responses: []string{invalidPlan(), invalidPlan(), invalidPlan()},
 		}
@@ -100,7 +100,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 		interviewResponse := "Can you tell me more about your project requirements?"
 		streamer := &integrationMockStreamer{responses: []string{interviewResponse}}
 
-		result, err := harness.Evaluate(ctx, streamer, "planner", "Start planning")
+		result, err := h.Evaluate(ctx, streamer, "planner", "Start planning")
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).NotTo(BeNil())
@@ -116,7 +116,7 @@ var _ = Describe("Integration", Label("integration"), func() {
 
 		streamer := &integrationMockStreamer{responses: []string{loadValidPlan()}}
 
-		result, err := harness.Evaluate(cancelledCtx, streamer, "planner", "Generate a plan")
+		result, err := h.Evaluate(cancelledCtx, streamer, "planner", "Generate a plan")
 
 		Expect(err).To(MatchError(context.Canceled))
 		Expect(result).To(BeNil())
@@ -129,9 +129,9 @@ func BenchmarkHarnessOverhead(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	projectRoot := filepath.Join(cwd, "..", "..")
-	harness := newTestHarness(projectRoot)
-	data, err := os.ReadFile("testdata/valid_plan.md")
+	projectRoot := filepath.Join(cwd, "..", "..", "..")
+	h := newTestHarness(projectRoot)
+	data, err := os.ReadFile("../testdata/valid_plan.md")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -140,6 +140,6 @@ func BenchmarkHarnessOverhead(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		streamer := &integrationMockStreamer{responses: []string{validPlan}}
-		_, _ = harness.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
+		_, _ = h.Evaluate(context.Background(), streamer, "planner", "Generate a plan")
 	}
 }

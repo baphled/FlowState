@@ -1,4 +1,4 @@
-package plan
+package harness
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -85,17 +86,17 @@ func WithMaxRetries(n int) HarnessOption {
 
 // schemaValidation validates plan documents for required structure and content.
 type schemaValidation interface {
-	Validate(planText string) (*ValidationResult, error)
+	Validate(planText string) (*plan.ValidationResult, error)
 }
 
 // assertionValidation performs semantic validation on a plan File.
 type assertionValidation interface {
-	Validate(planFile *File) (*ValidationResult, error)
+	Validate(planFile *plan.File) (*plan.ValidationResult, error)
 }
 
 // referenceValidation checks that file references in plan text exist under the project root.
 type referenceValidation interface {
-	Validate(planText string, projectRoot string) (*ValidationResult, error)
+	Validate(planText string, projectRoot string) (*plan.ValidationResult, error)
 }
 
 // Harness wraps a Streamer with validate-retry logic and optional LLM critic.
@@ -447,7 +448,7 @@ func (h *Harness) Evaluate(
 	streamer Streamer,
 	agentID string,
 	message string,
-) (*EvaluationResult, error) {
+) (*plan.EvaluationResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -463,7 +464,7 @@ func (h *Harness) Evaluate(
 
 		phase := hook.DetectPhase(planText)
 		if phase != hook.PhaseGeneration {
-			return &EvaluationResult{PlanText: planText, AttemptCount: attempt}, nil
+			return &plan.EvaluationResult{PlanText: planText, AttemptCount: attempt}, nil
 		}
 
 		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
@@ -489,7 +490,7 @@ func (h *Harness) Evaluate(
 //
 // Side effects:
 //   - May send a chat request to the critic provider.
-func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*EvaluationResult, string) {
+func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*plan.EvaluationResult, string) {
 	validation := h.validatePlan(planText)
 	if validation.Valid {
 		return h.handleValidPlan(ctx, planText, validation, attempt)
@@ -500,7 +501,7 @@ func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt 
 	}
 
 	validation.Warnings = append(validation.Warnings, "validation failed after "+strconv.Itoa(attempt)+" attempts")
-	return &EvaluationResult{
+	return &plan.EvaluationResult{
 		PlanText: planText, ValidationResult: validation,
 		AttemptCount: attempt, FinalScore: validation.Score,
 	}, ""
@@ -520,11 +521,11 @@ func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt 
 // Side effects:
 //   - May send a chat request to the critic provider.
 func (h *Harness) handleValidPlan(
-	ctx context.Context, planText string, validation *ValidationResult, attempt int,
-) (*EvaluationResult, string) {
+	ctx context.Context, planText string, validation *plan.ValidationResult, attempt int,
+) (*plan.EvaluationResult, string) {
 	criticFeedback := h.runCritic(ctx, planText, validation)
 	if criticFeedback == "" {
-		return &EvaluationResult{
+		return &plan.EvaluationResult{
 			PlanText: planText, ValidationResult: validation,
 			AttemptCount: attempt, FinalScore: validation.Score,
 		}, ""
@@ -533,7 +534,7 @@ func (h *Harness) handleValidPlan(
 		return nil, criticFeedback
 	}
 	validation.Warnings = append(validation.Warnings, "critic rejected plan on final attempt")
-	return &EvaluationResult{
+	return &plan.EvaluationResult{
 		PlanText: planText, ValidationResult: validation,
 		AttemptCount: attempt, FinalScore: validation.Score,
 	}, ""
@@ -549,13 +550,13 @@ func (h *Harness) handleValidPlan(
 //
 // Side effects:
 //   - None.
-func (h *Harness) validatePlan(planText string) *ValidationResult {
+func (h *Harness) validatePlan(planText string) *plan.ValidationResult {
 	schemaResult, err := h.schemaValidator.Validate(planText)
 	if err != nil {
 		return schemaResult
 	}
 
-	planFile := &File{Tasks: tasksFromPlanText(planText)}
+	planFile := &plan.File{Tasks: plan.TasksFromPlanText(planText)}
 	assertionResult, assertionErr := h.assertionValidator.Validate(planFile)
 	if assertionErr != nil && assertionResult != nil {
 		assertionResult.Warnings = append(assertionResult.Warnings, assertionErr.Error())
@@ -580,12 +581,12 @@ func (h *Harness) validatePlan(planText string) *ValidationResult {
 //
 // Side effects:
 //   - Sends a chat request to the critic provider when critic is configured and enabled.
-func (h *Harness) runCritic(ctx context.Context, planText string, validation *ValidationResult) string {
+func (h *Harness) runCritic(ctx context.Context, planText string, validation *plan.ValidationResult) string {
 	if h.critic == nil || h.criticProvider == nil {
 		return ""
 	}
 
-	parsedPlan, parseErr := parseFile(planText)
+	parsedPlan, parseErr := plan.ParseFile(planText)
 	if parseErr != nil {
 		parsedPlan = nil
 	}
@@ -618,7 +619,7 @@ func (h *Harness) runCritic(ctx context.Context, planText string, validation *Va
 //   - Emits harness_critic_feedback and slog validation events via outCh.
 func (h *Harness) evaluateStreamAttempt(
 	ctx context.Context, planText string, attempt int, outCh chan<- provider.StreamChunk,
-) (*EvaluationResult, string) {
+) (*plan.EvaluationResult, string) {
 	validation := h.validatePlan(planText)
 	slog.Info("harness validation",
 		"valid", validation.Valid,
@@ -635,7 +636,7 @@ func (h *Harness) evaluateStreamAttempt(
 	}
 
 	validation.Warnings = append(validation.Warnings, "validation failed after "+strconv.Itoa(attempt)+" attempts")
-	return &EvaluationResult{
+	return &plan.EvaluationResult{
 		PlanText: planText, ValidationResult: validation,
 		AttemptCount: attempt, FinalScore: validation.Score,
 	}, ""
@@ -656,11 +657,11 @@ func (h *Harness) evaluateStreamAttempt(
 // Side effects:
 //   - Emits harness_critic_feedback via outCh when the critic runs.
 func (h *Harness) handleValidPlanStream(
-	ctx context.Context, planText string, validation *ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
-) (*EvaluationResult, string) {
+	ctx context.Context, planText string, validation *plan.ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
+) (*plan.EvaluationResult, string) {
 	criticFeedback := h.runCriticStream(ctx, planText, validation, outCh)
 	if criticFeedback == "" {
-		return &EvaluationResult{
+		return &plan.EvaluationResult{
 			PlanText: planText, ValidationResult: validation,
 			AttemptCount: attempt, FinalScore: validation.Score,
 		}, ""
@@ -669,7 +670,7 @@ func (h *Harness) handleValidPlanStream(
 		return nil, criticFeedback
 	}
 	validation.Warnings = append(validation.Warnings, "critic rejected plan on final attempt")
-	return &EvaluationResult{
+	return &plan.EvaluationResult{
 		PlanText: planText, ValidationResult: validation,
 		AttemptCount: attempt, FinalScore: validation.Score,
 	}, ""
@@ -690,13 +691,13 @@ func (h *Harness) handleValidPlanStream(
 //   - Sends a chat request to the critic provider when configured.
 //   - Emits harness_critic_feedback to outCh on successful critic review.
 func (h *Harness) runCriticStream(
-	ctx context.Context, planText string, validation *ValidationResult, outCh chan<- provider.StreamChunk,
+	ctx context.Context, planText string, validation *plan.ValidationResult, outCh chan<- provider.StreamChunk,
 ) string {
 	if h.critic == nil || h.criticProvider == nil {
 		return ""
 	}
 
-	parsedPlan, parseErr := parseFile(planText)
+	parsedPlan, parseErr := plan.ParseFile(planText)
 	if parseErr != nil {
 		parsedPlan = nil
 	}
@@ -731,8 +732,8 @@ func (h *Harness) runCriticStream(
 // Side effects:
 //   - Spawns goroutines to generate plan variants when voter triggers.
 func (h *Harness) applyVoter(
-	ctx context.Context, streamer Streamer, agentID string, message string, result *EvaluationResult,
-) *EvaluationResult {
+	ctx context.Context, streamer Streamer, agentID string, message string, result *plan.EvaluationResult,
+) *plan.EvaluationResult {
 	if h.voter == nil {
 		return result
 	}
@@ -759,7 +760,7 @@ func (h *Harness) applyVoter(
 //
 // Side effects:
 //   - Sends a plan_artifact StreamChunk to outCh.
-func emitPlanArtifact(ctx context.Context, outCh chan<- provider.StreamChunk, result *EvaluationResult) {
+func emitPlanArtifact(ctx context.Context, outCh chan<- provider.StreamChunk, result *plan.EvaluationResult) {
 	trySend(ctx, outCh, provider.StreamChunk{
 		EventType: "plan_artifact",
 		Content:   result.PlanText,
@@ -803,7 +804,7 @@ func emitCriticFeedback(ctx context.Context, outCh chan<- provider.StreamChunk, 
 //
 // Side effects:
 //   - Sends a harness_complete StreamChunk to outCh.
-func emitHarnessComplete(ctx context.Context, outCh chan<- provider.StreamChunk, result *EvaluationResult) {
+func emitHarnessComplete(ctx context.Context, outCh chan<- provider.StreamChunk, result *plan.EvaluationResult) {
 	payload, err := json.Marshal(map[string]any{
 		"valid":        result.ValidationResult != nil && result.ValidationResult.Valid,
 		"score":        result.FinalScore,
@@ -830,7 +831,7 @@ func emitHarnessComplete(ctx context.Context, outCh chan<- provider.StreamChunk,
 //
 // Side effects:
 //   - None.
-func validationErrors(v *ValidationResult) []string {
+func validationErrors(v *plan.ValidationResult) []string {
 	if v != nil {
 		return v.Errors
 	}
@@ -847,7 +848,7 @@ func validationErrors(v *ValidationResult) []string {
 //
 // Side effects:
 //   - None.
-func validationWarnings(v *ValidationResult) []string {
+func validationWarnings(v *plan.ValidationResult) []string {
 	if v != nil {
 		return v.Warnings
 	}
@@ -943,35 +944,6 @@ func streamPlan(
 	return planText, nil
 }
 
-// normalizeDependencies removes empty and "none" entries from a dependency list.
-//
-// Expected:
-//   - deps is a string slice of dependency identifiers (may contain empty or "none" values).
-//
-// Returns:
-//   - A cleaned slice with empty and "none" entries removed.
-//
-// Side effects:
-//   - None.
-func normalizeDependencies(deps []string) []string {
-	if len(deps) == 0 {
-		return deps
-	}
-
-	cleaned := make([]string, 0, len(deps))
-	for _, dep := range deps {
-		trimmed := strings.TrimSpace(dep)
-		if trimmed == "" {
-			continue
-		}
-		if strings.EqualFold(trimmed, "none") {
-			continue
-		}
-		cleaned = append(cleaned, trimmed)
-	}
-	return cleaned
-}
-
 // combineValidationResults merges multiple validation results into a single averaged result.
 //
 // Expected:
@@ -982,8 +954,8 @@ func normalizeDependencies(deps []string) []string {
 //
 // Side effects:
 //   - None.
-func combineValidationResults(results ...*ValidationResult) *ValidationResult {
-	combined := &ValidationResult{Valid: true, Score: 1.0}
+func combineValidationResults(results ...*plan.ValidationResult) *plan.ValidationResult {
+	combined := &plan.ValidationResult{Valid: true, Score: 1.0}
 	count := 0
 	scoreSum := 0.0
 
@@ -1029,7 +1001,7 @@ func combineValidationResults(results ...*ValidationResult) *ValidationResult {
 //
 // Side effects:
 //   - None.
-func buildFeedback(result *ValidationResult) string {
+func buildFeedback(result *plan.ValidationResult) string {
 	issues := result.Errors
 	if len(issues) == 0 {
 		issues = result.Warnings

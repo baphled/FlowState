@@ -1,4 +1,4 @@
-package plan_test
+package harness_test
 
 import (
 	"context"
@@ -8,15 +8,15 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
 var _ = Describe("Aggregator", func() {
-	var agg *plan.Aggregator
+	var agg *harness.Aggregator
 
 	BeforeEach(func() {
-		agg = &plan.Aggregator{}
+		agg = &harness.Aggregator{}
 	})
 
 	DescribeTable("Aggregate",

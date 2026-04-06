@@ -1,4 +1,4 @@
-package plan_test
+package harness_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -38,7 +38,7 @@ func (m *mockEmbedProvider) Models() ([]provider.Model, error) {
 var _ = Describe("EmbeddingGrounder", func() {
 	var (
 		tmpDir   string
-		g        *plan.EmbeddingGrounder
+		g        *harness.EmbeddingGrounder
 		provider provider.Provider
 	)
 
@@ -50,7 +50,7 @@ var _ = Describe("EmbeddingGrounder", func() {
 		// Write a simple .go file
 		file := filepath.Join(tmpDir, "foo.go")
 		os.WriteFile(file, []byte("package foo\nfunc Bar() {}\ntype Baz struct{}\n"), 0o600)
-		g = plan.NewEmbeddingGrounder()
+		g = harness.NewEmbeddingGrounder()
 		provider = &mockEmbedProvider{}
 	})
 
