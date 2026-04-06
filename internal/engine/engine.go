@@ -1472,14 +1472,24 @@ func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err e
 	if e.bus == nil {
 		return
 	}
-	e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(events.ProviderErrorEventData{
+
+	data := events.ProviderErrorEventData{
 		SessionID:    sessionID,
 		AgentID:      e.manifest.ID,
 		ProviderName: e.LastProvider(),
 		ModelName:    e.LastModel(),
 		Error:        err,
 		Phase:        phase,
-	}))
+	}
+
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		data.ErrorType = string(provErr.ErrorType)
+		data.ErrorCode = provErr.ErrorCode
+		data.HTTPStatus = provErr.HTTPStatus
+		data.IsRetriable = provErr.IsRetriable
+	}
+	e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
 }
 
 // publishProviderRequestEvent publishes a provider request event to the engine bus

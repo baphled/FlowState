@@ -3,6 +3,7 @@ package zai_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,7 +144,7 @@ var _ = Describe("ZAI Provider", func() {
 		})
 
 		Context("when the server returns an error", func() {
-			It("returns a wrapped error", func() {
+			It("returns a structured provider error", func() {
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusInternalServerError)
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": map[string]interface{}{"message": "boom"}})
@@ -154,7 +155,11 @@ var _ = Describe("ZAI Provider", func() {
 
 				_, err = p.Chat(context.Background(), providerPkg.ChatRequest{Model: "glm-5"})
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("zai chat failed"))
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.Provider).To(Equal("zai"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeServerError))
 			})
 		})
 
@@ -476,6 +481,136 @@ var _ = Describe("ZAI Provider", func() {
 			p, err := zai.NewFromOpenCodeOrConfig(path, "fallback-token")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
+		})
+	})
+
+	Describe("Z.AI error code classification", func() {
+		var server *httptest.Server
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		zaiErrorHandler := func(code, message string) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": message,
+						"code":    code,
+					},
+				})
+			}
+		}
+
+		chatRequest := providerPkg.ChatRequest{
+			Model:    "glm-5",
+			Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+		}
+
+		Context("via Chat", func() {
+			It("classifies code 1001 as RateLimit (retriable)", func() {
+				server = httptest.NewServer(zaiErrorHandler("1001", "Rate limit exceeded"))
+				p, err := zai.NewWithOptions("test-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), chatRequest)
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("1001"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeRateLimit))
+				Expect(provErr.IsRetriable).To(BeTrue())
+			})
+
+			It("classifies code 1002 as Overload (retriable)", func() {
+				server = httptest.NewServer(zaiErrorHandler("1002", "Server overloaded"))
+				p, err := zai.NewWithOptions("test-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), chatRequest)
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("1002"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeOverload))
+				Expect(provErr.IsRetriable).To(BeTrue())
+			})
+
+			It("classifies code 1112 as Quota (not retriable)", func() {
+				server = httptest.NewServer(zaiErrorHandler("1112", "Quota exceeded"))
+				p, err := zai.NewWithOptions("test-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), chatRequest)
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("1112"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeQuota))
+				Expect(provErr.IsRetriable).To(BeFalse())
+			})
+
+			It("classifies code 1113 as Billing (not retriable)", func() {
+				server = httptest.NewServer(zaiErrorHandler("1113", "Insufficient balance"))
+				p, err := zai.NewWithOptions("test-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), chatRequest)
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("1113"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeBilling))
+				Expect(provErr.IsRetriable).To(BeFalse())
+			})
+
+			It("preserves base classification for unknown error codes", func() {
+				server = httptest.NewServer(zaiErrorHandler("9999", "Unknown error"))
+				p, err := zai.NewWithOptions("test-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), chatRequest)
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("9999"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeRateLimit))
+				Expect(provErr.IsRetriable).To(BeTrue())
+			})
+		})
+
+		Context("via Stream", func() {
+			It("classifies code 1113 as Billing in stream error chunks", func() {
+				server = httptest.NewServer(zaiErrorHandler("1113", "Insufficient balance"))
+				p, err := zai.NewWithOptions("test-key",
+					option.WithBaseURL(server.URL),
+					option.WithMaxRetries(0),
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				ch, err := p.Stream(context.Background(), chatRequest)
+				Expect(err).NotTo(HaveOccurred())
+
+				var last providerPkg.StreamChunk
+				for chunk := range ch {
+					last = chunk
+				}
+				Expect(last.Error).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(last.Error, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorCode).To(Equal("1113"))
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeBilling))
+				Expect(provErr.IsRetriable).To(BeFalse())
+			})
 		})
 	})
 })

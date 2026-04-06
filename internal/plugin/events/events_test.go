@@ -222,6 +222,10 @@ var _ = Describe("Events", func() {
 				ModelName:    "claude-3",
 				Error:        errors.New("auth failed"),
 				Phase:        "stream_init",
+				ErrorType:    string(provider.ErrorTypeAuthFailure),
+				ErrorCode:    "401",
+				HTTPStatus:   401,
+				IsRetriable:  false,
 			}
 			ts := time.Now().Add(-time.Minute)
 			evt := events.NewProviderErrorEvent(data, ts)
@@ -233,6 +237,10 @@ var _ = Describe("Events", func() {
 			Expect(evt.Data.ModelName).To(Equal("claude-3"))
 			Expect(evt.Data.Error).To(MatchError("auth failed"))
 			Expect(evt.Data.Phase).To(Equal("stream_init"))
+			Expect(evt.Data.ErrorType).To(Equal(string(provider.ErrorTypeAuthFailure)))
+			Expect(evt.Data.ErrorCode).To(Equal("401"))
+			Expect(evt.Data.HTTPStatus).To(Equal(401))
+			Expect(evt.Data.IsRetriable).To(BeFalse())
 		})
 
 		It("defaults timestamp to now when not provided", func() {
@@ -255,6 +263,10 @@ var _ = Describe("Events", func() {
 				ModelName:    "claude-3",
 				Error:        errors.New("rate limited"),
 				Phase:        "failover",
+				ErrorType:    string(provider.ErrorTypeRateLimit),
+				ErrorCode:    "429",
+				HTTPStatus:   429,
+				IsRetriable:  true,
 			}
 			raw, err := json.Marshal(data)
 			Expect(err).NotTo(HaveOccurred())
@@ -264,6 +276,10 @@ var _ = Describe("Events", func() {
 			Expect(parsed["error"]).To(Equal("rate limited"))
 			Expect(parsed["phase"]).To(Equal("failover"))
 			Expect(parsed["provider_name"]).To(Equal("anthropic"))
+			Expect(parsed["error_type"]).To(Equal("rate_limit"))
+			Expect(parsed["error_code"]).To(Equal("429"))
+			Expect(parsed["http_status"]).To(Equal(float64(429)))
+			Expect(parsed["is_retriable"]).To(BeTrue())
 		})
 
 		It("serialises to JSON with empty error when nil", func() {
@@ -277,6 +293,10 @@ var _ = Describe("Events", func() {
 			var parsed map[string]any
 			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
 			Expect(parsed).NotTo(HaveKey("error"))
+			Expect(parsed).NotTo(HaveKey("error_type"))
+			Expect(parsed).NotTo(HaveKey("error_code"))
+			Expect(parsed).NotTo(HaveKey("http_status"))
+			Expect(parsed).NotTo(HaveKey("is_retriable"))
 		})
 	})
 

@@ -154,7 +154,7 @@ var _ = Describe("OpenZen Provider", func() {
 
 				_, err = p.Chat(context.Background(), providerPkg.ChatRequest{Model: "claude-sonnet-4-5"})
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("openzen chat failed"))
+				Expect(err.Error()).To(ContainSubstring("boom"))
 			})
 		})
 

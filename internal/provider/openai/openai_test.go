@@ -234,7 +234,7 @@ var _ = Describe("OpenAI Provider", func() {
 					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
 				})
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("openai chat failed"))
+				Expect(err.Error()).To(ContainSubstring("internal server error"))
 			})
 		})
 

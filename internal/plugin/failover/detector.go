@@ -31,10 +31,42 @@ func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, 
 	}
 	d := &RateLimitDetector{health: health}
 	if d.isRateLimitedError(err) {
-		health.MarkRateLimited(providerName, model, time.Now().Add(time.Hour))
+		cooldown := time.Hour
+		var provErr *provider.Error
+		if errors.As(err, &provErr) {
+			cooldown = CooldownForErrorType(provErr.ErrorType)
+		}
+		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
 		return true
 	}
 	return false
+}
+
+// CooldownForErrorType returns the recommended cooldown duration for a given error type.
+//
+// Expected:
+//   - t is a provider error classification.
+//
+// Returns:
+//   - A cooldown duration appropriate for the error type.
+//
+// Side effects:
+//   - None.
+func CooldownForErrorType(t provider.ErrorType) time.Duration {
+	switch t {
+	case provider.ErrorTypeRateLimit:
+		return time.Hour
+	case provider.ErrorTypeBilling, provider.ErrorTypeQuota, provider.ErrorTypeAuthFailure, provider.ErrorTypeModelNotFound:
+		return 24 * time.Hour
+	case provider.ErrorTypeOverload:
+		return 60 * time.Second
+	case provider.ErrorTypeNetworkError:
+		return 30 * time.Second
+	case provider.ErrorTypeServerError:
+		return 2 * time.Minute
+	default:
+		return 5 * time.Minute
+	}
 }
 
 // RateLimitDetector monitors provider errors and detects rate-limit conditions.
@@ -84,10 +116,15 @@ func (d *RateLimitDetector) HandleError(event any) {
 	data := providerErrorEvent.Data
 
 	if d.isRateLimitedError(data.Error) {
+		cooldown := time.Hour
+		var provErr *provider.Error
+		if errors.As(data.Error, &provErr) {
+			cooldown = CooldownForErrorType(provErr.ErrorType)
+		}
 		d.health.MarkRateLimited(
 			data.ProviderName,
 			data.ModelName,
-			time.Now().Add(1*time.Hour),
+			time.Now().Add(cooldown),
 		)
 		d.bus.Publish(events.EventProviderRateLimited, events.NewProviderEvent(events.ProviderEventData{
 			ProviderName: data.ProviderName,
@@ -98,22 +135,24 @@ func (d *RateLimitDetector) HandleError(event any) {
 // isRateLimitedError checks if the error indicates a rate-limit condition.
 //
 // Expected: err may be nil.
-// Returns: true if error message contains rate-limit keywords.
+// Returns: true if error is a rate-limit signal.
 // Side effects: none.
 func (d *RateLimitDetector) isRateLimitedError(err error) bool {
 	if err == nil {
 		return false
 	}
 
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		return provErr.ErrorType == provider.ErrorTypeRateLimit
+	}
+
 	errMsg := strings.ToLower(err.Error())
 	rateLimitKeywords := []string{
 		"rate_limit",
 		"rate limit",
-		"quota exceeded",
 		"too many requests",
 		"free usage exceeded",
-		"429",
-		"503",
 	}
 
 	for _, keyword := range rateLimitKeywords {

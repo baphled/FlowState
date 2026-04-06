@@ -3,6 +3,7 @@ package ollama_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -186,14 +187,18 @@ var _ = Describe("Ollama Provider", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
-			It("returns an error", func() {
+			It("returns a structured provider error", func() {
 				ctx := context.Background()
 				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
 					Model:    "llama3.2",
 					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
 				})
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("ollama chat failed"))
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeServerError))
+				Expect(provErr.Provider).To(Equal("ollama"))
 			})
 		})
 
@@ -1062,6 +1067,269 @@ var _ = Describe("Ollama Provider", func() {
 					Input: "test input",
 				})
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Describe("error classification", func() {
+		Describe("via Chat", func() {
+			var (
+				server *httptest.Server
+				prov   *ollama.Provider
+			)
+
+			AfterEach(func() {
+				if server != nil {
+					server.Close()
+				}
+			})
+
+			Context("when connection is refused", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+					closedURL := server.URL
+					server.Close()
+					server = nil
+
+					var err error
+					prov, err = ollama.NewWithClient(closedURL, &http.Client{Timeout: 2 * time.Second})
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns NetworkError provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeNetworkError))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
+			Context("when server returns 404", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"error": "model 'nonexistent' not found"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns ModelNotFound provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "nonexistent",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeModelNotFound))
+					Expect(provErr.HTTPStatus).To(Equal(404))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeFalse())
+				})
+			})
+
+			Context("when server returns 503", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = w.Write([]byte(`{"error": "service unavailable"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns ServerError provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeServerError))
+					Expect(provErr.HTTPStatus).To(Equal(503))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
+			Context("when server returns 503 with loading message", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = w.Write([]byte(`{"error": "model is still loading into memory"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns Overload provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeOverload))
+					Expect(provErr.HTTPStatus).To(Equal(503))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
+			Context("when server returns 401", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns AuthFailure provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeAuthFailure))
+					Expect(provErr.HTTPStatus).To(Equal(401))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeFalse())
+				})
+			})
+
+			Context("when no error occurs", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						resp := map[string]interface{}{
+							"model":             "llama3.2",
+							"message":           map[string]interface{}{"role": "assistant", "content": "Hi"},
+							"done":              true,
+							"prompt_eval_count": 5,
+							"eval_count":        3,
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(resp)
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns nil error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).NotTo(HaveOccurred())
+				})
+			})
+		})
+
+		Describe("via Stream", func() {
+			var (
+				server *httptest.Server
+				prov   *ollama.Provider
+			)
+
+			AfterEach(func() {
+				if server != nil {
+					server.Close()
+				}
+			})
+
+			Context("when server returns 404", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"error": "model 'nonexistent' not found"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("sends ModelNotFound provider error via channel", func() {
+					ch, err := prov.Stream(context.Background(), providerPkg.ChatRequest{
+						Model:    "nonexistent",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).NotTo(HaveOccurred())
+
+					var lastChunk providerPkg.StreamChunk
+					for chunk := range ch {
+						lastChunk = chunk
+					}
+					Expect(lastChunk.Error).To(HaveOccurred())
+					Expect(lastChunk.Done).To(BeTrue())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeModelNotFound))
+					Expect(provErr.HTTPStatus).To(Equal(404))
+					Expect(provErr.Provider).To(Equal("ollama"))
+				})
+			})
+
+			Context("when server returns 401", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("sends AuthFailure provider error via channel", func() {
+					ch, err := prov.Stream(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).NotTo(HaveOccurred())
+
+					var lastChunk providerPkg.StreamChunk
+					for chunk := range ch {
+						lastChunk = chunk
+					}
+					Expect(lastChunk.Error).To(HaveOccurred())
+					Expect(lastChunk.Done).To(BeTrue())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeAuthFailure))
+					Expect(provErr.HTTPStatus).To(Equal(401))
+					Expect(provErr.Provider).To(Equal("ollama"))
+				})
 			})
 		})
 	})

@@ -352,7 +352,8 @@ func (p *Provider) streamMessages(
 	}
 
 	if err := stream.Err(); err != nil {
-		ch <- provider.StreamChunk{Error: err, Done: true}
+		streamErr := parseAnthropicStreamError(err)
+		ch <- provider.StreamChunk{Error: streamErr, Done: true}
 	}
 }
 
@@ -380,6 +381,10 @@ func (p *Provider) Chat(
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
+		if provErr := parseAnthropicError(err); provErr != nil {
+			return provider.ChatResponse{}, provErr
+		}
+
 		return provider.ChatResponse{},
 			fmt.Errorf("anthropic chat failed: %w", err)
 	}
@@ -513,6 +518,142 @@ func fallbackModels() []provider.Model {
 			ContextLength: defaultContextLength,
 		},
 	}
+}
+
+// parseAnthropicError extracts a structured provider.Error from an Anthropic SDK error.
+//
+// Expected:
+//   - err may be nil, a wrapped Anthropic API error, or any other error.
+//
+// Returns:
+//   - A *provider.Error with mapped ErrorType if the error is an Anthropic API error.
+//   - nil if err is nil or not an Anthropic API error.
+//
+// Side effects:
+//   - None.
+func parseAnthropicError(err error) *provider.Error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr *anthropicAPI.Error
+	if !errors.As(err, &apiErr) {
+		return nil
+	}
+
+	return mapAnthropicStatusCode(apiErr)
+}
+
+// mapAnthropicStatusCode maps an Anthropic API error's HTTP status to a provider.Error.
+//
+// Expected:
+//   - apiErr is a non-nil Anthropic API error with a valid StatusCode.
+//
+// Returns:
+//   - A *provider.Error with the appropriate ErrorType and retriability.
+//
+// Side effects:
+//   - None.
+func mapAnthropicStatusCode(apiErr *anthropicAPI.Error) *provider.Error {
+	switch apiErr.StatusCode {
+	case 429:
+		return buildProviderError(apiErr, provider.ErrorTypeRateLimit, true)
+	case 529:
+		return buildProviderError(apiErr, provider.ErrorTypeOverload, true)
+	case 401:
+		return buildProviderError(apiErr, provider.ErrorTypeAuthFailure, false)
+	case 400:
+		return mapBadRequestError(apiErr)
+	case 500, 502, 503, 504:
+		return buildProviderError(apiErr, provider.ErrorTypeServerError, true)
+	default:
+		return buildProviderError(apiErr, provider.ErrorTypeUnknown, false)
+	}
+}
+
+// mapBadRequestError classifies a 400 error as billing or unknown based on message content.
+//
+// Expected:
+//   - apiErr is an Anthropic API error with StatusCode 400.
+//
+// Returns:
+//   - A *provider.Error with ErrorTypeBilling if the message contains billing keywords.
+//   - A *provider.Error with ErrorTypeUnknown otherwise.
+//
+// Side effects:
+//   - None.
+func mapBadRequestError(apiErr *anthropicAPI.Error) *provider.Error {
+	if containsBillingKeyword(apiErr.Error()) {
+		return buildProviderError(apiErr, provider.ErrorTypeBilling, false)
+	}
+
+	return buildProviderError(apiErr, provider.ErrorTypeUnknown, false)
+}
+
+// buildProviderError creates a provider.Error from an Anthropic API error.
+//
+// Expected:
+//   - apiErr is a non-nil Anthropic API error.
+//   - errType classifies the error.
+//   - retriable indicates whether the request can be retried.
+//
+// Returns:
+//   - A fully populated *provider.Error.
+//
+// Side effects:
+//   - None.
+func buildProviderError(
+	apiErr *anthropicAPI.Error,
+	errType provider.ErrorType,
+	retriable bool,
+) *provider.Error {
+	return &provider.Error{
+		HTTPStatus:  apiErr.StatusCode,
+		ErrorType:   errType,
+		Provider:    providerName,
+		Message:     apiErr.Error(),
+		RawError:    apiErr,
+		IsRetriable: retriable,
+	}
+}
+
+// parseAnthropicStreamError returns a structured provider.Error if the error is
+// an Anthropic API error, otherwise returns the original error unchanged.
+//
+// Expected:
+//   - err is a non-nil error from a streaming response.
+//
+// Returns:
+//   - A *provider.Error if the error is a recognised Anthropic API error.
+//   - The original error otherwise.
+//
+// Side effects:
+//   - None.
+func parseAnthropicStreamError(err error) error {
+	if provErr := parseAnthropicError(err); provErr != nil {
+		return provErr
+	}
+
+	return err
+}
+
+// containsBillingKeyword checks whether the message contains billing-related terms.
+//
+// Expected:
+//   - msg is the error or response text to inspect.
+//
+// Returns:
+//   - true when msg contains a billing-related keyword.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func containsBillingKeyword(msg string) bool {
+	lower := strings.ToLower(msg)
+
+	return strings.Contains(lower, "billing") ||
+		strings.Contains(lower, "credit") ||
+		strings.Contains(lower, "balance")
 }
 
 // buildAssistantMessage converts a provider message to an Anthropic assistant message parameter.

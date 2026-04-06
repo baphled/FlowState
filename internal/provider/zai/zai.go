@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -131,7 +132,8 @@ func (p *Provider) Name() string {
 //   - Starts a goroutine and performs network I/O against the Z.AI API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	params := openaicompat.BuildParams(req)
-	return openaicompat.RunStream(ctx, p.client, params), nil
+	rawCh := openaicompat.RunStream(ctx, p.client, params)
+	return classifyStreamErrors(ctx, rawCh), nil
 }
 
 // Chat sends a non-streaming chat request to the Z.AI API.
@@ -150,7 +152,10 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	params := openaicompat.BuildParams(req)
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("zai chat failed: %w", err)
+		if provErr := openaicompat.ParseProviderError(providerName, err); provErr != nil {
+			return provider.ChatResponse{}, classifyZAIError(provErr)
+		}
+		return provider.ChatResponse{}, openaicompat.WrapChatError(providerName, err)
 	}
 	return openaicompat.ParseChatResponse(resp)
 }
@@ -244,6 +249,76 @@ func fallbackModels() []provider.Model {
 		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength},
 		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength},
 	}
+}
+
+// classifyZAIError refines the classification of a Z.AI error by inspecting the provider-specific
+// error code. Z.AI reuses HTTP 429 for billing, quota, and overload errors that are NOT rate limits.
+//
+// Expected:
+//   - baseErr may be nil.
+//
+// Returns:
+//   - A refined *provider.Error when the code matches a known Z.AI condition.
+//   - Nil when baseErr is nil.
+//   - baseErr when no specialisation applies.
+//
+// Side effects:
+//   - None.
+func classifyZAIError(baseErr *provider.Error) *provider.Error {
+	if baseErr == nil {
+		return nil
+	}
+	switch baseErr.ErrorCode {
+	case "1001":
+		return &provider.Error{
+			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1001", ErrorType: provider.ErrorTypeRateLimit,
+			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
+		}
+	case "1002":
+		return &provider.Error{
+			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1002", ErrorType: provider.ErrorTypeOverload,
+			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
+		}
+	case "1112":
+		return &provider.Error{
+			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1112", ErrorType: provider.ErrorTypeQuota,
+			Provider: providerName, Message: baseErr.Message, IsRetriable: false, RawError: baseErr.RawError,
+		}
+	case "1113":
+		return &provider.Error{
+			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1113", ErrorType: provider.ErrorTypeBilling,
+			Provider: providerName, Message: baseErr.Message, IsRetriable: false, RawError: baseErr.RawError,
+		}
+	default:
+		return baseErr
+	}
+}
+
+// classifyStreamErrors wraps a raw stream channel and applies Z.AI-specific error classification.
+//
+// Expected:
+//   - ctx is a valid context for cancellation.
+//   - rawCh yields provider.StreamChunk values and may be closed.
+//
+// Returns:
+//   - A channel that forwards the incoming stream chunks.
+//
+// Side effects:
+//   - Starts a goroutine and closes the returned channel when rawCh is exhausted.
+func classifyStreamErrors(ctx context.Context, rawCh <-chan provider.StreamChunk) <-chan provider.StreamChunk {
+	ch := make(chan provider.StreamChunk, 16)
+	go func() {
+		defer close(ch)
+		for chunk := range rawCh {
+			if chunk.Error != nil {
+				if provErr := openaicompat.ParseProviderError(providerName, chunk.Error); provErr != nil {
+					chunk.Error = classifyZAIError(provErr)
+				}
+			}
+			shared.SendChunk(ctx, ch, chunk)
+		}
+	}()
+	return ch
 }
 
 // zaiAccessToken extracts the Z.AI access token from OpenCode auth data.

@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,6 +15,8 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
@@ -556,6 +559,46 @@ var _ = Describe("Engine", func() {
 				_, err := eng.Stream(ctx, "test-agent", "Hello")
 
 				Expect(err).To(MatchError("provider error"))
+			})
+
+			It("publishes structured provider error data when available", func() {
+				structuredErr := &provider.Error{
+					HTTPStatus:  429,
+					ErrorCode:   "1113",
+					ErrorType:   provider.ErrorTypeBilling,
+					Provider:    "test-chat-provider",
+					Message:     "insufficient balance",
+					IsRetriable: false,
+				}
+				chatProvider.streamErr = fmt.Errorf("wrapped provider error: %w", structuredErr)
+
+				bus := eventbus.NewEventBus()
+				captured := make(chan *events.ProviderErrorEvent, 1)
+				bus.Subscribe(events.EventProviderError, func(event any) {
+					providerEvent, ok := event.(*events.ProviderErrorEvent)
+					if !ok {
+						return
+					}
+					captured <- providerEvent
+				})
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					EventBus:     bus,
+					Manifest:     manifest,
+				})
+
+				ctx := context.Background()
+				_, err := eng.Stream(ctx, "test-agent", "Hello")
+
+				Expect(err).To(MatchError("wrapped provider error: provider test-chat-provider error [billing/1113 HTTP 429]: insufficient balance"))
+
+				var event *events.ProviderErrorEvent
+				Eventually(captured).Should(Receive(&event))
+				Expect(event.Data.ErrorType).To(Equal(string(provider.ErrorTypeBilling)))
+				Expect(event.Data.ErrorCode).To(Equal("1113"))
+				Expect(event.Data.HTTPStatus).To(Equal(429))
+				Expect(event.Data.IsRetriable).To(BeFalse())
 			})
 		})
 

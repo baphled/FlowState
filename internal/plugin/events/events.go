@@ -680,6 +680,14 @@ type ProviderErrorEventData struct {
 	ModelName    string
 	Error        error
 	Phase        string
+	// ErrorType is the semantic classification of the error.
+	ErrorType string
+	// ErrorCode is the provider-specific error code.
+	ErrorCode string
+	// HTTPStatus is the HTTP response status code, or zero if unavailable.
+	HTTPStatus int
+	// IsRetriable indicates whether the caller should retry with the same provider.
+	IsRetriable bool
 }
 
 // MarshalJSON serialises ProviderErrorEventData while preserving error messages.
@@ -701,6 +709,10 @@ func (d ProviderErrorEventData) MarshalJSON() ([]byte, error) {
 		ModelName    string `json:"model_name,omitempty"`
 		Error        string `json:"error,omitempty"`
 		Phase        string `json:"phase,omitempty"`
+		ErrorType    string `json:"error_type,omitempty"`
+		ErrorCode    string `json:"error_code,omitempty"`
+		HTTPStatus   int    `json:"http_status,omitempty"`
+		IsRetriable  bool   `json:"is_retriable,omitempty"`
 	}
 
 	data := payload{
@@ -709,6 +721,10 @@ func (d ProviderErrorEventData) MarshalJSON() ([]byte, error) {
 		ProviderName: d.ProviderName,
 		ModelName:    d.ModelName,
 		Phase:        d.Phase,
+		ErrorType:    d.ErrorType,
+		ErrorCode:    d.ErrorCode,
+		HTTPStatus:   d.HTTPStatus,
+		IsRetriable:  d.IsRetriable,
 	}
 	if d.Error != nil {
 		data.Error = d.Error.Error()

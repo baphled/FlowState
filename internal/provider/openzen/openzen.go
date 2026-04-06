@@ -149,7 +149,7 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 	params := openaicompat.BuildParams(req)
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return provider.ChatResponse{}, fmt.Errorf("openzen chat failed: %w", err)
+		return provider.ChatResponse{}, openaicompat.WrapChatError(p.Name(), err)
 	}
 	return openaicompat.ParseChatResponse(resp)
 }

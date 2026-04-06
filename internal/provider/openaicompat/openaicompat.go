@@ -3,6 +3,9 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/url"
 
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
@@ -235,4 +238,100 @@ func ParseChatResponse(resp *openaiAPI.ChatCompletion) (provider.ChatResponse, e
 			TotalTokens:      int(resp.Usage.TotalTokens),
 		},
 	}, nil
+}
+
+// ParseProviderError extracts a *provider.Error from an OpenAI-compatible SDK error.
+// It uses errors.As to retrieve the typed *openai.Error with HTTP status and error code.
+//
+// Expected:
+//   - providerName is the provider identifier.
+//   - err may be nil.
+//
+// Returns:
+//   - A populated *provider.Error when the SDK error can be classified.
+//   - Nil when err is nil or the error cannot be classified.
+//
+// Side effects:
+//   - None.
+func ParseProviderError(providerName string, err error) *provider.Error {
+	if err == nil {
+		return nil
+	}
+
+	var openaiErr *openaiAPI.Error
+	if errors.As(err, &openaiErr) {
+		errType, retriable := classifyHTTPStatus(openaiErr.StatusCode)
+		return &provider.Error{
+			HTTPStatus:  openaiErr.StatusCode,
+			ErrorCode:   openaiErr.Code,
+			ErrorType:   errType,
+			Provider:    providerName,
+			Message:     openaiErr.Message,
+			IsRetriable: retriable,
+			RawError:    err,
+		}
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &provider.Error{
+			ErrorType:   provider.ErrorTypeNetworkError,
+			Provider:    providerName,
+			Message:     err.Error(),
+			IsRetriable: true,
+			RawError:    err,
+		}
+	}
+
+	return nil
+}
+
+// classifyHTTPStatus maps an HTTP status code to an ErrorType and retriability flag.
+//
+// Expected:
+//   - status is an HTTP status code returned by a provider.
+//
+// Returns:
+//   - The matching provider.ErrorType and whether the error is retriable.
+//
+// Side effects:
+//   - None.
+func classifyHTTPStatus(status int) (provider.ErrorType, bool) {
+	switch {
+	case status == http.StatusTooManyRequests:
+		return provider.ErrorTypeRateLimit, true
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return provider.ErrorTypeAuthFailure, false
+	case status == http.StatusNotFound:
+		return provider.ErrorTypeModelNotFound, false
+	case status >= http.StatusInternalServerError:
+		return provider.ErrorTypeServerError, true
+	default:
+		return provider.ErrorTypeUnknown, false
+	}
+}
+
+// WrapChatError wraps a Chat() or Stream() error as a *provider.Error when possible.
+//
+// Expected:
+//   - providerName is the provider identifier.
+//   - err may be nil.
+//
+// Returns:
+//   - Nil when err is nil.
+//   - A *provider.Error when the error can be classified.
+//   - The original error otherwise.
+//
+// Side effects:
+//   - None.
+func WrapChatError(providerName string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if provErr := ParseProviderError(providerName, err); provErr != nil {
+		return provErr
+	}
+
+	return err
 }

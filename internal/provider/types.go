@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -125,6 +126,152 @@ type Health struct {
 	Available bool
 	Latency   int64
 	Error     error
+}
+
+// ErrorType classifies the kind of error returned by a provider.
+type ErrorType string
+
+const (
+	// ErrorTypeRateLimit indicates the provider rejected the request because of rate limiting.
+	ErrorTypeRateLimit ErrorType = "rate_limit"
+	// ErrorTypeBilling indicates the provider rejected the request because of billing issues.
+	ErrorTypeBilling ErrorType = "billing"
+	// ErrorTypeQuota indicates the provider rejected the request because a quota was exceeded.
+	ErrorTypeQuota ErrorType = "quota"
+	// ErrorTypeOverload indicates the provider is temporarily overloaded.
+	ErrorTypeOverload ErrorType = "overload"
+	// ErrorTypeAuthFailure indicates the provider rejected the request because of authentication failure.
+	ErrorTypeAuthFailure ErrorType = "auth_failure"
+	// ErrorTypeModelNotFound indicates the requested model does not exist for the provider.
+	ErrorTypeModelNotFound ErrorType = "model_not_found"
+	// ErrorTypeNetworkError indicates the provider request failed because of a network issue.
+	ErrorTypeNetworkError ErrorType = "network_error"
+	// ErrorTypeServerError indicates the provider returned a server-side failure.
+	ErrorTypeServerError ErrorType = "server_error"
+	// ErrorTypeUnknown indicates the provider error could not be classified.
+	ErrorTypeUnknown ErrorType = "unknown"
+)
+
+// Error is a structured provider failure returned at the boundary.
+// It preserves HTTP status codes and provider-specific error codes for accurate classification.
+type Error struct {
+	HTTPStatus  int
+	ErrorCode   string
+	ErrorType   ErrorType
+	Provider    string
+	Message     string
+	IsRetriable bool
+	RawError    error
+}
+
+// NewProviderError constructs a provider error with the supplied metadata.
+//
+// Expected:
+//   - provider identifies the upstream provider.
+//   - errorType identifies the provider failure classification.
+//   - message contains the provider-facing error message.
+//
+// Returns:
+//   - A provider error populated with the supplied metadata.
+//
+// Side effects:
+//   - None.
+func NewProviderError(provider string, errorType ErrorType, message string) *Error {
+	return &Error{Provider: provider, ErrorType: errorType, Message: message}
+}
+
+// Error returns a human-readable description of the provider error.
+//
+// Expected:
+//   - p may be nil.
+//
+// Returns:
+//   - A formatted error string, or "<nil>" when p is nil.
+//
+// Side effects:
+//   - None.
+func (p *Error) Error() string {
+	if p == nil {
+		return "<nil>"
+	}
+
+	provider := p.Provider
+	if provider == "" {
+		provider = "unknown"
+	}
+
+	details := ""
+	if p.ErrorType != "" {
+		details = string(p.ErrorType)
+	}
+	if p.ErrorCode != "" {
+		if details != "" {
+			details += "/"
+		}
+		details += p.ErrorCode
+	}
+	if p.HTTPStatus != 0 {
+		if details != "" {
+			details += " "
+		}
+		details += fmt.Sprintf("HTTP %d", p.HTTPStatus)
+	}
+
+	message := p.Message
+	if message == "" && p.RawError != nil {
+		message = p.RawError.Error()
+	}
+
+	if details == "" {
+		if message == "" {
+			return fmt.Sprintf("provider %s error", provider)
+		}
+		return fmt.Sprintf("provider %s error: %s", provider, message)
+	}
+
+	if message == "" {
+		return fmt.Sprintf("provider %s error [%s]", provider, details)
+	}
+
+	return fmt.Sprintf("provider %s error [%s]: %s", provider, details, message)
+}
+
+// Unwrap returns the underlying error for errors.Is and errors.As traversal.
+//
+// Expected:
+//   - p may be nil.
+//
+// Returns:
+//   - The wrapped error, or nil when p is nil.
+//
+// Side effects:
+//   - None.
+func (p *Error) Unwrap() error {
+	if p == nil {
+		return nil
+	}
+
+	return p.RawError
+}
+
+// IsRetriableErrorType reports whether the given error type should be retried.
+//
+// Expected:
+//   - t is a provider error classification.
+//
+// Returns:
+//   - true when t is retriable.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func IsRetriableErrorType(t ErrorType) bool {
+	switch t {
+	case ErrorTypeRateLimit, ErrorTypeOverload, ErrorTypeNetworkError, ErrorTypeServerError:
+		return true
+	default:
+		return false
+	}
 }
 
 // Provider defines the interface for LLM provider implementations.

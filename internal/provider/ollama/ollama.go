@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/shared"
@@ -137,7 +138,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 			return nil
 		})
 		if err != nil {
-			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: err, Done: true})
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: classifiedOrRawError(err), Done: true})
 		}
 	}()
 
@@ -173,6 +174,9 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return nil
 	})
 	if err != nil {
+		if pErr := parseOllamaError(err); pErr != nil {
+			return provider.ChatResponse{}, pErr
+		}
 		return provider.ChatResponse{}, fmt.Errorf("ollama chat failed: %w", err)
 	}
 
@@ -255,6 +259,125 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	}
 
 	return models, nil
+}
+
+// classifiedOrRawError returns a *provider.Error if err can be classified, or the original error otherwise.
+//
+// Expected:
+//   - err may be nil.
+//
+// Returns:
+//   - Nil when err is nil.
+//   - A *provider.Error when classification succeeds.
+//   - The original error otherwise.
+//
+// Side effects:
+//   - None.
+func classifiedOrRawError(err error) error {
+	if pErr := parseOllamaError(err); pErr != nil {
+		return pErr
+	}
+	return err
+}
+
+// parseOllamaError converts Ollama SDK and transport errors into *provider.Error values.
+//
+// Expected:
+//   - err may be nil.
+//
+// Returns:
+//   - A populated *provider.Error when the error can be classified.
+//   - Nil when err is nil or unclassified.
+//
+// Side effects:
+//   - None.
+func parseOllamaError(err error) *provider.Error {
+	if err == nil {
+		return nil
+	}
+
+	var statusErr ollamaAPI.StatusError
+	if errors.As(err, &statusErr) {
+		return classifyStatusError(statusErr)
+	}
+
+	var authErr ollamaAPI.AuthorizationError
+	if errors.As(err, &authErr) {
+		return &provider.Error{
+			HTTPStatus:  authErr.StatusCode,
+			ErrorType:   provider.ErrorTypeAuthFailure,
+			Provider:    providerName,
+			Message:     authErr.Error(),
+			IsRetriable: false,
+			RawError:    err,
+		}
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &provider.Error{
+			ErrorType:   provider.ErrorTypeNetworkError,
+			Provider:    providerName,
+			Message:     urlErr.Error(),
+			IsRetriable: true,
+			RawError:    err,
+		}
+	}
+
+	if strings.Contains(err.Error(), "connection refused") {
+		return &provider.Error{
+			ErrorType:   provider.ErrorTypeNetworkError,
+			Provider:    providerName,
+			Message:     err.Error(),
+			IsRetriable: true,
+			RawError:    err,
+		}
+	}
+
+	return nil
+}
+
+// classifyStatusError maps an Ollama status error to a provider.Error classification.
+//
+// Expected:
+//   - statusErr contains the Ollama HTTP status and message.
+//
+// Returns:
+//   - A populated *provider.Error describing the failure.
+//
+// Side effects:
+//   - None.
+func classifyStatusError(statusErr ollamaAPI.StatusError) *provider.Error {
+	pErr := &provider.Error{
+		HTTPStatus: statusErr.StatusCode,
+		Provider:   providerName,
+		Message:    statusErr.ErrorMessage,
+		RawError:   statusErr,
+	}
+
+	switch statusErr.StatusCode {
+	case http.StatusNotFound:
+		pErr.ErrorType = provider.ErrorTypeModelNotFound
+		pErr.IsRetriable = false
+	case http.StatusUnauthorized, http.StatusForbidden:
+		pErr.ErrorType = provider.ErrorTypeAuthFailure
+		pErr.IsRetriable = false
+	case http.StatusServiceUnavailable:
+		if strings.Contains(strings.ToLower(statusErr.ErrorMessage), "loading") {
+			pErr.ErrorType = provider.ErrorTypeOverload
+		} else {
+			pErr.ErrorType = provider.ErrorTypeServerError
+		}
+		pErr.IsRetriable = true
+	case http.StatusTooManyRequests:
+		pErr.ErrorType = provider.ErrorTypeRateLimit
+		pErr.IsRetriable = true
+	default:
+		pErr.ErrorType = provider.ErrorTypeServerError
+		pErr.IsRetriable = provider.IsRetriableErrorType(provider.ErrorTypeServerError)
+	}
+
+	return pErr
 }
 
 // boolPtr returns a pointer to the given boolean value.

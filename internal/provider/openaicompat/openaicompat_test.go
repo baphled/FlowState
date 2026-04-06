@@ -3,11 +3,17 @@ package openaicompat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"time"
 
+	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
+	ollamaAPI "github.com/ollama/ollama/api"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	openaiAPI "github.com/openai/openai-go"
@@ -17,6 +23,10 @@ import (
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
 )
 
+// GO: errors.As survives fmt.Errorf wrapping for all three SDKs.
+// OpenAI exposes *openai.Error with StatusCode, Code, RawJSON(), DumpRequest(), and DumpResponse().
+// Anthropic exposes *anthropic.Error with StatusCode, RequestID, RawJSON(), DumpRequest(), and DumpResponse(); the body must be parsed for error type/message.
+// Ollama exposes *api.StatusError and *api.AuthorizationError with StatusCode plus Status/ErrorMessage or SigninURL; there is no raw body field.
 var _ = Describe("OpenAI Compat", func() {
 	Describe("BuildMessages", func() {
 		Context("characterisation: role and content mapping", func() {
@@ -356,6 +366,54 @@ var _ = Describe("OpenAI Compat", func() {
 	})
 })
 
+var _ = Describe("Spike: SDK error type introspection", func() {
+	It("extracts OpenAI typed errors through wrapping", func() {
+		err := newOpenAIError(`{"message":"invalid request","param":"model","type":"invalid_request_error","code":"invalid_model"}`, http.StatusBadRequest)
+		var extracted *openaiAPI.Error
+		Expect(errors.As(fmt.Errorf("openai provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected OpenAI error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusBadRequest))
+		Expect(extracted.Code).To(Equal("invalid_model"))
+		Expect(extracted.RawJSON()).To(ContainSubstring(`"code":"invalid_model"`))
+	})
+
+	It("extracts Anthropic typed errors through wrapping", func() {
+		err := newAnthropicError(`{"message":"rate limited","type":"rate_limit_error"}`, http.StatusTooManyRequests, "req_123")
+		var extracted *anthropicAPI.Error
+		Expect(errors.As(fmt.Errorf("anthropic provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Anthropic error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusTooManyRequests))
+		Expect(extracted.RequestID).To(Equal("req_123"))
+		Expect(extracted.RawJSON()).To(ContainSubstring(`"rate_limit_error"`))
+	})
+
+	It("extracts Ollama typed errors through wrapping", func() {
+		err := &ollamaAPI.StatusError{StatusCode: http.StatusNotFound, Status: "404 Not Found", ErrorMessage: "model not found"}
+		var extracted *ollamaAPI.StatusError
+		Expect(errors.As(fmt.Errorf("ollama provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Ollama status error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusNotFound))
+		Expect(extracted.ErrorMessage).To(Equal("model not found"))
+	})
+
+	It("extracts Ollama authorisation errors through wrapping", func() {
+		err := &ollamaAPI.AuthorizationError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized", SigninURL: "https://ollama.com/signin"}
+		var extracted *ollamaAPI.AuthorizationError
+		Expect(errors.As(fmt.Errorf("ollama provider: %w", err), &extracted)).To(BeTrue())
+		if extracted == nil {
+			Fail("expected Ollama authorisation error to be extracted")
+		}
+		Expect(extracted.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(extracted.SigninURL).To(Equal("https://ollama.com/signin"))
+	})
+})
+
 // ---
 // RunStream streaming specs.
 var _ = Describe("RunStream", func() {
@@ -513,6 +571,127 @@ var _ = Describe("RunStream", func() {
 	})
 })
 
+var _ = Describe("ParseProviderError", func() {
+	const testProvider = "test-provider"
+
+	Context("when error is nil", func() {
+		It("returns nil", func() {
+			Expect(openaicompat.ParseProviderError(testProvider, nil)).To(Succeed())
+		})
+	})
+
+	Context("when error is an OpenAI SDK error", func() {
+		It("classifies 429 as rate limit and retriable", func() {
+			err := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit_exceeded"}`, http.StatusTooManyRequests)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(result.IsRetriable).To(BeTrue())
+			Expect(result.Provider).To(Equal(testProvider))
+			Expect(result.ErrorCode).To(Equal("rate_limit_exceeded"))
+			Expect(result.Message).To(Equal("rate limited"))
+			Expect(result.RawError).To(Equal(err))
+		})
+
+		It("classifies 401 as auth failure and not retriable", func() {
+			err := newOpenAIError(`{"message":"invalid key","type":"auth","code":"invalid_api_key"}`, http.StatusUnauthorized)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeAuthFailure))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 403 as auth failure and not retriable", func() {
+			err := newOpenAIError(`{"message":"forbidden","type":"auth","code":"forbidden"}`, http.StatusForbidden)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeAuthFailure))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 404 as model not found and not retriable", func() {
+			err := newOpenAIError(`{"message":"model not found","type":"not_found","code":"model_not_found"}`, http.StatusNotFound)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeModelNotFound))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 500 as server error and retriable", func() {
+			err := newOpenAIError(`{"message":"internal error","type":"server_error","code":"server_error"}`, http.StatusInternalServerError)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("classifies 503 as server error and retriable", func() {
+			err := newOpenAIError(`{"message":"unavailable","type":"server_error","code":"unavailable"}`, http.StatusServiceUnavailable)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("survives fmt.Errorf wrapping", func() {
+			inner := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`, http.StatusTooManyRequests)
+			wrapped := fmt.Errorf("provider call: %w", inner)
+			result := openaicompat.ParseProviderError(testProvider, wrapped)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+		})
+
+		It("classifies unknown status as unknown and not retriable", func() {
+			err := newOpenAIError(`{"message":"teapot","type":"unknown","code":"teapot"}`, http.StatusTeapot)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+	})
+
+	Context("when error is a network error", func() {
+		It("classifies url.Error as network error and retriable", func() {
+			netErr := &url.Error{Op: "Post", URL: "https://api.openai.com/v1/chat", Err: errors.New("connection refused")}
+			result := openaicompat.ParseProviderError(testProvider, netErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeNetworkError))
+			Expect(result.IsRetriable).To(BeTrue())
+			Expect(result.Provider).To(Equal(testProvider))
+		})
+	})
+
+	Context("when error is unrecognised", func() {
+		It("returns nil for a plain error", func() {
+			Expect(openaicompat.ParseProviderError(testProvider, errors.New("something"))).To(Succeed())
+		})
+	})
+})
+
+var _ = Describe("WrapChatError", func() {
+	const testProvider = "test-provider"
+
+	It("returns nil for nil error", func() {
+		Expect(openaicompat.WrapChatError(testProvider, nil)).To(Succeed())
+	})
+
+	It("wraps an OpenAI SDK error as *provider.Error", func() {
+		inner := newOpenAIError(`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`, http.StatusTooManyRequests)
+		result := openaicompat.WrapChatError(testProvider, inner)
+		Expect(result).To(HaveOccurred())
+		var provErr *provider.Error
+		Expect(errors.As(result, &provErr)).To(BeTrue())
+		Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+	})
+
+	It("returns the original error when unrecognised", func() {
+		plain := errors.New("something unexpected")
+		result := openaicompat.WrapChatError(testProvider, plain)
+		Expect(result).To(Equal(plain))
+	})
+})
+
 func unmarshalToolCall(raw string) openaiAPI.ChatCompletionMessageToolCall {
 	var tc openaiAPI.ChatCompletionMessageToolCall
 	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
@@ -527,4 +706,35 @@ func unmarshalCompletion(raw string) *openaiAPI.ChatCompletion {
 		panic("failed to unmarshal completion: " + err.Error())
 	}
 	return &resp
+}
+
+func newOpenAIError(body string, statusCode int) *openaiAPI.Error {
+	var err openaiAPI.Error
+	if uErr := json.Unmarshal([]byte(body), &err); uErr != nil {
+		panic("failed to unmarshal openai error: " + uErr.Error())
+	}
+	err.StatusCode = statusCode
+	err.Request = httptest.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", http.NoBody)
+	err.Response = &http.Response{
+		StatusCode: statusCode,
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	return &err
+}
+
+func newAnthropicError(body string, statusCode int, requestID string) *anthropicAPI.Error {
+	var err anthropicAPI.Error
+	if uErr := json.Unmarshal([]byte(body), &err); uErr != nil {
+		panic("failed to unmarshal anthropic error: " + uErr.Error())
+	}
+	err.StatusCode = statusCode
+	err.RequestID = requestID
+	err.Request = httptest.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", http.NoBody)
+	err.Response = &http.Response{
+		StatusCode: statusCode,
+		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	return &err
 }

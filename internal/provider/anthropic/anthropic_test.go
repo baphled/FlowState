@@ -1,10 +1,38 @@
 package anthropic
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+
+	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func newTestAPIError(statusCode int) *anthropicAPI.Error {
+	u, _ := url.Parse("https://api.anthropic.com/v1/messages")
+
+	return &anthropicAPI.Error{
+		StatusCode: statusCode,
+		Request:    &http.Request{Method: "POST", URL: u},
+		Response:   &http.Response{StatusCode: statusCode},
+	}
+}
+
+func newTestAPIErrorWithBody(
+	statusCode int, body string,
+) *anthropicAPI.Error {
+	apiErr := newTestAPIError(statusCode)
+	if body != "" {
+		_ = apiErr.UnmarshalJSON([]byte(body))
+		apiErr.StatusCode = statusCode
+	}
+
+	return apiErr
+}
 
 var _ = Describe("buildToolResultMessage", func() {
 	It("returns a user message with tool result block (success)", func() {
@@ -170,5 +198,92 @@ var _ = Describe("mergeConsecutiveUserMessages", func() {
 		m := provider.Message{Role: "user", Content: ""}
 		mergeConsecutiveUserMessages(last, m)
 		Expect(last.Content).To(Equal("foo"))
+	})
+})
+
+var _ = Describe("parseAnthropicError", func() {
+	Context("when error is an Anthropic API error", func() {
+		It("maps 529 to Overload (Anthropic-specific)", func() {
+			apiErr := newTestAPIError(529)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(529))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeOverload))
+			Expect(result.Provider).To(Equal("anthropic"))
+			Expect(result.IsRetriable).To(BeTrue())
+			Expect(result.RawError).To(Equal(apiErr))
+		})
+
+		It("maps 429 to RateLimit", func() {
+			apiErr := newTestAPIError(429)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(429))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("maps 401 to AuthFailure", func() {
+			apiErr := newTestAPIError(401)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(401))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeAuthFailure))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("maps 5xx to ServerError", func() {
+			for _, code := range []int{500, 502, 503, 504} {
+				result := parseAnthropicError(newTestAPIError(code))
+				Expect(result).To(HaveOccurred())
+				Expect(result.HTTPStatus).To(Equal(code))
+				Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+				Expect(result.IsRetriable).To(BeTrue())
+			}
+		})
+
+		It("maps 400 with billing context to Billing", func() {
+			apiErr := newTestAPIErrorWithBody(
+				400,
+				`{"message":"Your credit balance is too low"}`,
+			)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(400))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeBilling))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("maps 400 without billing context to Unknown", func() {
+			apiErr := newTestAPIError(400)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(400))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+		})
+	})
+
+	Context("when error is nil", func() {
+		It("returns nil", func() {
+			result := parseAnthropicError(nil)
+			Expect(result).ToNot(HaveOccurred())
+		})
+	})
+
+	Context("when error is not an Anthropic API error", func() {
+		It("returns nil", func() {
+			result := parseAnthropicError(errors.New("random error"))
+			Expect(result).ToNot(HaveOccurred())
+		})
+	})
+
+	Context("when error is wrapped", func() {
+		It("extracts the Anthropic error from the chain", func() {
+			apiErr := newTestAPIError(429)
+			wrapped := fmt.Errorf("anthropic chat failed: %w", apiErr)
+			result := parseAnthropicError(wrapped)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+		})
 	})
 })

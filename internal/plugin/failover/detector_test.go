@@ -3,6 +3,7 @@ package failover_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,7 +78,7 @@ var _ = Describe("RateLimitDetector", func() {
 			Expect(health.IsRateLimited("anthropic", "claude-3-5-sonnet-20241022")).To(BeTrue())
 		})
 
-		It("detects quota exceeded error and marks provider as rate-limited", func() {
+		It("does not classify quota exceeded as rate-limited after keyword removal", func() {
 			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "anthropic",
 				Error:        errors.New("quota exceeded"),
@@ -85,8 +86,7 @@ var _ = Describe("RateLimitDetector", func() {
 
 			detector.HandleError(providerEvent)
 
-			Expect(health.IsRateLimited("anthropic", "")).To(BeTrue())
-			Expect(health.GetHealthyAlternatives("anthropic", "")).To(BeEmpty())
+			Expect(health.IsRateLimited("anthropic", "")).To(BeFalse())
 		})
 	})
 
@@ -113,7 +113,7 @@ var _ = Describe("RateLimitDetector", func() {
 			Expect(health.IsRateLimited("anthropic", "")).To(BeTrue())
 		})
 
-		It("detects 'quota exceeded' in error message", func() {
+		It("does not detect 'quota exceeded' after keyword removal", func() {
 			providerEvent := events.NewProviderErrorEvent(events.ProviderErrorEventData{
 				ProviderName: "openai",
 				Error:        errors.New("quota exceeded"),
@@ -121,7 +121,7 @@ var _ = Describe("RateLimitDetector", func() {
 
 			detector.HandleError(providerEvent)
 
-			Expect(health.IsRateLimited("openai", "")).To(BeTrue())
+			Expect(health.IsRateLimited("openai", "")).To(BeFalse())
 		})
 
 		It("detects 'too many requests' in error message", func() {
@@ -211,13 +211,13 @@ var _ = Describe("CheckAndMarkRateLimited", func() {
 		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
 	})
 
-	It("returns true and marks provider when error contains quota exceeded", func() {
+	It("does not mark provider for quota exceeded after keyword removal", func() {
 		err := errors.New("quota exceeded for this month")
 
 		result := failover.CheckAndMarkRateLimited(health, "openai", "gpt-4", err)
 
-		Expect(result).To(BeTrue())
-		Expect(health.IsRateLimited("openai", "gpt-4")).To(BeTrue())
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("openai", "gpt-4")).To(BeFalse())
 	})
 
 	It("returns true and marks provider when error contains too many requests", func() {
@@ -245,6 +245,236 @@ var _ = Describe("CheckAndMarkRateLimited", func() {
 
 		Expect(result).To(BeFalse())
 		Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+	})
+})
+
+var _ = Describe("CooldownForErrorType", func() {
+	DescribeTable("maps error type to duration",
+		func(errorType provider.ErrorType, expected time.Duration) {
+			Expect(failover.CooldownForErrorType(errorType)).To(Equal(expected))
+		},
+		Entry("RateLimit → 1 hour", provider.ErrorTypeRateLimit, time.Hour),
+		Entry("Billing → 24 hours", provider.ErrorTypeBilling, 24*time.Hour),
+		Entry("Quota → 24 hours", provider.ErrorTypeQuota, 24*time.Hour),
+		Entry("AuthFailure → 24 hours", provider.ErrorTypeAuthFailure, 24*time.Hour),
+		Entry("ModelNotFound → 24 hours", provider.ErrorTypeModelNotFound, 24*time.Hour),
+		Entry("Overload → 60 seconds", provider.ErrorTypeOverload, 60*time.Second),
+		Entry("NetworkError → 30 seconds", provider.ErrorTypeNetworkError, 30*time.Second),
+		Entry("ServerError → 2 minutes", provider.ErrorTypeServerError, 2*time.Minute),
+		Entry("Unknown → 5 minutes", provider.ErrorTypeUnknown, 5*time.Minute),
+	)
+
+	It("preserves existing rate-limit cooldown of 1 hour", func() {
+		Expect(failover.CooldownForErrorType(provider.ErrorTypeRateLimit)).To(Equal(time.Hour))
+	})
+})
+
+var _ = Describe("Z.AI error code classification", func() {
+	var health *failover.HealthManager
+
+	BeforeEach(func() {
+		var err error
+		dir, err := os.MkdirTemp("", "failover-zai-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			_ = os.RemoveAll(dir)
+		})
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+	})
+
+	It("returns true for Z.AI rate-limit code 1001", func() {
+		err := errors.New("provider error: 429 {\"code\":\"1001\",\"message\":\"Rate limit exceeded\"}")
+
+		result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeTrue())
+	})
+
+	It("returns false for Z.AI overload code 1002", func() {
+		err := errors.New("provider error: 429 {\"code\":\"1002\",\"message\":\"Server overloaded\"}")
+
+		result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeFalse())
+	})
+
+	It("returns false for Z.AI quota code 1112", func() {
+		err := errors.New("provider error: 429 {\"code\":\"1112\",\"message\":\"Quota exhausted\"}")
+
+		result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeFalse())
+	})
+
+	It("returns false for Z.AI billing code 1113", func() {
+		err := errors.New("provider error: 429 {\"code\":\"1113\",\"message\":\"Insufficient balance\"}")
+
+		result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeFalse())
+	})
+
+	It("still returns true for rate_limit_exceeded regression guard", func() {
+		err := errors.New("rate_limit_exceeded")
+
+		result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeTrue())
+	})
+})
+
+var _ = Describe("keyword cleanup regression guards", func() {
+	var health *failover.HealthManager
+
+	BeforeEach(func() {
+		dir := GinkgoT().TempDir()
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+	})
+
+	Context("removed keywords must not match", func() {
+		It("does not classify plain '429' text as rate-limited", func() {
+			err := errors.New("provider error: 429 service temporarily unavailable")
+
+			result := failover.CheckAndMarkRateLimited(health, "zai", "glm-4.6", err)
+
+			Expect(result).To(BeFalse())
+			Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeFalse())
+		})
+
+		It("does not classify '503 Service Unavailable' as rate-limited", func() {
+			err := errors.New("503 Service Unavailable")
+
+			result := failover.CheckAndMarkRateLimited(health, "ollama", "llama3.2", err)
+
+			Expect(result).To(BeFalse())
+			Expect(health.IsRateLimited("ollama", "llama3.2")).To(BeFalse())
+		})
+
+		It("does not classify 'quota exceeded' as rate-limited", func() {
+			err := errors.New("quota exceeded for this billing period")
+
+			result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+			Expect(result).To(BeFalse())
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+		})
+	})
+
+	Context("preserved keywords still match", func() {
+		It("still classifies 'rate_limit' as rate-limited", func() {
+			err := errors.New("rate_limit exceeded")
+
+			result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+			Expect(result).To(BeTrue())
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+		})
+
+		It("still classifies 'free usage exceeded' as rate-limited", func() {
+			err := errors.New("free usage exceeded for this model")
+
+			result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+			Expect(result).To(BeTrue())
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+		})
+
+		It("still classifies 'rate limit' (with space) as rate-limited", func() {
+			err := errors.New("rate limit exceeded for this model")
+
+			result := failover.CheckAndMarkRateLimited(health, "anthropic", "claude-3", err)
+
+			Expect(result).To(BeTrue())
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+		})
+
+		It("still classifies 'too many requests' as rate-limited", func() {
+			err := errors.New("too many requests, try again later")
+
+			result := failover.CheckAndMarkRateLimited(health, "openai", "gpt-4", err)
+
+			Expect(result).To(BeTrue())
+			Expect(health.IsRateLimited("openai", "gpt-4")).To(BeTrue())
+		})
+	})
+})
+
+var _ = Describe("hybrid error classification", func() {
+	var health *failover.HealthManager
+
+	BeforeEach(func() {
+		dir := GinkgoT().TempDir()
+		health = failover.NewHealthManager()
+		health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+	})
+
+	It("detects *provider.Error with ErrorTypeRateLimit as rate-limited", func() {
+		provErr := &provider.Error{
+			ErrorType: provider.ErrorTypeRateLimit,
+			Provider:  "test-provider",
+			Message:   "request throttled",
+		}
+
+		result := failover.CheckAndMarkRateLimited(health, "test-provider", "model-1", provErr)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("test-provider", "model-1")).To(BeTrue())
+	})
+
+	It("does not classify *provider.Error with ErrorTypeBilling as rate-limited", func() {
+		provErr := &provider.Error{
+			ErrorType: provider.ErrorTypeBilling,
+			Provider:  "test-provider",
+			Message:   "rate limit on billing endpoint",
+		}
+
+		result := failover.CheckAndMarkRateLimited(health, "test-provider", "model-1", provErr)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("test-provider", "model-1")).To(BeFalse())
+	})
+
+	It("does not classify *provider.Error with ErrorTypeOverload as rate-limited", func() {
+		provErr := &provider.Error{
+			ErrorType: provider.ErrorTypeOverload,
+			Provider:  "test-provider",
+			Message:   "too many requests causing overload",
+		}
+
+		result := failover.CheckAndMarkRateLimited(health, "test-provider", "model-1", provErr)
+
+		Expect(result).To(BeFalse())
+		Expect(health.IsRateLimited("test-provider", "model-1")).To(BeFalse())
+	})
+
+	It("unwraps wrapped *provider.Error via errors.As", func() {
+		provErr := &provider.Error{
+			ErrorType: provider.ErrorTypeRateLimit,
+			Provider:  "test-provider",
+			Message:   "throttled",
+		}
+		wrapped := fmt.Errorf("provider call failed: %w", provErr)
+
+		result := failover.CheckAndMarkRateLimited(health, "test-provider", "model-1", wrapped)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("test-provider", "model-1")).To(BeTrue())
+	})
+
+	It("falls back to keyword matching for plain string errors", func() {
+		err := errors.New("rate_limit exceeded")
+
+		result := failover.CheckAndMarkRateLimited(health, "test-provider", "model-1", err)
+
+		Expect(result).To(BeTrue())
+		Expect(health.IsRateLimited("test-provider", "model-1")).To(BeTrue())
 	})
 })
 

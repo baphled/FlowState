@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -106,5 +108,61 @@ var _ = Describe("StreamChunk delegation info", func() {
 		}
 
 		Expect(chunk.DelegationInfo).To(BeNil())
+	})
+})
+
+var _ = Describe("Error", func() {
+	It("satisfies the error interface", func() {
+		var _ error = &Error{}
+	})
+
+	It("unwraps to the raw error", func() {
+		rawErr := errors.New("root cause")
+		provErr := &Error{RawError: rawErr}
+
+		Expect(provErr.Unwrap()).To(BeIdenticalTo(rawErr))
+		Expect(errors.Is(provErr, rawErr)).To(BeTrue())
+	})
+
+	It("supports errors.As through one level of wrapping", func() {
+		rawErr := errors.New("root cause")
+		provErr := &Error{Provider: "zai", ErrorType: ErrorTypeBilling, RawError: rawErr}
+
+		wrapped := fmt.Errorf("outer: %w", provErr)
+
+		var target *Error
+		Expect(errors.As(wrapped, &target)).To(BeTrue())
+		Expect(target).To(BeIdenticalTo(provErr))
+	})
+
+	It("supports errors.As through two levels of wrapping", func() {
+		rawErr := errors.New("root cause")
+		provErr := &Error{Provider: "anthropic", ErrorType: ErrorTypeRateLimit, RawError: rawErr}
+
+		wrapped := fmt.Errorf("level 2: %w", fmt.Errorf("level 1: %w", provErr))
+
+		var target *Error
+		Expect(errors.As(wrapped, &target)).To(BeTrue())
+		Expect(target).To(BeIdenticalTo(provErr))
+	})
+
+	It("supports errors.As through three levels of wrapping", func() {
+		rawErr := errors.New("root cause")
+		provErr := &Error{Provider: "openzen", ErrorType: ErrorTypeServerError, RawError: rawErr}
+
+		wrapped := fmt.Errorf("level 3: %w", fmt.Errorf("level 2: %w", fmt.Errorf("level 1: %w", provErr)))
+
+		var target *Error
+		Expect(errors.As(wrapped, &target)).To(BeTrue())
+		Expect(target).To(BeIdenticalTo(provErr))
+	})
+
+	It("allows errors.Is to reach the raw error through wrapping", func() {
+		rawErr := errors.New("root cause")
+		provErr := &Error{Provider: "zai", ErrorType: ErrorTypeBilling, RawError: rawErr}
+
+		wrapped := fmt.Errorf("wrapped: %w", provErr)
+
+		Expect(errors.Is(wrapped, rawErr)).To(BeTrue())
 	})
 })
