@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks
+.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording
 
 # Binary name
 BINARY_NAME=flowstate
@@ -235,6 +235,40 @@ list-tasks: ## List all tasks
 			echo "[$${status:-unknown}] $$name"; \
 		fi \
 	done
+
+#
+# Debug & Analysis
+#
+
+debug-session: ## Debug a session (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make debug-session ID=<session-uuid>"; \
+		echo ""; \
+		echo "Add --include-logs with: make debug-session ID=<uuid> OPTS=--include-logs"; \
+		exit 1; \
+	fi
+	@python3 scripts/correlate-debug.py "$(ID)" $(OPTS)
+
+debug-latest: ## Debug the most recent session
+	@python3 scripts/correlate-debug.py --latest --include-logs
+
+debug-errors: ## Find sessions that encountered errors
+	@python3 scripts/correlate-debug.py --errors
+
+session-overview: ## Show overview of all sessions (OPTS for filters)
+	@python3 scripts/session-overview.py $(OPTS)
+
+log-analysis: ## Analyse application logs (OPTS for filters)
+	@python3 scripts/log-analysis.py $(OPTS)
+
+parse-recording: ## Parse a session recording timeline (ID=<session-id>)
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make parse-recording ID=<session-uuid>"; \
+		echo ""; \
+		echo "Flags via OPTS: make parse-recording ID=<uuid> OPTS='--tools-only'"; \
+		exit 1; \
+	fi
+	@python3 scripts/parse-recording.py "$(ID)" $(OPTS)
 
 #
 # Help
