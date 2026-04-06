@@ -638,6 +638,38 @@ func (a *App) setAgentOverridesFromConfig(cfg *config.AppConfig, eng *engine.Eng
 	}
 }
 
+// buildDelegateMaps builds the engines map and streamers map for all registered agents
+// except the one matching excludeID. Each engine's model preference is inherited from src.
+//
+// Expected:
+//   - excludeID is the ID of the coordinating agent to skip.
+//   - store is the shared coordination store.
+//   - src is the coordinating engine supplying model preferences and event bus.
+//
+// Returns:
+//   - A map of agent ID to isolated Engine instances.
+//   - A map of agent ID to Streamer implementations (HarnessStreamer when applicable).
+//
+// Side effects:
+//   - Creates isolated engine instances for each target agent.
+func (a *App) buildDelegateMaps(
+	excludeID string, store coordination.Store, src *engine.Engine,
+) (map[string]*engine.Engine, map[string]streaming.Streamer) {
+	allAgents := a.Registry.List()
+	engines := make(map[string]*engine.Engine, len(allAgents))
+	streamers := make(map[string]streaming.Streamer, len(allAgents))
+	for _, agentManifest := range allAgents {
+		if agentManifest.ID == excludeID {
+			continue
+		}
+		targetEngine, str := a.createDelegateEngine(*agentManifest, store, src.EventBus())
+		targetEngine.SetModelPreference(src.LastProvider(), src.LastModel())
+		engines[agentManifest.ID] = targetEngine
+		streamers[agentManifest.ID] = str
+	}
+	return engines, streamers
+}
+
 // wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
 // manifest permits delegation. Each target agent gets its own isolated engine
 // instance to prevent state corruption during delegation.
@@ -658,20 +690,11 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	bgManager.WithSessionManager(a.sessionManager)
 	coordinationStore := coordination.NewMemoryStore()
 
-	allAgents := a.Registry.List()
-	engines := make(map[string]*engine.Engine, len(allAgents))
-	for _, agentManifest := range allAgents {
-		if agentManifest.ID == manifest.ID {
-			continue
-		}
-		targetEngine := a.createDelegateEngine(*agentManifest, coordinationStore, eng.EventBus())
-		targetEngine.SetModelPreference(eng.LastProvider(), eng.LastModel())
-		engines[agentManifest.ID] = targetEngine
-	}
+	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
 
 	delegateTool := engine.NewDelegateToolWithBackground(
 		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
-	)
+	).WithStreamers(streamers)
 	delegateTool.WithRegistry(a.Registry)
 
 	if embedder := a.resolveEmbedder(); embedder != nil {
@@ -725,7 +748,9 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 //
 // Side effects:
 //   - Creates a new engine with the target's manifest, providers, and tools.
-func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus) *engine.Engine {
+func (a *App) createDelegateEngine(
+	manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus,
+) (*engine.Engine, streaming.Streamer) {
 	hookChain := buildHookChain(hookChainConfig{
 		learningStore:  a.Learning,
 		manifestGetter: func() agent.Manifest { return manifest },
@@ -739,7 +764,11 @@ func (a *App) createDelegateEngine(manifest agent.Manifest, store coordination.S
 		HookChain:     hookChain,
 		EventBus:      bus,
 	})
-	return eng
+	var str streaming.Streamer = eng
+	if manifest.HarnessEnabled && a.Config != nil {
+		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider)
+	}
+	return eng, str
 }
 
 // buildToolsForManifestWithStore returns the tools available to an agent based on its

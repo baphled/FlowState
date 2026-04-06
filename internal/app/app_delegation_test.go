@@ -383,7 +383,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 			coordinationStore := coordination.NewMemoryStore()
 
-			delegateEngine := delegateApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+			delegateEngine, _ := delegateApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
 			Expect(delegateEngine).NotTo(BeNil())
 
 			_, err := delegateEngine.Stream(context.Background(), "", "hello")
@@ -412,7 +412,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 			coordinationStore := coordination.NewMemoryStore()
 
-			delegateEngine := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+			delegateEngine, _ := isolatedApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
 
 			Expect(delegateEngine).NotTo(BeNil())
 			manifest := delegateEngine.Manifest()
@@ -439,7 +439,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			parentBus := eventbus.NewEventBus()
 			coordinationStore := coordination.NewMemoryStore()
 
-			delegateEngine := busApp.createDelegateEngine(explorerManifest, coordinationStore, parentBus)
+			delegateEngine, _ := busApp.createDelegateEngine(explorerManifest, coordinationStore, parentBus)
 			Expect(delegateEngine.EventBus()).To(BeIdenticalTo(parentBus))
 		})
 	})

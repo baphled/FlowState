@@ -97,6 +97,7 @@ type DelegateTool struct {
 	sessionManager     *session.Manager
 	storeFactory       DelegateStoreFactory
 	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
+	streamers          map[string]streaming.Streamer
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -152,6 +153,42 @@ func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegati
 		circuitBreaker: delegation.NewCircuitBreaker(maxDelegationFailures),
 		spawnLimits:    delegation.DefaultSpawnLimits(),
 	}
+}
+
+// WithStreamers registers per-agent streamers that override direct engine streaming.
+// Agents with HarnessEnabled in their manifest should have a HarnessStreamer here.
+//
+// Expected:
+//   - streamers maps agent IDs to Streamer implementations.
+//
+// Returns:
+//   - The DelegateTool for chaining.
+//
+// Side effects:
+//   - Sets the streamers map on the DelegateTool.
+func (d *DelegateTool) WithStreamers(streamers map[string]streaming.Streamer) *DelegateTool {
+	d.streamers = streamers
+	return d
+}
+
+// resolveStreamer returns the Streamer for agentID, falling back to eng when none is registered.
+//
+// Expected:
+//   - agentID is the target agent identifier.
+//   - eng is the fallback engine.
+//
+// Returns:
+//   - The Streamer to use for the delegation call.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveStreamer(agentID string, eng *Engine) streaming.Streamer {
+	if d.streamers != nil {
+		if str, ok := d.streamers[agentID]; ok {
+			return str
+		}
+	}
+	return eng
 }
 
 // NewDelegateToolWithBackground creates a new delegation tool with background task support.
@@ -764,6 +801,83 @@ func (d *DelegateTool) wrapWithAccumulator(rawCh <-chan provider.StreamChunk, se
 	return session.AccumulateStream(d.messageAppender, sessionID, agentID, rawCh)
 }
 
+// withHarnessEvents wires harness lifecycle events into outChan for harness-enabled targets.
+// When an explicit Streamer is registered for the target, it tees EventType chunks from src
+// to outChan (the registered Streamer emits its own harness events already).
+// When no explicit Streamer is registered and the target has HarnessEnabled, it injects a
+// synthetic harness_attempt_start event before forwarding chunks.
+// When HarnessEnabled is false or hasOutput is false it returns src unchanged.
+//
+// Expected:
+//   - src is the stream from resolveStreamer.
+//   - outChan and hasOutput control event delivery to the parent stream.
+//   - target provides the manifest HarnessEnabled flag and agentID.
+//
+// Returns:
+//   - A channel carrying all chunks from src for use by wrapWithAccumulator.
+//
+// Side effects:
+//   - Spawns a goroutine that closes the returned channel on completion.
+func (d *DelegateTool) withHarnessEvents(
+	ctx context.Context,
+	target delegationTarget,
+	src <-chan provider.StreamChunk,
+	outChan chan<- provider.StreamChunk,
+	hasOutput bool,
+) <-chan provider.StreamChunk {
+	if !hasOutput || !target.engine.Manifest().HarnessEnabled {
+		return src
+	}
+	out := make(chan provider.StreamChunk, 64)
+	go d.runHarnessEventLoop(ctx, target.agentID, src, outChan, out)
+	return out
+}
+
+// runHarnessEventLoop is the goroutine body for withHarnessEvents.
+// It emits a harness_attempt_start chunk when no explicit Streamer is registered,
+// then forwards all chunks from src to out whilst tee-ing EventType chunks to outChan.
+//
+// Expected:
+//   - agentID is used to look up any registered explicit Streamer.
+//   - src, outChan, and out are non-nil, live channels.
+//
+// Returns:
+//   - Nothing; closes out on completion.
+//
+// Side effects:
+//   - Closes out.
+func (d *DelegateTool) runHarnessEventLoop(
+	ctx context.Context,
+	agentID string,
+	src <-chan provider.StreamChunk,
+	outChan chan<- provider.StreamChunk,
+	out chan<- provider.StreamChunk,
+) {
+	defer close(out)
+	explicit := d.streamers != nil && d.streamers[agentID] != nil
+	if !explicit {
+		select {
+		case outChan <- provider.StreamChunk{EventType: "harness_attempt_start"}:
+		case <-ctx.Done():
+			return
+		}
+	}
+	for chunk := range src {
+		if explicit && chunk.EventType != "" {
+			select {
+			case outChan <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+		select {
+		case out <- chunk:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // createChildSession registers a child session for the delegation and returns its ID.
 // When a sessionCreator is configured and a parent session ID is present in ctx,
 // it calls CreateWithParent to produce a traceable child session.
@@ -929,7 +1043,7 @@ func (d *DelegateTool) executeSync(
 	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
 
-	chunks, err := target.engine.Stream(delegateCtx, target.agentID, target.message)
+	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(delegateCtx, target.agentID, target.message)
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
 		completedAt := time.Now().UTC()
@@ -938,6 +1052,7 @@ func (d *DelegateTool) executeSync(
 		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
 	}
 
+	chunks = d.withHarnessEvents(ctx, target, chunks, outChan, hasOutput)
 	chunks = d.wrapWithAccumulator(chunks, delegateSessionID, target.agentID)
 
 	result, err := d.collectWithProgress(ctx, chunks, time.Now())
@@ -1046,7 +1161,7 @@ func (d *DelegateTool) executeBackgroundTask(
 ) (string, error) {
 	closeStore := d.attachSessionStore(target.engine, sessionIDFromContext(ctx))
 
-	chunks, err := target.engine.Stream(ctx, target.agentID, target.message)
+	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
 		closeStore()
 		d.circuitBreaker.RecordFailure()
