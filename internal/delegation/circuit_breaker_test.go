@@ -2,6 +2,7 @@ package delegation
 
 import (
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -223,6 +224,118 @@ var _ = Describe("CircuitBreaker", func() {
 			}
 
 			wg.Wait()
+		})
+	})
+})
+
+var _ = Describe("CircuitBreaker time-windowed failures", func() {
+	var cb *CircuitBreaker
+
+	Describe("failure window expiry", func() {
+		It("forgets failures after the window expires", func() {
+			cb = NewCircuitBreaker(3, WithFailureWindow(100*time.Millisecond))
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			time.Sleep(120 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeTrue())
+			Expect(cb.State()).To(Equal(CircuitClosed))
+			Expect(cb.Failures()).To(BeZero())
+		})
+
+		It("does not forget failures within the window", func() {
+			cb = NewCircuitBreaker(3, WithFailureWindow(10*time.Second))
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			time.Sleep(10 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeFalse())
+			Expect(cb.State()).To(Equal(CircuitOpen))
+		})
+
+		It("allows requests immediately when window is disabled", func() {
+			cb = NewCircuitBreaker(3)
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			Expect(cb.Allow()).To(BeFalse())
+		})
+	})
+
+	Describe("auto-reset after timeout", func() {
+		It("transitions to HalfOpen after timeout expires", func() {
+			cb = NewCircuitBreaker(3, WithHalfOpenTimeout(100*time.Millisecond))
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			time.Sleep(120 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeTrue())
+			Expect(cb.State()).To(Equal(CircuitHalfOpen))
+		})
+
+		It("allows exactly one request after auto-reset", func() {
+			cb = NewCircuitBreaker(3, WithHalfOpenTimeout(100*time.Millisecond))
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+
+			time.Sleep(120 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeTrue())
+			Expect(cb.Allow()).To(BeFalse())
+		})
+
+		It("does not auto-reset within timeout", func() {
+			cb = NewCircuitBreaker(3, WithHalfOpenTimeout(10*time.Second))
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			time.Sleep(10 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeFalse())
+		})
+
+		It("auto-resets when timeout is disabled", func() {
+			cb = NewCircuitBreaker(3)
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+
+			Expect(cb.Allow()).To(BeFalse())
+		})
+	})
+
+	Describe("combined failure window and auto-reset", func() {
+		It("resets both failures and state after both timeouts expire", func() {
+			cb = NewCircuitBreaker(3,
+				WithFailureWindow(50*time.Millisecond),
+				WithHalfOpenTimeout(50*time.Millisecond),
+			)
+			cb.RecordFailure()
+			cb.RecordFailure()
+			cb.RecordFailure()
+			Expect(cb.State()).To(Equal(CircuitOpen))
+			Expect(cb.Failures()).To(Equal(3))
+
+			time.Sleep(100 * time.Millisecond)
+
+			Expect(cb.Allow()).To(BeTrue())
+			Expect(cb.State()).To(Equal(CircuitClosed))
+			Expect(cb.Failures()).To(BeZero())
 		})
 	})
 })

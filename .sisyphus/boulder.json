@@ -25,7 +25,16 @@
     "ses_29af3b2e4ffeV4KdZnSA5lDg7U",
     "ses_29aed68e5ffeTxZQCqHTA2848N",
     "ses_29aec486cffexC66xer39Pika5",
-    "ses_29ae2d9f8ffeFDf4mfA3WjoRwY"
+    "ses_29ae2d9f8ffeFDf4mfA3WjoRwY",
+    "ses_29adbe2c4ffe06akNK75c1xlcc",
+    "ses_29adb5948ffeOMJb5nkY9tAV5D",
+    "ses_29adb999fffeUeB9T4zhHpnsTR",
+    "ses_29adc1b7dffeuzvGupBsIP4Dw8",
+    "ses_29ad5eefdffeNLK9M7xgkt4Hz0",
+    "ses_29ab022f6ffeqc3JJWLvJI2jnn",
+    "ses_29ac635e2ffekCuZcCAY8LTb07",
+    "ses_29803cc46ffecSY75q6lbmwHs6",
+    "ses_297fa3200ffeX21vNs8r1COvAk"
   ],
   "plan_name": "provider-error-classification",
   "agent": "atlas",
@@ -74,6 +83,14 @@
       "agent": "Sisyphus-Junior",
       "category": "unspecified-high",
       "updated_at": "2026-04-06T23:29:36.676Z"
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_29adc1b7dffeuzvGupBsIP4Dw8",
+      "agent": "oracle",
+      "updated_at": "2026-04-06T23:35:58.457Z"
     }
   }
 }

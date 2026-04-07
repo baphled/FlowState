@@ -149,11 +149,15 @@ type delegationResult struct {
 //   - None.
 func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegation, sourceAgentID string) *DelegateTool {
 	return &DelegateTool{
-		engines:        engines,
-		delegation:     delegationConfig,
-		sourceAgentID:  sourceAgentID,
-		circuitBreaker: delegation.NewCircuitBreaker(maxDelegationFailures),
-		spawnLimits:    delegation.DefaultSpawnLimits(),
+		engines:       engines,
+		delegation:    delegationConfig,
+		sourceAgentID: sourceAgentID,
+		circuitBreaker: delegation.NewCircuitBreaker(
+			maxDelegationFailures,
+			delegation.WithFailureWindow(5*time.Minute),
+			delegation.WithHalfOpenTimeout(30*time.Second),
+		),
+		spawnLimits: delegation.DefaultSpawnLimits(),
 	}
 }
 
@@ -236,9 +240,13 @@ func NewDelegateToolWithBackground(
 		sourceAgentID:     sourceAgentID,
 		backgroundManager: backgroundManager,
 		coordinationStore: coordinationStore,
-		circuitBreaker:    delegation.NewCircuitBreaker(maxDelegationFailures),
-		spawnLimits:       delegation.DefaultSpawnLimits(),
-		rejectionTracker:  newRejectionTrackerIfPresent(coordinationStore),
+		circuitBreaker: delegation.NewCircuitBreaker(
+			maxDelegationFailures,
+			delegation.WithFailureWindow(5*time.Minute),
+			delegation.WithHalfOpenTimeout(30*time.Second),
+		),
+		spawnLimits:      delegation.DefaultSpawnLimits(),
+		rejectionTracker: newRejectionTrackerIfPresent(coordinationStore),
 	}
 }
 
