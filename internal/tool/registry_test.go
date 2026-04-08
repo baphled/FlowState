@@ -12,15 +12,15 @@ var _ = Describe("NewDefaultRegistry", func() {
 	var registry *tool.Registry
 
 	BeforeEach(func() {
-		registry = toolset.NewDefaultRegistry()
+		registry = toolset.NewDefaultRegistry("test-key")
 	})
 
 	It("returns a non-nil registry", func() {
 		Expect(registry).NotTo(BeNil())
 	})
 
-	It("returns exactly 4 tools", func() {
-		Expect(registry.List()).To(HaveLen(4))
+	It("returns exactly 15 tools", func() {
+		Expect(registry.List()).To(HaveLen(15))
 	})
 
 	It("can retrieve bash tool", func() {
@@ -45,6 +45,72 @@ var _ = Describe("NewDefaultRegistry", func() {
 		t, err := registry.Get("web")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(t.Name()).To(Equal("web"))
+	})
+
+	It("can retrieve websearch tool", func() {
+		t, err := registry.Get("websearch")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("websearch"))
+	})
+
+	It("can retrieve edit tool", func() {
+		t, err := registry.Get("edit")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("edit"))
+	})
+
+	It("can retrieve multiedit tool", func() {
+		t, err := registry.Get("multiedit")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("multiedit"))
+	})
+
+	It("can retrieve question tool", func() {
+		t, err := registry.Get("question")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("question"))
+	})
+
+	It("can retrieve plan enter tool", func() {
+		t, err := registry.Get("plan_enter")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("plan_enter"))
+	})
+
+	It("can retrieve plan exit tool", func() {
+		t, err := registry.Get("plan_exit")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("plan_exit"))
+	})
+
+	It("can retrieve invalid tool", func() {
+		t, err := registry.Get("invalid")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("invalid"))
+	})
+
+	It("can retrieve apply_patch tool", func() {
+		t, err := registry.Get("apply_patch")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("apply_patch"))
+	})
+
+	It("can retrieve grep tool", func() {
+		t, err := registry.Get("grep")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("grep"))
+	})
+
+	It("can retrieve ls tool", func() {
+		t, err := registry.Get("ls")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("ls"))
+	})
+
+	It("can retrieve batch tool", func() {
+		t, err := registry.Get("batch")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("batch"))
 	})
 
 	It("allows bash tool execution", func() {

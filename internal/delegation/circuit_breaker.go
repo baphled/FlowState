@@ -64,6 +64,10 @@ type Option func(*CircuitBreaker)
 //
 // This allows the circuit to recover from transient failures without
 // requiring manual intervention or auto-reset.
+//
+// Returns: an option that configures failure expiry on a circuit breaker
+// Expected: a positive duration allows failures to expire after the window elapses
+// Side effects: stores the failure window on the target circuit breaker.
 func WithFailureWindow(d time.Duration) Option {
 	return func(cb *CircuitBreaker) { cb.failureWindow = d }
 }
@@ -78,6 +82,10 @@ func WithFailureWindow(d time.Duration) Option {
 // When the timeout expires, the next Allow() call will transition the circuit
 // to HalfOpen and return true. Subsequent Allow() calls will return false
 // until RecordSuccess() or RecordFailure() is called.
+//
+// Returns: an option that configures automatic half-open recovery timing
+// Expected: a positive duration allows a later test request after the open period
+// Side effects: stores the half-open timeout on the target circuit breaker.
 func WithHalfOpenTimeout(d time.Duration) Option {
 	return func(cb *CircuitBreaker) { cb.halfOpenTimeout = d }
 }
@@ -93,6 +101,10 @@ func WithHalfOpenTimeout(d time.Duration) Option {
 //	cb := NewCircuitBreaker(3)                          // basic
 //	cb := NewCircuitBreaker(3, WithFailureWindow(5*time.Minute))  // with expiry
 //	cb := NewCircuitBreaker(3, WithHalfOpenTimeout(30*time.Second)) // with auto-reset
+//
+// Returns: a circuit breaker initialised in the closed state
+// Expected: maxFailures defines the threshold before the circuit opens
+// Side effects: records the initial state timestamp and applies any supplied options.
 func NewCircuitBreaker(maxFailures int, opts ...Option) *CircuitBreaker {
 	cb := &CircuitBreaker{
 		maxFailures:     maxFailures,
@@ -120,6 +132,9 @@ func NewCircuitBreaker(maxFailures int, opts ...Option) *CircuitBreaker {
 // In Open state, Allow() returns false unless:
 //   - Failure window is configured and failures have expired (transitions to Closed)
 //   - HalfOpen timeout has expired (transitions to HalfOpen, returns true once)
+//
+// Returns: true when a request may proceed, false when it should be blocked.
+// Side effects: may reset expired failures or transition the circuit between states.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -166,6 +181,8 @@ func (cb *CircuitBreaker) Allow() bool {
 // the underlying issue has resolved.
 //
 // When the circuit is already in Closed state, only the failure count is reset.
+//
+// Side effects: resets failure tracking and may close the circuit after a successful probe.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -186,6 +203,8 @@ func (cb *CircuitBreaker) RecordSuccess() {
 //
 // When the circuit is in HalfOpen, any failure transitions back to Open,
 // indicating the underlying issue persists.
+//
+// Side effects: increments failure tracking and may open the circuit.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -209,6 +228,9 @@ func (cb *CircuitBreaker) RecordFailure() {
 //
 // The state indicates whether requests are allowed (Closed), blocked (Open),
 // or in recovery testing (HalfOpen).
+//
+// Returns: the current circuit state value
+// Side effects: acquires the circuit mutex while reading state.
 func (cb *CircuitBreaker) State() CircuitState {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -220,6 +242,9 @@ func (cb *CircuitBreaker) State() CircuitState {
 //
 // The failure count is reset by RecordSuccess() or automatically expired
 // after the failure window duration (if configured).
+//
+// Returns: the number of consecutive failures currently recorded
+// Side effects: acquires the circuit mutex while reading failure state.
 func (cb *CircuitBreaker) Failures() int {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -232,6 +257,8 @@ func (cb *CircuitBreaker) Failures() int {
 // This allows a single test request to determine if the underlying issue
 // has been resolved. The failure count is preserved for analysis.
 // Contrast with automatic recovery via failure window expiry or half-open timeout.
+//
+// Side effects: moves the circuit to HalfOpen and clears the half-open usage flag.
 func (cb *CircuitBreaker) Reset() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

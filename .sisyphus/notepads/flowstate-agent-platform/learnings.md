@@ -164,17 +164,32 @@ AI_AGENT="Opencode" AI_MODEL="claude-opus-4.5" make ai-commit FILE=/tmp/commit.t
 
 ### Test Coverage
 - 70 specs total covering:
-  - Cold start (system prompt only)
-  - Sliding window messages
-  - Token budget enforcement with skill content
-  - System prompt truncation
-  - Oversized message truncation
-  - Deduplication
-  - Assembly order
-  - State summary inclusion
-  - Semantic search results
-  - BuildContext T15a entrypoint
-  - Warning on truncation path
+   - Cold start (system prompt only)
+   - Sliding window messages
+   - Token budget enforcement with skill content
+   - System prompt truncation
+   - Oversized message truncation
+   - Deduplication
+   - Assembly order
+   - State summary inclusion
+   - Semantic search results
+   - BuildContext T15a entrypoint
+   - Warning on truncation path
+
+## 2026-04-07 Tool Docblock Remediation
+
+### What changed
+- Added structured docblocks to the newly introduced internal/tool packages.
+- Brought exported tool constructors and methods into the FlowState three-section format: Expected, Returns, Side effects.
+- Added plain doc comments to unexported helper functions and small internal types.
+
+### What mattered
+- `make check-docblocks` now reports no `internal/tool/` issues for the touched files.
+- `lsp_diagnostics` on `internal/tool` returned zero errors after the documentation-only pass.
+
+### Pattern
+- For tool packages, keep comments mechanically consistent and treat documentation-only changes as first-class maintenance work.
+
 
 ## T20: TUI Chat — Bubble Tea wrapping Engine
 
@@ -525,3 +540,6 @@ Verified with: python3 check for `'id' in d and 'agent_id' in d` → `True True`
 - `for range ch {}` in tests triggers `revive` empty-block warnings; use `for chunk := range ch { _ = chunk }` when draining streamed channels.
 - `//nolint:nestif` in this repository must include a reason, otherwise `nolintlint` fails the build.
 - For credential-resolution constructors that intentionally inspect multiple sources, a targeted `nolint:nestif // ...` is acceptable when the logic is otherwise stable and well-tested.
+
+- Added a golangci-lint nilerr exclusion for internal/tool/**/*.go because FlowState tools intentionally return errors via tool.Result.Error while still returning nil Go errors.
+- Verified make lint passes after updating .golangci.yml.

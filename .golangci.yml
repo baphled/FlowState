@@ -412,6 +412,11 @@ linters:
           - errcheck
           - nilerr
 
+      # Tool results intentionally return Result.Error instead of Go errors
+      - path: 'internal/tool/(.*)\.go'
+        linters:
+          - nilerr
+
       # G204: Hook context injection builds commands from config paths
       - path: 'internal/hook/context_injection\.go'
         linters:
