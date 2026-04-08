@@ -376,9 +376,28 @@ type RecallSearchEvent struct {
 }
 
 // Type returns the event type.
+//
+// Expected:
+//   - The receiver contains recall search data.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
 func (e RecallSearchEvent) Type() string { return EventTypeRecallSearch }
 
 // MarshalJSON marshals the event to JSON.
+//
+// Expected:
+//   - The receiver contains recall search data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
 func (e RecallSearchEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallSearchEvent
 	return marshalWithType(e.Type(), alias(e))
@@ -393,9 +412,28 @@ type RecallChainSearchEvent struct {
 }
 
 // Type returns the event type.
+//
+// Expected:
+//   - The receiver contains chain search data.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
 func (e RecallChainSearchEvent) Type() string { return EventTypeRecallChainSearch }
 
 // MarshalJSON marshals the event to JSON.
+//
+// Expected:
+//   - The receiver contains chain search data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
 func (e RecallChainSearchEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallChainSearchEvent
 	return marshalWithType(e.Type(), alias(e))
@@ -410,9 +448,28 @@ type RecallSummarizedEvent struct {
 }
 
 // Type returns the event type.
+//
+// Expected:
+//   - The receiver contains summarisation data.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
 func (e RecallSummarizedEvent) Type() string { return EventTypeRecallSummarized }
 
 // MarshalJSON marshals the event to JSON.
+//
+// Expected:
+//   - The receiver contains summarisation data ready for serialisation.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
 func (e RecallSummarizedEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallSummarizedEvent
 	return marshalWithType(e.Type(), alias(e))

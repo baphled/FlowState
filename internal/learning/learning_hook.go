@@ -4,14 +4,14 @@ import (
 	"context"
 )
 
-// LearningRecord represents a record of a tool call for learning purposes.
-type LearningRecord struct {
+// Record represents a tool call record for learning purposes.
+type Record struct {
 	AgentID   string
 	ToolsUsed []string
 	Outcome   string
 }
 
-// ToolCallResult represents the result of a tool call (stub for now).
+// ToolCallResult represents the result of a tool call.
 type ToolCallResult struct {
 }
 
@@ -21,25 +21,42 @@ type contextKeyType string
 // AgentIDKey is the context key for storing the agent ID.
 const AgentIDKey contextKeyType = "AgentID"
 
-// learningHook implements the hook logic.
-type learningHook struct {
+// Hook implements the hook logic.
+type Hook struct {
 	client MemoryClient
 }
 
 // NewLearningHook creates a new learning hook with the given memory client.
-func NewLearningHook(client MemoryClient) *learningHook {
-	return &learningHook{client: client}
+//
+// Expected:
+//   - client implements MemoryClient.
+//
+// Returns:
+//   - A Hook that persists learning records through the supplied client.
+//
+// Side effects:
+//   - None.
+func NewLearningHook(client MemoryClient) *Hook {
+	return &Hook{client: client}
 }
 
 // Handle processes a tool call result and persists a learning record.
-func (h *learningHook) Handle(ctx context.Context, result *ToolCallResult) error {
-	record := &LearningRecord{}
+//
+// Expected:
+//   - ctx may contain an AgentID value.
+//   - result is accepted for interface compatibility.
+//
+// Returns:
+//   - An error when persisting the learning record fails.
+//
+// Side effects:
+//   - Writes a learning record via the configured MemoryClient.
+func (h *Hook) Handle(ctx context.Context, _ *ToolCallResult) error {
+	record := &Record{}
 
-	// Extract AgentID from context
 	if agentID, ok := ctx.Value(AgentIDKey).(string); ok {
 		record.AgentID = agentID
 	}
 
-	// Write via MemoryClient
 	return h.client.WriteLearningRecord(record)
 }

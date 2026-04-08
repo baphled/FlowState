@@ -133,17 +133,49 @@ func (b *WindowBuilder) BuildContextResult(
 	return result
 }
 
+// ChainBuildOptions groups the inputs for building a context window with chain context.
+type ChainBuildOptions struct {
+	store       *recall.FileContextStore
+	chainStore  recall.ChainContextStore
+	tokenBudget int
+}
+
+// NewChainBuildOptions creates options for BuildContextWithChainResult.
+//
+// Expected:
+//   - store may be nil or a valid FileContextStore.
+//   - chainStore may be nil or a valid ChainContextStore.
+//   - tokenBudget is the maximum token budget for the build.
+//
+// Returns:
+//   - A ChainBuildOptions value containing the supplied inputs.
+//
+// Side effects:
+//   - None.
+func NewChainBuildOptions(store *recall.FileContextStore, chainStore recall.ChainContextStore, tokenBudget int) ChainBuildOptions {
+	return ChainBuildOptions{store: store, chainStore: chainStore, tokenBudget: tokenBudget}
+}
+
 // BuildContextWithChainResult constructs a context window, appends chain context, and returns token usage.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest.
+//   - opts contains the stores and token budget used for assembly.
+//   - userMessage may be empty.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages and token usage.
+//
+// Side effects:
+//   - Appends user content to the assembled messages when provided.
 func (b *WindowBuilder) BuildContextWithChainResult(
 	ctx context.Context,
 	manifest *agent.Manifest,
 	userMessage string,
-	store *recall.FileContextStore,
-	chainStore recall.ChainContextStore,
-	tokenBudget int,
+	opts ChainBuildOptions,
 ) BuildResult {
 	_ = ctx
-	result := b.buildInternalWithChain(manifest, store, chainStore, tokenBudget, buildOptions{logWarnings: true})
+	result := b.buildInternalWithChain(manifest, opts.store, opts.chainStore, opts.tokenBudget, buildOptions{logWarnings: true})
 
 	if userMessage != "" {
 		userTokens := b.counter.Count(userMessage)
@@ -200,6 +232,18 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 }
 
 // buildInternalWithChain constructs a context window with chain context assembly.
+//
+// Expected:
+//   - manifest is a non-nil agent manifest.
+//   - store is a valid FileContextStore.
+//   - chainStore may be nil or a valid ChainContextStore.
+//   - opts contains build flags and optional content.
+//
+// Returns:
+//   - A BuildResult containing the assembled messages and token usage.
+//
+// Side effects:
+//   - None.
 func (b *WindowBuilder) buildInternalWithChain(
 	manifest *agent.Manifest,
 	store *recall.FileContextStore,
@@ -231,6 +275,16 @@ func (b *WindowBuilder) buildInternalWithChain(
 }
 
 // appendChainContext appends recent chain messages under a per-chain read lock.
+//
+// Expected:
+//   - messages and budget are valid build state.
+//   - chainStore may be nil or a valid ChainContextStore.
+//
+// Returns:
+//   - Updated messages and budget after appending chain context.
+//
+// Side effects:
+//   - Reads from the chain store.
 func (b *WindowBuilder) appendChainContext(
 	messages []provider.Message,
 	budget *TokenBudget,
@@ -261,6 +315,15 @@ func (b *WindowBuilder) appendChainContext(
 }
 
 // chainLock returns the per-chain RWMutex for the given chain identifier.
+//
+// Expected:
+//   - chainID identifies the chain lock to retrieve.
+//
+// Returns:
+//   - The RWMutex for the chain identifier.
+//
+// Side effects:
+//   - Creates and caches a new lock when one does not already exist.
 func (b *WindowBuilder) chainLock(chainID string) *sync.RWMutex {
 	b.chainMu.Lock()
 	defer b.chainMu.Unlock()

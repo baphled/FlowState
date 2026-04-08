@@ -2,6 +2,7 @@ package recall_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -44,21 +45,23 @@ func TestRecallToolFactory_RegistersAllRecallTools(t *testing.T) {
 
 type stubProvider struct{}
 
+var errStubProvider = errors.New("stub provider error")
+
 func (stubProvider) Name() string { return "stub" }
 
 func (stubProvider) Stream(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-	return nil, nil
+	return nil, errStubProvider
 }
 
 func (stubProvider) Chat(context.Context, provider.ChatRequest) (provider.ChatResponse, error) {
-	return provider.ChatResponse{}, nil
+	return provider.ChatResponse{}, errStubProvider
 }
 
 func (stubProvider) Embed(context.Context, provider.EmbedRequest) ([]float64, error) {
-	return []float64{1}, nil
+	return []float64{1}, errStubProvider
 }
 
-func (stubProvider) Models() ([]provider.Model, error) { return nil, nil }
+func (stubProvider) Models() ([]provider.Model, error) { return nil, errStubProvider }
 
 type stubTokenCounter struct{}
 

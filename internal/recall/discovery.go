@@ -2,6 +2,7 @@ package recall
 
 import "errors"
 
+// DiscoveryQuery describes the filters used to locate a discovery.
 type DiscoveryQuery struct {
 	Kind     string
 	Affects  string

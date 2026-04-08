@@ -13,7 +13,6 @@ import (
 
 type mockMCPClient struct {
 	calledWith struct {
-		ctx    context.Context
 		server string
 		tool   string
 		args   map[string]any
@@ -28,7 +27,6 @@ func (m *mockMCPClient) ListTools(ctx context.Context, serverName string) ([]mcp
 	return nil, nil
 }
 func (m *mockMCPClient) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (*mcp.ToolResult, error) {
-	m.calledWith.ctx = ctx
 	m.calledWith.server = serverName
 	m.calledWith.tool = toolName
 	m.calledWith.args = args

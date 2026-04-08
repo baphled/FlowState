@@ -19,7 +19,7 @@ var _ = Describe("LearningHook", func() {
 			// Use a stub MemoryClient to capture what is written
 			var capturedAgentID string
 			stubClient := &stubMemoryClient{
-				onWrite: func(record *learning.LearningRecord) error {
+				onWrite: func(record *learning.Record) error {
 					capturedAgentID = record.AgentID
 					return nil
 				},
@@ -38,7 +38,7 @@ var _ = Describe("LearningHook", func() {
 })
 
 type stubMemoryClient struct {
-	onWrite func(record *learning.LearningRecord) error
+	onWrite func(record *learning.Record) error
 }
 
 func (s *stubMemoryClient) CreateEntities(ctx context.Context, entities []learning.Entity) ([]learning.Entity, error) {
@@ -77,7 +77,7 @@ func (s *stubMemoryClient) OpenNodes(ctx context.Context, names []string) (learn
 	return learning.KnowledgeGraph{}, nil
 }
 
-func (s *stubMemoryClient) WriteLearningRecord(record *learning.LearningRecord) error {
+func (s *stubMemoryClient) WriteLearningRecord(record *learning.Record) error {
 	if s.onWrite != nil {
 		return s.onWrite(record)
 	}
@@ -91,7 +91,7 @@ var _ = Describe("LearningHook Integration", func() {
 			callCount := 0
 			mockClient := &integrationMemoryClient{
 				writeLearningCalls: 0,
-				onWrite: func(record *learning.LearningRecord) error {
+				onWrite: func(record *learning.Record) error {
 					callCount++
 					Expect(record.AgentID).To(Equal("test-agent"))
 					return nil
@@ -122,7 +122,7 @@ var _ = Describe("LearningHook Integration", func() {
 
 			for _, tc := range testCases {
 				mockClient := &integrationMemoryClient{
-					onWrite: func(record *learning.LearningRecord) error {
+					onWrite: func(record *learning.Record) error {
 						Expect(record.AgentID).To(Equal(tc.expectValue))
 						return nil
 					},
@@ -141,7 +141,7 @@ var _ = Describe("LearningHook Integration", func() {
 			// This test ensures learning hook operates synchronously
 			// and doesn't spawn goroutines that call external services
 			mockClient := &integrationMemoryClient{
-				onWrite: func(record *learning.LearningRecord) error {
+				onWrite: func(record *learning.Record) error {
 					return nil
 				},
 			}
@@ -161,10 +161,10 @@ var _ = Describe("LearningHook Integration", func() {
 	})
 })
 
-// integrationMemoryClient is a mock MemoryClient for integration testing
+// integrationMemoryClient is a mock MemoryClient for integration testing.
 type integrationMemoryClient struct {
 	writeLearningCalls int
-	onWrite            func(record *learning.LearningRecord) error
+	onWrite            func(record *learning.Record) error
 }
 
 func (c *integrationMemoryClient) CreateEntities(ctx context.Context, entities []learning.Entity) ([]learning.Entity, error) {
@@ -203,7 +203,7 @@ func (c *integrationMemoryClient) OpenNodes(ctx context.Context, names []string)
 	return learning.KnowledgeGraph{}, nil
 }
 
-func (c *integrationMemoryClient) WriteLearningRecord(record *learning.LearningRecord) error {
+func (c *integrationMemoryClient) WriteLearningRecord(record *learning.Record) error {
 	c.writeLearningCalls++
 	if c.onWrite != nil {
 		return c.onWrite(record)

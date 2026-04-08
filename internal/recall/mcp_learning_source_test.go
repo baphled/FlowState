@@ -11,9 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 )
 
-// mockMemoryClient is a stub implementation of learning.MemoryClient for testing
-// Only implements the methods needed for MCPLearningSource
-
+// mockMemoryClient is a stub implementation of learning.MemoryClient for testing.
 type mockMemoryClient struct {
 	searchNodesCalled     bool
 	addObservationsCalled bool
@@ -33,7 +31,7 @@ func (m *mockMemoryClient) AddObservations(ctx context.Context, observations []l
 	return m.addObservationsResult, m.addObservationsErr
 }
 
-// Unused methods for interface compliance
+// Unused methods for interface compliance.
 func (m *mockMemoryClient) CreateEntities(ctx context.Context, entities []learning.Entity) ([]learning.Entity, error) {
 	return nil, nil
 }
@@ -56,27 +54,29 @@ func (m *mockMemoryClient) OpenNodes(ctx context.Context, names []string) (learn
 	return learning.KnowledgeGraph{}, nil
 }
 
-func (m *mockMemoryClient) WriteLearningRecord(record *learning.LearningRecord) error {
+func (m *mockMemoryClient) WriteLearningRecord(record *learning.Record) error {
 	return nil
 }
 
 var _ = Describe("LearningSource interface and MCPLearningSource", func() {
 	Context("LearningSource interface contract", func() {
 		It("should define Query, Observe, and Synthesize methods", func() {
-			var _ recall.LearningSource = nil
+			var source recall.LearningSource
+			Expect(source).To(BeNil())
 		})
 	})
 
 	Context("MCPLearningSource implementation", func() {
 		It("should implement LearningSource interface", func() {
-			var _ recall.LearningSource = &recall.MCPLearningSource{}
+			var source recall.LearningSource = &recall.MCPLearningSource{}
+			Expect(source).NotTo(BeNil())
 		})
 
 		It("should delegate Query to MemoryClient.SearchNodes", func() {
 			mock := &mockMemoryClient{searchNodesResult: []learning.Entity{{Name: "foo"}, {Name: "bar"}}}
 			mls := recall.NewMCPLearningSource(mock)
 			results, err := mls.Query(context.Background(), "test-query")
-			Expect(err).To(BeNil())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(2))
 			Expect(results[0]).To(Equal(learning.Entity{Name: "foo"}))
 			Expect(results[1]).To(Equal(learning.Entity{Name: "bar"}))
@@ -88,7 +88,7 @@ var _ = Describe("LearningSource interface and MCPLearningSource", func() {
 			mls := recall.NewMCPLearningSource(mock)
 			obs := []any{learning.ObservationEntry{EntityName: "e1"}}
 			err := mls.Observe(context.Background(), obs)
-			Expect(err).To(BeNil())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(mock.addObservationsCalled).To(BeTrue())
 		})
 
@@ -104,7 +104,7 @@ var _ = Describe("LearningSource interface and MCPLearningSource", func() {
 		It("should return synthesized string from Synthesize", func() {
 			mls := recall.NewMCPLearningSource(&mockMemoryClient{})
 			result, err := mls.Synthesize(context.Background(), []any{"a", "b"})
-			Expect(err).To(BeNil())
+			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(ContainSubstring("a"))
 			Expect(result).To(ContainSubstring("b"))
 		})

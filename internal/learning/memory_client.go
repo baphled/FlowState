@@ -74,5 +74,5 @@ type MemoryClient interface {
 	OpenNodes(ctx context.Context, names []string) (KnowledgeGraph, error)
 
 	// WriteLearningRecord persists a learning record to storage.
-	WriteLearningRecord(record *LearningRecord) error
+	WriteLearningRecord(record *Record) error
 }
