@@ -889,7 +889,6 @@ func streamPlan(
 	return planText, nil
 }
 
-
 // normalizeDependencies removes empty and "none" entries from a dependency list.
 //
 // Expected:
@@ -1110,4 +1109,3 @@ func (v *ValidatorChain) Validate(planText string) (*ValidationResult, error) {
 
 	return combined, nil
 }
-

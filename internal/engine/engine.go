@@ -105,6 +105,8 @@ func New(cfg Config) *Engine {
 		windowBuilder = ctxstore.NewWindowBuilder(cfg.TokenCounter)
 	}
 
+	recall.RegisterRecallTools(&cfg)
+
 	timeout := cfg.StreamTimeout
 	if timeout == 0 {
 		timeout = defaultStreamTimeout

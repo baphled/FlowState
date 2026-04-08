@@ -16,6 +16,7 @@ type persistedChainStore struct {
 	Entries []chainEntry `json:"entries"`
 }
 
+// FileChainStore provides file-based storage for message chains.
 type FileChainStore struct {
 	*InMemoryChainStore
 	path            string
@@ -25,6 +26,7 @@ type FileChainStore struct {
 	flushInterval   time.Duration
 }
 
+// NewFileChainStore creates a new FileChainStore.
 func NewFileChainStore(path string) (*FileChainStore, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -45,9 +47,13 @@ func NewFileChainStore(path string) (*FileChainStore, error) {
 	return store, nil
 }
 
+// Append adds a message to the chain for the specified agent.
 func (s *FileChainStore) Append(agentID string, msg provider.Message) error {
 	s.mu.Lock()
-	s.InMemoryChainStore.Append(agentID, msg)
+	if err := s.InMemoryChainStore.Append(agentID, msg); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.pendingPersists++
 	shouldFlush := s.pendingPersists >= s.flushThreshold
 	s.mu.Unlock()
@@ -58,7 +64,9 @@ func (s *FileChainStore) Append(agentID string, msg provider.Message) error {
 
 	go func() {
 		time.Sleep(s.flushInterval)
-		s.persist()
+		if err := s.persist(); err != nil {
+			log.Printf("error: failed to persist chain store: %v", err)
+		}
 	}()
 	return nil
 }
@@ -114,6 +122,7 @@ func (s *FileChainStore) load() error {
 	return nil
 }
 
+// Flush ensures all pending messages are persisted to storage.
 func (s *FileChainStore) Flush() error {
 	return s.persist()
 }
