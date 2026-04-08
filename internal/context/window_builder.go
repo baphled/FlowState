@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"log"
+	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
@@ -26,7 +27,9 @@ type buildOptions struct {
 
 // WindowBuilder constructs context windows for agent conversations.
 type WindowBuilder struct {
-	counter TokenCounter
+	counter    TokenCounter
+	chainLocks map[string]*sync.RWMutex
+	chainMu    sync.Mutex
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
@@ -40,7 +43,7 @@ type WindowBuilder struct {
 // Side effects:
 //   - None.
 func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
-	return &WindowBuilder{counter: counter}
+	return &WindowBuilder{counter: counter, chainLocks: make(map[string]*sync.RWMutex)}
 }
 
 // Build constructs a context window from the manifest and store within the token budget.
@@ -130,6 +133,28 @@ func (b *WindowBuilder) BuildContextResult(
 	return result
 }
 
+// BuildContextWithChainResult constructs a context window, appends chain context, and returns token usage.
+func (b *WindowBuilder) BuildContextWithChainResult(
+	ctx context.Context,
+	manifest *agent.Manifest,
+	userMessage string,
+	store *recall.FileContextStore,
+	chainStore recall.ChainContextStore,
+	tokenBudget int,
+) BuildResult {
+	_ = ctx
+	result := b.buildInternalWithChain(manifest, store, chainStore, tokenBudget, buildOptions{logWarnings: true})
+
+	if userMessage != "" {
+		userTokens := b.counter.Count(userMessage)
+		result.Messages = append(result.Messages, provider.Message{Role: "user", Content: userMessage})
+		result.TokensUsed += userTokens
+		result.BudgetRemaining -= userTokens
+	}
+
+	return result
+}
+
 // BuildWithSummary constructs a context window including a conversation summary.
 //
 // Expected:
@@ -172,6 +197,81 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 	semanticResults []recall.SearchResult,
 ) BuildResult {
 	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
+}
+
+// buildInternalWithChain constructs a context window with chain context assembly.
+func (b *WindowBuilder) buildInternalWithChain(
+	manifest *agent.Manifest,
+	store *recall.FileContextStore,
+	chainStore recall.ChainContextStore,
+	tokenBudget int,
+	opts buildOptions,
+) BuildResult {
+	budget := NewTokenBudget(tokenBudget)
+	var messages []provider.Message
+	truncated := false
+
+	systemPrompt, systemTruncated := b.prepareSystemPrompt(manifest, tokenBudget, opts.logWarnings)
+	truncated = truncated || systemTruncated
+	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+	budget.Reserve("system", b.counter.Count(systemPrompt))
+
+	messages, budget = b.appendSummary(messages, budget, opts.summary)
+
+	seenIDs := make(map[string]bool)
+	messages, seenIDs, budget = b.appendSemanticResults(messages, seenIDs, budget, opts.semanticResults)
+	messages, budget = b.appendChainContext(messages, budget, chainStore)
+
+	state := &messageState{messages: messages, seenIDs: seenIDs, budget: budget, truncated: truncated}
+	b.appendRecentMessages(store, manifest, state)
+	messages = state.messages
+	truncated = state.truncated
+
+	return BuildResult{Messages: messages, TokensUsed: budget.Used, BudgetRemaining: budget.Remaining(), Truncated: truncated}
+}
+
+// appendChainContext appends recent chain messages under a per-chain read lock.
+func (b *WindowBuilder) appendChainContext(
+	messages []provider.Message,
+	budget *TokenBudget,
+	chainStore recall.ChainContextStore,
+) ([]provider.Message, *TokenBudget) {
+	if chainStore == nil {
+		return messages, budget
+	}
+
+	lock := b.chainLock(chainStore.ChainID())
+	lock.RLock()
+	defer lock.RUnlock()
+
+	chainMessages, err := chainStore.GetByAgent("", 10)
+	if err != nil {
+		return messages, budget
+	}
+
+	for _, msg := range chainMessages {
+		msgTokens := b.counter.Count(msg.Content)
+		if budget.CanFit(msgTokens) {
+			messages = append(messages, msg)
+			budget.Reserve("chain", msgTokens)
+		}
+	}
+
+	return messages, budget
+}
+
+// chainLock returns the per-chain RWMutex for the given chain identifier.
+func (b *WindowBuilder) chainLock(chainID string) *sync.RWMutex {
+	b.chainMu.Lock()
+	defer b.chainMu.Unlock()
+
+	if lock, ok := b.chainLocks[chainID]; ok {
+		return lock
+	}
+
+	lock := &sync.RWMutex{}
+	b.chainLocks[chainID] = lock
+	return lock
 }
 
 // buildInternal constructs a context window with the given options, assembling system prompt,

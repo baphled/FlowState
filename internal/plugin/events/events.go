@@ -923,6 +923,7 @@ func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time
 	}
 }
 
+// RecallEmbeddingStoredEventData describes the data for a recall embedding stored event.
 type RecallEmbeddingStoredEventData struct {
 	SessionID  string
 	MessageID  string
@@ -930,11 +931,13 @@ type RecallEmbeddingStoredEventData struct {
 	LatencyMS  int64
 }
 
+// RecallEmbeddingStoredEvent represents an event when a recall embedding is stored.
 type RecallEmbeddingStoredEvent struct {
 	BaseEvent
 	Data RecallEmbeddingStoredEventData
 }
 
+// NewRecallEmbeddingStoredEvent creates a new RecallEmbeddingStoredEvent.
 func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...time.Time) *RecallEmbeddingStoredEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -946,6 +949,7 @@ func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...ti
 	}
 }
 
+// RecallSearchEventData describes the data for a recall search event.
 type RecallSearchEventData struct {
 	SessionID string
 	Query     string
@@ -953,11 +957,13 @@ type RecallSearchEventData struct {
 	LatencyMS int64
 }
 
+// RecallSearchEvent represents an event when a recall search is performed.
 type RecallSearchEvent struct {
 	BaseEvent
 	Data RecallSearchEventData
 }
 
+// NewRecallSearchEvent creates a new RecallSearchEvent.
 func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSearchEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -969,6 +975,7 @@ func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSe
 	}
 }
 
+// RecallChainSearchEventData describes the data for a recall chain search event.
 type RecallChainSearchEventData struct {
 	SessionID string
 	AgentID   string
@@ -977,11 +984,13 @@ type RecallChainSearchEventData struct {
 	LatencyMS int64
 }
 
+// RecallChainSearchEvent represents an event when a recall chain search is performed.
 type RecallChainSearchEvent struct {
 	BaseEvent
 	Data RecallChainSearchEventData
 }
 
+// NewRecallChainSearchEvent creates a new RecallChainSearchEvent.
 func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time) *RecallChainSearchEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -993,6 +1002,7 @@ func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time)
 	}
 }
 
+// RecallSummarizedEventData describes the data for a recall summarized event.
 type RecallSummarizedEventData struct {
 	SessionID      string
 	OriginalTokens int
@@ -1000,11 +1010,13 @@ type RecallSummarizedEventData struct {
 	LatencyMS      int64
 }
 
+// RecallSummarizedEvent represents an event when recall data is summarized.
 type RecallSummarizedEvent struct {
 	BaseEvent
 	Data RecallSummarizedEventData
 }
 
+// NewRecallSummarizedEvent creates a new RecallSummarizedEvent.
 func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *RecallSummarizedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {

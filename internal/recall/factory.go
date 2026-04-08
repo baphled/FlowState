@@ -5,7 +5,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
-type RecallToolFactory struct {
+// ToolFactory creates recall-related tools.
+type ToolFactory struct {
 	store        *FileContextStore
 	embedder     provider.Provider
 	tokenCounter TokenCounter
@@ -13,8 +14,9 @@ type RecallToolFactory struct {
 	topK         int
 }
 
-func NewRecallToolFactory(store *FileContextStore, embedder provider.Provider, tokenCounter TokenCounter, model string) *RecallToolFactory {
-	return &RecallToolFactory{
+// NewToolFactory creates a new ToolFactory.
+func NewToolFactory(store *FileContextStore, embedder provider.Provider, tokenCounter TokenCounter, model string) *ToolFactory {
+	return &ToolFactory{
 		store:        store,
 		embedder:     embedder,
 		tokenCounter: tokenCounter,
@@ -23,7 +25,8 @@ func NewRecallToolFactory(store *FileContextStore, embedder provider.Provider, t
 	}
 }
 
-func (f *RecallToolFactory) Tools() []tool.Tool {
+// Tools returns the available recall tools.
+func (f *ToolFactory) Tools() []tool.Tool {
 	return []tool.Tool{
 		NewSearchContextTool(f.store, f.embedder, f.topK),
 		NewGetMessagesTool(f.store),
@@ -31,7 +34,8 @@ func (f *RecallToolFactory) Tools() []tool.Tool {
 	}
 }
 
-func (f *RecallToolFactory) ToolsWithChainStore(chainStore ChainContextStore) []tool.Tool {
+// ToolsWithChainStore returns recall tools with chain store integration.
+func (f *ToolFactory) ToolsWithChainStore(chainStore ChainContextStore) []tool.Tool {
 	tools := f.Tools()
 	if chainStore != nil {
 		chainTool := NewChainSearchTool(chainStore, f.embedder, f.store)

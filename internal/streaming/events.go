@@ -375,8 +375,10 @@ type RecallSearchEvent struct {
 	AgentID   string `json:"agentId"`
 }
 
+// Type returns the event type.
 func (e RecallSearchEvent) Type() string { return EventTypeRecallSearch }
 
+// MarshalJSON marshals the event to JSON.
 func (e RecallSearchEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallSearchEvent
 	return marshalWithType(e.Type(), alias(e))
@@ -390,8 +392,10 @@ type RecallChainSearchEvent struct {
 	AgentID   string `json:"agentId"`
 }
 
+// Type returns the event type.
 func (e RecallChainSearchEvent) Type() string { return EventTypeRecallChainSearch }
 
+// MarshalJSON marshals the event to JSON.
 func (e RecallChainSearchEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallChainSearchEvent
 	return marshalWithType(e.Type(), alias(e))
@@ -405,8 +409,10 @@ type RecallSummarizedEvent struct {
 	AgentID        string `json:"agentId"`
 }
 
+// Type returns the event type.
 func (e RecallSummarizedEvent) Type() string { return EventTypeRecallSummarized }
 
+// MarshalJSON marshals the event to JSON.
 func (e RecallSummarizedEvent) MarshalJSON() ([]byte, error) {
 	type alias RecallSummarizedEvent
 	return marshalWithType(e.Type(), alias(e))

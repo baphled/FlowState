@@ -264,15 +264,6 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
-
-
-
-
-
-
-
-
-
 // writeTasksToMarkdown writes tasks to the markdown body with all metadata fields.
 //
 // Expected:
@@ -928,9 +919,3 @@ func hasWorkObjectivesData(objectives WorkObjectives) bool {
 		len(objectives.MustHave) > 0 ||
 		len(objectives.MustNotHave) > 0
 }
-
-
-
-
-
-

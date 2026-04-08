@@ -556,43 +556,7 @@ type runtimeComponents struct {
 func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest))) {
 	var eng *engine.Engine
 	var ensureToolsFn func(agent.Manifest)
-	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
-	for i := range params.alwaysActiveSkills {
-		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
-	}
-
-	hookChain := buildHookChain(hookChainConfig{
-		learningStore: params.learningStore,
-		manifestGetter: func() agent.Manifest {
-			if eng != nil {
-				return eng.Manifest()
-			}
-			return params.defaultManifest
-		},
-		bakedSkillNames: bakedNames,
-		failoverHk:      params.failoverHook,
-		failoverMgr:     params.failoverManager,
-		dispatcher:      params.dispatcher,
-		twc: &toolWiringCallbacks{
-			hasTool: func(name string) bool {
-				if eng == nil {
-					return false
-				}
-				return eng.HasTool(name)
-			},
-			ensureTools: func(m agent.Manifest) {
-				if ensureToolsFn != nil {
-					ensureToolsFn(m)
-				}
-			},
-			schemaRebuilder: func() []provider.Tool {
-				if eng == nil {
-					return nil
-				}
-				return eng.ToolSchemas()
-			},
-		},
-	})
+	hookChain := buildCreateEngineHookChain(params, &eng, &ensureToolsFn)
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
@@ -615,6 +579,46 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		ensureToolsFn = fn
 	}
 	return eng, setEnsureTools
+}
+
+func buildCreateEngineHookChain(params engineParams, eng **engine.Engine, ensureToolsFn *func(agent.Manifest)) *hook.Chain {
+	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
+	for i := range params.alwaysActiveSkills {
+		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
+	}
+
+	return buildHookChain(hookChainConfig{
+		learningStore: params.learningStore,
+		manifestGetter: func() agent.Manifest {
+			if *eng != nil {
+				return (*eng).Manifest()
+			}
+			return params.defaultManifest
+		},
+		bakedSkillNames: bakedNames,
+		failoverHk:      params.failoverHook,
+		failoverMgr:     params.failoverManager,
+		dispatcher:      params.dispatcher,
+		twc: &toolWiringCallbacks{
+			hasTool: func(name string) bool {
+				if *eng == nil {
+					return false
+				}
+				return (*eng).HasTool(name)
+			},
+			ensureTools: func(m agent.Manifest) {
+				if *ensureToolsFn != nil {
+					(*ensureToolsFn)(m)
+				}
+			},
+			schemaRebuilder: func() []provider.Tool {
+				if *eng == nil {
+					return nil
+				}
+				return (*eng).ToolSchemas()
+			},
+		},
+	})
 }
 
 // setAgentOverridesFromConfig extracts agent overrides from the app config and applies them to the engine.
@@ -781,7 +785,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		contextStore := a.Engine.ContextStore()
 		if contextStore != nil && a.ollamaProvider != nil {
 			tokenCounter := ctxstore.NewTiktokenCounter()
-			factory := recall.NewRecallToolFactory(contextStore, a.ollamaProvider, tokenCounter, a.Config.Providers.Ollama.Model)
+			factory := recall.NewToolFactory(contextStore, a.ollamaProvider, tokenCounter, a.Config.Providers.Ollama.Model)
 			tools = append(tools, factory.ToolsWithChainStore(a.Engine.ChainStore())...)
 		}
 	}
