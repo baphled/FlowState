@@ -7,27 +7,31 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/learning"
+	"github.com/baphled/flowstate/internal/provider"
 )
 
-// MCPLearningSource implements LearningSource using MemoryClient.
-// It provides knowledge access and observation recording via the memory client.
+// MCPLearningSource implements LearningSource using MemoryClient and Provider.
+// It provides knowledge access, observation recording, and LLM-based synthesis via background goroutines.
 type MCPLearningSource struct {
-	client learning.MemoryClient
+	client   learning.MemoryClient
+	provider provider.Provider
 }
 
 // NewMCPLearningSource creates a new MCPLearningSource.
 //
 // Expected:
 //   - client implements learning.MemoryClient.
+//   - provider implements provider.Provider.
 //
 // Returns:
-//   - A learning source backed by the supplied memory client.
+//   - A learning source backed by the supplied memory client and provider.
 //
 // Side effects:
 //   - None.
-func NewMCPLearningSource(client learning.MemoryClient) *MCPLearningSource {
+func NewMCPLearningSource(client learning.MemoryClient, prov provider.Provider) *MCPLearningSource {
 	return &MCPLearningSource{
-		client: client,
+		client:   client,
+		provider: prov,
 	}
 }
 
@@ -79,24 +83,69 @@ func (m *MCPLearningSource) Observe(ctx context.Context, observations []any) err
 	return err
 }
 
-// Synthesize provides knowledge synthesis.
+// Synthesize generates insights from observations using the LLM provider.
+// It launches a background goroutine to synthesize and returns immediately without waiting.
 //
 // Expected:
-//   - nodes contains zero or more values to synthesise.
+//   - ctx is valid context for background goroutine setup.
+//   - entity is the entity name to synthesize.
+//   - observations contains strings to synthesize.
 //
 // Returns:
-//   - A synthesised summary string.
-//   - An error when synthesis cannot proceed.
+//   - An error if context setup fails; nil if goroutine launches successfully.
+//   - Provider errors and memory client errors are logged in the goroutine and do not block the caller.
 //
 // Side effects:
-//   - None.
-func (m *MCPLearningSource) Synthesize(_ context.Context, nodes []any) (string, error) {
-	if len(nodes) == 0 {
-		return "", nil
-	}
-	parts := make([]string, len(nodes))
-	for i, n := range nodes {
-		parts[i] = fmt.Sprint(n)
-	}
-	return "Synthesis: " + strings.Join(parts, ", "), nil
+//   - Launches a background goroutine that calls provider.Chat and adds observations to memory client.
+//   - Does not wait for goroutine completion (non-blocking).
+func (m *MCPLearningSource) Synthesize(ctx context.Context, entity string, observations []string) error {
+	// Launch background goroutine to synthesize
+	go func() {
+		// Create synthesis prompt from observations
+		var promptBuilder strings.Builder
+		fmt.Fprintf(&promptBuilder, "Synthesize insights from the following observations about %s:\n", entity)
+		for _, obs := range observations {
+			fmt.Fprintf(&promptBuilder, "- %s\n", obs)
+		}
+
+		// Call provider to synthesize
+		req := provider.ChatRequest{
+			Provider: "default",
+			Messages: []provider.Message{
+				{
+					Role:    "user",
+					Content: promptBuilder.String(),
+				},
+			},
+		}
+
+		resp, err := m.provider.Chat(ctx, req)
+		if err != nil {
+			// Log error but don't crash
+			fmt.Printf("[synthesis error] failed to call provider: %v\n", err)
+			return
+		}
+
+		// Extract synthesized content
+		synthesized := resp.Message.Content
+
+		// Store as observation
+		entries := []learning.ObservationEntry{
+			{
+				EntityName: entity,
+				Contents: []string{
+					"Synthesized: " + synthesized,
+				},
+			},
+		}
+
+		_, err = m.client.AddObservations(ctx, entries)
+		if err != nil {
+			// Log error but don't crash
+			fmt.Printf("[synthesis error] failed to store observations: %v\n", err)
+			return
+		}
+	}()
+
+	return nil
 }
