@@ -15,6 +15,17 @@ type ToolFactory struct {
 }
 
 // NewToolFactory creates a new ToolFactory.
+//
+// Expected:
+//   - store and embedder provide recall access.
+//   - tokenCounter counts model tokens.
+//   - model identifies the active embedding model.
+//
+// Returns:
+//   - A configured tool factory.
+//
+// Side effects:
+//   - None.
 func NewToolFactory(store *FileContextStore, embedder provider.Provider, tokenCounter TokenCounter, model string) *ToolFactory {
 	return &ToolFactory{
 		store:        store,
@@ -26,6 +37,15 @@ func NewToolFactory(store *FileContextStore, embedder provider.Provider, tokenCo
 }
 
 // Tools returns the available recall tools.
+//
+// Expected:
+//   - The receiver is a valid ToolFactory.
+//
+// Returns:
+//   - The base recall tools.
+//
+// Side effects:
+//   - None.
 func (f *ToolFactory) Tools() []tool.Tool {
 	return []tool.Tool{
 		NewSearchContextTool(f.store, f.embedder, f.topK),
@@ -35,6 +55,16 @@ func (f *ToolFactory) Tools() []tool.Tool {
 }
 
 // ToolsWithChainStore returns recall tools with chain store integration.
+//
+// Expected:
+//   - The receiver is a valid ToolFactory.
+//   - chainStore may be nil.
+//
+// Returns:
+//   - The base tools, plus chain search when a chain store is provided.
+//
+// Side effects:
+//   - None.
 func (f *ToolFactory) ToolsWithChainStore(chainStore ChainContextStore) []tool.Tool {
 	tools := f.Tools()
 	if chainStore != nil {

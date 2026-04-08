@@ -17,6 +17,16 @@ type FileDiscoveryStore struct {
 }
 
 // NewFileDiscoveryStore creates a new FileDiscoveryStore.
+//
+// Expected:
+//   - filePath identifies the JSONL file to open.
+//
+// Returns:
+//   - A file-backed discovery store.
+//   - An error when the file cannot be opened.
+//
+// Side effects:
+//   - Opens or creates the backing file.
 func NewFileDiscoveryStore(filePath string) (*FileDiscoveryStore, error) {
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -31,6 +41,16 @@ func NewFileDiscoveryStore(filePath string) (*FileDiscoveryStore, error) {
 }
 
 // Publish stores an event as JSON in the file.
+//
+// Expected:
+//   - event is JSON-marshalable.
+//
+// Returns:
+//   - An error when marshalling or writing fails.
+//
+// Side effects:
+//   - Appends a JSON line to the backing file.
+//   - Notifies any registered watchers.
 func (f *FileDiscoveryStore) Publish(event any) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -59,6 +79,16 @@ func (f *FileDiscoveryStore) Publish(event any) error {
 }
 
 // Query reads events from the file and returns them in insertion order.
+//
+// Expected:
+//   - The store is open.
+//
+// Returns:
+//   - Events in insertion order.
+//   - An error when the file cannot be read.
+//
+// Side effects:
+//   - Reads the backing file.
 func (f *FileDiscoveryStore) Query(_ any) ([]any, error) {
 	f.mutex.RLock()
 	defer f.mutex.RUnlock()
@@ -83,6 +113,16 @@ func (f *FileDiscoveryStore) Query(_ any) ([]any, error) {
 }
 
 // Watch returns a channel for streaming events.
+//
+// Expected:
+//   - The store is open.
+//
+// Returns:
+//   - A channel that receives published events.
+//   - An error when the store is closed.
+//
+// Side effects:
+//   - Registers a watcher channel.
 func (f *FileDiscoveryStore) Watch() (<-chan any, error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -97,6 +137,15 @@ func (f *FileDiscoveryStore) Watch() (<-chan any, error) {
 }
 
 // Close cleans up resources.
+//
+// Expected:
+//   - The store may already be closed.
+//
+// Returns:
+//   - An error when closing the backing file fails.
+//
+// Side effects:
+//   - Closes the backing file and marks the store closed.
 func (f *FileDiscoveryStore) Close() error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()

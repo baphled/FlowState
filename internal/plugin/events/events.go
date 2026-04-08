@@ -938,6 +938,16 @@ type RecallEmbeddingStoredEvent struct {
 }
 
 // NewRecallEmbeddingStoredEvent creates a new RecallEmbeddingStoredEvent.
+//
+// Expected:
+//   - data contains the embedding storage metadata.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallEmbeddingStoredEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...time.Time) *RecallEmbeddingStoredEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -964,6 +974,16 @@ type RecallSearchEvent struct {
 }
 
 // NewRecallSearchEvent creates a new RecallSearchEvent.
+//
+// Expected:
+//   - data contains the recall search metadata.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallSearchEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSearchEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -991,6 +1011,16 @@ type RecallChainSearchEvent struct {
 }
 
 // NewRecallChainSearchEvent creates a new RecallChainSearchEvent.
+//
+// Expected:
+//   - data contains the chain search metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallChainSearchEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time) *RecallChainSearchEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -1017,6 +1047,16 @@ type RecallSummarizedEvent struct {
 }
 
 // NewRecallSummarizedEvent creates a new RecallSummarizedEvent.
+//
+// Expected:
+//   - data contains the summarisation metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallSummarizedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
 func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *RecallSummarizedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {

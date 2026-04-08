@@ -12,6 +12,9 @@ import (
 // The function expects cfg to be a pointer to an engine.Config value. It reads the
 // configuration via reflection so the recall package does not import engine directly.
 //
+// Expected:
+//   - cfg points to a struct with Tools, Store, EmbeddingProvider, TokenCounter, and Manifest fields.
+//
 // Returns:
 //   - The recall tools that were added to cfg.Tools.
 //   - Nil when cfg is invalid or the recall dependencies are unavailable.
@@ -46,7 +49,7 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	factory := NewToolFactory(store, embedder, tokenCounter, model)
 	recallTools := factory.Tools()
 	currentTools := make([]tool.Tool, 0, toolsField.Len()+len(recallTools))
-	for i := 0; i < toolsField.Len(); i++ {
+	for i := range toolsField.Len() {
 		if existing, ok := toolsField.Index(i).Interface().(tool.Tool); ok {
 			currentTools = append(currentTools, existing)
 		}
@@ -62,30 +65,83 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	return recallTools
 }
 
+// loadRecallStore extracts a FileContextStore from a reflected field.
+//
+// Expected:
+//   - field contains a *FileContextStore value or nil.
+//
+// Returns:
+//   - The FileContextStore when present.
+//   - Nil when the field is invalid, nil, or of the wrong type.
+//
+// Side effects:
+//   - None.
 func loadRecallStore(field reflect.Value) *FileContextStore {
 	if !field.IsValid() || field.IsNil() {
 		return nil
 	}
-	store, _ := field.Interface().(*FileContextStore)
+	store, ok := field.Interface().(*FileContextStore)
+	if !ok {
+		return nil
+	}
 	return store
 }
 
+// loadRecallEmbedder extracts a provider.Provider from a reflected field.
+//
+// Expected:
+//   - field contains a provider.Provider value or nil.
+//
+// Returns:
+//   - The provider when present.
+//   - Nil when the field is invalid, nil, or of the wrong type.
+//
+// Side effects:
+//   - None.
 func loadRecallEmbedder(field reflect.Value) provider.Provider {
 	if !field.IsValid() || field.IsNil() {
 		return nil
 	}
-	embedder, _ := field.Interface().(provider.Provider)
+	embedder, ok := field.Interface().(provider.Provider)
+	if !ok {
+		return nil
+	}
 	return embedder
 }
 
+// loadRecallTokenCounter extracts a TokenCounter from a reflected field.
+//
+// Expected:
+//   - field contains a TokenCounter value or nil.
+//
+// Returns:
+//   - The token counter when present.
+//   - Nil when the field is invalid, nil, or of the wrong type.
+//
+// Side effects:
+//   - None.
 func loadRecallTokenCounter(field reflect.Value) TokenCounter {
 	if !field.IsValid() || field.IsNil() {
 		return nil
 	}
-	counter, _ := field.Interface().(TokenCounter)
+	counter, ok := field.Interface().(TokenCounter)
+	if !ok {
+		return nil
+	}
 	return counter
 }
 
+// loadRecallModelName extracts the embedding model name from a reflected manifest field.
+//
+// Expected:
+//   - field contains a manifest struct with ContextManagement.EmbeddingModel.
+//
+// Returns:
+//   - The embedding model name.
+//   - An empty string when the field is invalid or does not match the expected shape.
+//
+// Side effects:
+//   - None.
 func loadRecallModelName(field reflect.Value) string {
 	if !field.IsValid() || field.Kind() != reflect.Struct {
 		return ""

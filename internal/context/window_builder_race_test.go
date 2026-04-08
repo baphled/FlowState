@@ -26,7 +26,7 @@ var _ = Describe("WindowBuilder chain context race protection", func() {
 		store, err := recall.NewFileContextStore(filepath.Join(tempDir, "store.json"), "test-model")
 		Expect(err).NotTo(HaveOccurred())
 
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			Expect(chainStore.Append("agent-a", provider.Message{Role: "assistant", Content: "chain message"})).To(Succeed())
 		}
 
@@ -43,7 +43,7 @@ var _ = Describe("WindowBuilder chain context race protection", func() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				results <- builder.BuildContextWithChainResult(gocontext.Background(), manifest, "hello", store, chainStore, 128)
+				results <- builder.BuildContextWithChainResult(gocontext.Background(), manifest, "hello", context.NewChainBuildOptions(store, chainStore, 128))
 			}()
 		}
 

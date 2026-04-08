@@ -581,6 +581,18 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 	return eng, setEnsureTools
 }
 
+// buildCreateEngineHookChain constructs the hook chain used when the engine is created.
+//
+// Expected:
+//   - params contains the app dependencies required to wire hooks.
+//   - eng points to the engine instance that will be created.
+//   - ensureToolsFn points to the callback used to ensure tool registration.
+//
+// Returns:
+//   - A hook chain configured for engine creation.
+//
+// Side effects:
+//   - None.
 func buildCreateEngineHookChain(params engineParams, eng **engine.Engine, ensureToolsFn *func(agent.Manifest)) *hook.Chain {
 	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
 	for i := range params.alwaysActiveSkills {
@@ -2062,6 +2074,17 @@ func createContextStore(cfg *config.AppConfig) *recall.FileContextStore {
 	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model)
 }
 
+// createChainStore initialises the chain store for conversation context.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid DataDir.
+//
+// Returns:
+//   - A persistent chain store when the file-backed store can be created.
+//   - An in-memory chain store when file-backed initialisation fails.
+//
+// Side effects:
+//   - Attempts to open the chain store file under cfg.DataDir.
 func createChainStore(cfg *config.AppConfig) recall.ChainContextStore {
 	chainPath := filepath.Join(cfg.DataDir, "chain_store.json")
 	store, err := recall.NewFileChainStore(chainPath)

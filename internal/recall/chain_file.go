@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// persistedChainStore stores the serialised chain state on disk.
 type persistedChainStore struct {
 	ChainID string       `json:"chain_id"`
 	Entries []chainEntry `json:"entries"`
@@ -27,6 +28,17 @@ type FileChainStore struct {
 }
 
 // NewFileChainStore creates a new FileChainStore.
+//
+// Expected:
+//   - path identifies the backing JSON file.
+//
+// Returns:
+//   - A file-backed chain store.
+//   - An error when the directory cannot be created or existing data cannot be loaded.
+//
+// Side effects:
+//   - Creates the parent directory when needed.
+//   - Loads any existing chain state from disk.
 func NewFileChainStore(path string) (*FileChainStore, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -48,6 +60,17 @@ func NewFileChainStore(path string) (*FileChainStore, error) {
 }
 
 // Append adds a message to the chain for the specified agent.
+//
+// Expected:
+//   - agentID identifies the owning agent.
+//   - msg contains the message to append.
+//
+// Returns:
+//   - An error when the in-memory append or deferred persistence fails.
+//
+// Side effects:
+//   - Mutates the in-memory chain state.
+//   - May persist the chain state asynchronously or immediately.
 func (s *FileChainStore) Append(agentID string, msg provider.Message) error {
 	s.mu.Lock()
 	if err := s.InMemoryChainStore.Append(agentID, msg); err != nil {
@@ -71,6 +94,16 @@ func (s *FileChainStore) Append(agentID string, msg provider.Message) error {
 	return nil
 }
 
+// persist writes the chain store to disk.
+//
+// Expected:
+//   - The store has valid in-memory state.
+//
+// Returns:
+//   - An error when serialisation, write, or rename fails.
+//
+// Side effects:
+//   - Writes a temporary file and renames it over the target file.
 func (s *FileChainStore) persist() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -103,6 +136,16 @@ func (s *FileChainStore) persist() error {
 	return nil
 }
 
+// load restores the chain store from disk.
+//
+// Expected:
+//   - s.path identifies the backing file.
+//
+// Returns:
+//   - An error when the file exists but cannot be read or decoded.
+//
+// Side effects:
+//   - Populates the in-memory chain state from the file when present.
 func (s *FileChainStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -123,6 +166,15 @@ func (s *FileChainStore) load() error {
 }
 
 // Flush ensures all pending messages are persisted to storage.
+//
+// Expected:
+//   - The store has valid in-memory state.
+//
+// Returns:
+//   - An error when persistence fails.
+//
+// Side effects:
+//   - Writes pending chain data to disk.
 func (s *FileChainStore) Flush() error {
 	return s.persist()
 }

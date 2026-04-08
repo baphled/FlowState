@@ -20,6 +20,17 @@ type PublishDiscoveryTool struct {
 }
 
 // Run validates fields and publishes the discovery event.
+//
+// Expected:
+//   - The required discovery fields are populated.
+//   - Store implements the Publish method.
+//
+// Returns:
+//   - The published discovery identifier.
+//   - An error when validation or publishing fails.
+//
+// Side effects:
+//   - Publishes a discovery record to the configured store.
 func (t *PublishDiscoveryTool) Run() (string, error) {
 	if t.Kind == "" || t.Summary == "" || t.Details == "" {
 		return "", errors.New("kind, summary, and details are required")

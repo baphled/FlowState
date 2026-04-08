@@ -18,6 +18,17 @@ type QueryDiscoveriesTool struct {
 }
 
 // Run returns matching discoveries as JSON.
+//
+// Expected:
+//   - Store implements the Query method.
+//   - The receiver contains the desired discovery filters.
+//
+// Returns:
+//   - A JSON array of matching discoveries.
+//   - An error when querying or marshalling fails.
+//
+// Side effects:
+//   - Queries the configured store.
 func (t *QueryDiscoveriesTool) Run() (string, error) {
 	q := recall.DiscoveryQuery{
 		Kind:     t.Kind,
@@ -48,6 +59,17 @@ func (t *QueryDiscoveriesTool) Run() (string, error) {
 	return string(out), nil
 }
 
+// matchesQuery reports whether a discovery satisfies the configured filters.
+//
+// Expected:
+//   - discovery is non-nil.
+//
+// Returns:
+//   - True when the discovery matches all configured filters.
+//   - False otherwise.
+//
+// Side effects:
+//   - None.
 func (t *QueryDiscoveriesTool) matchesQuery(discovery *recall.Discovery) bool {
 	if t.Kind != "" && discovery.Kind != t.Kind {
 		return false
