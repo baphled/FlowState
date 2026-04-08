@@ -2,7 +2,38 @@ package learning
 
 import (
 	"context"
+	"runtime"
+	"strings"
 )
+
+// extractCallStack returns the function names from the current call stack.
+// It skips internal frames to surface user-meaningful function names.
+//
+// Expected: None.
+//
+// Returns:
+//   - A slice of function names from the current call stack.
+//
+// Side effects:
+//   - None.
+func extractCallStack() []string {
+	pcs := make([]uintptr, 10)
+	n := runtime.Callers(2, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	var stack []string
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" {
+			parts := strings.Split(frame.Function, "/")
+			name := parts[len(parts)-1]
+			stack = append(stack, name)
+		}
+		if !more {
+			break
+		}
+	}
+	return stack
+}
 
 // Record represents a tool call record for learning purposes.
 type Record struct {
@@ -13,6 +44,7 @@ type Record struct {
 
 // ToolCallResult represents the result of a tool call.
 type ToolCallResult struct {
+	Outcome string
 }
 
 // contextKeyType is a type for context keys to avoid collisions with built-in types.
@@ -44,18 +76,26 @@ func NewLearningHook(client MemoryClient) *Hook {
 //
 // Expected:
 //   - ctx may contain an AgentID value.
-//   - result is accepted for interface compatibility.
+//   - result may contain an Outcome value.
 //
 // Returns:
 //   - An error when persisting the learning record fails.
 //
 // Side effects:
 //   - Writes a learning record via the configured MemoryClient.
-func (h *Hook) Handle(ctx context.Context, _ *ToolCallResult) error {
+func (h *Hook) Handle(ctx context.Context, result *ToolCallResult) error {
 	record := &Record{}
 
 	if agentID, ok := ctx.Value(AgentIDKey).(string); ok {
 		record.AgentID = agentID
+	}
+
+	// Populate ToolsUsed from call stack
+	record.ToolsUsed = extractCallStack()
+
+	// Populate Outcome from result
+	if result != nil {
+		record.Outcome = result.Outcome
 	}
 
 	return h.client.WriteLearningRecord(record)

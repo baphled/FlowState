@@ -25,11 +25,29 @@ type PublishDiscoveryTool struct {
 }
 
 // NewPublishDiscoveryTool creates a new PublishDiscoveryTool.
+//
+// Expected:
+//   - store implements DiscoveryStore.
+//
+// Returns:
+//   - A *PublishDiscoveryTool configured with the given store.
+//
+// Side effects:
+//   - None.
 func NewPublishDiscoveryTool(store DiscoveryStore) *PublishDiscoveryTool {
 	return &PublishDiscoveryTool{store: store}
 }
 
 // Run publishes a discovery using the provided input.
+//
+// Expected:
+//   - input.Kind, input.Summary, input.Priority must be non-empty strings.
+//
+// Returns:
+//   - The published discovery ID, or error if validation fails or store.Publish fails.
+//
+// Side effects:
+//   - Publishes the discovery to the configured DiscoveryStore.
 func (t *PublishDiscoveryTool) Run(input PublishDiscoveryInput) (string, error) {
 	// Validate required fields (AC2)
 	if input.Kind == "" {
