@@ -10,6 +10,7 @@ type LearningSource interface {
 	Query(ctx context.Context, query string) ([]any, error)
 	// Observe records new observations via the memory client.
 	Observe(ctx context.Context, observations []any) error
-	// Synthesize provides knowledge synthesis and insights.
-	Synthesize(ctx context.Context, nodes []any) (string, error)
+	// Synthesize generates insights from observations using an LLM provider.
+	// It launches a background goroutine to synthesize and returns immediately.
+	Synthesize(ctx context.Context, entity string, observations []string) error
 }
