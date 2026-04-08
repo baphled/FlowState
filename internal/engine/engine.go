@@ -38,6 +38,7 @@ type Engine struct {
 	store             *recall.FileContextStore
 	chainStore        recall.ChainContextStore
 	windowBuilder     *ctxstore.WindowBuilder
+	recallBroker      recall.Broker
 	tokenCounter      ctxstore.TokenCounter
 	streamTimeout     time.Duration
 	hookChain         *hook.Chain
@@ -77,6 +78,7 @@ type Config struct {
 	Store             *recall.FileContextStore
 	ChainStore        recall.ChainContextStore
 	TokenCounter      ctxstore.TokenCounter
+	RecallBroker      recall.Broker
 	StreamTimeout     time.Duration
 	HookChain         *hook.Chain
 	ToolRegistry      *tool.Registry
@@ -137,6 +139,7 @@ func New(cfg Config) *Engine {
 		store:             cfg.Store,
 		chainStore:        cfg.ChainStore,
 		windowBuilder:     windowBuilder,
+		recallBroker:      cfg.RecallBroker,
 		tokenCounter:      cfg.TokenCounter,
 		streamTimeout:     timeout,
 		hookChain:         chain,
@@ -1089,9 +1092,35 @@ func (e *Engine) appendToolResultToMessages(
 //
 // Returns:
 //   - A slice of messages including system prompt, history, and user message.
+
+// obsToSearchResults converts Observation objects from RecallBroker to SearchResult format.
+// Observations don't have scores, so we use a default score of 1.0.
 //
-// Side effects:
-//   - None.
+// Expected: Slice of Observation objects from RecallBroker.Query().
+// Returns: Slice of SearchResult objects with default score of 1.0.
+// Side effects: None.
+func obsToSearchResults(observations []recall.Observation) []recall.SearchResult {
+	searchResults := make([]recall.SearchResult, 0, len(observations))
+	for _, obs := range observations {
+		searchResults = append(searchResults, recall.SearchResult{
+			MessageID: obs.ID,
+			Score:     1.0,
+			Message: provider.Message{
+				Role:    "assistant",
+				Content: obs.Content,
+			},
+		})
+	}
+	return searchResults
+}
+
+// buildContextWindow assembles context for the language model, including system prompt, chat history, and observations from RecallBroker.
+// It queries RecallBroker for relevant observations if available and merges them into the context window.
+// If RecallBroker is unavailable or fails, context assembly degrades gracefully to normal operation.
+//
+// Expected: sessionID and userMessage are non-empty strings.
+// Returns: Slice of provider.Message objects forming the context window for the language model.
+// Side effects: Logs query failures without crashing; uses RecallBroker if available.
 func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userMessage string) []provider.Message {
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPrompt()
@@ -1109,7 +1138,26 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	manifestCopy := e.manifest
 	manifestCopy.Instructions.SystemPrompt = systemPrompt
-	result := e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+
+	// Fire context.assembly hook: query RecallBroker if available
+	searchResults := []recall.SearchResult{}
+	if e.recallBroker != nil {
+		observations, err := e.recallBroker.Query(ctx, userMessage, 5)
+		if err != nil {
+			slog.Warn("RecallBroker.Query failed", "error", err)
+		} else {
+			searchResults = obsToSearchResults(observations)
+		}
+	}
+
+	// Use BuildWithSemanticResults if we have search results, otherwise use BuildContextResult
+	var result ctxstore.BuildResult
+	if len(searchResults) > 0 {
+		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults)
+	} else {
+		result = e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+	}
+
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
 	e.lastContextResult = result
