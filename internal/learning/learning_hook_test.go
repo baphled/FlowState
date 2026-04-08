@@ -210,3 +210,52 @@ func (c *integrationMemoryClient) WriteLearningRecord(record *learning.Record) e
 	}
 	return nil
 }
+
+var _ = Describe("LearningHook (AC2-AC4 RED phase)", func() {
+	Context("populating ToolsUsed from call stack", func() {
+		It("should populate ToolsUsed in the learning record from execution context", func() {
+			stubClient := &stubMemoryClient{
+				onWrite: func(record *learning.Record) error {
+					Expect(record.ToolsUsed).NotTo(BeEmpty())
+					return nil
+				},
+			}
+			hook := learning.NewLearningHook(stubClient)
+			ctx := context.Background()
+			_ = hook.Handle(ctx, &learning.ToolCallResult{})
+		})
+	})
+
+	Context("populating Outcome from ToolCallResult", func() {
+		It("should populate Outcome in the learning record from ToolCallResult.Outcome field", func() {
+			stubClient := &stubMemoryClient{
+				onWrite: func(record *learning.Record) error {
+					Expect(record.Outcome).To(Equal("success"))
+					return nil
+				},
+			}
+			hook := learning.NewLearningHook(stubClient)
+			ctx := context.Background()
+			result := &learning.ToolCallResult{Outcome: "success"}
+			_ = hook.Handle(ctx, result)
+		})
+	})
+
+	Context("comprehensive field population", func() {
+		It("should populate all three fields (AgentID, ToolsUsed, Outcome) in one call", func() {
+			testAgentID := "agent-test-123"
+			stubClient := &stubMemoryClient{
+				onWrite: func(record *learning.Record) error {
+					Expect(record.AgentID).To(Equal(testAgentID))
+					Expect(record.ToolsUsed).ToNot(BeEmpty())
+					Expect(record.Outcome).To(Equal("completed"))
+					return nil
+				},
+			}
+			hook := learning.NewLearningHook(stubClient)
+			ctx := context.WithValue(context.Background(), learning.AgentIDKey, testAgentID)
+			result := &learning.ToolCallResult{Outcome: "completed"}
+			_ = hook.Handle(ctx, result)
+		})
+	})
+})
