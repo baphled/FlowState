@@ -28,7 +28,6 @@ import (
 	"github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plugin/failover"
-	"github.com/baphled/flowstate/internal/prompt"
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/recall"
@@ -3635,7 +3634,7 @@ func (s *StepDefinitions) theAssistantTextShouldAppearBeforeTheToolCallIndicator
 	}
 	rendered := s.chatView.RenderContent(s.chatView.Width())
 	textPos := strings.Index(rendered, "Hello from the assistant")
-	toolCallPos := strings.Index(rendered, "file_read")
+	toolCallPos := strings.Index(rendered, "⚡")
 	if textPos < 0 {
 		return fmt.Errorf("expected assistant text to appear in content, but not found; rendered: %q", rendered)
 	}
@@ -5035,15 +5034,16 @@ func (s *StepDefinitions) configureAgentEngine(id, name, defaultPrompt string) e
 			SystemPrompt: defaultPrompt,
 		},
 	}
-	promptContent, err := prompt.GetPromptWithMetadata(id)
-	if err == nil && promptContent != nil {
-		manifest.Instructions.SystemPrompt = promptContent.Body
+	agentPath := filepath.Join("..", "..", "internal", "app", "agents", id+".md")
+	if loaded, err := agent.LoadManifestMarkdown(agentPath); err == nil {
+		manifest = *loaded
 	}
 	registry := provider.NewRegistry()
 	s.agentEngine = engine.New(engine.Config{
-		Registry:        registry,
-		Manifest:        manifest,
-		FailoverManager: failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
+		Registry:         registry,
+		Manifest:         manifest,
+		AgentsFileLoader: agent.NewAgentsFileLoader("", ""),
+		FailoverManager:  failover.NewManager(registry, failover.NewHealthManager(), 5*time.Minute),
 	})
 	return nil
 }

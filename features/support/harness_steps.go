@@ -72,7 +72,7 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 			return bddCtx, err
 		}
 		h.projectRoot = filepath.Join(cwd, "..", "..")
-		h.harness = harness.NewHarness(h.projectRoot, validation.DefaultValidators()...)
+		h.harness = harness.NewHarness(h.projectRoot, append(validation.DefaultValidators(), harness.WithMaxRetries(3))...)
 		h.evaluationResult = nil
 		h.validationResult = nil
 		h.planText = ""

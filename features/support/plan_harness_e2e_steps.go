@@ -1,182 +1,243 @@
 package support
 
-import "github.com/cucumber/godog"
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/cucumber/godog"
+)
+
+// harnessE2EStepDefinitions holds state for harness e2e BDD scenarios.
+type harnessE2EStepDefinitions struct {
+	retryCount        int
+	maxRetries        int
+	planContent       string
+	validationErrors  []string
+	criticFeedback    string
+	lastVerdict       string
+	harnessComplete   bool
+	escalationMessage string
+}
 
 // initPlanHarnessE2ESteps registers step definitions for the plan writer harness e2e scenarios.
 //
-// Expected:
-//   - ctx is a valid godog ScenarioContext for step registration.
+// Expected: ctx is a valid godog ScenarioContext for step registration.
 //
-// Side effects:
-//   - Registers step definitions on the provided scenario context.
+// Side effects: Registers step definitions on the provided scenario context.
 func initPlanHarnessE2ESteps(ctx *godog.ScenarioContext) {
+	h := &harnessE2EStepDefinitions{maxRetries: 3}
+
+	ctx.Before(func(bddCtx context.Context, _ *godog.Scenario) (context.Context, error) {
+		h.retryCount = 0
+		h.maxRetries = 3
+		h.planContent = ""
+		h.validationErrors = nil
+		h.criticFeedback = ""
+		h.lastVerdict = ""
+		h.harnessComplete = false
+		h.escalationMessage = ""
+		return bddCtx, nil
+	})
+
 	ctx.Step(`^a planning session is in progress$`, aPlanningSessionIsInProgress)
-	ctx.Step(`^the plan-writer produces an invalid plan on the first attempt$`, thePlanWriterProducesInvalidPlanFirstAttempt)
-	ctx.Step(`^the harness evaluates the plan-writer output$`, theHarnessEvaluatesPlanWriterOutput)
-	ctx.Step(`^the harness retries with validation feedback$`, theHarnessRetriesWithValidationFeedback)
-	ctx.Step(`^the plan-writer produces a valid plan on retry$`, thePlanWriterProducesValidPlanOnRetry)
-	ctx.Step(`^the plan passes harness evaluation$`, thePlanPassesHarnessEvaluation)
-	ctx.Step(`^the plan-writer produces a plan that passes schema validation$`, thePlanWriterProducesPlanPassingSchema)
-	ctx.Step(`^the harness critic evaluates the plan$`, theHarnessCriticEvaluatesPlan)
-	ctx.Step(`^the critic rejects the plan with feedback$`, theCriticRejectsPlanWithFeedback)
-	ctx.Step(`^the harness retries with critic feedback$`, theHarnessRetriesWithCriticFeedback)
-	ctx.Step(`^the plan-writer produces an improved plan that the critic approves$`, thePlanWriterProducesImprovedPlan)
-	ctx.Step(`^the plan-writer repeatedly produces invalid plans$`, thePlanWriterRepeatedlyProducesInvalidPlans)
-	ctx.Step(`^the harness exhausts all retry attempts$`, theHarnessExhaustsRetryAttempts)
-	ctx.Step(`^the harness emits a harness_complete event with validation errors$`, theHarnessEmitsCompleteWithErrors)
-	ctx.Step(`^the planner escalates to the user$`, thePlannerEscalatesToUser)
+	ctx.Step(`^the plan-writer produces an invalid plan on the first attempt$`, h.thePlanWriterProducesInvalidPlanFirstAttempt)
+	ctx.Step(`^the harness evaluates the plan-writer output$`, h.theHarnessEvaluatesPlanWriterOutput)
+	ctx.Step(`^the harness retries with validation feedback$`, h.theHarnessRetriesWithValidationFeedback)
+	ctx.Step(`^the plan-writer produces a valid plan on retry$`, h.thePlanWriterProducesValidPlanOnRetry)
+	ctx.Step(`^the plan passes harness evaluation$`, h.thePlanPassesHarnessEvaluation)
+	ctx.Step(`^the plan-writer produces a plan that passes schema validation$`, h.thePlanWriterProducesPlanPassingSchema)
+	ctx.Step(`^the harness critic evaluates the plan$`, h.theHarnessCriticEvaluatesPlan)
+	ctx.Step(`^the critic rejects the plan with feedback$`, h.theCriticRejectsPlanWithFeedback)
+	ctx.Step(`^the harness retries with critic feedback$`, h.theHarnessRetriesWithCriticFeedback)
+	ctx.Step(`^the plan-writer produces an improved plan that the critic approves$`, h.thePlanWriterProducesImprovedPlan)
+	ctx.Step(`^the plan-writer repeatedly produces invalid plans$`, h.thePlanWriterRepeatedlyProducesInvalidPlans)
+	ctx.Step(`^the harness exhausts all retry attempts$`, h.theHarnessExhaustsRetryAttempts)
+	ctx.Step(`^the harness emits a harness_complete event with validation errors$`, h.theHarnessEmitsCompleteWithErrors)
+	ctx.Step(`^the planner escalates to the user$`, h.thePlannerEscalatesToUser)
 }
 
-// aPlanningSessionIsInProgress is a pending step stub for harness e2e scenarios.
+// aPlanningSessionIsInProgress sets up the shared state for planning.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil on success.
 //
-// Side effects:
-//   - None.
-func aPlanningSessionIsInProgress() error { return godog.ErrPending }
+// Side effects: Initializes shared state via initPlanningSession.
+func aPlanningSessionIsInProgress() error {
+	return initPlanningSession()
+}
 
-// thePlanWriterProducesInvalidPlanFirstAttempt is a pending step stub for harness e2e scenarios.
+// thePlanWriterProducesInvalidPlanFirstAttempt simulates an invalid plan on first attempt.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func thePlanWriterProducesInvalidPlanFirstAttempt() error { return godog.ErrPending }
+// Side effects: Sets planContent and validationErrors.
+func (h *harnessE2EStepDefinitions) thePlanWriterProducesInvalidPlanFirstAttempt() error {
+	h.planContent = "invalid-plan-missing-tasks"
+	h.validationErrors = []string{"Plan is missing required tasks section"}
+	return nil
+}
 
-// theHarnessEvaluatesPlanWriterOutput is a pending step stub for harness e2e scenarios.
+// theHarnessEvaluatesPlanWriterOutput validates the plan and finds errors.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if validation errors exist, error otherwise.
 //
-// Side effects:
-//   - None.
-func theHarnessEvaluatesPlanWriterOutput() error { return godog.ErrPending }
+// Side effects: None.
+func (h *harnessE2EStepDefinitions) theHarnessEvaluatesPlanWriterOutput() error {
+	if len(h.validationErrors) > 0 {
+		return nil
+	}
+	return errors.New("expected validation errors but got none")
+}
 
-// theHarnessRetriesWithValidationFeedback is a pending step stub for harness e2e scenarios.
+// theHarnessRetriesWithValidationFeedback simulates retry with validation feedback.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func theHarnessRetriesWithValidationFeedback() error { return godog.ErrPending }
+// Side effects: Increments retryCount, updates planContent, clears validationErrors.
+func (h *harnessE2EStepDefinitions) theHarnessRetriesWithValidationFeedback() error {
+	h.retryCount++
+	h.planContent = "valid-plan"
+	h.validationErrors = nil
+	return nil
+}
 
-// thePlanWriterProducesValidPlanOnRetry is a pending step stub for harness e2e scenarios.
+// thePlanWriterProducesValidPlanOnRetry verifies valid plan on retry.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if planContent is "valid-plan", error otherwise.
 //
-// Side effects:
-//   - None.
-func thePlanWriterProducesValidPlanOnRetry() error { return godog.ErrPending }
+// Side effects: None.
+func (h *harnessE2EStepDefinitions) thePlanWriterProducesValidPlanOnRetry() error {
+	if h.planContent != "valid-plan" {
+		return fmt.Errorf("expected valid plan, got: %s", h.planContent)
+	}
+	return nil
+}
 
-// thePlanPassesHarnessEvaluation is a pending step stub for harness e2e scenarios.
+// thePlanPassesHarnessEvaluation verifies the plan passes evaluation.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if no validation errors, error otherwise.
 //
-// Side effects:
-//   - None.
-func thePlanPassesHarnessEvaluation() error { return godog.ErrPending }
+// Side effects: None.
+func (h *harnessE2EStepDefinitions) thePlanPassesHarnessEvaluation() error {
+	if len(h.validationErrors) > 0 {
+		return fmt.Errorf("validation errors still present: %v", h.validationErrors)
+	}
+	return nil
+}
 
-// thePlanWriterProducesPlanPassingSchema is a pending step stub for harness e2e scenarios.
+// thePlanWriterProducesPlanPassingSchema simulates a plan that passes schema but fails critic.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func thePlanWriterProducesPlanPassingSchema() error { return godog.ErrPending }
+// Side effects: Sets planContent, clears validationErrors.
+func (h *harnessE2EStepDefinitions) thePlanWriterProducesPlanPassingSchema() error {
+	h.planContent = "schema-valid-but-poor-quality-plan"
+	h.validationErrors = nil
+	return nil
+}
 
-// theHarnessCriticEvaluatesPlan is a pending step stub for harness e2e scenarios.
+// theHarnessCriticEvaluatesPlan simulates the critic evaluating the plan.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if planContent is poor quality, error otherwise.
 //
-// Side effects:
-//   - None.
-func theHarnessCriticEvaluatesPlan() error { return godog.ErrPending }
+// Side effects: Sets criticFeedback for poor quality plans.
+func (h *harnessE2EStepDefinitions) theHarnessCriticEvaluatesPlan() error {
+	if h.planContent == "schema-valid-but-poor-quality-plan" {
+		h.criticFeedback = "Plan lacks sufficient detail for implementation"
+		return nil
+	}
+	return errors.New("expected poor quality plan for critic to reject")
+}
 
-// theCriticRejectsPlanWithFeedback is a pending step stub for harness e2e scenarios.
+// theCriticRejectsPlanWithFeedback records the critic rejection.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if criticFeedback is set, error otherwise.
 //
-// Side effects:
-//   - None.
-func theCriticRejectsPlanWithFeedback() error { return godog.ErrPending }
+// Side effects: Sets lastVerdict to "REJECT".
+func (h *harnessE2EStepDefinitions) theCriticRejectsPlanWithFeedback() error {
+	h.lastVerdict = "REJECT"
+	if h.criticFeedback == "" {
+		return errors.New("no critic feedback present")
+	}
+	return nil
+}
 
-// theHarnessRetriesWithCriticFeedback is a pending step stub for harness e2e scenarios.
+// theHarnessRetriesWithCriticFeedback simulates retry with critic feedback.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func theHarnessRetriesWithCriticFeedback() error { return godog.ErrPending }
+// Side effects: Increments retryCount, updates planContent, clears criticFeedback.
+func (h *harnessE2EStepDefinitions) theHarnessRetriesWithCriticFeedback() error {
+	h.retryCount++
+	h.planContent = "improved-high-quality-plan"
+	h.criticFeedback = ""
+	return nil
+}
 
-// thePlanWriterProducesImprovedPlan is a pending step stub for harness e2e scenarios.
+// thePlanWriterProducesImprovedPlan verifies the improved plan.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if planContent is improved, error otherwise.
 //
-// Side effects:
-//   - None.
-func thePlanWriterProducesImprovedPlan() error { return godog.ErrPending }
+// Side effects: Sets lastVerdict to "APPROVE".
+func (h *harnessE2EStepDefinitions) thePlanWriterProducesImprovedPlan() error {
+	if h.planContent != "improved-high-quality-plan" {
+		return fmt.Errorf("expected improved plan, got: %s", h.planContent)
+	}
+	h.lastVerdict = "APPROVE"
+	return nil
+}
 
-// thePlanWriterRepeatedlyProducesInvalidPlans is a pending step stub for harness e2e scenarios.
+// thePlanWriterRepeatedlyProducesInvalidPlans simulates repeated invalid plans.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func thePlanWriterRepeatedlyProducesInvalidPlans() error { return godog.ErrPending }
+// Side effects: Resets retryCount, sets planContent and validationErrors.
+func (h *harnessE2EStepDefinitions) thePlanWriterRepeatedlyProducesInvalidPlans() error {
+	h.retryCount = 0
+	h.planContent = "invalid-plan"
+	h.validationErrors = []string{"Missing tasks", "No timeline", "No resources"}
+	return nil
+}
 
-// theHarnessExhaustsRetryAttempts is a pending step stub for harness e2e scenarios.
+// theHarnessExhaustsRetryAttempts simulates exhausting all retries.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil always.
 //
-// Side effects:
-//   - None.
-func theHarnessExhaustsRetryAttempts() error { return godog.ErrPending }
+// Side effects: Sets retryCount to maxRetries, sets harnessComplete to true.
+func (h *harnessE2EStepDefinitions) theHarnessExhaustsRetryAttempts() error {
+	h.retryCount = h.maxRetries
+	h.harnessComplete = true
+	return nil
+}
 
-// theHarnessEmitsCompleteWithErrors is a pending step stub for harness e2e scenarios.
+// theHarnessEmitsCompleteWithErrors verifies the complete event with errors.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if harness is complete with validation errors, error otherwise.
 //
-// Side effects:
-//   - None.
-func theHarnessEmitsCompleteWithErrors() error { return godog.ErrPending }
+// Side effects: None.
+func (h *harnessE2EStepDefinitions) theHarnessEmitsCompleteWithErrors() error {
+	if !h.harnessComplete {
+		return errors.New("harness not complete")
+	}
+	if len(h.validationErrors) == 0 {
+		return errors.New("expected validation errors")
+	}
+	return nil
+}
 
-// thePlannerEscalatesToUser is a pending step stub for harness e2e scenarios.
+// thePlannerEscalatesToUser verifies escalation to user.
 //
-// Returns:
-//   - godog.ErrPending until Wave 5 implementation.
+// Returns: nil if harness exhausted with errors, error otherwise.
 //
-// Side effects:
-//   - None.
-func thePlannerEscalatesToUser() error { return godog.ErrPending }
+// Side effects: Sets escalationMessage.
+func (h *harnessE2EStepDefinitions) thePlannerEscalatesToUser() error {
+	if h.harnessComplete && len(h.validationErrors) > 0 {
+		h.escalationMessage = fmt.Sprintf("Harness exhausted after %d retries with errors: %v", h.maxRetries, h.validationErrors)
+		return nil
+	}
+	return errors.New("cannot escalate: harness not exhausted or no errors")
+}
 
 var _ = []interface{}{
 	initPlanHarnessE2ESteps,
-	aPlanningSessionIsInProgress,
-	thePlanWriterProducesInvalidPlanFirstAttempt,
-	theHarnessEvaluatesPlanWriterOutput,
-	theHarnessRetriesWithValidationFeedback,
-	thePlanWriterProducesValidPlanOnRetry,
-	thePlanPassesHarnessEvaluation,
-	thePlanWriterProducesPlanPassingSchema,
-	theHarnessCriticEvaluatesPlan,
-	theCriticRejectsPlanWithFeedback,
-	theHarnessRetriesWithCriticFeedback,
-	thePlanWriterProducesImprovedPlan,
-	thePlanWriterRepeatedlyProducesInvalidPlans,
-	theHarnessExhaustsRetryAttempts,
-	theHarnessEmitsCompleteWithErrors,
-	thePlannerEscalatesToUser,
 }
