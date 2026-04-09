@@ -446,6 +446,90 @@ var _ = Describe("WindowBuilder", func() {
 				Expect(skillToolCount).To(Equal(3))
 			})
 		})
+
+		Context("skill pair ordering", func() {
+			It("appends skill pairs in chronological order", func() {
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "s1", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "skill-alpha"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "s2", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "skill-beta"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "s3", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "skill-gamma"})
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: "S",
+					},
+					ContextManagement: agent.ContextManagement{
+						SlidingWindowSize: 6,
+					},
+				}
+
+				result := builder.Build(manifest, store, 4096)
+
+				var toolContents []string
+				for _, msg := range result.Messages {
+					if msg.Role == "tool" {
+						toolContents = append(toolContents, msg.Content)
+					}
+				}
+
+				Expect(toolContents).To(HaveLen(3))
+				Expect(toolContents[0]).To(Equal("skill-alpha"))
+				Expect(toolContents[1]).To(Equal("skill-beta"))
+				Expect(toolContents[2]).To(Equal("skill-gamma"))
+			})
+
+			It("interleaves skill pairs chronologically with conversation messages", func() {
+				store.Append(provider.Message{Role: "user", Content: "msg-1"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "s1", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "skill-first"})
+				store.Append(provider.Message{Role: "user", Content: "msg-2"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "s2", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "skill-second"})
+				store.Append(provider.Message{Role: "user", Content: "msg-3"})
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: "S",
+					},
+					ContextManagement: agent.ContextManagement{
+						SlidingWindowSize: 7,
+					},
+				}
+
+				result := builder.Build(manifest, store, 4096)
+
+				var nonSystemContents []string
+				for _, msg := range result.Messages {
+					if msg.Role != "system" {
+						nonSystemContents = append(nonSystemContents, msg.Content)
+					}
+				}
+
+				Expect(nonSystemContents).To(HaveLen(7))
+				Expect(nonSystemContents[0]).To(Equal("msg-1"))
+				Expect(nonSystemContents[1]).To(Equal("msg-2"))
+				Expect(nonSystemContents[2]).To(Equal("msg-3"))
+				Expect(nonSystemContents[4]).To(Equal("skill-first"))
+				Expect(nonSystemContents[6]).To(Equal("skill-second"))
+			})
+		})
 	})
 
 	Describe("BuildResult", func() {

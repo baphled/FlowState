@@ -433,10 +433,11 @@ func (b *WindowBuilder) appendNonSkillMessages(
 	}
 }
 
-// appendSkillPairsWithBudget appends skill_load pairs to the context window,
-// processing most recent pairs first so that older pairs are evicted preferentially.
-// Each pair is added atomically: both the assistant and tool messages must fit
-// within the remaining budget or neither is added.
+// appendSkillPairsWithBudget appends skill_load pairs to the context window in
+// chronological order. Most recent pairs are given priority when the budget is
+// tight, so older pairs are evicted first. Each pair is added atomically: both
+// the assistant and tool messages must fit within the remaining budget or
+// neither is added.
 //
 // Expected:
 //   - messages is a slice of recent provider.Message instances.
@@ -444,8 +445,8 @@ func (b *WindowBuilder) appendNonSkillMessages(
 //   - state is a non-nil messageState tracking the current window assembly.
 //
 // Side effects:
-//   - Appends skill pair messages to state.messages within the token budget.
-//   - Updates state.budget with token reservations for added pairs.
+//   - Appends skill pair messages to state.messages in chronological order.
+//   - Reserves tokens under the "skill-result" budget category.
 func (b *WindowBuilder) appendSkillPairsWithBudget(
 	messages []provider.Message,
 	ids []string,
@@ -459,6 +460,7 @@ func (b *WindowBuilder) appendSkillPairsWithBudget(
 		}
 	}
 
+	var keptStarts []int
 	for j := len(pairStarts) - 1; j >= 0; j-- {
 		idx := pairStarts[j]
 		assistantID := b.getMessageIDAtIndex(ids, idx)
@@ -470,10 +472,13 @@ func (b *WindowBuilder) appendSkillPairsWithBudget(
 		if !state.budget.CanFit(pairTokens) {
 			continue
 		}
-		state.messages = append(state.messages, messages[idx])
-		state.budget.Reserve("sliding", b.counter.Count(messages[idx].Content))
-		state.messages = append(state.messages, messages[idx+1])
-		state.budget.Reserve("sliding", b.counter.Count(messages[idx+1].Content))
+		state.budget.Reserve("skill-result", b.counter.Count(messages[idx].Content))
+		state.budget.Reserve("skill-result", b.counter.Count(messages[idx+1].Content))
+		keptStarts = append([]int{idx}, keptStarts...)
+	}
+
+	for _, idx := range keptStarts {
+		state.messages = append(state.messages, messages[idx], messages[idx+1])
 	}
 }
 
