@@ -48,7 +48,7 @@ func SkillAutoLoaderHook(
 				}
 				return next(ctx, req)
 			}
-			selection := selectSkillsFromManifest(manifestGetter, req, config)
+			selection := selectSkillsFromManifest(manifestGetter, req, config, cache)
 			if len(selection.Skills) == 0 {
 				return next(ctx, req)
 			}
@@ -65,6 +65,9 @@ func SkillAutoLoaderHook(
 //   - manifestGetter returns the current agent manifest.
 //   - req contains at least one user message.
 //   - config is a non-nil SkillAutoLoaderConfig.
+//   - cache is an optional SkillContentCache for byte-budget enforcement in SelectSkills.
+//     When non-nil, SelectSkills applies PerSkillMaxBytes and MaxAutoSkillsBytes filtering.
+//     Pass nil to use count-only selection.
 //
 // Returns:
 //   - The SkillSelection result from SelectSkills.
@@ -75,6 +78,7 @@ func selectSkillsFromManifest(
 	manifestGetter func() agent.Manifest,
 	req *provider.ChatRequest,
 	config *SkillAutoLoaderConfig,
+	cache *SkillContentCache,
 ) SkillSelection {
 	manifest := manifestGetter()
 	userPrompt := extractUserMessage(req.Messages)
@@ -83,6 +87,7 @@ func selectSkillsFromManifest(
 		Category:           manifest.Complexity,
 		Prompt:             userPrompt,
 		AgentDefaultSkills: manifest.Capabilities.AlwaysActiveSkills,
+		Cache:              cache,
 	}
 	return SelectSkills(input, config)
 }
@@ -115,8 +120,11 @@ func injectSelectedSkills(
 			baselineSet[s] = true
 		}
 		blocks, _ := buildSkillContentBlocks(skills, cache, config.MaxAutoSkillsBytes, baselineSet)
+		lean := buildLeanInjection(skills)
 		if blocks != "" {
-			injectLeanSkills(req, blocks)
+			injectLeanSkills(req, lean+"\n\n"+blocks)
+		} else {
+			injectLeanSkills(req, lean)
 		}
 		return
 	}

@@ -565,4 +565,120 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
+	Context("when cache threads through to SelectSkills for byte-budget enforcement", func() {
+		var (
+			cache    *hook.SkillContentCache
+			cacheDir string
+		)
+
+		BeforeEach(func() {
+			var err error
+			cacheDir, err = os.MkdirTemp("", "skill-budget-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(cacheDir) })
+
+			oversizedDir := filepath.Join(cacheDir, "oversized-skill")
+			Expect(os.MkdirAll(oversizedDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oversizedDir, "SKILL.md"), []byte(strings.Repeat("X", 8000)), 0o600)).To(Succeed())
+
+			smallDir := filepath.Join(cacheDir, "small-skill")
+			Expect(os.MkdirAll(smallDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(smallDir, "SKILL.md"), []byte("# Small\nFits."), 0o600)).To(Succeed())
+
+			cache = hook.NewSkillContentCache(cacheDir)
+			Expect(cache.Init()).To(Succeed())
+
+			manifest = agent.Manifest{
+				ID:   "test-agent",
+				Name: "Test Agent",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"oversized-skill", "small-skill"},
+				},
+			}
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:     []string{},
+				MaxAutoSkills:      10,
+				MaxAutoSkillsBytes: 30000,
+				PerSkillMaxBytes:   5120,
+				CategoryMappings:   map[string][]string{},
+				KeywordPatterns:    []hook.KeywordPattern{},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("drops oversized skills via PerSkillMaxBytes enforcement in SelectSkills", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring(`<skill name="small-skill">`))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name="oversized-skill">`))
+		})
+	})
+
+	Context("when cache injects lean header alongside skill blocks", func() {
+		var (
+			cache    *hook.SkillContentCache
+			cacheDir string
+		)
+
+		BeforeEach(func() {
+			var err error
+			cacheDir, err = os.MkdirTemp("", "skill-lean-header-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(cacheDir) })
+
+			skillDir := filepath.Join(cacheDir, "skill-a")
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Skill A\nContent."), 0o600)).To(Succeed())
+
+			cache = hook.NewSkillContentCache(cacheDir)
+			Expect(cache.Init()).To(Succeed())
+
+			manifest = agent.Manifest{
+				ID:   "test-agent",
+				Name: "Test Agent",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"skill-a"},
+				},
+			}
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns:  []hook.KeywordPattern{},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("prepends lean header before skill content blocks", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
+
+			leanIdx := strings.Index(systemContent, "Your load_skills: [")
+			blockIdx := strings.Index(systemContent, `<skill name="skill-a">`)
+			Expect(leanIdx).To(BeNumerically("<", blockIdx))
+		})
+	})
+
 })
