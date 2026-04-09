@@ -75,7 +75,7 @@ type App struct {
 	Engine            *engine.Engine
 	Discovery         *discovery.AgentDiscovery
 	Sessions          *ctxstore.FileSessionStore
-	Learning          *learning.JSONFileStore
+	Learning          learning.Store
 	API               *api.Server
 	Streamer          streaming.Streamer
 	TodoStore         todotool.Store
@@ -128,7 +128,11 @@ func New(cfg *config.AppConfig) (*App, error) {
 	agentRegistry := setupAgentRegistry(cfg)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
-	sessionStore, learningStore, err := createDataStores(cfg)
+	defaultProvider, err := providerRegistry.Get(cfg.Providers.Default)
+	if err != nil {
+		return nil, fmt.Errorf("getting default provider: %w", err)
+	}
+	sessionStore, learningStore, err := createDataStores(cfg, defaultProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +251,7 @@ type appBuildParams struct {
 	skills           []skill.Skill
 	runtime          *runtimeComponents
 	sessionStore     *ctxstore.FileSessionStore
-	learningStore    *learning.JSONFileStore
+	learningStore    learning.Store
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
 	pluginRuntime    *pluginRuntime
@@ -359,7 +363,7 @@ type engineParams struct {
 	alwaysActiveSkills   []skill.Skill
 	contextStore         *recall.FileContextStore
 	chainStore           recall.ChainContextStore
-	learningStore        *learning.JSONFileStore
+	learningStore        learning.Store
 	appTools             []tool.Tool
 	toolRegistry         *tool.Registry
 	permissionHandler    tool.PermissionHandler
@@ -528,7 +532,7 @@ type setupEngineParams struct {
 	alwaysActiveSkills []skill.Skill
 	skills             []skill.Skill
 	sessionStore       *ctxstore.FileSessionStore
-	learningStore      *learning.JSONFileStore
+	learningStore      learning.Store
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
 	dispatcher         *external.Dispatcher
@@ -1329,7 +1333,7 @@ type toolWiringCallbacks struct {
 
 // hookChainConfig groups parameters for buildHookChain to stay within the argument-limit.
 type hookChainConfig struct {
-	learningStore   *learning.JSONFileStore
+	learningStore   learning.Store
 	manifestGetter  func() agent.Manifest
 	bakedSkillNames []string
 	failoverHk      *failover.Hook
@@ -1517,6 +1521,7 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt.dispatcher != nil {
 		subscribeDispatcherHooks(rt.dispatcher, bus)
 	}
+	subscribeLearningHook(bus)
 }
 
 // startBusPlugins starts builtin plugins that implement BusStarter.
@@ -1616,6 +1621,31 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 			slog.Info("dispatcher: tool hook activated", "hook", "tool.execute.error", "tool", toolEvt.Data.ToolName)
 			if err := dispatcher.Dispatch(context.Background(), pluginpkg.ToolExecAfter, args); err != nil {
 				slog.Warn("plugin hook dispatch error", "hook", "tool.execute.error", "error", err)
+			}
+		}
+	})
+}
+
+// subscribeLearningHook subscribes the learning hook to tool execute result events.
+// This enables learning records to be captured when tools are executed.
+//
+// Expected:
+//   - bus is a valid EventBus instance.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Subscribes a handler to "tool.execute.result" events on the bus.
+func subscribeLearningHook(bus *eventbus.EventBus) {
+	learningHook := learning.NewLearningHook(nil) // nil client for graceful degradation
+	bus.Subscribe(events.EventToolExecuteResult, func(msg any) {
+		if toolEvt, ok := msg.(*events.ToolExecuteResultEvent); ok {
+			result := &learning.ToolCallResult{
+				Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
+			}
+			if err := learningHook.Handle(context.Background(), result); err != nil {
+				slog.Warn("learning hook error", "error", err)
 			}
 		}
 	})
@@ -2004,7 +2034,7 @@ func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollam
 // Side effects:
 //   - None.
 func BuildHookChainForTest(
-	learningStore *learning.JSONFileStore,
+	learningStore learning.Store,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
 	return buildHookChain(hookChainConfig{
@@ -2027,7 +2057,7 @@ func BuildHookChainForTest(
 // Side effects:
 //   - None.
 func BuildHookChainWithDispatcherForTest(
-	learningStore *learning.JSONFileStore,
+	learningStore learning.Store,
 	manifestGetter func() agent.Manifest,
 	dispatcher *external.Dispatcher,
 ) *hook.Chain {
@@ -2124,21 +2154,34 @@ func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with a valid DataDir path.
+//   - p is a non-nil provider.Provider for embeddings.
 //
 // Returns:
 //   - A FileSessionStore for persisting session data.
-//   - A JSONFileStore for persisting learning data.
+//   - A Store for persisting learning data (Mem0LearningStore if Qdrant configured, nil otherwise).
 //   - An error if session store creation fails.
 //
 // Side effects:
 //   - Creates the sessions subdirectory if it does not exist.
-//   - Creates the learnings.json file path (file creation deferred to store).
-func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learning.JSONFileStore, error) {
+//   - Initializes Qdrant client if configured.
+func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.FileSessionStore, learning.Store, error) {
 	sessionStore, err := ctxstore.NewFileSessionStore(filepath.Join(cfg.DataDir, "sessions"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating session store: %w", err)
 	}
-	learningStore := learning.NewJSONFileStore(filepath.Join(cfg.DataDir, "learnings.json"))
+
+	// Create Mem0LearningStore with Qdrant if configured, otherwise fall back to JSONFileStore
+	var learningStore learning.Store
+	if cfg.Qdrant.URL != "" {
+		qdrantClient := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+		embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+		adapter := &qdrantClientAdapter{client: qdrantClient}
+		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
+	} else {
+		// Graceful degradation: use JSONFileStore when Qdrant not configured
+		learningStore = learning.NewJSONFileStore(filepath.Join(cfg.DataDir, "learnings.json"))
+	}
+
 	return sessionStore, learningStore, nil
 }
 
@@ -2174,6 +2217,69 @@ func createChainStore(cfg *config.AppConfig) recall.ChainContextStore {
 		return recall.NewInMemoryChainStore(nil)
 	}
 	return store
+}
+
+// qdrantClientAdapter bridges qdrant.Client to learning.VectorStoreClient
+// by converting qdrant.ScoredPoint to learning.ScoredVectorPoint.
+type qdrantClientAdapter struct {
+	client *qdrantrecall.Client
+}
+
+// Upsert stores or updates points in the Qdrant collection.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - collection is the target collection name.
+//   - points contains the vectors and payloads to upsert.
+//   - wait indicates whether to wait for the operation to complete.
+//
+// Returns:
+//   - nil on success.
+//   - An error if the upsert operation fails.
+//
+// Side effects:
+//   - Sends an upsert request to the wrapped Qdrant client.
+func (a *qdrantClientAdapter) Upsert(ctx context.Context, collection string, points []learning.VectorPoint, wait bool) error {
+	qdrantPoints := make([]qdrantrecall.Point, len(points))
+	for i, p := range points {
+		qdrantPoints[i] = qdrantrecall.Point{
+			ID:      p.ID,
+			Vector:  p.Vector,
+			Payload: p.Payload,
+		}
+	}
+	return a.client.Upsert(ctx, collection, qdrantPoints, wait)
+}
+
+// Search finds the nearest vectors in the Qdrant collection.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - collection is the target collection name.
+//   - vector is the query vector.
+//   - limit is the maximum number of results to return.
+//
+// Returns:
+//   - A slice of ScoredVectorPoint results.
+//   - An error if the search operation fails.
+//
+// Side effects:
+//   - Sends a search request to the wrapped Qdrant client.
+func (a *qdrantClientAdapter) Search(ctx context.Context, collection string,
+	vector []float64, limit int) ([]learning.ScoredVectorPoint, error) {
+	qdrantResults, err := a.client.Search(ctx, collection, vector, limit)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]learning.ScoredVectorPoint, len(qdrantResults))
+	for i, qr := range qdrantResults {
+		results[i] = learning.ScoredVectorPoint{
+			ID:      qr.ID,
+			Score:   qr.Score,
+			Payload: qr.Payload,
+		}
+	}
+	return results, nil
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.
@@ -2489,7 +2595,7 @@ func (a *App) ClosePlugins() error {
 // Side effects:
 //   - None.
 func BuildHookChainForTestWithFailover(
-	learningStore *learning.JSONFileStore,
+	learningStore learning.Store,
 	manifestGetter func() agent.Manifest,
 ) *hook.Chain {
 	health := failover.NewHealthManager()
