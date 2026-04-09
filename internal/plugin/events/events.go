@@ -1068,6 +1068,81 @@ func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *
 	}
 }
 
+// DiscoveryPublishedEventData holds the data for a discovery published event.
+type DiscoveryPublishedEventData struct {
+	ID        string
+	Summary   string
+	Kind      string
+	Priority  string
+	Tags      []string
+	Timestamp time.Time
+}
+
+// DiscoveryPublishedEvent is published when an agent discovery is completed.
+type DiscoveryPublishedEvent struct {
+	BaseEvent
+	Data DiscoveryPublishedEventData
+}
+
+// NewDiscoveryPublishedEvent creates a new DiscoveryPublishedEvent.
+//
+// Expected:
+//   - data contains the discovery metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DiscoveryPublishedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDiscoveryPublishedEvent(data DiscoveryPublishedEventData, ts ...time.Time) *DiscoveryPublishedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DiscoveryPublishedEvent{
+		BaseEvent: BaseEvent{eventType: EventDiscoveryPublished, timestamp: t},
+		Data:      data,
+	}
+}
+
+// LearningRecordedEventData holds the data for a learning recorded event.
+type LearningRecordedEventData struct {
+	AgentID     string
+	UserMessage string
+	Outcome     string
+	ToolsUsed   []string
+	Timestamp   time.Time
+}
+
+// LearningRecordedEvent is published when learning is recorded.
+type LearningRecordedEvent struct {
+	BaseEvent
+	Data LearningRecordedEventData
+}
+
+// NewLearningRecordedEvent creates a new LearningRecordedEvent.
+//
+// Expected:
+//   - data contains the learning metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A LearningRecordedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewLearningRecordedEvent(data LearningRecordedEventData, ts ...time.Time) *LearningRecordedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &LearningRecordedEvent{
+		BaseEvent: BaseEvent{eventType: EventLearningRecorded, timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -1096,4 +1171,6 @@ var (
 	_ Event = (*RecallSearchEvent)(nil)
 	_ Event = (*RecallChainSearchEvent)(nil)
 	_ Event = (*RecallSummarizedEvent)(nil)
+	_ Event = (*DiscoveryPublishedEvent)(nil)
+	_ Event = (*LearningRecordedEvent)(nil)
 )
