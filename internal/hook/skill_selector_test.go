@@ -2,6 +2,9 @@ package hook_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -462,6 +465,90 @@ var _ = Describe("SelectSkills", func() {
 			result := hook.SelectSkills(input, config)
 
 			Expect(result.Skills).To(Equal(config.BaselineSkills))
+		})
+	})
+
+	Context("with byte budget enforcement", func() {
+		var cache *hook.SkillContentCache
+		var tmpDir string
+
+		BeforeEach(func() {
+			tmpDir = GinkgoT().TempDir()
+			for _, name := range []string{"skill-a", "skill-b", "skill-c"} {
+				dir := filepath.Join(tmpDir, name)
+				Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
+				content := strings.Repeat("x", 10240)
+				Expect(os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600)).To(Succeed())
+			}
+			cache = hook.NewSkillContentCache(tmpDir)
+			Expect(cache.Init()).To(Succeed())
+		})
+
+		It("includes all skills when total bytes within budget", func() {
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			cfg.MaxAutoSkillsBytes = 35840
+			cfg.PerSkillMaxBytes = 0
+			cfg.BaselineSkills = []string{}
+			input := hook.SkillSelectionInput{
+				AgentID:            "test",
+				AgentDefaultSkills: []string{"skill-a", "skill-b", "skill-c"},
+				Cache:              cache,
+			}
+			result := hook.SelectSkills(input, cfg)
+			Expect(result.Skills).To(ConsistOf("skill-a", "skill-b", "skill-c"))
+			Expect(result.SkillsDropped).To(BeEmpty())
+			Expect(result.BytesUsed).To(Equal(30720))
+		})
+
+		It("drops lowest-priority skills when total bytes exceed budget", func() {
+			dir4 := filepath.Join(tmpDir, "skill-d")
+			Expect(os.MkdirAll(dir4, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(dir4, "SKILL.md"), []byte(strings.Repeat("x", 10240)), 0o600)).To(Succeed())
+			Expect(cache.Init()).To(Succeed())
+
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			cfg.MaxAutoSkillsBytes = 35840
+			cfg.PerSkillMaxBytes = 0
+			cfg.BaselineSkills = []string{}
+			input := hook.SkillSelectionInput{
+				AgentID:            "test",
+				AgentDefaultSkills: []string{"skill-a", "skill-b", "skill-c", "skill-d"},
+				Cache:              cache,
+			}
+			result := hook.SelectSkills(input, cfg)
+			Expect(result.Skills).To(HaveLen(3))
+			Expect(result.SkillsDropped).To(HaveLen(1))
+			Expect(result.SkillsDropped).To(ContainElement("skill-d"))
+		})
+
+		It("never drops baseline skills regardless of byte budget", func() {
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			cfg.MaxAutoSkillsBytes = 100
+			cfg.PerSkillMaxBytes = 0
+			cfg.BaselineSkills = []string{"skill-a", "skill-b"}
+			input := hook.SkillSelectionInput{
+				AgentID:            "test",
+				AgentDefaultSkills: []string{},
+				Cache:              cache,
+			}
+			result := hook.SelectSkills(input, cfg)
+			Expect(result.Skills).To(ConsistOf("skill-a", "skill-b"))
+			Expect(result.SkillsDropped).To(BeEmpty())
+		})
+
+		It("excludes individual skills exceeding PerSkillMaxBytes", func() {
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			cfg.MaxAutoSkillsBytes = 35840
+			cfg.PerSkillMaxBytes = 5120
+			cfg.BaselineSkills = []string{}
+			input := hook.SkillSelectionInput{
+				AgentID:            "test",
+				AgentDefaultSkills: []string{"skill-a"},
+				Cache:              cache,
+			}
+			result := hook.SelectSkills(input, cfg)
+			Expect(result.Skills).To(BeEmpty())
+			Expect(result.SkillsDropped).To(ConsistOf("skill-a"))
 		})
 	})
 })

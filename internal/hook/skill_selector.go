@@ -19,6 +19,28 @@ import "strings"
 type SkillSelection struct {
 	Skills  []string      `json:"skills"`
 	Sources []SkillSource `json:"sources"`
+	// SkillsDropped contains skill names excluded due to byte-budget enforcement.
+	//
+	// Expected:
+	//   - Empty when Cache is nil or no skills exceeded the budget.
+	//
+	// Returns:
+	//   - N/A (struct field).
+	//
+	// Side effects:
+	//   - None.
+	SkillsDropped []string `json:"skills_dropped"`
+	// BytesUsed is the aggregate byte size of non-baseline skills included.
+	//
+	// Expected:
+	//   - Zero when Cache is nil or no non-baseline skills were selected.
+	//
+	// Returns:
+	//   - N/A (struct field).
+	//
+	// Side effects:
+	//   - None.
+	BytesUsed int `json:"bytes_used"`
 }
 
 // SkillSource represents the source of a selected skill.
@@ -67,6 +89,18 @@ type SkillSelectionInput struct {
 	Prompt             string   `json:"prompt"`
 	ExistingSkills     []string `json:"existingSkills"`
 	AgentDefaultSkills []string `json:"agentDefaultSkills"`
+	// Cache is an optional SkillContentCache used for byte-budget enforcement.
+	// When nil, byte-budget enforcement is skipped and count-only selection applies.
+	//
+	// Expected:
+	//   - May be nil; when nil, only count-based MaxAutoSkills cap is applied.
+	//
+	// Returns:
+	//   - N/A (struct field).
+	//
+	// Side effects:
+	//   - None.
+	Cache *SkillContentCache `json:"-"`
 }
 
 // SelectSkills applies the three-tier skill selection algorithm.
@@ -130,5 +164,64 @@ func SelectSkills(input SkillSelectionInput, config *SkillAutoLoaderConfig) Skil
 		}
 	}
 
+	if input.Cache != nil && config.MaxAutoSkillsBytes > 0 {
+		return applyByteBudget(skills, sources, config, input.Cache)
+	}
+
 	return SkillSelection{Skills: skills, Sources: sources}
+}
+
+// applyByteBudget filters non-baseline skills that exceed the configured byte
+// budget, keeping baseline skills unconditionally.
+//
+// Expected:
+//   - skills and sources have matching indices and equal lengths.
+//   - config contains MaxAutoSkillsBytes and PerSkillMaxBytes thresholds.
+//   - cache is non-nil and has been initialised.
+//
+// Returns:
+//   - A SkillSelection with filtered skills, matching sources, dropped names, and aggregate byte usage.
+//
+// Side effects:
+//   - None.
+func applyByteBudget(skills []string, sources []SkillSource, config *SkillAutoLoaderConfig, cache *SkillContentCache) SkillSelection {
+	nonBaselineStart := len(config.BaselineSkills)
+	baselineSet := make(map[string]bool, len(config.BaselineSkills))
+	for _, s := range config.BaselineSkills {
+		baselineSet[s] = true
+	}
+
+	var kept []string
+	var keptSources []SkillSource
+	var dropped []string
+	var bytesUsed int
+
+	for i, skill := range skills {
+		if i < nonBaselineStart || baselineSet[skill] {
+			kept = append(kept, skill)
+			keptSources = append(keptSources, sources[i])
+			continue
+		}
+
+		size := cache.ByteSize(skill)
+		if config.PerSkillMaxBytes > 0 && size > config.PerSkillMaxBytes {
+			dropped = append(dropped, skill)
+			continue
+		}
+		if bytesUsed+size > config.MaxAutoSkillsBytes {
+			dropped = append(dropped, skill)
+			continue
+		}
+
+		kept = append(kept, skill)
+		keptSources = append(keptSources, sources[i])
+		bytesUsed += size
+	}
+
+	return SkillSelection{
+		Skills:        kept,
+		Sources:       keptSources,
+		SkillsDropped: dropped,
+		BytesUsed:     bytesUsed,
+	}
 }
