@@ -7,6 +7,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// DefaultMaxAutoSkillsBytes is the default aggregate byte ceiling for non-baseline auto-loaded skills (35 KB).
+	DefaultMaxAutoSkillsBytes = 35 * 1024
+
+	// DefaultPerSkillMaxBytes is the default maximum byte size for a single auto-loaded skill (5 KB).
+	DefaultPerSkillMaxBytes = 5 * 1024
+)
+
 // KeywordPattern maps a text pattern to skills that should be auto-loaded when matched.
 type KeywordPattern struct {
 	Pattern string   `yaml:"pattern" json:"pattern"`
@@ -48,8 +56,8 @@ func DefaultSkillAutoLoaderConfig() *SkillAutoLoaderConfig {
 			"agent-discovery",
 		},
 		MaxAutoSkills:         6,
-		MaxAutoSkillsBytes:    35840,
-		PerSkillMaxBytes:      5120,
+		MaxAutoSkillsBytes:    DefaultMaxAutoSkillsBytes,
+		PerSkillMaxBytes:      DefaultPerSkillMaxBytes,
 		SkipOnSessionContinue: false,
 		CategoryMappings:      map[string][]string{},
 		KeywordPatterns:       []KeywordPattern{},

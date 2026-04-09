@@ -541,6 +541,9 @@ func (b *WindowBuilder) identifySkillPairIndices(messages []provider.Message) ma
 //   - manifest is a non-nil agent manifest with context management settings.
 //   - state is a non-nil messageState tracking the current window assembly.
 //
+// Returns:
+//   - None.
+//
 // Side effects:
 //   - Appends messages to state.messages.
 //   - Updates state.budget with token reservations.
@@ -572,6 +575,9 @@ func (b *WindowBuilder) appendRecentMessages(
 //   - ids is a parallel slice of message ID strings.
 //   - skillIndices identifies indices belonging to skill_load pairs.
 //   - state is a non-nil messageState tracking the current window assembly.
+//
+// Returns:
+//   - None.
 //
 // Side effects:
 //   - Appends non-skill messages to state.messages within the token budget.
@@ -606,6 +612,9 @@ func (b *WindowBuilder) appendNonSkillMessages(
 //   - messages is a slice of recent provider.Message instances.
 //   - ids is a parallel slice of message ID strings.
 //   - state is a non-nil messageState tracking the current window assembly.
+//
+// Returns:
+//   - None.
 //
 // Side effects:
 //   - Appends skill pair messages to state.messages in chronological order.

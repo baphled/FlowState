@@ -255,6 +255,34 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
 		})
 
+		It("does not modify the system message when baseline skills are empty", func() {
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:        []string{},
+				MaxAutoSkills:         6,
+				MaxAutoSkillsBytes:    35840,
+				PerSkillMaxBytes:      5120,
+				SkipOnSessionContinue: true,
+				CategoryMappings:      map[string][]string{},
+				KeywordPatterns:       []hook.KeywordPattern{},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are helpful."},
+					{Role: "user", Content: "first message"},
+					{Role: "assistant", Content: "first response"},
+					{Role: "user", Content: "follow-up"},
+				},
+			}
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(Equal("You are helpful."))
+		})
+
 		It("still calls through to the next handler", func() {
 			var handlerCalled bool
 			handler := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
