@@ -32,6 +32,9 @@ func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() ag
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 			if containsAssistantMessage(req.Messages) {
+				if config.SkipOnSessionContinue {
+					injectBaselineOnly(req, config.BaselineSkills, bakedSkillNames)
+				}
 				return next(ctx, req)
 			}
 			manifest := manifestGetter()
@@ -55,6 +58,29 @@ func SkillAutoLoaderHook(config *SkillAutoLoaderConfig, manifestGetter func() ag
 			return next(ctx, req)
 		}
 	}
+}
+
+// injectBaselineOnly injects only baseline skills into the system message, stripping any
+// that are already baked into the prompt.
+//
+// Expected:
+//   - req is a non-nil ChatRequest.
+//   - baselineSkills is the list of Tier 1 skill names from the config.
+//   - bakedSkillNames is the set of skills already present in the system prompt (may be nil).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates the system message in req when baseline skills remain after stripping baked names.
+//   - No-ops when all baseline skills are already baked or the baseline list is empty.
+func injectBaselineOnly(req *provider.ChatRequest, baselineSkills []string, bakedSkillNames []string) {
+	remaining := stripBakedSkills(baselineSkills, bakedSkillNames)
+	if len(remaining) == 0 {
+		return
+	}
+	lean := buildLeanInjection(remaining)
+	injectLeanSkills(req, lean)
 }
 
 // stripBakedSkills returns a filtered copy of skills, removing any name that appears

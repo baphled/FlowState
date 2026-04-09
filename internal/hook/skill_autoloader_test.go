@@ -376,4 +376,66 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
+	Context("when SkipOnSessionContinue is true and assistant messages are present", func() {
+		BeforeEach(func() {
+			config.SkipOnSessionContinue = true
+			config.KeywordPatterns = []hook.KeywordPattern{
+				{Pattern: "test", Skills: []string{"golang-testing"}},
+			}
+			config.CategoryMappings = map[string][]string{
+				"quick": {"pragmatic-problem-solving"},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "write a test for me"},
+					{Role: "assistant", Content: "Sure, I can help with that."},
+					{Role: "user", Content: "also add error handling"},
+				},
+			}
+		})
+
+		It("injects only baseline skills, skipping Tier 2 and Tier 3", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			for _, skill := range config.BaselineSkills {
+				Expect(systemContent).To(ContainSubstring(skill))
+			}
+			Expect(systemContent).NotTo(ContainSubstring("golang-testing"))
+			Expect(systemContent).NotTo(ContainSubstring("pragmatic-problem-solving"))
+			Expect(systemContent).NotTo(ContainSubstring("clean-code"))
+		})
+	})
+
+	Context("when SkipOnSessionContinue is false (default) and assistant messages are present", func() {
+		BeforeEach(func() {
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "write a test for me"},
+					{Role: "assistant", Content: "Sure, I can help with that."},
+					{Role: "user", Content: "also add error handling"},
+				},
+			}
+		})
+
+		It("skips all injection preserving current behaviour", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(Equal("You are a helpful assistant."))
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+		})
+	})
+
 })
