@@ -55,10 +55,17 @@
     "ses_2917d955affepKAr2iow3EenH8",
     "ses_29171bd5effeQoz3O35dSnnsor",
     "ses_2916935bcffeC8YzdoyGP5iLoW",
-    "ses_29165512dffeRi0UqtfLc4cb2J"
+    "ses_29165512dffeRi0UqtfLc4cb2J",
+    "ses_29051b12dffe1p1UogdHj5wYf3",
+    "ses_2904f8642ffeanZ2teMbLlJc6s",
+    "ses_28ea62a47ffeHwelgc2Qb1M7T8",
+    "ses_28ea5fadaffedZIVFwhIto86ZM"
   ],
   "plan_name": "recall-learning-integration",
   "agent": "atlas",
   "worktree_path": "/home/baphled/Projects/FlowState.git/recall-integration",
-  "task_sessions": {}
+  "task_sessions": {},
+  "completed_tasks": [
+    "task-12"
+  ]
 }
