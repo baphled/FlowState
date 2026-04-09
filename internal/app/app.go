@@ -239,7 +239,7 @@ func configureApplicationAfterBuild(
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
-	startCorePluginSubscriptions(rt, eng)
+	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider))
 	startSessionRecorder(runtime.sessionRecorder, eng)
 	startExternalPlugins(rt)
 }
@@ -1508,7 +1508,7 @@ func pluginDispatcher(rt *pluginRuntime) *external.Dispatcher {
 //   - Starts the event logger (opens file, subscribes to EventBus).
 //   - Creates and subscribes a RateLimitDetector to "provider.error" events.
 //   - Subscribes the dispatcher to plugin hook events for forwarding to external plugins.
-func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
+func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine, distiller learning.Distiller) {
 	if rt == nil || eng == nil {
 		return
 	}
@@ -1521,7 +1521,7 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine) {
 	if rt.dispatcher != nil {
 		subscribeDispatcherHooks(rt.dispatcher, bus)
 	}
-	subscribeLearningHook(bus)
+	subscribeLearningHook(bus, distiller)
 }
 
 // startBusPlugins starts builtin plugins that implement BusStarter.
@@ -1637,18 +1637,46 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 //
 // Side effects:
 //   - Subscribes a handler to "tool.execute.result" events on the bus.
-func subscribeLearningHook(bus *eventbus.EventBus) {
-	learningHook := learning.NewLearningHook(nil) // nil client for graceful degradation
+func subscribeLearningHook(bus *eventbus.EventBus, distiller learning.Distiller) {
+	learningHook := learning.NewLearningHook(nil)
 	bus.Subscribe(events.EventToolExecuteResult, func(msg any) {
-		if toolEvt, ok := msg.(*events.ToolExecuteResultEvent); ok {
-			result := &learning.ToolCallResult{
-				Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
-			}
-			if err := learningHook.Handle(context.Background(), result); err != nil {
-				slog.Warn("learning hook error", "error", err)
-			}
-		}
+		handleToolExecuteResult(msg, learningHook, distiller)
 	})
+}
+
+// handleToolExecuteResult processes a tool execute result event for learning capture.
+//
+// Expected:
+//   - msg is the raw event message from the event bus.
+//   - hook is a non-nil learning.Hook for capturing tool results.
+//   - distiller may be nil; when non-nil it distils the entry into the knowledge graph.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Calls hook.Handle and optionally distiller.Distill; logs warnings on error.
+func handleToolExecuteResult(msg any, learningHk *learning.Hook, distiller learning.Distiller) {
+	toolEvt, ok := msg.(*events.ToolExecuteResultEvent)
+	if !ok {
+		return
+	}
+	result := &learning.ToolCallResult{
+		Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
+	}
+	if err := learningHk.Handle(context.Background(), result); err != nil {
+		slog.Warn("learning hook error", "error", err)
+	}
+	if distiller == nil {
+		return
+	}
+	entry := learning.Entry{
+		ToolsUsed: []string{toolEvt.Data.ToolName},
+		Outcome:   fmt.Sprintf("%v", toolEvt.Data.Result),
+	}
+	if _, _, err := distiller.Distill(entry); err != nil {
+		slog.Warn("distiller error", "error", err)
+	}
 }
 
 // subscribeRateLimitLogger subscribes to "provider.rate_limited" events and logs
@@ -2345,6 +2373,33 @@ func buildRecallBroker(cfg *config.AppConfig, p provider.Provider) recall.Broker
 	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
 	source := qdrantrecall.NewSource(client, embedder, col)
 	return recall.NewRecallBroker(nil, nil, nil, source)
+}
+
+// buildDistiller constructs a StructuredDistiller backed by Qdrant when configured.
+//
+// Expected:
+//   - cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
+//   - p is the provider used for embedding computation.
+//
+// Returns:
+//   - A non-nil Distiller when cfg.Qdrant.URL is non-empty.
+//   - nil when Qdrant is not configured, disabling structured distillation.
+//
+// Side effects:
+//   - None; Qdrant connections are established lazily per-request.
+func buildDistiller(cfg *config.AppConfig, p provider.Provider) learning.Distiller {
+	if cfg == nil || cfg.Qdrant.URL == "" {
+		return nil
+	}
+	col := cfg.Qdrant.Collection
+	if col == "" {
+		col = "flowstate-recall"
+	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+	adapter := &qdrantClientAdapter{client: client}
+	memClient := learning.NewVectorStoreMemoryClient(adapter, embedder, col)
+	return learning.NewStructuredDistiller(memClient)
 }
 
 // createDiscovery initialises agent discovery with manifests from the provided registry.
