@@ -33,6 +33,16 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 			Expect(cfg.MaxAutoSkills).To(Equal(6))
 		})
 
+		It("returns max auto skills bytes of 35840", func() {
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			Expect(cfg.MaxAutoSkillsBytes).To(Equal(35840))
+		})
+
+		It("returns per skill max bytes of 5120", func() {
+			cfg := hook.DefaultSkillAutoLoaderConfig()
+			Expect(cfg.PerSkillMaxBytes).To(Equal(5120))
+		})
+
 		It("returns empty category mappings", func() {
 			cfg := hook.DefaultSkillAutoLoaderConfig()
 			Expect(cfg.CategoryMappings).To(BeEmpty())
@@ -60,6 +70,8 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 				"agent-discovery",
 			}))
 			Expect(cfg.MaxAutoSkills).To(Equal(6))
+			Expect(cfg.MaxAutoSkillsBytes).To(Equal(35840))
+			Expect(cfg.PerSkillMaxBytes).To(Equal(5120))
 		})
 
 		It("loads config from a valid YAML file", func() {
@@ -67,8 +79,10 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 			configPath := filepath.Join(dir, "skill-autoloader.yaml")
 
 			yamlContent := hook.SkillAutoLoaderConfig{
-				BaselineSkills: []string{"custom-skill-a", "custom-skill-b"},
-				MaxAutoSkills:  10,
+				BaselineSkills:     []string{"custom-skill-a", "custom-skill-b"},
+				MaxAutoSkills:      10,
+				MaxAutoSkillsBytes: 51200,
+				PerSkillMaxBytes:   6144,
 				CategoryMappings: map[string][]string{
 					"deep": {"golang", "architecture"},
 				},
@@ -84,6 +98,8 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfg.BaselineSkills).To(Equal([]string{"custom-skill-a", "custom-skill-b"}))
 			Expect(cfg.MaxAutoSkills).To(Equal(10))
+			Expect(cfg.MaxAutoSkillsBytes).To(Equal(51200))
+			Expect(cfg.PerSkillMaxBytes).To(Equal(6144))
 			Expect(cfg.CategoryMappings).To(HaveKey("deep"))
 			Expect(cfg.CategoryMappings["deep"]).To(Equal([]string{"golang", "architecture"}))
 			Expect(cfg.KeywordPatterns).To(HaveLen(1))
@@ -154,8 +170,21 @@ var _ = Describe("SkillAutoLoaderConfig", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded.BaselineSkills).To(Equal(original.BaselineSkills))
 			Expect(loaded.MaxAutoSkills).To(Equal(original.MaxAutoSkills))
+			Expect(loaded.MaxAutoSkillsBytes).To(Equal(original.MaxAutoSkillsBytes))
+			Expect(loaded.PerSkillMaxBytes).To(Equal(original.PerSkillMaxBytes))
 			Expect(loaded.CategoryMappings).To(Equal(original.CategoryMappings))
 			Expect(loaded.KeywordPatterns).To(Equal(original.KeywordPatterns))
+		})
+
+		It("allows zero value byte budgets from YAML", func() {
+			dir := GinkgoT().TempDir()
+			configPath := filepath.Join(dir, "zero-budget.yaml")
+			Expect(os.WriteFile(configPath, []byte("max_auto_skills_bytes: 0\nper_skill_max_bytes: 0\n"), 0o600)).To(Succeed())
+
+			cfg, err := hook.LoadSkillAutoLoaderConfig(configPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.MaxAutoSkillsBytes).To(Equal(0))
+			Expect(cfg.PerSkillMaxBytes).To(Equal(0))
 		})
 	})
 })

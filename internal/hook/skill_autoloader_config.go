@@ -15,10 +15,12 @@ type KeywordPattern struct {
 
 // SkillAutoLoaderConfig controls the three-tier skill auto-loading behaviour.
 type SkillAutoLoaderConfig struct {
-	BaselineSkills   []string            `yaml:"baseline_skills" json:"baseline_skills"`
-	MaxAutoSkills    int                 `yaml:"max_auto_skills" json:"max_auto_skills"`
-	CategoryMappings map[string][]string `yaml:"category_mappings" json:"category_mappings"`
-	KeywordPatterns  []KeywordPattern    `yaml:"keyword_patterns" json:"keyword_patterns"`
+	BaselineSkills     []string            `yaml:"baseline_skills" json:"baseline_skills"`
+	MaxAutoSkills      int                 `yaml:"max_auto_skills" json:"max_auto_skills"`
+	MaxAutoSkillsBytes int                 `yaml:"max_auto_skills_bytes" json:"max_auto_skills_bytes"`
+	PerSkillMaxBytes   int                 `yaml:"per_skill_max_bytes" json:"per_skill_max_bytes"`
+	CategoryMappings   map[string][]string `yaml:"category_mappings" json:"category_mappings"`
+	KeywordPatterns    []KeywordPattern    `yaml:"keyword_patterns" json:"keyword_patterns"`
 }
 
 // DefaultSkillAutoLoaderConfig returns a config with baseline skills and sensible defaults.
@@ -44,9 +46,11 @@ func DefaultSkillAutoLoaderConfig() *SkillAutoLoaderConfig {
 			"skill-discovery",
 			"agent-discovery",
 		},
-		MaxAutoSkills:    6,
-		CategoryMappings: map[string][]string{},
-		KeywordPatterns:  []KeywordPattern{},
+		MaxAutoSkills:      6,
+		MaxAutoSkillsBytes: 35840,
+		PerSkillMaxBytes:   5120,
+		CategoryMappings:   map[string][]string{},
+		KeywordPatterns:    []KeywordPattern{},
 	}
 }
 
