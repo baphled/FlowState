@@ -80,12 +80,12 @@ func (m *Mem0LearningStore) Capture(entry Entry) error {
 		ID:     strconv.FormatInt(entry.Timestamp.UnixNano(), 10),
 		Vector: vector,
 		Payload: map[string]any{
-			"agent_id":     entry.AgentID,
-			"user_message": entry.UserMessage,
-			"response":     entry.Response,
-			"tools_used":   entry.ToolsUsed,
-			"outcome":      entry.Outcome,
-			"timestamp":    entry.Timestamp.Format(time.RFC3339),
+			"agent_id":   entry.AgentID,
+			"content":    entry.UserMessage,
+			"response":   entry.Response,
+			"tools_used": entry.ToolsUsed,
+			"outcome":    entry.Outcome,
+			"timestamp":  entry.Timestamp.Format(time.RFC3339),
 		},
 	}
 
@@ -139,7 +139,7 @@ func scoredPointToEntry(p ScoredVectorPoint) Entry {
 	if v, ok := p.Payload["agent_id"].(string); ok {
 		e.AgentID = v
 	}
-	if v, ok := p.Payload["user_message"].(string); ok {
+	if v, ok := p.Payload["content"].(string); ok {
 		e.UserMessage = v
 	}
 	if v, ok := p.Payload["response"].(string); ok {
@@ -151,6 +151,13 @@ func scoredPointToEntry(p ScoredVectorPoint) Entry {
 	if v, ok := p.Payload["timestamp"].(string); ok {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			e.Timestamp = t
+		}
+	}
+	if v, ok := p.Payload["tools_used"].([]any); ok {
+		for _, t := range v {
+			if s, ok := t.(string); ok {
+				e.ToolsUsed = append(e.ToolsUsed, s)
+			}
 		}
 	}
 	return e

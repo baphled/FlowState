@@ -91,11 +91,11 @@ var _ = Describe("Mem0LearningStore", func() {
 						ID:    "123",
 						Score: 0.9,
 						Payload: map[string]any{
-							"user_message": "what is recall",
-							"agent_id":     "agent-1",
-							"response":     "it remembers things",
-							"outcome":      "success",
-							"timestamp":    "2026-04-09T10:00:00Z",
+							"content":   "what is recall",
+							"agent_id":  "agent-1",
+							"response":  "it remembers things",
+							"outcome":   "success",
+							"timestamp": "2026-04-09T10:00:00Z",
 						},
 					},
 				}
