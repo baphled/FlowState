@@ -2179,6 +2179,7 @@ func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.Fil
 		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
 	} else {
 		// Graceful degradation: use JSONFileStore when Qdrant not configured
+		slog.Warn("Qdrant not configured; learning store falling back to JSON file — set QDRANT_URL to enable vector learning")
 		learningStore = learning.NewJSONFileStore(filepath.Join(cfg.DataDir, "learnings.json"))
 	}
 
@@ -2337,6 +2338,7 @@ func (a *providerEmbedderAdapter) Embed(ctx context.Context, text string) ([]flo
 //   - None; Qdrant connections are established lazily per-request.
 func buildRecallBroker(cfg *config.AppConfig, p provider.Provider) recall.Broker {
 	if cfg.Qdrant.URL == "" {
+		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL to enable vector recall")
 		return nil
 	}
 	col := cfg.Qdrant.Collection
