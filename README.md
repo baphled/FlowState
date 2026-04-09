@@ -9,6 +9,7 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 - **Ollama-first** - Local models as first-class citizens.
 - **Provider-agnostic** - Plug in any model provider (OpenAI, Anthropic, etc.).
 - **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol.
+- **Vector-backed Recall** - Optional Qdrant integration for semantic memory and learning.
 - **Session management** - Persistent conversations with search.
 - **Tool system** - Bash, file operations, web fetching with granular permissions.
 - **Extensible skill and command system** - Add custom commands and integrate with your workflows.
