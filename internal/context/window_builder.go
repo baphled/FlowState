@@ -315,7 +315,63 @@ type messageState struct {
 	truncated bool
 }
 
-// appendRecentMessages appends recent messages from the store to the context window, respecting the token budget.
+// isSkillLoadPair reports whether messages[i] and messages[i+1] form a skill_load tool call pair.
+// A skill_load pair consists of an assistant message with a skill_load ToolCall followed
+// immediately by a tool-role result message.
+//
+// Expected:
+//   - i is a valid index into messages (0-based).
+//   - messages has at least i+2 elements for a true result.
+//
+// Returns:
+//   - true when messages[i] is an assistant message with ToolCalls[0].Name == "skill_load"
+//     AND messages[i+1].Role == "tool".
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func isSkillLoadPair(messages []provider.Message, i int) bool {
+	if i+1 >= len(messages) {
+		return false
+	}
+	msg := messages[i]
+	if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+		return false
+	}
+	if msg.ToolCalls[0].Name != "skill_load" {
+		return false
+	}
+	return messages[i+1].Role == "tool"
+}
+
+// identifySkillPairIndices returns a set of message indices that belong to skill_load tool call pairs.
+// Both the assistant message (with ToolCalls[0].Name="skill_load") and the following
+// tool-result message are included.
+//
+// Expected:
+//   - messages is a slice of provider.Message (may be empty).
+//
+// Returns:
+//   - A map of indices that should be treated as skill tool results for eviction purposes.
+//
+// Side effects:
+//   - None.
+func (b *WindowBuilder) identifySkillPairIndices(messages []provider.Message) map[int]bool {
+	skillIdx := make(map[int]bool)
+	for i := 0; i < len(messages)-1; i++ {
+		if isSkillLoadPair(messages, i) {
+			skillIdx[i] = true
+			skillIdx[i+1] = true
+			i++
+		}
+	}
+	return skillIdx
+}
+
+// appendRecentMessages appends recent messages from the store to the context window,
+// preferentially evicting skill_load tool result pairs when the token budget is tight.
+// Non-skill messages are processed first to guarantee their inclusion; remaining budget
+// is then filled with skill pairs starting from the most recent.
 //
 // Expected:
 //   - store is a non-nil recall.FileContextStore containing conversation messages.
@@ -339,16 +395,85 @@ func (b *WindowBuilder) appendRecentMessages(
 
 	recentMessages := store.GetRecent(slidingWindowSize)
 	recentIDs := b.getMessageIDs(store, len(recentMessages))
+	skillPairIndices := b.identifySkillPairIndices(recentMessages)
 
-	for i, msg := range recentMessages {
-		msgID := b.getMessageIDAtIndex(recentIDs, i)
+	b.appendNonSkillMessages(recentMessages, recentIDs, skillPairIndices, state)
+	b.appendSkillPairsWithBudget(recentMessages, recentIDs, state)
+}
+
+// appendNonSkillMessages appends messages that are not part of skill_load pairs,
+// preserving their original chronological order.
+//
+// Expected:
+//   - messages is a slice of recent provider.Message instances.
+//   - ids is a parallel slice of message ID strings.
+//   - skillIndices identifies indices belonging to skill_load pairs.
+//   - state is a non-nil messageState tracking the current window assembly.
+//
+// Side effects:
+//   - Appends non-skill messages to state.messages within the token budget.
+//   - Updates state.budget and state.truncated accordingly.
+func (b *WindowBuilder) appendNonSkillMessages(
+	messages []provider.Message,
+	ids []string,
+	skillIndices map[int]bool,
+	state *messageState,
+) {
+	for i, msg := range messages {
+		if skillIndices[i] {
+			continue
+		}
+		msgID := b.getMessageIDAtIndex(ids, i)
 		if state.seenIDs[msgID] {
 			continue
 		}
-
 		var msgTruncated bool
 		state.messages, msgTruncated = b.appendMessageWithBudget(state.messages, msg, state.budget)
 		state.truncated = state.truncated || msgTruncated
+	}
+}
+
+// appendSkillPairsWithBudget appends skill_load pairs to the context window,
+// processing most recent pairs first so that older pairs are evicted preferentially.
+// Each pair is added atomically: both the assistant and tool messages must fit
+// within the remaining budget or neither is added.
+//
+// Expected:
+//   - messages is a slice of recent provider.Message instances.
+//   - ids is a parallel slice of message ID strings.
+//   - state is a non-nil messageState tracking the current window assembly.
+//
+// Side effects:
+//   - Appends skill pair messages to state.messages within the token budget.
+//   - Updates state.budget with token reservations for added pairs.
+func (b *WindowBuilder) appendSkillPairsWithBudget(
+	messages []provider.Message,
+	ids []string,
+	state *messageState,
+) {
+	var pairStarts []int
+	for i := 0; i < len(messages)-1; i++ {
+		if isSkillLoadPair(messages, i) {
+			pairStarts = append(pairStarts, i)
+			i++
+		}
+	}
+
+	for j := len(pairStarts) - 1; j >= 0; j-- {
+		idx := pairStarts[j]
+		assistantID := b.getMessageIDAtIndex(ids, idx)
+		toolID := b.getMessageIDAtIndex(ids, idx+1)
+		if state.seenIDs[assistantID] || state.seenIDs[toolID] {
+			continue
+		}
+		pairTokens := b.counter.Count(messages[idx].Content) + b.counter.Count(messages[idx+1].Content)
+		if !state.budget.CanFit(pairTokens) {
+			continue
+		}
+		state.messages = append(state.messages, messages[idx])
+		state.budget.Reserve("sliding", b.counter.Count(messages[idx].Content))
+		state.messages = append(state.messages, messages[idx+1])
+		state.budget.Reserve("sliding", b.counter.Count(messages[idx+1].Content))
 	}
 }
 

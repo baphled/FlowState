@@ -3,6 +3,7 @@ package context_test
 import (
 	"bytes"
 	gocontext "context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -323,6 +324,126 @@ var _ = Describe("WindowBuilder", func() {
 					}
 				}
 				Expect(hasRelevant).To(BeTrue())
+			})
+		})
+
+		Context("skill-aware eviction", func() {
+			It("evicts skill tool result pairs before conversation messages", func() {
+				store.Append(provider.Message{Role: "user", Content: "aaaa"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "c1", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "aaaa aaaa aaaa aaaa aaaa"})
+				store.Append(provider.Message{Role: "user", Content: "bbbb"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "c2", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "aaaa aaaa aaaa aaaa aaaa"})
+				store.Append(provider.Message{Role: "assistant", Content: "cccc"})
+				store.Append(provider.Message{Role: "user", Content: "dddd"})
+				store.Append(provider.Message{
+					Role:      "assistant",
+					ToolCalls: []provider.ToolCall{{ID: "c3", Name: "skill_load"}},
+				})
+				store.Append(provider.Message{Role: "tool", Content: "aaaa aaaa aaaa aaaa aaaa"})
+				store.Append(provider.Message{Role: "user", Content: "eeee"})
+				store.Append(provider.Message{Role: "assistant", Content: "ffff"})
+				store.Append(provider.Message{Role: "user", Content: "gggg"})
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: "S",
+					},
+					ContextManagement: agent.ContextManagement{
+						SlidingWindowSize: 13,
+					},
+				}
+
+				result := builder.Build(manifest, store, 9)
+
+				var nonSystemContents []string
+				for _, msg := range result.Messages {
+					if msg.Role != "system" {
+						nonSystemContents = append(nonSystemContents, msg.Content)
+					}
+				}
+
+				for _, expected := range []string{"aaaa", "bbbb", "cccc", "dddd", "eeee", "ffff", "gggg"} {
+					Expect(nonSystemContents).To(ContainElement(expected))
+				}
+
+				for _, msg := range result.Messages {
+					if msg.Role == "tool" {
+						Fail("Expected no tool messages in result")
+					}
+				}
+			})
+
+			It("preserves standard behaviour when no skill messages are present", func() {
+				for range 10 {
+					store.Append(provider.Message{Role: "user", Content: "aaaa"})
+				}
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: "S",
+					},
+					ContextManagement: agent.ContextManagement{
+						SlidingWindowSize: 10,
+					},
+				}
+
+				result := builder.Build(manifest, store, 8)
+
+				nonSystem := 0
+				for _, msg := range result.Messages {
+					if msg.Role != "system" {
+						nonSystem++
+					}
+				}
+				Expect(nonSystem).To(Equal(7))
+			})
+
+			It("keeps conversation messages and most recent skill pairs when budget allows", func() {
+				for i := range 5 {
+					store.Append(provider.Message{
+						Role:      "assistant",
+						ToolCalls: []provider.ToolCall{{ID: fmt.Sprintf("c%d", i), Name: "skill_load"}},
+					})
+					store.Append(provider.Message{Role: "tool", Content: "aaaa aaaa aaaa aaaa aaaa"})
+					store.Append(provider.Message{Role: "user", Content: fmt.Sprintf("conv-%d", i)})
+				}
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: "S",
+					},
+					ContextManagement: agent.ContextManagement{
+						SlidingWindowSize: 15,
+					},
+				}
+
+				result := builder.Build(manifest, store, 24)
+
+				var conversationContents []string
+				skillToolCount := 0
+				for _, msg := range result.Messages {
+					if msg.Role == "user" {
+						conversationContents = append(conversationContents, msg.Content)
+					}
+					if msg.Role == "tool" {
+						skillToolCount++
+					}
+				}
+
+				Expect(conversationContents).To(HaveLen(5))
+				for i := range 5 {
+					Expect(conversationContents).To(ContainElement(fmt.Sprintf("conv-%d", i)))
+				}
+
+				Expect(skillToolCount).To(Equal(3))
 			})
 		})
 	})
