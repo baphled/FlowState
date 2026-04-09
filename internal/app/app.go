@@ -1350,7 +1350,8 @@ type hookChainConfig struct {
 // the base handler. When only failoverHk is set (legacy path), it is prepended first.
 //
 // Expected:
-//   - params.learningStore may be nil or a Mem0LearningStore for persisting learning data. If nil, learning is disabled. Mem0LearningStore provides in-memory persistence without external dependencies.
+//   - params.learningStore may be nil or a Mem0LearningStore for persisting learning data.
+//     If nil, learning is disabled. Mem0LearningStore provides in-memory persistence without external dependencies.
 //   - params.manifestGetter returns the current agent manifest for skill selection.
 //   - params.bakedSkillNames are skill names already baked into BuildSystemPrompt. May be nil.
 //   - params.failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
@@ -2053,7 +2054,8 @@ func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollam
 // BuildHookChainForTest is a test helper that exposes buildHookChain for testing.
 //
 // Expected:
-//   - learningStore may be nil or a Mem0LearningStore for persisting learning data. If nil, learning is disabled. Mem0LearningStore provides in-memory persistence without external dependencies.
+//   - learningStore may be nil or a Mem0LearningStore for persisting learning data.
+//     If nil, learning is disabled. Mem0LearningStore provides in-memory persistence without external dependencies.
 //   - manifestGetter returns the current agent manifest for hook selection.
 //
 // Returns:
