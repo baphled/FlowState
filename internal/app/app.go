@@ -367,6 +367,7 @@ type engineParams struct {
 	failoverManager    *failover.Manager
 	mcpServerTools     map[string][]string
 	dispatcher         *external.Dispatcher
+	skillDir           string
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -406,6 +407,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		failoverHook:       params.failoverHook,
 		failoverManager:    params.failoverManager,
 		dispatcher:         params.dispatcher,
+		skillDir:           params.cfg.SkillDir,
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -577,6 +579,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		eventBus:        appEventBus,
 		agentID:         params.defaultManifest.ID,
 		twc:             buildToolWiringCallbacks(&eng, &ensureToolsFn),
+		skillDir:        params.skillDir,
 	})
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
@@ -775,11 +778,16 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 func (a *App) createDelegateEngine(
 	manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus,
 ) (*engine.Engine, streaming.Streamer) {
+	var delegateSkillDir string
+	if a.Config != nil {
+		delegateSkillDir = a.Config.SkillDir
+	}
 	hookChain := buildHookChain(hookChainConfig{
 		learningStore:  a.Learning,
 		manifestGetter: func() agent.Manifest { return manifest },
 		eventBus:       bus,
 		agentID:        manifest.ID,
+		skillDir:       delegateSkillDir,
 	})
 
 	// Create a new failover manager for the child engine from shared components.
@@ -1305,6 +1313,7 @@ type hookChainConfig struct {
 	dispatcher      *external.Dispatcher
 	eventBus        *eventbus.EventBus
 	agentID         string
+	skillDir        string
 }
 
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
@@ -1318,17 +1327,30 @@ type hookChainConfig struct {
 //   - params.failoverHk may be nil; when non-nil and failoverMgr is nil, it is prepended.
 //   - params.failoverMgr may be nil; when non-nil, a StreamHook is appended LAST.
 //   - params.twc may be nil; when non-nil, a ToolWiringHook is appended after SkillAutoLoader.
+//   - params.skillDir may be empty; when non-empty, a SkillContentCache is initialised and
+//     passed to SkillAutoLoaderHook for direct content injection.
 //
 // Returns:
 //   - A fully configured hook.Chain ready for use in the engine.
 //
 // Side effects:
 //   - Reads skill-autoloader.yaml from the config directory if it exists.
+//   - Scans params.skillDir to populate the skill content cache when non-empty.
 func buildHookChain(params hookChainConfig) *hook.Chain {
 	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
 	if err != nil {
 		cfg = hook.DefaultSkillAutoLoaderConfig()
 	}
+
+	var skillCache *hook.SkillContentCache
+	if params.skillDir != "" {
+		skillCache = hook.NewSkillContentCache(params.skillDir)
+		if err := skillCache.Init(); err != nil {
+			slog.Warn("skill content cache init failed", "error", err)
+			skillCache = nil
+		}
+	}
+
 	hooks := []hook.Hook{
 		hook.LoggingHook(),
 	}
@@ -1336,7 +1358,7 @@ func buildHookChain(params hookChainConfig) *hook.Chain {
 		hooks = append(hooks, hook.LearningHook(params.learningStore))
 	}
 	hooks = append(hooks,
-		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames, nil),
+		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames, skillCache),
 	)
 	if params.dispatcher != nil {
 		d := params.dispatcher
