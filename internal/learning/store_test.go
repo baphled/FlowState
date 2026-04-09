@@ -9,6 +9,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/learning"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 )
 
 var _ = Describe("JSONFileStore", func() {
@@ -60,6 +62,39 @@ var _ = Describe("JSONFileStore", func() {
 			err := store.Capture(entry)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(filePath).To(BeAnExistingFile())
+		})
+
+		It("emits LearningRecordedEvent when EventBus is configured", func() {
+			bus := eventbus.NewEventBus()
+			var publishedEvent events.Event
+			bus.Subscribe(events.EventLearningRecorded, func(event any) {
+				if e, ok := event.(events.Event); ok {
+					publishedEvent = e
+				}
+			})
+
+			jsonStore := learning.NewJSONFileStore(filePath)
+			jsonStore.SetEventBus(bus)
+
+			entry := learning.Entry{
+				Timestamp:   time.Now(),
+				AgentID:     "agent-001",
+				UserMessage: "How do I write tests?",
+				Response:    "Use Ginkgo and Gomega.",
+				ToolsUsed:   []string{"editor", "terminal"},
+				Outcome:     "success",
+			}
+
+			err := jsonStore.Capture(entry)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(publishedEvent).NotTo(BeNil())
+			Expect(publishedEvent.EventType()).To(Equal(events.EventLearningRecorded))
+
+			if event, ok := publishedEvent.(*events.LearningRecordedEvent); ok {
+				Expect(event.Data.AgentID).To(Equal("agent-001"))
+				Expect(event.Data.UserMessage).To(Equal("How do I write tests?"))
+				Expect(event.Data.Outcome).To(Equal("success"))
+			}
 		})
 	})
 

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 )
 
 // Entry represents a captured agent interaction for learning purposes.
@@ -34,6 +37,7 @@ type JSONFileStore struct {
 	path    string
 	entries []Entry
 	mu      sync.RWMutex
+	bus     *eventbus.EventBus
 }
 
 // NewJSONFileStore creates a new JSONFileStore at the given path.
@@ -53,6 +57,22 @@ func NewJSONFileStore(path string) *JSONFileStore {
 	}
 	store.load()
 	return store
+}
+
+// SetEventBus configures the event bus for emitting learning recorded events.
+//
+// Expected:
+//   - bus is a non-nil EventBus for event emission.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the bus reference for use in Capture.
+func (s *JSONFileStore) SetEventBus(bus *eventbus.EventBus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bus = bus
 }
 
 // load reads and unmarshals learning entries from the JSON file.
@@ -127,12 +147,29 @@ func (s *JSONFileStore) persist() error {
 //
 // Side effects:
 //   - Appends the entry and persists the updated list to the JSON file.
+//   - Emits LearningRecordedEvent if event bus is configured.
 func (s *JSONFileStore) Capture(entry Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.entries = append(s.entries, entry)
-	return s.persist()
+	if err := s.persist(); err != nil {
+		return err
+	}
+
+	// Emit event if bus is configured (AC3)
+	if s.bus != nil {
+		event := events.NewLearningRecordedEvent(events.LearningRecordedEventData{
+			AgentID:     entry.AgentID,
+			UserMessage: entry.UserMessage,
+			Outcome:     entry.Outcome,
+			ToolsUsed:   entry.ToolsUsed,
+			Timestamp:   time.Now(),
+		})
+		s.bus.Publish(events.EventLearningRecorded, event)
+	}
+
+	return nil
 }
 
 // Query returns all entries that contain the query string in UserMessage, Response, or Outcome.
