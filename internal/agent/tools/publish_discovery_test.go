@@ -7,6 +7,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent/tools"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 )
 
 type fakeDiscoveryStore struct {
@@ -66,6 +68,40 @@ var _ = Describe("PublishDiscoveryTool", func() {
 			discoveryStore.publishErr = errors.New("store failure")
 			_, err := tool.Run(input)
 			Expect(err).To(MatchError(ContainSubstring("store failure")))
+		})
+	})
+
+	Context("when EventBus is provided", func() {
+		It("publishes DiscoveryPublishedEvent on successful publish", func() {
+			bus := eventbus.NewEventBus()
+			var publishedEvent events.Event
+			bus.Subscribe(events.EventDiscoveryPublished, func(event any) {
+				if e, ok := event.(events.Event); ok {
+					publishedEvent = e
+				}
+			})
+
+			input := tools.PublishDiscoveryInput{
+				Kind:     "test",
+				Summary:  "Test discovery",
+				Priority: "high",
+			}
+			discoveryStore.publishID = "disc-123"
+			tool = tools.NewPublishDiscoveryToolWithBus(discoveryStore, bus)
+
+			id, err := tool.Run(input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("disc-123"))
+			Expect(publishedEvent).NotTo(BeNil())
+			Expect(publishedEvent.EventType()).To(Equal(events.EventDiscoveryPublished))
+
+			// Verify event data
+			if event, ok := publishedEvent.(*events.DiscoveryPublishedEvent); ok {
+				Expect(event.Data.ID).To(Equal("disc-123"))
+				Expect(event.Data.Summary).To(Equal("Test discovery"))
+				Expect(event.Data.Kind).To(Equal("test"))
+				Expect(event.Data.Priority).To(Equal("high"))
+			}
 		})
 	})
 })
