@@ -32,6 +32,28 @@ type AppConfig struct {
 	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
 	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
 	SessionRecording   bool                             `json:"session_recording" yaml:"session_recording"`
+	Qdrant             QdrantConfig                     `json:"qdrant" yaml:"qdrant"`
+}
+
+// QdrantConfig provides configuration for Qdrant-based recall storage.
+//
+// Fields:
+//   - URL: The base URL of the Qdrant server (e.g., "http://localhost:6333").
+//   - Collection: The Qdrant collection name to use for recall storage.
+//   - APIKey: The optional API key for authenticated Qdrant instances.
+//
+// Expected:
+//   - Used to configure Qdrant-backed recall in the application engine.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - None.
+type QdrantConfig struct {
+	URL        string `json:"url" yaml:"url"`
+	Collection string `json:"collection" yaml:"collection"`
+	APIKey     string `json:"api_key" yaml:"api_key"`
 }
 
 // ProvidersConfig configures all available LLM providers.

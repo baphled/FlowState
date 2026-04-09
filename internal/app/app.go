@@ -41,6 +41,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/openzen"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	recall "github.com/baphled/flowstate/internal/recall"
+	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -369,6 +370,7 @@ type engineParams struct {
 	mcpServerTools     map[string][]string
 	dispatcher         *external.Dispatcher
 	skillDir           string
+	recallBroker       recall.Broker
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -411,6 +413,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		failoverManager:    params.failoverManager,
 		dispatcher:         params.dispatcher,
 		skillDir:           params.cfg.SkillDir,
+		recallBroker:       buildRecallBroker(params.cfg, tracedProvider),
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -578,6 +581,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		TokenCounter:      params.tokenCounter,
 		MCPServerTools:    params.mcpServerTools,
 		EventBus:          appEventBus,
+		RecallBroker:      params.recallBroker,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -2185,6 +2189,55 @@ func toEmbeddingProvider(ollamaProvider *ollama.Provider) provider.Provider {
 		return ollamaProvider
 	}
 	return nil
+}
+
+// providerEmbedderAdapter bridges provider.Provider to qdrant.ProviderEmbedder
+// by converting the string-based Embed call to a provider.EmbedRequest.
+type providerEmbedderAdapter struct {
+	p provider.Provider
+}
+
+// Embed delegates to the wrapped provider, converting the text argument to
+// a provider.EmbedRequest.
+//
+// Expected:
+//   - ctx is non-nil.
+//   - text is a non-empty string to embed.
+//
+// Returns:
+//   - A float64 slice of the embedding vector on success.
+//   - An error if the underlying provider fails.
+//
+// Side effects:
+//   - Delegates to the configured provider.Provider.
+func (a *providerEmbedderAdapter) Embed(ctx context.Context, text string) ([]float64, error) {
+	return a.p.Embed(ctx, provider.EmbedRequest{Input: text})
+}
+
+// buildRecallBroker constructs a recall.Broker backed by Qdrant when configured.
+//
+// Expected:
+//   - cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
+//   - p is the provider used for embedding computation.
+//
+// Returns:
+//   - A non-nil recall.Broker when cfg.Qdrant.URL is non-empty.
+//   - nil when Qdrant is not configured, disabling vector recall.
+//
+// Side effects:
+//   - None; Qdrant connections are established lazily per-request.
+func buildRecallBroker(cfg *config.AppConfig, p provider.Provider) recall.Broker {
+	if cfg.Qdrant.URL == "" {
+		return nil
+	}
+	col := cfg.Qdrant.Collection
+	if col == "" {
+		col = "flowstate-recall"
+	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+	source := qdrantrecall.NewSource(client, embedder, col)
+	return recall.NewRecallBroker(nil, nil, nil, source)
 }
 
 // createDiscovery initialises agent discovery with manifests from the provided registry.
