@@ -1336,7 +1336,7 @@ func buildHookChain(params hookChainConfig) *hook.Chain {
 		hooks = append(hooks, hook.LearningHook(params.learningStore))
 	}
 	hooks = append(hooks,
-		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames),
+		hook.SkillAutoLoaderHook(cfg, params.manifestGetter, params.bakedSkillNames, nil),
 	)
 	if params.dispatcher != nil {
 		d := params.dispatcher

@@ -49,7 +49,7 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 				{Role: "user", Content: userMsg},
 			},
 		}
-		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil)
+		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil, nil)
 		chain := hook.NewChain(h)
 		handler := chain.Execute(func(ctx context.Context, r *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 			capturedReq = r

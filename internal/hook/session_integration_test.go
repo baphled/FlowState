@@ -20,7 +20,7 @@ var _ = Describe("SkillAutoLoaderHook session integration", Label("integration")
 	)
 
 	runSessionHook := func(ctx context.Context, req *provider.ChatRequest) (*provider.ChatRequest, bool) {
-		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil)
+		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil, nil)
 		var captured *provider.ChatRequest
 		called := false
 		chain := hook.NewChain(h)
@@ -108,7 +108,7 @@ var _ = Describe("SkillAutoLoaderHook session resumption", Label("integration"),
 	)
 
 	runSessionHook := func(req *provider.ChatRequest) *provider.ChatRequest {
-		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil)
+		h := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return testManifest }, nil, nil)
 		var captured *provider.ChatRequest
 		chain := hook.NewChain(h)
 		handler := chain.Execute(func(_ context.Context, r *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -200,7 +200,7 @@ var _ = Describe("Hook chain session context propagation", Label("integration"),
 					AlwaysActiveSkills: []string{"golang"},
 				},
 			}
-			autoloaderHook := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return manifest }, nil)
+			autoloaderHook := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return manifest }, nil, nil)
 
 			chain := hook.NewChain(spyHook, autoloaderHook)
 			handler := chain.Execute(func(_ context.Context, _ *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
@@ -241,7 +241,7 @@ var _ = Describe("Hook chain session context propagation", Label("integration"),
 					AlwaysActiveSkills: []string{"golang"},
 				},
 			}
-			autoloaderHook := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return manifest }, nil)
+			autoloaderHook := hook.SkillAutoLoaderHook(cfg, func() agent.Manifest { return manifest }, nil, nil)
 
 			handlerCalled := false
 			chain := hook.NewChain(autoloaderHook)

@@ -2,6 +2,9 @@ package hook_test
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -54,7 +57,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("prepends lean skill names to the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -70,7 +73,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 		It("includes baseline skills regardless of prompt content", func() {
 			request.Messages[1].Content = "something unrelated"
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -82,7 +85,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("includes agent always-active skills", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -107,7 +110,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("includes keyword-matched skills in the injection", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -128,7 +131,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("creates a system message with lean injection", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -162,7 +165,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(handler)
 
 			resultChan, err := wrapped(ctx, request)
@@ -189,7 +192,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("uses the expected lean format", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -216,7 +219,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("does not double-inject skills into the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -241,7 +244,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("skips skill injection entirely", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -263,7 +266,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(handler)
 
 			_, err := wrapped(ctx, request)
@@ -283,7 +286,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("injects skills as normal", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -322,7 +325,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("does not inject anything into the system message", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -344,7 +347,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 				return ch, nil
 			}
 
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return emptyManifest }, nil, nil)
 			wrapped := autoloader(handler)
 
 			_, err := wrapped(ctx, request)
@@ -364,7 +367,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("still injects the dynamic skills list because static placeholder lacks opening bracket", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -396,7 +399,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("injects only baseline skills, skipping Tier 2 and Tier 3", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -426,7 +429,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 
 		It("skips all injection preserving current behaviour", func() {
-			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil)
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
 			_, err := wrapped(ctx, request)
@@ -435,6 +438,130 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(Equal("You are a helpful assistant."))
 			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+		})
+	})
+
+	Context("when cache is provided (direct content injection)", func() {
+		var (
+			cache    *hook.SkillContentCache
+			cacheDir string
+		)
+
+		BeforeEach(func() {
+			var err error
+			cacheDir, err = os.MkdirTemp("", "skill-cache-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(cacheDir) })
+
+			skillDir := filepath.Join(cacheDir, "skill-a")
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# My Skill\nDo things."), 0o600)).To(Succeed())
+
+			cache = hook.NewSkillContentCache(cacheDir)
+			Expect(cache.Init()).To(Succeed())
+
+			manifest = agent.Manifest{
+				ID:   "test-agent",
+				Name: "Test Agent",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"skill-a"},
+				},
+			}
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns:  []hook.KeywordPattern{},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("injects skill content blocks when cache is provided", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
+			Expect(systemContent).To(ContainSubstring("# My Skill"))
+			Expect(systemContent).To(ContainSubstring("</skill>"))
+		})
+
+		It("falls back to lean injection when cache is nil", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).NotTo(ContainSubstring(`<skill name=`))
+		})
+	})
+
+	Context("when cache is provided with ceiling enforcement", func() {
+		var (
+			cache    *hook.SkillContentCache
+			cacheDir string
+		)
+
+		BeforeEach(func() {
+			var err error
+			cacheDir, err = os.MkdirTemp("", "skill-ceiling-test-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(cacheDir) })
+
+			for i := range 5 {
+				name := fmt.Sprintf("skill-%d", i)
+				dir := filepath.Join(cacheDir, name)
+				Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
+				content := strings.Repeat("X", 10240)
+				Expect(os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600)).To(Succeed())
+			}
+
+			cache = hook.NewSkillContentCache(cacheDir)
+			Expect(cache.Init()).To(Succeed())
+
+			manifest = agent.Manifest{
+				ID:   "test-agent",
+				Name: "Test Agent",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"skill-0", "skill-1", "skill-2", "skill-3", "skill-4"},
+				},
+			}
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:     []string{},
+				MaxAutoSkills:      10,
+				MaxAutoSkillsBytes: 35840,
+				CategoryMappings:   map[string][]string{},
+				KeywordPatterns:    []hook.KeywordPattern{},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("respects ceiling when cache provided — drops excess skills", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			blockCount := strings.Count(systemContent, "<skill name=")
+			Expect(blockCount).To(Equal(3))
 		})
 	})
 
