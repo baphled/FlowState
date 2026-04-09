@@ -38,6 +38,8 @@
 //   - recall.searched
 //   - recall.chain.searched
 //   - recall.summarized
+//   - discovery.published
+//   - learning.recorded
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
@@ -69,4 +71,6 @@ const (
 	EventRecallSearched          = "recall.searched"
 	EventRecallChainSearched     = "recall.chain.searched"
 	EventRecallSummarized        = "recall.summarized"
+	EventDiscoveryPublished      = "discovery.published"
+	EventLearningRecorded        = "learning.recorded"
 )
