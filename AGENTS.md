@@ -320,6 +320,43 @@ make test          # Go tests
 | `tasks/*.md` | Current tasks |
 | `features/*.feature` | BDD scenarios |
 
+## Qdrant Vector Store (Optional)
+
+FlowState uses Qdrant for vector-backed recall and learning pipelines. These features are disabled by default and require external dependencies.
+
+### Setup
+
+1. **Start Qdrant**:
+   ```bash
+   docker run -p 6333:6333 qdrant/qdrant:v1.12.0
+   ```
+
+2. **Pull Embedding Model**:
+   ```bash
+   ollama pull nomic-embed-text
+   ```
+
+### Configuration
+
+Add the following to your `config.yaml`:
+
+```yaml
+qdrant:
+  url: "http://localhost:6333"
+  collection: "flowstate-recall"
+  api_key: ""
+```
+
+**Note**: If Qdrant is not configured, FlowState starts normally but logs a warning that recall and vector learning are disabled.
+
+### External Integration Tests
+
+Standard tests (`make test`) do not require Qdrant. To run external integration tests, ensure Qdrant is running and the `QDRANT_URL` environment variable is set:
+
+```bash
+QDRANT_URL=http://localhost:6333 make test-external
+```
+
 ## Provider Requirements for Planner/Executor
 
 ### Anthropic is Required
