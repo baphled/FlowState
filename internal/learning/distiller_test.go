@@ -84,6 +84,8 @@ var _ = Describe("StructuredDistiller", func() {
 			Expect(entity.Name).To(Equal("agent-123"))
 			Expect(entity.EntityType).To(Equal("observation"))
 			Expect(entity.Observations).To(ContainElement("AgentID: agent-123"))
+			Expect(entity.Observations).To(ContainElement("UserMessage: How to test?"))
+			Expect(entity.Observations).To(ContainElement("Response: Use Ginkgo"))
 			Expect(entity.Observations).To(ContainElement("ToolsUsed: [editor terminal]"))
 			Expect(entity.Observations).To(ContainElement("Outcome: success"))
 			Expect(entity.Observations).To(ContainElement("Timestamp: 2023-01-01T12:00:00Z"))

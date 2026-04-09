@@ -164,4 +164,117 @@ var _ = Describe("MCPMemoryClient", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Describe("AddObservations", func() {
+		It("calls the add_observations tool and returns entries on success", func() {
+			observations := []learning.ObservationEntry{{EntityName: "Alice", Contents: []string{"likes Go"}}}
+			client.result = &mcp.ToolResult{Content: `{"observations":[{"entityName":"Alice","contents":["likes Go"]}]}`}
+			client.err = nil
+
+			result, err := mem.AddObservations(context.Background(), observations)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(1))
+			Expect(result[0].EntityName).To(Equal("Alice"))
+			Expect(result[0].Contents).To(Equal([]string{"likes Go"}))
+			Expect(client.calledWith.tool).To(Equal("add_observations"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			_, err := mem.AddObservations(context.Background(), nil)
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
+
+	Describe("DeleteEntities", func() {
+		It("calls the delete_entities tool and returns deleted names on success", func() {
+			client.result = &mcp.ToolResult{Content: `{"deleted":["Alice","Bob"]}`}
+			client.err = nil
+
+			result, err := mem.DeleteEntities(context.Background(), []string{"Alice", "Bob"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([]string{"Alice", "Bob"}))
+			Expect(client.calledWith.tool).To(Equal("delete_entities"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			_, err := mem.DeleteEntities(context.Background(), nil)
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
+
+	Describe("DeleteObservations", func() {
+		It("calls the delete_observations tool on success", func() {
+			deletions := []learning.DeletionEntry{{EntityName: "Alice", Observations: []string{"old fact"}}}
+			client.result = &mcp.ToolResult{Content: `{}`}
+			client.err = nil
+
+			err := mem.DeleteObservations(context.Background(), deletions)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.calledWith.tool).To(Equal("delete_observations"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			err := mem.DeleteObservations(context.Background(), nil)
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
+
+	Describe("DeleteRelations", func() {
+		It("calls the delete_relations tool on success", func() {
+			relations := []learning.Relation{{From: "A", To: "B", RelationType: "friend"}}
+			client.result = &mcp.ToolResult{Content: `{}`}
+			client.err = nil
+
+			err := mem.DeleteRelations(context.Background(), relations)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.calledWith.tool).To(Equal("delete_relations"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			err := mem.DeleteRelations(context.Background(), nil)
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
+
+	Describe("ReadGraph", func() {
+		It("calls the read_graph tool and returns full KnowledgeGraph on success", func() {
+			client.result = &mcp.ToolResult{Content: `{"entities":[{"name":"Alice","entityType":"Person","observations":["obs1"]}],"relations":[{"from":"Alice","to":"Bob","relationType":"friend"}]}`}
+			client.err = nil
+
+			result, err := mem.ReadGraph(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Entities).To(HaveLen(1))
+			Expect(result.Relations).To(HaveLen(1))
+			Expect(client.calledWith.tool).To(Equal("read_graph"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			_, err := mem.ReadGraph(context.Background())
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
+
+	Describe("WriteLearningRecord", func() {
+		It("creates an entity from the record via CreateEntities", func() {
+			client.result = &mcp.ToolResult{Content: `{"entities":[{"name":"agent-1","entityType":"learning-record","observations":["Outcome: success"]}]}`}
+			client.err = nil
+
+			record := &learning.Record{AgentID: "agent-1", ToolsUsed: []string{"bash"}, Outcome: "success"}
+			err := mem.WriteLearningRecord(record)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.calledWith.tool).To(Equal("create_entities"))
+		})
+
+		It("returns error if MCP tool call fails", func() {
+			client.err = errors.New("tool error")
+			record := &learning.Record{AgentID: "agent-1", Outcome: "fail"}
+			err := mem.WriteLearningRecord(record)
+			Expect(err).To(MatchError("tool error"))
+		})
+	})
 })

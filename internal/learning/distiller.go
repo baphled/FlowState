@@ -94,6 +94,8 @@ func (d *StructuredDistiller) Distill(entry Entry) (Entity, []Relation, error) {
 func (d *StructuredDistiller) extractObservations(entry Entry) []string {
 	return []string{
 		"AgentID: " + entry.AgentID,
+		"UserMessage: " + entry.UserMessage,
+		"Response: " + entry.Response,
 		fmt.Sprintf("ToolsUsed: [%s]", strings.Join(entry.ToolsUsed, " ")),
 		"Outcome: " + entry.Outcome,
 		"Timestamp: " + entry.Timestamp.Format(time.RFC3339),

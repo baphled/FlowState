@@ -1,49 +1,47 @@
-// Package engine — Context Assembly Hook Integration Tests
-//
-// These tests verify the end-to-end integration of the context.assembly hook
-// with RecallBroker during context window building. They test all 4 ACs:
-// AC1: Hook fires before context assembly
-// AC2: RecallBroker.Query is called with correct parameters
+// Package engine tests verify the end-to-end integration of RecallBroker
+// with the Engine's context window building. They cover all 4 ACs:
+// AC1: RecallBroker is queried during context assembly
+// AC2: RecallBroker.Query receives the user message as query
 // AC3: Observations are merged into the context window
 // AC4: Token budget constraint is respected (no overflow)
 package engine_test
 
 import (
 	stdctx "context"
+	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
-	ctx "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 )
 
-// mockTokenCounter returns a fixed token count for testing.
-type mockTokenCounter struct {
+type contextAssemblyTokenCounter struct {
 	countFn      func(text string) int
 	modelLimitFn func(model string) int
 }
 
-func (m *mockTokenCounter) Count(text string) int {
+func (m *contextAssemblyTokenCounter) Count(text string) int {
 	if m.countFn != nil {
 		return m.countFn(text)
 	}
-	return len(text) / 4 // rough approximation: ~4 chars per token
+	return len(text) / 4
 }
 
-func (m *mockTokenCounter) ModelLimit(model string) int {
+func (m *contextAssemblyTokenCounter) ModelLimit(model string) int {
 	if m.modelLimitFn != nil {
 		return m.modelLimitFn(model)
 	}
-	return 8192 // default limit for testing
+	return 8192
 }
 
-// mockRecallBroker returns pre-configured observations.
-type mockRecallBroker struct {
+type contextAssemblyBroker struct {
 	queryFn    func(c stdctx.Context, query string, limit int) ([]recall.Observation, error)
 	queryCalls []struct {
 		query string
@@ -51,7 +49,7 @@ type mockRecallBroker struct {
 	}
 }
 
-func (m *mockRecallBroker) Query(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
+func (m *contextAssemblyBroker) Query(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
 	m.queryCalls = append(m.queryCalls, struct {
 		query string
 		limit int
@@ -62,450 +60,385 @@ func (m *mockRecallBroker) Query(c stdctx.Context, query string, limit int) ([]r
 	return []recall.Observation{}, nil
 }
 
-// mockFileContextStore is a minimal test store for buildContextWindow.
-type mockFileContextStore struct{}
+type contextAssemblyProvider struct{}
 
-func (m *mockFileContextStore) GetRecentMessages(c stdctx.Context, sessionID string, limit int) ([]provider.Message, error) {
-	return []provider.Message{}, nil
+func (p *contextAssemblyProvider) Name() string { return "test-provider" }
+func (p *contextAssemblyProvider) Stream(_ stdctx.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	ch <- provider.StreamChunk{Done: true}
+	close(ch)
+	return ch, nil
 }
-
-func (m *mockFileContextStore) SaveMessage(c stdctx.Context, sessionID string, msg provider.Message) error {
-	return nil
+func (p *contextAssemblyProvider) Chat(_ stdctx.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
 }
+func (p *contextAssemblyProvider) Embed(_ stdctx.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+func (p *contextAssemblyProvider) Models() ([]provider.Model, error) { return nil, nil }
 
 var _ = Describe("Context Assembly Hook Integration", Label("integration", "context-assembly"), func() {
 	var (
-		tokenCounter  *mockTokenCounter
-		recallBroker  *mockRecallBroker
-		windowBuilder *ctx.WindowBuilder
-		mockStore     *mockFileContextStore
-		manifest      *agent.Manifest
+		counter  *contextAssemblyTokenCounter
+		broker   *contextAssemblyBroker
+		manifest agent.Manifest
+		tmpDir   string
 	)
 
 	BeforeEach(func() {
-		// Set up basic mocks
-		tokenCounter = &mockTokenCounter{
-			countFn: func(text string) int {
-				return len(text) / 4
-			},
-			modelLimitFn: func(model string) int {
-				return 8192
-			},
+		counter = &contextAssemblyTokenCounter{
+			countFn:      func(text string) int { return len(text) / 4 },
+			modelLimitFn: func(model string) int { return 8192 },
 		}
-
-		recallBroker = &mockRecallBroker{}
-
-		// Create minimal manifest for testing
-		manifest = &agent.Manifest{
+		broker = &contextAssemblyBroker{}
+		manifest = agent.Manifest{
 			ID:   "test-agent",
 			Name: "Test Agent",
 			Instructions: agent.Instructions{
 				SystemPrompt: "You are a test agent.",
 			},
 		}
-
-		// Create window builder
-		windowBuilder = ctx.NewWindowBuilder(tokenCounter)
-
-		// Mock file context store (empty for now)
-		mockStore = &mockFileContextStore{}
-
-		// Use the mocks (silence unused warnings)
-		_ = recallBroker
-		_ = windowBuilder
-		_ = mockStore
-		_ = manifest
+		var err error
+		tmpDir, err = os.MkdirTemp("", "context-assembly-test")
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	Describe("AC1: Context Assembly Hook is wired into Engine", func() {
-		It("should fire the context.assembly hook before WindowBuilder.BuildContextResult", func() {
-			// Need an Engine with RecallBroker injected
-			// For now, just verify the hook payload type exists
-			payload := &plugin.ContextAssemblyPayload{
-				SessionID:   "test-session",
-				AgentID:     "test-agent",
-				UserMessage: "test message",
-				TokenBudget: 8192,
-			}
-			Expect(payload).NotTo(BeNil())
-			Expect(payload.SessionID).To(Equal("test-session"))
-		})
+	AfterEach(func() {
+		os.RemoveAll(tmpDir)
+	})
 
-		It("should pass hook payload with sessionID, agentID, userMessage, and tokenBudget", func() {
-			// Verify mockRecallBroker tracks Query calls with correct parameters
-			queryWasCalled := false
-			mockBrokerWithTracking := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					queryWasCalled = true
-					Expect(query).To(Equal("test query"))
-					Expect(limit).To(BeNumerically(">", 0))
-					return []recall.Observation{}, nil
-				},
+	Describe("AC1: RecallBroker is queried during Engine.buildContextWindow", func() {
+		It("queries RecallBroker when building context with a real Engine", func() {
+			broker.queryFn = func(_ stdctx.Context, query string, limit int) ([]recall.Observation, error) {
+				return []recall.Observation{}, nil
 			}
-
-			// Simulate RecallBroker.Query call
-			obs, err := mockBrokerWithTracking.Query(stdctx.Background(), "test query", 5)
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(queryWasCalled).To(BeTrue())
-			Expect(obs).To(BeEmpty())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
+
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hello")
+			Expect(msgs).NotTo(BeEmpty())
+			Expect(broker.queryCalls).To(HaveLen(1))
 		})
 
-		It("should maintain hook.Chain in Engine for middleware composition", func() {
-			// Verify ContextAssembly hook type is defined as a constant
-			Expect(plugin.ContextAssembly).To(Equal(plugin.HookType("context.assembly")))
+		It("does not crash when RecallBroker is nil", func() {
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+			})
+
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hello")
+			Expect(msgs).NotTo(BeEmpty())
 		})
 	})
 
-	Describe("AC2: RecallBroker.Query is called during context assembly", func() {
-		It("should invoke RecallBroker.Query with the user message as query", func() {
-			userMessage := "what is context assembly?"
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					Expect(query).To(Equal(userMessage))
-					return []recall.Observation{}, nil
-				},
+	Describe("AC2: RecallBroker.Query receives the user message", func() {
+		It("passes the user message as the query parameter", func() {
+			broker.queryFn = func(_ stdctx.Context, query string, limit int) ([]recall.Observation, error) {
+				return []recall.Observation{}, nil
 			}
-			obs, err := mockBroker.Query(stdctx.Background(), userMessage, 5)
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(obs).To(BeEmpty())
-			Expect(mockBroker.queryCalls).To(HaveLen(1))
-		})
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-		It("should call Query with a reasonable limit (e.g., 5-10 observations)", func() {
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					Expect(limit).To(BeNumerically(">=", 5))
-					Expect(limit).To(BeNumerically("<=", 10))
-					return []recall.Observation{}, nil
-				},
-			}
-			mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(mockBroker.queryCalls).To(HaveLen(1))
-			Expect(mockBroker.queryCalls[0].limit).To(Equal(5))
-		})
-
-		It("should handle RecallBroker.Query errors gracefully (degrade to normal assembly)", func() {
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return nil, stdctx.DeadlineExceeded
-				},
-			}
-			obs, err := mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(err).To(Equal(stdctx.DeadlineExceeded))
-			Expect(obs).To(BeNil())
-		})
-
-		It("should continue assembly even if RecallBroker.Query times out", func() {
-			ctx, cancel := stdctx.WithTimeout(stdctx.Background(), 0)
-			defer cancel()
-
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					select {
-					case <-c.Done():
-						return nil, c.Err()
-					default:
-						return []recall.Observation{}, nil
-					}
-				},
-			}
-			obs, err := mockBroker.Query(ctx, "test", 5)
-			Expect(err).To(HaveOccurred())
-			Expect(obs).To(BeNil())
+			eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "What is recall?")
+			Expect(broker.queryCalls).To(HaveLen(1))
+			Expect(broker.queryCalls[0].query).To(Equal("What is recall?"))
+			Expect(broker.queryCalls[0].limit).To(Equal(5))
 		})
 	})
 
 	Describe("AC3: Observations are merged into the context window", func() {
-		It("should add recalled observations to WindowBuilder input", func() {
-			observations := []recall.Observation{
-				{
-					ID:      "obs-1",
-					Content: "Previous discussion about architecture",
-				},
+		It("includes recalled observations in the context messages", func() {
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{
+					{ID: "obs-1", Content: "Previous architecture discussion", Source: "memory", Timestamp: time.Now()},
+				}, nil
 			}
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return observations, nil
-				},
-			}
-			obs, err := mockBroker.Query(stdctx.Background(), "test", 5)
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(obs).To(HaveLen(1))
-			Expect(obs[0].Content).To(Equal("Previous discussion about architecture"))
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
+
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Tell me about arch")
+			contents := extractContents(msgs)
+			Expect(contents).To(ContainElement(ContainSubstring("Previous architecture discussion")))
 		})
 
-		It("should convert Observation to SearchResult for WindowBuilder", func() {
-			obs := recall.Observation{
-				ID:      "obs-1",
-				Content: "Test content",
-				Source:  "memory",
+		It("preserves the user message when observations are returned", func() {
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{
+					{ID: "obs-1", Content: "Recalled content"},
+				}, nil
 			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-			// Simulate conversion pattern used in buildContextWindow
-			result := recall.SearchResult{
-				MessageID: obs.ID,
-				Score:     1.0,
-				Message: provider.Message{
-					Role:    "assistant",
-					Content: obs.Content,
-				},
-			}
-
-			Expect(result.MessageID).To(Equal("obs-1"))
-			Expect(result.Score).To(Equal(1.0))
-			Expect(result.Message.Content).To(Equal("Test content"))
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "My question")
+			lastMsg := msgs[len(msgs)-1]
+			Expect(lastMsg.Role).To(Equal("user"))
+			Expect(lastMsg.Content).To(Equal("My question"))
 		})
 
-		It("should merge multiple observations in freshness order (newest first)", func() {
-			observations := []recall.Observation{
-				{ID: "obs-1", Content: "Oldest", Timestamp: time.Unix(100, 0)},
-				{ID: "obs-2", Content: "Middle", Timestamp: time.Unix(200, 0)},
-				{ID: "obs-3", Content: "Newest", Timestamp: time.Unix(300, 0)},
+		It("merges multiple observations into the context", func() {
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{
+					{ID: "obs-1", Content: "First memory"},
+					{ID: "obs-2", Content: "Second memory"},
+				}, nil
 			}
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return observations, nil
-				},
-			}
-			obs, _ := mockBroker.Query(stdctx.Background(), "test", 5)
-			// Observations should be in order returned (freshness handled by RecallBroker)
-			Expect(obs).To(HaveLen(3))
-			Expect(obs[0].Content).To(Equal("Oldest"))
-			Expect(obs[2].Content).To(Equal("Newest"))
-		})
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-		It("should deduplicate observations by ID if present in multiple sources", func() {
-			observations := []recall.Observation{
-				{ID: "obs-1", Content: "Content A"},
-				{ID: "obs-1", Content: "Content A"}, // duplicate
-				{ID: "obs-2", Content: "Content B"},
-			}
-
-			// Simulate deduplication (convert to map by ID)
-			seen := make(map[string]bool)
-			deduped := []recall.Observation{}
-			for _, obs := range observations {
-				if !seen[obs.ID] {
-					deduped = append(deduped, obs)
-					seen[obs.ID] = true
-				}
-			}
-
-			Expect(deduped).To(HaveLen(2))
-		})
-
-		It("should include observation content in the context messages", func() {
-			observations := []recall.Observation{
-				{ID: "obs-1", Content: "Relevant memory from session"},
-			}
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return observations, nil
-				},
-			}
-			obs, _ := mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(obs[0].Content).To(ContainSubstring("Relevant memory"))
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Query")
+			contents := extractContents(msgs)
+			Expect(contents).To(ContainElement("First memory"))
+			Expect(contents).To(ContainElement("Second memory"))
 		})
 	})
 
-	Describe("AC4: Window size constraint is enforced (no overflow)", func() {
-		It("should respect token budget when adding observations", func() {
-			counter := &mockTokenCounter{
-				countFn: func(text string) int {
-					return len(text) / 4
-				},
+	Describe("AC4: Token budget constraint is respected", func() {
+		It("does not overflow the token budget with observations", func() {
+			tightCounter := &contextAssemblyTokenCounter{
+				countFn:      func(text string) int { return len(text) },
+				modelLimitFn: func(model string) int { return 100 },
 			}
-
-			content := "This is observation content with some tokens"
-			tokens := counter.Count(content)
-			Expect(tokens).To(BeNumerically(">", 0))
-		})
-
-		It("should not allow recall observations to overflow the context window", func() {
-			counter := &mockTokenCounter{
-				countFn: func(text string) int {
-					return 100 // Fixed 100 tokens per item
-				},
-				modelLimitFn: func(model string) int {
-					return 200 // 200 token budget
-				},
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{
+					{ID: "obs-1", Content: "Short content"},
+				}, nil
 			}
-
-			largeContent := "x" // Would be 100 tokens
-			totalTokens := counter.Count(largeContent) + counter.Count(largeContent)
-			modelLimit := counter.ModelLimit("test")
-
-			Expect(totalTokens).To(BeNumerically("<=", modelLimit))
-		})
-
-		It("should log when observations exceed token budget", func() {
-			counter := &mockTokenCounter{
-				countFn: func(text string) int {
-					return 500 // Exceeds typical budgets
-				},
-			}
-
-			content := "very large observation"
-			tokens := counter.Count(content)
-			budget := 200
-
-			if tokens > budget {
-				// Would be logged in implementation
-				Expect(tokens).To(BeNumerically(">", budget))
-			}
-		})
-
-		It("should truncate observations rather than drop them silently", func() {
-			observations := []recall.Observation{
-				{ID: "obs-1", Content: "This is a very very very long observation that exceeds token limit"},
-			}
-
-			// Simulate truncation: keep observation but truncate content
-			truncated := observations[0].Content[:30]
-			Expect(truncated).To(HaveLen(30))
-			Expect(observations[0].Content).To(ContainSubstring(truncated))
-		})
-	})
-
-	Describe("Hook Integration: Full End-to-End Flow", func() {
-		It("should wire context.assembly hook into Engine.buildContextWindow", func() {
-			// Verify ContextAssemblyPayload struct is correct
-			payload := &plugin.ContextAssemblyPayload{
-				SessionID:     "test-session",
-				AgentID:       "test-agent",
-				UserMessage:   "Hello",
-				TokenBudget:   8192,
-				SearchResults: []recall.SearchResult{},
-			}
-			Expect(payload.SessionID).To(Equal("test-session"))
-			Expect(payload.SearchResults).To(BeEmpty())
-		})
-
-		It("should handle empty RecallBroker results gracefully", func() {
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return []recall.Observation{}, nil
-				},
-			}
-			obs, err := mockBroker.Query(stdctx.Background(), "test", 5)
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(obs).To(BeEmpty())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: tightCounter,
+				Store:        store,
+				RecallBroker: broker,
+			})
+
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Q")
+			Expect(msgs).NotTo(BeEmpty())
 		})
 
-		It("should maintain backward compatibility when RecallBroker returns no observations", func() {
-			mockBroker := &mockRecallBroker{}
-			obs, err := mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(obs).To(BeEmpty())
-			// Should behave same as before hook was added
-		})
-
-		It("should fire context.assembly hook even if no observations are returned", func() {
-			hookFired := false
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					hookFired = true
-					return []recall.Observation{}, nil
-				},
+		It("accounts for user message tokens on the semantic path", func() {
+			tokenCounter := &contextAssemblyTokenCounter{
+				countFn:      func(text string) int { return len(text) },
+				modelLimitFn: func(model string) int { return 8192 },
 			}
-			mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(hookFired).To(BeTrue())
-		})
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{
+					{ID: "obs-1", Content: "Recalled memory"},
+				}, nil
+			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: tokenCounter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-		It("should compose multiple hooks in chain order", func() {
-			// Verify hook types are defined
-			Expect(plugin.ContextAssembly).NotTo(BeEmpty())
-			// In implementation, hook.Chain would fire hooks sequentially
+			userMsg := "What about architecture?"
+			eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", userMsg)
+			ctxResult := eng.LastContextResult()
+			Expect(ctxResult.TokensUsed).To(BeNumerically(">", 0))
+			Expect(ctxResult.TokensUsed).To(BeNumerically(">=", len(userMsg)))
+			Expect(ctxResult.BudgetRemaining).To(BeNumerically("<", 8192))
 		})
 	})
 
 	Describe("Error Handling and Resilience", func() {
-		It("should log RecallBroker.Query errors without crashing", func() {
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return nil, stdctx.DeadlineExceeded
-				},
+		It("degrades gracefully when RecallBroker.Query fails", func() {
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return nil, stdctx.DeadlineExceeded
 			}
-			obs, err := mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(err).To(HaveOccurred())
-			Expect(obs).To(BeNil())
-			// Would be logged in implementation
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
+
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hello")
+			Expect(msgs).NotTo(BeEmpty())
+			lastMsg := msgs[len(msgs)-1]
+			Expect(lastMsg.Role).To(Equal("user"))
+			Expect(lastMsg.Content).To(Equal("Hello"))
 		})
 
-		It("should continue with normal assembly if hook returns error", func() {
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					return nil, stdctx.DeadlineExceeded
-				},
-			}
-			// Even with error, query should return error but not crash
-			_, err := mockBroker.Query(stdctx.Background(), "test", 5)
-			Expect(err).To(HaveOccurred())
-			// Main assembly continues (verified in buildContextWindow logic)
-		})
+		It("falls back to normal assembly when broker returns empty", func() {
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-		It("should respect context deadline for RecallBroker queries", func() {
-			ctx, cancel := stdctx.WithTimeout(stdctx.Background(), 0)
-			defer cancel()
-
-			mockBroker := &mockRecallBroker{
-				queryFn: func(c stdctx.Context, query string, limit int) ([]recall.Observation, error) {
-					select {
-					case <-c.Done():
-						return nil, c.Err()
-					default:
-						return []recall.Observation{}, nil
-					}
-				},
-			}
-			obs, err := mockBroker.Query(ctx, "test", 5)
-			Expect(err).To(HaveOccurred())
-			Expect(obs).To(BeNil())
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hello")
+			lastMsg := msgs[len(msgs)-1]
+			Expect(lastMsg.Role).To(Equal("user"))
+			Expect(lastMsg.Content).To(Equal("Hello"))
 		})
 	})
 
-	Describe("Token Budget Compliance", func() {
-		It("should not exceed token budget with observation content", func() {
-			counter := &mockTokenCounter{
-				countFn: func(text string) int {
-					return 50 // 50 tokens per observation
-				},
-				modelLimitFn: func(model string) int {
-					return 200 // 200 token total budget
-				},
+	Describe("Context Assembly Hook Dispatch", func() {
+		It("dispatches registered ContextAssemblyHooks during context assembly", func() {
+			hookFired := false
+			customHook := func(_ stdctx.Context, payload *plugin.ContextAssemblyPayload) error {
+				hookFired = true
+				Expect(payload.UserMessage).To(Equal("Hook test"))
+				Expect(payload.SessionID).NotTo(BeEmpty())
+				Expect(payload.AgentID).To(Equal("test-agent"))
+				return nil
 			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				ContextAssemblyHooks: []plugin.ContextAssemblyHook{customHook},
+			})
 
-			totalUsed := counter.Count("obs1") + counter.Count("obs2") + counter.Count("obs3")
-			budget := counter.ModelLimit("test")
-			Expect(totalUsed).To(BeNumerically("<=", budget))
+			eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hook test")
+			Expect(hookFired).To(BeTrue())
 		})
 
-		It("should report accurate token usage including observations", func() {
-			counter := &mockTokenCounter{
-				countFn: func(text string) int {
-					return len(text) / 4
-				},
+		It("allows hooks to populate SearchResults into the context window", func() {
+			enrichHook := func(_ stdctx.Context, payload *plugin.ContextAssemblyPayload) error {
+				payload.SearchResults = []recall.SearchResult{
+					{MessageID: "hook-obs-1", Score: 1.0, Message: provider.Message{Role: "assistant", Content: "Hook-injected memory"}},
+				}
+				return nil
 			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				ContextAssemblyHooks: []plugin.ContextAssemblyHook{enrichHook},
+			})
 
-			content := "test observation"
-			count := counter.Count(content)
-			Expect(count).To(BeNumerically(">", 0))
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Query")
+			contents := extractContents(msgs)
+			Expect(contents).To(ContainElement("Hook-injected memory"))
 		})
 
-		It("should truncate oldest messages first when budget exceeded", func() {
-			observations := []recall.Observation{
-				{ID: "obs-1", Content: "Oldest", Timestamp: time.Unix(100, 0)},
-				{ID: "obs-2", Content: "Newest", Timestamp: time.Unix(200, 0)},
+		It("auto-registers RecallBroker as a hook when configured", func() {
+			broker.queryFn = func(_ stdctx.Context, _ string, _ int) ([]recall.Observation, error) {
+				return []recall.Observation{{ID: "obs-1", Content: "Broker observation"}}, nil
 			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider: &contextAssemblyProvider{},
+				Manifest:     manifest,
+				TokenCounter: counter,
+				Store:        store,
+				RecallBroker: broker,
+			})
 
-			// Simulating FIFO truncation when budget exceeded
-			if len(observations) > 1 {
-				// Remove oldest (first)
-				observations = observations[1:]
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Query")
+			contents := extractContents(msgs)
+			Expect(contents).To(ContainElement("Broker observation"))
+		})
+
+		It("continues assembly when a hook returns an error", func() {
+			failHook := func(_ stdctx.Context, _ *plugin.ContextAssemblyPayload) error {
+				return stdctx.DeadlineExceeded
 			}
+			store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "store.json"), "test-model")
+			Expect(err).NotTo(HaveOccurred())
+			eng := engine.New(engine.Config{
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				ContextAssemblyHooks: []plugin.ContextAssemblyHook{failHook},
+			})
 
-			Expect(observations).To(HaveLen(1))
-			Expect(observations[0].ID).To(Equal("obs-2"))
+			msgs := eng.BuildContextWindowForTest(stdctx.Background(), "ses-1", "Hello")
+			Expect(msgs).NotTo(BeEmpty())
+			lastMsg := msgs[len(msgs)-1]
+			Expect(lastMsg.Role).To(Equal("user"))
+			Expect(lastMsg.Content).To(Equal("Hello"))
+		})
+	})
+
+	Describe("Hook Type Definitions", func() {
+		It("defines ContextAssembly as a HookType constant", func() {
+			Expect(plugin.ContextAssembly).To(Equal(plugin.HookType("context.assembly")))
+		})
+
+		It("defines ContextAssemblyPayload with required fields", func() {
+			payload := &plugin.ContextAssemblyPayload{
+				SessionID:     "ses-1",
+				AgentID:       "agent-1",
+				UserMessage:   "Hello",
+				TokenBudget:   8192,
+				SearchResults: []recall.SearchResult{},
+			}
+			Expect(payload.SessionID).To(Equal("ses-1"))
+			Expect(payload.AgentID).To(Equal("agent-1"))
+			Expect(payload.UserMessage).To(Equal("Hello"))
+			Expect(payload.TokenBudget).To(Equal(8192))
+			Expect(payload.SearchResults).To(BeEmpty())
 		})
 	})
 })
+
+func extractContents(msgs []provider.Message) []string {
+	contents := make([]string, len(msgs))
+	for i, m := range msgs {
+		contents[i] = m.Content
+	}
+	return contents
+}

@@ -10,6 +10,9 @@ import (
 	"github.com/baphled/flowstate/internal/mcp"
 )
 
+// Compile-time assertion that MCPMemoryClient implements MemoryClient.
+var _ MemoryClient = (*MCPMemoryClient)(nil)
+
 // MCPMemoryClient implements MemoryClient by delegating to MCP tool calls.
 type MCPMemoryClient struct {
 	MCPClient mcp.Client
@@ -127,6 +130,127 @@ func (m *MCPMemoryClient) OpenNodes(ctx context.Context, names []string) (Knowle
 		return KnowledgeGraph{}, &json.UnmarshalTypeError{Value: "missing 'entities' or 'relations' field in MCP response", Type: nil}
 	}
 	return out, nil
+}
+
+// AddObservations appends observations to existing entities by calling the MCP tool.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - observations contains the observation entries to append.
+//
+// Returns:
+//   - The appended observation entries.
+//   - An error when the MCP call or response decoding fails.
+//
+// Side effects:
+//   - Calls the MCP server.
+func (m *MCPMemoryClient) AddObservations(ctx context.Context, observations []ObservationEntry) ([]ObservationEntry, error) {
+	var out struct {
+		Observations []ObservationEntry `json:"observations"`
+	}
+	if err := m.callAndUnmarshal(ctx, "add_observations", map[string]any{"observations": observations}, &out); err != nil {
+		return nil, err
+	}
+	return out.Observations, nil
+}
+
+// DeleteEntities removes entities and cascades relations by calling the MCP tool.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - entityNames contains the names of entities to delete.
+//
+// Returns:
+//   - The names of deleted entities.
+//   - An error when the MCP call or response decoding fails.
+//
+// Side effects:
+//   - Calls the MCP server.
+func (m *MCPMemoryClient) DeleteEntities(ctx context.Context, entityNames []string) ([]string, error) {
+	var out struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := m.callAndUnmarshal(ctx, "delete_entities", map[string]any{"entityNames": entityNames}, &out); err != nil {
+		return nil, err
+	}
+	return out.Deleted, nil
+}
+
+// DeleteObservations removes specific observations from entities by calling the MCP tool.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - deletions specifies which observations to remove from which entities.
+//
+// Returns:
+//   - An error when the MCP call fails.
+//
+// Side effects:
+//   - Calls the MCP server.
+func (m *MCPMemoryClient) DeleteObservations(ctx context.Context, deletions []DeletionEntry) error {
+	var out struct{}
+	return m.callAndUnmarshal(ctx, "delete_observations", map[string]any{"deletions": deletions}, &out)
+}
+
+// DeleteRelations removes specific relations from the graph by calling the MCP tool.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - relations contains the relations to remove.
+//
+// Returns:
+//   - An error when the MCP call fails.
+//
+// Side effects:
+//   - Calls the MCP server.
+func (m *MCPMemoryClient) DeleteRelations(ctx context.Context, relations []Relation) error {
+	var out struct{}
+	return m.callAndUnmarshal(ctx, "delete_relations", map[string]any{"relations": relations}, &out)
+}
+
+// ReadGraph returns the entire knowledge graph by calling the MCP tool.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//
+// Returns:
+//   - The full KnowledgeGraph.
+//   - An error when the MCP call or response decoding fails.
+//
+// Side effects:
+//   - Calls the MCP server.
+func (m *MCPMemoryClient) ReadGraph(ctx context.Context) (KnowledgeGraph, error) {
+	var out KnowledgeGraph
+	if err := m.callAndUnmarshal(ctx, "read_graph", map[string]any{}, &out); err != nil {
+		return KnowledgeGraph{}, err
+	}
+	return out, nil
+}
+
+// WriteLearningRecord persists a learning record by converting it to an entity and calling CreateEntities.
+//
+// Expected:
+//   - record is a non-nil Record with at least an AgentID.
+//
+// Returns:
+//   - An error when the entity creation fails.
+//
+// Side effects:
+//   - Calls CreateEntities on the MCP server.
+func (m *MCPMemoryClient) WriteLearningRecord(record *Record) error {
+	observations := []string{
+		"Outcome: " + record.Outcome,
+	}
+	for _, tool := range record.ToolsUsed {
+		observations = append(observations, "ToolUsed: "+tool)
+	}
+	entity := Entity{
+		Name:         record.AgentID,
+		EntityType:   "learning-record",
+		Observations: observations,
+	}
+	_, err := m.CreateEntities(context.Background(), []Entity{entity})
+	return err
 }
 
 // callAndUnmarshal calls a tool and decodes the JSON response into target.
