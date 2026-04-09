@@ -939,6 +939,226 @@ func NewProviderRequestRetryEvent(data ProviderRequestRetryEventData, ts ...time
 	}
 }
 
+// RecallEmbeddingStoredEventData describes the data for a recall embedding stored event.
+type RecallEmbeddingStoredEventData struct {
+	SessionID  string
+	MessageID  string
+	Dimensions int
+	LatencyMS  int64
+}
+
+// RecallEmbeddingStoredEvent represents an event when a recall embedding is stored.
+type RecallEmbeddingStoredEvent struct {
+	BaseEvent
+	Data RecallEmbeddingStoredEventData
+}
+
+// NewRecallEmbeddingStoredEvent creates a new RecallEmbeddingStoredEvent.
+//
+// Expected:
+//   - data contains the embedding storage metadata.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallEmbeddingStoredEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...time.Time) *RecallEmbeddingStoredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallEmbeddingStoredEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallEmbeddingStored, timestamp: t},
+		Data:      data,
+	}
+}
+
+// RecallSearchEventData describes the data for a recall search event.
+type RecallSearchEventData struct {
+	SessionID string
+	Query     string
+	Results   int
+	LatencyMS int64
+}
+
+// RecallSearchEvent represents an event when a recall search is performed.
+type RecallSearchEvent struct {
+	BaseEvent
+	Data RecallSearchEventData
+}
+
+// NewRecallSearchEvent creates a new RecallSearchEvent.
+//
+// Expected:
+//   - data contains the recall search metadata.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallSearchEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSearchEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallSearchEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallSearched, timestamp: t},
+		Data:      data,
+	}
+}
+
+// RecallChainSearchEventData describes the data for a recall chain search event.
+type RecallChainSearchEventData struct {
+	SessionID string
+	AgentID   string
+	Query     string
+	Results   int
+	LatencyMS int64
+}
+
+// RecallChainSearchEvent represents an event when a recall chain search is performed.
+type RecallChainSearchEvent struct {
+	BaseEvent
+	Data RecallChainSearchEventData
+}
+
+// NewRecallChainSearchEvent creates a new RecallChainSearchEvent.
+//
+// Expected:
+//   - data contains the chain search metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallChainSearchEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time) *RecallChainSearchEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallChainSearchEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallChainSearched, timestamp: t},
+		Data:      data,
+	}
+}
+
+// RecallSummarizedEventData describes the data for a recall summarized event.
+type RecallSummarizedEventData struct {
+	SessionID      string
+	OriginalTokens int
+	SummaryTokens  int
+	LatencyMS      int64
+}
+
+// RecallSummarizedEvent represents an event when recall data is summarized.
+type RecallSummarizedEvent struct {
+	BaseEvent
+	Data RecallSummarizedEventData
+}
+
+// NewRecallSummarizedEvent creates a new RecallSummarizedEvent.
+//
+// Expected:
+//   - data contains the summarisation metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A RecallSummarizedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *RecallSummarizedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &RecallSummarizedEvent{
+		BaseEvent: BaseEvent{eventType: EventRecallSummarized, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DiscoveryPublishedEventData holds the data for a discovery published event.
+type DiscoveryPublishedEventData struct {
+	ID        string
+	Summary   string
+	Kind      string
+	Priority  string
+	Tags      []string
+	Timestamp time.Time
+}
+
+// DiscoveryPublishedEvent is published when an agent discovery is completed.
+type DiscoveryPublishedEvent struct {
+	BaseEvent
+	Data DiscoveryPublishedEventData
+}
+
+// NewDiscoveryPublishedEvent creates a new DiscoveryPublishedEvent.
+//
+// Expected:
+//   - data contains the discovery metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DiscoveryPublishedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDiscoveryPublishedEvent(data DiscoveryPublishedEventData, ts ...time.Time) *DiscoveryPublishedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DiscoveryPublishedEvent{
+		BaseEvent: BaseEvent{eventType: EventDiscoveryPublished, timestamp: t},
+		Data:      data,
+	}
+}
+
+// LearningRecordedEventData holds the data for a learning recorded event.
+type LearningRecordedEventData struct {
+	AgentID     string
+	UserMessage string
+	Outcome     string
+	ToolsUsed   []string
+	Timestamp   time.Time
+}
+
+// LearningRecordedEvent is published when learning is recorded.
+type LearningRecordedEvent struct {
+	BaseEvent
+	Data LearningRecordedEventData
+}
+
+// NewLearningRecordedEvent creates a new LearningRecordedEvent.
+//
+// Expected:
+//   - data contains the learning metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A LearningRecordedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewLearningRecordedEvent(data LearningRecordedEventData, ts ...time.Time) *LearningRecordedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &LearningRecordedEvent{
+		BaseEvent: BaseEvent{eventType: EventLearningRecorded, timestamp: t},
+		Data:      data,
+	}
+}
+
 // Compile-time interface checks.
 //
 // Expected: ensures event types implement Event interface.
@@ -963,4 +1183,10 @@ var (
 	_ Event = (*ToolExecuteErrorEvent)(nil)
 	_ Event = (*ToolExecuteResultEvent)(nil)
 	_ Event = (*ProviderRequestRetryEvent)(nil)
+	_ Event = (*RecallEmbeddingStoredEvent)(nil)
+	_ Event = (*RecallSearchEvent)(nil)
+	_ Event = (*RecallChainSearchEvent)(nil)
+	_ Event = (*RecallSummarizedEvent)(nil)
+	_ Event = (*DiscoveryPublishedEvent)(nil)
+	_ Event = (*LearningRecordedEvent)(nil)
 )

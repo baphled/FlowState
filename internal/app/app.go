@@ -357,6 +357,7 @@ type engineParams struct {
 	defaultManifest    agent.Manifest
 	alwaysActiveSkills []skill.Skill
 	contextStore       *recall.FileContextStore
+	chainStore         recall.ChainContextStore
 	learningStore      *learning.JSONFileStore
 	appTools           []tool.Tool
 	toolRegistry       *tool.Registry
@@ -389,6 +390,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	tp := buildToolPipeline(params.cfg)
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
+	chainStore := createChainStore(params.cfg)
 	eng, setEnsureTools := createEngine(engineParams{
 		defaultProvider:    tracedProvider,
 		ollamaProvider:     params.ollamaProvider,
@@ -397,6 +399,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		defaultManifest:    params.defaultManifest,
 		alwaysActiveSkills: params.alwaysActiveSkills,
 		contextStore:       contextStore,
+		chainStore:         chainStore,
 		learningStore:      params.learningStore,
 		appTools:           tp.tools,
 		toolRegistry:       tp.toolRegistry,
@@ -555,32 +558,8 @@ type runtimeComponents struct {
 func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest))) {
 	var eng *engine.Engine
 	var ensureToolsFn func(agent.Manifest)
-	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
-	for i := range params.alwaysActiveSkills {
-		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
-	}
-
-	// Create the event bus early so it can be passed to the hook chain
-	// and used for failover event publishing.
 	appEventBus := eventbus.NewEventBus()
-
-	hookChain := buildHookChain(hookChainConfig{
-		learningStore: params.learningStore,
-		manifestGetter: func() agent.Manifest {
-			if eng != nil {
-				return eng.Manifest()
-			}
-			return params.defaultManifest
-		},
-		bakedSkillNames: bakedNames,
-		failoverHk:      params.failoverHook,
-		failoverMgr:     params.failoverManager,
-		dispatcher:      params.dispatcher,
-		eventBus:        appEventBus,
-		agentID:         params.defaultManifest.ID,
-		twc:             buildToolWiringCallbacks(&eng, &ensureToolsFn),
-		skillDir:        params.skillDir,
-	})
+	hookChain := buildCreateEngineHookChain(params, &eng, &ensureToolsFn, appEventBus)
 	eng = engine.New(engine.Config{
 		ChatProvider:      params.defaultProvider,
 		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
@@ -590,6 +569,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		Manifest:          params.defaultManifest,
 		Skills:            params.alwaysActiveSkills,
 		Store:             params.contextStore,
+		ChainStore:        params.chainStore,
 		HookChain:         hookChain,
 		Tools:             params.appTools,
 		ToolRegistry:      params.toolRegistry,
@@ -605,38 +585,65 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 	return eng, setEnsureTools
 }
 
-// buildToolWiringCallbacks constructs the tool wiring callbacks for the hook chain.
-// It captures the engine and ensureToolsFn references to lazily initialise tools.
+// buildCreateEngineHookChain constructs the hook chain used when the engine is created.
 //
 // Expected:
-//   - engPtr is a non-nil pointer to an engine pointer (for deferred initialisation).
-//   - ensureToolsFnPtr is a non-nil pointer to an ensureTools function pointer.
+//   - params contains the app dependencies required to wire hooks.
+//   - eng points to the engine instance that will be created.
+//   - ensureToolsFn points to the callback used to ensure tool registration.
+//   - appEventBus is the event bus for failover event publishing.
 //
 // Returns:
-//   - A toolWiringCallbacks struct with all callbacks wired and ready for use.
+//   - A hook chain configured for engine creation.
 //
 // Side effects:
-//   - None; callbacks are closures that capture the pointers for deferred use.
-func buildToolWiringCallbacks(engPtr **engine.Engine, ensureToolsFnPtr *func(agent.Manifest)) *toolWiringCallbacks {
-	return &toolWiringCallbacks{
-		hasTool: func(name string) bool {
-			if *engPtr == nil {
-				return false
-			}
-			return (*engPtr).HasTool(name)
-		},
-		ensureTools: func(m agent.Manifest) {
-			if *ensureToolsFnPtr != nil {
-				(*ensureToolsFnPtr)(m)
-			}
-		},
-		schemaRebuilder: func() []provider.Tool {
-			if *engPtr == nil {
-				return nil
-			}
-			return (*engPtr).ToolSchemas()
-		},
+//   - None.
+func buildCreateEngineHookChain(
+	params engineParams,
+	eng **engine.Engine,
+	ensureToolsFn *func(agent.Manifest),
+	appEventBus *eventbus.EventBus,
+) *hook.Chain {
+	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
+	for i := range params.alwaysActiveSkills {
+		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
 	}
+
+	return buildHookChain(hookChainConfig{
+		learningStore: params.learningStore,
+		manifestGetter: func() agent.Manifest {
+			if *eng != nil {
+				return (*eng).Manifest()
+			}
+			return params.defaultManifest
+		},
+		bakedSkillNames: bakedNames,
+		failoverHk:      params.failoverHook,
+		failoverMgr:     params.failoverManager,
+		dispatcher:      params.dispatcher,
+		eventBus:        appEventBus,
+		agentID:         params.defaultManifest.ID,
+		skillDir:        params.skillDir,
+		twc: &toolWiringCallbacks{
+			hasTool: func(name string) bool {
+				if *eng == nil {
+					return false
+				}
+				return (*eng).HasTool(name)
+			},
+			ensureTools: func(m agent.Manifest) {
+				if *ensureToolsFn != nil {
+					(*ensureToolsFn)(m)
+				}
+			},
+			schemaRebuilder: func() []provider.Tool {
+				if *eng == nil {
+					return nil
+				}
+				return (*eng).ToolSchemas()
+			},
+		},
+	})
 }
 
 // setAgentOverridesFromConfig extracts agent overrides from the app config and applies them to the engine.
@@ -790,13 +797,14 @@ func (a *App) createDelegateEngine(
 		skillDir:       delegateSkillDir,
 	})
 
-	// Create a new failover manager for the child engine from shared components.
-	// Each child gets its own manager instance to avoid sharing mutable state
-	// (override, lastProvider, lastModel) between parent and children.
+	var chainStore recall.ChainContextStore
+	if a.Engine != nil {
+		chainStore = a.Engine.ChainStore()
+	}
+
 	var childFailoverMgr *failover.Manager
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
-		// Copy base preferences from parent failover manager if available.
 		if a.plugins.failoverManager != nil {
 			childFailoverMgr.SetBasePreferences(a.plugins.failoverManager.Preferences())
 		}
@@ -809,6 +817,7 @@ func (a *App) createDelegateEngine(
 		Manifest:        manifest,
 		Tools:           a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:       hookChain,
+		ChainStore:      chainStore,
 		EventBus:        bus,
 		FailoverManager: childFailoverMgr,
 	})
@@ -841,6 +850,15 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		tools = append(tools, coordinationtool.New(store))
+	}
+
+	if a.Engine != nil {
+		contextStore := a.Engine.ContextStore()
+		if contextStore != nil && a.ollamaProvider != nil {
+			tokenCounter := ctxstore.NewTiktokenCounter()
+			factory := recall.NewToolFactory(contextStore, a.ollamaProvider, tokenCounter, a.Config.Providers.Ollama.Model)
+			tools = append(tools, factory.ToolsWithChainStore(a.Engine.ChainStore())...)
+		}
 	}
 
 	return tools
@@ -2129,6 +2147,26 @@ func createDataStores(cfg *config.AppConfig) (*ctxstore.FileSessionStore, *learn
 //   - None; creates an in-memory context store with no file I/O.
 func createContextStore(cfg *config.AppConfig) *recall.FileContextStore {
 	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model)
+}
+
+// createChainStore initialises the chain store for conversation context.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with a valid DataDir.
+//
+// Returns:
+//   - A persistent chain store when the file-backed store can be created.
+//   - An in-memory chain store when file-backed initialisation fails.
+//
+// Side effects:
+//   - Attempts to open the chain store file under cfg.DataDir.
+func createChainStore(cfg *config.AppConfig) recall.ChainContextStore {
+	chainPath := filepath.Join(cfg.DataDir, "chain_store.json")
+	store, err := recall.NewFileChainStore(chainPath)
+	if err != nil {
+		return recall.NewInMemoryChainStore(nil)
+	}
+	return store
 }
 
 // toEmbeddingProvider converts an Ollama provider to a generic provider interface for embedding operations.

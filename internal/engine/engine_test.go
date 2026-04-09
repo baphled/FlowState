@@ -1067,6 +1067,28 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
+	Describe("Recall tool registration", func() {
+		It("registers recall tools during engine construction when the dependencies are available", func() {
+			manifest := agent.Manifest{
+				ID:                "test-agent",
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			manifest.ContextManagement.EmbeddingModel = "test-model"
+
+			eng := engine.New(engine.Config{
+				ChatProvider:      chatProvider,
+				EmbeddingProvider: chatProvider,
+				Store:             recall.NewEmptyContextStore("test-model"),
+				TokenCounter:      ctxstore.NewApproximateCounter(),
+				Manifest:          manifest,
+			})
+
+			Expect(eng.HasTool("search_context")).To(BeTrue())
+			Expect(eng.HasTool("get_messages")).To(BeTrue())
+			Expect(eng.HasTool("summarize_context")).To(BeTrue())
+		})
+	})
+
 	Describe("ModelContextLimit", func() {
 		Context("when TokenCounter is configured with a Claude model", func() {
 			It("returns the Claude model limit instead of the default 4096", func() {
