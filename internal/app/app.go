@@ -2163,7 +2163,7 @@ func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 //
 // Side effects:
 //   - Creates the sessions subdirectory if it does not exist.
-//   - Initializes Qdrant client if configured.
+//   - Initializes Qdrant client when configured; no file created otherwise.
 func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.FileSessionStore, learning.Store, error) {
 	sessionStore, err := ctxstore.NewFileSessionStore(filepath.Join(cfg.DataDir, "sessions"))
 	if err != nil {
@@ -2177,10 +2177,6 @@ func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.Fil
 		embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
 		adapter := &qdrantClientAdapter{client: qdrantClient}
 		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
-	} else {
-		// Graceful degradation: use JSONFileStore when Qdrant not configured
-		slog.Warn("Qdrant not configured; learning store falling back to JSON file — set QDRANT_URL to enable vector learning")
-		learningStore = learning.NewJSONFileStore(filepath.Join(cfg.DataDir, "learnings.json"))
 	}
 
 	return sessionStore, learningStore, nil
@@ -2454,8 +2450,8 @@ func NewForTest(tc TestConfig) (*App, error) {
 		return nil, fmt.Errorf("creating session store: %w", err)
 	}
 
-	learningsPath := filepath.Join(tc.DataDir, "learnings.json")
-	learningStore := learning.NewJSONFileStore(learningsPath)
+	// Learning store is nil when Qdrant is not configured (graceful degradation)
+	var learningStore learning.Store
 
 	manifests := agentRegistry.List()
 	manifestValues := make([]agent.Manifest, len(manifests))

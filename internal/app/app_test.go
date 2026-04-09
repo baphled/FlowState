@@ -93,7 +93,6 @@ var _ = Describe("App", func() {
 			Expect(application.Config).NotTo(BeNil())
 			Expect(application.Registry).NotTo(BeNil())
 			Expect(application.Sessions).NotTo(BeNil())
-			Expect(application.Learning).NotTo(BeNil())
 			Expect(application.Discovery).NotTo(BeNil())
 		})
 
@@ -518,7 +517,6 @@ When to use: Testing purposes
 				Expect(application.Config).To(Equal(cfg))
 				Expect(application.Registry).NotTo(BeNil())
 				Expect(application.Sessions).NotTo(BeNil())
-				Expect(application.Learning).NotTo(BeNil())
 				Expect(application.Discovery).NotTo(BeNil())
 				Expect(application.API).NotTo(BeNil())
 			})
