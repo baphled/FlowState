@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/mcp"
+	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 )
 
 type mockMCPClient struct {
@@ -713,6 +715,36 @@ When to use: Testing purposes
 				Expect(pluginCfg.Timeout).To(Equal(9))
 				Expect(pluginCfg.Enabled).To(Equal([]string{"alpha"}))
 			})
+		})
+	})
+
+	Describe("Context assembly hook wiring", func() {
+		It("passes configured custom hooks into the engine", func() {
+			customHook := func(context.Context, *pluginpkg.ContextAssemblyPayload) error { return nil }
+			cfg := config.DefaultConfig()
+			cfg.DataDir = tempDir
+			cfg.ContextAssemblyHooks = []pluginpkg.ContextAssemblyHook{customHook}
+
+			application, err := app.New(cfg)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(application.Engine).NotTo(BeNil())
+			hooks := reflect.ValueOf(application.Engine).Elem().FieldByName("contextAssemblyHooks")
+			Expect(hooks.IsNil()).To(BeFalse())
+			Expect(hooks.Len()).To(Equal(1))
+		})
+
+		It("leaves hooks nil when none are configured", func() {
+			cfg := config.DefaultConfig()
+			cfg.DataDir = tempDir
+			cfg.ContextAssemblyHooks = nil
+
+			application, err := app.New(cfg)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(application.Engine).NotTo(BeNil())
+			hooks := reflect.ValueOf(application.Engine).Elem().FieldByName("contextAssemblyHooks")
+			Expect(hooks.IsNil()).To(BeTrue())
 		})
 	})
 

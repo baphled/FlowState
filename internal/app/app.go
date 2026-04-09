@@ -351,26 +351,27 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 
 // engineParams holds parameters for engine creation.
 type engineParams struct {
-	defaultProvider    provider.Provider
-	ollamaProvider     *ollama.Provider
-	providerRegistry   *provider.Registry
-	agentRegistry      *agent.Registry
-	defaultManifest    agent.Manifest
-	alwaysActiveSkills []skill.Skill
-	contextStore       *recall.FileContextStore
-	chainStore         recall.ChainContextStore
-	learningStore      *learning.JSONFileStore
-	appTools           []tool.Tool
-	toolRegistry       *tool.Registry
-	permissionHandler  tool.PermissionHandler
-	agentsFileLoader   *agent.AgentsFileLoader
-	tokenCounter       ctxstore.TokenCounter
-	failoverHook       *failover.Hook
-	failoverManager    *failover.Manager
-	mcpServerTools     map[string][]string
-	dispatcher         *external.Dispatcher
-	skillDir           string
-	recallBroker       recall.Broker
+	defaultProvider      provider.Provider
+	ollamaProvider       *ollama.Provider
+	providerRegistry     *provider.Registry
+	agentRegistry        *agent.Registry
+	defaultManifest      agent.Manifest
+	alwaysActiveSkills   []skill.Skill
+	contextStore         *recall.FileContextStore
+	chainStore           recall.ChainContextStore
+	learningStore        *learning.JSONFileStore
+	appTools             []tool.Tool
+	toolRegistry         *tool.Registry
+	permissionHandler    tool.PermissionHandler
+	agentsFileLoader     *agent.AgentsFileLoader
+	tokenCounter         ctxstore.TokenCounter
+	contextAssemblyHooks []pluginpkg.ContextAssemblyHook
+	failoverHook         *failover.Hook
+	failoverManager      *failover.Manager
+	mcpServerTools       map[string][]string
+	dispatcher           *external.Dispatcher
+	skillDir             string
+	recallBroker         recall.Broker
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -394,26 +395,27 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	contextStore := createContextStore(params.cfg)
 	chainStore := createChainStore(params.cfg)
 	eng, setEnsureTools := createEngine(engineParams{
-		defaultProvider:    tracedProvider,
-		ollamaProvider:     params.ollamaProvider,
-		providerRegistry:   params.providerRegistry,
-		agentRegistry:      params.agentRegistry,
-		defaultManifest:    params.defaultManifest,
-		alwaysActiveSkills: params.alwaysActiveSkills,
-		contextStore:       contextStore,
-		chainStore:         chainStore,
-		learningStore:      params.learningStore,
-		appTools:           tp.tools,
-		toolRegistry:       tp.toolRegistry,
-		permissionHandler:  tp.permissionHandler,
-		mcpServerTools:     tp.mcpServerTools,
-		agentsFileLoader:   buildAgentsFileLoader(),
-		tokenCounter:       ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
-		failoverHook:       params.failoverHook,
-		failoverManager:    params.failoverManager,
-		dispatcher:         params.dispatcher,
-		skillDir:           params.cfg.SkillDir,
-		recallBroker:       buildRecallBroker(params.cfg, tracedProvider),
+		defaultProvider:      tracedProvider,
+		ollamaProvider:       params.ollamaProvider,
+		providerRegistry:     params.providerRegistry,
+		agentRegistry:        params.agentRegistry,
+		defaultManifest:      params.defaultManifest,
+		alwaysActiveSkills:   params.alwaysActiveSkills,
+		contextStore:         contextStore,
+		chainStore:           chainStore,
+		learningStore:        params.learningStore,
+		appTools:             tp.tools,
+		toolRegistry:         tp.toolRegistry,
+		permissionHandler:    tp.permissionHandler,
+		mcpServerTools:       tp.mcpServerTools,
+		agentsFileLoader:     buildAgentsFileLoader(),
+		tokenCounter:         ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
+		contextAssemblyHooks: params.cfg.ContextAssemblyHooks,
+		failoverHook:         params.failoverHook,
+		failoverManager:      params.failoverManager,
+		dispatcher:           params.dispatcher,
+		skillDir:             params.cfg.SkillDir,
+		recallBroker:         buildRecallBroker(params.cfg, tracedProvider),
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -564,24 +566,25 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 	appEventBus := eventbus.NewEventBus()
 	hookChain := buildCreateEngineHookChain(params, &eng, &ensureToolsFn, appEventBus)
 	eng = engine.New(engine.Config{
-		ChatProvider:      params.defaultProvider,
-		EmbeddingProvider: toEmbeddingProvider(params.ollamaProvider),
-		Registry:          params.providerRegistry,
-		AgentRegistry:     params.agentRegistry,
-		FailoverManager:   params.failoverManager,
-		Manifest:          params.defaultManifest,
-		Skills:            params.alwaysActiveSkills,
-		Store:             params.contextStore,
-		ChainStore:        params.chainStore,
-		HookChain:         hookChain,
-		Tools:             params.appTools,
-		ToolRegistry:      params.toolRegistry,
-		PermissionHandler: params.permissionHandler,
-		AgentsFileLoader:  params.agentsFileLoader,
-		TokenCounter:      params.tokenCounter,
-		MCPServerTools:    params.mcpServerTools,
-		EventBus:          appEventBus,
-		RecallBroker:      params.recallBroker,
+		ChatProvider:         params.defaultProvider,
+		EmbeddingProvider:    toEmbeddingProvider(params.ollamaProvider),
+		Registry:             params.providerRegistry,
+		AgentRegistry:        params.agentRegistry,
+		FailoverManager:      params.failoverManager,
+		Manifest:             params.defaultManifest,
+		Skills:               params.alwaysActiveSkills,
+		Store:                params.contextStore,
+		ChainStore:           params.chainStore,
+		HookChain:            hookChain,
+		Tools:                params.appTools,
+		ToolRegistry:         params.toolRegistry,
+		PermissionHandler:    params.permissionHandler,
+		AgentsFileLoader:     params.agentsFileLoader,
+		TokenCounter:         params.tokenCounter,
+		MCPServerTools:       params.mcpServerTools,
+		EventBus:             appEventBus,
+		RecallBroker:         params.recallBroker,
+		ContextAssemblyHooks: params.contextAssemblyHooks,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
