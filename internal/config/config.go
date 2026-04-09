@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/engine"
+	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,8 +32,10 @@ type AppConfig struct {
 	AlwaysActiveSkills []string                         `yaml:"always_active_skills,omitempty"`
 	Harness            HarnessConfig                    `json:"harness" yaml:"harness"`
 	AgentOverrides     map[string]AgentOverrideConfig   `json:"agent_overrides" yaml:"agent_overrides"`
-	SessionRecording   bool                             `json:"session_recording" yaml:"session_recording"`
-	Qdrant             QdrantConfig                     `json:"qdrant" yaml:"qdrant"`
+	// ContextAssemblyHooks lets callers inject custom context assembly hooks at runtime.
+	ContextAssemblyHooks []pluginpkg.ContextAssemblyHook `json:"-" yaml:"-"`
+	SessionRecording     bool                            `json:"session_recording" yaml:"session_recording"`
+	Qdrant               QdrantConfig                    `json:"qdrant" yaml:"qdrant"`
 }
 
 // QdrantConfig provides configuration for Qdrant-based recall storage.
