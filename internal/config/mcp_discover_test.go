@@ -25,22 +25,22 @@ var _ = Describe("DiscoverMCPServers", func() {
 		os.Setenv("PATH", origPAT)
 	})
 
-	Context("when flowstate-memory-server is in PATH", func() {
+	Context("when mcp-mem0-server is in PATH", func() {
 		BeforeEach(func() {
-			fakeBin := filepath.Join(tmpDir, "flowstate-memory-server")
+			fakeBin := filepath.Join(tmpDir, "mcp-mem0-server")
 			Expect(os.WriteFile(fakeBin, []byte("#!/bin/sh\n"), 0o600)).To(Succeed())
 			Expect(os.Chmod(fakeBin, 0o755)).To(Succeed())
 			os.Setenv("PATH", tmpDir+":"+origPAT)
 		})
 
-		It("includes flowstate-memory config", func() {
+		It("includes memory config", func() {
 			servers := config.DiscoverMCPServers()
 
 			var found bool
 			for _, s := range servers {
-				if s.Name == "flowstate-memory" {
+				if s.Name == "memory" {
 					found = true
-					Expect(s.Command).To(ContainSubstring("flowstate-memory-server"))
+					Expect(s.Command).To(ContainSubstring("mcp-mem0-server"))
 					Expect(s.Enabled).To(BeTrue())
 				}
 			}
@@ -48,7 +48,7 @@ var _ = Describe("DiscoverMCPServers", func() {
 		})
 	})
 
-	Context("when flowstate-memory-server is not in PATH", func() {
+	Context("when no known servers are in PATH", func() {
 		BeforeEach(func() {
 			os.Setenv("PATH", tmpDir)
 		})

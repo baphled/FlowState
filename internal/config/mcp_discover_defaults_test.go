@@ -82,7 +82,7 @@ var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration
 
 	Context("when all known servers are in PATH", func() {
 		BeforeEach(func() {
-			for _, name := range []string{"mcp-mem0-server", "mcp-vault-server", "flowstate-memory-server", "npx"} {
+			for _, name := range []string{"mcp-mem0-server", "mcp-vault-server", "npx"} {
 				fakeBin := filepath.Join(tmpDir, name)
 				Expect(os.WriteFile(fakeBin, []byte("#!/bin/sh\n"), 0o600)).To(Succeed())
 				Expect(os.Chmod(fakeBin, 0o755)).To(Succeed())
@@ -99,14 +99,14 @@ var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration
 			}
 		})
 
-		It("includes all four known server names", func() {
+		It("includes all known server names", func() {
 			servers := config.DiscoverMCPServers()
 
 			names := make([]string, 0, len(servers))
 			for _, s := range servers {
 				names = append(names, s.Name)
 			}
-			Expect(names).To(ContainElements("memory", "vault-rag", "flowstate-memory", "filesystem"))
+			Expect(names).To(ContainElements("memory", "vault-rag", "filesystem"))
 		})
 	})
 })
