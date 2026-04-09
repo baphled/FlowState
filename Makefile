@@ -1,4 +1,4 @@
-.PHONY: all build run test bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
+.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
 
 # Binary name
 BINARY_NAME=flowstate
@@ -40,6 +40,16 @@ clean: ## Clean build artifacts
 test: ## Run all Go tests (excluding BDD features)
 	@echo "Running tests..."
 	$(GOTEST) -v $(shell go list ./... | grep -v '/features/')
+
+test-external: ## Run external integration tests (requires QDRANT_URL)
+	@if [ -z "$(QDRANT_URL)" ]; then \
+		echo "QDRANT_URL is not set. Run: QDRANT_URL=http://localhost:6333 make test-external"; \
+		exit 1; \
+	fi
+	$(GOTEST) -v ./... --ginkgo.label-filter="external" -count=1
+
+test-recall: ## Run recall integration tests
+	$(GOTEST) -v ./internal/recall/... --ginkgo.label-filter="integration" -v -count=1
 
 test-coverage: ## Run tests with coverage (excluding BDD features)
 	@echo "Running tests with coverage..."
