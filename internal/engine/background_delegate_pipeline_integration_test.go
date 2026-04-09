@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -408,18 +409,22 @@ func (p *asyncDelegatePipelineProvider) Models() ([]provider.Model, error) {
 
 type slowDelegateProvider struct {
 	name      string
+	mu        sync.Mutex
 	releaseCh chan struct{}
 }
 
 func (p *slowDelegateProvider) Name() string { return p.name }
 
 func (p *slowDelegateProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	p.mu.Lock()
 	if p.releaseCh == nil {
 		p.releaseCh = make(chan struct{})
 	}
+	releaseCh := p.releaseCh
+	p.mu.Unlock()
 	ch := make(chan provider.StreamChunk, 2)
 	go func() {
-		<-p.releaseCh
+		<-releaseCh
 		ch <- provider.StreamChunk{Content: "slow result", Done: false}
 		ch <- provider.StreamChunk{Done: true}
 		close(ch)
@@ -440,6 +445,8 @@ func (p *slowDelegateProvider) Models() ([]provider.Model, error) {
 }
 
 func (p *slowDelegateProvider) release() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.releaseCh != nil {
 		select {
 		case <-p.releaseCh:
