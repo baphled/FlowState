@@ -12,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
@@ -29,29 +30,31 @@ const (
 
 // Engine orchestrates AI agent interactions with providers, tools, and context management.
 type Engine struct {
-	chatProvider      provider.Provider
-	embeddingProvider provider.Provider
-	failoverManager   *failover.Manager
-	manifest          agent.Manifest
-	tools             []tool.Tool
-	skills            []skill.Skill
-	store             *recall.FileContextStore
-	chainStore        recall.ChainContextStore
-	windowBuilder     *ctxstore.WindowBuilder
-	tokenCounter      ctxstore.TokenCounter
-	streamTimeout     time.Duration
-	hookChain         *hook.Chain
-	toolRegistry      *tool.Registry
-	permissionHandler tool.PermissionHandler
-	providerRegistry  *provider.Registry
-	agentRegistry     *agent.Registry
-	agentsFileLoader  *agent.AgentsFileLoader
-	lastContextResult ctxstore.BuildResult
-	agentOverrides    map[string]string
-	preferredProvider string
-	preferredModel    string
-	bus               *eventbus.EventBus
-	mcpServerTools    map[string][]string
+	chatProvider         provider.Provider
+	embeddingProvider    provider.Provider
+	failoverManager      *failover.Manager
+	manifest             agent.Manifest
+	tools                []tool.Tool
+	skills               []skill.Skill
+	store                *recall.FileContextStore
+	chainStore           recall.ChainContextStore
+	windowBuilder        *ctxstore.WindowBuilder
+	recallBroker         recall.Broker
+	contextAssemblyHooks []plugin.ContextAssemblyHook
+	tokenCounter         ctxstore.TokenCounter
+	streamTimeout        time.Duration
+	hookChain            *hook.Chain
+	toolRegistry         *tool.Registry
+	permissionHandler    tool.PermissionHandler
+	providerRegistry     *provider.Registry
+	agentRegistry        *agent.Registry
+	agentsFileLoader     *agent.AgentsFileLoader
+	lastContextResult    ctxstore.BuildResult
+	agentOverrides       map[string]string
+	preferredProvider    string
+	preferredModel       string
+	bus                  *eventbus.EventBus
+	mcpServerTools       map[string][]string
 
 	cachedSystemPrompt string
 	systemPromptDirty  bool
@@ -66,23 +69,25 @@ type Engine struct {
 
 // Config holds the configuration for creating a new Engine.
 type Config struct {
-	ChatProvider      provider.Provider
-	EmbeddingProvider provider.Provider
-	Registry          *provider.Registry
-	AgentRegistry     *agent.Registry
-	FailoverManager   *failover.Manager
-	Manifest          agent.Manifest
-	Tools             []tool.Tool
-	Skills            []skill.Skill
-	Store             *recall.FileContextStore
-	ChainStore        recall.ChainContextStore
-	TokenCounter      ctxstore.TokenCounter
-	StreamTimeout     time.Duration
-	HookChain         *hook.Chain
-	ToolRegistry      *tool.Registry
-	PermissionHandler tool.PermissionHandler
-	AgentsFileLoader  *agent.AgentsFileLoader
-	EventBus          *eventbus.EventBus
+	ChatProvider         provider.Provider
+	EmbeddingProvider    provider.Provider
+	Registry             *provider.Registry
+	AgentRegistry        *agent.Registry
+	FailoverManager      *failover.Manager
+	Manifest             agent.Manifest
+	Tools                []tool.Tool
+	Skills               []skill.Skill
+	Store                *recall.FileContextStore
+	ChainStore           recall.ChainContextStore
+	TokenCounter         ctxstore.TokenCounter
+	RecallBroker         recall.Broker
+	ContextAssemblyHooks []plugin.ContextAssemblyHook
+	StreamTimeout        time.Duration
+	HookChain            *hook.Chain
+	ToolRegistry         *tool.Registry
+	PermissionHandler    tool.PermissionHandler
+	AgentsFileLoader     *agent.AgentsFileLoader
+	EventBus             *eventbus.EventBus
 	// MCPServerTools maps MCP server names to the tool names they expose.
 	// Used by buildAllowedToolSet to auto-include tools from servers declared
 	// in Capabilities.MCPServers without requiring agents to list individual tool names.
@@ -105,6 +110,8 @@ func New(cfg Config) *Engine {
 		windowBuilder = ctxstore.NewWindowBuilder(cfg.TokenCounter)
 	}
 
+	recall.RegisterRecallTools(&cfg)
+
 	timeout := cfg.StreamTimeout
 	if timeout == 0 {
 		timeout = defaultStreamTimeout
@@ -125,29 +132,62 @@ func New(cfg Config) *Engine {
 		})
 	}
 
+	assemblyHooks := buildContextAssemblyHooks(cfg)
+
 	return &Engine{
-		chatProvider:      cfg.ChatProvider,
-		embeddingProvider: cfg.EmbeddingProvider,
-		failoverManager:   cfg.FailoverManager,
-		manifest:          cfg.Manifest,
-		tools:             cfg.Tools,
-		skills:            cfg.Skills,
-		store:             cfg.Store,
-		chainStore:        cfg.ChainStore,
-		windowBuilder:     windowBuilder,
-		tokenCounter:      cfg.TokenCounter,
-		streamTimeout:     timeout,
-		hookChain:         chain,
-		toolRegistry:      cfg.ToolRegistry,
-		permissionHandler: cfg.PermissionHandler,
-		providerRegistry:  cfg.Registry,
-		agentRegistry:     cfg.AgentRegistry,
-		agentsFileLoader:  cfg.AgentsFileLoader,
-		agentOverrides:    make(map[string]string),
-		bus:               bus,
-		systemPromptDirty: true,
-		mcpServerTools:    cfg.MCPServerTools,
+		chatProvider:         cfg.ChatProvider,
+		embeddingProvider:    cfg.EmbeddingProvider,
+		failoverManager:      cfg.FailoverManager,
+		manifest:             cfg.Manifest,
+		tools:                cfg.Tools,
+		skills:               cfg.Skills,
+		store:                cfg.Store,
+		chainStore:           cfg.ChainStore,
+		windowBuilder:        windowBuilder,
+		recallBroker:         cfg.RecallBroker,
+		contextAssemblyHooks: assemblyHooks,
+		tokenCounter:         cfg.TokenCounter,
+		streamTimeout:        timeout,
+		hookChain:            chain,
+		toolRegistry:         cfg.ToolRegistry,
+		permissionHandler:    cfg.PermissionHandler,
+		providerRegistry:     cfg.Registry,
+		agentRegistry:        cfg.AgentRegistry,
+		agentsFileLoader:     cfg.AgentsFileLoader,
+		agentOverrides:       make(map[string]string),
+		bus:                  bus,
+		systemPromptDirty:    true,
+		mcpServerTools:       cfg.MCPServerTools,
 	}
+}
+
+// buildContextAssemblyHooks constructs the context assembly hook chain from config.
+// If a RecallBroker is provided, it is auto-registered as the first hook.
+// Any explicitly configured hooks are appended after the broker hook.
+//
+// Expected:
+//   - cfg may contain a RecallBroker and/or ContextAssemblyHooks.
+//
+// Returns:
+//   - A slice of ContextAssemblyHook functions for dispatch during context assembly.
+//
+// Side effects:
+//   - None.
+func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
+	var hooks []plugin.ContextAssemblyHook
+	if cfg.RecallBroker != nil {
+		broker := cfg.RecallBroker
+		hooks = append(hooks, func(ctx context.Context, payload *plugin.ContextAssemblyPayload) error {
+			observations, err := broker.Query(ctx, payload.UserMessage, 5)
+			if err != nil {
+				return err
+			}
+			payload.SearchResults = append(payload.SearchResults, obsToSearchResults(observations)...)
+			return nil
+		})
+	}
+	hooks = append(hooks, cfg.ContextAssemblyHooks...)
+	return hooks
 }
 
 // SetAgentOverrides sets the agent-specific configuration overrides, such as prompt appends.
@@ -624,8 +664,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
-		e.store.Append(userMsg)
-		e.embedMessage(ctx, message)
+		msgID := e.store.AppendReturningID(userMsg)
+		e.embedMessage(ctx, message, msgID)
 	}
 
 	req := provider.ChatRequest{
@@ -1087,9 +1127,35 @@ func (e *Engine) appendToolResultToMessages(
 //
 // Returns:
 //   - A slice of messages including system prompt, history, and user message.
+
+// obsToSearchResults converts Observation objects from RecallBroker to SearchResult format.
+// Observations don't have scores, so we use a default score of 1.0.
 //
-// Side effects:
-//   - None.
+// Expected: Slice of Observation objects from RecallBroker.Query().
+// Returns: Slice of SearchResult objects with default score of 1.0.
+// Side effects: None.
+func obsToSearchResults(observations []recall.Observation) []recall.SearchResult {
+	searchResults := make([]recall.SearchResult, 0, len(observations))
+	for _, obs := range observations {
+		searchResults = append(searchResults, recall.SearchResult{
+			MessageID: obs.ID,
+			Score:     1.0,
+			Message: provider.Message{
+				Role:    "assistant",
+				Content: obs.Content,
+			},
+		})
+	}
+	return searchResults
+}
+
+// buildContextWindow assembles context for the language model, including system prompt, chat history, and observations from RecallBroker.
+// It queries RecallBroker for relevant observations if available and merges them into the context window.
+// If RecallBroker is unavailable or fails, context assembly degrades gracefully to normal operation.
+//
+// Expected: sessionID and userMessage are non-empty strings.
+// Returns: Slice of provider.Message objects forming the context window for the language model.
+// Side effects: Logs query failures without crashing; uses RecallBroker if available.
 func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userMessage string) []provider.Message {
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPrompt()
@@ -1107,49 +1173,130 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	manifestCopy := e.manifest
 	manifestCopy.Instructions.SystemPrompt = systemPrompt
-	result := e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+
+	searchResults := e.dispatchContextAssemblyHooks(ctx, sessionID, userMessage, tokenBudget)
+
+	var result ctxstore.BuildResult
+	if len(searchResults) > 0 {
+		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults)
+		if userMessage != "" {
+			userTokens := e.tokenCounter.Count(userMessage)
+			result.Messages = append(result.Messages, provider.Message{
+				Role:    "user",
+				Content: userMessage,
+			})
+			result.TokensUsed += userTokens
+			result.BudgetRemaining -= userTokens
+		}
+	} else {
+		result = e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+	}
+
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
 	e.lastContextResult = result
-
-	if e.bus != nil {
-		e.bus.Publish(events.EventPromptGenerated, events.NewPromptEvent(events.PromptEventData{
-			SessionID:  sessionID,
-			AgentID:    e.manifest.ID,
-			FullPrompt: manifestCopy.Instructions.SystemPrompt,
-			TokenCount: result.TokensUsed,
-			Truncated:  result.Truncated,
-		}))
-		e.bus.Publish(events.EventContextWindowBuilt, events.NewContextWindowEvent(events.ContextWindowEventData{
-			SessionID:       sessionID,
-			AgentID:         e.manifest.ID,
-			TokenBudget:     tokenBudget,
-			TokensUsed:      result.TokensUsed,
-			BudgetRemaining: result.BudgetRemaining,
-			MessageCount:    len(result.Messages),
-			Truncated:       result.Truncated,
-		}))
-	}
+	e.publishContextWindowEvents(sessionID, manifestCopy.Instructions.SystemPrompt, tokenBudget, result)
 
 	return result.Messages
 }
 
-// embedMessage sends the message content to the embedding provider if configured.
+// dispatchContextAssemblyHooks fires all registered context assembly hooks, collecting search results.
+// Each hook receives a mutable ContextAssemblyPayload and may populate SearchResults.
+// Hook errors are logged but do not prevent subsequent hooks or assembly from proceeding.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//   - userMessage is the user's input text.
+//   - tokenBudget is the configured token limit.
+//
+// Returns:
+//   - Aggregated search results from all hooks.
+//
+// Side effects:
+//   - Logs warnings for hooks that return errors.
+func (e *Engine) dispatchContextAssemblyHooks(
+	ctx context.Context, sessionID string, userMessage string, tokenBudget int,
+) []recall.SearchResult {
+	if len(e.contextAssemblyHooks) == 0 {
+		return nil
+	}
+	payload := &plugin.ContextAssemblyPayload{
+		SessionID:   sessionID,
+		AgentID:     e.manifest.ID,
+		UserMessage: userMessage,
+		TokenBudget: tokenBudget,
+	}
+	for _, h := range e.contextAssemblyHooks {
+		if err := h(ctx, payload); err != nil {
+			slog.Warn("context.assembly hook failed", "error", err)
+		}
+	}
+	return payload.SearchResults
+}
+
+// publishContextWindowEvents emits prompt and context window events when the event bus is configured.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//   - systemPrompt is the assembled system prompt text.
+//   - tokenBudget is the configured token limit.
+//   - result contains the build outcome with token usage.
+//
+// Side effects:
+//   - Publishes EventPromptGenerated and EventContextWindowBuilt if bus is non-nil.
+func (e *Engine) publishContextWindowEvents(sessionID string, systemPrompt string, tokenBudget int, result ctxstore.BuildResult) {
+	if e.bus == nil {
+		return
+	}
+	e.bus.Publish(events.EventPromptGenerated, events.NewPromptEvent(events.PromptEventData{
+		SessionID:  sessionID,
+		AgentID:    e.manifest.ID,
+		FullPrompt: systemPrompt,
+		TokenCount: result.TokensUsed,
+		Truncated:  result.Truncated,
+	}))
+	e.bus.Publish(events.EventContextWindowBuilt, events.NewContextWindowEvent(events.ContextWindowEventData{
+		SessionID:       sessionID,
+		AgentID:         e.manifest.ID,
+		TokenBudget:     tokenBudget,
+		TokensUsed:      result.TokensUsed,
+		BudgetRemaining: result.BudgetRemaining,
+		MessageCount:    len(result.Messages),
+		Truncated:       result.Truncated,
+	}))
+}
+
+// embedMessage sends the message content to the embedding provider if configured and stores the vector.
 //
 // Expected:
 //   - ctx is a valid context for the operation.
 //   - content is the message text to embed.
+//   - msgID is the unique identifier of the stored message.
 //
 // Side effects:
-//   - Calls the embedding provider if configured; errors are silently ignored.
-func (e *Engine) embedMessage(ctx context.Context, content string) {
-	if e.embeddingProvider == nil {
+//   - Calls the embedding provider if configured and stores the vector.
+//   - Publishes a recall.embedding.stored event if the event bus is configured.
+func (e *Engine) embedMessage(ctx context.Context, content string, msgID string) {
+	if e.embeddingProvider == nil || e.store == nil {
 		return
 	}
 
-	_, err := e.embeddingProvider.Embed(ctx, provider.EmbedRequest{Input: content})
+	start := time.Now()
+	vec, err := e.embeddingProvider.Embed(ctx, provider.EmbedRequest{Input: content})
 	if err != nil {
 		return
+	}
+
+	dimensions := len(vec)
+	e.store.StoreEmbedding(msgID, vec, e.store.GetModel(), dimensions)
+
+	if e.bus != nil {
+		e.bus.Publish(events.EventRecallEmbeddingStored, events.NewRecallEmbeddingStoredEvent(events.RecallEmbeddingStoredEventData{
+			SessionID:  e.currentSessionID,
+			MessageID:  msgID,
+			Dimensions: dimensions,
+			LatencyMS:  time.Since(start).Milliseconds(),
+		}))
 	}
 }
 
@@ -1169,9 +1316,9 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 	}
 
 	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking}
-	e.store.Append(assistantMsg)
+	msgID := e.store.AppendReturningID(assistantMsg)
 	e.dualWriteToChainStore(assistantMsg)
-	e.embedMessage(ctx, content)
+	e.embedMessage(ctx, content, msgID)
 }
 
 // completeResponse stores the assistant response and publishes a provider response event.
@@ -1238,6 +1385,17 @@ func (e *Engine) SetContextStore(store *recall.FileContextStore, sessionID strin
 //   - None.
 func (e *Engine) ContextStore() *recall.FileContextStore {
 	return e.store
+}
+
+// ChainStore returns the current chain context store.
+//
+// Returns:
+//   - The ChainContextStore currently attached to this engine, or nil.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ChainStore() recall.ChainContextStore {
+	return e.chainStore
 }
 
 // LoadedSkills returns the skills stored when the engine was created.

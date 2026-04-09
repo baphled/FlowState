@@ -34,6 +34,12 @@
 //   - background.task.started
 //   - background.task.completed
 //   - background.task.failed
+//   - recall.embedding.stored
+//   - recall.searched
+//   - recall.chain.searched
+//   - recall.summarized
+//   - discovery.published
+//   - learning.recorded
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
@@ -61,4 +67,10 @@ const (
 	EventBackgroundTaskCompleted = "background.task.completed"
 	EventBackgroundTaskFailed    = "background.task.failed"
 	EventBackgroundTaskCancelled = "background.task.cancelled"
+	EventRecallEmbeddingStored   = "recall.embedding.stored"
+	EventRecallSearched          = "recall.searched"
+	EventRecallChainSearched     = "recall.chain.searched"
+	EventRecallSummarized        = "recall.summarized"
+	EventDiscoveryPublished      = "discovery.published"
+	EventLearningRecorded        = "learning.recorded"
 )
