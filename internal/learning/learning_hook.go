@@ -98,5 +98,8 @@ func (h *Hook) Handle(ctx context.Context, result *ToolCallResult) error {
 		record.Outcome = result.Outcome
 	}
 
+	if h.client == nil {
+		return nil
+	}
 	return h.client.WriteLearningRecord(record)
 }
