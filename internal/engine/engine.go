@@ -440,6 +440,10 @@ func (e *Engine) BuildSystemPrompt() string {
 		}
 	}
 
+	for i := range e.skills {
+		base = base + "\n\n# Skill: " + e.skills[i].Name + "\n\n" + e.skills[i].Content
+	}
+
 	if e.manifest.Delegation.CanDelegate {
 		base = e.appendDelegationSections(base)
 	}

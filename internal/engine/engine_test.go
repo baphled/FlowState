@@ -283,7 +283,7 @@ var _ = Describe("Engine", func() {
 			Expect(prompt).To(ContainSubstring("You are a helpful assistant."))
 		})
 
-		It("does not include skill content in system prompt", func() {
+		It("includes skill content in system prompt", func() {
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,
 				Manifest:     manifest,
@@ -292,8 +292,8 @@ var _ = Describe("Engine", func() {
 
 			prompt := eng.BuildSystemPrompt()
 
-			Expect(prompt).NotTo(ContainSubstring("Always remember context."))
-			Expect(prompt).NotTo(ContainSubstring("This should not appear."))
+			Expect(prompt).To(ContainSubstring("Always remember context."))
+			Expect(prompt).To(ContainSubstring("This should not appear."))
 		})
 
 		Context("when no always-active skills are configured", func() {
@@ -303,7 +303,6 @@ var _ = Describe("Engine", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest:     manifest,
-					Skills:       skills,
 				})
 
 				prompt := eng.BuildSystemPrompt()
@@ -389,7 +388,7 @@ var _ = Describe("Engine", func() {
 		})
 
 		Context("when agent has agent-level skills", func() {
-			It("does not include agent-level skill content in system prompt", func() {
+			It("includes agent-level skill content in system prompt", func() {
 				manifest.Capabilities.Skills = []string{"agent-skill"}
 				manifest.Capabilities.AlwaysActiveSkills = []string{"memory-keeper"}
 
@@ -406,9 +405,9 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).NotTo(ContainSubstring("Always remember context."))
-				Expect(prompt).NotTo(ContainSubstring("This is an agent-level skill."))
-				Expect(prompt).To(Equal("You are a helpful assistant."))
+				Expect(prompt).To(ContainSubstring("Always remember context."))
+				Expect(prompt).To(ContainSubstring("This is an agent-level skill."))
+				Expect(prompt).To(ContainSubstring("# Skill: agent-skill"))
 			})
 		})
 	})
