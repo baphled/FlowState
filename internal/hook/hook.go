@@ -168,3 +168,59 @@ func extractUserMessage(messages []provider.Message) string {
 	}
 	return ""
 }
+
+// LearningLoopHook creates a hook that notifies a TriggerSink after each response.
+//
+// When the response completes, the hook raises a TriggerKindFailure trigger if
+// the last chunk carries an error, or a TriggerKindNovelty trigger otherwise.
+// The trigger is fire-and-forget: it never blocks the streaming path.
+//
+// Expected:
+//   - agentID identifies the agent whose responses are being observed.
+//   - sink is a non-nil learning.TriggerSink.
+//
+// Returns:
+//   - A Hook that notifies the sink after each completed response.
+//
+// Side effects:
+//   - Calls TriggerSink.Notify in the goroutine that drains the response channel.
+func LearningLoopHook(agentID string, sink learning.TriggerSink) Hook {
+	return func(next HandlerFunc) HandlerFunc {
+		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			resultChan, err := next(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+
+			outChan := make(chan provider.StreamChunk, streamBufferSize)
+			go func() {
+				defer close(outChan)
+				var responseBuilder strings.Builder
+				var lastErr bool
+
+				for chunk := range resultChan {
+					if chunk.Error != nil {
+						lastErr = true
+					}
+					responseBuilder.WriteString(chunk.Content)
+					outChan <- chunk
+				}
+
+				kind := learning.TriggerKindNovelty
+				if lastErr {
+					kind = learning.TriggerKindFailure
+				}
+				sink.Notify(learning.Trigger{
+					ID:       time.Now().Format(time.RFC3339Nano),
+					AgentID:  agentID,
+					Kind:     kind,
+					Source:   learning.TriggerSourceLearningHook,
+					Output:   responseBuilder.String(),
+					RaisedAt: time.Now(),
+				})
+			}()
+
+			return outChan, nil
+		}
+	}
+}
