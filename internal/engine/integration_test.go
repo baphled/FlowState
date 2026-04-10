@@ -3,6 +3,8 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -10,8 +12,10 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
 )
 
 var _ = Describe("Engine Integration", Label("integration"), func() {
@@ -321,6 +325,227 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 
 				Expect(prompt).To(Equal("You are a helpful fallback assistant."))
 			})
+		})
+	})
+
+	Describe("eager core skill loading via Stream()", func() {
+		var capture *mockProvider
+
+		BeforeEach(func() {
+			capture = &mockProvider{
+				name: "capture-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "ok", Done: true},
+				},
+			}
+		})
+
+		It("bakes multi-skill content into the provider system message", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: capture,
+				Manifest: agent.Manifest{
+					ID:   "test-agent",
+					Name: "Test Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+				},
+				Skills: []skill.Skill{
+					{Name: "pre-action", Content: "PREFLIGHT"},
+					{Name: "memory-keeper", Content: "MEMORY"},
+				},
+			})
+
+			ctx := context.Background()
+			ch, err := eng.Stream(ctx, "", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
+			Expect(capture.capturedRequest.Messages[0].Role).To(Equal("system"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("PREFLIGHT"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: memory-keeper"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("MEMORY"))
+		})
+
+		It("produces no skill markers when Skills is nil", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: capture,
+				Manifest: agent.Manifest{
+					ID:   "test-agent",
+					Name: "Test Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+				},
+				Skills: nil,
+			})
+
+			ctx := context.Background()
+			ch, err := eng.Stream(ctx, "", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill:"))
+		})
+
+		It("strips baked skills from lean injection in the real hook chain", func() {
+			bakedSkillNames := []string{"pre-action"}
+			cfg := &hook.SkillAutoLoaderConfig{
+				BaselineSkills: []string{"pre-action"},
+				MaxAutoSkills:  6,
+			}
+			manifestGetter := func() agent.Manifest {
+				return agent.Manifest{
+					ID:         "test-agent",
+					Name:       "Test Agent",
+					Complexity: "standard",
+				}
+			}
+			chain := hook.NewChain(hook.SkillAutoLoaderHook(cfg, manifestGetter, bakedSkillNames, nil))
+
+			eng := engine.New(engine.Config{
+				ChatProvider: capture,
+				Manifest: agent.Manifest{
+					ID:   "test-agent",
+					Name: "Test Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+					Complexity: "standard",
+				},
+				Skills: []skill.Skill{
+					{Name: "pre-action", Content: "PREFLIGHT"},
+				},
+				HookChain: chain,
+			})
+
+			ctx := context.Background()
+			ch, err := eng.Stream(ctx, "", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("Your load_skills: [pre-action"))
+		})
+
+		It("retains skills after SetManifest invalidates the prompt cache", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: capture,
+				Manifest: agent.Manifest{
+					ID:   "planner",
+					Name: "Planner",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are Planner",
+					},
+				},
+				Skills: []skill.Skill{
+					{Name: "pre-action", Content: "PREFLIGHT"},
+				},
+			})
+
+			ctx := context.Background()
+			ch, err := eng.Stream(ctx, "", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("You are Planner"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+
+			capture.capturedRequest = nil
+			eng.SetManifest(agent.Manifest{
+				ID:   "executor",
+				Name: "Executor",
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are Executor",
+				},
+			})
+
+			ch2, err2 := eng.Stream(ctx, "", "hello")
+			Expect(err2).NotTo(HaveOccurred())
+			for chunk := range ch2 {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("You are Executor"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("You are Planner"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+		})
+	})
+
+	Describe("LoadAlwaysActiveSkills with partial filesystem", func() {
+		var (
+			capture *mockProvider
+			tmpDir  string
+		)
+
+		BeforeEach(func() {
+			capture = &mockProvider{
+				name: "capture-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "ok", Done: true},
+				},
+			}
+
+			var err error
+			tmpDir, err = os.MkdirTemp("", "eager-skill-load-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				_ = os.RemoveAll(tmpDir)
+			})
+
+			preActionDir := filepath.Join(tmpDir, "pre-action")
+			Expect(os.MkdirAll(preActionDir, 0o755)).To(Succeed())
+			skillFile := filepath.Join(preActionDir, "SKILL.md")
+			skillBody := "---\nname: pre-action\ndescription: Pre-action reasoning\n---\n\nPRE_ACTION_BODY"
+			Expect(os.WriteFile(skillFile, []byte(skillBody), 0o600)).To(Succeed())
+		})
+
+		It("loads only skills whose SKILL.md exists and injects them into the provider request", func() {
+			loaded := engine.LoadAlwaysActiveSkills(tmpDir, []string{"pre-action", "memory-keeper"}, nil)
+			Expect(loaded).To(HaveLen(1))
+			Expect(loaded[0].Name).To(Equal("pre-action"))
+
+			eng := engine.New(engine.Config{
+				ChatProvider: capture,
+				Manifest: agent.Manifest{
+					ID:   "test-agent",
+					Name: "Test Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a helpful assistant.",
+					},
+				},
+				Skills: loaded,
+			})
+
+			ctx := context.Background()
+			ch, err := eng.Stream(ctx, "", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			for chunk := range ch {
+				_ = chunk
+			}
+
+			Expect(capture.capturedRequest).NotTo(BeNil())
+			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("PRE_ACTION_BODY"))
+			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("# Skill: memory-keeper"))
 		})
 	})
 })
