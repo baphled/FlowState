@@ -42,6 +42,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/zai"
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
+	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
@@ -419,7 +420,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		failoverManager:      params.failoverManager,
 		dispatcher:           params.dispatcher,
 		skillDir:             params.cfg.SkillDir,
-		recallBroker:         buildRecallBroker(params.cfg, tracedProvider),
+		recallBroker:         buildRecallBroker(params.cfg, tracedProvider, tp.mcpManager),
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -2350,22 +2351,28 @@ func (a *providerEmbedderAdapter) Embed(ctx context.Context, text string) ([]flo
 	return a.p.Embed(ctx, provider.EmbedRequest{Input: text})
 }
 
-// buildRecallBroker constructs a recall.Broker backed by Qdrant when configured.
+// buildRecallBroker constructs a recall.Broker wired with MCP memory, vault, and
+// optionally Qdrant-backed sources.
 //
 // Expected:
 //   - cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
 //   - p is the provider used for embedding computation.
+//   - mcpClient is the MCP manager used to reach the memory and vault-rag servers.
 //
 // Returns:
-//   - A non-nil recall.Broker when cfg.Qdrant.URL is non-empty.
-//   - nil when Qdrant is not configured, disabling vector recall.
+//   - A non-nil recall.Broker with MCP memory and vault sources always attached.
+//   - When cfg.Qdrant.URL is non-empty the Qdrant learning source is also included.
 //
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
-func buildRecallBroker(cfg *config.AppConfig, p provider.Provider) recall.Broker {
+func buildRecallBroker(cfg *config.AppConfig, p provider.Provider, mcpClient mcpclient.Client) recall.Broker {
+	memClient := learning.NewMCPMemoryClient(mcpClient, "memory")
+	memSource := recall.NewMCPMemorySource(recall.NewMCPLearningSource(memClient, nil))
+	vaultSource := vaultrecall.NewVaultSource(mcpClient, "vault-rag", "")
+
 	if cfg.Qdrant.URL == "" {
 		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL to enable vector recall")
-		return nil
+		return recall.NewRecallBroker(nil, nil, nil, nil, memSource, vaultSource)
 	}
 	col := cfg.Qdrant.Collection
 	if col == "" {
@@ -2374,7 +2381,7 @@ func buildRecallBroker(cfg *config.AppConfig, p provider.Provider) recall.Broker
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
 	source := qdrantrecall.NewSource(client, embedder, col)
-	return recall.NewRecallBroker(nil, nil, nil, source)
+	return recall.NewRecallBroker(nil, nil, nil, source, memSource, vaultSource)
 }
 
 // buildDistiller constructs a StructuredDistiller backed by Qdrant when configured.

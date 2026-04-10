@@ -729,10 +729,10 @@ When to use: Testing purposes
 			Expect(application.Engine).NotTo(BeNil())
 			hooks := reflect.ValueOf(application.Engine).Elem().FieldByName("contextAssemblyHooks")
 			Expect(hooks.IsNil()).To(BeFalse())
-			Expect(hooks.Len()).To(Equal(1))
+			Expect(hooks.Len()).To(Equal(2))
 		})
 
-		It("leaves hooks nil when none are configured", func() {
+		It("includes only the recall hook when no custom hooks are configured", func() {
 			cfg := config.DefaultConfig()
 			cfg.DataDir = tempDir
 			cfg.ContextAssemblyHooks = nil
@@ -742,7 +742,8 @@ When to use: Testing purposes
 			Expect(err).NotTo(HaveOccurred())
 			Expect(application.Engine).NotTo(BeNil())
 			hooks := reflect.ValueOf(application.Engine).Elem().FieldByName("contextAssemblyHooks")
-			Expect(hooks.IsNil()).To(BeTrue())
+			Expect(hooks.IsNil()).To(BeFalse())
+			Expect(hooks.Len()).To(Equal(1))
 		})
 	})
 
