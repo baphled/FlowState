@@ -240,7 +240,7 @@ func configureApplicationAfterBuild(
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
-	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider))
+	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)
 	startExternalPlugins(rt)
 }
@@ -1510,7 +1510,7 @@ func pluginDispatcher(rt *pluginRuntime) *external.Dispatcher {
 //   - Starts the event logger (opens file, subscribes to EventBus).
 //   - Creates and subscribes a RateLimitDetector to "provider.error" events.
 //   - Subscribes the dispatcher to plugin hook events for forwarding to external plugins.
-func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine, distiller learning.Distiller) {
+func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine, distiller learning.Distiller, mcpClient mcpclient.Client) {
 	if rt == nil || eng == nil {
 		return
 	}
@@ -1523,7 +1523,7 @@ func startCorePluginSubscriptions(rt *pluginRuntime, eng *engine.Engine, distill
 	if rt.dispatcher != nil {
 		subscribeDispatcherHooks(rt.dispatcher, bus)
 	}
-	subscribeLearningHook(bus, distiller)
+	subscribeLearningHook(bus, distiller, mcpClient)
 }
 
 // startBusPlugins starts builtin plugins that implement BusStarter.
@@ -1633,14 +1633,17 @@ func subscribeDispatcherHooks(dispatcher *external.Dispatcher, bus *eventbus.Eve
 //
 // Expected:
 //   - bus is a valid EventBus instance.
+//   - distiller is a valid learning.Distiller.
+//   - mcpClient is a valid mcpclient.Client for memory operations.
 //
 // Returns:
 //   - None.
 //
 // Side effects:
 //   - Subscribes a handler to "tool.execute.result" events on the bus.
-func subscribeLearningHook(bus *eventbus.EventBus, distiller learning.Distiller) {
-	learningHook := learning.NewLearningHook(nil)
+func subscribeLearningHook(bus *eventbus.EventBus, distiller learning.Distiller, mcpClient mcpclient.Client) {
+	memClient := learning.NewMCPMemoryClient(mcpClient, "memory")
+	learningHook := learning.NewLearningHook(memClient)
 	bus.Subscribe(events.EventToolExecuteResult, func(msg any) {
 		handleToolExecuteResult(msg, learningHook, distiller)
 	})
@@ -1673,6 +1676,7 @@ func handleToolExecuteResult(msg any, learningHk *learning.Hook, distiller learn
 		return
 	}
 	entry := learning.Entry{
+		Timestamp: toolEvt.Timestamp(),
 		ToolsUsed: []string{toolEvt.Data.ToolName},
 		Outcome:   fmt.Sprintf("%v", toolEvt.Data.Result),
 	}
