@@ -2,6 +2,8 @@ package recall
 
 import (
 	"context"
+	"math"
+	"sort"
 	"sync"
 
 	"github.com/google/uuid"
@@ -26,6 +28,7 @@ type ChainContextStore interface {
 type chainEntry struct {
 	agentID string
 	message provider.Message
+	vector  []float64
 }
 
 // InMemoryChainStore implements ChainContextStore using an in-memory store.
@@ -79,10 +82,18 @@ func (s *InMemoryChainStore) ChainID() string {
 //
 // Side effects:
 //   - Appends to the in-memory entries slice under a write lock.
+//   - If an embedding provider is configured, stores the embedding vector for the message.
 func (s *InMemoryChainStore) Append(agentID string, msg provider.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entries = append(s.entries, chainEntry{agentID: agentID, message: msg})
+	entry := chainEntry{agentID: agentID, message: msg}
+	if s.embeddingProvider != nil {
+		vector, err := s.embeddingProvider.Embed(context.Background(), provider.EmbedRequest{Input: msg.Content})
+		if err == nil {
+			entry.vector = vector
+		}
+	}
+	s.entries = append(s.entries, entry)
 	return nil
 }
 
@@ -141,10 +152,36 @@ func (s *InMemoryChainStore) degradedSearch(topK int) ([]SearchResult, error) {
 	return results, nil
 }
 
+// cosineSimilarity returns the cosine similarity between two vectors.
+//
+// Expected:
+//   - a and b are non-nil, equal-length float64 slices.
+//
+// Returns:
+//   - Cosine similarity as a float64 in [-1, 1].
+//
+// Side effects:
+//   - None.
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
 // searchByVector performs cosine similarity search against all stored entries.
 //
 // Expected:
-//   - _ is the embedding vector (reserved for future cosine similarity; currently unused).
+//   - queryVec is the embedding vector to compare against stored entries.
 //   - topK is the maximum number of results to return.
 //   - The caller holds at least a read lock on s.mu.
 //
@@ -153,19 +190,27 @@ func (s *InMemoryChainStore) degradedSearch(topK int) ([]SearchResult, error) {
 //
 // Side effects:
 //   - None.
-func (s *InMemoryChainStore) searchByVector(_ []float64, topK int) []SearchResult {
+func (s *InMemoryChainStore) searchByVector(queryVec []float64, topK int) []SearchResult {
 	var results []SearchResult
-	for _, entry := range s.entries {
-		if entry.message.Role == "tool" {
+	for i := range s.entries {
+		entry := &s.entries[i]
+		if entry.message.Role == "tool" || len(entry.vector) == 0 {
 			continue
 		}
+		score := cosineSimilarity(queryVec, entry.vector)
 		results = append(results, SearchResult{
 			Message: entry.message,
-			Score:   0,
+			Score:   score,
 		})
 	}
-	if len(results) > topK {
-		results = results[len(results)-topK:]
+	if len(results) == 0 {
+		return results
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	if topK > 0 && len(results) > topK {
+		results = results[:topK]
 	}
 	return results
 }
@@ -190,9 +235,9 @@ func (s *InMemoryChainStore) GetByAgent(agentID string, last int) ([]provider.Me
 	defer s.mu.RUnlock()
 
 	var matched []provider.Message
-	for _, entry := range s.entries {
-		if agentID == "" || entry.agentID == agentID {
-			matched = append(matched, entry.message)
+	for i := range s.entries {
+		if agentID == "" || s.entries[i].agentID == agentID {
+			matched = append(matched, s.entries[i].message)
 		}
 	}
 

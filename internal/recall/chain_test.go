@@ -10,6 +10,25 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 )
 
+type mockEmbeddingProvider struct {
+	vector []float64
+	err    error
+}
+
+func (m *mockEmbeddingProvider) Name() string { return "mock" }
+func (m *mockEmbeddingProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+func (m *mockEmbeddingProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (m *mockEmbeddingProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return m.vector, m.err
+}
+func (m *mockEmbeddingProvider) Models() ([]provider.Model, error) { return nil, nil }
+
 var _ = Describe("ChainContextStore", func() {
 	Describe("NewInMemoryChainStore", func() {
 		It("returns a store with a non-empty ChainID", func() {
@@ -129,6 +148,38 @@ var _ = Describe("ChainContextStore", func() {
 				results, err := store.Search(context.Background(), "any query", 5)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(results).To(BeEmpty())
+			})
+		})
+
+		Context("when embedding provider is configured", func() {
+			It("returns non-zero scores when vectors match", func() {
+				ep := &mockEmbeddingProvider{vector: []float64{1, 0}}
+				store := recall.NewInMemoryChainStore(ep)
+
+				Expect(store.Append("agent-a", provider.Message{Role: "assistant", Content: "alpha"})).To(Succeed())
+				Expect(store.Append("agent-b", provider.Message{Role: "assistant", Content: "beta"})).To(Succeed())
+
+				results, err := store.Search(context.Background(), "alpha", 10)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).NotTo(BeEmpty())
+				for _, r := range results {
+					Expect(r.Score).To(BeNumerically(">", 0))
+				}
+			})
+
+			It("returns results sorted by descending score", func() {
+				ep := &mockEmbeddingProvider{vector: []float64{1, 0}}
+				store := recall.NewInMemoryChainStore(ep)
+
+				Expect(store.Append("agent-a", provider.Message{Role: "assistant", Content: "first"})).To(Succeed())
+				Expect(store.Append("agent-b", provider.Message{Role: "assistant", Content: "second"})).To(Succeed())
+				Expect(store.Append("agent-a", provider.Message{Role: "assistant", Content: "third"})).To(Succeed())
+
+				results, err := store.Search(context.Background(), "query", 10)
+				Expect(err).NotTo(HaveOccurred())
+				for i := 1; i < len(results); i++ {
+					Expect(results[i-1].Score).To(BeNumerically(">=", results[i].Score))
+				}
 			})
 		})
 	})
