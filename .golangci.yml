@@ -411,6 +411,13 @@ linters:
           - gocognit
           - errcheck
           - nilerr
+          - revive
+
+      # UnmarshalEvent uses a type-switch that grows with each new event type
+      - path: 'internal/streaming/events\.go'
+        linters:
+          - revive
+        text: 'cyclomatic'
 
       # Tool results intentionally return Result.Error instead of Go errors
       - path: 'internal/tool/(.*)\.go'

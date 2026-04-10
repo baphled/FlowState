@@ -27,6 +27,9 @@ type Manifest struct {
 	// Harness defines fine-grained output validation and quality layers for this agent.
 	// When present, it takes precedence over the legacy HarnessEnabled boolean.
 	Harness *HarnessConfig `json:"harness,omitempty" yaml:"harness,omitempty"`
+	// Mode selects the harness loop type for this agent. Valid values are "plan"
+	// (default) and "execution". When empty, "plan" behaviour is assumed.
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
 	// Loop defines the delegation loop for coordinator agents.
 	// When present, the agent operates in review-cycle mode rather than single-shot mode.
 	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`

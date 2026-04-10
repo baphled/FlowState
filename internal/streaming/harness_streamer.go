@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/harness"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -19,16 +20,29 @@ type PlanEvaluator interface {
 	StreamEvaluate(ctx context.Context, streamer Streamer, agentID string, message string) (<-chan provider.StreamChunk, error)
 }
 
+// ExecutionEvaluator abstracts the execution harness evaluation for testability.
+//
+// Unlike PlanEvaluator, it returns the shared harness.EvaluationResult rather
+// than a plan-specific result, enabling mode-based routing without conflating
+// the two result types.
+type ExecutionEvaluator interface {
+	// Evaluate runs the validate-critique loop synchronously and returns the final result.
+	Evaluate(ctx context.Context, streamer Streamer, agentID string, message string) (*harness.EvaluationResult, error)
+	// StreamEvaluate runs the validate-critique loop and streams output chunks as they arrive.
+	StreamEvaluate(ctx context.Context, streamer Streamer, agentID string, message string) (<-chan provider.StreamChunk, error)
+}
+
 // AgentRegistry abstracts agent manifest lookup for testability.
 type AgentRegistry interface {
 	// Get retrieves an agent manifest by ID, returning false if not found.
 	Get(id string) (*agent.Manifest, bool)
 }
 
-// HarnessStreamer decorates a Streamer with plan harness validation for harness-enabled agents.
+// HarnessStreamer decorates a Streamer with harness validation for enabled agents.
 type HarnessStreamer struct {
 	inner    Streamer
 	harness  PlanEvaluator
+	execEval ExecutionEvaluator
 	registry AgentRegistry
 }
 
@@ -36,7 +50,7 @@ type HarnessStreamer struct {
 //
 // Expected:
 //   - inner is a non-nil Streamer for passthrough and harness evaluation.
-//   - harness is a non-nil PlanEvaluator for plan validation.
+//   - planEval is a non-nil PlanEvaluator for plan validation.
 //   - registry is a non-nil AgentRegistry for manifest lookup.
 //
 // Returns:
@@ -44,15 +58,30 @@ type HarnessStreamer struct {
 //
 // Side effects:
 //   - None.
-func NewHarnessStreamer(inner Streamer, harness PlanEvaluator, registry AgentRegistry) *HarnessStreamer {
+func NewHarnessStreamer(inner Streamer, planEval PlanEvaluator, registry AgentRegistry) *HarnessStreamer {
 	return &HarnessStreamer{
 		inner:    inner,
-		harness:  harness,
+		harness:  planEval,
 		registry: registry,
 	}
 }
 
-// Stream routes the request through the harness for harness-enabled agents, or passes through to the inner streamer.
+// WithExecutionEvaluator sets the execution evaluator used for agents whose mode is "execution".
+//
+// Expected:
+//   - eval is a non-nil ExecutionEvaluator.
+//
+// Returns:
+//   - The HarnessStreamer for method chaining.
+//
+// Side effects:
+//   - Replaces the stored execution evaluator.
+func (s *HarnessStreamer) WithExecutionEvaluator(eval ExecutionEvaluator) *HarnessStreamer {
+	s.execEval = eval
+	return s
+}
+
+// Stream routes the request through the appropriate harness for enabled agents, or passes through to the inner streamer.
 //
 // Expected:
 //   - ctx is a valid context for the streaming operation.
@@ -64,9 +93,13 @@ func NewHarnessStreamer(inner Streamer, harness PlanEvaluator, registry AgentReg
 //   - An error if the harness streaming fails or the inner stream fails.
 //
 // Side effects:
-//   - Delegates to StreamEvaluate for harness-enabled agents, forwarding chunks live.
+//   - Delegates to the execution evaluator for agents with mode "execution".
+//   - Delegates to StreamEvaluate for plan-harness-enabled agents.
 func (s *HarnessStreamer) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	manifest, ok := s.registry.Get(agentID)
+	if ok && manifest.Mode == "execution" && s.execEval != nil {
+		return s.execEval.StreamEvaluate(ctx, s.inner, agentID, message)
+	}
 	if ok && manifest.HarnessEnabled {
 		return s.harness.StreamEvaluate(ctx, s.inner, agentID, message)
 	}
