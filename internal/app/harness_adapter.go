@@ -118,7 +118,12 @@ func createHarnessStreamer(
 
 	opts = append(validation.DefaultValidators(), opts...)
 	h := harness.NewHarness(projectRoot, opts...)
-	return streaming.NewHarnessStreamer(inner, &harnessAdapter{h: h}, registry)
+	hs := streaming.NewHarnessStreamer(inner, &harnessAdapter{h: h}, registry)
+	if cfg.Mode == "execution" || cfg.LearningEnabled {
+		execEval := createExecutionEvaluator(cfg, registry, p)
+		hs.WithExecutionEvaluator(execEval)
+	}
+	return hs
 }
 
 // CreateHarnessStreamerForTest is a test helper that exposes createHarnessStreamer for
