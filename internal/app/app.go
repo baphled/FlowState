@@ -1677,6 +1677,7 @@ func handleToolExecuteResult(msg any, learningHk *learning.Hook, distiller learn
 	}
 	entry := learning.Entry{
 		Timestamp: toolEvt.Timestamp(),
+		AgentID:   toolEvt.Data.SessionID,
 		ToolsUsed: []string{toolEvt.Data.ToolName},
 		Outcome:   fmt.Sprintf("%v", toolEvt.Data.Result),
 	}
