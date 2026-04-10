@@ -20,6 +20,7 @@ const (
 	EventTypeRecallSearch           = "recall_search"
 	EventTypeRecallChainSearch      = "recall_chain_search"
 	EventTypeRecallSummarized       = "recall_summarized"
+	EventTypeLearningTriggered      = "learning_triggered"
 )
 
 // Event represents a discrete typed occurrence within the streaming pipeline.
@@ -475,6 +476,44 @@ func (e RecallSummarizedEvent) MarshalJSON() ([]byte, error) {
 	return marshalWithType(e.Type(), alias(e))
 }
 
+// LearningTriggeredEvent signals that a background learning job has been queued.
+//
+// This event is emitted immediately before Done when the learning loop accepts
+// a trigger, giving downstream consumers visibility without blocking the stream.
+type LearningTriggeredEvent struct {
+	AgentID   string `json:"agentId"`
+	TriggerID string `json:"triggerId"`
+	Reason    string `json:"reason"`
+}
+
+// Type returns the event type identifier for learning triggered events.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
+func (e LearningTriggeredEvent) Type() string { return EventTypeLearningTriggered }
+
+// MarshalJSON serialises a LearningTriggeredEvent with a type discriminator field.
+//
+// Expected:
+//   - e contains the event payload.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (e LearningTriggeredEvent) MarshalJSON() ([]byte, error) {
+	type alias LearningTriggeredEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
 // MarshalEvent serialises an event to JSON with a type discriminator field.
 //
 // Expected:
@@ -534,6 +573,8 @@ func UnmarshalEvent(data []byte) (Event, error) {
 		return unmarshalTyped[RecallChainSearchEvent](data)
 	case EventTypeRecallSummarized:
 		return unmarshalTyped[RecallSummarizedEvent](data)
+	case EventTypeLearningTriggered:
+		return unmarshalTyped[LearningTriggeredEvent](data)
 	default:
 		return nil, fmt.Errorf("unknown event type: %q", peek.Type)
 	}

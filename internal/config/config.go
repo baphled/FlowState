@@ -110,6 +110,13 @@ type MCPServerConfig struct {
 // the harness is enabled but the critic and voting are disabled.
 // MaxRetries controls how many evaluation attempts the harness makes
 // before returning a best-effort result; defaults to 1.
+//
+// Mode selects the harness loop type. Valid values are "plan" (default)
+// and "execution". When empty, "plan" behaviour is assumed.
+//
+// LearningEnabled enables the async learning loop for this harness.
+// LearningOnFailure triggers learning captures when evaluation fails.
+// LearningOnNovelty triggers learning captures when novel output is detected.
 type HarnessConfig struct {
 	Enabled            bool   `json:"enabled" yaml:"enabled"`
 	ProjectRoot        string `json:"project_root" yaml:"project_root"`
@@ -117,6 +124,10 @@ type HarnessConfig struct {
 	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
 	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
 	MaxRetries         int    `json:"harness_max_retries" yaml:"harness_max_retries"`
+	Mode               string `json:"mode" yaml:"mode"`
+	LearningEnabled    bool   `json:"learning_enabled" yaml:"learning_enabled"`
+	LearningOnFailure  bool   `json:"learning_on_failure" yaml:"learning_on_failure"`
+	LearningOnNovelty  bool   `json:"learning_on_novelty" yaml:"learning_on_novelty"`
 }
 
 // AgentOverrideConfig holds per-agent configuration overrides.
