@@ -709,4 +709,128 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
+	Context("when all selected skills are already baked into the system prompt", func() {
+		BeforeEach(func() {
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{"pre-action", "memory-keeper", "token-cost-estimation"},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns:  []hook.KeywordPattern{},
+			}
+			manifest = agent.Manifest{
+				ID:         "test-agent",
+				Name:       "Test Agent",
+				Complexity: "quick",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{},
+				},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("strips every skill from the lean injection and leaves the system prompt untouched", func() {
+			baked := []string{"pre-action", "memory-keeper", "token-cost-estimation"}
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(Equal("You are a helpful assistant."))
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills: ["))
+		})
+	})
+
+	Context("when only some selected skills are baked into the system prompt", func() {
+		BeforeEach(func() {
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{"pre-action", "token-cost-estimation"},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns: []hook.KeywordPattern{
+					{Pattern: "test", Skills: []string{"golang-testing"}},
+				},
+			}
+			manifest = agent.Manifest{
+				ID:         "test-agent",
+				Name:       "Test Agent",
+				Complexity: "quick",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{},
+				},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "write a test for this"},
+				},
+			}
+		})
+
+		It("strips baked skills and keeps unbaked skills in the lean injection", func() {
+			baked := []string{"pre-action", "token-cost-estimation"}
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("golang-testing"))
+
+			loadSkillsIdx := strings.Index(systemContent, "Your load_skills: [")
+			Expect(loadSkillsIdx).NotTo(Equal(-1))
+			closeBracketIdx := strings.Index(systemContent[loadSkillsIdx:], "]")
+			Expect(closeBracketIdx).NotTo(Equal(-1))
+			skillList := systemContent[loadSkillsIdx+len("Your load_skills: [") : loadSkillsIdx+closeBracketIdx]
+			Expect(skillList).NotTo(ContainSubstring("pre-action"))
+			Expect(skillList).NotTo(ContainSubstring("token-cost-estimation"))
+		})
+	})
+
+	Context("when bakedSkillNames is nil (backwards compatible)", func() {
+		BeforeEach(func() {
+			config = &hook.SkillAutoLoaderConfig{
+				BaselineSkills:   []string{"pre-action", "memory-keeper"},
+				MaxAutoSkills:    6,
+				CategoryMappings: map[string][]string{},
+				KeywordPatterns:  []hook.KeywordPattern{},
+			}
+			manifest = agent.Manifest{
+				ID:         "test-agent",
+				Name:       "Test Agent",
+				Complexity: "quick",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{},
+				},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("injects every selected skill into the lean header", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("pre-action"))
+			Expect(systemContent).To(ContainSubstring("memory-keeper"))
+		})
+	})
+
 })
