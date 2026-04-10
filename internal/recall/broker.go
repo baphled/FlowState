@@ -37,19 +37,21 @@ type broker struct {
 	chainSource     Source
 	hierarchySource Source
 	learningSource  Source
+	extraSources    []Source
 }
 
 // NewRecallBroker creates a broker that queries all supplied sources.
 //
-// Expected: all source arguments may be nil and ctx is supplied per query.
+// Expected: all source arguments may be nil and ctx is supplied per query. Extra variadic sources are appended to the fan-out set.
 // Returns: a Broker that fans out to the configured sources and merges their results.
 // Side effects: stores the supplied sources for later concurrent querying.
-func NewRecallBroker(sessionSource, chainSource, hierarchySource, learningSource Source) Broker {
+func NewRecallBroker(sessionSource, chainSource, hierarchySource, learningSource Source, extra ...Source) Broker {
 	return &broker{
 		sessionSource:   sessionSource,
 		chainSource:     chainSource,
 		hierarchySource: hierarchySource,
 		learningSource:  learningSource,
+		extraSources:    extra,
 	}
 }
 
@@ -77,6 +79,7 @@ func (b *broker) Query(ctx context.Context, query string, limit int) ([]Observat
 // Side effects: launches concurrent source queries and logs any query failures.
 func (b *broker) collect(ctx context.Context, query string, limit int) [][]Observation {
 	sources := []Source{b.sessionSource, b.chainSource, b.hierarchySource, b.learningSource}
+	sources = append(sources, b.extraSources...)
 	results := make([][]Observation, len(sources))
 
 	var wg sync.WaitGroup
