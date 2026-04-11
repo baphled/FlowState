@@ -74,6 +74,8 @@ func AccumulateStream(
 			applyChunk(appender, s, chunk)
 			accumCh <- chunk
 		}
+		flushThinking(appender, s)
+		flushContent(appender, s)
 	}()
 	return accumCh
 }

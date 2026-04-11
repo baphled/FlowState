@@ -323,7 +323,7 @@ var _ = Describe("AccumulateStream", func() {
 	})
 
 	Context("when the raw channel closes without a terminal Done chunk", func() {
-		PIt("flushes accumulated assistant content on channel close", func() {
+		It("flushes accumulated assistant content on channel close", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
 			rawCh <- provider.StreamChunk{Content: "hello"}
 			rawCh <- provider.StreamChunk{Content: " world"}
@@ -343,7 +343,7 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"))
 		})
 
-		PIt("flushes accumulated thinking content on channel close", func() {
+		It("flushes accumulated thinking content on channel close", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
 			rawCh <- provider.StreamChunk{Thinking: "half a"}
 			rawCh <- provider.StreamChunk{Thinking: " thought"}
@@ -362,7 +362,7 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(thinkingMsgs[0].Content).To(Equal("half a thought"))
 		})
 
-		PIt("does not double-flush when a Done chunk is followed by channel close", func() {
+		It("does not double-flush when a Done chunk is followed by channel close", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
 			rawCh <- provider.StreamChunk{Content: "only once"}
 			rawCh <- provider.StreamChunk{Done: true}
