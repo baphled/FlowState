@@ -147,6 +147,11 @@ func (l *Loop) Stop() {
 	<-l.done
 }
 
+// process handles a single trigger based on its kind and configuration.
+//
+// Returns: none.
+// Expected: trigger kind may not match enabled conditions.
+// Side effects: captures an entry to the store if conditions are met.
 func (l *Loop) process(t Trigger) {
 	switch t.Kind {
 	case TriggerKindFailure:
