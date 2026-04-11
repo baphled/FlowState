@@ -16,6 +16,35 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+type rejectionMockProvider struct {
+	chunks []provider.StreamChunk
+}
+
+func (p *rejectionMockProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, len(p.chunks))
+	for i := range p.chunks {
+		ch <- p.chunks[i]
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (p *rejectionMockProvider) Name() string {
+	return "rejection-test-provider"
+}
+
+func (p *rejectionMockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *rejectionMockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func (p *rejectionMockProvider) Models() ([]provider.Model, error) {
+	return nil, nil
+}
+
 var _ = Describe("DelegateTool rejection exhaustion", func() {
 	const testChainID = "test-chain-001"
 
@@ -29,7 +58,7 @@ var _ = Describe("DelegateTool rejection exhaustion", func() {
 
 	BeforeEach(func() {
 		planWriterEngine = engine.New(engine.Config{
-			ChatProvider: &harnessAwareMockProvider{
+			ChatProvider: &rejectionMockProvider{
 				chunks: []provider.StreamChunk{
 					{Content: "plan content"},
 					{Done: true},
