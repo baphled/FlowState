@@ -496,6 +496,86 @@ var _ = Describe("RunStream", func() {
 		Expect(chunks[1].Done).To(BeTrue())
 	})
 
+	PIt("emits tool calls when the terminal chunk combines delta and finish_reason (github-copilot shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-copilot","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"delegate","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-copilot","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"agent\":\"Explore\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		var toolCalls []provider.ToolCall
+		for _, c := range collected {
+			if c.ToolCall != nil {
+				toolCalls = append(toolCalls, *c.ToolCall)
+			}
+		}
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].Name).To(Equal("delegate"))
+		Expect(toolCalls[0].ID).To(Equal("call_x"))
+		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("agent", "Explore"))
+	})
+
+	PIt("emits tool calls when every chunk carries empty content alongside tool_calls (zai shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-zai","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"","tool_calls":[{"index":0,"id":"call_y","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-zai","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"x.txt\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "read file"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		var toolCalls []provider.ToolCall
+		for _, c := range collected {
+			if c.ToolCall != nil {
+				toolCalls = append(toolCalls, *c.ToolCall)
+			}
+		}
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].Name).To(Equal("read_file"))
+		Expect(toolCalls[0].ID).To(Equal("call_y"))
+		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("path", "x.txt"))
+	})
+
 	It("propagates server errors", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
