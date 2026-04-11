@@ -8,7 +8,6 @@ Feature: Vector Recall via Qdrant
     Given FlowState is running
     And the recall broker is initialised
 
-  @smoke
   Scenario: Recall relevant results from Qdrant
     Given FlowState is configured with a Qdrant URL
     And the Qdrant store contains several memories

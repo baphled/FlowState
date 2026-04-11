@@ -8,7 +8,6 @@ Feature: Structured Knowledge Distillation
     Given FlowState is running
     And the learning hook is capturing data
 
-  @smoke
   Scenario: Distil learning records into summaries
     Given FlowState is configured with a Qdrant store
     And several learning entries have been recorded

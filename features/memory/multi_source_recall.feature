@@ -8,7 +8,6 @@ Feature: Multi-Source Recall
     Given FlowState is running
     And the agent system is initialised
 
-  @smoke
   Scenario: Recall from the MCP memory graph
     Given FlowState is configured with an MCP memory server
     And I have previously asked the agent to remember that "the project deadline is Friday"
@@ -16,7 +15,6 @@ Feature: Multi-Source Recall
     Then the response should mention that the deadline is Friday
     And the agent should recognise the information came from the memory graph
 
-  @smoke
   Scenario: Recall from the vault-rag knowledge base
     Given FlowState is configured with the vault-rag MCP server
     And my knowledge base contains a note about "British English conventions"
