@@ -8,7 +8,6 @@ Feature: Learning Capture via Mem0
     Given FlowState is running
     And the agent system is initialised
 
-  @smoke
   Scenario: Record tool usage and outcome
     Given FlowState is configured with a Mem0 memory client
     When the agent uses the "read" tool
