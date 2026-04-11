@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// executionLoopState holds state for execution loop BDD scenarios.
 type executionLoopState struct {
 	loop       *execution.Loop
 	result     *harness.EvaluationResult
@@ -20,25 +21,40 @@ type executionLoopState struct {
 	validator  harness.Validator
 }
 
+// executionAlwaysPassValidator is a validator that always returns valid for testing.
 type executionAlwaysPassValidator struct{}
 
 // Validate always returns valid for testing.
+//
+// Returns: always returns ValidationResult with Valid=true and Score=1.0
+// Expected: no external calls
+// Side effects: none.
 func (v *executionAlwaysPassValidator) Validate(_ string) (*harness.ValidationResult, error) {
 	return &harness.ValidationResult{Valid: true, Score: 1.0}, nil
 }
 
+// executionAlwaysFailValidator is a validator that always returns invalid for testing.
 type executionAlwaysFailValidator struct{}
 
 // Validate always returns invalid for testing.
+//
+// Returns: always returns ValidationResult with Valid=false and Score=0.0
+// Expected: no external calls
+// Side effects: none.
 func (v *executionAlwaysFailValidator) Validate(_ string) (*harness.ValidationResult, error) {
 	return &harness.ValidationResult{Valid: false, Score: 0.0}, nil
 }
 
+// executionFakeStreamer is a test streamer that returns pre-configured responses.
 type executionFakeStreamer struct {
 	response string
 }
 
 // Stream returns a pre-configured response for testing.
+//
+// Returns: a channel containing the pre-configured response and a done chunk
+// Expected: the channel is closed after sending the response
+// Side effects: closes the returned channel.
 func (f *executionFakeStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 2)
 	ch <- provider.StreamChunk{Content: f.response}
@@ -48,6 +64,9 @@ func (f *executionFakeStreamer) Stream(_ context.Context, _ string, _ string) (<
 }
 
 // RegisterExecutionLoopSteps registers BDD step definitions for the execution loop feature.
+//
+// Expected: all step definitions are registered with the scenario context
+// Side effects: modifies the scenario context by adding step definitions.
 func RegisterExecutionLoopSteps(ctx *godog.ScenarioContext) {
 	s := &executionLoopState{maxRetries: 3}
 

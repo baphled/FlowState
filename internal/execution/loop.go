@@ -125,6 +125,11 @@ func (l *Loop) StreamEvaluate(
 	return ch, nil
 }
 
+// runLoop executes the evaluation loop with retries and streaming.
+//
+// Returns: loopResult containing the final result, stop reason, and attempt count, or an error.
+// Expected: context may be cancelled.
+// Side effects: may call streamer multiple times if validation fails.
 func (l *Loop) runLoop(ctx context.Context, streamer harness.Streamer, agentID, message string) (loopResult, error) {
 	var (
 		result   *harness.EvaluationResult
@@ -166,6 +171,11 @@ func (l *Loop) runLoop(ctx context.Context, streamer harness.Streamer, agentID, 
 	}
 }
 
+// collectOutput streams and collects all content from the streamer.
+//
+// Returns: the concatenated content string and any error from the streamer.
+// Expected: streamer may return an error.
+// Side effects: consumes all chunks from the channel until Done is received.
 func (l *Loop) collectOutput(ctx context.Context, streamer harness.Streamer, agentID, message string) (string, error) {
 	ch, err := streamer.Stream(ctx, agentID, message)
 	if err != nil {
@@ -181,6 +191,11 @@ func (l *Loop) collectOutput(ctx context.Context, streamer harness.Streamer, age
 	return sb.String(), nil
 }
 
+// validate runs the validator on the output and updates the result.
+//
+// Returns: the updated result with ValidationResult and FinalScore set.
+// Expected: validator may be nil.
+// Side effects: modifies the result in place.
 func (l *Loop) validate(result *harness.EvaluationResult) *harness.EvaluationResult {
 	if l.validator == nil {
 		result.ValidationResult = &harness.ValidationResult{Valid: true, Score: 1.0}
@@ -198,6 +213,11 @@ func (l *Loop) validate(result *harness.EvaluationResult) *harness.EvaluationRes
 	return result
 }
 
+// critique applies the critic to the result if one is configured.
+//
+// Returns: the updated result with potentially adjusted FinalScore.
+// Expected: critic and criticProvider may be nil.
+// Side effects: modifies the result.FinalScore if critic verdict is Fail.
 func (l *Loop) critique(ctx context.Context, result *harness.EvaluationResult) *harness.EvaluationResult {
 	if l.critic == nil || l.criticProvider == nil {
 		return result
@@ -213,6 +233,11 @@ func (l *Loop) critique(ctx context.Context, result *harness.EvaluationResult) *
 	return result
 }
 
+// notifyObserver sends the evaluation outcome to the registered observer.
+//
+// Returns: none.
+// Expected: observer may be nil.
+// Side effects: calls observer.OnOutcome if observer is not nil.
 func (l *Loop) notifyObserver(result *harness.EvaluationResult, reason StopReason, attempts int) {
 	if l.observer == nil {
 		return

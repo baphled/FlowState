@@ -11,18 +11,24 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 )
 
+// learningLoopState holds state for learning loop BDD scenarios.
 type learningLoopState struct {
 	loop  *learning.Loop
 	store *bddFakeStore
 	opts  []learning.LoopOption
 }
 
+// bddFakeStore is a thread-safe in-memory learning store for BDD testing.
 type bddFakeStore struct {
 	mu      sync.Mutex
 	entries []learning.Entry
 }
 
 // Capture records an entry in the fake store for testing.
+//
+// Returns: nil error.
+// Expected: no external calls.
+// Side effects: appends entry to internal slice.
 func (s *bddFakeStore) Capture(e learning.Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -31,26 +37,45 @@ func (s *bddFakeStore) Capture(e learning.Entry) error {
 }
 
 // Query returns all entries in the fake store for testing.
+//
+// Returns: copy of all captured entries.
+// Expected: no external calls.
+// Side effects: none.
 func (s *bddFakeStore) Query(_ string) []learning.Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]learning.Entry(nil), s.entries...)
 }
 
+// count returns the number of entries in the store.
+//
+// Returns: the number of entries.
+// Expected: no external calls.
+// Side effects: none.
 func (s *bddFakeStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.entries)
 }
 
+// bddFakeRecallClient is a fake recall client for BDD testing.
 type bddFakeRecallClient struct {
 	score float64
 }
 
+// Search returns pre-configured recall matches for testing.
+//
+// Returns: a slice with one RecallMatch using the configured score.
+// Expected: no external calls.
+// Side effects: none.
 func (r *bddFakeRecallClient) Search(_ string, _ int) ([]learning.RecallMatch, error) {
 	return []learning.RecallMatch{{Score: r.score}}, nil
 }
 
+// RegisterLearningLoopSteps registers BDD step definitions for the learning loop feature.
+//
+// Expected: all step definitions are registered with the scenario context.
+// Side effects: modifies the scenario context by adding step definitions.
 func RegisterLearningLoopSteps(ctx *godog.ScenarioContext) {
 	s := &learningLoopState{}
 
