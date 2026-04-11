@@ -181,6 +181,7 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 		defer close(ch)
 		stream := client.Chat.Completions.NewStreaming(ctx, params)
 		var acc openaiAPI.ChatCompletionAccumulator
+		emitted := make(map[int]bool)
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -191,6 +192,7 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 				}
 			}
 			if tc, ok := acc.JustFinishedToolCall(); ok {
+				emitted[tc.Index] = true
 				shared.SendChunk(ctx, ch, provider.StreamChunk{
 					ToolCall: &provider.ToolCall{
 						ID:        tc.ID,
@@ -200,14 +202,66 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 				})
 			}
 			if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
+				flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 				shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
 			}
 		}
 		if err := stream.Err(); err != nil {
 			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: err, Done: true})
+			return
 		}
+		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 	}()
 	return ch
+}
+
+// flushAccumulatedToolCalls emits any tool calls that the openai-go accumulator
+// has recorded but RunStream has not yet forwarded via JustFinishedToolCall.
+// This recovers tool calls from OpenAI-compatible providers whose stream shape
+// never triggers the SDK's state-machine transitions — notably github-copilot,
+// which combines the final tool_calls delta with finish_reason in one chunk,
+// and zai, which emits an empty content field on every tool-call chunk.
+//
+// Expected:
+//   - ctx is the caller context used to honour cancellation when sending.
+//   - ch is the downstream StreamChunk channel.
+//   - acc is the accumulator populated by stream.AddChunk calls.
+//   - emitted tracks tool-call indexes that have already been forwarded so
+//     callers do not see duplicate emissions for the happy path.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Sends one StreamChunk per previously unemitted tool call on ch and
+//     marks that tool call as emitted.
+func flushAccumulatedToolCalls(
+	ctx context.Context,
+	ch chan<- provider.StreamChunk,
+	acc *openaiAPI.ChatCompletionAccumulator,
+	emitted map[int]bool,
+) {
+	if acc == nil || len(acc.Choices) == 0 {
+		return
+	}
+	toolCalls := acc.Choices[0].Message.ToolCalls
+	for i := range toolCalls {
+		if emitted[i] {
+			continue
+		}
+		tc := toolCalls[i]
+		if tc.ID == "" && tc.Function.Name == "" {
+			continue
+		}
+		emitted[i] = true
+		shared.SendChunk(ctx, ch, provider.StreamChunk{
+			ToolCall: &provider.ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: shared.ParseToolArguments(tc.Function.Arguments),
+			},
+		})
+	}
 }
 
 // ParseChatResponse converts an OpenAI chat completion to a provider ChatResponse.

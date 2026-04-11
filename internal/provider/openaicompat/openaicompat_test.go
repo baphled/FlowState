@@ -496,7 +496,7 @@ var _ = Describe("RunStream", func() {
 		Expect(chunks[1].Done).To(BeTrue())
 	})
 
-	PIt("emits tool calls when the terminal chunk combines delta and finish_reason (github-copilot shape)", func() {
+	It("emits tool calls when the terminal chunk combines delta and finish_reason (github-copilot shape)", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
@@ -536,7 +536,7 @@ var _ = Describe("RunStream", func() {
 		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("agent", "Explore"))
 	})
 
-	PIt("emits tool calls when every chunk carries empty content alongside tool_calls (zai shape)", func() {
+	It("emits tool calls when every chunk carries empty content alongside tool_calls (zai shape)", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
