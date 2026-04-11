@@ -321,6 +321,66 @@ var _ = Describe("AccumulateStream", func() {
 			}
 		})
 	})
+
+	Context("when the raw channel closes without a terminal Done chunk", func() {
+		PIt("flushes accumulated assistant content on channel close", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{Content: "hello"}
+			rawCh <- provider.StreamChunk{Content: " world"}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].Content).To(Equal("hello world"))
+			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"))
+		})
+
+		PIt("flushes accumulated thinking content on channel close", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{Thinking: "half a"}
+			rawCh <- provider.StreamChunk{Thinking: " thought"}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "thinking" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(HaveLen(1))
+			Expect(thinkingMsgs[0].Content).To(Equal("half a thought"))
+		})
+
+		PIt("does not double-flush when a Done chunk is followed by channel close", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{Content: "only once"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].Content).To(Equal("only once"))
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {
