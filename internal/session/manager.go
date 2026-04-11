@@ -108,6 +108,22 @@ func (m *Manager) SetRecorder(r Recorder) {
 	m.recorder = r
 }
 
+// EnsureSession is an alias for RegisterSession that matches the interface name
+// used by TUI chat intent. Idempotent — a no-op when the session already exists.
+//
+// Expected:
+//   - sessionID is the externally generated session identifier.
+//   - agentID identifies the agent that owns the session.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores a new session in memory when sessionID is not already present.
+func (m *Manager) EnsureSession(sessionID, agentID string) {
+	m.RegisterSession(sessionID, agentID)
+}
+
 // RegisterSession upserts a session with the given ID into the in-memory store.
 // When a session with the same ID already exists, the call is a no-op.
 // This allows the TUI's main session (whose ID is determined externally) to be

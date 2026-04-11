@@ -161,6 +161,7 @@ func newChatIntent(application *flowapp.App, agentID string, sessionID string) *
 		App:                nil,
 		Engine:             application.Engine,
 		Streamer:           sessionStreamer,
+		SessionManager:     application.SessionMgr(),
 		AgentID:            agentID,
 		SessionID:          sessionID,
 		ModelName:          application.Engine.LastModel(),
