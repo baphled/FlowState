@@ -576,9 +576,7 @@ var _ = Describe("RunStream", func() {
 		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("path", "x.txt"))
 	})
 
-	// Pending (PIt) for the RED commit to keep make check green; the GREEN
-	// commit flips to It alongside the openaicompat.go stamp fix.
-	PIt("stamps EventType=\"tool_call\" on chunks emitted by the main streaming loop", func() {
+	It("stamps EventType=\"tool_call\" on chunks emitted by the main streaming loop", func() {
 		// Regression pin: without EventType set, the engine tool-loop gate at
 		// internal/engine/engine.go:907 silently drops the tool call, producing
 		// the 3-minute stall observed for github-copilot/zai/openzen/openai in
@@ -621,8 +619,7 @@ var _ = Describe("RunStream", func() {
 				"non-anthropic silent-stall bug")
 	})
 
-	// Pending (PIt) for the RED commit; flipped to It by the GREEN commit.
-	PIt("stamps EventType=\"tool_call\" on chunks emitted by flushAccumulatedToolCalls (github-copilot shape)", func() {
+	It("stamps EventType=\"tool_call\" on chunks emitted by flushAccumulatedToolCalls (github-copilot shape)", func() {
 		// Regression pin for the flush path: github-copilot combines the final
 		// tool_calls delta with finish_reason in one chunk, so JustFinishedToolCall
 		// never fires and flushAccumulatedToolCalls is the only emitter. It must

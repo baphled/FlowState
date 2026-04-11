@@ -135,10 +135,34 @@ var _ = Describe("createChildSession behaviour", Label("integration"), func() {
 var _ = Describe("Delegation message accumulation", Label("integration"), func() {
 	Context("when messageAppender is set alongside sessionCreator", func() {
 		It("stores ToolName from the delegation stream in child session messages", func() {
-			toolStreamEngine := newDelegationTestEngine([]provider.StreamChunk{
-				{ToolCall: &provider.ToolCall{Name: "search", Arguments: map[string]any{"query": "test"}}},
-				{ToolResult: &provider.ToolResultInfo{Content: "search results"}},
-				{Content: "", Done: true},
+			// The engine now dispatches tool calls by chunk shape
+			// (internal/engine/engine.go: `if chunk.ToolCall != nil`) so the
+			// child engine must have a registered tool matching the mock chunk.
+			// A streamSequenceProvider plus a no-op executableMockTool lets the
+			// tool loop complete without looping on a replaying provider.
+			searchTool := &executableMockTool{
+				name:        "search",
+				description: "search tool",
+				execResult:  tool.Result{Output: "search results"},
+			}
+			toolStreamProvider := &streamSequenceProvider{
+				name: "test-provider",
+				sequences: [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall:  &provider.ToolCall{Name: "search", Arguments: map[string]any{"query": "test"}},
+						},
+					},
+					{
+						{Content: "done", Done: true},
+					},
+				},
+			}
+			toolStreamEngine := engine.New(engine.Config{
+				ChatProvider: toolStreamProvider,
+				Manifest:     newDelegationTestManifest("target-agent"),
+				Tools:        []tool.Tool{searchTool},
 			})
 			toolMgr := session.NewManager(toolStreamEngine)
 			toolMgr.RegisterSession("parent-tool-name", "coordinator")
@@ -182,10 +206,32 @@ var _ = Describe("Delegation message accumulation", Label("integration"), func()
 		})
 
 		It("stores ToolInput from the delegation stream in child session messages", func() {
-			toolInputEngine := newDelegationTestEngine([]provider.StreamChunk{
-				{ToolCall: &provider.ToolCall{Name: "bash", Arguments: map[string]any{"command": "ls"}}},
-				{ToolResult: &provider.ToolResultInfo{Content: "file1.go\nfile2.go"}},
-				{Content: "", Done: true},
+			// See the sibling spec above: engine dispatch is now shape-based,
+			// so the mock must drive a registered tool to avoid
+			// "tool not found" errors terminating the stream.
+			bashTool := &executableMockTool{
+				name:        "bash",
+				description: "bash tool",
+				execResult:  tool.Result{Output: "file1.go\nfile2.go"},
+			}
+			toolInputProvider := &streamSequenceProvider{
+				name: "test-provider",
+				sequences: [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall:  &provider.ToolCall{Name: "bash", Arguments: map[string]any{"command": "ls"}},
+						},
+					},
+					{
+						{Content: "done", Done: true},
+					},
+				},
+			}
+			toolInputEngine := engine.New(engine.Config{
+				ChatProvider: toolInputProvider,
+				Manifest:     newDelegationTestManifest("target-agent"),
+				Tools:        []tool.Tool{bashTool},
 			})
 			toolMgr := session.NewManager(toolInputEngine)
 			toolMgr.RegisterSession("parent-tool-input", "coordinator")
