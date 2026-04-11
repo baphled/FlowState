@@ -842,6 +842,77 @@ var _ = Describe("Engine tool call context store", func() {
 	})
 })
 
+var _ = Describe("Engine tool call dispatch by chunk shape", func() {
+	// These specs pin the engine's tool-call gate to the StreamChunk.ToolCall
+	// field rather than a conjunction with EventType. The openaicompat provider
+	// emits tool-call chunks without setting EventType (see
+	// internal/provider/openaicompat/openaicompat.go), and the engine previously
+	// silently dropped those, producing the 3-minute stall observed in
+	// session-1775944430840782553. The session accumulator already dispatches
+	// by shape (internal/session/accumulator.go:98); the engine must match.
+	//
+	// Pending (PIt) for the RED commit to keep make check green; the GREEN
+	// commit flips to It alongside the engine.go gate fix.
+	PIt("dispatches a tool call when the chunk carries ToolCall but no EventType", func() {
+		chatProvider := &streamSequenceProvider{
+			name: "shape-dispatch-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						// EventType deliberately empty: mirrors openaicompat's
+						// current (broken) emission shape.
+						ToolCall: &provider.ToolCall{
+							ID:        "call_shape",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool result observed.", Done: true},
+				},
+			},
+		}
+
+		testTool := &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "shape-dispatched result"},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+		Expect(err).NotTo(HaveOccurred())
+
+		for v := range chunks {
+			_ = v
+		}
+
+		Expect(testTool.execCalled).To(BeTrue(),
+			"engine must dispatch tool calls by StreamChunk.ToolCall shape, "+
+				"not by EventType == \"tool_call\"; this is the fix for "+
+				"non-anthropic providers that omit EventType")
+		Expect(chatProvider.callIndex).To(Equal(2),
+			"after dispatching the tool the engine must re-enter the stream loop "+
+				"so the provider produces a follow-up response")
+	})
+})
+
 var _ = Describe("Engine tool result emission", func() {
 	It("emits tool result chunks on outChan after tool execution", func() {
 		tmpDir, err := os.MkdirTemp("", "engine-toolresult-emit")

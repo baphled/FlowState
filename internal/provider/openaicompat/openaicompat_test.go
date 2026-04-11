@@ -576,6 +576,92 @@ var _ = Describe("RunStream", func() {
 		Expect(toolCalls[0].Arguments).To(HaveKeyWithValue("path", "x.txt"))
 	})
 
+	// Pending (PIt) for the RED commit to keep make check green; the GREEN
+	// commit flips to It alongside the openaicompat.go stamp fix.
+	PIt("stamps EventType=\"tool_call\" on chunks emitted by the main streaming loop", func() {
+		// Regression pin: without EventType set, the engine tool-loop gate at
+		// internal/engine/engine.go:907 silently drops the tool call, producing
+		// the 3-minute stall observed for github-copilot/zai/openzen/openai in
+		// session-1775944430840782553. Anthropic and Ollama both stamp this
+		// field; openaicompat must do the same for the JustFinishedToolCall
+		// happy path (the main RunStream loop).
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-eventtype","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_et","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"London\"}"}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-eventtype","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var toolCallChunks []provider.StreamChunk
+		for chunk := range ch {
+			if chunk.ToolCall != nil {
+				toolCallChunks = append(toolCallChunks, chunk)
+			}
+		}
+		Expect(toolCallChunks).To(HaveLen(1))
+		Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+			"tool-call chunks from the main RunStream loop must carry EventType=\"tool_call\" "+
+				"so the engine tool loop dispatches them; omitting the stamp caused the "+
+				"non-anthropic silent-stall bug")
+	})
+
+	// Pending (PIt) for the RED commit; flipped to It by the GREEN commit.
+	PIt("stamps EventType=\"tool_call\" on chunks emitted by flushAccumulatedToolCalls (github-copilot shape)", func() {
+		// Regression pin for the flush path: github-copilot combines the final
+		// tool_calls delta with finish_reason in one chunk, so JustFinishedToolCall
+		// never fires and flushAccumulatedToolCalls is the only emitter. It must
+		// also stamp EventType so the engine tool loop dispatches the call.
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-flush","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_flush","type":"function","function":{"name":"delegate","arguments":""}}]},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-flush","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"agent\":\"Explore\"}"}}]},"finish_reason":"tool_calls"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params)
+		var toolCallChunks []provider.StreamChunk
+		for chunk := range ch {
+			if chunk.ToolCall != nil {
+				toolCallChunks = append(toolCallChunks, chunk)
+			}
+		}
+		Expect(toolCallChunks).To(HaveLen(1))
+		Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+			"tool-call chunks from flushAccumulatedToolCalls must carry EventType=\"tool_call\" "+
+				"so the engine tool loop dispatches them; this is the github-copilot code path")
+	})
+
 	It("propagates server errors", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
