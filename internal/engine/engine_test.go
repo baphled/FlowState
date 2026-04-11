@@ -296,6 +296,57 @@ var _ = Describe("Engine", func() {
 			Expect(prompt).To(ContainSubstring("This should not appear."))
 		})
 
+		Context("with skill injection", func() {
+			It("includes headings and content when two skills are configured", func() {
+				twoSkills := []skill.Skill{
+					{Name: "pre-action", Content: "PREFLIGHT content"},
+					{Name: "memory-keeper", Content: "MEMORY content"},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       twoSkills,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("# Skill: pre-action"))
+				Expect(prompt).To(ContainSubstring("PREFLIGHT content"))
+				Expect(prompt).To(ContainSubstring("# Skill: memory-keeper"))
+				Expect(prompt).To(ContainSubstring("MEMORY content"))
+			})
+
+			It("includes heading and content when one skill is configured", func() {
+				oneSkill := []skill.Skill{
+					{Name: "scope-management", Content: "Manage scope effectively."},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       oneSkill,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("# Skill: scope-management"))
+				Expect(prompt).To(ContainSubstring("Manage scope effectively."))
+			})
+
+			It("does not include skill markers when Skills is nil", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       nil,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).NotTo(ContainSubstring("# Skill:"))
+			})
+		})
+
 		Context("when no always-active skills are configured", func() {
 			It("returns only the system prompt", func() {
 				manifest.Capabilities.AlwaysActiveSkills = nil
