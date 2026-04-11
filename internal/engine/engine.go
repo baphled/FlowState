@@ -904,7 +904,13 @@ func (e *Engine) processStreamChunks(
 
 			chunk.ModelID = e.LastModel()
 
-			if chunk.EventType == "tool_call" && chunk.ToolCall != nil {
+			// Dispatch by chunk shape rather than EventType so the loop
+			// matches the session accumulator (internal/session/accumulator.go:98)
+			// and cannot silently drop tool calls when a provider forgets to
+			// stamp EventType. Non-anthropic OpenAI-compatible providers hit this
+			// path; anthropic and ollama continue to stamp EventType so this check
+			// is strictly more permissive for them without behavioural change.
+			if chunk.ToolCall != nil {
 				if e.bus != nil && responseContent.Len() > 0 {
 					e.bus.Publish(events.EventToolReasoning, events.NewToolReasoningEvent(events.ToolReasoningEventData{
 						SessionID:        sessionID,

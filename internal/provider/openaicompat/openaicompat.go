@@ -194,6 +194,7 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 			if tc, ok := acc.JustFinishedToolCall(); ok {
 				emitted[tc.Index] = true
 				shared.SendChunk(ctx, ch, provider.StreamChunk{
+					EventType: "tool_call",
 					ToolCall: &provider.ToolCall{
 						ID:        tc.ID,
 						Name:      tc.Name,
@@ -255,6 +256,7 @@ func flushAccumulatedToolCalls(
 		}
 		emitted[i] = true
 		shared.SendChunk(ctx, ch, provider.StreamChunk{
+			EventType: "tool_call",
 			ToolCall: &provider.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,

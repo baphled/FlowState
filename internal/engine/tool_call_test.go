@@ -851,9 +851,7 @@ var _ = Describe("Engine tool call dispatch by chunk shape", func() {
 	// session-1775944430840782553. The session accumulator already dispatches
 	// by shape (internal/session/accumulator.go:98); the engine must match.
 	//
-	// Pending (PIt) for the RED commit to keep make check green; the GREEN
-	// commit flips to It alongside the engine.go gate fix.
-	PIt("dispatches a tool call when the chunk carries ToolCall but no EventType", func() {
+	It("dispatches a tool call when the chunk carries ToolCall but no EventType", func() {
 		chatProvider := &streamSequenceProvider{
 			name: "shape-dispatch-provider",
 			sequences: [][]provider.StreamChunk{
