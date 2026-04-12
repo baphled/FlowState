@@ -1,6 +1,6 @@
 # FlowState AI Agent Instructions
 
-**Quick reference for AI coding agents working on FlowState - a Go TUI application using Bubble Tea framework.**
+> **Reference document** for AI coding agents working on FlowState — a Go TUI application built with the Bubble Tea framework. Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
 
 ## Git Worktree Setup
 
@@ -79,8 +79,6 @@ make install-hooks
 ```
 This configures the version-controlled pre-commit hook in `.git-hooks/` which enforces `make check` before every commit. Commits will be blocked if checks fail.
 
-
-
 ## Development Workflow
 
 ### BDD-Driven Development (MANDATORY)
@@ -134,8 +132,8 @@ App -> Intents -> UIKit + Behaviors
 
 ### Dependency Rules
 
-- `uikit/` **NEVER** imports `intents/` or `behaviors/`
-- `behaviors/` **NEVER** imports `intents/`
+- `uikit/` **NEVER** imports `intents/` or `behaviours/`
+- `behaviours/` **NEVER** imports `intents/`
 - Intents communicate results via `IntentResult[T]` — never direct state mutation
 - **NO `screens/` package** — screens are legacy; intents use UIKit directly
 
@@ -188,7 +186,7 @@ asScreen := render.AsScreen(myComponent, layout)
 asModal := render.AsModal(myComponent, background, w, h, theme)
 ```
 
-## Code Style
+## Code Style and Documentation
 
 ### Imports
 
@@ -213,15 +211,15 @@ import (
 - **Types:** `PascalCase`
 - **Private:** `camelCase`
 
-### Comments (FORBIDDEN inside functions)
+### Comments
+
+Comments inside function bodies are **forbidden** — express intent through naming and structure instead.
 
 - **NO** comments inside function bodies
 - **NO** inline comments
 - **NO** markers: `TODO`, `FIXME`, `HACK`
 
 **Exception:** E2E tests may have inline comments.
-
-## Code Documentation
 
 ### Package Documentation
 
@@ -277,8 +275,6 @@ Group related constants with a single leading comment for the block. Individual 
 - **Verbatim repetition:** Do not simply repeat the type name or field names — add meaningful context.
 - **The obvious:** If the code already makes the purpose clear, do not add redundant comments.
 
-**Note:** The rule prohibiting comments inside function bodies (from the Code Style section) still applies.
-
 ## Testing
 
 ### BDD Tags
@@ -313,12 +309,12 @@ make test          # Go tests
 
 | File | Purpose |
 |------|---------|
-| `docs/PLAN.md` | Complete project plan |
-| `AGENTS.md` | This file - AI instructions |
+| `AGENTS.md` | This file — AI agent instructions |
 | `Makefile` | Build and development commands |
 | `rules/*.md` | Development rules |
 | `tasks/*.md` | Current tasks |
 | `features/*.feature` | BDD scenarios |
+| `.sisyphus/plans/` | Active and historical delivery plans |
 
 ## Qdrant Vector Store (Optional)
 
