@@ -444,6 +444,28 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				Expect(lastChunk.Error).To(HaveOccurred())
 				Expect(lastChunk.Error.Error()).To(ContainSubstring("unknown_tool"))
 			})
+
+			It("returns an error wrapping tool.ErrToolNotFound", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use unknown tool")
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var lastChunk provider.StreamChunk
+				for chunk := range chunks {
+					lastChunk = chunk
+				}
+
+				Expect(lastChunk.Error).To(HaveOccurred())
+				Expect(errors.Is(lastChunk.Error, tool.ErrToolNotFound)).To(BeTrue(),
+					"expected stream error to wrap tool.ErrToolNotFound for typed error matching")
+			})
 		})
 
 		Context("when tool execution fails", func() {
