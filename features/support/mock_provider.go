@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
@@ -65,6 +66,16 @@ type ToolCall struct {
 	Arguments map[string]interface{}
 }
 
+// longStreamChunks is the number of chunks emitted when the mock provider is
+// in long-response mode. Large enough that tests can reliably observe tokens
+// arriving and cancel mid-stream before natural completion.
+const longStreamChunks = 500
+
+// longStreamChunkDelay is the per-chunk delay in long-response mode. Small
+// enough to keep scenarios fast but large enough that a well-timed cancel
+// aborts before all chunks emit.
+const longStreamChunkDelay = 2 * time.Millisecond
+
 // MockProvider is a test double for provider implementations in BDD scenarios.
 type MockProvider struct {
 	name          string
@@ -72,6 +83,10 @@ type MockProvider struct {
 	embeddings    []float64
 	models        []Model
 	responseIndex int
+	// longStream enables a slow, lengthy streaming response so scenarios
+	// covering mid-stream cancellation can observe and interrupt the stream
+	// before it naturally completes.
+	longStream bool
 }
 
 // NewMockProvider creates a new MockProvider with default responses.
@@ -117,6 +132,10 @@ func (m *MockProvider) Name() string {
 //   - Spawns a goroutine to send chunks on the returned channel.
 func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan StreamChunk, error) {
 	ch := make(chan StreamChunk, 16)
+	if m.longStream {
+		go m.streamLong(ctx, ch)
+		return ch, nil
+	}
 	go func() {
 		defer close(ch)
 		response := m.getContextualResponse(req)
@@ -129,6 +148,61 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 		}
 	}()
 	return ch, nil
+}
+
+// streamLong emits a long sequence of small chunks with a short delay between
+// each, respecting context cancellation. It closes the channel on completion
+// or cancellation WITHOUT emitting an error chunk: a user-initiated cancel is
+// not an error at the mock boundary.
+//
+// Expected:
+//   - ctx may be cancelled mid-stream.
+//   - ch is open and will be closed on exit.
+//
+// Side effects:
+//   - Sends up to longStreamChunks StreamChunk values on ch.
+func (m *MockProvider) streamLong(ctx context.Context, ch chan<- StreamChunk) {
+	defer close(ch)
+	for i := range longStreamChunks {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(longStreamChunkDelay):
+		}
+		done := i == longStreamChunks-1
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- StreamChunk{Content: "lorem ", Done: done}:
+		}
+	}
+}
+
+// SetLongStream toggles the slow, lengthy streaming mode used by the
+// mid-stream cancellation scenario.
+//
+// Expected:
+//   - enabled is true to engage long-mode streaming, false to restore the
+//     default short contextual response.
+//
+// Side effects:
+//   - Mutates longStream so subsequent Stream calls emit longStreamChunks
+//     chunks with a short per-chunk delay.
+func (m *MockProvider) SetLongStream(enabled bool) {
+	m.longStream = enabled
+}
+
+// LongStreamFullLen returns the total byte length a long-mode stream would
+// produce if allowed to complete. Used by tests to verify that a cancelled
+// stream's collected content is strictly shorter than the full payload.
+//
+// Returns:
+//   - Expected full byte length of a long-mode stream.
+//
+// Side effects:
+//   - None.
+func LongStreamFullLen() int {
+	return longStreamChunks * len("lorem ")
 }
 
 // getContextualResponse returns a contextual response based on the chat request.

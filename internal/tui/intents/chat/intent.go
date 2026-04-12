@@ -3,6 +3,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -218,6 +219,15 @@ type Intent struct {
 	activeToolCall string
 	activeThinking string
 	streamCancel   context.CancelFunc
+	// lastEscTime records when Esc was last pressed while streaming, enabling
+	// the 500ms double-press window that cancels an active stream.
+	lastEscTime time.Time
+	// userCancelled is set when the user initiates a stream cancel via the
+	// double-Esc interrupt. It tells handleStreamChunk that the subsequent
+	// context.Canceled error propagating from the provider is a legitimate
+	// user action (not a failure), so the error must not surface as a chat
+	// error message. The flag is consumed on the first cancel-related chunk.
+	userCancelled  bool
 	completionChan <-chan streaming.CompletionNotificationEvent
 	// backgroundManager tracks active background delegation tasks.
 	backgroundManager *engine.BackgroundTaskManager
@@ -917,6 +927,8 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 //   - Updates i.input on typing keys.
 func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
+	case tea.KeyEsc:
+		return i.handleEscapeKey()
 	case tea.KeyCtrlC:
 		i.cancelActiveStream()
 		return tea.Sequence(i.saveSession(), tea.Quit)
@@ -1012,6 +1024,40 @@ func (i *Intent) updateViewportForInput() {
 	i.msgViewport.Height = i.computeViewportHeight()
 }
 
+// formatStreamError decides whether a stream-chunk error should be surfaced to
+// the user and, if so, returns the pre-formatted display string. A
+// user-initiated cancel (double-Esc) is a legitimate action, not an error:
+// when the pending userCancelled flag is set and the error wraps
+// context.Canceled, the flag is consumed and an empty string is returned so
+// handleStreamChunk does not append an error artefact to the chat. Any other
+// error — including an upstream context.Canceled from a provider deadline — is
+// formatted normally and logged when log-worthy.
+//
+// Expected:
+//   - err may be nil (no error chunk), context.Canceled (user cancel or
+//     upstream cancel), or any other provider error.
+//
+// Returns:
+//   - Empty string when the error was a user-initiated cancel (suppressed)
+//     or when err is nil. Otherwise the formatted error message for display.
+//
+// Side effects:
+//   - Clears i.userCancelled when a user-initiated cancel is consumed.
+//   - Writes a log line to stderr for log-worthy errors.
+func (i *Intent) formatStreamError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if i.userCancelled && errors.Is(err, context.Canceled) {
+		i.userCancelled = false
+		return ""
+	}
+	if chat.IsLogWorthy(err) {
+		fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", err)
+	}
+	return chat.FormatErrorMessage(err)
+}
+
 // handleStreamChunk processes a streaming response chunk.
 //
 // Expected:
@@ -1021,13 +1067,7 @@ func (i *Intent) updateViewportForInput() {
 //   - Delegates to view.HandleChunk for streaming state management.
 //   - Counts tokens and updates the StatusBar.
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
-	errMsg := ""
-	if msg.Error != nil {
-		errMsg = chat.FormatErrorMessage(msg.Error)
-		if chat.IsLogWorthy(msg.Error) {
-			fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", msg.Error)
-		}
-	}
+	errMsg := i.formatStreamError(msg.Error)
 
 	i.appendThinking(msg.Thinking)
 
@@ -1399,6 +1439,47 @@ func (i *Intent) cancelActiveStream() {
 		i.streamCancel()
 		i.streamCancel = nil
 	}
+}
+
+// doubleEscWindow is the maximum interval between two Esc presses that still
+// counts as a double-press for cancelling a streaming response.
+const doubleEscWindow = 500 * time.Millisecond
+
+// handleEscapeKey implements the double-Esc interrupt for a streaming response.
+//
+// Expected:
+//   - Called only via handleInputKey, after the session viewer and modal
+//     handlers have declined the key.
+//
+// Returns:
+//   - Always nil — cancellation is a side effect and produces no Cmd.
+//
+// Side effects:
+//   - When not streaming: no-op.
+//   - First Esc while streaming: records the timestamp (arms the interrupt).
+//   - Second Esc within doubleEscWindow: cancels the active stream, clears the
+//     partial response via the view, resets lastEscTime, and refreshes the
+//     viewport so the user sees the streaming state end.
+//   - Esc outside the window: treated as a fresh first press.
+func (i *Intent) handleEscapeKey() tea.Cmd {
+	if !i.view.IsStreaming() {
+		return nil
+	}
+	now := time.Now()
+	if !i.lastEscTime.IsZero() && now.Sub(i.lastEscTime) <= doubleEscWindow {
+		// Mark this cancellation as user-initiated BEFORE invoking cancel so
+		// handleStreamChunk can distinguish it from an upstream context.Canceled
+		// (network timeout, deadline exceeded) and avoid surfacing a spurious
+		// error message to the user.
+		i.userCancelled = true
+		i.cancelActiveStream()
+		i.view.SetStreaming(false, "")
+		i.lastEscTime = time.Time{}
+		i.refreshViewport()
+		return nil
+	}
+	i.lastEscTime = now
+	return nil
 }
 
 // sendMessage appends the current input to messages and streams a response from the engine.
