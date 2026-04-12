@@ -315,6 +315,40 @@ var _ = Describe("BackgroundTaskManager", func() {
 			})
 		})
 
+		Context("when a task is accessed and eviction is deferred", func() {
+			It("remains accessible until eviction is explicitly called", func() {
+				ctx := context.Background()
+				manager.Launch(ctx, "deferred-task", "agent-1", "deferred eviction test", func(ctx context.Context) (string, error) {
+					return "deferred result", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("deferred-task")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				// Read the task via Get — simulates tool reading output
+				t, found := manager.Get("deferred-task")
+				Expect(found).To(BeTrue())
+				Expect(t.Result).To(Equal("deferred result"))
+
+				// Mark as accessed
+				manager.MarkAccessed("deferred-task")
+
+				// Task should still be retrievable before eviction runs
+				t2, found2 := manager.Get("deferred-task")
+				Expect(found2).To(BeTrue())
+				Expect(t2.Result).To(Equal("deferred result"))
+
+				// Now call EvictCompleted — task should be removed
+				manager.EvictCompleted()
+
+				_, found3 := manager.Get("deferred-task")
+				Expect(found3).To(BeFalse())
+				Expect(manager.List()).To(BeEmpty())
+			})
+		})
+
 		Context("when running tasks exist alongside completed ones", func() {
 			It("only removes accessed terminal tasks and preserves active/unaccessed ones", func() {
 				ctx := context.Background()
@@ -373,6 +407,81 @@ var _ = Describe("BackgroundTaskManager", func() {
 		Context("with no tasks", func() {
 			It("returns zero", func() {
 				Expect(manager.ActiveCount()).To(Equal(0))
+			})
+		})
+	})
+
+	Describe("ActiveCountForSession", func() {
+		Context("when no tasks exist", func() {
+			It("returns zero", func() {
+				Expect(manager.ActiveCountForSession("session-a")).To(Equal(0))
+			})
+		})
+
+		Context("when tasks belong to different sessions", func() {
+			It("counts only active tasks for the specified session", func() {
+				blockCh := make(chan struct{})
+
+				ctxA := context.WithValue(context.Background(), session.IDKey{}, "session-a")
+				ctxB := context.WithValue(context.Background(), session.IDKey{}, "session-b")
+
+				manager.Launch(ctxA, "a-task-1", "agent-1", "session A task 1", func(ctx context.Context) (string, error) {
+					<-blockCh
+					return "done", nil
+				})
+				manager.Launch(ctxA, "a-task-2", "agent-1", "session A task 2", func(ctx context.Context) (string, error) {
+					<-blockCh
+					return "done", nil
+				})
+				manager.Launch(ctxB, "b-task-1", "agent-1", "session B task 1", func(ctx context.Context) (string, error) {
+					<-blockCh
+					return "done", nil
+				})
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}, "2s", "50ms").Should(Equal(3))
+
+				Expect(manager.ActiveCountForSession("session-a")).To(Equal(2))
+				Expect(manager.ActiveCountForSession("session-b")).To(Equal(1))
+
+				close(blockCh)
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}, "2s", "50ms").Should(Equal(0))
+			})
+		})
+
+		Context("when a task has completed", func() {
+			It("excludes completed tasks from the count", func() {
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "session-c")
+				manager.Launch(ctx, "c-task-1", "agent-1", "completing task", func(ctx context.Context) (string, error) {
+					return "done", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("c-task-1")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				Expect(manager.ActiveCountForSession("session-c")).To(Equal(0))
+			})
+		})
+
+		Context("when session ID is unknown", func() {
+			It("returns zero", func() {
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "session-d")
+				manager.Launch(ctx, "d-task-1", "agent-1", "known session task", func(ctx context.Context) (string, error) {
+					time.Sleep(50 * time.Millisecond)
+					return "done", nil
+				})
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}, "2s", "50ms").Should(BeNumerically(">=", 1))
+
+				Expect(manager.ActiveCountForSession("unknown-session")).To(Equal(0))
 			})
 		})
 	})
