@@ -37,9 +37,12 @@ COLOURS = {
 EVENT_ICONS = {
     "session": "🔵",
     "provider.request": "📤",
+    "provider.request.retry": "🔁",
     "provider.response": "📥",
     "tool": "🔧",
     "tool.reasoning": "💭",
+    "tool.execute.result": "✅",
+    "tool.execute.error": "❌",
 }
 
 
@@ -221,6 +224,19 @@ def render_timeline(events, verbose=False, tools_only=False):
             detail = render_tool_event(event, data, verbose)
         elif et == "tool.reasoning":
             detail = render_tool_reasoning(event, data)
+        elif et == "tool.execute.result":
+            tool_name = data.get("tool_name", "unknown")
+            result = data.get("result", "")
+            preview = result[:120] + "…" if len(result) > 120 else result
+            detail = f"{c('green', tool_name)} → {c('dim', preview)}"
+        elif et == "tool.execute.error":
+            tool_name = data.get("tool_name", "unknown")
+            error = data.get("error", "unknown error")
+            detail = f"{c('red', tool_name)} ERROR: {error}"
+        elif et == "provider.request.retry":
+            reason = data.get("reason", "")
+            attempt = data.get("attempt", "")
+            detail = f"retry attempt={attempt} reason={reason}"
         else:
             detail = f"Unknown event: {et}"
 
@@ -262,6 +278,11 @@ def compute_stats(events):
                 stats["tool_results"] += 1
             else:
                 stats["tool_calls"] += 1
+            stats["unique_tools"].add(data.get("tool_name", ""))
+        elif et == "tool.execute.result":
+            stats["tool_results"] += 1
+            stats["unique_tools"].add(data.get("tool_name", ""))
+        elif et == "tool.execute.error":
             stats["unique_tools"].add(data.get("tool_name", ""))
         elif et == "tool.reasoning":
             stats["reasoning_steps"] += 1
