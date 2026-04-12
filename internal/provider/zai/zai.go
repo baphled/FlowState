@@ -132,7 +132,7 @@ func (p *Provider) Name() string {
 //   - Starts a goroutine and performs network I/O against the Z.AI API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	params := openaicompat.BuildParams(req)
-	rawCh := openaicompat.RunStream(ctx, p.client, params)
+	rawCh := openaicompat.RunStream(ctx, p.client, params, p.Name())
 	return classifyStreamErrors(ctx, rawCh), nil
 }
 

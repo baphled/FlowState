@@ -73,7 +73,7 @@ func ensureOpenZenE2EData() {
 		}
 
 		// Use RunStream to get chunks
-		ch := openaicompat.RunStream(context.Background(), *client, params)
+		ch := openaicompat.RunStream(context.Background(), *client, params, "openzen")
 		var chunks []provider.StreamChunk
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
