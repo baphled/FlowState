@@ -386,33 +386,36 @@ func (m *BackgroundTaskManager) executeTask(
 //   - completedAt is the time at which execution finished.
 //
 // Side effects:
-//   - Emits the appropriate task completion event.
-//   - Sends a completion notification when a parent session exists.
+//   - Injects a completion notification into the session manager (if configured).
+//   - Notifies the completion subscriber channel.
+//   - Emits the appropriate task completion event via the EventBus.
+//
+// Ordering: notifications are injected before the EventBus event is emitted so
+// that any synchronous EventBus handler (e.g. CompletionOrchestrator) can
+// retrieve the stored notifications immediately.
 func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ string, err error, completedAt time.Time) {
+	if task.ParentSessionID != "" {
+		notification := streaming.CompletionNotificationEvent{
+			TaskID:      task.ID,
+			Description: task.Description,
+			Agent:       task.AgentID,
+			Duration:    completedAt.Sub(task.StartedAt),
+			Status:      task.Status.Load(),
+			Result:      task.Result,
+		}
+
+		if m.sessionMgr != nil {
+			m.injectCompletionNotification(task.ParentSessionID, notification)
+		}
+
+		m.notifyCompletionSubscriber(notification)
+	}
+
 	if err != nil {
 		m.emitTaskFailed(task)
 	} else {
 		m.emitTaskCompleted(task)
 	}
-
-	if task.ParentSessionID == "" {
-		return
-	}
-
-	notification := streaming.CompletionNotificationEvent{
-		TaskID:      task.ID,
-		Description: task.Description,
-		Agent:       task.AgentID,
-		Duration:    completedAt.Sub(task.StartedAt),
-		Status:      task.Status.Load(),
-		Result:      task.Result,
-	}
-
-	if m.sessionMgr != nil {
-		m.injectCompletionNotification(task.ParentSessionID, notification)
-	}
-
-	m.notifyCompletionSubscriber(notification)
 }
 
 // notifyCompletionSubscriber sends a completion notification to the subscriber
