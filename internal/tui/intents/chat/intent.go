@@ -635,7 +635,9 @@ func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) t
 	return tea.Batch(cmds...)
 }
 
-// formatCompletionReminder builds the system-reminder message for a completed background task.
+// formatCompletionReminder builds the system-reminder message for a completed
+// background task. Delegates to the shared engine.FormatCompletionReminder so
+// that all consumers (TUI, CLI, API) produce identical reminder text.
 //
 // Expected:
 //   - msg contains task completion details.
@@ -646,13 +648,7 @@ func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) t
 // Side effects:
 //   - None.
 func formatCompletionReminder(msg BackgroundTaskCompletedMsg) string {
-	return fmt.Sprintf(
-		"<system-reminder>\n[BACKGROUND TASK COMPLETE]\n"+
-			"Task %s (%s) completed in %s.\n"+
-			"Use background_output(task_id=%q) to retrieve the result.\n"+
-			"</system-reminder>",
-		msg.TaskID, msg.Agent, msg.Duration, msg.TaskID,
-	)
+	return engine.FormatCompletionReminder(msg.TaskID, msg.Agent, msg.Duration)
 }
 
 // handleDelegationKeyMsg processes keyboard input for the delegation picker modal.
