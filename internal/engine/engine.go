@@ -966,7 +966,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err)
 		return result, nil
 	}
-	return tool.Result{}, fmt.Errorf("tool not found: %s", toolCall.Name)
+	return tool.Result{}, fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name)
 }
 
 // checkToolPermission verifies the tool has permission to execute.
