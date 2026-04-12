@@ -732,6 +732,154 @@ var _ = Describe("RunStream", func() {
 		}
 		Expect(chunks).To(BeEmpty())
 	})
+
+	// Error classification specs. These exercise the fix for the silent
+	// retry-classification degrade on non-anthropic providers: `stream.Err()`
+	// was previously emitted raw as the `Error` field on a `StreamChunk`,
+	// so `errors.As(err, &providerErr)` in the engine retry path returned
+	// false and the engine fell back to `ErrorTypeUnknown`. Post-fix,
+	// RunStream must route the error through `WrapChatError` (plus a
+	// fallback for unclassifiable stream-decoder errors) so the downstream
+	// chunk carries a `*provider.Error` with a populated `ErrorType`,
+	// `HTTPStatus`, and `Provider` field matching the name passed into
+	// RunStream.
+	//
+	// RED NOTE: these specs currently call the pre-fix three-argument
+	// RunStream signature and assert classification on the raw error
+	// surfaced on chunk.Error. They fail because the current code emits
+	// the raw SDK error and errors.As(*provider.Error) returns false.
+	// When the fix lands (four-argument RunStream that takes a provider
+	// name), the call sites and the Provider-field assertions will be
+	// updated in the same commit as the implementation.
+	Describe("error classification", func() {
+		It("wraps a 429 pre-stream error as *provider.Error with ErrorTypeRateLimit", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "rate limited",
+						"type":    "rate_limit",
+						"code":    "rate_limit_exceeded",
+					},
+				})
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "rate me"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params)
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				lastChunk = chunk
+			}
+			Expect(lastChunk.Error).To(HaveOccurred())
+			Expect(lastChunk.Done).To(BeTrue())
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue(),
+				"stream error must unwrap to *provider.Error so the engine retry path can classify it")
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(provErr.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(provErr.IsRetriable).To(BeTrue())
+		})
+
+		It("wraps a 500 pre-stream error as *provider.Error with ErrorTypeServerError", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "internal server error",
+						"type":    "server_error",
+					},
+				})
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "boom"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params)
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				lastChunk = chunk
+			}
+			Expect(lastChunk.Error).To(HaveOccurred())
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue())
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(provErr.HTTPStatus).To(Equal(http.StatusInternalServerError))
+			Expect(provErr.IsRetriable).To(BeTrue())
+		})
+
+		It("wraps a mid-stream SSE error payload as *provider.Error with a populated ErrorType", func() {
+			// openai-go's ssestream decoder turns mid-stream `error` payloads
+			// into `fmt.Errorf("received error while streaming: %s", ...)`.
+			// These are bare error values — neither *openaiAPI.Error nor
+			// *url.Error — so the current RunStream code path surfaces them
+			// raw, and engine `errors.As` classification fails. Post-fix,
+			// RunStream must still produce a *provider.Error so the engine
+			// gets a non-zero ErrorType (even if only ErrorTypeUnknown).
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// First emit a valid content chunk so the SDK enters the
+				// streaming loop, then inject an error payload mid-stream.
+				fmt.Fprintf(w, "data: %s\n\n",
+					`{"id":"chatcmpl-err","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				fmt.Fprintf(w, "data: %s\n\n",
+					`{"error":{"message":"upstream exploded","type":"server_error"}}`)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}))
+			client := openaiAPI.NewClient(
+				option.WithAPIKey("test-key"),
+				option.WithBaseURL(server.URL),
+				option.WithMaxRetries(0),
+			)
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "stream error"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params)
+
+			var lastChunk provider.StreamChunk
+			for chunk := range ch {
+				if chunk.Error != nil {
+					lastChunk = chunk
+				}
+			}
+			Expect(lastChunk.Error).To(HaveOccurred(),
+				"mid-stream SSE error payloads must surface as chunk.Error")
+
+			var provErr *provider.Error
+			Expect(errors.As(lastChunk.Error, &provErr)).To(BeTrue(),
+				"even bare mid-stream errors must unwrap to *provider.Error so the engine retry path has structured metadata to key on")
+			Expect(provErr.ErrorType).NotTo(BeEmpty(),
+				"ErrorType must be populated — even ErrorTypeUnknown is better than the empty-string silent-degrade behaviour")
+		})
+	})
 })
 
 var _ = Describe("ParseProviderError", func() {
