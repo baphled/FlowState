@@ -169,13 +169,19 @@ func ExtractToolCalls(toolCalls []openaiAPI.ChatCompletionMessageToolCall) []pro
 //   - ctx is a valid context for the API call.
 //   - client is an initialised OpenAI API client.
 //   - params contains the chat completion parameters.
+//   - providerName identifies the provider for error classification.
 //
 // Returns:
 //   - A channel emitting provider.StreamChunk events as the stream progresses.
 //
 // Side effects:
 //   - Spawns a goroutine and initiates network streaming.
-func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.ChatCompletionNewParams) <-chan provider.StreamChunk {
+func RunStream(
+	ctx context.Context,
+	client openaiAPI.Client,
+	params openaiAPI.ChatCompletionNewParams,
+	providerName string,
+) <-chan provider.StreamChunk {
 	ch := make(chan provider.StreamChunk, 16)
 	go func() {
 		defer close(ch)
@@ -208,12 +214,38 @@ func RunStream(ctx context.Context, client openaiAPI.Client, params openaiAPI.Ch
 			}
 		}
 		if err := stream.Err(); err != nil {
-			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: err, Done: true})
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Error: wrapStreamError(providerName, err), Done: true})
 			return
 		}
 		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 	}()
 	return ch
+}
+
+// wrapStreamError classifies a stream error as a *provider.Error.
+// It delegates to WrapChatError for SDK-recognised errors (HTTP status errors,
+// network errors) and falls back to an ErrorTypeUnknown *provider.Error for
+// bare stream-decoder errors that WrapChatError cannot classify.
+//
+// Expected:
+//   - providerName identifies the provider for error tagging.
+//   - err is a non-nil error from stream.Err().
+//
+// Returns:
+//   - A *provider.Error (always non-nil when err is non-nil).
+//
+// Side effects:
+//   - None.
+func wrapStreamError(providerName string, err error) error {
+	if provErr := ParseProviderError(providerName, err); provErr != nil {
+		return provErr
+	}
+	return &provider.Error{
+		ErrorType: provider.ErrorTypeUnknown,
+		Provider:  providerName,
+		Message:   err.Error(),
+		RawError:  err,
+	}
 }
 
 // flushAccumulatedToolCalls emits any tool calls that the openai-go accumulator

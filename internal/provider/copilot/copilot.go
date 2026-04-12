@@ -280,7 +280,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 	}
 	client := p.buildClient(token)
 	params := openaicompat.BuildParams(req)
-	return openaicompat.RunStream(ctx, client, params), nil
+	return openaicompat.RunStream(ctx, client, params, p.Name()), nil
 }
 
 // Embed is not implemented for GitHub Copilot.

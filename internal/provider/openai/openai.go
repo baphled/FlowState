@@ -88,7 +88,7 @@ func (p *Provider) Name() string {
 //   - Spawns a goroutine to read from the OpenAI streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	params := openaicompat.BuildParams(req)
-	return openaicompat.RunStream(ctx, p.client, params), nil
+	return openaicompat.RunStream(ctx, p.client, params, p.Name()), nil
 }
 
 // Chat sends a non-streaming chat request to the OpenAI API.

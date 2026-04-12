@@ -449,7 +449,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "Hello"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var chunks []provider.StreamChunk
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
@@ -483,7 +483,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var chunks []provider.StreamChunk
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
@@ -519,7 +519,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var collected []provider.StreamChunk
 		for chunk := range ch {
 			collected = append(collected, chunk)
@@ -559,7 +559,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "read file"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var collected []provider.StreamChunk
 		for chunk := range ch {
 			collected = append(collected, chunk)
@@ -605,7 +605,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "Weather?"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var toolCallChunks []provider.StreamChunk
 		for chunk := range ch {
 			if chunk.ToolCall != nil {
@@ -646,7 +646,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "delegate please"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var toolCallChunks []provider.StreamChunk
 		for chunk := range ch {
 			if chunk.ToolCall != nil {
@@ -676,7 +676,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "fail"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var lastChunk provider.StreamChunk
 		for chunk := range ch {
 			lastChunk = chunk
@@ -704,7 +704,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "cancel"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var gotCancel bool
 		for chunk := range ch {
 			if chunk.Error != nil && ctx.Err() != nil {
@@ -725,7 +725,7 @@ var _ = Describe("RunStream", func() {
 			Model:    "gpt-4o",
 			Messages: []provider.Message{{Role: "user", Content: "empty"}},
 		})
-		ch := openaicompat.RunStream(ctx, client, params)
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 		var chunks []provider.StreamChunk
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
@@ -774,7 +774,7 @@ var _ = Describe("RunStream", func() {
 				Model:    "gpt-4o",
 				Messages: []provider.Message{{Role: "user", Content: "rate me"}},
 			})
-			ch := openaicompat.RunStream(ctx, client, params)
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 
 			var lastChunk provider.StreamChunk
 			for chunk := range ch {
@@ -789,6 +789,7 @@ var _ = Describe("RunStream", func() {
 			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
 			Expect(provErr.HTTPStatus).To(Equal(http.StatusTooManyRequests))
 			Expect(provErr.IsRetriable).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("test-provider"))
 		})
 
 		It("wraps a 500 pre-stream error as *provider.Error with ErrorTypeServerError", func() {
@@ -812,7 +813,7 @@ var _ = Describe("RunStream", func() {
 				Model:    "gpt-4o",
 				Messages: []provider.Message{{Role: "user", Content: "boom"}},
 			})
-			ch := openaicompat.RunStream(ctx, client, params)
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 
 			var lastChunk provider.StreamChunk
 			for chunk := range ch {
@@ -825,6 +826,7 @@ var _ = Describe("RunStream", func() {
 			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeServerError))
 			Expect(provErr.HTTPStatus).To(Equal(http.StatusInternalServerError))
 			Expect(provErr.IsRetriable).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("test-provider"))
 		})
 
 		It("wraps a mid-stream SSE error payload as *provider.Error with a populated ErrorType", func() {
@@ -862,7 +864,7 @@ var _ = Describe("RunStream", func() {
 				Model:    "gpt-4o",
 				Messages: []provider.Message{{Role: "user", Content: "stream error"}},
 			})
-			ch := openaicompat.RunStream(ctx, client, params)
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
 
 			var lastChunk provider.StreamChunk
 			for chunk := range ch {
@@ -878,6 +880,7 @@ var _ = Describe("RunStream", func() {
 				"even bare mid-stream errors must unwrap to *provider.Error so the engine retry path has structured metadata to key on")
 			Expect(provErr.ErrorType).NotTo(BeEmpty(),
 				"ErrorType must be populated — even ErrorTypeUnknown is better than the empty-string silent-degrade behaviour")
+			Expect(provErr.Provider).To(Equal("test-provider"))
 		})
 	})
 })
