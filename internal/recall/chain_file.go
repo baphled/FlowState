@@ -11,10 +11,22 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// persistedChainEntry is the serialisable form of a chainEntry.
+// ChainEntry uses unexported fields which encoding/json cannot marshal, so we
+// convert to/from this concrete struct at persistence boundaries.
+type persistedChainEntry struct {
+	AgentID   string              `json:"agent_id"`
+	Role      string              `json:"role"`
+	Content   string              `json:"content"`
+	Thinking  string              `json:"thinking,omitempty"`
+	ModelID   string              `json:"model_id,omitempty"`
+	ToolCalls []provider.ToolCall `json:"tool_calls,omitempty"`
+}
+
 // persistedChainStore stores the serialised chain state on disk.
 type persistedChainStore struct {
-	ChainID string       `json:"chain_id"`
-	Entries []chainEntry `json:"entries"`
+	ChainID string                `json:"chain_id"`
+	Entries []persistedChainEntry `json:"entries"`
 }
 
 // FileChainStore provides file-based storage for message chains.
@@ -114,7 +126,7 @@ func (s *FileChainStore) persist() error {
 
 	persisted := persistedChainStore{
 		ChainID: s.chainID,
-		Entries: s.entries,
+		Entries: toPersistedEntries(s.entries),
 	}
 
 	data, err := json.MarshalIndent(persisted, "", "  ")
@@ -134,6 +146,58 @@ func (s *FileChainStore) persist() error {
 	s.pendingPersists = 0
 	log.Printf("info: chain store persisted %d entries", len(s.entries))
 	return nil
+}
+
+// toPersistedEntries converts a slice of chainEntry to persistedChainEntry for serialisation.
+//
+// Expected:
+//   - entries is a valid slice of chainEntry values (may be empty).
+//
+// Returns:
+//   - A slice of persistedChainEntry with the same length and field values.
+//
+// Side effects:
+//   - None.
+func toPersistedEntries(entries []chainEntry) []persistedChainEntry {
+	out := make([]persistedChainEntry, len(entries))
+	for i := range entries {
+		out[i] = persistedChainEntry{
+			AgentID:   entries[i].agentID,
+			Role:      entries[i].message.Role,
+			Content:   entries[i].message.Content,
+			Thinking:  entries[i].message.Thinking,
+			ModelID:   entries[i].message.ModelID,
+			ToolCalls: entries[i].message.ToolCalls,
+		}
+	}
+	return out
+}
+
+// fromPersistedEntries converts a slice of persistedChainEntry back to chainEntry.
+//
+// Expected:
+//   - entries is a valid slice of persistedChainEntry values (may be empty).
+//
+// Returns:
+//   - A slice of chainEntry with the same length and field values.
+//
+// Side effects:
+//   - None.
+func fromPersistedEntries(entries []persistedChainEntry) []chainEntry {
+	out := make([]chainEntry, len(entries))
+	for i, e := range entries {
+		out[i] = chainEntry{
+			agentID: e.AgentID,
+			message: provider.Message{
+				Role:      e.Role,
+				Content:   e.Content,
+				Thinking:  e.Thinking,
+				ModelID:   e.ModelID,
+				ToolCalls: e.ToolCalls,
+			},
+		}
+	}
+	return out
 }
 
 // load restores the chain store from disk.
@@ -161,7 +225,7 @@ func (s *FileChainStore) load() error {
 	}
 
 	s.chainID = persisted.ChainID
-	s.entries = persisted.Entries
+	s.entries = fromPersistedEntries(persisted.Entries)
 	return nil
 }
 
