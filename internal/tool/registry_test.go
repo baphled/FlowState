@@ -1,6 +1,8 @@
 package tool_test
 
 import (
+	"errors"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -177,5 +179,27 @@ var _ = Describe("CheckPermission", func() {
 			Expect(registry.CheckPermission("tool-b")).To(Equal(tool.Deny))
 			Expect(registry.CheckPermission("tool-c")).To(Equal(tool.Allow))
 		})
+	})
+})
+
+var _ = Describe("Registry Get ErrToolNotFound sentinel", func() {
+	var registry *tool.Registry
+
+	BeforeEach(func() {
+		registry = tool.NewRegistry()
+	})
+
+	It("returns ErrToolNotFound for a non-existent tool", func() {
+		_, err := registry.Get("nonexistent_tool")
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, tool.ErrToolNotFound)).To(BeTrue(),
+			"expected error to wrap tool.ErrToolNotFound so callers can use errors.Is")
+	})
+
+	It("does not return ErrToolNotFound for a registered tool", func() {
+		_, err := registry.Get("nonexistent_tool")
+		Expect(err).To(HaveOccurred())
+		// Verify the error message still contains the tool name for diagnostics.
+		Expect(err.Error()).To(ContainSubstring("nonexistent_tool"))
 	})
 })
