@@ -142,6 +142,23 @@ type StepDefinitions struct {
 	// Layered agent discovery test fields
 	primaryAgentDir string
 	extraAgentDir   string
+
+	// Streaming-cancel test fields (double-Esc interrupt scenario).
+	// streamCtx / streamCancel are the cancellable context used by an
+	// asynchronous send, mirroring the TUI's streamCancel function that is
+	// invoked on double-Esc. streamDrainDone closes when the background
+	// drain goroutine exits.
+	streamCtx       context.Context
+	streamCancel    context.CancelFunc
+	streamDrainDone chan struct{}
+	streamCancelled bool
+	streamErrSeen   bool
+	// streamedLen is the total bytes received before cancel; streamFullLen
+	// is the length the mock would have produced if uncancelled.
+	streamedLen       int
+	streamFullLen     int
+	streamUserEscd    bool
+	streamDoneChunkRx bool
 }
 
 // TestApp represents a test application instance.
@@ -200,6 +217,17 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 		s.searchQuery = ""
 		s.forkedSession = nil
 		s.sessionBrowserOrder = nil
+		// Reset streaming-cancel scenario state so cross-scenario leaks
+		// cannot make the double-Esc scenario spuriously pass or fail.
+		s.streamCtx = nil
+		s.streamCancel = nil
+		s.streamDrainDone = nil
+		s.streamCancelled = false
+		s.streamErrSeen = false
+		s.streamedLen = 0
+		s.streamFullLen = 0
+		s.streamUserEscd = false
+		s.streamDoneChunkRx = false
 		return ctx, nil
 	})
 

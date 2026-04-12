@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
@@ -2530,6 +2531,127 @@ var _ = Describe("session viewer full-screen rendering", func() {
 			Expect(chat.IsSessionViewerActive(intent)).To(BeTrue())
 			view := intent.View()
 			Expect(view).NotTo(BeEmpty())
+		})
+	})
+
+	Describe("double-Esc cancels an active stream", func() {
+		Context("when not streaming", func() {
+			It("ignores Esc (no cancel, no lastEscTime recorded)", func() {
+				cancelled := intent.InstallStreamCancelForTest()
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(*cancelled).To(BeFalse())
+				Expect(intent.StreamCancelClearedForTest()).To(BeFalse())
+				Expect(intent.LastEscTimeForTest().IsZero()).To(BeTrue())
+			})
+		})
+
+		Context("when streaming", func() {
+			BeforeEach(func() {
+				intent.SetStreamingForTest(true)
+			})
+
+			It("arms the interrupt on first Esc without cancelling", func() {
+				cancelled := intent.InstallStreamCancelForTest()
+				before := time.Now()
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(*cancelled).To(BeFalse())
+				Expect(intent.StreamCancelClearedForTest()).To(BeFalse())
+				Expect(intent.IsStreaming()).To(BeTrue())
+				Expect(intent.LastEscTimeForTest()).To(BeTemporally(">=", before))
+			})
+
+			It("cancels the active stream on second Esc within 500ms", func() {
+				cancelled := intent.InstallStreamCancelForTest()
+				intent.SetLastEscTimeForTest(time.Now().Add(-100 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(*cancelled).To(BeTrue())
+				Expect(intent.StreamCancelClearedForTest()).To(BeTrue())
+				Expect(intent.IsStreaming()).To(BeFalse())
+				Expect(intent.LastEscTimeForTest().IsZero()).To(BeTrue())
+			})
+
+			It("treats Esc outside the 500ms window as a fresh first press", func() {
+				cancelled := intent.InstallStreamCancelForTest()
+				intent.SetLastEscTimeForTest(time.Now().Add(-2 * time.Second))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(*cancelled).To(BeFalse())
+				Expect(intent.StreamCancelClearedForTest()).To(BeFalse())
+				Expect(intent.IsStreaming()).To(BeTrue())
+			})
+		})
+	})
+
+	Describe("user-cancel does not surface as an error", func() {
+		// Defect: a user-initiated double-Esc cancel propagates context.Canceled
+		// back through the stream and handleStreamChunk previously formatted it
+		// as an error ("⚠ Error: context canceled"). A user-initiated cancel is
+		// a legitimate action, not an error — no error message, toast, or
+		// artefact should appear in the chat.
+		Context("when the user has just cancelled via double-Esc", func() {
+			BeforeEach(func() {
+				intent.SetStreamingForTest(true)
+				intent.InstallStreamCancelForTest()
+				// Arm the interrupt inside the 500ms window, then press Esc to
+				// trigger the user-initiated cancel path.
+				intent.SetLastEscTimeForTest(time.Now().Add(-100 * time.Millisecond))
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			})
+
+			It("does not append a context.Canceled error message to the view", func() {
+				before := len(intent.AllViewMessagesForTest())
+
+				// Final chunk arrives after cancel — simulates provider draining
+				// the cancelled context.
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+					Error: context.Canceled,
+					Done:  true,
+				})
+
+				messages := intent.AllViewMessagesForTest()
+				for _, msg := range messages[before:] {
+					Expect(msg.Content).NotTo(ContainSubstring("⚠ Error"),
+						"user-cancel must not produce an error message: %q", msg.Content)
+					Expect(msg.Content).NotTo(ContainSubstring("context canceled"),
+						"user-cancel must not leak raw context.Canceled: %q", msg.Content)
+				}
+			})
+
+			It("clears the user-cancel flag after consuming the cancel chunk", func() {
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+					Error: context.Canceled,
+					Done:  true,
+				})
+				Expect(intent.UserCancelledForTest()).To(BeFalse(),
+					"flag must be reset so a later upstream cancel surfaces normally")
+			})
+		})
+
+		Context("when context.Canceled arrives without a user cancel", func() {
+			BeforeEach(func() {
+				intent.SetStreamingForTest(true)
+			})
+
+			It("still surfaces the error (no blanket swallow)", func() {
+				before := len(intent.AllViewMessagesForTest())
+
+				intent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+					Error: context.Canceled,
+					Done:  true,
+				})
+
+				messages := intent.AllViewMessagesForTest()
+				// Upstream cancel is an error — it MUST appear as an error
+				// message so users can diagnose network/timeouts.
+				found := false
+				for _, msg := range messages[before:] {
+					if strings.Contains(msg.Content, "⚠ Error") || strings.Contains(msg.Content, "context canceled") {
+						found = true
+						break
+					}
+				}
+				Expect(found).To(BeTrue(),
+					"upstream context.Canceled without user-cancel must still be shown as an error")
+			})
 		})
 	})
 })

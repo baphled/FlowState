@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -342,4 +344,41 @@ func (i *Intent) SetEventNotifChanForTest(ch chan EventBusNotificationMsg) {
 // HandleEventBusNotificationForTest exposes handleEventBusNotification for test assertions.
 func (i *Intent) HandleEventBusNotificationForTest(msg EventBusNotificationMsg) tea.Cmd {
 	return i.handleEventBusNotification(msg)
+}
+
+// SetLastEscTimeForTest sets the last Esc press timestamp for test assertions.
+func (i *Intent) SetLastEscTimeForTest(t time.Time) {
+	i.lastEscTime = t
+}
+
+// LastEscTimeForTest returns the last Esc press timestamp for test assertions.
+func (i *Intent) LastEscTimeForTest() time.Time {
+	return i.lastEscTime
+}
+
+// InstallStreamCancelForTest installs a cancellable context cancel func on the
+// intent and returns a pointer to a flag that will flip to true when the cancel
+// function is invoked. Useful for asserting double-Esc cancellation without a
+// live stream.
+func (i *Intent) InstallStreamCancelForTest() *bool {
+	cancelled := false
+	_, cancel := context.WithCancel(context.Background())
+	i.streamCancel = func() {
+		cancelled = true
+		cancel()
+	}
+	return &cancelled
+}
+
+// StreamCancelClearedForTest reports whether the stream cancel func has been
+// cleared (i.e. cancelActiveStream ran).
+func (i *Intent) StreamCancelClearedForTest() bool {
+	return i.streamCancel == nil
+}
+
+// UserCancelledForTest reports whether the intent currently has a pending
+// user-initiated cancel marker. Set by double-Esc, cleared by handleStreamChunk
+// when it consumes the corresponding context.Canceled chunk.
+func (i *Intent) UserCancelledForTest() bool {
+	return i.userCancelled
 }

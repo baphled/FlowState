@@ -15,11 +15,15 @@ Feature: Streaming Responses
     And I should see a complete response
 
   @smoke
-  Scenario: Streaming can be interrupted
+  Scenario: Streaming can be interrupted by double-Escape
     Given I am in insert mode
-    When I type "Write a very long essay"
-    And I press Enter
-    And I should see tokens appearing
+    And the agent streams a long response
+    When I send "Write a very long essay"
+    And I see tokens appearing
+    And I press Escape twice within 500ms
+    Then the stream should be cancelled
+    And no error should be shown
+    And the response should be incomplete
 
   @wip
   Scenario: Stream error is displayed to user
