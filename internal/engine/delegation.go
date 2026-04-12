@@ -1124,6 +1124,7 @@ func (d *DelegateTool) executeSync(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
+	d.closeSessionIfManaged(delegateSessionID)
 
 	return tool.Result{
 		Output: formatDelegationOutput(delegateSessionID, result.response),
@@ -1242,6 +1243,9 @@ func (d *DelegateTool) executeBackgroundTask(
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
 
+	taskSessionID := sessionIDFromContext(ctx)
+	d.closeSessionIfManaged(taskSessionID)
+
 	return result.response, nil
 }
 
@@ -1319,6 +1323,23 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		denyDelegate:     !d.agentHasToolPermission(targetAgentID, "delegate"),
 		denyTodoWrite:    !d.agentHasToolPermission(targetAgentID, "todowrite"),
 	}, nil
+}
+
+// closeSessionIfManaged closes the named session via the session manager when one is configured.
+//
+// Expected:
+//   - sessionID identifies the session to close.
+//
+// Side effects:
+//   - Closes the session in the session manager if one is set.
+//   - Suppresses ErrSessionNotFound; other errors are silently discarded.
+func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
+	if d.sessionManager == nil {
+		return
+	}
+	if err := d.sessionManager.CloseSession(sessionID); err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		_ = err
+	}
 }
 
 // resolveAgentID attempts registry lookup via subagent_type, then falls back to discovery.
