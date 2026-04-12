@@ -612,6 +612,32 @@ func (m *BackgroundTaskManager) ActiveCount() int {
 	return count
 }
 
+// ActiveCountForSession returns the number of tasks currently in pending or
+// running state that belong to the given parent session.
+//
+// Expected:
+//   - sessionID is the parent session identifier to filter by.
+//
+// Returns:
+//   - The count of active (non-terminal) tasks for the specified session.
+//
+// Side effects:
+//   - None.
+func (m *BackgroundTaskManager) ActiveCountForSession(sessionID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, task := range m.tasks {
+		status := task.Status.Load()
+		if task.ParentSessionID == sessionID && (status == "pending" || status == "running") {
+			count++
+		}
+	}
+
+	return count
+}
+
 var (
 	errTaskNotFound       = errTaskNotFoundFn()
 	errTaskNotCancellable = errTaskNotCancellableFn()

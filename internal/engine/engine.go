@@ -755,6 +755,8 @@ func (e *Engine) streamWithToolLoop(
 	ctx context.Context, sessionID string, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) {
+	defer e.evictCompletedBackgroundTasks()
+
 	attempt := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
@@ -795,7 +797,6 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		messages = e.appendToolResultToMessages(messages, result.toolCall, toolResult)
-		e.evictCompletedBackgroundTasks()
 
 		attempt++
 		var streamErr error
@@ -809,6 +810,8 @@ func (e *Engine) streamWithToolLoop(
 
 // evictCompletedBackgroundTasks calls EvictCompleted on the delegate tool's background manager
 // if one is configured, preventing unbounded memory growth from completed task entries.
+// Called via defer at the top of streamWithToolLoop so that tasks remain accessible
+// throughout the entire tool loop and eviction covers all exit paths.
 //
 // Side effects:
 //   - Removes terminal tasks from the background task manager if a delegate tool is present.
