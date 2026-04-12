@@ -89,6 +89,33 @@ func (b *fakeBroker) getPublishedSessions() []string {
 	return append([]string{}, b.sessions...)
 }
 
+// blockingFakeBroker blocks Publish until release is closed, simulating a
+// long-running re-prompt stream. Used to test pending re-enqueue.
+type blockingFakeBroker struct {
+	mu       sync.Mutex
+	sessions []string
+	release  chan struct{}
+}
+
+func (b *blockingFakeBroker) Publish(sessionID string, chunks <-chan provider.StreamChunk) {
+	b.mu.Lock()
+	b.sessions = append(b.sessions, sessionID)
+	b.mu.Unlock()
+
+	go func() {
+		for range chunks { //nolint:revive // intentional drain
+		}
+	}()
+
+	<-b.release
+}
+
+func (b *blockingFakeBroker) getPublishedSessions() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string{}, b.sessions...)
+}
+
 var _ = Describe("CompletionOrchestrator", func() {
 	var (
 		bgMgr  *engine.BackgroundTaskManager
@@ -109,6 +136,7 @@ var _ = Describe("CompletionOrchestrator", func() {
 	})
 
 	AfterEach(func() {
+		defer func() { _ = recover() }()
 		orch.Stop()
 	})
 
@@ -300,6 +328,62 @@ var _ = Describe("CompletionOrchestrator", func() {
 			Eventually(func() []string {
 				return sender.getSendCalls()
 			}, "2s", "50ms").Should(ContainElement("sess-6"))
+		})
+	})
+
+	Describe("pending re-enqueue after in-flight re-prompt", func() {
+		It("re-processes the session when a completion arrives during a re-prompt", func() {
+			// Stop the default orchestrator so only our blocking one is listening.
+			orch.Stop()
+
+			// Use a fresh bus so the stopped orchestrator's handlers can't fire.
+			localBus := eventbus.NewEventBus()
+			bgMgr.SetEventBus(localBus)
+
+			// Use a blocking broker that holds the first re-prompt stream open
+			// long enough for a second task to complete and fire its event.
+			blockingBroker := &blockingFakeBroker{release: make(chan struct{})}
+			blockingOrch := engine.NewCompletionOrchestrator(bgMgr, sender, localBus, blockingBroker)
+			blockingOrch.Start()
+			defer blockingOrch.Stop()
+
+			// Seed a notification so the first re-prompt has something to send.
+			sender.addNotification("sess-pending", streaming.CompletionNotificationEvent{
+				TaskID: "task-p1", Agent: "explorer", Duration: time.Second,
+			})
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-pending")
+			bgMgr.Launch(ctx, "task-p1", "explorer", "first", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			Eventually(func() int {
+				return len(blockingBroker.getPublishedSessions())
+			}, "2s", "50ms").Should(Equal(1))
+
+			// First re-prompt is now blocked inside Publish. Launch a second
+			// task; its completion event should be marked pending because
+			// rePrompting[sess-pending] is true.
+			sender.addNotification("sess-pending", streaming.CompletionNotificationEvent{
+				TaskID: "task-p2", Agent: "librarian", Duration: time.Second,
+			})
+			bgMgr.Launch(ctx, "task-p2", "librarian", "second", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			Eventually(func() string {
+				t, _ := bgMgr.Get("task-p2")
+				return t.Status.Load()
+			}, "2s", "50ms").Should(Equal("completed"))
+
+			// Release the first re-prompt so the defer fires and the pending
+			// completion is re-enqueued.
+			close(blockingBroker.release)
+
+			// The second re-prompt should eventually happen.
+			Eventually(func() int {
+				return len(sender.getSendCalls())
+			}, "3s", "50ms").Should(BeNumerically(">=", 2))
 		})
 	})
 

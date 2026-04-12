@@ -38,12 +38,13 @@ type Server struct {
 	skills            []skill.Skill
 	sessions          *ctxstore.FileSessionStore
 	sessionManager    *session.Manager
-	sessionBroker     *SessionBroker
-	todoStore         todo.Store
-	backgroundManager *engine.BackgroundTaskManager
-	eventBus          *eventbus.EventBus
-	metricsHandler    http.Handler
-	mux               *http.ServeMux
+	sessionBroker          *SessionBroker
+	todoStore              todo.Store
+	backgroundManager      *engine.BackgroundTaskManager
+	completionOrchestrator *engine.CompletionOrchestrator
+	eventBus               *eventbus.EventBus
+	metricsHandler         http.Handler
+	mux                    *http.ServeMux
 }
 
 // ServerOption configures an optional Server dependency.
@@ -173,6 +174,21 @@ func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //   - Updates the server's session broker reference.
 func (s *Server) SetSessionBroker(broker *SessionBroker) {
 	s.sessionBroker = broker
+}
+
+// SetCompletionOrchestrator attaches the completion orchestrator so user-
+// initiated messages can reset the autonomous re-prompt budget.
+//
+// Expected:
+//   - orch is a non-nil CompletionOrchestrator.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the server's orchestrator reference.
+func (s *Server) SetCompletionOrchestrator(orch *engine.CompletionOrchestrator) {
+	s.completionOrchestrator = orch
 }
 
 // SubscribeSessionBus exposes subscribeSessionBus for external use.
@@ -479,6 +495,9 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+	if s.completionOrchestrator != nil {
+		s.completionOrchestrator.ResetRePromptCount(id)
 	}
 	chunks, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
 	if err != nil {

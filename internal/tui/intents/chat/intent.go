@@ -1433,6 +1433,12 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.responseTokenCount = 0
 	i.refreshViewport()
 
+	// A fresh user message resets the autonomous re-prompt budget so the
+	// orchestrator can re-prompt up to maxRePrompts times per user turn.
+	if i.completionOrchestrator != nil {
+		i.completionOrchestrator.ResetRePromptCount(i.sessionID)
+	}
+
 	i.cancelActiveStream()
 	ctx, cancel := context.WithCancel(context.Background())
 	i.streamCancel = cancel

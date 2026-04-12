@@ -252,6 +252,9 @@ func configureApplicationAfterBuild(
 			app.backgroundManager, app.sessionManager, eng.EventBus(), broker,
 		)
 		app.completionOrchestrator.Start()
+		if app.API != nil {
+			app.API.SetCompletionOrchestrator(app.completionOrchestrator)
+		}
 	}
 	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)

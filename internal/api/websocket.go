@@ -178,6 +178,9 @@ func (s *Server) serveWSSession(ctx context.Context, out chan<- WSChunkMsg, sess
 	if msg.Content == "" {
 		return true
 	}
+	if s.completionOrchestrator != nil {
+		s.completionOrchestrator.ResetRePromptCount(sessionID)
+	}
 	chunks, err := s.sessionManager.SendMessage(ctx, sessionID, msg.Content)
 	if err != nil {
 		return false
