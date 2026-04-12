@@ -55,7 +55,7 @@ func (r *Registry) Get(name string) (Tool, error) {
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	if !ok {
-		return nil, fmt.Errorf("tool %q not found", name)
+		return nil, fmt.Errorf("%w: %s", ErrToolNotFound, name)
 	}
 	return t, nil
 }
