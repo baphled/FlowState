@@ -70,25 +70,26 @@ type MCPConnectionResult struct {
 
 // App is the main application container holding all initialized components.
 type App struct {
-	Config            *config.AppConfig
-	Registry          *agent.Registry
-	Skills            []skill.Skill
-	Engine            *engine.Engine
-	Discovery         *discovery.AgentDiscovery
-	Sessions          *ctxstore.FileSessionStore
-	Learning          learning.Store
-	API               *api.Server
-	Streamer          streaming.Streamer
-	TodoStore         todotool.Store
-	mcpClient         mcpclient.Client
-	plugins           *pluginRuntime
-	providerRegistry  *provider.Registry
-	ollamaProvider    *ollama.Provider
-	metricsRegistry   *prometheus.Registry
-	Store             *plan.Store
-	defaultProvider   provider.Provider
-	backgroundManager *engine.BackgroundTaskManager
-	sessionManager    *session.Manager
+	Config                 *config.AppConfig
+	Registry               *agent.Registry
+	Skills                 []skill.Skill
+	Engine                 *engine.Engine
+	Discovery              *discovery.AgentDiscovery
+	Sessions               *ctxstore.FileSessionStore
+	Learning               learning.Store
+	API                    *api.Server
+	Streamer               streaming.Streamer
+	TodoStore              todotool.Store
+	mcpClient              mcpclient.Client
+	plugins                *pluginRuntime
+	providerRegistry       *provider.Registry
+	ollamaProvider         *ollama.Provider
+	metricsRegistry        *prometheus.Registry
+	Store                  *plan.Store
+	defaultProvider        provider.Provider
+	backgroundManager      *engine.BackgroundTaskManager
+	sessionManager         *session.Manager
+	completionOrchestrator *engine.CompletionOrchestrator
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -239,6 +240,18 @@ func configureApplicationAfterBuild(
 	}
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
+	}
+	if app.backgroundManager != nil && app.sessionManager != nil && eng.EventBus() != nil {
+		var broker engine.SessionBrokerPublisher
+		if app.API != nil {
+			sessionBroker := api.NewSessionBroker()
+			app.API.SetSessionBroker(sessionBroker)
+			broker = sessionBroker
+		}
+		app.completionOrchestrator = engine.NewCompletionOrchestrator(
+			app.backgroundManager, app.sessionManager, eng.EventBus(), broker,
+		)
+		app.completionOrchestrator.Start()
 	}
 	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)
@@ -2565,6 +2578,18 @@ func NewForTest(tc TestConfig) (*App, error) {
 //   - None.
 func (a *App) BackgroundManager() *engine.BackgroundTaskManager {
 	return a.backgroundManager
+}
+
+// CompletionOrchestrator returns the background task completion orchestrator,
+// or nil if delegation is not enabled.
+//
+// Returns:
+//   - The CompletionOrchestrator, or nil.
+//
+// Side effects:
+//   - None.
+func (a *App) CompletionOrchestrator() *engine.CompletionOrchestrator {
+	return a.completionOrchestrator
 }
 
 // PluginConfigForTest returns the plugin configuration wired into the app.

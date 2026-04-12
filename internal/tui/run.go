@@ -132,6 +132,10 @@ func runWithChatIntent(application *flowapp.App, agentID string, sessionID strin
 		chatIntent.SetCompletionChannel(ch)
 		chatIntent.SetBackgroundManager(bgMgr)
 	}
+	if orch := application.CompletionOrchestrator(); orch != nil {
+		chatIntent.SetCompletionOrchestrator(orch)
+		defer orch.UnsubscribeRePrompt(sessionID)
+	}
 	appShell := app.New(chatIntent, application)
 	chatIntent.SetApp(appShell)
 	p := tea.NewProgram(appShell, tea.WithAltScreen(), tea.WithMouseCellMotion())

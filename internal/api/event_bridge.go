@@ -27,6 +27,9 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 		{eventType: events.EventToolExecuteResult, handler: newToolResultHandler(sessionID, out)},
 		{eventType: events.EventToolExecuteError, handler: newToolErrorHandler(sessionID, out)},
 		{eventType: events.EventProviderRateLimited, handler: newRateLimitHandler(out)},
+		{eventType: events.EventBackgroundTaskStarted, handler: newBackgroundTaskHandler(sessionID, out)},
+		{eventType: events.EventBackgroundTaskCompleted, handler: newBackgroundTaskHandler(sessionID, out)},
+		{eventType: events.EventBackgroundTaskFailed, handler: newBackgroundTaskHandler(sessionID, out)},
 	}
 
 	for _, h := range handlers {
@@ -128,6 +131,60 @@ func newRateLimitHandler(out chan<- WSChunkMsg) eventbus.EventHandler {
 			"event_type": events.EventProviderRateLimited,
 			"provider":   pe.Data.ProviderName,
 		}}:
+		default:
+		}
+	}
+}
+
+// newBackgroundTaskHandler creates an EventHandler that forwards background task
+// lifecycle events (started, completed, failed) to the out channel when the
+// session ID matches. This enables WebSocket clients to receive real-time
+// notifications about background task progress.
+//
+// Expected:
+//   - sessionID is the connection's session.
+//   - out accepts WSChunkMsg values.
+//
+// Returns:
+//   - An eventbus.EventHandler for background task events.
+//
+// Side effects:
+//   - Sends to out channel on matching events.
+func newBackgroundTaskHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+	return func(msg any) {
+		var data events.BackgroundTaskEventData
+		var eventType string
+
+		switch e := msg.(type) {
+		case *events.BackgroundTaskStartedEvent:
+			data = e.Data
+			eventType = events.EventBackgroundTaskStarted
+		case *events.BackgroundTaskCompletedEvent:
+			data = e.Data
+			eventType = events.EventBackgroundTaskCompleted
+		case *events.BackgroundTaskFailedEvent:
+			data = e.Data
+			eventType = events.EventBackgroundTaskFailed
+		default:
+			return
+		}
+
+		if data.SessionID != sessionID {
+			return
+		}
+
+		sanitised := map[string]any{
+			"event_type": eventType,
+			"task_id":    data.TaskID,
+			"name":       data.Name,
+			"status":     data.Status,
+		}
+		if data.Error != "" {
+			sanitised["error"] = data.Error
+		}
+
+		select {
+		case out <- WSChunkMsg{EventType: eventType, EventData: sanitised}:
 		default:
 		}
 	}

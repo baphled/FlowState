@@ -221,6 +221,12 @@ type Intent struct {
 	completionChan <-chan streaming.CompletionNotificationEvent
 	// backgroundManager tracks active background delegation tasks.
 	backgroundManager *engine.BackgroundTaskManager
+	// completionOrchestrator handles re-prompting when all background tasks finish.
+	// When set, the TUI delegates re-prompt decisions to the orchestrator and
+	// receives re-prompt streams via its subscription channel.
+	completionOrchestrator *engine.CompletionOrchestrator
+	// rePromptChan receives re-prompt stream channels from the orchestrator.
+	rePromptChan <-chan (<-chan provider.StreamChunk)
 	// cachedScreenLayout holds the reusable ScreenLayout for View() to avoid allocations.
 	cachedScreenLayout    *layout.ScreenLayout
 	breadcrumbPath        string
@@ -334,6 +340,25 @@ func (i *Intent) SetCompletionChannel(ch <-chan streaming.CompletionNotification
 //   - Stores the manager reference on the intent.
 func (i *Intent) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 	i.backgroundManager = mgr
+}
+
+// SetCompletionOrchestrator attaches the completion orchestrator for
+// engine-level re-prompting. When set, the TUI subscribes to the
+// orchestrator's re-prompt channel and no longer triggers re-prompts itself.
+//
+// Expected:
+//   - orch is a non-nil CompletionOrchestrator that has been started.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the orchestrator reference and subscribes for re-prompt streams.
+func (i *Intent) SetCompletionOrchestrator(orch *engine.CompletionOrchestrator) {
+	i.completionOrchestrator = orch
+	if orch != nil && i.sessionID != "" {
+		i.rePromptChan = orch.SubscribeRePrompt(i.sessionID)
+	}
 }
 
 // Init returns the initial command for the intent.
