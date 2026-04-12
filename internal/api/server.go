@@ -161,6 +161,20 @@ func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 	s.backgroundManager = mgr
 }
 
+// SetSessionBroker sets the session broker for live event streaming.
+//
+// Expected:
+//   - broker is a non-nil SessionBroker.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the server's session broker reference.
+func (s *Server) SetSessionBroker(broker *SessionBroker) {
+	s.sessionBroker = broker
+}
+
 // SubscribeSessionBus exposes subscribeSessionBus for external use.
 // It subscribes to EventBus events for the given session, forwarding sanitised
 // summaries to the provided channel. The returned function stops forwarding when called.

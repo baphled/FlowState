@@ -61,6 +61,12 @@ type CompletionOrchestrator struct {
 	rePrompting   map[string]bool
 	rePromptCount map[string]int
 	maxRePrompts  int
+
+	// rePromptSubs maps session IDs to channels that receive re-prompt stream
+	// channels. When a subscriber exists for a session, the re-prompt stream is
+	// delivered to the subscriber instead of the broker.
+	subsMu       sync.RWMutex
+	rePromptSubs map[string]chan<- (<-chan provider.StreamChunk)
 }
 
 // NewCompletionOrchestrator creates a new orchestrator. Call Start() to begin
@@ -93,6 +99,7 @@ func NewCompletionOrchestrator(
 		rePrompting:   make(map[string]bool),
 		rePromptCount: make(map[string]int),
 		maxRePrompts:  3,
+		rePromptSubs:  make(map[string]chan<- (<-chan provider.StreamChunk)),
 	}
 }
 
@@ -246,10 +253,38 @@ func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 		return
 	}
 
+	// If a direct subscriber exists (e.g. TUI), deliver the stream to it
+	// instead of the broker. This avoids duplicate chunk delivery.
+	o.subsMu.RLock()
+	sub, hasSub := o.rePromptSubs[sessionID]
+	o.subsMu.RUnlock()
+
+	if hasSub {
+		select {
+		case sub <- chunks:
+		default:
+			slog.Warn("completion orchestrator: re-prompt subscriber full, falling back to broker",
+				"session_id", sessionID)
+			o.publishOrDrain(sessionID, chunks)
+		}
+		return
+	}
+
+	o.publishOrDrain(sessionID, chunks)
+}
+
+// publishOrDrain publishes chunks to the broker if configured, otherwise
+// drains the channel to ensure the stream completes.
+//
+// Expected:
+//   - chunks is a non-nil channel from SendMessage.
+//
+// Side effects:
+//   - Publishes to broker or drains the channel.
+func (o *CompletionOrchestrator) publishOrDrain(sessionID string, chunks <-chan provider.StreamChunk) {
 	if o.broker != nil {
 		o.broker.Publish(sessionID, chunks)
 	} else {
-		// Drain the channel to ensure the stream completes even without a broker.
 		for range chunks { //nolint:revive // intentional drain
 		}
 	}
@@ -268,4 +303,44 @@ func (o *CompletionOrchestrator) ResetRePromptCount(sessionID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.rePromptCount, sessionID)
+}
+
+// SubscribeRePrompt registers a channel to receive re-prompt stream channels
+// for the given session. When a re-prompt is triggered, the resulting stream
+// is sent on the returned channel instead of being published to the session
+// broker, allowing the TUI to read chunks incrementally.
+//
+// Expected:
+//   - sessionID is a valid session identifier.
+//
+// Returns:
+//   - A receive-only channel that delivers re-prompt stream channels.
+//
+// Side effects:
+//   - Registers the subscription; call UnsubscribeRePrompt to clean up.
+func (o *CompletionOrchestrator) SubscribeRePrompt(sessionID string) <-chan (<-chan provider.StreamChunk) {
+	ch := make(chan (<-chan provider.StreamChunk), 1)
+
+	o.subsMu.Lock()
+	o.rePromptSubs[sessionID] = ch
+	o.subsMu.Unlock()
+
+	return ch
+}
+
+// UnsubscribeRePrompt removes the re-prompt subscription for the given
+// session and closes the subscriber channel.
+//
+// Expected:
+//   - sessionID was previously passed to SubscribeRePrompt.
+//
+// Side effects:
+//   - Closes the subscriber channel and removes it from the map.
+func (o *CompletionOrchestrator) UnsubscribeRePrompt(sessionID string) {
+	o.subsMu.Lock()
+	if ch, ok := o.rePromptSubs[sessionID]; ok {
+		close(ch)
+		delete(o.rePromptSubs, sessionID)
+	}
+	o.subsMu.Unlock()
 }
