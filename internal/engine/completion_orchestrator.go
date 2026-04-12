@@ -59,8 +59,12 @@ type CompletionOrchestrator struct {
 
 	mu            sync.Mutex
 	rePrompting   map[string]bool
-	rePromptCount map[string]int
-	maxRePrompts  int
+	// rePromptPending flags sessions that received a completion event while a
+	// re-prompt was already in progress. After the current re-prompt finishes,
+	// the drain goroutine re-processes the session to avoid stranding events.
+	rePromptPending map[string]bool
+	rePromptCount   map[string]int
+	maxRePrompts    int
 
 	// rePromptSubs maps session IDs to channels that receive re-prompt stream
 	// channels. When a subscriber exists for a session, the re-prompt stream is
@@ -96,9 +100,10 @@ func NewCompletionOrchestrator(
 		broker:        broker,
 		completionCh:  make(chan completionEvent, 64),
 		stopCh:        make(chan struct{}),
-		rePrompting:   make(map[string]bool),
-		rePromptCount: make(map[string]int),
-		maxRePrompts:  3,
+		rePrompting:     make(map[string]bool),
+		rePromptPending: make(map[string]bool),
+		rePromptCount:   make(map[string]int),
+		maxRePrompts:    3,
 		rePromptSubs:  make(map[string]chan<- (<-chan provider.StreamChunk)),
 	}
 }
@@ -202,6 +207,11 @@ func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 	// CAS: only one re-prompt per session at a time.
 	o.mu.Lock()
 	if o.rePrompting[evt.sessionID] {
+		// A re-prompt is already running for this session. Mark pending so the
+		// current re-prompt's defer re-processes the session after it finishes,
+		// preventing strand if a new task completed while the re-prompt was
+		// still streaming.
+		o.rePromptPending[evt.sessionID] = true
 		o.mu.Unlock()
 		return
 	}
@@ -232,7 +242,21 @@ func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 		o.mu.Lock()
 		o.rePromptCount[sessionID]++
 		o.rePrompting[sessionID] = false
+		pending := o.rePromptPending[sessionID]
+		delete(o.rePromptPending, sessionID)
 		o.mu.Unlock()
+
+		// If completions arrived during this re-prompt, re-enqueue to avoid
+		// stranding them. The drain goroutine will re-check ActiveCountForSession
+		// and notification presence; if neither applies, it is a no-op.
+		if pending {
+			select {
+			case o.completionCh <- completionEvent{sessionID: sessionID}:
+			default:
+				slog.Warn("completion orchestrator: could not re-enqueue pending completion",
+					"session_id", sessionID)
+			}
+		}
 	}()
 
 	notifications, err := o.sessionMgr.GetNotifications(sessionID)
