@@ -54,9 +54,13 @@ func (v *VectorStoreMemoryClient) CreateEntities(ctx context.Context, entities [
 			return nil, fmt.Errorf("embedding entity name: %w", err)
 		}
 		points = append(points, VectorPoint{
-			ID:      e.Name,
-			Vector:  emb,
-			Payload: map[string]any{"entityType": e.EntityType, "observations": e.Observations},
+			ID:     PointIDFromSource(e.Name),
+			Vector: emb,
+			Payload: map[string]any{
+				"source_id":    e.Name,
+				"entityType":   e.EntityType,
+				"observations": e.Observations,
+			},
 		})
 	}
 	if err := v.Store.Upsert(ctx, v.Collection, points, false); err != nil {
@@ -86,9 +90,14 @@ func (v *VectorStoreMemoryClient) CreateRelations(ctx context.Context, rels []Re
 			return nil, fmt.Errorf("embedding relation: %w", err)
 		}
 		points = append(points, VectorPoint{
-			ID:      relText,
-			Vector:  emb,
-			Payload: map[string]any{"from": r.From, "relationType": r.RelationType, "to": r.To},
+			ID:     PointIDFromSource(relText),
+			Vector: emb,
+			Payload: map[string]any{
+				"source_id":    relText,
+				"from":         r.From,
+				"relationType": r.RelationType,
+				"to":           r.To,
+			},
 		})
 	}
 	if err := v.Store.Upsert(ctx, v.Collection, points, false); err != nil {
@@ -116,9 +125,12 @@ func (v *VectorStoreMemoryClient) AddObservations(ctx context.Context, observati
 			return nil, fmt.Errorf("embedding entity for observation: %w", err)
 		}
 		points = append(points, VectorPoint{
-			ID:      o.EntityName,
-			Vector:  emb,
-			Payload: map[string]any{"observations": o.Contents},
+			ID:     PointIDFromSource(o.EntityName),
+			Vector: emb,
+			Payload: map[string]any{
+				"source_id":    o.EntityName,
+				"observations": o.Contents,
+			},
 		})
 	}
 	if err := v.Store.Upsert(ctx, v.Collection, points, false); err != nil {
@@ -281,9 +293,10 @@ func (v *VectorStoreMemoryClient) WriteLearningRecord(record *Record) error {
 		return fmt.Errorf("embedding record: %w", err)
 	}
 	p := VectorPoint{
-		ID:     record.AgentID,
+		ID:     PointIDFromSource(record.AgentID),
 		Vector: emb,
 		Payload: map[string]any{
+			"source_id":  record.AgentID,
 			"agent_id":   record.AgentID,
 			"tools_used": record.ToolsUsed,
 			"outcome":    record.Outcome,

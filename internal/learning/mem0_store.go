@@ -76,10 +76,12 @@ func (m *Mem0LearningStore) Capture(entry Entry) error {
 		return fmt.Errorf("mem0 capture embed: %w", err)
 	}
 
+	sourceID := strconv.FormatInt(entry.Timestamp.UnixNano(), 10)
 	p := VectorPoint{
-		ID:     strconv.FormatInt(entry.Timestamp.UnixNano(), 10),
+		ID:     PointIDFromSource(sourceID),
 		Vector: vector,
 		Payload: map[string]any{
+			"source_id":  sourceID,
 			"agent_id":   entry.AgentID,
 			"content":    entry.UserMessage,
 			"response":   entry.Response,
