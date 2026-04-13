@@ -39,8 +39,12 @@ func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessag
 		case "system":
 			result = append(result, openaiAPI.SystemMessage(pair.Content))
 		case "tool":
-			if len(m.ToolCalls) > 0 {
-				result = append(result, openaiAPI.ToolMessage(pair.Content, m.ToolCalls[0].ID))
+			// One OpenAI tool message per tool-call id. Historically only
+			// ToolCalls[0].ID was emitted, which silently dropped results for
+			// messages that bundled multiple tool calls.
+			for _, tc := range m.ToolCalls {
+				wireID := shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetOpenAI)
+				result = append(result, openaiAPI.ToolMessage(pair.Content, wireID))
 			}
 		}
 	}
@@ -66,7 +70,7 @@ func buildAssistantMessageWithToolCalls(m provider.Message) openaiAPI.ChatComple
 			argsJSON = []byte("{}")
 		}
 		toolCalls = append(toolCalls, openaiAPI.ChatCompletionMessageToolCallParam{
-			ID: tc.ID,
+			ID: shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetOpenAI),
 			Function: openaiAPI.ChatCompletionMessageToolCallFunctionParam{
 				Name:      tc.Name,
 				Arguments: string(argsJSON),

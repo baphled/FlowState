@@ -706,7 +706,9 @@ func buildAssistantWithTools(
 	}
 	for _, tc := range m.ToolCalls {
 		blocks = append(blocks, anthropicAPI.NewToolUseBlock(
-			tc.ID, tc.Arguments, tc.Name,
+			shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetAnthropic),
+			tc.Arguments,
+			tc.Name,
 		))
 	}
 	msg := anthropicAPI.NewAssistantMessage(blocks...)
@@ -733,7 +735,9 @@ func buildToolResultMessage(
 	for _, tc := range m.ToolCalls {
 		isError := strings.HasPrefix(m.Content, "Error:")
 		blocks = append(blocks, anthropicAPI.NewToolResultBlock(
-			tc.ID, m.Content, isError,
+			shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetAnthropic),
+			m.Content,
+			isError,
 		))
 	}
 	if len(blocks) > 0 {

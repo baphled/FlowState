@@ -39,7 +39,7 @@ var _ = Describe("buildToolResultMessage", func() {
 		m := provider.Message{
 			Role:      "tool",
 			Content:   "42",
-			ToolCalls: []provider.ToolCall{{ID: "tool1"}},
+			ToolCalls: []provider.ToolCall{{ID: "toolu_01tool1"}},
 		}
 		msg := buildToolResultMessage(m)
 		Expect(msg).NotTo(BeNil())
@@ -48,7 +48,7 @@ var _ = Describe("buildToolResultMessage", func() {
 		block := msg.Content[0]
 		Expect(block.OfToolResult).NotTo(BeNil())
 		tr := block.OfToolResult
-		Expect(tr.ToolUseID).To(Equal("tool1"))
+		Expect(tr.ToolUseID).To(Equal("toolu_01tool1"))
 		Expect(tr.Content).To(HaveLen(1))
 		Expect(tr.Content[0].OfText).NotTo(BeNil())
 		Expect(tr.Content[0].OfText.Text).To(Equal("42"))
@@ -60,7 +60,7 @@ var _ = Describe("buildToolResultMessage", func() {
 		m := provider.Message{
 			Role:      "tool",
 			Content:   "Error: failed to compute",
-			ToolCalls: []provider.ToolCall{{ID: "tool2"}},
+			ToolCalls: []provider.ToolCall{{ID: "toolu_01tool2"}},
 		}
 		msg := buildToolResultMessage(m)
 		Expect(msg).NotTo(BeNil())
@@ -69,7 +69,7 @@ var _ = Describe("buildToolResultMessage", func() {
 		block := msg.Content[0]
 		Expect(block.OfToolResult).NotTo(BeNil())
 		tr := block.OfToolResult
-		Expect(tr.ToolUseID).To(Equal("tool2"))
+		Expect(tr.ToolUseID).To(Equal("toolu_01tool2"))
 		Expect(tr.Content).To(HaveLen(1))
 		Expect(tr.Content[0].OfText).NotTo(BeNil())
 		Expect(tr.Content[0].OfText.Text).To(Equal("Error: failed to compute"))
@@ -119,7 +119,7 @@ var _ = Describe("buildMessages", func() {
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "hi"},
-			{Role: "tool", Content: "42", ToolCalls: []provider.ToolCall{{ID: "tool1"}}},
+			{Role: "tool", Content: "42", ToolCalls: []provider.ToolCall{{ID: "toolu_01tool1"}}},
 			{Role: "assistant", Content: "done"},
 		}
 		result := buildMessages(msgs)
@@ -131,7 +131,7 @@ var _ = Describe("buildMessages", func() {
 		Expect(string(result[2].Role)).To(Equal("user"))
 		tr := result[2].Content[0].OfToolResult
 		Expect(tr).NotTo(BeNil())
-		Expect(tr.ToolUseID).To(Equal("tool1"))
+		Expect(tr.ToolUseID).To(Equal("toolu_01tool1"))
 		Expect(tr.Content[0].OfText.Text).To(Equal("42"))
 		Expect(tr.IsError.Valid()).To(BeTrue())
 		Expect(tr.IsError.Value).To(BeFalse())
@@ -157,15 +157,15 @@ var _ = Describe("buildMessages", func() {
 	It("handles tool messages with multiple tool calls", func() {
 		msgs := []provider.Message{
 			{Role: "user", Content: "ask"},
-			{Role: "tool", Content: "result1", ToolCalls: []provider.ToolCall{{ID: "id1"}, {ID: "id2"}}},
+			{Role: "tool", Content: "result1", ToolCalls: []provider.ToolCall{{ID: "toolu_01id1"}, {ID: "toolu_01id2"}}},
 		}
 		result := buildMessages(msgs)
 		Expect(result).To(HaveLen(2))
 		Expect(string(result[1].Role)).To(Equal("user"))
 		tr1 := result[1].Content[0].OfToolResult
 		tr2 := result[1].Content[1].OfToolResult
-		Expect(tr1.ToolUseID).To(Equal("id1"))
-		Expect(tr2.ToolUseID).To(Equal("id2"))
+		Expect(tr1.ToolUseID).To(Equal("toolu_01id1"))
+		Expect(tr2.ToolUseID).To(Equal("toolu_01id2"))
 		Expect(tr1.Content[0].OfText.Text).To(Equal("result1"))
 		Expect(tr2.Content[0].OfText.Text).To(Equal("result1"))
 	})
@@ -285,5 +285,88 @@ var _ = Describe("parseAnthropicError", func() {
 			Expect(result).To(HaveOccurred())
 			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
 		})
+	})
+})
+
+// Cross-provider failover: when session history contains tool-call IDs
+// emitted by a non-Anthropic provider (e.g. openai-style "call_..."),
+// the Anthropic request builder must translate them to toolu_-prefixed IDs
+// so the Messages API accepts them. Bug #1: tool_use_id mismatch after failover.
+var _ = Describe("cross-provider failover id translation (Anthropic target)", func() {
+	It("rewrites a foreign call_-style id to a toolu_-prefixed id in tool_result", func() {
+		m := provider.Message{
+			Role:      "tool",
+			Content:   "result from previously-openai tool call",
+			ToolCalls: []provider.ToolCall{{ID: "call_foreign_xyz"}},
+		}
+		msg := buildToolResultMessage(m)
+		Expect(msg).NotTo(BeNil())
+		tr := msg.Content[0].OfToolResult
+		Expect(tr).NotTo(BeNil())
+		Expect(tr.ToolUseID).To(HavePrefix("toolu_"))
+		Expect(tr.ToolUseID).NotTo(Equal("call_foreign_xyz"))
+	})
+
+	It("rewrites a foreign call_-style id to a toolu_-prefixed id in assistant tool_use", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "Calling weather",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_foreign_xyz",
+				Name:      "get_weather",
+				Arguments: map[string]any{"city": "London"},
+			}},
+		}
+		msg := buildAssistantMessage(m)
+		Expect(msg).NotTo(BeNil())
+		// Content[0] is the text block; Content[1] is the tool_use block.
+		var toolUseID string
+		for _, block := range msg.Content {
+			if block.OfToolUse != nil {
+				toolUseID = block.OfToolUse.ID
+				break
+			}
+		}
+		Expect(toolUseID).To(HavePrefix("toolu_"))
+		Expect(toolUseID).NotTo(Equal("call_foreign_xyz"))
+	})
+
+	It("preserves pairing: assistant tool_use id matches subsequent tool_result id after translation", func() {
+		foreign := "call_original_from_openai"
+		msgs := []provider.Message{
+			{Role: "user", Content: "what is the weather"},
+			{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{{
+				ID: foreign, Name: "get_weather", Arguments: map[string]any{"city": "London"},
+			}}},
+			{Role: "tool", Content: "15c", ToolCalls: []provider.ToolCall{{ID: foreign}}},
+		}
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(3))
+		// Assistant tool_use block
+		var assistantToolUseID string
+		for _, block := range result[1].Content {
+			if block.OfToolUse != nil {
+				assistantToolUseID = block.OfToolUse.ID
+				break
+			}
+		}
+		Expect(assistantToolUseID).To(HavePrefix("toolu_"))
+		// Tool result block
+		trID := result[2].Content[0].OfToolResult.ToolUseID
+		Expect(trID).To(HavePrefix("toolu_"))
+		// Load-bearing contract: they must match, otherwise the API returns 400 tool_use_id mismatch.
+		Expect(trID).To(Equal(assistantToolUseID))
+	})
+
+	It("leaves native toolu_-prefixed ids unchanged", func() {
+		m := provider.Message{
+			Role:      "tool",
+			Content:   "ok",
+			ToolCalls: []provider.ToolCall{{ID: "toolu_01NATIVEabc"}},
+		}
+		msg := buildToolResultMessage(m)
+		Expect(msg).NotTo(BeNil())
+		tr := msg.Content[0].OfToolResult
+		Expect(tr.ToolUseID).To(Equal("toolu_01NATIVEabc"))
 	})
 })
