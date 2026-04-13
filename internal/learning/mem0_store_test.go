@@ -12,11 +12,15 @@ import (
 
 type mockVectorStore struct {
 	upsertErr    error
+	upsertPoints []learning.VectorPoint
+	upsertCalled bool
 	searchResult []learning.ScoredVectorPoint
 	searchErr    error
 }
 
-func (m *mockVectorStore) Upsert(_ context.Context, _ string, _ []learning.VectorPoint, _ bool) error {
+func (m *mockVectorStore) Upsert(_ context.Context, _ string, points []learning.VectorPoint, _ bool) error {
+	m.upsertCalled = true
+	m.upsertPoints = append(m.upsertPoints, points...)
 	return m.upsertErr
 }
 
@@ -144,6 +148,41 @@ var _ = Describe("Mem0LearningStore", func() {
 				Expect(entries).To(HaveLen(1))
 				Expect(entries[0].UserMessage).To(BeEmpty())
 				Expect(entries[0].AgentID).To(BeEmpty())
+			})
+		})
+
+		Describe("Qdrant point ID contract", func() {
+			It("upserts points with a UUIDv5 ID, not a raw numeric timestamp", func() {
+				entry := learning.Entry{
+					Timestamp:   time.Unix(0, 1776075802192788529).UTC(),
+					AgentID:     "agent-1",
+					UserMessage: "hello",
+				}
+				Expect(store.Capture(entry)).To(Succeed())
+				Expect(vs.upsertCalled).To(BeTrue())
+				Expect(vs.upsertPoints).To(HaveLen(1))
+				Expect(vs.upsertPoints[0].ID).To(HaveLen(36))
+				Expect(vs.upsertPoints[0].ID).To(MatchRegexp(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`))
+			})
+
+			It("preserves the original numeric source ID in the point payload as source_id", func() {
+				entry := learning.Entry{
+					Timestamp:   time.Unix(0, 1776075802192788529).UTC(),
+					AgentID:     "agent-1",
+					UserMessage: "hello",
+				}
+				Expect(store.Capture(entry)).To(Succeed())
+				Expect(vs.upsertPoints).To(HaveLen(1))
+				Expect(vs.upsertPoints[0].Payload).To(HaveKeyWithValue("source_id", "1776075802192788529"))
+			})
+
+			It("produces the same UUID across repeated captures of the same timestamp (determinism)", func() {
+				ts := time.Unix(0, 1776075802192788529).UTC()
+				entry := learning.Entry{Timestamp: ts, AgentID: "agent-1", UserMessage: "hello"}
+				Expect(store.Capture(entry)).To(Succeed())
+				Expect(store.Capture(entry)).To(Succeed())
+				Expect(vs.upsertPoints).To(HaveLen(2))
+				Expect(vs.upsertPoints[0].ID).To(Equal(vs.upsertPoints[1].ID))
 			})
 		})
 	})

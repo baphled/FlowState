@@ -129,6 +129,26 @@ var _ = Describe("Client", func() {
 				Expect(results[0].Payload).To(HaveKeyWithValue("key", "value"))
 			})
 		})
+
+		Context("when the server returns integer IDs (legacy mem0/OpenCode writes)", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"result":[{"id":1776075781962028658,"score":0.42,"payload":{"text":"hello"}}]}`))
+				}))
+				DeferCleanup(server.Close)
+				client = qdrant.NewClient(server.URL, "", server.Client())
+			})
+
+			It("decodes the integer id into the string ID field without error", func() {
+				results, err := client.Search(context.Background(), "opencode_memory", []float64{0.1, 0.2}, 10)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1))
+				Expect(results[0].ID).To(Equal("1776075781962028658"))
+				Expect(results[0].Payload).To(HaveKeyWithValue("text", "hello"))
+			})
+		})
 	})
 
 	Describe("DeleteCollection", func() {
