@@ -6,6 +6,8 @@ package learning
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/mcp"
 )
@@ -50,8 +52,12 @@ func (m *MCPMemoryClient) CreateEntities(ctx context.Context, entities []Entity)
 	var out struct {
 		Entities []Entity `json:"entities"`
 	}
-	if err := m.callAndUnmarshal(ctx, "create_entities", map[string]any{"entities": entities}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "create_entities", map[string]any{"entities": entities}, &out)
+	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return []Entity{}, nil
 	}
 	if out.Entities == nil {
 		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
@@ -75,8 +81,12 @@ func (m *MCPMemoryClient) CreateRelations(ctx context.Context, relations []Relat
 	var out struct {
 		Relations []Relation `json:"relations"`
 	}
-	if err := m.callAndUnmarshal(ctx, "create_relations", map[string]any{"relations": relations}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "create_relations", map[string]any{"relations": relations}, &out)
+	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return []Relation{}, nil
 	}
 	if out.Relations == nil {
 		return nil, &json.UnmarshalTypeError{Value: "missing 'relations' field in MCP response", Type: nil}
@@ -100,8 +110,12 @@ func (m *MCPMemoryClient) SearchNodes(ctx context.Context, query string) ([]Enti
 	var out struct {
 		Entities []Entity `json:"entities"`
 	}
-	if err := m.callAndUnmarshal(ctx, "search_nodes", map[string]any{"query": query}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "search_nodes", map[string]any{"query": query}, &out)
+	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return []Entity{}, nil
 	}
 	if out.Entities == nil {
 		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
@@ -123,8 +137,12 @@ func (m *MCPMemoryClient) SearchNodes(ctx context.Context, query string) ([]Enti
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) OpenNodes(ctx context.Context, names []string) (KnowledgeGraph, error) {
 	var out KnowledgeGraph
-	if err := m.callAndUnmarshal(ctx, "open_nodes", map[string]any{"names": names}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "open_nodes", map[string]any{"names": names}, &out)
+	if err != nil {
 		return KnowledgeGraph{}, err
+	}
+	if empty {
+		return KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
 	}
 	if out.Entities == nil || out.Relations == nil {
 		return KnowledgeGraph{}, &json.UnmarshalTypeError{Value: "missing 'entities' or 'relations' field in MCP response", Type: nil}
@@ -148,8 +166,12 @@ func (m *MCPMemoryClient) AddObservations(ctx context.Context, observations []Ob
 	var out struct {
 		Observations []ObservationEntry `json:"observations"`
 	}
-	if err := m.callAndUnmarshal(ctx, "add_observations", map[string]any{"observations": observations}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "add_observations", map[string]any{"observations": observations}, &out)
+	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return []ObservationEntry{}, nil
 	}
 	return out.Observations, nil
 }
@@ -170,8 +192,12 @@ func (m *MCPMemoryClient) DeleteEntities(ctx context.Context, entityNames []stri
 	var out struct {
 		Deleted []string `json:"deleted"`
 	}
-	if err := m.callAndUnmarshal(ctx, "delete_entities", map[string]any{"entityNames": entityNames}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "delete_entities", map[string]any{"entityNames": entityNames}, &out)
+	if err != nil {
 		return nil, err
+	}
+	if empty {
+		return []string{}, nil
 	}
 	return out.Deleted, nil
 }
@@ -189,7 +215,8 @@ func (m *MCPMemoryClient) DeleteEntities(ctx context.Context, entityNames []stri
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) DeleteObservations(ctx context.Context, deletions []DeletionEntry) error {
 	var out struct{}
-	return m.callAndUnmarshal(ctx, "delete_observations", map[string]any{"deletions": deletions}, &out)
+	_, err := m.callAndUnmarshal(ctx, "delete_observations", map[string]any{"deletions": deletions}, &out)
+	return err
 }
 
 // DeleteRelations removes specific relations from the graph by calling the MCP tool.
@@ -205,7 +232,8 @@ func (m *MCPMemoryClient) DeleteObservations(ctx context.Context, deletions []De
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) DeleteRelations(ctx context.Context, relations []Relation) error {
 	var out struct{}
-	return m.callAndUnmarshal(ctx, "delete_relations", map[string]any{"relations": relations}, &out)
+	_, err := m.callAndUnmarshal(ctx, "delete_relations", map[string]any{"relations": relations}, &out)
+	return err
 }
 
 // ReadGraph returns the entire knowledge graph by calling the MCP tool.
@@ -221,8 +249,12 @@ func (m *MCPMemoryClient) DeleteRelations(ctx context.Context, relations []Relat
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) ReadGraph(ctx context.Context) (KnowledgeGraph, error) {
 	var out KnowledgeGraph
-	if err := m.callAndUnmarshal(ctx, "read_graph", map[string]any{}, &out); err != nil {
+	empty, err := m.callAndUnmarshal(ctx, "read_graph", map[string]any{}, &out)
+	if err != nil {
 		return KnowledgeGraph{}, err
+	}
+	if empty {
+		return KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
 	}
 	return out, nil
 }
@@ -255,6 +287,12 @@ func (m *MCPMemoryClient) WriteLearningRecord(record *Record) error {
 
 // callAndUnmarshal calls a tool and decodes the JSON response into target.
 //
+// Some MCP servers (notably the JS reference memory server) return non-JSON
+// text such as the literal string "undefined" on a non-error response when a
+// search yields no results. Those responses are treated as empty, not as
+// decode errors, so callers can surface "no results" semantics to consumers
+// instead of failing the entire recall query.
+//
 // Expected:
 //   - ctx is valid for the tool call.
 //   - toolName identifies the MCP tool.
@@ -262,20 +300,30 @@ func (m *MCPMemoryClient) WriteLearningRecord(record *Record) error {
 //   - target is a pointer to the destination value.
 //
 // Returns:
-//   - An error when the call fails, the tool reports an error, or decoding fails.
+//   - empty is true when the MCP server returned non-JSON content on a
+//     successful response; target is left untouched in that case.
+//   - An error when the call fails, the tool reports an error, or decoding
+//     a JSON-shaped payload fails.
 //
 // Side effects:
 //   - Calls the MCP server.
-func (m *MCPMemoryClient) callAndUnmarshal(ctx context.Context, toolName string, args map[string]any, target any) error {
+//   - Emits a debug-level log when an empty non-JSON response is observed.
+func (m *MCPMemoryClient) callAndUnmarshal(ctx context.Context, toolName string, args map[string]any, target any) (empty bool, err error) {
 	result, err := m.MCPClient.CallTool(ctx, m.MCPServer, toolName, args)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if result.IsError {
-		return &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+		return false, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+	}
+	trimmed := strings.TrimLeft(result.Content, " \t\r\n")
+	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+		slog.Debug("MCP memory server returned non-JSON content, treating as empty result",
+			"tool", toolName, "server", m.MCPServer)
+		return true, nil
 	}
 	if err := json.Unmarshal([]byte(result.Content), target); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return false, nil
 }
