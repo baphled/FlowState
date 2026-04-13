@@ -57,8 +57,8 @@ type CompletionOrchestrator struct {
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
 
-	mu            sync.Mutex
-	rePrompting   map[string]bool
+	mu          sync.Mutex
+	rePrompting map[string]bool
 	// rePromptPending flags sessions that received a completion event while a
 	// re-prompt was already in progress. After the current re-prompt finishes,
 	// the drain goroutine re-processes the session to avoid stranding events.
@@ -94,17 +94,17 @@ func NewCompletionOrchestrator(
 	broker SessionBrokerPublisher,
 ) *CompletionOrchestrator {
 	return &CompletionOrchestrator{
-		backgroundMgr: backgroundMgr,
-		sessionMgr:    sessionMgr,
-		eventBus:      eventBus,
-		broker:        broker,
-		completionCh:  make(chan completionEvent, 64),
-		stopCh:        make(chan struct{}),
+		backgroundMgr:   backgroundMgr,
+		sessionMgr:      sessionMgr,
+		eventBus:        eventBus,
+		broker:          broker,
+		completionCh:    make(chan completionEvent, 64),
+		stopCh:          make(chan struct{}),
 		rePrompting:     make(map[string]bool),
 		rePromptPending: make(map[string]bool),
 		rePromptCount:   make(map[string]int),
 		maxRePrompts:    3,
-		rePromptSubs:  make(map[string]chan<- (<-chan provider.StreamChunk)),
+		rePromptSubs:    make(map[string]chan<- (<-chan provider.StreamChunk)),
 	}
 }
 
