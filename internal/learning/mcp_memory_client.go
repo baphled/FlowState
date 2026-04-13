@@ -6,8 +6,6 @@ package learning
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/mcp"
 )
@@ -316,14 +314,6 @@ func (m *MCPMemoryClient) callAndUnmarshal(ctx context.Context, toolName string,
 	if result.IsError {
 		return false, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
 	}
-	trimmed := strings.TrimLeft(result.Content, " \t\r\n")
-	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
-		slog.Debug("MCP memory server returned non-JSON content, treating as empty result",
-			"tool", toolName, "server", m.MCPServer)
-		return true, nil
-	}
-	if err := json.Unmarshal([]byte(result.Content), target); err != nil {
-		return false, err
-	}
-	return false, nil
+	return mcp.DecodeContent(result.Content, target,
+		"tool", toolName, "server", m.MCPServer)
 }

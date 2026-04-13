@@ -7,7 +7,6 @@ package vault
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"time"
 
@@ -80,8 +79,13 @@ func (v *Source) Query(ctx context.Context, query string, limit int) ([]recall.O
 	}
 
 	var resp vaultResponse
-	if err := json.Unmarshal([]byte(result.Content), &resp); err != nil {
+	empty, err := mcp.DecodeContent(result.Content, &resp,
+		"tool", "query_vault", "server", v.serverName)
+	if err != nil {
 		return []recall.Observation{}, err
+	}
+	if empty {
+		return []recall.Observation{}, nil
 	}
 
 	observations := make([]recall.Observation, 0, len(resp.Chunks))
