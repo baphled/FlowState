@@ -74,8 +74,10 @@ var _ = Describe("VaultSource", func() {
 		Expect(results[0].ID).To(Equal("vault:/docs/note.md:" + strconv.Itoa(0)))
 	})
 
-	It("returns empty slice when JSON is malformed", func() {
-		stubMC.result = &mcp.ToolResult{Content: "not-json", IsError: false}
+	It("returns an error when JSON-shaped content is syntactically malformed", func() {
+		// Content begins with '{' so it IS a JSON-shape response, but it's
+		// broken. That is a real decode error and must surface.
+		stubMC.result = &mcp.ToolResult{Content: `{"chunks": [`, IsError: false}
 		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
 		results, err := source.Query(ctx, "test", 5)
 		Expect(err).To(HaveOccurred())
@@ -84,6 +86,36 @@ var _ = Describe("VaultSource", func() {
 
 	It("returns empty slice when chunks array is empty", func() {
 		stubMC.result = &mcp.ToolResult{Content: `{"chunks":[]}`, IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
+	// Reproduces the post-restart 2026-04-13 20:43:35 recall broker log:
+	//   "warning: recall source query failed: invalid character 'u'
+	//    looking for beginning of value"
+	// The vault-rag MCP server emitted the literal string "undefined" on a
+	// no-result response; that is non-JSON content and must be treated as
+	// an empty result, not a decode error.
+	It("returns empty slice without error when MCP returns non-JSON text such as 'undefined'", func() {
+		stubMC.result = &mcp.ToolResult{Content: "undefined", IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
+	It("returns empty slice without error when MCP returns whitespace-only content", func() {
+		stubMC.result = &mcp.ToolResult{Content: "   \t\r\n   ", IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
+	It("returns empty slice without error when MCP returns an empty string", func() {
+		stubMC.result = &mcp.ToolResult{Content: "", IsError: false}
 		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
 		results, err := source.Query(ctx, "test", 5)
 		Expect(err).ToNot(HaveOccurred())
