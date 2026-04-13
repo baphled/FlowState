@@ -129,6 +129,41 @@ var _ = Describe("MCPMemoryClient", func() {
 			_, err := mem.SearchNodes(context.Background(), "Alice")
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("returns empty result without error when MCP returns non-JSON text such as 'undefined'", func() {
+			client.result = &mcp.ToolResult{Content: `undefined`}
+			client.err = nil
+
+			result, err := mem.SearchNodes(context.Background(), "Alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("returns empty result without error when MCP returns whitespace-only content", func() {
+			client.result = &mcp.ToolResult{Content: "   \n\t  "}
+			client.err = nil
+
+			result, err := mem.SearchNodes(context.Background(), "Alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("returns empty result without error when MCP returns an empty string", func() {
+			client.result = &mcp.ToolResult{Content: ""}
+			client.err = nil
+
+			result, err := mem.SearchNodes(context.Background(), "Alice")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeEmpty())
+		})
+
+		It("still returns the IsError sentinel when MCP reports tool error", func() {
+			client.result = &mcp.ToolResult{Content: "boom", IsError: true}
+			client.err = nil
+
+			_, err := mem.SearchNodes(context.Background(), "Alice")
+			Expect(err).To(HaveOccurred())
+		})
 	})
 
 	Describe("OpenNodes", func() {
