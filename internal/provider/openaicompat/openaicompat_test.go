@@ -1006,6 +1006,97 @@ var _ = Describe("WrapChatError", func() {
 	})
 })
 
+// Cross-provider failover: when session history contains tool-call IDs
+// emitted by Anthropic ("toolu_..."), the OpenAI-compat request builder
+// must translate them to call_-prefixed IDs so OpenAI-style providers accept them.
+// Bug #1: tool_use_id mismatch after failover.
+var _ = Describe("cross-provider failover id translation (OpenAI-compat target)", func() {
+	It("rewrites a foreign toolu_-style id to a call_-prefixed id in tool message", func() {
+		msgs := []provider.Message{{
+			Role:      "tool",
+			Content:   "result from previously-anthropic tool call",
+			ToolCalls: []provider.ToolCall{{ID: "toolu_01FOREIGN"}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool).NotTo(BeNil())
+		Expect(result[0].OfTool.ToolCallID).To(HavePrefix("call_"))
+		Expect(result[0].OfTool.ToolCallID).NotTo(Equal("toolu_01FOREIGN"))
+	})
+
+	It("rewrites a foreign toolu_-style id in assistant tool_calls", func() {
+		msgs := []provider.Message{{
+			Role:    "assistant",
+			Content: "calling",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "toolu_01FOREIGN",
+				Name:      "get_weather",
+				Arguments: map[string]any{"city": "London"},
+			}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		toolCalls := result[0].GetToolCalls()
+		Expect(toolCalls).To(HaveLen(1))
+		Expect(toolCalls[0].ID).To(HavePrefix("call_"))
+		Expect(toolCalls[0].ID).NotTo(Equal("toolu_01FOREIGN"))
+	})
+
+	It("preserves pairing: assistant tool_calls id matches subsequent tool message id after translation", func() {
+		foreign := "toolu_01ORIGINAL_FROM_ANTHROPIC"
+		msgs := []provider.Message{
+			{Role: "user", Content: "what is the weather"},
+			{Role: "assistant", Content: "", ToolCalls: []provider.ToolCall{{
+				ID: foreign, Name: "get_weather", Arguments: map[string]any{"city": "London"},
+			}}},
+			{Role: "tool", Content: "15c", ToolCalls: []provider.ToolCall{{ID: foreign}}},
+		}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(3))
+		assistantCalls := result[1].GetToolCalls()
+		Expect(assistantCalls).To(HaveLen(1))
+		Expect(assistantCalls[0].ID).To(HavePrefix("call_"))
+		Expect(result[2].OfTool).NotTo(BeNil())
+		// Load-bearing contract: ids must match intra-request.
+		Expect(result[2].OfTool.ToolCallID).To(Equal(assistantCalls[0].ID))
+	})
+
+	It("leaves native call_-prefixed ids unchanged", func() {
+		msgs := []provider.Message{{
+			Role:      "tool",
+			Content:   "ok",
+			ToolCalls: []provider.ToolCall{{ID: "call_NATIVE_abc"}},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		Expect(result[0].OfTool.ToolCallID).To(Equal("call_NATIVE_abc"))
+	})
+})
+
+// Secondary fix: when a tool message bundles multiple tool calls, BuildMessages
+// must emit a ToolMessage per tool-call ID, not silently drop indices >= 1.
+var _ = Describe("BuildMessages multi-tool-call tool-role handling", func() {
+	It("emits one tool message per tool call id, preserving ordering", func() {
+		msgs := []provider.Message{{
+			Role:    "tool",
+			Content: "shared result payload",
+			ToolCalls: []provider.ToolCall{
+				{ID: "call_first"},
+				{ID: "call_second"},
+				{ID: "call_third"},
+			},
+		}}
+		result := openaicompat.BuildMessages(msgs)
+		Expect(result).To(HaveLen(3))
+		Expect(result[0].OfTool).NotTo(BeNil())
+		Expect(result[0].OfTool.ToolCallID).To(Equal("call_first"))
+		Expect(result[1].OfTool).NotTo(BeNil())
+		Expect(result[1].OfTool.ToolCallID).To(Equal("call_second"))
+		Expect(result[2].OfTool).NotTo(BeNil())
+		Expect(result[2].OfTool.ToolCallID).To(Equal("call_third"))
+	})
+})
+
 func unmarshalToolCall(raw string) openaiAPI.ChatCompletionMessageToolCall {
 	var tc openaiAPI.ChatCompletionMessageToolCall
 	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
