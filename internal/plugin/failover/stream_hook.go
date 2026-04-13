@@ -62,6 +62,19 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			return nil, errors.New("no healthy providers available")
 		}
 
+		// Honour a parent ctx that is already cancelled or past its
+		// deadline at loop entry — this is how an upstream caller signals
+		// "don't even try" (explicit user cancel, expired deadline).
+		//
+		// Between attempts we deliberately do NOT re-check ctx.Err():
+		// the per-attempt ctx is detached in attemptCandidate, so a
+		// cleanup cascade on the parent (e.g. the previous attempt's
+		// derived cancel propagating, a racing goroutine) cannot leak
+		// into later attempts. This is the core of the Bug #2 fix.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("all providers failed: %w", err)
+		}
+
 		var lastErr error
 		for _, candidate := range candidates {
 			req.Provider = candidate.Provider
@@ -100,7 +113,24 @@ func (sh *StreamHook) attemptCandidate(
 	req *provider.ChatRequest,
 	candidate provider.ModelPreference,
 ) (<-chan provider.StreamChunk, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, sh.manager.StreamTimeout())
+	// Detach cancellation so a previous attempt's cleanup (its derived
+	// cancel() firing, a racing goroutine, or any transient parent-chain
+	// cancel not originating from the caller) cannot short-circuit this
+	// attempt. Values (e.g. session.IDKey) still propagate.
+	//
+	// A genuine parent deadline is still honoured: we clamp the per-attempt
+	// timeout to whichever is shorter — the configured stream timeout or
+	// the remaining time until the parent's deadline. Explicit
+	// parent-cancel is enforced one level up in Execute before this
+	// function is called.
+	detached := context.WithoutCancel(ctx)
+	attemptTimeout := sh.manager.StreamTimeout()
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < attemptTimeout {
+			attemptTimeout = remaining
+		}
+	}
+	timeoutCtx, cancel := context.WithTimeout(detached, attemptTimeout)
 
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
