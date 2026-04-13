@@ -130,11 +130,10 @@ func New(cfg *config.AppConfig) (*App, error) {
 	agentRegistry := setupAgentRegistry(cfg)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
-	defaultProvider, err := providerRegistry.Get(cfg.Providers.Default)
-	if err != nil {
+	if _, err := providerRegistry.Get(cfg.Providers.Default); err != nil {
 		return nil, fmt.Errorf("getting default provider: %w", err)
 	}
-	sessionStore, learningStore, err := createDataStores(cfg, defaultProvider)
+	sessionStore, learningStore, err := createDataStores(cfg, ollamaProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +255,7 @@ func configureApplicationAfterBuild(
 			app.API.SetCompletionOrchestrator(app.completionOrchestrator)
 		}
 	}
-	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider), runtime.mcpManager)
+	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider, app.ollamaProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)
 	startExternalPlugins(rt)
 }
@@ -415,6 +414,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
 	chainStore := createChainStore(params.cfg)
+	broker := buildRecallBrokerFromSetup(params, tracedProvider, tp.mcpManager, contextStore, chainStore)
 	eng, setEnsureTools := createEngine(engineParams{
 		defaultProvider:      tracedProvider,
 		ollamaProvider:       params.ollamaProvider,
@@ -436,7 +436,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		failoverManager:      params.failoverManager,
 		dispatcher:           params.dispatcher,
 		skillDir:             params.cfg.SkillDir,
-		recallBroker:         buildRecallBroker(params.cfg, tracedProvider, tp.mcpManager, contextStore, chainStore),
+		recallBroker:         broker,
 	})
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
@@ -466,6 +466,37 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		setEnsureTools:  setEnsureTools,
 		sessionManager:  sessionMgr,
 	}, nil
+}
+
+// buildRecallBrokerFromSetup is a thin helper that translates setupEngine's
+// locals into a recallBrokerParams value. Keeping this as a helper prevents
+// setupEngine from exceeding the 60-line function length limit.
+//
+// Expected:
+//   - params is the setupEngine input bundle.
+//   - chatProvider is the traced chat provider; retained for compatibility.
+//   - mcpClient, contextStore, chainStore are the recall source dependencies.
+//
+// Returns:
+//   - The recall.Broker as constructed by buildRecallBroker.
+//
+// Side effects:
+//   - Delegates to buildRecallBroker; no direct I/O.
+func buildRecallBrokerFromSetup(
+	params setupEngineParams,
+	chatProvider provider.Provider,
+	mcpClient mcpclient.Client,
+	contextStore *recall.FileContextStore,
+	chainStore recall.ChainContextStore,
+) recall.Broker {
+	return buildRecallBroker(recallBrokerParams{
+		cfg:            params.cfg,
+		chatProvider:   chatProvider,
+		mcpClient:      mcpClient,
+		contextStore:   contextStore,
+		chainStore:     chainStore,
+		ollamaProvider: params.ollamaProvider,
+	})
 }
 
 // toolPipelineResult groups the outputs of buildToolPipeline.
@@ -2206,7 +2237,9 @@ func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with a valid DataDir path.
-//   - p is a non-nil provider.Provider for embeddings.
+//   - ollamaProvider may be nil; when nil and Qdrant is configured, the
+//     learning store is created with a no-op embedder so writes surface a
+//     clear error rather than silently corrupting the collection.
 //
 // Returns:
 //   - A FileSessionStore for persisting session data.
@@ -2216,7 +2249,7 @@ func setupAgentRegistry(cfg *config.AppConfig) *agent.Registry {
 // Side effects:
 //   - Creates the sessions subdirectory if it does not exist.
 //   - Initializes Qdrant client when configured; no file created otherwise.
-func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.FileSessionStore, learning.Store, error) {
+func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ctxstore.FileSessionStore, learning.Store, error) {
 	sessionStore, err := ctxstore.NewFileSessionStore(filepath.Join(cfg.DataDir, "sessions"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating session store: %w", err)
@@ -2226,7 +2259,7 @@ func createDataStores(cfg *config.AppConfig, p provider.Provider) (*ctxstore.Fil
 	var learningStore learning.Store
 	if cfg.Qdrant.URL != "" {
 		qdrantClient := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-		embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+		embedder := newRecallEmbedder(ollamaProvider)
 		adapter := &qdrantClientAdapter{client: qdrantClient}
 		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
 	}
@@ -2349,38 +2382,29 @@ func toEmbeddingProvider(ollamaProvider *ollama.Provider) provider.Provider {
 	return nil
 }
 
-// providerEmbedderAdapter bridges provider.Provider to qdrant.ProviderEmbedder
-// by converting the string-based Embed call to a provider.EmbedRequest.
-type providerEmbedderAdapter struct {
-	p provider.Provider
-}
-
-// Embed delegates to the wrapped provider, converting the text argument to
-// a provider.EmbedRequest.
-//
-// Expected:
-//   - ctx is non-nil.
-//   - text is a non-empty string to embed.
-//
-// Returns:
-//   - A float64 slice of the embedding vector on success.
-//   - An error if the underlying provider fails.
-//
-// Side effects:
-//   - Delegates to the configured provider.Provider.
-func (a *providerEmbedderAdapter) Embed(ctx context.Context, text string) ([]float64, error) {
-	return a.p.Embed(ctx, provider.EmbedRequest{Input: text})
+// recallBrokerParams groups the dependencies required to build a recall broker.
+type recallBrokerParams struct {
+	cfg            *config.AppConfig
+	chatProvider   provider.Provider
+	mcpClient      mcpclient.Client
+	contextStore   *recall.FileContextStore
+	chainStore     recall.ChainContextStore
+	ollamaProvider embedRequester
 }
 
 // buildRecallBroker constructs a recall.Broker wired with MCP memory, vault, and
 // optionally Qdrant-backed sources.
 //
 // Expected:
-//   - cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
-//   - p is the provider used for embedding computation.
-//   - mcpClient is the MCP manager used to reach the memory and vault-rag servers.
-//   - contextStore is the session context store; may be nil.
-//   - chainStore is the chain context store; may be nil.
+//   - params.cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
+//   - params.chatProvider is retained for signature compatibility but NOT used
+//     for embeddings — chat providers (e.g. anthropic) do not expose an
+//     embeddings endpoint. Embeddings are routed to params.ollamaProvider.
+//   - params.mcpClient is the MCP manager used to reach memory and vault-rag.
+//   - params.contextStore is the session context store; may be nil.
+//   - params.chainStore is the chain context store; may be nil.
+//   - params.ollamaProvider is the Ollama provider used for embeddings; when
+//     nil, a no-op embedder is used and Qdrant queries surface a clear error.
 //
 // Returns:
 //   - A non-nil recall.Broker with MCP memory and vault sources always attached.
@@ -2388,18 +2412,14 @@ func (a *providerEmbedderAdapter) Embed(ctx context.Context, text string) ([]flo
 //
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
-func buildRecallBroker(
-	cfg *config.AppConfig,
-	p provider.Provider,
-	mcpClient mcpclient.Client,
-	contextStore *recall.FileContextStore,
-	chainStore recall.ChainContextStore,
-) recall.Broker {
-	memClient := learning.NewMCPMemoryClient(mcpClient, "memory")
+func buildRecallBroker(params recallBrokerParams) recall.Broker {
+	_ = params.chatProvider // retained for compatibility; embeddings use Ollama.
+	cfg := params.cfg
+	memClient := learning.NewMCPMemoryClient(params.mcpClient, "memory")
 	memSource := recall.NewMCPMemorySource(recall.NewMCPLearningSource(memClient, nil))
-	vaultSource := vaultrecall.NewVaultSource(mcpClient, "vault-rag", "")
-	sessionSrc := recall.NewSessionSource(contextStore)
-	chainSrc := recall.NewChainSource(chainStore)
+	vaultSource := vaultrecall.NewVaultSource(params.mcpClient, "vault-rag", "")
+	sessionSrc := recall.NewSessionSource(params.contextStore)
+	chainSrc := recall.NewChainSource(params.chainStore)
 
 	if cfg.Qdrant.URL == "" {
 		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL to enable vector recall")
@@ -2410,7 +2430,7 @@ func buildRecallBroker(
 		col = "flowstate-recall"
 	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+	embedder := newRecallEmbedder(params.ollamaProvider)
 	source := qdrantrecall.NewSource(client, embedder, col)
 	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, memSource, vaultSource)
 }
@@ -2419,7 +2439,10 @@ func buildRecallBroker(
 //
 // Expected:
 //   - cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
-//   - p is the provider used for embedding computation.
+//   - chatProvider is retained for signature compatibility but NOT used for
+//     embeddings — see Bug #4. Embeddings are routed to ollamaProvider.
+//   - ollamaProvider is the Ollama provider used for embeddings; when nil, a
+//     no-op embedder is used and distillation writes surface a clear error.
 //
 // Returns:
 //   - A non-nil Distiller when cfg.Qdrant.URL is non-empty.
@@ -2427,7 +2450,7 @@ func buildRecallBroker(
 //
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
-func buildDistiller(cfg *config.AppConfig, p provider.Provider) learning.Distiller {
+func buildDistiller(cfg *config.AppConfig, _ provider.Provider, ollamaProvider embedRequester) learning.Distiller {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
 	}
@@ -2436,7 +2459,7 @@ func buildDistiller(cfg *config.AppConfig, p provider.Provider) learning.Distill
 		col = "flowstate-recall"
 	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := qdrantrecall.NewOllamaEmbedder(&providerEmbedderAdapter{p: p})
+	embedder := newRecallEmbedder(ollamaProvider)
 	adapter := &qdrantClientAdapter{client: client}
 	memClient := learning.NewVectorStoreMemoryClient(adapter, embedder, col)
 	return learning.NewStructuredDistiller(memClient)
