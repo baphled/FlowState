@@ -32,12 +32,12 @@ type Streamer interface {
 
 // Server provides HTTP endpoints for the FlowState platform.
 type Server struct {
-	streamer          Streamer
-	registry          *agent.Registry
-	discovery         *discovery.AgentDiscovery
-	skills            []skill.Skill
-	sessions          *ctxstore.FileSessionStore
-	sessionManager    *session.Manager
+	streamer               Streamer
+	registry               *agent.Registry
+	discovery              *discovery.AgentDiscovery
+	skills                 []skill.Skill
+	sessions               *ctxstore.FileSessionStore
+	sessionManager         *session.Manager
 	sessionBroker          *SessionBroker
 	todoStore              todo.Store
 	backgroundManager      *engine.BackgroundTaskManager
