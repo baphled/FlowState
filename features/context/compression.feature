@@ -57,3 +57,22 @@ Feature: Context Compression — Layers 1 and 2
     When the auto-compactor rehydrates
     Then the rehydrated window leads with a system message carrying the intent
     And the rehydrated window carries one tool message per queued file
+
+  @session-memory
+  Scenario: Session memory persists and reloads across store instances
+    Given a session memory store is seeded with 2 facts and 1 preference
+    When the store is saved and reloaded into a fresh instance
+    Then the reloaded store exposes every original entry
+
+  @session-memory
+  Scenario: Retrieve filters by type, sorts by relevance, and honours the floor
+    Given a session memory store with mixed-type entries
+    When I retrieve up to 5 fact entries
+    Then the retrieved list is sorted by relevance descending
+    And no retrieved entry has relevance below 0.3
+
+  @session-memory
+  Scenario: Knowledge extractor merges entries without duplicating by content
+    Given a knowledge extractor backed by a scripted provider returning 2 entries
+    When the extractor runs twice on the same transcript
+    Then the session memory store holds 2 unique entries
