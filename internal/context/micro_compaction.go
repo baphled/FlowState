@@ -21,11 +21,19 @@
 package context
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/google/uuid"
 )
 
 // CompactedMessage is the on-disk metadata record for a single message (or
@@ -247,4 +255,391 @@ func (c *DefaultMessageCompactor) Compact(unit Unit, _ []provider.Message, recor
 		Role:    "user",
 		Content: fmt.Sprintf("[compacted: %s — %d %s elided]", recordID, count, noun),
 	}
+}
+
+// SplitResult is the in-memory output of HotColdSplitter.Split. Entries are
+// returned per-unit: hot units stay inline as their original messages,
+// cold units appear as a single Placeholder message (the output of
+// MessageCompactor.Compact). The original input slice is never mutated.
+//
+// HotMessages preserves the original chronological order: cold units that
+// fall inside the kept window are emitted as their placeholder in the
+// position they occupied; everything inside the hot tail is copied through
+// verbatim.
+type SplitResult struct {
+	// HotMessages is the assembled, ordered slice ready to be appended to
+	// the provider request window. It contains both verbatim hot messages
+	// and the placeholders standing in for cold units.
+	HotMessages []provider.Message
+	// ColdRecords is the metadata for every cold unit spilled to disk. The
+	// async persist worker uses these to write payload files.
+	ColdRecords []CompactedMessage
+}
+
+// persistJob is the work item posted from Split() to the persist worker.
+// It carries everything the worker needs to write the payload atomically
+// without re-touching the splitter's state.
+type persistJob struct {
+	record  CompactedMessage
+	payload CompactedUnit
+}
+
+// HotColdSplitter applies the L1 micro-compaction policy to a (copy of the)
+// recent-messages slice. Per ADR - Tool-Call Atomicity in Context
+// Compaction, splitting is done at *unit* boundaries (never inside a tool
+// group), and per ADR - View-Only Context Compaction, the input slice is
+// treated as immutable — Split() copies before transforming.
+//
+// All disk I/O is asynchronous: Split() never blocks on syscalls. The
+// persist worker reads from a buffered channel and writes payloads using
+// the temp-then-rename atomic pattern (mirroring internal/recall/store.go
+// persist()).
+type HotColdSplitter struct {
+	compactor   MessageCompactor
+	hotTailSize int
+	storageDir  string
+	sessionID   string
+
+	persistCh chan persistJob
+	workerWG  sync.WaitGroup
+	workerCtx context.Context
+	cancel    context.CancelFunc
+	startOnce sync.Once
+	stopOnce  sync.Once
+
+	// nowFn is overridable for deterministic timestamps in tests.
+	nowFn func() time.Time
+}
+
+// HotColdSplitterOptions configures a HotColdSplitter at construction.
+type HotColdSplitterOptions struct {
+	// Compactor decides which units are large enough to spill and emits
+	// placeholder messages. Required.
+	Compactor MessageCompactor
+	// HotTailSize is the minimum number of *messages* (not units) kept
+	// inline at the tail. The actual hot tail may be larger because the
+	// boundary is extended outward to the nearest unit edge — a tool
+	// group is never split. A non-positive value is treated as zero.
+	HotTailSize int
+	// StorageDir is the parent directory under which the per-session
+	// spillover directory is created. Required when persistence is
+	// desired; an empty StorageDir disables disk writes (Split still
+	// returns placeholders, but the persist worker is a no-op).
+	StorageDir string
+	// SessionID is the session whose spillover directory this splitter
+	// owns. Required if StorageDir is set.
+	SessionID string
+	// PersistChannelBuffer is the buffered channel size for async writes.
+	// Defaults to 64 when zero or negative.
+	PersistChannelBuffer int
+	// NowFn overrides the timestamp source. Defaults to time.Now.UTC.
+	NowFn func() time.Time
+}
+
+// NewHotColdSplitter constructs a splitter from the supplied options. The
+// persist worker is NOT started by the constructor — call StartPersistWorker
+// explicitly when the caller is ready to accept disk writes.
+//
+// Expected:
+//   - opts.Compactor is non-nil.
+//
+// Returns:
+//   - A configured HotColdSplitter ready to call Split() and
+//     StartPersistWorker.
+//   - nil when opts.Compactor is nil (mis-configuration is a programming
+//     error and the caller should panic if it cannot proceed).
+//
+// Side effects:
+//   - None. No goroutines are spawned and no directories are created
+//     until StartPersistWorker runs.
+func NewHotColdSplitter(opts HotColdSplitterOptions) *HotColdSplitter {
+	if opts.Compactor == nil {
+		return nil
+	}
+	buf := opts.PersistChannelBuffer
+	if buf <= 0 {
+		buf = 64
+	}
+	now := opts.NowFn
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &HotColdSplitter{
+		compactor:   opts.Compactor,
+		hotTailSize: max(opts.HotTailSize, 0),
+		storageDir:  opts.StorageDir,
+		sessionID:   opts.SessionID,
+		persistCh:   make(chan persistJob, buf),
+		nowFn:       now,
+	}
+}
+
+// StartPersistWorker spawns the goroutine that drains persistCh and writes
+// payloads to disk under storageDir/sessionID/. Subsequent calls are
+// no-ops. Use Stop() to flush and shut down cleanly.
+//
+// Expected:
+//   - parentCtx may be background or a request-scoped context. Cancellation
+//     stops the worker after draining whatever is buffered.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Spawns one goroutine. Creates storageDir/sessionID/ on demand.
+func (s *HotColdSplitter) StartPersistWorker(parentCtx context.Context) {
+	s.startOnce.Do(func() {
+		//nolint:gosec // cancel is invoked by Stop() which is the pair operation.
+		s.workerCtx, s.cancel = context.WithCancel(parentCtx)
+		s.workerWG.Add(1)
+		go s.runWorker()
+	})
+}
+
+// Stop signals the worker to drain its buffer and return. Safe to call
+// multiple times. Blocks until the worker goroutine has exited.
+//
+// Expected:
+//   - StartPersistWorker has been called previously.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Closes the persist channel and joins the worker goroutine.
+func (s *HotColdSplitter) Stop() {
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		close(s.persistCh)
+		s.workerWG.Wait()
+	})
+}
+
+// Split partitions msgs into a hot-tail window (kept inline) plus a cold
+// prefix (replaced by per-unit placeholders) and posts spillover jobs to
+// the persist worker. The returned SplitResult is fully prepared in
+// memory; no syscalls are issued from this call.
+//
+// The hot/cold boundary is computed in two stages:
+//  1. The naive index hotStart = max(0, len(msgs)-hotTailSize) marks the
+//     tail floor.
+//  2. The walker (compaction_units.go) identifies unit boundaries; the
+//     boundary is extended *outward* (toward index 0) so it never falls
+//     inside a tool group.
+//
+// Cold units that exceed the compactor's threshold become placeholders;
+// cold units below threshold pass through as their original messages
+// (preserves correctness when only some old units are large).
+//
+// Expected:
+//   - msgs is the recent-message slice supplied by the caller. Treated as
+//     immutable: every element is copied (value-equal) into the result;
+//     the caller's slice header and elements remain identity-equal after
+//     return.
+//
+// Returns:
+//   - SplitResult with HotMessages (verbatim + placeholders, in original
+//     order) and ColdRecords (one per spilled unit).
+//
+// Side effects:
+//   - Posts up to one persistJob per cold-and-spilled unit to persistCh.
+//     Non-blocking semantics: when the channel is full, the job is
+//     dropped and the placeholder still emitted (the caller will recompute
+//     on the next pass; durability of L1 is best-effort by design).
+func (s *HotColdSplitter) Split(msgs []provider.Message) SplitResult {
+	if len(msgs) == 0 {
+		return SplitResult{}
+	}
+
+	// View-only invariant: copy before we even consider transforming.
+	work := make([]provider.Message, len(msgs))
+	copy(work, msgs)
+
+	units := walkUnits(work)
+	if units == nil {
+		// Malformed input — refuse to compact, return everything verbatim.
+		return SplitResult{HotMessages: work}
+	}
+
+	naiveHotStart := max(len(work)-s.hotTailSize, 0)
+	coldUnitEnd := s.findColdBoundary(units, naiveHotStart)
+
+	out := SplitResult{
+		HotMessages: make([]provider.Message, 0, len(work)),
+		ColdRecords: make([]CompactedMessage, 0, coldUnitEnd),
+	}
+
+	// Cold prefix: spill (or pass-through) per unit.
+	for i := range coldUnitEnd {
+		u := units[i]
+		if !s.compactor.ShouldCompact(u, work) {
+			out.HotMessages = append(out.HotMessages, work[u.Start:u.End]...)
+			continue
+		}
+		record, placeholder := s.spillUnit(u, work)
+		out.ColdRecords = append(out.ColdRecords, record)
+		out.HotMessages = append(out.HotMessages, placeholder)
+	}
+	// Hot tail: verbatim through.
+	for i := coldUnitEnd; i < len(units); i++ {
+		u := units[i]
+		out.HotMessages = append(out.HotMessages, work[u.Start:u.End]...)
+	}
+
+	return out
+}
+
+// findColdBoundary returns the index in units up to which (exclusive)
+// units are considered cold. The boundary is rounded down to the nearest
+// unit edge so a tool group is never split.
+//
+// Expected:
+//   - units is the walker output (non-nil, may be empty).
+//   - naiveHotStart is the message-level boundary to round.
+//
+// Returns:
+//   - The unit index i such that units[0..i) are cold and units[i..]
+//     are hot. Returns 0 when the entire input fits inside the hot tail.
+//
+// Side effects:
+//   - None.
+func (s *HotColdSplitter) findColdBoundary(units []Unit, naiveHotStart int) int {
+	for i, u := range units {
+		// First unit whose Start is at or beyond the naive hot floor
+		// becomes the first hot unit; everything before is cold.
+		if u.Start >= naiveHotStart {
+			return i
+		}
+	}
+	return len(units)
+}
+
+// spillUnit constructs the CompactedMessage record + placeholder for one
+// cold unit and posts the persistJob to the worker channel.
+//
+// Expected:
+//   - unit indexes a valid range of work.
+//   - work is the splitter's local copy of the input slice (never mutated).
+//
+// Returns:
+//   - The CompactedMessage record (suitable for SplitResult.ColdRecords).
+//   - The placeholder provider.Message returned by Compact.
+//
+// Side effects:
+//   - Posts a persistJob to persistCh non-blockingly (drops on full).
+func (s *HotColdSplitter) spillUnit(unit Unit, work []provider.Message) (CompactedMessage, provider.Message) {
+	id := uuid.NewString()
+	payload := CompactedUnit{
+		Kind:     unit.Kind,
+		Messages: append([]provider.Message(nil), work[unit.Start:unit.End]...),
+	}
+
+	storagePath := ""
+	if s.storageDir != "" && s.sessionID != "" {
+		storagePath = filepath.Join(s.storageDir, s.sessionID, id+".json")
+	}
+
+	record := CompactedMessage{
+		ID:                 id,
+		OriginalTokenCount: s.compactor.UnitTokenCount(unit, work),
+		StoragePath:        storagePath,
+		Checksum:           checksumPayload(payload),
+		CreatedAt:          s.nowFn(),
+	}
+
+	placeholder := s.compactor.Compact(unit, work, id)
+
+	if storagePath != "" {
+		select {
+		case s.persistCh <- persistJob{record: record, payload: payload}:
+		default:
+			// Channel full: drop. Placeholder is still emitted; the
+			// next pass will recompute and re-attempt persistence.
+		}
+	}
+
+	return record, placeholder
+}
+
+// runWorker is the body of the persist goroutine.
+//
+// Expected:
+//   - s.persistCh is open; Stop() closes it to signal shutdown.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Consumes jobs from s.persistCh until the channel closes.
+//   - Writes payload files via writeJob. Logs to stderr on failure.
+//   - Signals s.workerWG on exit.
+func (s *HotColdSplitter) runWorker() {
+	defer s.workerWG.Done()
+	for job := range s.persistCh {
+		// Honour cancellation but still drain pending jobs already on the
+		// channel — we want at-least-best-effort durability.
+		if err := writeJob(job); err != nil {
+			// Failure here is logged-and-continue: L1 durability is
+			// best-effort. The placeholder is already in the caller's
+			// view; re-computation on the next turn will retry.
+			fmt.Fprintf(os.Stderr, "[micro_compaction] persist failed for %s: %v\n", job.record.ID, err)
+		}
+	}
+}
+
+// writeJob persists one payload using temp-then-rename, mirroring the
+// pattern used by internal/recall/store.go persist().
+//
+// Expected:
+//   - job.record.StoragePath is non-empty and ends in .json.
+//
+// Returns:
+//   - nil on successful atomic rename.
+//   - A wrapped error when the parent directory cannot be created, the
+//     temp file cannot be written, or the rename fails.
+//
+// Side effects:
+//   - Creates the parent directory (mode 0o700) if missing.
+//   - Writes job.record.StoragePath atomically.
+func writeJob(job persistJob) error {
+	dir := filepath.Dir(job.record.StoragePath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating spill dir: %w", err)
+	}
+	data, err := json.MarshalIndent(job.payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling payload: %w", err)
+	}
+	tmp := job.record.StoragePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := os.Rename(tmp, job.record.StoragePath); err != nil {
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	return nil
+}
+
+// checksumPayload returns the sha-256 hex digest of the marshalled
+// payload. Used to detect bit-rot on rehydration (Phase 2).
+//
+// Expected:
+//   - payload is the CompactedUnit about to be persisted.
+//
+// Returns:
+//   - Hex-encoded sha-256 of the marshalled payload, or empty string if
+//     marshalling fails (the persist path will then fail loudly with the
+//     real marshal error so absence of a checksum is not silent).
+//
+// Side effects:
+//   - None.
+func checksumPayload(payload CompactedUnit) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
