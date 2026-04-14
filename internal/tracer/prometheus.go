@@ -11,10 +11,12 @@ var _ Recorder = (*prometheusRecorder)(nil)
 
 // prometheusRecorder implements Recorder using Prometheus counters and histograms.
 type prometheusRecorder struct {
-	retries          *prometheus.CounterVec
-	validationScores *prometheus.HistogramVec
-	criticResults    *prometheus.CounterVec
-	providerLatency  *prometheus.HistogramVec
+	retries              *prometheus.CounterVec
+	validationScores     *prometheus.HistogramVec
+	criticResults        *prometheus.CounterVec
+	providerLatency      *prometheus.HistogramVec
+	contextWindowTokens  *prometheus.GaugeVec
+	compressionTokensSav *prometheus.CounterVec
 }
 
 // NewPrometheusRecorder returns a Recorder backed by Prometheus metrics registered with reg.
@@ -26,7 +28,7 @@ type prometheusRecorder struct {
 //   - A Recorder that records metrics to the provided Prometheus registry.
 //
 // Side effects:
-//   - Registers four Prometheus collectors with reg.
+//   - Registers six Prometheus collectors with reg.
 func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 	return &prometheusRecorder{
 		retries: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
@@ -47,6 +49,14 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 			Help:    "Provider call latency in milliseconds.",
 			Buckets: prometheus.ExponentialBuckets(1, 2, 12),
 		}, []string{"provider", "method"}),
+		contextWindowTokens: promauto.With(reg).NewGaugeVec(prometheus.GaugeOpts{
+			Name: "flowstate_context_window_tokens",
+			Help: "Size in tokens of the most recently assembled context window per agent.",
+		}, []string{"agent_id"}),
+		compressionTokensSav: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "flowstate_compression_tokens_saved_total",
+			Help: "Cumulative tokens eliminated by L2 auto-compaction per agent.",
+		}, []string{"agent_id"}),
 	}
 }
 
@@ -94,4 +104,33 @@ func (p *prometheusRecorder) RecordCriticResult(agentID string, passed bool) {
 //   - Observes ms on the provider latency histogram for the prov and method labels.
 func (p *prometheusRecorder) RecordProviderLatency(prov, method string, ms float64) {
 	p.providerLatency.WithLabelValues(prov, method).Observe(ms)
+}
+
+// RecordContextWindowTokens sets the context-window gauge for agentID to tokens.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - tokens is the assembled window size in tokens (≥0).
+//
+// Side effects:
+//   - Sets the flowstate_context_window_tokens gauge for agentID.
+func (p *prometheusRecorder) RecordContextWindowTokens(agentID string, tokens int) {
+	p.contextWindowTokens.WithLabelValues(agentID).Set(float64(tokens))
+}
+
+// RecordCompressionTokensSaved adds tokensSaved to the compression-savings counter.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - tokensSaved is the delta of tokens eliminated by compaction.
+//     Non-positive values are ignored to keep the counter monotonic.
+//
+// Side effects:
+//   - Increments the flowstate_compression_tokens_saved_total counter
+//     for agentID by tokensSaved when positive; otherwise no-op.
+func (p *prometheusRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
+	if tokensSaved <= 0 {
+		return
+	}
+	p.compressionTokensSav.WithLabelValues(agentID).Add(float64(tokensSaved))
 }

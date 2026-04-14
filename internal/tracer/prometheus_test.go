@@ -95,6 +95,52 @@ var _ = Describe("PrometheusRecorder", func() {
 			Expect(sum).To(Equal(200.0))
 		})
 	})
+
+	Describe("RecordContextWindowTokens", func() {
+		It("sets the gauge to the most recent observation per agent", func() {
+			rec.RecordContextWindowTokens("agent-1", 1234)
+			rec.RecordContextWindowTokens("agent-1", 2048)
+			rec.RecordContextWindowTokens("agent-2", 512)
+
+			// Gauge semantics: last-write-wins, not cumulative.
+			val := gaugeValue(reg, "flowstate_context_window_tokens", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(2048.0))
+
+			val = gaugeValue(reg, "flowstate_context_window_tokens", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(512.0))
+		})
+
+		It("keeps a separate gauge series per agent label", func() {
+			rec.RecordContextWindowTokens("agent-a", 100)
+			rec.RecordContextWindowTokens("agent-b", 200)
+
+			family := gatherMetricFamily(reg, "flowstate_context_window_tokens")
+			Expect(family.GetMetric()).To(HaveLen(2))
+		})
+	})
+
+	Describe("RecordCompressionTokensSaved", func() {
+		It("accumulates tokens saved per agent", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 300)
+			rec.RecordCompressionTokensSaved("agent-1", 450)
+			rec.RecordCompressionTokensSaved("agent-2", 100)
+
+			val := counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(750.0))
+
+			val = counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(100.0))
+		})
+
+		It("ignores non-positive deltas so noisy call sites do not corrupt the counter", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 100)
+			rec.RecordCompressionTokensSaved("agent-1", 0)
+			rec.RecordCompressionTokensSaved("agent-1", -50)
+
+			val := counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(100.0))
+		})
+	})
 })
 
 func gatherMetricFamily(reg *prometheus.Registry, name string) *dto.MetricFamily {
@@ -152,5 +198,16 @@ func histogramSum(reg *prometheus.Registry, name string, labels prometheus.Label
 		}
 	}
 	Fail(fmt.Sprintf("histogram metric %q with labels %v not found", name, labels))
+	return 0
+}
+
+func gaugeValue(reg *prometheus.Registry, name string, labels prometheus.Labels) float64 {
+	family := gatherMetricFamily(reg, name)
+	for _, m := range family.GetMetric() {
+		if matchLabels(m, labels) {
+			return m.GetGauge().GetValue()
+		}
+	}
+	Fail(fmt.Sprintf("gauge metric %q with labels %v not found", name, labels))
 	return 0
 }
