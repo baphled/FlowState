@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -34,6 +35,11 @@ type WindowBuilder struct {
 	// messages slice before they are appended to the window. When nil,
 	// the existing skill-pair-aware path runs unchanged.
 	splitter *HotColdSplitter
+	// sessionMemory, when non-nil, causes buildInternal to prepend a
+	// "[session memory]:" block after the system prompt so facts,
+	// conventions, and preferences distilled in prior turns are visible
+	// to the model. See WithSessionMemory for attachment semantics.
+	sessionMemory *recall.SessionMemoryStore
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
@@ -65,6 +71,24 @@ func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 //   - Mutates the builder. Callers MUST coordinate concurrent use.
 func (b *WindowBuilder) WithSplitter(splitter *HotColdSplitter) *WindowBuilder {
 	b.splitter = splitter
+	return b
+}
+
+// WithSessionMemory attaches a SessionMemoryStore whose entries are
+// prepended as a single assistant-role "[session memory]:" message
+// immediately after the system prompt. Attaching a nil store detaches
+// any previously-attached store.
+//
+// Expected:
+//   - store may be nil to disable the feature.
+//
+// Returns:
+//   - The receiver, for chaining.
+//
+// Side effects:
+//   - Mutates the builder. Callers MUST coordinate concurrent use.
+func (b *WindowBuilder) WithSessionMemory(store *recall.SessionMemoryStore) *WindowBuilder {
+	b.sessionMemory = store
 	return b
 }
 
@@ -282,6 +306,8 @@ func (b *WindowBuilder) buildInternalWithChain(
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	budget.Reserve("system", b.counter.Count(systemPrompt))
 
+	messages, budget = b.appendSessionMemory(messages, budget)
+
 	messages, budget = b.appendSummary(messages, budget, opts.summary)
 
 	seenIDs := make(map[string]bool)
@@ -388,6 +414,8 @@ func (b *WindowBuilder) buildInternal(
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	budget.Reserve("system", b.counter.Count(systemPrompt))
 
+	messages, budget = b.appendSessionMemory(messages, budget)
+
 	messages, budget = b.appendSummary(messages, budget, opts.summary)
 
 	seenIDs := make(map[string]bool)
@@ -431,6 +459,66 @@ func (b *WindowBuilder) prepareSystemPrompt(manifest *agent.Manifest, tokenBudge
 		log.Printf("warning: system prompt truncated from %d to %d tokens (budget: %d)", systemTokens, tokenBudget, tokenBudget)
 	}
 	return b.truncateToFit(systemPrompt, tokenBudget), true
+}
+
+// appendSessionMemory prepends a "[session memory]:" block immediately
+// after the system prompt when a SessionMemoryStore is attached. The
+// block aggregates up to 5 facts, 3 conventions, and 3 preferences
+// (matching plan T16 guidance) retrieved via the store's Retrieve
+// method. When no store is attached, or the store is empty, the method
+// is a no-op.
+//
+// Expected:
+//   - messages is the slice being assembled; the session memory block
+//     is appended as a single assistant-role message so it reads as
+//     agent-provided context rather than a user instruction.
+//   - budget is the active TokenBudget; the block is only appended if
+//     it fits under the "session_memory" category.
+//
+// Returns:
+//   - The possibly-augmented message slice.
+//   - The updated budget.
+//
+// Side effects:
+//   - Reserves tokens under the "session_memory" category when the
+//     block is appended.
+func (b *WindowBuilder) appendSessionMemory(messages []provider.Message, budget *TokenBudget) ([]provider.Message, *TokenBudget) {
+	if b.sessionMemory == nil {
+		return messages, budget
+	}
+	facts := b.sessionMemory.Retrieve("fact", 5)
+	conventions := b.sessionMemory.Retrieve("convention", 3)
+	preferences := b.sessionMemory.Retrieve("preference", 3)
+	if len(facts)+len(conventions)+len(preferences) == 0 {
+		return messages, budget
+	}
+
+	var builder strings.Builder
+	builder.WriteString("[session memory]:\n")
+	for _, e := range facts {
+		builder.WriteString("- fact: ")
+		builder.WriteString(e.Content)
+		builder.WriteString("\n")
+	}
+	for _, e := range conventions {
+		builder.WriteString("- convention: ")
+		builder.WriteString(e.Content)
+		builder.WriteString("\n")
+	}
+	for _, e := range preferences {
+		builder.WriteString("- preference: ")
+		builder.WriteString(e.Content)
+		builder.WriteString("\n")
+	}
+
+	content := builder.String()
+	cost := b.counter.Count(content)
+	if !budget.CanFit(cost) {
+		return messages, budget
+	}
+	messages = append(messages, provider.Message{Role: "assistant", Content: content})
+	budget.Reserve("session_memory", cost)
+	return messages, budget
 }
 
 // appendSummary appends a conversation summary to the message list if it fits within the token budget.
