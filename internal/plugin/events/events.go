@@ -1084,6 +1084,51 @@ func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *
 	}
 }
 
+// ContextCompactedEventData holds the payload for an L2 auto-compaction
+// event emitted by the engine after a successful compaction pass. The
+// fields mirror streaming.ContextCompactedEvent so a single set of
+// subscribers can decode either the internal bus event or the wire
+// event without adapting field names.
+type ContextCompactedEventData struct {
+	SessionID      string
+	AgentID        string
+	OriginalTokens int
+	SummaryTokens  int
+	LatencyMS      int64
+}
+
+// ContextCompactedEvent is published when auto-compaction produces a
+// validated summary. Distinct from RecallSummarizedEvent per
+// [[ADR - Tool-Call Atomicity in Context Compaction]].
+type ContextCompactedEvent struct {
+	BaseEvent
+	Data ContextCompactedEventData
+}
+
+// NewContextCompactedEvent constructs a ContextCompactedEvent with the
+// current timestamp unless an override is supplied.
+//
+// Expected:
+//   - data contains the compaction statistics to include in the event.
+//   - ts is optional and, when provided with a non-zero value, uses the
+//     first entry as the event timestamp.
+//
+// Returns:
+//   - A ContextCompactedEvent ready to publish. Never nil.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewContextCompactedEvent(data ContextCompactedEventData, ts ...time.Time) *ContextCompactedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ContextCompactedEvent{
+		BaseEvent: BaseEvent{eventType: EventContextCompacted, timestamp: t},
+		Data:      data,
+	}
+}
+
 // DiscoveryPublishedEventData holds the data for a discovery published event.
 type DiscoveryPublishedEventData struct {
 	ID        string
@@ -1187,6 +1232,7 @@ var (
 	_ Event = (*RecallSearchEvent)(nil)
 	_ Event = (*RecallChainSearchEvent)(nil)
 	_ Event = (*RecallSummarizedEvent)(nil)
+	_ Event = (*ContextCompactedEvent)(nil)
 	_ Event = (*DiscoveryPublishedEvent)(nil)
 	_ Event = (*LearningRecordedEvent)(nil)
 )

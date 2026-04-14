@@ -430,6 +430,17 @@ var Catalog = []EventCatalogEntry{
 		Delivery:    "fire-and-forget",
 	},
 	{
+		Topic:       EventContextCompacted,
+		Constant:    "EventContextCompacted",
+		EventType:   "context.compacted",
+		Struct:      "ContextCompactedEvent",
+		Publishers:  []string{"internal/engine/engine.go"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+	},
+	{
 		Topic:       EventDiscoveryPublished,
 		Constant:    "EventDiscoveryPublished",
 		EventType:   "discovery.published",

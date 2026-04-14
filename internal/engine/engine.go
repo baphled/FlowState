@@ -78,6 +78,10 @@ type Engine struct {
 	// compaction summary so that T11 rehydration can read the intent,
 	// next_steps, and files_to_restore emitted at compaction time.
 	lastCompactionSummary *ctxstore.CompactionSummary
+	// knowledgeExtractor is the L3 extractor fired asynchronously from
+	// Stream to distil each completed turn into the session memory
+	// store. Nil disables the feature.
+	knowledgeExtractor *recall.KnowledgeExtractor
 
 	mu sync.RWMutex
 }
@@ -116,6 +120,11 @@ type Config struct {
 	// engine consults it at assembly time to gate L2 (auto-compaction)
 	// behaviour. L1 and L3 wiring live in their own injection points.
 	CompressionConfig ctxstore.CompressionConfig
+	// KnowledgeExtractor is the optional L3 extractor fired in a
+	// background goroutine after each Stream invocation when
+	// CompressionConfig.SessionMemory.Enabled is true. Nil disables the
+	// feature.
+	KnowledgeExtractor *recall.KnowledgeExtractor
 }
 
 // New creates a new Engine from the given configuration.
@@ -184,6 +193,7 @@ func New(cfg Config) *Engine {
 		mcpServerTools:       cfg.MCPServerTools,
 		autoCompactor:        cfg.AutoCompactor,
 		compressionConfig:    cfg.CompressionConfig,
+		knowledgeExtractor:   cfg.KnowledgeExtractor,
 	}
 }
 
@@ -717,9 +727,66 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	go func() {
 		defer close(outChan)
 		e.streamWithToolLoop(ctx, sessionID, messages, providerChunks, outChan)
+		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
+		e.dispatchKnowledgeExtraction(messages)
 	}()
 
 	return outChan, nil
+}
+
+// dispatchKnowledgeExtraction fires the Phase 3 knowledge extractor on
+// a background goroutine when one is configured and Layer 3 is enabled.
+// The caller's messages slice is copied so the extractor never races
+// with subsequent assembly runs on the shared slab. A fresh
+// context.Background with a 30-second deadline is used so the stream's
+// original ctx — which closes when the channel drains — does not
+// cancel the extraction mid-flight.
+//
+// Expected:
+//   - messages is the final message slice the stream ran against. The
+//     caller must not mutate it after calling this method; the copy
+//     inside protects only the in-flight extraction, not the caller.
+//
+// Returns:
+//   - None. Errors from the extractor are logged at WARN and do not
+//     propagate.
+//
+// Side effects:
+//   - Spawns a goroutine when the extractor is wired and enabled.
+func (e *Engine) dispatchKnowledgeExtraction(messages []provider.Message) {
+	if e.knowledgeExtractor == nil || !e.compressionConfig.SessionMemory.Enabled {
+		return
+	}
+
+	msgsCopy := make([]provider.Message, len(messages))
+	copy(msgsCopy, messages)
+
+	go runKnowledgeExtraction(e.knowledgeExtractor, msgsCopy)
+}
+
+// runKnowledgeExtraction is the body of the background goroutine spawned
+// by dispatchKnowledgeExtraction. It uses a deliberately fresh
+// context.Background so the stream's ctx — which is cancelled when the
+// channel closes — cannot cut the extraction short.
+//
+// Expected:
+//   - extractor is a non-nil KnowledgeExtractor.
+//   - msgs is a defensive copy of the caller's slice — safe to read
+//     from a goroutine without further coordination.
+//
+// Returns:
+//   - None. Errors are logged at WARN and discarded.
+//
+// Side effects:
+//   - One LLM call and at most one store save through the extractor.
+func runKnowledgeExtraction(extractor *recall.KnowledgeExtractor, msgs []provider.Message) {
+	extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := extractor.Extract(extractCtx, msgs); err != nil {
+		slog.Warn("engine knowledge extraction failed",
+			"error", err,
+		)
+	}
 }
 
 // streamFromProvider initiates a streaming chat request with the provider, applying any configured hooks.
@@ -1215,7 +1282,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	searchResults := e.dispatchContextAssemblyHooks(ctx, sessionID, userMessage, tokenBudget)
 
-	compactedSummary := e.maybeAutoCompact(ctx, &manifestCopy, tokenBudget)
+	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget)
 
 	var result ctxstore.BuildResult
 	switch {
@@ -1259,6 +1326,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //
 // Expected:
 //   - ctx carries cancellation/deadline for the LLM call.
+//   - sessionID identifies the active session; threaded through to the
+//     T10b ContextCompactedEvent so subscribers can correlate emitted
+//     events with session telemetry.
 //   - manifest has been prepared with the current system prompt (used to
 //     determine SlidingWindowSize).
 //   - tokenBudget is the full model context limit.
@@ -1275,42 +1345,22 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 // Side effects:
 //   - Issues one LLM call via the injected AutoCompactor when fired.
 //   - Updates e.lastCompactionSummary on success; cleared on non-fire.
-func (e *Engine) maybeAutoCompact(ctx context.Context, manifest *agent.Manifest, tokenBudget int) string {
+//   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
+//     on successful compaction (T10b per ADR - Tool-Call Atomicity).
+func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int) string {
 	e.lastCompactionSummary = nil
 
-	if e.autoCompactor == nil || !e.compressionConfig.AutoCompaction.Enabled {
-		return ""
-	}
-	if e.store == nil || e.tokenCounter == nil {
-		return ""
-	}
-	if tokenBudget <= 0 {
-		return ""
-	}
-	threshold := e.compressionConfig.AutoCompaction.Threshold
-	if threshold <= 0 {
+	threshold, ok := e.autoCompactionThreshold(tokenBudget)
+	if !ok {
 		return ""
 	}
 
-	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
-	if slidingWindowSize <= 0 {
-		slidingWindowSize = 10
-	}
-	recent := e.store.GetRecent(slidingWindowSize)
-	if len(recent) == 0 {
+	recent, recentTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold)
+	if !fire {
 		return ""
 	}
 
-	var recentTokens int
-	for i := range recent {
-		recentTokens += e.tokenCounter.Count(recent[i].Content)
-	}
-
-	ratio := float64(recentTokens) / float64(tokenBudget)
-	if ratio <= threshold {
-		return ""
-	}
-
+	start := time.Now()
 	summary, err := e.autoCompactor.Compact(ctx, recent)
 	if err != nil {
 		slog.Warn("engine auto-compaction failed; falling back to uncompacted window",
@@ -1321,19 +1371,122 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, manifest *agent.Manifest,
 		)
 		return ""
 	}
+	latency := time.Since(start)
 
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
-		slog.Warn("engine auto-compaction produced unmarshallable summary",
-			"error", err,
-		)
+		slog.Warn("engine auto-compaction produced unmarshallable summary", "error", err)
 		return ""
 	}
 
 	summaryCopy := summary
 	e.lastCompactionSummary = &summaryCopy
 
-	return "[auto-compacted summary]: " + string(summaryJSON)
+	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
+	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
+	return summaryText
+}
+
+// autoCompactionThreshold returns the configured auto-compaction ratio
+// threshold when every prerequisite for compaction is met. The second
+// return value is false when the feature is disabled or a dependency is
+// missing, so the caller can short-circuit without inspecting fields
+// individually.
+//
+// Expected:
+//   - tokenBudget is the model context limit passed through from
+//     buildContextWindow.
+//
+// Returns:
+//   - (threshold, true) when the feature is enabled, the AutoCompactor
+//     is wired, the store and counter are present, tokenBudget is
+//     positive, and the configured threshold is positive.
+//   - (0, false) otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) autoCompactionThreshold(tokenBudget int) (float64, bool) {
+	if e.autoCompactor == nil || !e.compressionConfig.AutoCompaction.Enabled {
+		return 0, false
+	}
+	if e.store == nil || e.tokenCounter == nil {
+		return 0, false
+	}
+	if tokenBudget <= 0 {
+		return 0, false
+	}
+	threshold := e.compressionConfig.AutoCompaction.Threshold
+	if threshold <= 0 {
+		return 0, false
+	}
+	return threshold, true
+}
+
+// autoCompactionCandidates pulls the recent-message slice from the
+// store, counts its tokens, and decides whether the load crosses the
+// threshold. Split out of maybeAutoCompact so the decision logic can
+// be unit-tested independently of the LLM call and so the trigger
+// function stays inside the funlen gate.
+//
+// Expected:
+//   - manifest carries ContextManagement to pick the sliding window size.
+//   - tokenBudget is the model context limit.
+//   - threshold is the ratio above which compaction fires.
+//
+// Returns:
+//   - recent: the recent-message slice counted against the budget.
+//   - recentTokens: sum of token counts for those messages.
+//   - fire: true when the ratio exceeds threshold and there is content
+//     to summarise; false when compaction should be skipped.
+//
+// Side effects:
+//   - None.
+func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64) ([]provider.Message, int, bool) {
+	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
+	if slidingWindowSize <= 0 {
+		slidingWindowSize = 10
+	}
+	recent := e.store.GetRecent(slidingWindowSize)
+	if len(recent) == 0 {
+		return nil, 0, false
+	}
+	var recentTokens int
+	for i := range recent {
+		recentTokens += e.tokenCounter.Count(recent[i].Content)
+	}
+	ratio := float64(recentTokens) / float64(tokenBudget)
+	if ratio <= threshold {
+		return nil, 0, false
+	}
+	return recent, recentTokens, true
+}
+
+// publishContextCompactedEvent emits the T10b ContextCompactedEvent on
+// the engine bus when compaction succeeds. Counted as observability:
+// failed or no-op compactions are not emitted so subscribers do not see
+// phantom events.
+//
+// Expected:
+//   - sessionID and agentID identify the emission source.
+//   - recentTokens is the pre-compaction token count the summary replaces.
+//   - summaryText is the final "[auto-compacted summary]: <json>" string
+//     injected into the built window.
+//   - latency is the wall-clock duration of the Compact call.
+//
+// Side effects:
+//   - Publishes one event on the engine bus if non-nil; otherwise no-op.
+func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration) {
+	if e.bus == nil {
+		return
+	}
+	summaryTokens := e.tokenCounter.Count(summaryText)
+	e.bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+		SessionID:      sessionID,
+		AgentID:        agentID,
+		OriginalTokens: recentTokens,
+		SummaryTokens:  summaryTokens,
+		LatencyMS:      latency.Milliseconds(),
+	}))
 }
 
 // LastCompactionSummary returns the most recent auto-compaction summary
