@@ -71,6 +71,75 @@ const (
 	providerName     = "ollama"
 )
 
+// knownModelContextLengths maps Ollama model family prefixes to their
+// published context windows. Keys are matched against the model ID via a
+// case-insensitive HasPrefix check so that variants such as
+// "llama3.2:latest", "llama3.2:3b", and "llama3.2" all resolve to the
+// same length. The map is deliberately small and conservative: values
+// come from the public Ollama model pages and the Hugging Face model
+// cards of the underlying weights. Adding an entry costs nothing at
+// runtime; picking the wrong value for an unknown model costs a
+// truncated prompt.
+//
+// Rationale for hard-coding rather than querying /api/show at runtime:
+// the HTTP round-trip for every model every Models() call would amplify
+// latency on the failover resolver's hot path, and the context length
+// of a given model rarely changes — the hard-coded fallback stays
+// correct across Ollama versions. If a future deployment needs dynamic
+// resolution (e.g. fine-tuned local models with bespoke context
+// windows), wire an optional /api/show lookup around this lookup table
+// rather than replacing it.
+var knownModelContextLengths = map[string]int{
+	"llama3.2":  131072,
+	"llama3.1":  131072,
+	"llama3":    8192,
+	"qwen2.5":   32768,
+	"qwen2":     32768,
+	"granite4":  131072,
+	"granite3":  131072,
+	"mistral":   32768,
+	"mixtral":   32768,
+	"phi3":      131072,
+	"gemma2":    8192,
+	"codellama": 16384,
+	"deepseek":  16384,
+}
+
+// resolveOllamaContextLength returns the context length for an Ollama
+// model ID by walking knownModelContextLengths for a matching family
+// prefix. When no entry matches, it returns defaultMaxTokens so the
+// caller still receives a usable value and the failover manager's own
+// fallback is never reached on a known family.
+//
+// Expected:
+//   - modelID is a concrete Ollama model identifier such as
+//     "llama3.2:latest" or "qwen2.5:7b-instruct".
+//
+// Returns:
+//   - The longest-prefix matched context length in tokens, or
+//     defaultMaxTokens (4096) when no family prefix matches.
+//
+// Side effects:
+//   - None.
+func resolveOllamaContextLength(modelID string) int {
+	if modelID == "" {
+		return defaultMaxTokens
+	}
+	lower := strings.ToLower(modelID)
+	var bestPrefix string
+	var bestLen int
+	for family, length := range knownModelContextLengths {
+		if strings.HasPrefix(lower, family) && len(family) > len(bestPrefix) {
+			bestPrefix = family
+			bestLen = length
+		}
+	}
+	if bestPrefix == "" {
+		return defaultMaxTokens
+	}
+	return bestLen
+}
+
 // Name returns the provider name.
 //
 // Returns:
@@ -250,11 +319,10 @@ func (p *Provider) Models() ([]provider.Model, error) {
 
 	models := make([]provider.Model, 0, len(resp.Models))
 	for i := range resp.Models {
-		contextLen := defaultMaxTokens
 		models = append(models, provider.Model{
 			ID:            resp.Models[i].Name,
 			Provider:      providerName,
-			ContextLength: contextLen,
+			ContextLength: resolveOllamaContextLength(resp.Models[i].Name),
 		})
 	}
 
