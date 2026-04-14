@@ -10,6 +10,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tracer"
 )
 
 // BuildResult contains the outcome of building a context window.
@@ -45,6 +46,12 @@ type WindowBuilder struct {
 	// logged via slog.Info at the end of every Build call. See
 	// WithMetrics.
 	metrics *CompressionMetrics
+	// recorder, when non-nil, receives a context-window gauge update
+	// (RecordContextWindowTokens) at the end of every Build call with
+	// the assembled window's token count and the manifest agent ID.
+	// Deployments that never enable Prometheus metrics pay no overhead
+	// because the field stays nil. See WithRecorder.
+	recorder tracer.Recorder
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
@@ -94,6 +101,25 @@ func (b *WindowBuilder) WithSplitter(splitter *HotColdSplitter) *WindowBuilder {
 //   - Mutates the builder. Callers MUST coordinate concurrent use.
 func (b *WindowBuilder) WithMetrics(metrics *CompressionMetrics) *WindowBuilder {
 	b.metrics = metrics
+	return b
+}
+
+// WithRecorder attaches a tracer.Recorder that receives the
+// context-window gauge after every Build call. When non-nil, Build
+// invokes RecordContextWindowTokens with the manifest agent ID and the
+// assembled window's token count so operators can watch window size in
+// real time alongside the existing Prometheus metrics.
+//
+// Expected:
+//   - recorder may be nil to detach a previously-attached recorder.
+//
+// Returns:
+//   - The receiver, for chaining.
+//
+// Side effects:
+//   - Mutates the builder. Callers MUST coordinate concurrent use.
+func (b *WindowBuilder) WithRecorder(recorder tracer.Recorder) *WindowBuilder {
+	b.recorder = recorder
 	return b
 }
 
@@ -450,6 +476,7 @@ func (b *WindowBuilder) buildInternal(
 	truncated = state.truncated
 
 	b.logCompressionMetrics()
+	b.emitContextWindowGauge(manifest, budget.Used)
 
 	return BuildResult{
 		Messages:        messages,
@@ -457,6 +484,26 @@ func (b *WindowBuilder) buildInternal(
 		BudgetRemaining: budget.Remaining(),
 		Truncated:       truncated,
 	}
+}
+
+// emitContextWindowGauge pushes the assembled window's token count into
+// the attached tracer.Recorder as a context-window gauge observation.
+// The agent label is sourced from the manifest so operators can
+// distinguish windows built for different agents during the same run.
+// No-op when no recorder has been attached via WithRecorder.
+//
+// Expected:
+//   - manifest carries the agent ID used as the gauge label.
+//   - tokensUsed is the final budget.Used value for the window.
+//
+// Side effects:
+//   - Invokes recorder.RecordContextWindowTokens when the recorder is
+//     non-nil; otherwise no-op.
+func (b *WindowBuilder) emitContextWindowGauge(manifest *agent.Manifest, tokensUsed int) {
+	if b.recorder == nil || manifest == nil {
+		return
+	}
+	b.recorder.RecordContextWindowTokens(manifest.ID, tokensUsed)
 }
 
 // logCompressionMetrics emits a single slog.Info record naming the four
