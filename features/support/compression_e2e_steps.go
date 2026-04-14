@@ -29,6 +29,11 @@ type compressionE2EState struct {
 	seedFact string
 
 	capturedReq *provider.ChatRequest
+
+	// benchmark scenario state
+	benchMessages         []provider.Message
+	benchUncompressedToks int
+	benchCompressedToks   int
 }
 
 // RegisterCompressionE2ESteps wires the plan T20 @e2e scenarios that
@@ -51,6 +56,9 @@ func RegisterCompressionE2ESteps(ctx *godog.ScenarioContext) {
 		state.capturedReq = nil
 		state.seedFact = ""
 		state.sessID = "e2e-session"
+		state.benchMessages = nil
+		state.benchUncompressedToks = 0
+		state.benchCompressedToks = 0
 
 		dir, err := os.MkdirTemp("", "compression-e2e-*")
 		if err != nil {
@@ -168,6 +176,69 @@ func RegisterCompressionE2ESteps(ctx *godog.ScenarioContext) {
 			return fmt.Errorf("session memory block does not mention %q; got %q", want, m.Content)
 		}
 		return errors.New("session memory block not found; cannot check contents")
+	})
+
+	ctx.Step(`^a transcript of (\d+) large assistant messages$`, func(n int) error {
+		state.benchMessages = make([]provider.Message, 0, n)
+		for i := range n {
+			state.benchMessages = append(state.benchMessages, provider.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("msg-%d %s", i, strings.Repeat("lorem ipsum dolor sit amet ", 40)),
+			})
+		}
+		return nil
+	})
+
+	ctx.Step(`^the window is built with and without the L1 splitter$`, func() error {
+		if len(state.benchMessages) == 0 {
+			return errors.New("benchmark transcript not seeded")
+		}
+		counter := flowctx.NewTiktokenCounter()
+
+		// Uncompressed baseline: sum every message as-is.
+		for _, m := range state.benchMessages {
+			state.benchUncompressedToks += counter.Count(m.Content)
+		}
+
+		// Compressed: drive the real splitter with the plan's default
+		// threshold and a small hot tail to exercise the reduction path.
+		spillDir := filepath.Join(state.tempDir, "bench-spill")
+		if err := os.MkdirAll(spillDir, 0o700); err != nil {
+			return fmt.Errorf("mkdir spill: %w", err)
+		}
+		compactor := flowctx.NewDefaultMessageCompactor(20)
+		splitter := flowctx.NewHotColdSplitter(flowctx.HotColdSplitterOptions{
+			Compactor:   compactor,
+			HotTailSize: 2,
+			StorageDir:  spillDir,
+			SessionID:   "bench",
+		})
+		if splitter == nil {
+			return errors.New("splitter construction failed")
+		}
+		splitter.StartPersistWorker(context.Background())
+		defer splitter.Stop()
+
+		result := splitter.Split(state.benchMessages)
+		for _, m := range result.HotMessages {
+			state.benchCompressedToks += counter.Count(m.Content)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the compressed window tokens are at most (\d+) percent of the uncompressed window tokens$`, func(pct int) error {
+		if state.benchUncompressedToks == 0 {
+			return errors.New("uncompressed token count is zero; scenario setup failed")
+		}
+		if state.benchCompressedToks == 0 {
+			return errors.New("compressed token count is zero; splitter produced nothing")
+		}
+		limit := (state.benchUncompressedToks * pct) / 100
+		if state.benchCompressedToks > limit {
+			return fmt.Errorf("compressed tokens = %d; uncompressed = %d; limit = %d (%d%%); reduction did not meet target",
+				state.benchCompressedToks, state.benchUncompressedToks, limit, pct)
+		}
+		return nil
 	})
 }
 

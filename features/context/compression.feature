@@ -117,3 +117,9 @@ Feature: Context Compression — Layers 1 and 2
     When a fresh engine loads the same session memory store and streams one user turn
     Then the provider request contains a session memory block
     And the session memory block mentions "snake_case is the convention"
+
+  @e2e
+  Scenario: Long transcripts compress to 60% or less of the uncompressed window
+    Given a transcript of 50 large assistant messages
+    When the window is built with and without the L1 splitter
+    Then the compressed window tokens are at most 60 percent of the uncompressed window tokens
