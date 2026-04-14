@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -21,4 +22,12 @@ func (e *Engine) BuildContextWindowForTest(ctx context.Context, sessionID string
 // ContextAssemblyHooksForTest exposes the engine's configured context assembly hooks for white-box testing.
 func (e *Engine) ContextAssemblyHooksForTest() []pluginpkg.ContextAssemblyHook {
 	return e.contextAssemblyHooks
+}
+
+// LastCompactionSummaryForTest exposes the engine's most recent auto-
+// compaction summary for assertion in T10 trigger tests. It is a thin
+// re-export of the public LastCompactionSummary method so that test
+// naming stays consistent with other For-Test helpers.
+func (e *Engine) LastCompactionSummaryForTest() *ctxstore.CompactionSummary {
+	return e.LastCompactionSummary()
 }

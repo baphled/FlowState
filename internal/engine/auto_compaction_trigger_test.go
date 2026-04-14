@@ -1,0 +1,304 @@
+// Package engine_test — T10 auto-compaction trigger specification.
+//
+// These tests pin the contract that engine.buildContextWindow fires the
+// L2 auto-compactor when the recent-message token load crosses the
+// configured threshold, and that the compaction summary is injected into
+// the built window. The trigger lives in buildContextWindow rather than
+// WindowBuilder.buildInternal because compaction requires ctx + network
+// I/O, which do not belong in the pure assembler — see plan T10.
+package engine_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/baphled/flowstate/internal/agent"
+	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
+)
+
+// recordingSummariser is a ctxstore.Summariser test double that returns a
+// scripted JSON summary and counts how many times it was called. The
+// counter is atomic because an in-flight refactor could, in principle,
+// invoke the summariser from a goroutine; the atomic keeps the race
+// detector happy regardless.
+type recordingSummariser struct {
+	calls    atomic.Int32
+	response string
+	err      error
+}
+
+// Summarise satisfies ctxstore.Summariser. It ignores the inputs and
+// returns the configured response (or error).
+func (r *recordingSummariser) Summarise(_ context.Context, _ string, _ string, _ []provider.Message) (string, error) {
+	r.calls.Add(1)
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.response, nil
+}
+
+// buildSummaryJSON returns a minimal-but-valid CompactionSummary body.
+// It is a helper, not a fixture — each test that needs specific content
+// builds its own via this function with the override hook.
+func buildSummaryJSON(t *testing.T, override func(*ctxstore.CompactionSummary)) string {
+	t.Helper()
+	summary := ctxstore.CompactionSummary{
+		Intent:             "continue T10 integration work",
+		KeyDecisions:       []string{"fire compaction at threshold"},
+		Errors:             []string{},
+		NextSteps:          []string{"persist summary on engine"},
+		FilesToRestore:     []string{"internal/engine/engine.go"},
+		OriginalTokenCount: 0,
+		SummaryTokenCount:  0,
+	}
+	if override != nil {
+		override(&summary)
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	return string(data)
+}
+
+// newTestEngineWithCompactor creates an Engine wired with a real
+// AutoCompactor backed by the supplied summariser. The engine is
+// configured with a deliberately tiny token budget so tests can craft
+// messages that straddle the 80% threshold without pushing megabytes of
+// synthetic content. The caller receives the engine and the path of the
+// temp context store (so it can seed messages directly).
+func newTestEngineWithCompactor(
+	t *testing.T,
+	summariser ctxstore.Summariser,
+	threshold float64,
+	enabled bool,
+) (*engine.Engine, *recall.FileContextStore) {
+	t.Helper()
+
+	tempDir, err := os.MkdirTemp("", "engine-t10-*")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+
+	store, err := recall.NewFileContextStore(filepath.Join(tempDir, "context.json"), "test-model")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	// Stub counter that attributes a predictable token count per string:
+	// one token per whitespace-separated word. This lets tests control
+	// whether the ratio crosses the threshold by choosing word counts.
+	counter := &wordTokenCounter{limit: 100}
+
+	compactor := ctxstore.NewAutoCompactor(summariser)
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = enabled
+	cfg.AutoCompaction.Threshold = threshold
+
+	testManifest := agent.Manifest{
+		ID:   "t10-agent",
+		Name: "T10 Agent",
+		Instructions: agent.Instructions{
+			SystemPrompt: "sys",
+		},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+
+	eng := engine.New(engine.Config{
+		ChatProvider:      &t10FakeProvider{},
+		Manifest:          testManifest,
+		Store:             store,
+		TokenCounter:      counter,
+		AutoCompactor:     compactor,
+		CompressionConfig: cfg,
+	})
+
+	return eng, store
+}
+
+// wordTokenCounter is a deterministic TokenCounter for engine tests. It
+// reports one token per whitespace-delimited word and returns a fixed
+// model limit so tests can precisely target threshold boundaries.
+type wordTokenCounter struct {
+	limit int
+}
+
+func (w *wordTokenCounter) Count(text string) int {
+	if text == "" {
+		return 0
+	}
+	return len(strings.Fields(text))
+}
+
+func (w *wordTokenCounter) ModelLimit(_ string) int {
+	return w.limit
+}
+
+// t10FakeProvider satisfies provider.Provider without doing anything
+// useful. Engine construction requires a ChatProvider; the T10 trigger
+// path never invokes Chat or Stream, so empty stubs are sufficient.
+type t10FakeProvider struct{}
+
+func (t10FakeProvider) Name() string { return "t10-fake" }
+func (t10FakeProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+func (t10FakeProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (t10FakeProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+func (t10FakeProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// seedMessages appends 10 messages to the store (matching the default
+// sliding window size) with a content string sized so that the
+// wordTokenCounter reports 7 tokens per message — 70 tokens total. The
+// 70-token figure is chosen to sit at ratio 0.70 against the 100-token
+// budget used by newTestEngineWithCompactor: above a 0.60 threshold
+// (triggers compaction) but below a 0.80 threshold (does not).
+func seedMessages(t *testing.T, store *recall.FileContextStore) {
+	t.Helper()
+	const wordsPerMessage = 7
+	words := make([]string, wordsPerMessage)
+	for i := range words {
+		words[i] = "w"
+	}
+	content := strings.Join(words, " ")
+	for range 10 {
+		store.Append(provider.Message{Role: "assistant", Content: content})
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_AboveThreshold_FiresCompact
+// asserts that when the recent messages exceed threshold*budget, the
+// AutoCompactor is invoked and the produced summary lands in the built
+// context as a summary message. With budget=100 and threshold=0.60, a
+// recent-message load of 70 tokens must trigger.
+func TestBuildContextWindowAutoCompaction_AboveThreshold_FiresCompact(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
+
+	// 10 messages × 7 words = 70 tokens. Sliding window default keeps
+	// all 10. Budget is 100; ratio is 0.70 > 0.60 threshold → fire.
+	seedMessages(t, store)
+
+	messages := eng.BuildContextWindowForTest(context.Background(), "session-1", "next user turn")
+
+	if summariser.calls.Load() != 1 {
+		t.Fatalf("summariser calls = %d; want 1", summariser.calls.Load())
+	}
+
+	var foundSummary bool
+	for _, m := range messages {
+		if strings.Contains(m.Content, "[auto-compacted summary]") {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Fatalf("built context missing [auto-compacted summary] marker")
+	}
+
+	summary := eng.LastCompactionSummaryForTest()
+	if summary == nil {
+		t.Fatalf("LastCompactionSummary is nil after trigger; T11 rehydration will have no source")
+	}
+	if summary.Intent == "" {
+		t.Fatalf("stored summary has empty Intent; parse+validate path skipped")
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_BelowThreshold_DoesNotFire
+// asserts that the trigger stays silent when the recent-message load is
+// under threshold. With budget=100 and threshold=0.80, a 70-token load
+// is 0.70 ratio and must NOT trigger.
+func TestBuildContextWindowAutoCompaction_BelowThreshold_DoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.80, true)
+
+	seedMessages(t, store)
+
+	messages := eng.BuildContextWindowForTest(context.Background(), "session-2", "next user turn")
+
+	if summariser.calls.Load() != 0 {
+		t.Fatalf("summariser calls = %d; want 0", summariser.calls.Load())
+	}
+	for _, m := range messages {
+		if strings.Contains(m.Content, "[auto-compacted summary]") {
+			t.Fatalf("built context contains summary marker but threshold was not crossed")
+		}
+	}
+	if got := eng.LastCompactionSummaryForTest(); got != nil {
+		t.Fatalf("LastCompactionSummary should be nil when trigger did not fire; got %+v", got)
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_Disabled_DoesNotFire asserts that
+// the trigger is inert when CompressionConfig.AutoCompaction.Enabled is
+// false, regardless of token load. This is the safety rail for existing
+// deployments that have not opted into compression.
+func TestBuildContextWindowAutoCompaction_Disabled_DoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.10, false)
+
+	seedMessages(t, store)
+
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-3", "next user turn")
+
+	if summariser.calls.Load() != 0 {
+		t.Fatalf("summariser calls = %d; want 0 (feature disabled)", summariser.calls.Load())
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_CompactError_FailsOpen asserts
+// that when the compactor errors, the engine still returns a window
+// (falling back to the uncompacted path) rather than panicking or
+// returning empty. The threshold is crossed and the summariser errors —
+// the built messages must still contain the system prompt and the
+// original recent messages.
+func TestBuildContextWindowAutoCompaction_CompactError_FailsOpen(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{err: errors.New("simulated summariser outage")}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
+
+	seedMessages(t, store)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	messages := eng.BuildContextWindowForTest(ctx, "session-4", "next user turn")
+
+	if len(messages) == 0 {
+		t.Fatalf("engine returned no messages on compaction failure; must fail open")
+	}
+	for _, m := range messages {
+		if strings.Contains(m.Content, "[auto-compacted summary]") {
+			t.Fatalf("compaction errored but marker still present; wrong fallback")
+		}
+	}
+	if eng.LastCompactionSummaryForTest() != nil {
+		t.Fatalf("stored summary should be nil when compaction errored")
+	}
+}
