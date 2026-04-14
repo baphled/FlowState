@@ -136,6 +136,17 @@ type Config struct {
 	// CompressionConfig.SessionMemory.Enabled is true. Nil disables the
 	// feature.
 	KnowledgeExtractor *recall.KnowledgeExtractor
+
+	// SessionMemoryStore is the optional L3 read-side store attached to
+	// the WindowBuilder so distilled facts, conventions, and preferences
+	// from prior turns (or prior sessions) surface as a
+	// "[session memory]:" block immediately after the system prompt.
+	// Attachment only happens when CompressionConfig.SessionMemory.Enabled
+	// is true; nil disables the feature even when compression is on.
+	// The extractor (KnowledgeExtractor) handles the write side; this
+	// store handles the read side. The two are independent: either may
+	// be nil, and tests typically set one at a time.
+	SessionMemoryStore *recall.SessionMemoryStore
 }
 
 // New creates a new Engine from the given configuration.
@@ -256,6 +267,9 @@ func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
 	builder := ctxstore.NewWindowBuilder(cfg.TokenCounter)
 	if cfg.CompressionMetrics != nil {
 		builder = builder.WithMetrics(cfg.CompressionMetrics)
+	}
+	if cfg.SessionMemoryStore != nil && cfg.CompressionConfig.SessionMemory.Enabled {
+		builder = builder.WithSessionMemory(cfg.SessionMemoryStore)
 	}
 	return builder
 }
