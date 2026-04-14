@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,6 +65,20 @@ type Engine struct {
 	skipAgentFiles     bool
 	currentSessionID   string
 
+	// autoCompactor is the L2 compactor invoked from buildContextWindow
+	// when compressionConfig.AutoCompaction.Enabled is true and the recent
+	// message token load crosses the configured threshold. Nil disables
+	// the feature.
+	autoCompactor *ctxstore.AutoCompactor
+	// compressionConfig carries the three-layer compression settings.
+	// Only AutoCompaction is consumed by the engine directly; L1 wiring
+	// flows via WindowBuilder and L3 via a separate injection point.
+	compressionConfig ctxstore.CompressionConfig
+	// lastCompactionSummary retains the most recent successful auto-
+	// compaction summary so that T11 rehydration can read the intent,
+	// next_steps, and files_to_restore emitted at compaction time.
+	lastCompactionSummary *ctxstore.CompactionSummary
+
 	mu sync.RWMutex
 }
 
@@ -92,6 +107,15 @@ type Config struct {
 	// Used by buildAllowedToolSet to auto-include tools from servers declared
 	// in Capabilities.MCPServers without requiring agents to list individual tool names.
 	MCPServerTools map[string][]string
+	// AutoCompactor is the optional L2 compactor that buildContextWindow
+	// invokes when CompressionConfig.AutoCompaction is enabled and the
+	// recent-message token load crosses the configured threshold. Nil
+	// disables the feature regardless of CompressionConfig.
+	AutoCompactor *ctxstore.AutoCompactor
+	// CompressionConfig holds the three-layer compression settings. The
+	// engine consults it at assembly time to gate L2 (auto-compaction)
+	// behaviour. L1 and L3 wiring live in their own injection points.
+	CompressionConfig ctxstore.CompressionConfig
 }
 
 // New creates a new Engine from the given configuration.
@@ -158,6 +182,8 @@ func New(cfg Config) *Engine {
 		bus:                  bus,
 		systemPromptDirty:    true,
 		mcpServerTools:       cfg.MCPServerTools,
+		autoCompactor:        cfg.AutoCompactor,
+		compressionConfig:    cfg.CompressionConfig,
 	}
 }
 
@@ -1189,8 +1215,11 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	searchResults := e.dispatchContextAssemblyHooks(ctx, sessionID, userMessage, tokenBudget)
 
+	compactedSummary := e.maybeAutoCompact(ctx, &manifestCopy, tokenBudget)
+
 	var result ctxstore.BuildResult
-	if len(searchResults) > 0 {
+	switch {
+	case len(searchResults) > 0:
 		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults)
 		if userMessage != "" {
 			userTokens := e.tokenCounter.Count(userMessage)
@@ -1201,7 +1230,18 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			result.TokensUsed += userTokens
 			result.BudgetRemaining -= userTokens
 		}
-	} else {
+	case compactedSummary != "":
+		result = e.windowBuilder.BuildWithSummary(&manifestCopy, e.store, tokenBudget, compactedSummary)
+		if userMessage != "" {
+			userTokens := e.tokenCounter.Count(userMessage)
+			result.Messages = append(result.Messages, provider.Message{
+				Role:    "user",
+				Content: userMessage,
+			})
+			result.TokensUsed += userTokens
+			result.BudgetRemaining -= userTokens
+		}
+	default:
 		result = e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
 	}
 
@@ -1211,6 +1251,107 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	e.publishContextWindowEvents(sessionID, manifestCopy.Instructions.SystemPrompt, tokenBudget, result)
 
 	return result.Messages
+}
+
+// maybeAutoCompact runs the Phase 2 auto-compaction trigger when the
+// engine is configured with an AutoCompactor, the feature is enabled,
+// and the recent-message token load exceeds the configured threshold.
+//
+// Expected:
+//   - ctx carries cancellation/deadline for the LLM call.
+//   - manifest has been prepared with the current system prompt (used to
+//     determine SlidingWindowSize).
+//   - tokenBudget is the full model context limit.
+//
+// Returns:
+//   - The summary text ("[auto-compacted summary]: <json>") when
+//     compaction fired and succeeded; empty otherwise.
+//   - The built window falls back to the normal path on:
+//   - feature disabled,
+//   - compactor nil,
+//   - token load under threshold,
+//   - compactor error (logged, not fatal).
+//
+// Side effects:
+//   - Issues one LLM call via the injected AutoCompactor when fired.
+//   - Updates e.lastCompactionSummary on success; cleared on non-fire.
+func (e *Engine) maybeAutoCompact(ctx context.Context, manifest *agent.Manifest, tokenBudget int) string {
+	e.lastCompactionSummary = nil
+
+	if e.autoCompactor == nil || !e.compressionConfig.AutoCompaction.Enabled {
+		return ""
+	}
+	if e.store == nil || e.tokenCounter == nil {
+		return ""
+	}
+	if tokenBudget <= 0 {
+		return ""
+	}
+	threshold := e.compressionConfig.AutoCompaction.Threshold
+	if threshold <= 0 {
+		return ""
+	}
+
+	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
+	if slidingWindowSize <= 0 {
+		slidingWindowSize = 10
+	}
+	recent := e.store.GetRecent(slidingWindowSize)
+	if len(recent) == 0 {
+		return ""
+	}
+
+	var recentTokens int
+	for i := range recent {
+		recentTokens += e.tokenCounter.Count(recent[i].Content)
+	}
+
+	ratio := float64(recentTokens) / float64(tokenBudget)
+	if ratio <= threshold {
+		return ""
+	}
+
+	summary, err := e.autoCompactor.Compact(ctx, recent)
+	if err != nil {
+		slog.Warn("engine auto-compaction failed; falling back to uncompacted window",
+			"error", err,
+			"recentTokens", recentTokens,
+			"tokenBudget", tokenBudget,
+			"threshold", threshold,
+		)
+		return ""
+	}
+
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		slog.Warn("engine auto-compaction produced unmarshallable summary",
+			"error", err,
+		)
+		return ""
+	}
+
+	summaryCopy := summary
+	e.lastCompactionSummary = &summaryCopy
+
+	return "[auto-compacted summary]: " + string(summaryJSON)
+}
+
+// LastCompactionSummary returns the most recent auto-compaction summary
+// produced by buildContextWindow, or nil if compaction has not fired
+// since the engine was created (or since the last non-firing build).
+//
+// Expected:
+//   - The engine has been used to assemble at least one context window.
+//
+// Returns:
+//   - A pointer to the stored summary. The caller must not mutate it;
+//     it is the same value persisted on the engine.
+//   - nil when compaction has not fired on the most recent build.
+//
+// Side effects:
+//   - None.
+func (e *Engine) LastCompactionSummary() *ctxstore.CompactionSummary {
+	return e.lastCompactionSummary
 }
 
 // dispatchContextAssemblyHooks fires all registered context assembly hooks, collecting search results.
