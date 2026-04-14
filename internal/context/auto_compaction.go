@@ -30,10 +30,24 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/provider"
 )
+
+// forbiddenToolIDPattern detects raw provider-level tool-call identifiers
+// in summary output. Per [[ADR - Tool-Call Atomicity in Context
+// Compaction]], L2 summaries must not embed `toolu_...` (Anthropic) or
+// `call_...` (OpenAI-compatible) strings — the provider layer regenerates
+// ids deterministically from canonical inputs, so any textual reference
+// surviving compaction is a dangling reference that crashes the next
+// turn with a 400 at the wire.
+//
+// The trailing length bound (16+ identifier bytes) matches the lower
+// limit of both providers' id lengths and keeps plain English phrases
+// like "tool called" or "a call back" from tripping the guard.
+var forbiddenToolIDPattern = regexp.MustCompile(`\b(toolu_|call_)[A-Za-z0-9_-]{16,}\b`)
 
 // ErrInvalidSummary is returned when the summariser produces a parseable
 // but semantically empty summary. Exposed as a sentinel so callers (and
@@ -256,15 +270,16 @@ func (a *AutoCompactor) Rehydrate(summary CompactionSummary) ([]provider.Message
 }
 
 // validateSummary enforces the minimum semantic contract: Intent must be
-// non-empty (after trimming whitespace) and NextSteps must contain at
-// least one entry. Any failure returns a wrapped ErrInvalidSummary with
-// the field name embedded for diagnostics.
+// non-empty (after trimming whitespace), NextSteps must contain at least
+// one entry, and no string field may leak a provider-level tool-call
+// identifier. Any failure returns a wrapped ErrInvalidSummary with the
+// field name embedded for diagnostics.
 //
 // Expected:
 //   - summary is the parsed result of json.Unmarshal.
 //
 // Returns:
-//   - nil when both invariants hold.
+//   - nil when every invariant holds.
 //   - A wrapped ErrInvalidSummary naming the first failing field.
 //
 // Side effects:
@@ -276,5 +291,49 @@ func validateSummary(summary CompactionSummary) error {
 	if len(summary.NextSteps) == 0 {
 		return fmt.Errorf("%w: field next_steps is empty", ErrInvalidSummary)
 	}
+	if field, leak, ok := findForbiddenToolID(summary); ok {
+		return fmt.Errorf("%w: field %s leaks forbidden tool-call identifier %q", ErrInvalidSummary, field, leak)
+	}
 	return nil
+}
+
+// findForbiddenToolID scans every string-bearing field of a summary for
+// provider-level tool-call identifiers (`toolu_...` or `call_...`). It
+// returns the field name and the offending substring on first match so
+// the caller can build a diagnostic error naming exactly which piece of
+// LLM output tripped the T10c guard.
+//
+// Expected:
+//   - summary is the parsed summary under validation.
+//
+// Returns:
+//   - (fieldName, leakedID, true) when a forbidden identifier is present.
+//   - ("", "", false) when the summary is clean.
+//
+// Side effects:
+//   - None.
+func findForbiddenToolID(summary CompactionSummary) (string, string, bool) {
+	type fieldScan struct {
+		name  string
+		value string
+	}
+	scan := []fieldScan{{name: "intent", value: summary.Intent}}
+	for i, v := range summary.KeyDecisions {
+		scan = append(scan, fieldScan{name: fmt.Sprintf("key_decisions[%d]", i), value: v})
+	}
+	for i, v := range summary.Errors {
+		scan = append(scan, fieldScan{name: fmt.Sprintf("errors[%d]", i), value: v})
+	}
+	for i, v := range summary.NextSteps {
+		scan = append(scan, fieldScan{name: fmt.Sprintf("next_steps[%d]", i), value: v})
+	}
+	for i, v := range summary.FilesToRestore {
+		scan = append(scan, fieldScan{name: fmt.Sprintf("files_to_restore[%d]", i), value: v})
+	}
+	for _, f := range scan {
+		if match := forbiddenToolIDPattern.FindString(f.value); match != "" {
+			return f.name, match, true
+		}
+	}
+	return "", "", false
 }

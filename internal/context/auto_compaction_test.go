@@ -337,3 +337,96 @@ func TestAutoCompactor_Compact_FencedJSON_ParsesSuccessfully(t *testing.T) {
 		t.Fatalf("Compact: fenced JSON was parsed but Intent is empty; want populated")
 	}
 }
+
+// TestAutoCompactor_Compact_RejectsSummaryWithAnthropicToolID asserts the
+// T10c invariant from [[ADR - Tool-Call Atomicity in Context Compaction]]:
+// a summary string containing a raw "toolu_..." identifier must be
+// rejected via ErrInvalidSummary. The ADR specifies this because a
+// dangling reference to a tool_use_id the provider has never seen would
+// surface as a 400 at the wire.
+func TestAutoCompactor_Compact_RejectsSummaryWithAnthropicToolID(t *testing.T) {
+	t.Parallel()
+
+	leaked := sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+		s.Intent = "summary references toolu_abc1234567890xyz which should be scrubbed"
+	})
+	summariser := &fakeSummariser{response: leaked}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	_, err := compactor.Compact(context.Background(), sampleMessages())
+	if err == nil {
+		t.Fatalf("Compact: expected validation error for leaked toolu_ id; got nil")
+	}
+	if !errors.Is(err, contextpkg.ErrInvalidSummary) {
+		t.Fatalf("Compact: err = %v; want ErrInvalidSummary for leaked tool-call id", err)
+	}
+	if !strings.Contains(err.Error(), "tool") {
+		t.Fatalf("Compact: err = %q; want message naming the forbidden-id leak", err.Error())
+	}
+}
+
+// TestAutoCompactor_Compact_RejectsSummaryWithOpenAIToolID is the
+// sibling assertion for the OpenAI-compatible namespace. Summaries that
+// leak a "call_..." identifier anywhere inside any string field must be
+// rejected. The regex in ADR - Tool-Call Atomicity deliberately covers
+// both providers in one pass.
+func TestAutoCompactor_Compact_RejectsSummaryWithOpenAIToolID(t *testing.T) {
+	t.Parallel()
+
+	leaked := sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+		s.NextSteps = []string{"re-run the call_9876543210ABCDEF tool"}
+	})
+	summariser := &fakeSummariser{response: leaked}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	_, err := compactor.Compact(context.Background(), sampleMessages())
+	if err == nil {
+		t.Fatalf("Compact: expected validation error for leaked call_ id; got nil")
+	}
+	if !errors.Is(err, contextpkg.ErrInvalidSummary) {
+		t.Fatalf("Compact: err = %v; want ErrInvalidSummary for leaked tool-call id", err)
+	}
+}
+
+// TestAutoCompactor_Compact_AllowsSummaryThatMerelyMentionsToolWord
+// asserts the regex is a precise id matcher, not a word filter. A
+// summary that uses the literal word "tool" (very common) must not be
+// rejected. Only the toolu_ / call_ prefix patterns trigger the guard.
+func TestAutoCompactor_Compact_AllowsSummaryThatMerelyMentionsToolWord(t *testing.T) {
+	t.Parallel()
+
+	summariser := &fakeSummariser{
+		response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+			s.Intent = "the agent completed a tool call sequence successfully"
+			s.NextSteps = []string{"continue with the next tool invocation"}
+		}),
+	}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	if _, err := compactor.Compact(context.Background(), sampleMessages()); err != nil {
+		t.Fatalf("Compact: unexpected rejection for summary mentioning plain 'tool': %v", err)
+	}
+}
+
+// TestAutoCompactor_Compact_RejectsForbiddenIDInErrorsField asserts the
+// validator inspects every string-bearing field, not just Intent. The
+// Errors slice is the most likely place an LLM would parrot back a raw
+// id when it "helpfully" describes an earlier failure.
+func TestAutoCompactor_Compact_RejectsForbiddenIDInErrorsField(t *testing.T) {
+	t.Parallel()
+
+	summariser := &fakeSummariser{
+		response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+			s.Errors = []string{"tool toolu_aaaaaaaaaaaaaaaaaa returned a timeout"}
+		}),
+	}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	_, err := compactor.Compact(context.Background(), sampleMessages())
+	if err == nil {
+		t.Fatalf("Compact: expected validation error for leaked id in Errors; got nil")
+	}
+	if !errors.Is(err, contextpkg.ErrInvalidSummary) {
+		t.Fatalf("Compact: err = %v; want ErrInvalidSummary", err)
+	}
+}
