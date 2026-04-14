@@ -110,3 +110,10 @@ Feature: Context Compression — Layers 1 and 2
     When the auto-compactor rehydrates
     Then the rehydrated window leads with a system message carrying the intent
     And the rehydrated window carries one tool message per queued file
+
+  @e2e
+  Scenario: Session memory written in one session surfaces in a fresh engine on reload
+    Given session A persisted a knowledge entry "snake_case is the convention" to the session memory store
+    When a fresh engine loads the same session memory store and streams one user turn
+    Then the provider request contains a session memory block
+    And the session memory block mentions "snake_case is the convention"
