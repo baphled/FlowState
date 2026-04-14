@@ -69,4 +69,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterExecutionLoopSteps(ctx)
 	RegisterLearningLoopSteps(ctx)
 	RegisterCompressionSteps(ctx)
+	RegisterAutoCompactionSteps(ctx)
 }

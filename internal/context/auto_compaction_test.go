@@ -293,6 +293,28 @@ func TestAutoCompactor_Compact_NilSummariser_ReturnsConfigError(t *testing.T) {
 	}
 }
 
+// TestAutoCompactor_Compact_FenceWithoutNewline_ReturnsParseError
+// exercises the defensive branch in stripJSONFences where the summariser
+// returns a response that starts with ``` but contains no subsequent
+// newline. The fence-stripper passes the raw input through unchanged
+// (there is nothing sensible to strip), so json.Unmarshal rejects it as
+// malformed. Added for coverage on the stripJSONFences.newlineIdx == -1
+// branch — keeping the contract explicit as a byproduct.
+func TestAutoCompactor_Compact_FenceWithoutNewline_ReturnsParseError(t *testing.T) {
+	t.Parallel()
+
+	summariser := &fakeSummariser{response: "```json no-newline-ever"}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	_, err := compactor.Compact(context.Background(), sampleMessages())
+	if err == nil {
+		t.Fatalf("Compact: expected parse error for fence-without-newline; got nil")
+	}
+	if errors.Is(err, contextpkg.ErrInvalidSummary) {
+		t.Fatalf("Compact: err = %v; should not be ErrInvalidSummary", err)
+	}
+}
+
 // TestAutoCompactor_Compact_FencedJSON_ParsesSuccessfully asserts that a
 // summariser returning a JSON body wrapped in Markdown code fences (a
 // common misbehaviour by chat models despite the T8 prompt's instruction)
