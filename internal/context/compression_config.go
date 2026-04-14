@@ -66,6 +66,36 @@ type SessionMemoryConfig struct {
 	StorageDir string `json:"storage_dir" yaml:"storage_dir"`
 }
 
+// CompressionMetrics is a per-WindowBuilder counter set that tracks the
+// compression layers' activity across the builder's lifetime. The
+// counters are intended for observability only — correctness of
+// compression does not depend on them — so they are exposed as plain
+// int fields rather than atomic types. Callers that share a builder
+// across goroutines must synchronise externally, matching the rest of
+// the WindowBuilder API.
+//
+// The four counters are the plan T19 contract:
+//
+//   - MicroCompactionCount: incremented once per cold message written
+//     by HotColdSplitter.Split.
+//   - AutoCompactionCount:  incremented once per successful
+//     AutoCompactor.Compact call.
+//   - TokensSaved:          running total of OriginalTokenCount -
+//     SummaryTokenCount across successful auto-compactions.
+//   - CacheHits:            reserved for a future summary-view cache
+//     (ADR - View-Only Context Compaction §3) and currently left at
+//     zero.
+type CompressionMetrics struct {
+	// MicroCompactionCount counts L1 cold-message offloads.
+	MicroCompactionCount int
+	// AutoCompactionCount counts successful L2 summary productions.
+	AutoCompactionCount int
+	// TokensSaved is the running total of tokens eliminated by L2.
+	TokensSaved int
+	// CacheHits is reserved for a compacted-view cache; zero today.
+	CacheHits int
+}
+
 // DefaultCompressionConfig returns a CompressionConfig with every layer
 // disabled and all numeric/path fields populated to safe defaults.
 //
