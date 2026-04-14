@@ -21,6 +21,8 @@
 package context
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -99,5 +101,150 @@ func NewCompactionIndex(sessionID string) CompactionIndex {
 	return CompactionIndex{
 		SessionID: sessionID,
 		Entries:   make(map[string]CompactedMessage),
+	}
+}
+
+// MessageCompactor decides whether a compactable unit (per ADR - Tool-Call
+// Atomicity in Context Compaction) is large enough to be replaced by a
+// placeholder, and counts tokens for comparison against the threshold.
+//
+// Implementations operate at the *unit* level — never per-message — so that
+// a parallel fan-out group is either kept or compacted as a whole. This is
+// a deliberate override of the original plan text (which spoke of
+// per-message compaction) per the team-lead's brief.
+type MessageCompactor interface {
+	// ShouldCompact reports whether the unit at unit.Start..unit.End in msgs
+	// has accumulated enough tokens to warrant compaction. Implementations
+	// must treat msgs as immutable.
+	ShouldCompact(unit Unit, msgs []provider.Message) bool
+	// TokenCount returns the cheap-approximation token count for a single
+	// provider.Message. Used by ShouldCompact and by the splitter when
+	// recording OriginalTokenCount.
+	TokenCount(msg provider.Message) int
+	// UnitTokenCount returns the cheap-approximation token count for an
+	// entire unit (sum of TokenCount over its messages).
+	UnitTokenCount(unit Unit, msgs []provider.Message) int
+	// Compact builds the placeholder message that replaces the whole unit.
+	// The returned message is a single solo-class message (per the ADR);
+	// any tool_use / tool_result payloads are dropped together.
+	Compact(unit Unit, msgs []provider.Message, recordID string) provider.Message
+}
+
+// DefaultMessageCompactor is the production implementation of
+// MessageCompactor. Token counts come from a cheap whitespace-split
+// approximation, and ShouldCompact fires when the unit's total exceeds
+// the configured threshold (strictly greater than, per the existing T2
+// acceptance test).
+type DefaultMessageCompactor struct {
+	threshold int
+}
+
+// NewDefaultMessageCompactor constructs a DefaultMessageCompactor with the
+// given token threshold.
+//
+// Expected:
+//   - threshold is the strict-greater-than firing point (e.g. 1000 means
+//     a unit totalling 1001 tokens triggers compaction; 1000 does not).
+//     A non-positive threshold disables compaction (ShouldCompact always
+//     returns false).
+//
+// Returns:
+//   - A configured DefaultMessageCompactor.
+//
+// Side effects:
+//   - None.
+func NewDefaultMessageCompactor(threshold int) *DefaultMessageCompactor {
+	return &DefaultMessageCompactor{threshold: threshold}
+}
+
+// ShouldCompact reports whether the unit's total token count strictly
+// exceeds the configured threshold.
+//
+// Expected:
+//   - unit.Start and unit.End are valid half-open bounds into msgs.
+//   - msgs is the slice the unit indexes into. Treated as immutable.
+//
+// Returns:
+//   - true when the unit totals strictly more than threshold tokens.
+//   - false when the unit fits or threshold is non-positive.
+//
+// Side effects:
+//   - None.
+func (c *DefaultMessageCompactor) ShouldCompact(unit Unit, msgs []provider.Message) bool {
+	if c.threshold <= 0 {
+		return false
+	}
+	return c.UnitTokenCount(unit, msgs) > c.threshold
+}
+
+// TokenCount returns the whitespace-split token count for the message body.
+// Tool-call argument payloads and tool-result content are both counted via
+// the message Content field; ToolCalls metadata is not separately scored.
+//
+// Expected:
+//   - msg may be any provider.Message; nil-equivalent (zero) is treated as
+//     zero tokens.
+//
+// Returns:
+//   - The whitespace-field count of msg.Content.
+//
+// Side effects:
+//   - None.
+func (c *DefaultMessageCompactor) TokenCount(msg provider.Message) int {
+	if msg.Content == "" {
+		return 0
+	}
+	return len(strings.Fields(msg.Content))
+}
+
+// UnitTokenCount sums TokenCount over every message in the unit.
+//
+// Expected:
+//   - unit.Start and unit.End are valid half-open bounds into msgs.
+//   - msgs is the slice the unit indexes into.
+//
+// Returns:
+//   - The sum of TokenCount(msgs[i]) for i in [unit.Start, unit.End).
+//
+// Side effects:
+//   - None.
+func (c *DefaultMessageCompactor) UnitTokenCount(unit Unit, msgs []provider.Message) int {
+	total := 0
+	for i := unit.Start; i < unit.End; i++ {
+		total += c.TokenCount(msgs[i])
+	}
+	return total
+}
+
+// Compact builds the placeholder that replaces the whole unit. The
+// placeholder is a Role:"user" message (a solo unit per the ADR — never a
+// tool message and carrying no tool_call_id). It records the record id and
+// the message count for inline diagnostics; the actual content lives in
+// the spilled CompactedUnit payload at StoragePath.
+//
+// Expected:
+//   - unit.Start and unit.End bound the unit in the original message slice.
+//   - The original message slice is the splitter's input; it is not read
+//     here (the placeholder text is derived from unit indices and recordID
+//     alone) but the parameter is retained for forward compatibility with
+//     richer placeholder strategies (e.g. summarised previews).
+//   - recordID is the CompactedMessage.ID used for spillover lookup.
+//
+// Returns:
+//   - A single provider.Message with Role:"user", Content describing the
+//     elision, and an empty ToolCalls slice. tool_use and tool_result
+//     entries from the original unit are dropped together.
+//
+// Side effects:
+//   - None.
+func (c *DefaultMessageCompactor) Compact(unit Unit, _ []provider.Message, recordID string) provider.Message {
+	count := unit.End - unit.Start
+	noun := "message"
+	if count != 1 {
+		noun = "messages"
+	}
+	return provider.Message{
+		Role:    "user",
+		Content: fmt.Sprintf("[compacted: %s — %d %s elided]", recordID, count, noun),
 	}
 }
