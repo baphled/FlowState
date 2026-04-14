@@ -33,9 +33,9 @@ type savedObservation struct {
 	tokensSaved int
 }
 
-func (r *recordingRecorder) RecordRetry(string)                   {}
+func (r *recordingRecorder) RecordRetry(string)                    {}
 func (r *recordingRecorder) RecordValidationScore(string, float64) {}
-func (r *recordingRecorder) RecordCriticResult(string, bool)      {}
+func (r *recordingRecorder) RecordCriticResult(string, bool)       {}
 func (r *recordingRecorder) RecordProviderLatency(string, string, float64) {
 }
 func (r *recordingRecorder) RecordContextWindowTokens(agentID string, tokens int) {

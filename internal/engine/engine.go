@@ -22,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tracer"
 )
 
 const (
@@ -83,6 +84,13 @@ type Engine struct {
 	// successful L2 compaction so operators have a single counter set
 	// spanning both layers. Nil means no metrics are recorded.
 	compressionMetrics *ctxstore.CompressionMetrics
+
+	// recorder, when non-nil, receives RecordCompressionTokensSaved on
+	// every successful L2 compaction. The delta is OriginalTokens -
+	// SummaryTokens — the same figure the ContextCompactedEvent carries
+	// — so Prometheus time series and event-bus subscribers stay in
+	// sync. Nil leaves the counter untouched (no-op wiring).
+	recorder tracer.Recorder
 
 	// knowledgeExtractor is the L3 extractor fired asynchronously from
 	// Stream to distil each completed turn into the session memory
@@ -147,6 +155,15 @@ type Config struct {
 	// store handles the read side. The two are independent: either may
 	// be nil, and tests typically set one at a time.
 	SessionMemoryStore *recall.SessionMemoryStore
+
+	// Recorder is the optional tracer.Recorder the engine uses to emit
+	// compression observability metrics. When set, the engine:
+	//   - forwards the recorder to the WindowBuilder so every Build call
+	//     emits a RecordContextWindowTokens gauge observation; and
+	//   - invokes RecordCompressionTokensSaved on every successful L2
+	//     auto-compaction with the positive delta of tokens eliminated.
+	// Nil leaves both emission sites silent (no-op recorder semantics).
+	Recorder tracer.Recorder
 }
 
 // New creates a new Engine from the given configuration.
@@ -213,6 +230,7 @@ func New(cfg Config) *Engine {
 		autoCompactor:        cfg.AutoCompactor,
 		compressionConfig:    cfg.CompressionConfig,
 		compressionMetrics:   cfg.CompressionMetrics,
+		recorder:             cfg.Recorder,
 		knowledgeExtractor:   cfg.KnowledgeExtractor,
 	}
 }
@@ -270,6 +288,9 @@ func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
 	}
 	if cfg.SessionMemoryStore != nil && cfg.CompressionConfig.SessionMemory.Enabled {
 		builder = builder.WithSessionMemory(cfg.SessionMemoryStore)
+	}
+	if cfg.Recorder != nil {
+		builder = builder.WithRecorder(cfg.Recorder)
 	}
 	return builder
 }
@@ -1525,11 +1546,18 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 //   - Publishes one event on the engine bus if non-nil; otherwise no-op.
 func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration) {
 	summaryTokens := e.tokenCounter.Count(summaryText)
+	delta := recentTokens - summaryTokens
 	if e.compressionMetrics != nil {
 		e.compressionMetrics.AutoCompactionCount++
-		if delta := recentTokens - summaryTokens; delta > 0 {
+		if delta > 0 {
 			e.compressionMetrics.TokensSaved += delta
 		}
+	}
+	if e.recorder != nil {
+		// Recorder itself guards against non-positive deltas, but we
+		// still pass through the raw value so callers can inspect the
+		// call site for anomalies during investigation.
+		e.recorder.RecordCompressionTokensSaved(agentID, delta)
 	}
 	if e.bus == nil {
 		return
