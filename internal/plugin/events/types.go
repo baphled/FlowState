@@ -38,6 +38,7 @@
 //   - recall.searched
 //   - recall.chain.searched
 //   - recall.summarized
+//   - context.compacted
 //   - discovery.published
 //   - learning.recorded
 //
@@ -71,6 +72,7 @@ const (
 	EventRecallSearched          = "recall.searched"
 	EventRecallChainSearched     = "recall.chain.searched"
 	EventRecallSummarized        = "recall.summarized"
+	EventContextCompacted        = "context.compacted"
 	EventDiscoveryPublished      = "discovery.published"
 	EventLearningRecorded        = "learning.recorded"
 )

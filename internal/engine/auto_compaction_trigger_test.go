@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	pluginevents "github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 )
@@ -48,9 +50,12 @@ func (r *recordingSummariser) Summarise(_ context.Context, _ string, _ string, _
 }
 
 // buildSummaryJSON returns a minimal-but-valid CompactionSummary body.
-// It is a helper, not a fixture — each test that needs specific content
-// builds its own via this function with the override hook.
-func buildSummaryJSON(t *testing.T, override func(*ctxstore.CompactionSummary)) string {
+// Kept as a helper rather than inlined so individual T10 tests stay
+// focused on trigger behaviour, not JSON construction. None of the
+// current callers need to vary the payload — if a future test does, it
+// should build its own summary inline rather than parameterising this
+// helper with a rarely-exercised override hook.
+func buildSummaryJSON(t *testing.T) string {
 	t.Helper()
 	summary := ctxstore.CompactionSummary{
 		Intent:             "continue T10 integration work",
@@ -60,9 +65,6 @@ func buildSummaryJSON(t *testing.T, override func(*ctxstore.CompactionSummary)) 
 		FilesToRestore:     []string{"internal/engine/engine.go"},
 		OriginalTokenCount: 0,
 		SummaryTokenCount:  0,
-	}
-	if override != nil {
-		override(&summary)
 	}
 	data, err := json.Marshal(summary)
 	if err != nil {
@@ -192,7 +194,7 @@ func seedMessages(t *testing.T, store *recall.FileContextStore) {
 func TestBuildContextWindowAutoCompaction_AboveThreshold_FiresCompact(t *testing.T) {
 	t.Parallel()
 
-	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
 	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
 
 	// 10 messages × 7 words = 70 tokens. Sliding window default keeps
@@ -232,7 +234,7 @@ func TestBuildContextWindowAutoCompaction_AboveThreshold_FiresCompact(t *testing
 func TestBuildContextWindowAutoCompaction_BelowThreshold_DoesNotFire(t *testing.T) {
 	t.Parallel()
 
-	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
 	eng, store := newTestEngineWithCompactor(t, summariser, 0.80, true)
 
 	seedMessages(t, store)
@@ -259,7 +261,7 @@ func TestBuildContextWindowAutoCompaction_BelowThreshold_DoesNotFire(t *testing.
 func TestBuildContextWindowAutoCompaction_Disabled_DoesNotFire(t *testing.T) {
 	t.Parallel()
 
-	summariser := &recordingSummariser{response: buildSummaryJSON(t, nil)}
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
 	eng, store := newTestEngineWithCompactor(t, summariser, 0.10, false)
 
 	seedMessages(t, store)
@@ -268,6 +270,96 @@ func TestBuildContextWindowAutoCompaction_Disabled_DoesNotFire(t *testing.T) {
 
 	if summariser.calls.Load() != 0 {
 		t.Fatalf("summariser calls = %d; want 0 (feature disabled)", summariser.calls.Load())
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_EmitsContextCompactedEvent asserts
+// the T10b invariant from [[ADR - Tool-Call Atomicity in Context
+// Compaction]]: a successful compaction pass publishes a
+// plugin-events ContextCompactedEvent (topic EventContextCompacted) so
+// subscribers can observe compaction frequency, latency, and savings
+// without overloading the recall.summarized topic.
+func TestBuildContextWindowAutoCompaction_EmitsContextCompactedEvent(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
+
+	var (
+		mu       sync.Mutex
+		observed []pluginevents.ContextCompactedEventData
+	)
+	eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(evt any) {
+		e, ok := evt.(*pluginevents.ContextCompactedEvent)
+		if !ok {
+			t.Errorf("subscriber received %T; want *ContextCompactedEvent", evt)
+			return
+		}
+		mu.Lock()
+		observed = append(observed, e.Data)
+		mu.Unlock()
+	})
+
+	seedMessages(t, store)
+
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-t10b", "next user turn")
+
+	// The bus dispatches synchronously but we still guard against a
+	// future async change by polling briefly.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(observed)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 1 {
+		t.Fatalf("observed %d ContextCompactedEvent payloads; want 1", len(observed))
+	}
+	got := observed[0]
+	if got.SessionID != "session-t10b" {
+		t.Fatalf("event SessionID = %q; want session-t10b", got.SessionID)
+	}
+	if got.AgentID != "t10-agent" {
+		t.Fatalf("event AgentID = %q; want t10-agent", got.AgentID)
+	}
+	if got.OriginalTokens <= 0 {
+		t.Fatalf("event OriginalTokens = %d; want > 0", got.OriginalTokens)
+	}
+	if got.SummaryTokens <= 0 {
+		t.Fatalf("event SummaryTokens = %d; want > 0 (summary text has length)", got.SummaryTokens)
+	}
+	if got.LatencyMS < 0 {
+		t.Fatalf("event LatencyMS = %d; want >= 0", got.LatencyMS)
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_NoEventOnError asserts that a
+// failed compaction pass does NOT emit the success event. Subscribers
+// must not see phantom compactions; fail-soft means both the summary
+// and the event are suppressed.
+func TestBuildContextWindowAutoCompaction_NoEventOnError(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{err: errors.New("sim outage")}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
+
+	var counter atomic.Int32
+	eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(_ any) {
+		counter.Add(1)
+	})
+
+	seedMessages(t, store)
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-t10b-err", "next user turn")
+
+	if counter.Load() != 0 {
+		t.Fatalf("ContextCompactedEvent fired %d times on error; want 0", counter.Load())
 	}
 }
 

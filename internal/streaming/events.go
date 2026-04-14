@@ -20,6 +20,7 @@ const (
 	EventTypeRecallSearch           = "recall_search"
 	EventTypeRecallChainSearch      = "recall_chain_search"
 	EventTypeRecallSummarized       = "recall_summarized"
+	EventTypeContextCompacted       = "context_compacted"
 	EventTypeLearningTriggered      = "learning_triggered"
 )
 
@@ -476,6 +477,49 @@ func (e RecallSummarizedEvent) MarshalJSON() ([]byte, error) {
 	return marshalWithType(e.Type(), alias(e))
 }
 
+// ContextCompactedEvent represents a successful Layer 2 auto-compaction
+// pass. Emitted by the engine's buildContextWindow trigger when an
+// AutoCompactor produces a validated summary for the current session.
+// Distinct from RecallSummarizedEvent per [[ADR - Tool-Call Atomicity
+// in Context Compaction]] so downstream subscribers can tell context
+// compaction apart from recall summarisation.
+type ContextCompactedEvent struct {
+	OriginalTokens int    `json:"originalTokens"`
+	SummaryTokens  int    `json:"summaryTokens"`
+	LatencyMS      int64  `json:"latencyMs"`
+	AgentID        string `json:"agentId"`
+}
+
+// Type returns the event type identifier for context compacted events.
+//
+// Expected:
+//   - The receiver holds compaction statistics.
+//
+// Returns:
+//   - The event type identifier.
+//
+// Side effects:
+//   - None.
+func (e ContextCompactedEvent) Type() string { return EventTypeContextCompacted }
+
+// MarshalJSON serialises a ContextCompactedEvent with a type
+// discriminator field so wire subscribers can route decoded events by
+// the same "type" key every other streaming event honours.
+//
+// Expected:
+//   - e carries the compaction statistics to serialise.
+//
+// Returns:
+//   - JSON bytes containing the event fields plus a "type" discriminator.
+//   - An error if serialisation fails.
+//
+// Side effects:
+//   - None.
+func (e ContextCompactedEvent) MarshalJSON() ([]byte, error) {
+	type alias ContextCompactedEvent
+	return marshalWithType(e.Type(), alias(e))
+}
+
 // LearningTriggeredEvent signals that a background learning job has been queued.
 //
 // This event is emitted immediately before Done when the learning loop accepts
@@ -547,37 +591,31 @@ func UnmarshalEvent(data []byte) (Event, error) {
 	if err := json.Unmarshal(data, &peek); err != nil {
 		return nil, fmt.Errorf("reading event type: %w", err)
 	}
-
-	switch peek.Type {
-	case EventTypeTextChunk:
-		return unmarshalTyped[TextChunkEvent](data)
-	case EventTypeToolCall:
-		return unmarshalTyped[ToolCallEvent](data)
-	case EventTypeDelegation:
-		return unmarshalTyped[DelegationEvent](data)
-	case EventTypeProgress:
-		return unmarshalTyped[ProgressEvent](data)
-	case EventTypeCompletionNotification:
-		return unmarshalTyped[CompletionNotificationEvent](data)
-	case EventTypeCoordinationStore:
-		return unmarshalTyped[CoordinationStoreEvent](data)
-	case EventTypeStatusTransition:
-		return unmarshalTyped[StatusTransitionEvent](data)
-	case EventTypePlanArtifact:
-		return unmarshalTyped[PlanArtifactEvent](data)
-	case EventTypeReviewVerdict:
-		return unmarshalTyped[ReviewVerdictEvent](data)
-	case EventTypeRecallSearch:
-		return unmarshalTyped[RecallSearchEvent](data)
-	case EventTypeRecallChainSearch:
-		return unmarshalTyped[RecallChainSearchEvent](data)
-	case EventTypeRecallSummarized:
-		return unmarshalTyped[RecallSummarizedEvent](data)
-	case EventTypeLearningTriggered:
-		return unmarshalTyped[LearningTriggeredEvent](data)
-	default:
+	decoder, ok := eventDecoders[peek.Type]
+	if !ok {
 		return nil, fmt.Errorf("unknown event type: %q", peek.Type)
 	}
+	return decoder(data)
+}
+
+// eventDecoders routes event types to their typed decoder. The map
+// replaces a long switch so adding new event kinds does not push
+// UnmarshalEvent past the cyclomatic-complexity gate.
+var eventDecoders = map[string]func([]byte) (Event, error){
+	EventTypeTextChunk:              func(d []byte) (Event, error) { return unmarshalTyped[TextChunkEvent](d) },
+	EventTypeToolCall:               func(d []byte) (Event, error) { return unmarshalTyped[ToolCallEvent](d) },
+	EventTypeDelegation:             func(d []byte) (Event, error) { return unmarshalTyped[DelegationEvent](d) },
+	EventTypeProgress:               func(d []byte) (Event, error) { return unmarshalTyped[ProgressEvent](d) },
+	EventTypeCompletionNotification: func(d []byte) (Event, error) { return unmarshalTyped[CompletionNotificationEvent](d) },
+	EventTypeCoordinationStore:      func(d []byte) (Event, error) { return unmarshalTyped[CoordinationStoreEvent](d) },
+	EventTypeStatusTransition:       func(d []byte) (Event, error) { return unmarshalTyped[StatusTransitionEvent](d) },
+	EventTypePlanArtifact:           func(d []byte) (Event, error) { return unmarshalTyped[PlanArtifactEvent](d) },
+	EventTypeReviewVerdict:          func(d []byte) (Event, error) { return unmarshalTyped[ReviewVerdictEvent](d) },
+	EventTypeRecallSearch:           func(d []byte) (Event, error) { return unmarshalTyped[RecallSearchEvent](d) },
+	EventTypeRecallChainSearch:      func(d []byte) (Event, error) { return unmarshalTyped[RecallChainSearchEvent](d) },
+	EventTypeRecallSummarized:       func(d []byte) (Event, error) { return unmarshalTyped[RecallSummarizedEvent](d) },
+	EventTypeContextCompacted:       func(d []byte) (Event, error) { return unmarshalTyped[ContextCompactedEvent](d) },
+	EventTypeLearningTriggered:      func(d []byte) (Event, error) { return unmarshalTyped[LearningTriggeredEvent](d) },
 }
 
 // unmarshalTyped deserialises JSON into a concrete event type.
