@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,10 @@ type AppConfig struct {
 	ContextAssemblyHooks []pluginpkg.ContextAssemblyHook `json:"-" yaml:"-"`
 	SessionRecording     bool                            `json:"session_recording" yaml:"session_recording"`
 	Qdrant               QdrantConfig                    `json:"qdrant" yaml:"qdrant"`
+	// Compression controls the three-layer context compression system
+	// (micro-compaction, auto-compaction, session-memory). All layers
+	// default to disabled; see internal/context.DefaultCompressionConfig.
+	Compression contextpkg.CompressionConfig `json:"compression" yaml:"compression"`
 }
 
 // QdrantConfig provides configuration for Qdrant-based recall storage.
@@ -257,6 +262,7 @@ func DefaultConfig() *AppConfig {
 			},
 		},
 		AgentOverrides: make(map[string]AgentOverrideConfig),
+		Compression:    contextpkg.DefaultCompressionConfig(),
 	}
 }
 
@@ -418,6 +424,40 @@ func applyDefaults(cfg *AppConfig) {
 			cfg.MCPServers[i].Enabled = true
 		}
 	}
+
+	applyCompressionDefaults(&cfg.Compression, defaults.Compression)
+}
+
+// applyCompressionDefaults fills empty numeric and path fields of the
+// CompressionConfig from defaults, leaving any explicitly configured
+// value untouched. Enabled flags are never overridden — an explicit
+// false in YAML is preserved because all defaults are false too.
+//
+// Expected:
+//   - cfg is a non-nil CompressionConfig pointer.
+//   - defaults carries the values returned by DefaultCompressionConfig.
+//
+// Side effects:
+//   - Modifies cfg in place.
+func applyCompressionDefaults(cfg *contextpkg.CompressionConfig, defaults contextpkg.CompressionConfig) {
+	if cfg.MicroCompaction.HotTailSize == 0 {
+		cfg.MicroCompaction.HotTailSize = defaults.MicroCompaction.HotTailSize
+	}
+	if cfg.MicroCompaction.TokenThreshold == 0 {
+		cfg.MicroCompaction.TokenThreshold = defaults.MicroCompaction.TokenThreshold
+	}
+	if cfg.MicroCompaction.StorageDir == "" {
+		cfg.MicroCompaction.StorageDir = defaults.MicroCompaction.StorageDir
+	}
+	if cfg.MicroCompaction.PlaceholderTokens == 0 {
+		cfg.MicroCompaction.PlaceholderTokens = defaults.MicroCompaction.PlaceholderTokens
+	}
+	if cfg.AutoCompaction.Threshold == 0 {
+		cfg.AutoCompaction.Threshold = defaults.AutoCompaction.Threshold
+	}
+	if cfg.SessionMemory.StorageDir == "" {
+		cfg.SessionMemory.StorageDir = defaults.SessionMemory.StorageDir
+	}
 }
 
 // mergeCategoryRouting applies user overrides on top of the default routing map.
@@ -511,4 +551,6 @@ func expandPaths(cfg *AppConfig) {
 	for i, dir := range cfg.AgentDirs {
 		cfg.AgentDirs[i] = expandTilde(dir)
 	}
+	cfg.Compression.MicroCompaction.StorageDir = expandTilde(cfg.Compression.MicroCompaction.StorageDir)
+	cfg.Compression.SessionMemory.StorageDir = expandTilde(cfg.Compression.SessionMemory.StorageDir)
 }
