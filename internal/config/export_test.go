@@ -9,3 +9,8 @@ func ExpandTildeForTest(path string) string {
 func ExpandPathsForTest(cfg *AppConfig) {
 	expandPaths(cfg)
 }
+
+// ApplyCompressionDefaultsForTest exposes applyCompressionDefaults for testing.
+func ApplyCompressionDefaultsForTest(cfg *AppConfig) {
+	applyCompressionDefaults(&cfg.Compression, DefaultConfig().Compression)
+}
