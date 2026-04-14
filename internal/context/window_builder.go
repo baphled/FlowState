@@ -477,11 +477,14 @@ func (b *WindowBuilder) logCompressionMetrics() {
 	if b.metrics == nil {
 		return
 	}
+	// A cache_hits key is intentionally omitted. Per ADR - View-Only
+	// Context Compaction §3 the compacted-view cache is a permitted but
+	// deferred extension; emitting a zero stub would mislead operators
+	// into diagnosing a broken cache that does not exist.
 	slog.Info("compression metrics",
 		"micro_compaction_count", b.metrics.MicroCompactionCount,
 		"auto_compaction_count", b.metrics.AutoCompactionCount,
 		"tokens_saved", b.metrics.TokensSaved,
-		"cache_hits", b.metrics.CacheHits,
 	)
 }
 

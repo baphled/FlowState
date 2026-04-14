@@ -74,7 +74,7 @@ type SessionMemoryConfig struct {
 // across goroutines must synchronise externally, matching the rest of
 // the WindowBuilder API.
 //
-// The four counters are the plan T19 contract:
+// The three enforced counters are the plan T19 contract:
 //
 //   - MicroCompactionCount: incremented once per cold message written
 //     by HotColdSplitter.Split.
@@ -82,9 +82,14 @@ type SessionMemoryConfig struct {
 //     AutoCompactor.Compact call.
 //   - TokensSaved:          running total of OriginalTokenCount -
 //     SummaryTokenCount across successful auto-compactions.
-//   - CacheHits:            reserved for a future summary-view cache
-//     (ADR - View-Only Context Compaction §3) and currently left at
-//     zero.
+//
+// A CacheHits counter is deliberately absent. The governing ADR
+// (View-Only Context Compaction §3, "Caching Is a Permitted Extension")
+// classifies the compacted-view cache as an out-of-scope extension of
+// this delivery. A zero-stub counter with no backing cache is worse
+// than no counter at all because it emits misleading observability
+// data. When the cache ships, the CacheHits field and its increment
+// site must be introduced together.
 type CompressionMetrics struct {
 	// MicroCompactionCount counts L1 cold-message offloads.
 	MicroCompactionCount int
@@ -92,8 +97,6 @@ type CompressionMetrics struct {
 	AutoCompactionCount int
 	// TokensSaved is the running total of tokens eliminated by L2.
 	TokensSaved int
-	// CacheHits is reserved for a compacted-view cache; zero today.
-	CacheHits int
 }
 
 // DefaultCompressionConfig returns a CompressionConfig with every layer

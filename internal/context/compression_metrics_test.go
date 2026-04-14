@@ -1,11 +1,17 @@
 // Package context_test — T19 CompressionMetrics specification.
 //
 // CompressionMetrics is an optional counter set attached to the
-// WindowBuilder. The plan requires four counters (MicroCompactionCount,
-// AutoCompactionCount, TokensSaved, CacheHits) and slog.Info emission
-// on every Build() call. Tests assert the counters exist, are attached
-// via WithMetrics, and that a metrics log record names the expected
-// keys so downstream log processors can rely on the schema.
+// WindowBuilder. The plan's enforced counters are MicroCompactionCount,
+// AutoCompactionCount, and TokensSaved; slog.Info emits them on every
+// Build() call. Tests assert the counters exist, are attached via
+// WithMetrics, and that the metrics log record names the expected keys
+// so downstream log processors can rely on the schema.
+//
+// A compacted-view cache hit counter was deliberately excluded: the
+// governing ADR (View-Only Context Compaction §3, "Caching Is a
+// Permitted Extension") classifies the cache as out-of-scope for this
+// delivery. Any future cache wiring must add both the counter and a
+// real increment site together.
 package context_test
 
 import (
@@ -27,7 +33,7 @@ func TestCompressionMetrics_ZeroValue_IsReady(t *testing.T) {
 	t.Parallel()
 
 	var m contextpkg.CompressionMetrics
-	if m.MicroCompactionCount != 0 || m.AutoCompactionCount != 0 || m.TokensSaved != 0 || m.CacheHits != 0 {
+	if m.MicroCompactionCount != 0 || m.AutoCompactionCount != 0 || m.TokensSaved != 0 {
 		t.Fatalf("zero CompressionMetrics not zero-valued: %+v", m)
 	}
 }
@@ -64,7 +70,6 @@ func TestWindowBuilder_Build_LogsMetricsKeys(t *testing.T) {
 		MicroCompactionCount: 3,
 		AutoCompactionCount:  1,
 		TokensSaved:          420,
-		CacheHits:            2,
 	}
 	builder := contextpkg.NewWindowBuilder(stubCounter{}).WithMetrics(metrics)
 
@@ -81,10 +86,13 @@ func TestWindowBuilder_Build_LogsMetricsKeys(t *testing.T) {
 	_ = builder.Build(manifest, store, 10_000)
 
 	out := buf.String()
-	for _, key := range []string{"micro_compaction_count", "auto_compaction_count", "tokens_saved", "cache_hits"} {
+	for _, key := range []string{"micro_compaction_count", "auto_compaction_count", "tokens_saved"} {
 		if !strings.Contains(out, key) {
 			t.Fatalf("Build did not log metrics key %q; log was %s", key, out)
 		}
+	}
+	if strings.Contains(out, "cache_hits") {
+		t.Fatalf("Build logged cache_hits; the counter is out of scope until the compacted-view cache ships per ADR - View-Only Context Compaction §3. log was %s", out)
 	}
 }
 
