@@ -326,10 +326,22 @@ type latencyCall struct {
 }
 
 type spyRecorder struct {
-	retryCalls   []string
-	scoreCalls   []float64
-	criticCalls  []bool
-	latencyCalls []latencyCall
+	retryCalls        []string
+	scoreCalls        []float64
+	criticCalls       []bool
+	latencyCalls      []latencyCall
+	contextWindowObs  []contextWindowCall
+	tokensSavedCalls  []tokensSavedCall
+}
+
+type contextWindowCall struct {
+	agentID string
+	tokens  int
+}
+
+type tokensSavedCall struct {
+	agentID     string
+	tokensSaved int
 }
 
 func (s *spyRecorder) RecordRetry(agentID string) {
@@ -346,6 +358,14 @@ func (s *spyRecorder) RecordCriticResult(_ string, passed bool) {
 
 func (s *spyRecorder) RecordProviderLatency(prov, method string, ms float64) {
 	s.latencyCalls = append(s.latencyCalls, latencyCall{provider: prov, method: method, ms: ms})
+}
+
+func (s *spyRecorder) RecordContextWindowTokens(agentID string, tokens int) {
+	s.contextWindowObs = append(s.contextWindowObs, contextWindowCall{agentID: agentID, tokens: tokens})
+}
+
+func (s *spyRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
+	s.tokensSavedCalls = append(s.tokensSavedCalls, tokensSavedCall{agentID: agentID, tokensSaved: tokensSaved})
 }
 
 var _ tracer.Recorder = (*spyRecorder)(nil)

@@ -10,6 +10,16 @@ type Recorder interface {
 	RecordCriticResult(agentID string, passed bool)
 	// RecordProviderLatency records the latency in milliseconds for a provider method call.
 	RecordProviderLatency(provider, method string, ms float64)
+	// RecordContextWindowTokens sets a gauge to the size in tokens of the
+	// most recently assembled context window for the given agent. Call
+	// sites: context.WindowBuilder.Build after assembly completes.
+	RecordContextWindowTokens(agentID string, tokens int)
+	// RecordCompressionTokensSaved adds tokensSaved to a running counter
+	// of tokens eliminated by L2 auto-compaction for the given agent.
+	// Non-positive deltas are ignored so noisy call sites cannot corrupt
+	// the cumulative value. Call sites: engine.maybeAutoCompact on
+	// successful compaction, using OriginalTokens - SummaryTokens.
+	RecordCompressionTokensSaved(agentID string, tokensSaved int)
 }
 
 // NoopRecorder is a Recorder that discards all metrics. Useful for testing.
@@ -54,3 +64,23 @@ func (n *NoopRecorder) RecordCriticResult(_ string, _ bool) {}
 // Side effects:
 //   - None.
 func (n *NoopRecorder) RecordProviderLatency(_, _ string, _ float64) {}
+
+// RecordContextWindowTokens discards the context window gauge update.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - tokens is the assembled window size in tokens.
+//
+// Side effects:
+//   - None.
+func (n *NoopRecorder) RecordContextWindowTokens(_ string, _ int) {}
+
+// RecordCompressionTokensSaved discards the compression savings delta.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - tokensSaved is the non-negative delta of tokens eliminated.
+//
+// Side effects:
+//   - None.
+func (n *NoopRecorder) RecordCompressionTokensSaved(_ string, _ int) {}
