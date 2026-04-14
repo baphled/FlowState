@@ -90,6 +90,12 @@ type App struct {
 	backgroundManager      *engine.BackgroundTaskManager
 	sessionManager         *session.Manager
 	completionOrchestrator *engine.CompletionOrchestrator
+	// compression is the shared compression wiring for both the root
+	// engine and every delegate engine. Retained on App so
+	// createDelegateEngine can reuse the same CompressionConfig, metrics,
+	// recorder, and L2/L3 stores without re-reading cfg or
+	// re-constructing the summariser adapter.
+	compression compressionComponents
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -311,6 +317,7 @@ func buildApp(params appBuildParams) *App {
 		metricsRegistry:  runtime.metricsRegistry,
 		defaultProvider:  runtime.defaultProvider,
 		sessionManager:   runtime.sessionManager,
+		compression:      runtime.compression,
 	}
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
@@ -392,6 +399,40 @@ type engineParams struct {
 	dispatcher           *external.Dispatcher
 	skillDir             string
 	recallBroker         recall.Broker
+	// compression carries the three-layer compression dependencies that
+	// must flow into the Engine for L1/L2/L3 to activate. Zero values on
+	// any field disable the corresponding layer. See buildCompressionComponents.
+	compression compressionComponents
+}
+
+// compressionComponents bundles the wiring required to activate the
+// three-layer context compression system on an engine. Each field is
+// gated on its corresponding Enabled flag in cfg.Compression, so the
+// zero value of this struct is a correct "compression disabled"
+// configuration.
+type compressionComponents struct {
+	// autoCompactor is the L2 orchestrator; nil disables L2 regardless
+	// of cfg.Compression.AutoCompaction.Enabled.
+	autoCompactor *ctxstore.AutoCompactor
+	// config is the parsed cfg.Compression block. Passing it in unaltered
+	// is deliberate: the engine reads individual Enabled flags so a
+	// partially wired struct still lets the engine short-circuit cleanly.
+	config ctxstore.CompressionConfig
+	// metrics tracks per-builder compaction counters. Always non-nil so
+	// the engine can increment without nil-guarding at the hot path.
+	metrics *ctxstore.CompressionMetrics
+	// sessionMemoryStore is the L3 read-side store; nil disables L3 even
+	// if cfg.Compression.SessionMemory.Enabled is true.
+	sessionMemoryStore *recall.SessionMemoryStore
+	// recorder is the shared tracer.Recorder. Always non-nil (the no-op
+	// case is filled in by a real PrometheusRecorder so
+	// RecordCompressionTokensSaved and RecordContextWindowTokens surface
+	// through /metrics).
+	recorder tracer.Recorder
+	// summariserAdapter is the production ctxstore.Summariser bound to
+	// the engine's chat provider. Retained here so call-site wiring can
+	// rebind the manifest after the engine is constructed.
+	summariserAdapter *engine.ProviderSummariser
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -406,7 +447,7 @@ type engineParams struct {
 // Side effects:
 //   - Creates the MCP manager, tool registry, engine, discovery, streamer, and API server.
 func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
-	metricsReg, tracedProvider, err := buildTracedProvider(params.providerRegistry, params.cfg.Providers.Default)
+	traced, err := buildTracedProvider(params.providerRegistry, params.cfg.Providers.Default)
 	if err != nil {
 		return nil, err
 	}
@@ -414,32 +455,20 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
 	chainStore := createChainStore(params.cfg)
-	broker := buildRecallBrokerFromSetup(params, tracedProvider, tp.mcpManager, contextStore, chainStore)
-	eng, setEnsureTools := createEngine(engineParams{
-		defaultProvider:      tracedProvider,
-		ollamaProvider:       params.ollamaProvider,
-		providerRegistry:     params.providerRegistry,
-		agentRegistry:        params.agentRegistry,
-		defaultManifest:      params.defaultManifest,
-		alwaysActiveSkills:   params.alwaysActiveSkills,
-		contextStore:         contextStore,
-		chainStore:           chainStore,
-		learningStore:        params.learningStore,
-		appTools:             tp.tools,
-		toolRegistry:         tp.toolRegistry,
-		permissionHandler:    tp.permissionHandler,
-		mcpServerTools:       tp.mcpServerTools,
-		agentsFileLoader:     buildAgentsFileLoader(),
-		tokenCounter:         ctxstore.NewTiktokenCounterWithResolver(params.failoverManager, params.cfg.Providers.Default),
-		contextAssemblyHooks: params.cfg.ContextAssemblyHooks,
-		failoverHook:         params.failoverHook,
-		failoverManager:      params.failoverManager,
-		dispatcher:           params.dispatcher,
-		skillDir:             params.cfg.SkillDir,
-		recallBroker:         broker,
-	})
+	broker := buildRecallBrokerFromSetup(params, traced.provider, tp.mcpManager, contextStore, chainStore)
+	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, traced.recorder)
+	eng, setEnsureTools := createEngine(buildEngineParams(engineAssemblyParams{
+		setup:        params,
+		traced:       traced,
+		tools:        tp,
+		contextStore: contextStore,
+		chainStore:   chainStore,
+		broker:       broker,
+		compression:  compression,
+	}))
+	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
-	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, tracedProvider)
+	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider)
 	sessionMgr := session.NewManager(streamer)
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr)
 	apiServer := api.NewServer(
@@ -450,22 +479,97 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithSessions(params.sessionStore),
 		api.WithSessionManager(sessionMgr),
 		api.WithTodoStore(tp.todoStore),
-		api.WithMetricsHandler(promhttp.HandlerFor(metricsReg, promhttp.HandlerOpts{})),
+		api.WithMetricsHandler(promhttp.HandlerFor(traced.metrics, promhttp.HandlerOpts{})),
 		api.WithEventBus(eng.EventBus()),
 	)
 	return &runtimeComponents{
 		engine:          eng,
-		defaultProvider: tracedProvider,
+		defaultProvider: traced.provider,
 		discovery:       disc,
 		streamer:        streamer,
 		apiServer:       apiServer,
-		metricsRegistry: metricsReg,
+		metricsRegistry: traced.metrics,
+		compression:     compression,
 		mcpManager:      tp.mcpManager,
 		todoStore:       tp.todoStore,
 		sessionRecorder: sessRecorder,
 		setEnsureTools:  setEnsureTools,
 		sessionManager:  sessionMgr,
 	}, nil
+}
+
+// engineAssemblyParams bundles the locals setupEngine accumulates en
+// route to building the engine's configuration. Declared as a struct so
+// buildEngineParams stays under the 5-argument revive gate.
+type engineAssemblyParams struct {
+	setup        setupEngineParams
+	traced       tracedBundle
+	tools        toolPipelineResult
+	contextStore *recall.FileContextStore
+	chainStore   recall.ChainContextStore
+	broker       recall.Broker
+	compression  compressionComponents
+}
+
+// buildEngineParams assembles the engineParams bundle from setupEngine
+// locals. Extracted so setupEngine stays under the 60-line funlen gate
+// now that compression wiring adds five additional fields to the engine
+// configuration surface.
+//
+// Expected:
+//   - in carries every local setupEngine needs to emit; see
+//     engineAssemblyParams for the per-field contract.
+//
+// Returns:
+//   - A fully populated engineParams value ready for createEngine.
+//
+// Side effects:
+//   - None.
+func buildEngineParams(in engineAssemblyParams) engineParams {
+	return engineParams{
+		defaultProvider:      in.traced.provider,
+		ollamaProvider:       in.setup.ollamaProvider,
+		providerRegistry:     in.setup.providerRegistry,
+		agentRegistry:        in.setup.agentRegistry,
+		defaultManifest:      in.setup.defaultManifest,
+		alwaysActiveSkills:   in.setup.alwaysActiveSkills,
+		contextStore:         in.contextStore,
+		chainStore:           in.chainStore,
+		learningStore:        in.setup.learningStore,
+		appTools:             in.tools.tools,
+		toolRegistry:         in.tools.toolRegistry,
+		permissionHandler:    in.tools.permissionHandler,
+		mcpServerTools:       in.tools.mcpServerTools,
+		agentsFileLoader:     buildAgentsFileLoader(),
+		tokenCounter:         ctxstore.NewTiktokenCounterWithResolver(in.setup.failoverManager, in.setup.cfg.Providers.Default),
+		contextAssemblyHooks: in.setup.cfg.ContextAssemblyHooks,
+		failoverHook:         in.setup.failoverHook,
+		failoverManager:      in.setup.failoverManager,
+		dispatcher:           in.setup.dispatcher,
+		skillDir:             in.setup.cfg.SkillDir,
+		recallBroker:         in.broker,
+		compression:          in.compression,
+	}
+}
+
+// bindCompressionManifest rebinds the summariser adapter to the default
+// manifest after createEngine returns. Without this step the L2 category
+// router defaults every call to "quick" even when the agent's manifest
+// specifies a richer summary tier.
+//
+// Expected:
+//   - compression is the bundle produced by buildCompressionComponents.
+//     A nil summariserAdapter (compression disabled) is a safe no-op.
+//   - manifest is the default agent manifest from app configuration.
+//
+// Side effects:
+//   - Mutates compression.summariserAdapter when present.
+func bindCompressionManifest(compression compressionComponents, manifest agent.Manifest) {
+	if compression.summariserAdapter == nil {
+		return
+	}
+	m := manifest
+	compression.summariserAdapter.WithManifest(&m)
 }
 
 // buildRecallBrokerFromSetup is a thin helper that translates setupEngine's
@@ -594,6 +698,7 @@ type runtimeComponents struct {
 	streamer        streaming.Streamer
 	apiServer       *api.Server
 	metricsRegistry *prometheus.Registry
+	compression     compressionComponents
 	mcpManager      mcpclient.Client
 	todoStore       todotool.Store
 	sessionRecorder *sessionrecorder.Recorder
@@ -637,6 +742,11 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		EventBus:             appEventBus,
 		RecallBroker:         params.recallBroker,
 		ContextAssemblyHooks: params.contextAssemblyHooks,
+		AutoCompactor:        params.compression.autoCompactor,
+		CompressionConfig:    params.compression.config,
+		CompressionMetrics:   params.compression.metrics,
+		SessionMemoryStore:   params.compression.sessionMemoryStore,
+		Recorder:             params.compression.recorder,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -869,22 +979,76 @@ func (a *App) createDelegateEngine(
 		}
 	}
 
+	delegateCompression := a.buildDelegateCompression(manifest)
+
 	eng := engine.New(engine.Config{
-		ChatProvider:    a.defaultProvider,
-		Registry:        a.providerRegistry,
-		AgentRegistry:   a.Registry,
-		Manifest:        manifest,
-		Tools:           a.buildToolsForManifestWithStore(manifest, store),
-		HookChain:       hookChain,
-		ChainStore:      chainStore,
-		EventBus:        bus,
-		FailoverManager: childFailoverMgr,
+		ChatProvider:       a.defaultProvider,
+		Registry:           a.providerRegistry,
+		AgentRegistry:      a.Registry,
+		Manifest:           manifest,
+		Tools:              a.buildToolsForManifestWithStore(manifest, store),
+		HookChain:          hookChain,
+		ChainStore:         chainStore,
+		EventBus:           bus,
+		FailoverManager:    childFailoverMgr,
+		AutoCompactor:      delegateCompression.autoCompactor,
+		CompressionConfig:  delegateCompression.config,
+		CompressionMetrics: delegateCompression.metrics,
+		SessionMemoryStore: delegateCompression.sessionMemoryStore,
+		Recorder:           delegateCompression.recorder,
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
 		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider)
 	}
 	return eng, str
+}
+
+// buildDelegateCompression assembles compression components for a delegate
+// engine. It shares the parent App's CompressionConfig, metrics, recorder,
+// and SessionMemoryStore (so counters aggregate across delegates and L3
+// entries land in one store), but constructs a per-delegate summariser
+// adapter bound to the delegate's manifest. Without the rebind every
+// delegate would resolve its summary tier against the coordinator's
+// manifest, silently collapsing the category routing to a single tier.
+//
+// Expected:
+//   - a.compression has been populated by setupEngine. When compression
+//     is disabled (zero autoCompactor and nil store) the returned bundle
+//     is a zero-effort pass-through.
+//   - manifest is the delegate's manifest. Its ContextManagement.SummaryTier
+//     picks the routing category at Summarise time.
+//
+// Returns:
+//   - A compressionComponents value with a fresh summariser adapter and
+//     AutoCompactor when L2 is enabled; otherwise a disabled bundle that
+//     reuses the parent's metrics and recorder unchanged.
+//
+// Side effects:
+//   - None.
+func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionComponents {
+	out := compressionComponents{
+		config:             a.compression.config,
+		metrics:            a.compression.metrics,
+		sessionMemoryStore: a.compression.sessionMemoryStore,
+		recorder:           a.compression.recorder,
+	}
+
+	if !a.compression.config.AutoCompaction.Enabled {
+		return out
+	}
+	if a.Config == nil {
+		return out
+	}
+
+	categoryResolver := engine.NewCategoryResolver(a.Config.CategoryRouting)
+	summariserResolver := engine.NewSummariserResolver(categoryResolver)
+	fallbackModel := a.Config.Providers.Ollama.Model
+	adapter := engine.NewProviderSummariser(a.defaultProvider, summariserResolver, fallbackModel).
+		WithManifest(&manifest)
+	out.summariserAdapter = adapter
+	out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
+	return out
 }
 
 // buildToolsForManifestWithStore returns the tools available to an agent based on its
@@ -1938,17 +2102,30 @@ func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager) *se
 	return recorder
 }
 
+// tracedBundle groups the tracing pieces produced by buildTracedProvider.
+// Keeping recorder and registry together is essential: compression
+// counters must surface on the same /metrics registry that exposes
+// provider-latency, so callers need both references.
+type tracedBundle struct {
+	metrics  *prometheus.Registry
+	recorder tracer.Recorder
+	provider *tracer.TracingProvider
+}
+
 // buildTracedProvider creates a Prometheus metrics registry, wraps the default
 // provider with a TracingProvider that records per-method latency, and returns
-// both for use in the application container.
+// the pieces required by the application container.
 //
 // Expected:
 //   - providerRegistry is a non-nil provider.Registry with registered providers.
 //   - defaultName is the name of the default provider to retrieve.
 //
 // Returns:
-//   - A prometheus.Registry for gathering metrics.
-//   - A TracingProvider wrapping the default provider with latency recording.
+//   - A tracedBundle containing the prometheus registry, the shared
+//     tracer.Recorder, and a TracingProvider wrapping the default
+//     provider. The recorder is exposed so compression counters
+//     (RecordContextWindowTokens, RecordCompressionTokensSaved) surface
+//     through the same /metrics handler used for provider latency.
 //   - An error if the default provider cannot be found.
 //
 // Side effects:
@@ -1956,14 +2133,72 @@ func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager) *se
 func buildTracedProvider(
 	providerRegistry *provider.Registry,
 	defaultName string,
-) (*prometheus.Registry, *tracer.TracingProvider, error) {
+) (tracedBundle, error) {
 	metricsReg := prometheus.NewRegistry()
 	recorder := tracer.NewPrometheusRecorder(metricsReg)
 	defaultProvider, err := providerRegistry.Get(defaultName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("getting default provider %q: %w", defaultName, err)
+		return tracedBundle{}, fmt.Errorf("getting default provider %q: %w", defaultName, err)
 	}
-	return metricsReg, tracer.NewTracingProvider(defaultProvider, recorder), nil
+	return tracedBundle{
+		metrics:  metricsReg,
+		recorder: recorder,
+		provider: tracer.NewTracingProvider(defaultProvider, recorder),
+	}, nil
+}
+
+// buildCompressionComponents assembles the dependencies required to
+// activate the three-layer context compression system. Each layer is
+// gated on the corresponding Enabled flag in cfg.Compression so that
+// deployments opt in via YAML rather than by code change. A fully
+// disabled CompressionConfig produces a zero-value bundle except for
+// the recorder and metrics fields, which are always populated because
+// the engine hot path reads them unconditionally.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig whose Compression block has already
+//     been populated by the config loader (tilde expansion, defaults).
+//   - agentRegistry is consulted for CategoryRouting when constructing
+//     the summariser resolver.
+//   - chatProvider is the provider the L2 summariser will call; reusing
+//     the engine's primary provider keeps the runtime to a single chat
+//     client per brief.
+//   - recorder is the shared tracer.Recorder so compression counters
+//     surface on the same /metrics registry as provider-latency metrics.
+//
+// Returns:
+//   - A fully wired compressionComponents value. AutoCompactor and
+//     SessionMemoryStore are nil when their respective Enabled flag is
+//     false; every other field is always populated.
+//
+// Side effects:
+//   - None at this layer. SessionMemoryStore writes lazily on Save.
+func buildCompressionComponents(
+	cfg *config.AppConfig,
+	_ *agent.Registry,
+	chatProvider provider.Provider,
+	recorder tracer.Recorder,
+) compressionComponents {
+	out := compressionComponents{
+		config:   cfg.Compression,
+		metrics:  &ctxstore.CompressionMetrics{},
+		recorder: recorder,
+	}
+
+	if cfg.Compression.AutoCompaction.Enabled {
+		categoryResolver := engine.NewCategoryResolver(cfg.CategoryRouting)
+		summariserResolver := engine.NewSummariserResolver(categoryResolver)
+		fallbackModel := cfg.Providers.Ollama.Model
+		adapter := engine.NewProviderSummariser(chatProvider, summariserResolver, fallbackModel)
+		out.summariserAdapter = adapter
+		out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
+	}
+
+	if cfg.Compression.SessionMemory.Enabled {
+		out.sessionMemoryStore = recall.NewSessionMemoryStore(cfg.Compression.SessionMemory.StorageDir)
+	}
+
+	return out
 }
 
 // setupProviders initialises and registers all configured LLM providers.
