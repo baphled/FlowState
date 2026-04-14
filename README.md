@@ -111,7 +111,7 @@ compression:
     storage_dir: ~/.flowstate/session-memory
 ```
 
-Metrics are emitted via `slog.Info` with keys `micro_compaction_count`, `auto_compaction_count`, `tokens_saved`, and `cache_hits`. A successful L2 compaction also publishes a `context.compacted` event on the engine bus with original/summary token counts and latency.
+Metrics are emitted via `slog.Info` with keys `micro_compaction_count`, `auto_compaction_count`, and `tokens_saved`. A successful L2 compaction also publishes a `context.compacted` event on the engine bus with original/summary token counts and latency. A compacted-view cache hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.
 
 ## MCP Integration
 
