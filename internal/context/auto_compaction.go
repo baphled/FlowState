@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/provider"
@@ -45,6 +46,14 @@ var ErrInvalidSummary = errors.New("context: compaction summary failed validatio
 // rather than panic so misconfiguration surfaces through normal error
 // handling at the integration point.
 var ErrNilSummariser = errors.New("context: auto-compactor summariser is nil")
+
+// ErrRehydrationRead is returned when Rehydrate fails to read a file
+// listed in CompactionSummary.FilesToRestore. The wrapped error carries
+// the underlying filesystem error; the message contains the offending
+// path so operators can act on it without parsing the chain. Exposed as
+// a sentinel so callers can distinguish rehydration I/O failures from
+// summary validation failures (ErrInvalidSummary).
+var ErrRehydrationRead = errors.New("context: rehydration read failed")
 
 // Summariser is the narrow capability AutoCompactor depends on to obtain
 // a textual summary from an LLM. Implementations live outside this
@@ -191,6 +200,59 @@ func stripJSONFences(raw string) string {
 	}
 
 	return body
+}
+
+// Rehydrate turns a previously produced CompactionSummary back into a
+// seed slice of messages that the engine can prepend to the next
+// context window. The first message is a system message anchored on the
+// summary's Intent ("Session rehydrated. Continuing from: <intent>");
+// subsequent messages are one tool-role message per file in
+// FilesToRestore, carrying the file's verbatim content.
+//
+// Expected:
+//   - summary.Intent is non-empty. Callers should have produced the
+//     summary via Compact, which enforces the same invariant — this is
+//     a defensive second check.
+//   - Paths in summary.FilesToRestore are readable by the process.
+//     Relative paths resolve against the process working directory, so
+//     callers that accept relative paths from the model must convert
+//     them to absolute before storing the summary.
+//
+// Returns:
+//   - A []provider.Message of length 1 + len(FilesToRestore) on success.
+//   - ErrInvalidSummary when Intent is empty.
+//   - A wrapped ErrRehydrationRead when any file in FilesToRestore
+//     cannot be read. The error message names the offending path. On
+//     the first failure Rehydrate stops and does not return partial
+//     results — rehydration is all-or-nothing so the engine never runs
+//     against a half-populated seed window.
+//
+// Side effects:
+//   - Reads each file in FilesToRestore once via os.ReadFile. No
+//     caching, no retries.
+func (a *AutoCompactor) Rehydrate(summary CompactionSummary) ([]provider.Message, error) {
+	if strings.TrimSpace(summary.Intent) == "" {
+		return nil, fmt.Errorf("%w: field intent is empty", ErrInvalidSummary)
+	}
+
+	msgs := make([]provider.Message, 0, 1+len(summary.FilesToRestore))
+	msgs = append(msgs, provider.Message{
+		Role:    "system",
+		Content: "Session rehydrated. Continuing from: " + summary.Intent,
+	})
+
+	for _, path := range summary.FilesToRestore {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", ErrRehydrationRead, path, err)
+		}
+		msgs = append(msgs, provider.Message{
+			Role:    "tool",
+			Content: string(content),
+		})
+	}
+
+	return msgs, nil
 }
 
 // validateSummary enforces the minimum semantic contract: Intent must be
