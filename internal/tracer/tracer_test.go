@@ -326,12 +326,12 @@ type latencyCall struct {
 }
 
 type spyRecorder struct {
-	retryCalls        []string
-	scoreCalls        []float64
-	criticCalls       []bool
-	latencyCalls      []latencyCall
-	contextWindowObs  []contextWindowCall
-	tokensSavedCalls  []tokensSavedCall
+	retryCalls       []string
+	scoreCalls       []float64
+	criticCalls      []bool
+	latencyCalls     []latencyCall
+	contextWindowObs []contextWindowCall
+	tokensSavedCalls []tokensSavedCall
 }
 
 type contextWindowCall struct {

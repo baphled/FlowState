@@ -26,7 +26,35 @@ import (
 	pluginevents "github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tracer"
 )
+
+// engineTestRecorder captures RecordCompressionTokensSaved calls so
+// the auto-compaction wiring test can assert the delta.
+type engineTestRecorder struct {
+	tracer.NoopRecorder
+	mu         sync.Mutex
+	savedCalls []engineSavedCall
+}
+
+type engineSavedCall struct {
+	agentID     string
+	tokensSaved int
+}
+
+func (r *engineTestRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.savedCalls = append(r.savedCalls, engineSavedCall{agentID: agentID, tokensSaved: tokensSaved})
+}
+
+func (r *engineTestRecorder) saved() []engineSavedCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]engineSavedCall, len(r.savedCalls))
+	copy(out, r.savedCalls)
+	return out
+}
 
 // recordingSummariser is a ctxstore.Summariser test double that returns a
 // scripted JSON summary and counts how many times it was called. The
@@ -86,6 +114,20 @@ func newTestEngineWithCompactor(
 	enabled bool,
 ) (*engine.Engine, *recall.FileContextStore) {
 	t.Helper()
+	return newTestEngineWithCompactorAndRecorder(t, summariser, threshold, enabled, nil)
+}
+
+// newTestEngineWithCompactorAndRecorder extends newTestEngineWithCompactor
+// with an optional tracer.Recorder so tests can assert that the engine
+// emits the RecordCompressionTokensSaved counter on successful compaction.
+func newTestEngineWithCompactorAndRecorder(
+	t *testing.T,
+	summariser ctxstore.Summariser,
+	threshold float64,
+	enabled bool,
+	recorder tracer.Recorder,
+) (*engine.Engine, *recall.FileContextStore) {
+	t.Helper()
 
 	tempDir, err := os.MkdirTemp("", "engine-t10-*")
 	if err != nil {
@@ -125,6 +167,7 @@ func newTestEngineWithCompactor(
 		TokenCounter:      counter,
 		AutoCompactor:     compactor,
 		CompressionConfig: cfg,
+		Recorder:          recorder,
 	})
 
 	return eng, store
@@ -393,4 +436,70 @@ func TestBuildContextWindowAutoCompaction_CompactError_FailsOpen(t *testing.T) {
 	if eng.LastCompactionSummaryForTest() != nil {
 		t.Fatalf("stored summary should be nil when compaction errored")
 	}
+}
+
+// TestBuildContextWindowAutoCompaction_EmitsCompressionTokensSavedCounter
+// asserts that a successful compaction invokes the configured
+// tracer.Recorder with a RecordCompressionTokensSaved observation whose
+// delta equals OriginalTokens - SummaryTokens (the same numbers carried
+// on the ContextCompactedEvent). Operators rely on this counter to
+// validate the L2 path end-to-end against Prometheus.
+func TestBuildContextWindowAutoCompaction_EmitsCompressionTokensSavedCounter(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
+	rec := &engineTestRecorder{}
+	eng, store := newTestEngineWithCompactorAndRecorder(t, summariser, 0.60, true, rec)
+
+	var observed []pluginevents.ContextCompactedEventData
+	var mu sync.Mutex
+	eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(evt any) {
+		e, ok := evt.(*pluginevents.ContextCompactedEvent)
+		if !ok {
+			t.Errorf("subscriber received %T; want *ContextCompactedEvent", evt)
+			return
+		}
+		mu.Lock()
+		observed = append(observed, e.Data)
+		mu.Unlock()
+	})
+
+	seedMessages(t, store)
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-metrics", "next user turn")
+
+	calls := rec.saved()
+	if len(calls) != 1 {
+		t.Fatalf("RecordCompressionTokensSaved calls = %d; want 1", len(calls))
+	}
+	if calls[0].agentID != "t10-agent" {
+		t.Fatalf("recorder agent ID = %q; want %q", calls[0].agentID, "t10-agent")
+	}
+
+	mu.Lock()
+	if len(observed) != 1 {
+		mu.Unlock()
+		t.Fatalf("observed %d compacted events; want 1", len(observed))
+	}
+	evt := observed[0]
+	mu.Unlock()
+
+	expectedDelta := evt.OriginalTokens - evt.SummaryTokens
+	if calls[0].tokensSaved != expectedDelta {
+		t.Fatalf("recorder tokensSaved = %d; want OriginalTokens-SummaryTokens = %d",
+			calls[0].tokensSaved, expectedDelta)
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_NoRecorder_NoPanic asserts the
+// engine is safe to use without a Recorder configured — the compaction
+// path must not dereference a nil recorder.
+func TestBuildContextWindowAutoCompaction_NoRecorder_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
+	eng, store := newTestEngineWithCompactor(t, summariser, 0.60, true)
+
+	seedMessages(t, store)
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-no-rec", "next user turn")
+	// Reaching here without panicking is the assertion.
 }
