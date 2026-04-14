@@ -30,6 +30,10 @@ type WindowBuilder struct {
 	counter    TokenCounter
 	chainLocks map[string]*sync.RWMutex
 	chainMu    sync.Mutex
+	// splitter, when non-nil, applies L1 micro-compaction to the recent
+	// messages slice before they are appended to the window. When nil,
+	// the existing skill-pair-aware path runs unchanged.
+	splitter *HotColdSplitter
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
@@ -38,12 +42,30 @@ type WindowBuilder struct {
 //   - counter is a non-nil TokenCounter implementation.
 //
 // Returns:
-//   - A configured WindowBuilder instance.
+//   - A configured WindowBuilder instance with no L1 splitter attached.
+//     Use WithSplitter to enable micro-compaction.
 //
 // Side effects:
 //   - None.
 func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 	return &WindowBuilder{counter: counter, chainLocks: make(map[string]*sync.RWMutex)}
+}
+
+// WithSplitter attaches an L1 HotColdSplitter to the builder. Subsequent
+// appendRecentMessages calls will route the recent slice through the
+// splitter before assembly.
+//
+// Expected:
+//   - splitter may be nil to detach a previously-attached splitter.
+//
+// Returns:
+//   - The receiver, for chaining.
+//
+// Side effects:
+//   - Mutates the builder. Callers MUST coordinate concurrent use.
+func (b *WindowBuilder) WithSplitter(splitter *HotColdSplitter) *WindowBuilder {
+	b.splitter = splitter
+	return b
 }
 
 // Build constructs a context window from the manifest and store within the token budget.
@@ -560,11 +582,47 @@ func (b *WindowBuilder) appendRecentMessages(
 	}
 
 	recentMessages := store.GetRecent(slidingWindowSize)
+
+	if b.splitter != nil {
+		b.appendCompactedRecentMessages(recentMessages, state)
+		return
+	}
+
 	recentIDs := b.getMessageIDs(store, len(recentMessages))
 	skillPairIndices := b.identifySkillPairIndices(recentMessages)
 
 	b.appendNonSkillMessages(recentMessages, recentIDs, skillPairIndices, state)
 	b.appendSkillPairsWithBudget(recentMessages, recentIDs, state)
+}
+
+// appendCompactedRecentMessages routes the recent messages through the
+// attached HotColdSplitter and appends the resulting hot+placeholder
+// stream within the token budget.
+//
+// Expected:
+//   - recentMessages is the unmodified slice from the recall store. Treated
+//     as immutable: the splitter copies before transforming, per ADR -
+//     View-Only Context Compaction.
+//   - state is a non-nil messageState tracking the build.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Appends to state.messages and reserves tokens via state.budget under
+//     the "sliding" and "compressed_micro" categories. Sets state.truncated
+//     when any message is truncated to fit.
+func (b *WindowBuilder) appendCompactedRecentMessages(
+	recentMessages []provider.Message,
+	state *messageState,
+) {
+	split := b.splitter.Split(recentMessages)
+
+	for _, msg := range split.HotMessages {
+		var msgTruncated bool
+		state.messages, msgTruncated = b.appendMessageWithBudget(state.messages, msg, state.budget)
+		state.truncated = state.truncated || msgTruncated
+	}
 }
 
 // appendNonSkillMessages appends messages that are not part of skill_load pairs,
