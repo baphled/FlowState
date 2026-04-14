@@ -76,3 +76,37 @@ Feature: Context Compression — Layers 1 and 2
     Given a knowledge extractor backed by a scripted provider returning 2 entries
     When the extractor runs twice on the same transcript
     Then the session memory store holds 2 unique entries
+
+  # @e2e scenarios exercise the three layers in combination. They reuse
+  # the step library from the per-layer sections above so each scenario
+  # drives real production code paths rather than bespoke stubs.
+
+  @e2e
+  Scenario: Micro-compaction and atomicity hold together under mixed load
+    Given I have appended a parallel fan-out group followed by 4 large solo messages
+    When the splitter runs with hot tail size 1
+    Then the resulting window contains no orphan tool-result messages
+    And every spilled tool-group payload contains every message of its group
+    And the canonical recall view is unchanged
+
+  @e2e
+  Scenario: Session memory survives a save reload across store instances
+    Given a session memory store is seeded with 2 facts and 1 preference
+    When the store is saved and reloaded into a fresh instance
+    Then the reloaded store exposes every original entry
+
+  @e2e
+  Scenario: Auto-compaction rejects a malformed summary without retrying
+    Given the L2 summariser returns a summary with empty next_steps
+    And I have a cold slice of 3 messages to summarise
+    When the auto-compactor runs
+    Then the auto-compactor returns an invalid-summary error
+    And the summariser was called exactly once
+
+  @e2e
+  Scenario: Auto-compaction rehydrates the intent and queued files
+    Given a compaction summary whose intent anchors the next turn
+    And two files are queued for rehydration
+    When the auto-compactor rehydrates
+    Then the rehydrated window leads with a system message carrying the intent
+    And the rehydrated window carries one tool message per queued file

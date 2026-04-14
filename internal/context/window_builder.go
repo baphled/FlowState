@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"log"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -40,6 +41,10 @@ type WindowBuilder struct {
 	// conventions, and preferences distilled in prior turns are visible
 	// to the model. See WithSessionMemory for attachment semantics.
 	sessionMemory *recall.SessionMemoryStore
+	// metrics, when non-nil, is updated by the compression helpers and
+	// logged via slog.Info at the end of every Build call. See
+	// WithMetrics.
+	metrics *CompressionMetrics
 }
 
 // NewWindowBuilder creates a new context window builder with the given token counter.
@@ -71,6 +76,24 @@ func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 //   - Mutates the builder. Callers MUST coordinate concurrent use.
 func (b *WindowBuilder) WithSplitter(splitter *HotColdSplitter) *WindowBuilder {
 	b.splitter = splitter
+	return b
+}
+
+// WithMetrics attaches a *CompressionMetrics counter set to the
+// builder. When non-nil, Build logs the current counter values via
+// slog.Info so downstream log processors can scrape compression
+// activity without touching the builder's internals.
+//
+// Expected:
+//   - metrics may be nil to detach a previously-attached counter set.
+//
+// Returns:
+//   - The receiver, for chaining.
+//
+// Side effects:
+//   - Mutates the builder. Callers MUST coordinate concurrent use.
+func (b *WindowBuilder) WithMetrics(metrics *CompressionMetrics) *WindowBuilder {
+	b.metrics = metrics
 	return b
 }
 
@@ -426,12 +449,40 @@ func (b *WindowBuilder) buildInternal(
 	messages = state.messages
 	truncated = state.truncated
 
+	b.logCompressionMetrics()
+
 	return BuildResult{
 		Messages:        messages,
 		TokensUsed:      budget.Used,
 		BudgetRemaining: budget.Remaining(),
 		Truncated:       truncated,
 	}
+}
+
+// logCompressionMetrics emits a single slog.Info record naming the four
+// compression counter keys whenever a CompressionMetrics has been
+// attached via WithMetrics. Emitted once per Build so downstream log
+// processors can scrape the counter deltas over a known cadence.
+//
+// Expected:
+//   - None; the method is a no-op when b.metrics is nil so deployments
+//     that never enable compression pay no log noise.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Writes one slog.Info record at default level when metrics are set.
+func (b *WindowBuilder) logCompressionMetrics() {
+	if b.metrics == nil {
+		return
+	}
+	slog.Info("compression metrics",
+		"micro_compaction_count", b.metrics.MicroCompactionCount,
+		"auto_compaction_count", b.metrics.AutoCompactionCount,
+		"tokens_saved", b.metrics.TokensSaved,
+		"cache_hits", b.metrics.CacheHits,
+	)
 }
 
 // prepareSystemPrompt extracts and optionally truncates the system prompt to fit within the token budget.
@@ -705,6 +756,10 @@ func (b *WindowBuilder) appendCompactedRecentMessages(
 	state *messageState,
 ) {
 	split := b.splitter.Split(recentMessages)
+
+	if b.metrics != nil {
+		b.metrics.MicroCompactionCount += len(split.ColdRecords)
+	}
 
 	for _, msg := range split.HotMessages {
 		var msgTruncated bool

@@ -78,6 +78,12 @@ type Engine struct {
 	// compaction summary so that T11 rehydration can read the intent,
 	// next_steps, and files_to_restore emitted at compaction time.
 	lastCompactionSummary *ctxstore.CompactionSummary
+	// compressionMetrics, when non-nil, is shared with the window
+	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
+	// successful L2 compaction so operators have a single counter set
+	// spanning both layers. Nil means no metrics are recorded.
+	compressionMetrics *ctxstore.CompressionMetrics
+
 	// knowledgeExtractor is the L3 extractor fired asynchronously from
 	// Stream to distil each completed turn into the session memory
 	// store. Nil disables the feature.
@@ -120,6 +126,11 @@ type Config struct {
 	// engine consults it at assembly time to gate L2 (auto-compaction)
 	// behaviour. L1 and L3 wiring live in their own injection points.
 	CompressionConfig ctxstore.CompressionConfig
+	// CompressionMetrics, when non-nil, is attached to the window
+	// builder and the engine so L1 offloads and L2 compactions are
+	// counted in a single place. Nil disables metrics.
+	CompressionMetrics *ctxstore.CompressionMetrics
+
 	// KnowledgeExtractor is the optional L3 extractor fired in a
 	// background goroutine after each Stream invocation when
 	// CompressionConfig.SessionMemory.Enabled is true. Nil disables the
@@ -138,10 +149,7 @@ type Config struct {
 // Side effects:
 //   - None.
 func New(cfg Config) *Engine {
-	var windowBuilder *ctxstore.WindowBuilder
-	if cfg.TokenCounter != nil {
-		windowBuilder = ctxstore.NewWindowBuilder(cfg.TokenCounter)
-	}
+	windowBuilder := buildWindowBuilder(cfg)
 
 	recall.RegisterRecallTools(&cfg)
 
@@ -193,6 +201,7 @@ func New(cfg Config) *Engine {
 		mcpServerTools:       cfg.MCPServerTools,
 		autoCompactor:        cfg.AutoCompactor,
 		compressionConfig:    cfg.CompressionConfig,
+		compressionMetrics:   cfg.CompressionMetrics,
 		knowledgeExtractor:   cfg.KnowledgeExtractor,
 	}
 }
@@ -224,6 +233,31 @@ func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
 	}
 	hooks = append(hooks, cfg.ContextAssemblyHooks...)
 	return hooks
+}
+
+// buildWindowBuilder constructs the engine's window builder from the
+// supplied Config, attaching the compression metrics counter set when
+// the caller provided one. Extracted from New to keep the constructor
+// inside the funlen gate.
+//
+// Expected:
+//   - cfg is the engine Config used to initialise the engine.
+//
+// Returns:
+//   - A *ctxstore.WindowBuilder when cfg.TokenCounter is non-nil; nil
+//     otherwise so downstream code can fall back to the simple path.
+//
+// Side effects:
+//   - None.
+func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
+	if cfg.TokenCounter == nil {
+		return nil
+	}
+	builder := ctxstore.NewWindowBuilder(cfg.TokenCounter)
+	if cfg.CompressionMetrics != nil {
+		builder = builder.WithMetrics(cfg.CompressionMetrics)
+	}
+	return builder
 }
 
 // SetAgentOverrides sets the agent-specific configuration overrides, such as prompt appends.
@@ -1476,10 +1510,16 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 // Side effects:
 //   - Publishes one event on the engine bus if non-nil; otherwise no-op.
 func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration) {
+	summaryTokens := e.tokenCounter.Count(summaryText)
+	if e.compressionMetrics != nil {
+		e.compressionMetrics.AutoCompactionCount++
+		if delta := recentTokens - summaryTokens; delta > 0 {
+			e.compressionMetrics.TokensSaved += delta
+		}
+	}
 	if e.bus == nil {
 		return
 	}
-	summaryTokens := e.tokenCounter.Count(summaryText)
 	e.bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
 		SessionID:      sessionID,
 		AgentID:        agentID,

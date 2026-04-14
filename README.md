@@ -81,6 +81,38 @@ always_active_skills:
 
 For a full walkthrough, see the [Demo Guide](docs/DEMO.md).
 
+## Context Compression
+
+FlowState ships a three-layer compression pipeline that keeps long-running sessions inside provider token budgets without mutating the canonical transcript. Every layer is opt-in, and each can be enabled independently via the `compression:` block in `config.yaml`.
+
+- **Layer 1 — Micro-compaction** (`micro_compaction`) replaces older tool-heavy units with short placeholders while keeping the recent "hot tail" verbatim. Spilled payloads land under `~/.flowstate/compacted/{session-id}/` and can be rehydrated on demand.
+- **Layer 2 — Auto-compaction** (`auto_compaction`) fires when recent-message tokens exceed the configured fraction of the model context window. A summariser produces a structured `CompactionSummary` (intent, decisions, next steps, files-to-restore) that is injected as a single assistant message in place of the cold range. Compaction is strictly view-only: `session.Messages` is never mutated.
+- **Layer 3 — Session memory** (`session_memory`) distils facts, conventions, and preferences from the transcript into a per-session knowledge store under `~/.flowstate/session-memory/{session-id}/`. Extraction runs asynchronously after each stream completes; retrieval surfaces the top-relevance entries as a prefix block in subsequent windows.
+
+Compaction honours two ADRs:
+- **View-Only Context Compaction** — artefacts are parallel state, never rewrites of the canonical transcript.
+- **Tool-Call Atomicity in Context Compaction** — compaction operates on tool-use/tool-result pairs as atomic units, and summary output is scrubbed for raw provider identifiers (`toolu_…`, `call_…`) before injection.
+
+### Example configuration
+
+```yaml
+compression:
+  micro_compaction:
+    enabled: true
+    hot_tail_size: 5
+    token_threshold: 1000
+    storage_dir: ~/.flowstate/compacted
+    placeholder_tokens: 50
+  auto_compaction:
+    enabled: true
+    threshold: 0.75
+  session_memory:
+    enabled: true
+    storage_dir: ~/.flowstate/session-memory
+```
+
+Metrics are emitted via `slog.Info` with keys `micro_compaction_count`, `auto_compaction_count`, `tokens_saved`, and `cache_hits`. A successful L2 compaction also publishes a `context.compacted` event on the engine bus with original/summary token counts and latency.
+
 ## MCP Integration
 
 FlowState natively supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). This allows the AI to use external tools, access resources, and interact with your filesystem or other services.
