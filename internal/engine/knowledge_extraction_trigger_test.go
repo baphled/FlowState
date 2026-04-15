@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 // signalledProvider is a provider.Provider test double that signals a
@@ -204,4 +205,89 @@ func mustMarshalEntries(t *testing.T, entries []recall.KnowledgeEntry) string {
 		t.Fatalf("marshal entries: %v", err)
 	}
 	return string(data)
+}
+
+// TestStream_AsyncKnowledgeExtraction_FactoryPath_WritesUnderLiveSessionID
+// is the regression guard for the wiring gap identified on 2026-04-15:
+// the App bootstrap builds a per-session extractor factory rather than
+// a static extractor, so the live sessionID passed to Stream flows all
+// the way through to SessionMemoryStore.Save. Without the factory
+// branch in dispatchKnowledgeExtraction the memory would have been
+// written under a constant "default" directory regardless of which
+// session the stream belongs to.
+func TestStream_AsyncKnowledgeExtraction_FactoryPath_WritesUnderLiveSessionID(t *testing.T) {
+	t.Parallel()
+
+	chatProvider := &signalledProvider{
+		streamChunks: []provider.StreamChunk{
+			{Content: "ok"},
+			{Content: "", Done: true},
+		},
+	}
+	extractorProvider := &signalledProvider{
+		chatSignal: make(chan struct{}, 1),
+		chatResp: provider.ChatResponse{Message: provider.Message{
+			Content: mustMarshalEntries(t, []recall.KnowledgeEntry{
+				{ID: "e1", Type: "fact", Content: "factory path wiring works", Relevance: 0.9},
+			}),
+		}},
+	}
+
+	memDir := t.TempDir()
+	memStore := recall.NewSessionMemoryStore(memDir)
+
+	storeDir := t.TempDir()
+	store, err := recall.NewFileContextStore(filepath.Join(storeDir, "ctx.json"), "test-model")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.SessionMemory.Enabled = true
+
+	const liveSessionID = "live-session-xyz"
+
+	eng := engine.New(engine.Config{
+		ChatProvider: chatProvider,
+		Manifest: agent.Manifest{
+			ID:                "factory-agent",
+			Instructions:      agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+		Store:        store,
+		TokenCounter: ctxstore.NewTiktokenCounter(),
+		KnowledgeExtractorFactory: func(sessionID string) *recall.KnowledgeExtractor {
+			return recall.NewKnowledgeExtractor(extractorProvider, memStore, sessionID)
+		},
+		CompressionConfig: cfg,
+	})
+
+	ctx := context.WithValue(context.Background(), session.IDKey{}, liveSessionID)
+	chunks, err := eng.Stream(ctx, "factory-agent", "hello")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for chunk := range chunks {
+		_ = chunk
+	}
+
+	select {
+	case <-extractorProvider.chatSignal:
+		// Extraction fired.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("factory-path extraction did not fire within 2s of stream completion")
+	}
+
+	// The live sessionID must be the directory under which memory.json
+	// landed — the factory path's whole point is that each Stream gets
+	// its own sessionID rather than a constructor-baked constant.
+	deadline := time.Now().Add(2 * time.Second)
+	target := filepath.Join(memDir, liveSessionID, "memory.json")
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(target); statErr == nil {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("memory.json was never written at %s", target)
 }

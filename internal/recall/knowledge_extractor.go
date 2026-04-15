@@ -63,6 +63,7 @@ type KnowledgeExtractor struct {
 	llm       provider.Provider
 	store     *SessionMemoryStore
 	sessionID string
+	model     string
 }
 
 // NewKnowledgeExtractor binds an LLM provider and a store together.
@@ -81,6 +82,25 @@ type KnowledgeExtractor struct {
 //   - None at construction time.
 func NewKnowledgeExtractor(llm provider.Provider, store *SessionMemoryStore, sessionID string) *KnowledgeExtractor {
 	return &KnowledgeExtractor{llm: llm, store: store, sessionID: sessionID}
+}
+
+// WithModel configures the chat model the extractor requests. Providers
+// such as Ollama reject a ChatRequest with an empty Model field, so
+// production wiring must set this — the zero value leaves the extractor
+// in its legacy test-only mode where Chat is a no-op mock.
+//
+// Expected:
+//   - model is a provider-specific identifier ("llama3.2", "gpt-4o-mini",
+//     etc.). An empty string is accepted so callers can disable override.
+//
+// Returns:
+//   - The receiver, to allow fluent chaining.
+//
+// Side effects:
+//   - None.
+func (e *KnowledgeExtractor) WithModel(model string) *KnowledgeExtractor {
+	e.model = model
+	return e
 }
 
 // Extract calls the LLM with an extraction prompt derived from msgs,
@@ -108,6 +128,7 @@ func (e *KnowledgeExtractor) Extract(ctx context.Context, msgs []provider.Messag
 
 	prompt := buildExtractionPrompt(msgs)
 	req := provider.ChatRequest{
+		Model: e.model,
 		Messages: []provider.Message{
 			{Role: "system", Content: strings.Join(knowledgeExtractorSystemLines, "\n")},
 			{Role: "user", Content: prompt},

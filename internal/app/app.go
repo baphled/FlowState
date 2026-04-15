@@ -433,6 +433,10 @@ type compressionComponents struct {
 	// the engine's chat provider. Retained here so call-site wiring can
 	// rebind the manifest after the engine is constructed.
 	summariserAdapter *engine.ProviderSummariser
+	// knowledgeExtractorFactory lazily produces a per-session L3
+	// extractor. Non-nil iff cfg.Compression.SessionMemory.Enabled and
+	// the session-memory store is live. Nil leaves L3 inert.
+	knowledgeExtractorFactory func(sessionID string) *recall.KnowledgeExtractor
 }
 
 // setupEngine initialises the engine and the immediate runtime dependencies.
@@ -742,11 +746,12 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		EventBus:             appEventBus,
 		RecallBroker:         params.recallBroker,
 		ContextAssemblyHooks: params.contextAssemblyHooks,
-		AutoCompactor:        params.compression.autoCompactor,
-		CompressionConfig:    params.compression.config,
-		CompressionMetrics:   params.compression.metrics,
-		SessionMemoryStore:   params.compression.sessionMemoryStore,
-		Recorder:             params.compression.recorder,
+		AutoCompactor:             params.compression.autoCompactor,
+		CompressionConfig:         params.compression.config,
+		CompressionMetrics:        params.compression.metrics,
+		SessionMemoryStore:        params.compression.sessionMemoryStore,
+		Recorder:                  params.compression.recorder,
+		KnowledgeExtractorFactory: params.compression.knowledgeExtractorFactory,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -982,20 +987,21 @@ func (a *App) createDelegateEngine(
 	delegateCompression := a.buildDelegateCompression(manifest)
 
 	eng := engine.New(engine.Config{
-		ChatProvider:       a.defaultProvider,
-		Registry:           a.providerRegistry,
-		AgentRegistry:      a.Registry,
-		Manifest:           manifest,
-		Tools:              a.buildToolsForManifestWithStore(manifest, store),
-		HookChain:          hookChain,
-		ChainStore:         chainStore,
-		EventBus:           bus,
-		FailoverManager:    childFailoverMgr,
-		AutoCompactor:      delegateCompression.autoCompactor,
-		CompressionConfig:  delegateCompression.config,
-		CompressionMetrics: delegateCompression.metrics,
-		SessionMemoryStore: delegateCompression.sessionMemoryStore,
-		Recorder:           delegateCompression.recorder,
+		ChatProvider:              a.defaultProvider,
+		Registry:                  a.providerRegistry,
+		AgentRegistry:             a.Registry,
+		Manifest:                  manifest,
+		Tools:                     a.buildToolsForManifestWithStore(manifest, store),
+		HookChain:                 hookChain,
+		ChainStore:                chainStore,
+		EventBus:                  bus,
+		FailoverManager:           childFailoverMgr,
+		AutoCompactor:             delegateCompression.autoCompactor,
+		CompressionConfig:         delegateCompression.config,
+		CompressionMetrics:        delegateCompression.metrics,
+		SessionMemoryStore:        delegateCompression.sessionMemoryStore,
+		Recorder:                  delegateCompression.recorder,
+		KnowledgeExtractorFactory: delegateCompression.knowledgeExtractorFactory,
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
@@ -1028,10 +1034,11 @@ func (a *App) createDelegateEngine(
 //   - None.
 func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionComponents {
 	out := compressionComponents{
-		config:             a.compression.config,
-		metrics:            a.compression.metrics,
-		sessionMemoryStore: a.compression.sessionMemoryStore,
-		recorder:           a.compression.recorder,
+		config:                    a.compression.config,
+		metrics:                   a.compression.metrics,
+		sessionMemoryStore:        a.compression.sessionMemoryStore,
+		recorder:                  a.compression.recorder,
+		knowledgeExtractorFactory: a.compression.knowledgeExtractorFactory,
 	}
 
 	if !a.compression.config.AutoCompaction.Enabled {
@@ -2196,6 +2203,31 @@ func buildCompressionComponents(
 
 	if cfg.Compression.SessionMemory.Enabled {
 		out.sessionMemoryStore = recall.NewSessionMemoryStore(cfg.Compression.SessionMemory.StorageDir)
+		// Bind a per-session extractor factory so each Stream invocation
+		// writes its distilled knowledge under the session actually being
+		// streamed, rather than a shared static ID. The store itself is
+		// shared across invocations so cross-session recall still works
+		// (retrieval is content-typed, not session-scoped).
+		store := out.sessionMemoryStore
+		// The chat request the extractor issues must carry a model —
+		// Ollama and several OpenAI-compatible backends reject empty
+		// Model with HTTP 400. Fall back to the configured default so
+		// extraction is never accidentally silenced by a wiring gap.
+		model := cfg.Providers.Ollama.Model
+		if model == "" {
+			switch cfg.Providers.Default {
+			case "openai":
+				model = cfg.Providers.OpenAI.Model
+			case "anthropic":
+				model = cfg.Providers.Anthropic.Model
+			}
+		}
+		out.knowledgeExtractorFactory = func(sessionID string) *recall.KnowledgeExtractor {
+			if sessionID == "" {
+				sessionID = "default"
+			}
+			return recall.NewKnowledgeExtractor(chatProvider, store, sessionID).WithModel(model)
+		}
 	}
 
 	return out
