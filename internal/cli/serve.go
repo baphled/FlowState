@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,21 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
+
+// httpShutdowner is the narrow slice of *http.Server the serve
+// shutdown path needs. Expressed as an interface so Item 6's
+// regression test can drive the ordering without standing up a real
+// HTTP listener.
+type httpShutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
+// engineShutdowner is the narrow slice of *engine.Engine the serve
+// shutdown path needs. Keeps the seam private; the fake lives in
+// export_test.go alongside the propagation-test helpers.
+type engineShutdowner interface {
+	Shutdown(ctx context.Context) error
+}
 
 // ServeOptions configures the HTTP API server.
 type ServeOptions struct {
@@ -85,28 +101,64 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	select {
 	case <-ctx.Done():
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Shutting down server...")
-		if err := server.Shutdown(context.Background()); err != nil {
-			return err
-		}
-		// H3: drain engine-owned background work before returning.
-		// http.Server.Shutdown only waits for HTTP handlers; without
-		// this call, session splitters' persist workers and L3
-		// knowledge-extraction goroutines get killed at process exit,
-		// orphaning `.tmp` files on disk.
+		var eng engineShutdowner
 		if application.Engine != nil {
-			drainCtx, drainCancel := context.WithTimeout(context.Background(), engineShutdownTimeout)
-			defer drainCancel()
-			if err := application.Engine.Shutdown(drainCtx); err != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-					"warning: engine shutdown did not complete within %s: %v\n",
-					engineShutdownTimeout, err,
-				)
-			}
+			eng = application.Engine
 		}
-		return nil
+		return performServeShutdown(server, eng, cmd.OutOrStdout(), cmd.ErrOrStderr())
 	case err := <-errChan:
 		return err
 	}
+}
+
+// performServeShutdown drains the HTTP server and then the engine,
+// in that order. Extracted so the Item 6 regression test can drive
+// the sequence with a fake httpShutdowner and engineShutdowner
+// without spinning up a real listener, binding a port, or waiting on
+// signals. The function must always invoke engineShutdowner.Shutdown
+// when it is non-nil — that is the behaviour a future refactor of
+// runServe is most likely to regress, and the resulting orphaned
+// extractor goroutines leave `.tmp` files on disk with no log
+// signal.
+//
+// Expected:
+//   - server is non-nil; callers pass *http.Server from runServe or a
+//     test double implementing httpShutdowner.
+//   - eng may be nil (e.g. tests with no Engine assembled); the engine
+//     drain is skipped in that case.
+//   - out and errOut are the command's stdout/stderr sinks.
+//
+// Returns:
+//   - nil on clean shutdown of both layers.
+//   - The http.Server.Shutdown error when that fails (engine drain is
+//     skipped, matching the previous behaviour).
+//
+// Side effects:
+//   - Blocks the caller until both shutdowns complete or error.
+//   - Emits a warning on errOut when the engine drain times out;
+//     engine-drain failure is not promoted to a return error because
+//     the HTTP server has already shut down and the operator cannot
+//     usefully retry.
+func performServeShutdown(server httpShutdowner, eng engineShutdowner, _ io.Writer, errOut io.Writer) error {
+	if err := server.Shutdown(context.Background()); err != nil {
+		return err
+	}
+	// H3: drain engine-owned background work before returning.
+	// http.Server.Shutdown only waits for HTTP handlers; without this
+	// call, session splitters' persist workers and L3 knowledge-
+	// extraction goroutines get killed at process exit, orphaning
+	// `.tmp` files on disk.
+	if eng != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), engineShutdownTimeout)
+		defer drainCancel()
+		if err := eng.Shutdown(drainCtx); err != nil {
+			_, _ = fmt.Fprintf(errOut,
+				"warning: engine shutdown did not complete within %s: %v\n",
+				engineShutdownTimeout, err,
+			)
+		}
+	}
+	return nil
 }
 
 // engineShutdownTimeout bounds the wait for engine-owned background
