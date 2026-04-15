@@ -32,6 +32,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -174,6 +175,14 @@ func (a *AutoCompactor) Compact(ctx context.Context, msgs []provider.Message) (C
 	if err := validateSummary(summary); err != nil {
 		return CompactionSummary{}, err
 	}
+
+	// Server-stamp the compaction wall-clock time after parse. The T8
+	// prompt no longer asks the summariser for this field, so any value
+	// it supplies is overwritten here. Doing the stamp here rather than
+	// at the persistence site keeps CompactedAt populated for every
+	// consumer of the returned summary (engine hot path, tests, and
+	// downstream metrics) without a second layer of defensive defaults.
+	summary.CompactedAt = time.Now().UTC()
 
 	return summary, nil
 }
