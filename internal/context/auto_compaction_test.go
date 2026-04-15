@@ -276,6 +276,81 @@ func TestAutoCompactor_Compact_MissingNextSteps_ReturnsValidationError(t *testin
 	}
 }
 
+// TestAutoCompactor_Compact_EmptyNextStepsEntry_ReturnsValidationError
+// pins M1 — validateSummary previously only checked
+// `len(NextSteps) == 0`, which meant `["", "  "]` sailed through
+// validation and landed on disk as a summary whose continuation
+// anchor was whitespace. The symptom at T11 rehydration is a
+// next-steps block that renders as blank bullet points — technically
+// non-empty, operationally useless. Each entry must therefore be
+// non-empty after TrimSpace.
+func TestAutoCompactor_Compact_EmptyNextStepsEntry_ReturnsValidationError(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string][]string{
+		"single empty entry":    {""},
+		"whitespace only entry": {"   "},
+		"tab only entry":        {"\t"},
+		"valid followed by empty": {
+			"first concrete step",
+			"",
+		},
+		"empty followed by valid": {
+			"",
+			"real continuation",
+		},
+	}
+
+	for name, steps := range cases {
+		next := steps
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			summariser := &fakeSummariser{
+				response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+					s.NextSteps = next
+				}),
+			}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			_, err := compactor.Compact(context.Background(), sampleMessages())
+			if err == nil {
+				t.Fatalf("Compact: expected validation error for empty-after-trim NextSteps entry; got nil")
+			}
+			if !errors.Is(err, contextpkg.ErrInvalidSummary) {
+				t.Fatalf("Compact: err = %v; want ErrInvalidSummary", err)
+			}
+			if !strings.Contains(err.Error(), "next_steps") {
+				t.Fatalf("Compact: err = %q; want message naming the offending field", err.Error())
+			}
+		})
+	}
+}
+
+// TestAutoCompactor_Compact_AllTrimmedNextStepsPopulated_Succeeds
+// exercises the positive path for the M1 guard: every entry is
+// non-empty after TrimSpace and validation passes unchanged.
+func TestAutoCompactor_Compact_AllTrimmedNextStepsPopulated_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	summariser := &fakeSummariser{
+		response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+			// Surrounding whitespace must NOT trip the guard — the
+			// check is "entry is empty once trimmed", not "entry is
+			// free of leading/trailing whitespace".
+			s.NextSteps = []string{"  do X  ", "do Y"}
+		}),
+	}
+	compactor := contextpkg.NewAutoCompactor(summariser)
+
+	summary, err := compactor.Compact(context.Background(), sampleMessages())
+	if err != nil {
+		t.Fatalf("Compact: unexpected error: %v", err)
+	}
+	if len(summary.NextSteps) != 2 {
+		t.Fatalf("Compact: NextSteps = %v; want two entries preserved verbatim", summary.NextSteps)
+	}
+}
+
 // TestAutoCompactor_Compact_NilSummariser_ReturnsConfigError asserts that
 // constructing an AutoCompactor with a nil summariser surfaces as a typed
 // error on the first call rather than a nil-pointer panic.
