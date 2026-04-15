@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tracer"
@@ -695,6 +696,19 @@ func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
 func (e *Engine) ensureSessionSplitter(ctx context.Context, sessionID string) *ctxstore.HotColdSplitter {
 	micro := e.compressionConfig.MicroCompaction
 	if !micro.Enabled || micro.StorageDir == "" || sessionID == "" {
+		return nil
+	}
+	// H4 defence-in-depth: the CLI gate in run.go/chat.go rejects
+	// path-unsafe --session values before engine methods run, but
+	// programmatic callers (serve bus subscribers, integration
+	// harnesses) can reach here with arbitrary sessionIDs. Collapse
+	// to "no L1 this session" rather than build a filepath.Join that
+	// escapes MicroCompaction.StorageDir. Logging is intentional —
+	// this branch should never fire in production; if it does, an
+	// operator needs to see it in the log stream.
+	if err := sessionid.Validate(sessionID); err != nil {
+		slog.Warn("engine refused to construct L1 splitter for unsafe session id",
+			"session_id", sessionID, "error", err)
 		return nil
 	}
 

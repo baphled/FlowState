@@ -175,6 +175,32 @@ var _ = Describe("run command", func() {
 		Expect(payload.Session).To(HavePrefix("session-"))
 	})
 
+	It("rejects path-traversal session IDs at the CLI gate", func() {
+		// H4: --session is user-controllable and flows into
+		// filepath.Join calls at L1 and L3 storage write sites.
+		// "../../tmp/evil" escapes the configured storage dir; the
+		// validator rejects it at the earliest entry point so no
+		// downstream code ever builds an unsafe path.
+		testApp := createRunTestApp([]provider.StreamChunk{{Content: "ignored", Done: true}}, nil)
+		err := runCmd(testApp, "run", "--prompt", "hello", "--session", "../../tmp/evil")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("session"))
+	})
+
+	It("rejects absolute-path session IDs at the CLI gate", func() {
+		testApp := createRunTestApp([]provider.StreamChunk{{Content: "ignored", Done: true}}, nil)
+		err := runCmd(testApp, "run", "--prompt", "hello", "--session", "/tmp/evil")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("session"))
+	})
+
+	It("rejects leading-dot session IDs at the CLI gate", func() {
+		testApp := createRunTestApp([]provider.StreamChunk{{Content: "ignored", Done: true}}, nil)
+		err := runCmd(testApp, "run", "--prompt", "hello", "--session", ".hidden")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("session"))
+	})
+
 	It("shows session flag in help", func() {
 		testApp := createTestApp("", "")
 		err := runCmd(testApp, "run", "--help")
