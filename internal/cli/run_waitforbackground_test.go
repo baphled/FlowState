@@ -14,22 +14,27 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/engine"
 )
 
 // fakeWaiter is a test double that reports a scripted result from
 // WaitForBackgroundExtractions, records the timeout it was called
 // with, and lets tests drive both the clean-finish and timeout paths
 // deterministically (no real goroutines, no sleeps).
+//
+// Post-M7 the real engine returns `error` rather than bool so the CLI
+// exit path can distinguish "timed out after waiting" from "caller
+// asked not to wait". The fake mirrors that shape.
 type fakeWaiter struct {
-	finishedCleanly bool
-	gotTimeout      time.Duration
-	calls           int
+	returnErr  error
+	gotTimeout time.Duration
+	calls      int
 }
 
-func (f *fakeWaiter) WaitForBackgroundExtractions(timeout time.Duration) bool {
+func (f *fakeWaiter) WaitForBackgroundExtractions(timeout time.Duration) error {
 	f.calls++
 	f.gotTimeout = timeout
-	return f.finishedCleanly
+	return f.returnErr
 }
 
 // captureSlog swaps the default slog logger for one writing to a
@@ -53,7 +58,7 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 func TestWaitForBackgroundExtractions_CleanFinish_NoWarn(t *testing.T) {
 	buf := captureSlog(t)
 
-	waiter := &fakeWaiter{finishedCleanly: true}
+	waiter := &fakeWaiter{returnErr: nil}
 	cli.WaitForBackgroundExtractionsForTest(waiter, 35*time.Second)
 
 	if waiter.calls != 1 {
@@ -74,7 +79,7 @@ func TestWaitForBackgroundExtractions_CleanFinish_NoWarn(t *testing.T) {
 func TestWaitForBackgroundExtractions_Timeout_EmitsWarnWithTimeout(t *testing.T) {
 	buf := captureSlog(t)
 
-	waiter := &fakeWaiter{finishedCleanly: false}
+	waiter := &fakeWaiter{returnErr: engine.ErrExtractionTimeout}
 	cli.WaitForBackgroundExtractionsForTest(waiter, 35*time.Second)
 
 	got := buf.String()
@@ -96,10 +101,33 @@ func TestWaitForBackgroundExtractions_Timeout_EmitsWarnWithTimeout(t *testing.T)
 // exercises a non-default timeout to prove the helper reports the
 // configured value, not a hardcoded 35. This is the failsafe for the
 // future configurability hook (compression.session_memory.wait_timeout).
+// TestWaitForBackgroundExtractions_Skip_NoWarn pins M7 — when the
+// engine is called with a non-positive timeout (the legacy
+// fire-and-forget path), the returned error is nil, not
+// ErrExtractionTimeout. The CLI warn must therefore NOT fire on skip.
+// Pre-M7 the return was a plain bool, and `false` conflated
+// "timed out after waiting" with "skipped because timeout <= 0",
+// causing a spurious warning on every run that configured the wait
+// off.
+func TestWaitForBackgroundExtractions_Skip_NoWarn(t *testing.T) {
+	buf := captureSlog(t)
+
+	// returnErr=nil represents both "completed cleanly" and "skipped";
+	// the fake is agnostic because the caller communicates "skipped"
+	// by passing a non-positive timeout, which the real engine
+	// short-circuits without scheduling any work.
+	waiter := &fakeWaiter{returnErr: nil}
+	cli.WaitForBackgroundExtractionsForTest(waiter, 0)
+
+	if strings.Contains(buf.String(), "knowledge extraction timed out") {
+		t.Fatalf("skip should not emit timeout warn; log:\n%s", buf.String())
+	}
+}
+
 func TestWaitForBackgroundExtractions_Timeout_IncludesConfiguredSeconds(t *testing.T) {
 	buf := captureSlog(t)
 
-	waiter := &fakeWaiter{finishedCleanly: false}
+	waiter := &fakeWaiter{returnErr: engine.ErrExtractionTimeout}
 	cli.WaitForBackgroundExtractionsForTest(waiter, 10*time.Second)
 
 	if !strings.Contains(buf.String(), "timeout_seconds=10") {

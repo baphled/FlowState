@@ -1087,6 +1087,16 @@ func (e *Engine) dispatchKnowledgeExtraction(sessionID string, messages []provid
 	}()
 }
 
+// ErrExtractionTimeout is returned by WaitForBackgroundExtractions
+// when the wait expired with work still in flight. It is the sentinel
+// callers check to distinguish "timed out after actually waiting" from
+// every other nil-error outcome (clean finish, or the no-wait skip
+// path taken when timeout <= 0). Pre-M7 the method returned a plain
+// bool, and `false` conflated "timed out" with "skipped because
+// timeout <= 0" — the CLI warn fired on both, producing a spurious
+// warning on every run that opted out of waiting.
+var ErrExtractionTimeout = errors.New("engine: background extraction wait timed out")
+
 // WaitForBackgroundExtractions blocks until every in-flight L3
 // extraction goroutine dispatched by dispatchKnowledgeExtraction has
 // returned, or until timeout elapses — whichever comes first. Long-
@@ -1099,19 +1109,22 @@ func (e *Engine) dispatchKnowledgeExtraction(sessionID string, messages []provid
 // Expected:
 //   - timeout is the maximum wall-clock duration to wait. A non-
 //     positive value is treated as "no wait" and the call returns
-//     immediately (retaining the legacy fire-and-forget contract when
-//     the caller does not care).
+//     nil immediately (retaining the legacy fire-and-forget contract
+//     when the caller does not care).
 //
 // Returns:
-//   - true if every dispatched goroutine finished within the timeout.
-//   - false on timeout; in-flight work continues but the caller is
-//     free to proceed.
+//   - nil when every dispatched goroutine finished within the timeout
+//     OR the caller opted out of waiting with timeout <= 0. Both
+//     cases share the "no work to warn about" semantics.
+//   - ErrExtractionTimeout when the wait expired with work still in
+//     flight. In-flight work continues but the caller is free to
+//     proceed; the L3 save may be incomplete.
 //
 // Side effects:
 //   - Blocks the caller's goroutine for at most timeout.
-func (e *Engine) WaitForBackgroundExtractions(timeout time.Duration) bool {
+func (e *Engine) WaitForBackgroundExtractions(timeout time.Duration) error {
 	if timeout <= 0 {
-		return false
+		return nil
 	}
 	done := make(chan struct{})
 	go func() {
@@ -1120,9 +1133,9 @@ func (e *Engine) WaitForBackgroundExtractions(timeout time.Duration) bool {
 	}()
 	select {
 	case <-done:
-		return true
+		return nil
 	case <-time.After(timeout):
-		return false
+		return ErrExtractionTimeout
 	}
 }
 

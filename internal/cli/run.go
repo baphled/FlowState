@@ -11,6 +11,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/spf13/cobra"
@@ -130,15 +131,17 @@ const backgroundExtractionWait = 35 * time.Second
 
 // backgroundExtractionWaiter is the narrow capability the CLI exit path
 // needs from the engine. Expressed as an interface so tests can supply
-// a test double that deterministically returns false on timeout — the
+// a test double that deterministically returns a scripted error — the
 // real engine's WaitForBackgroundExtractions would require spinning an
 // actual goroutine past the deadline, which is slow and flaky.
 type backgroundExtractionWaiter interface {
 	// WaitForBackgroundExtractions blocks until every dispatched
-	// extraction finishes or timeout elapses. Returns true on clean
-	// finish, false on timeout. Callers on timeout must assume session-
-	// memory state is incomplete.
-	WaitForBackgroundExtractions(timeout time.Duration) bool
+	// extraction finishes or timeout elapses. Returns nil on clean
+	// finish or when timeout <= 0 (caller opted out of waiting).
+	// Returns engine.ErrExtractionTimeout when the wait expired with
+	// work still in flight. Callers on timeout must assume session-
+	// memory state is incomplete. See M7.
+	WaitForBackgroundExtractions(timeout time.Duration) error
 }
 
 // waitForBackgroundExtractions drives the pre-exit wait and surfaces a
@@ -163,7 +166,24 @@ type backgroundExtractionWaiter interface {
 //     seconds so operators can correlate partial session-memory state
 //     with the specific run.
 func waitForBackgroundExtractions(waiter backgroundExtractionWaiter, timeout time.Duration) {
-	if waiter.WaitForBackgroundExtractions(timeout) {
+	err := waiter.WaitForBackgroundExtractions(timeout)
+	if err == nil {
+		// Clean finish OR caller passed a non-positive timeout and
+		// opted out of waiting. Neither is worth a warning; the
+		// opted-out path is an operator choice, and the clean-finish
+		// path is the happy case.
+		return
+	}
+	if !errors.Is(err, engine.ErrExtractionTimeout) {
+		// Unknown error shape — surface it so operators can diagnose
+		// future waiter implementations, but do not downgrade the
+		// level. The warn template stays consistent so log-processors
+		// do not need to learn new patterns.
+		slog.Warn(
+			"knowledge extraction wait returned unexpected error",
+			"timeout_seconds", int(timeout/time.Second),
+			"err", err,
+		)
 		return
 	}
 	slog.Warn(
