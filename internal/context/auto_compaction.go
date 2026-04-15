@@ -45,10 +45,20 @@ import (
 // surviving compaction is a dangling reference that crashes the next
 // turn with a 400 at the wire.
 //
+// The body character class is deliberately restricted to `[A-Za-z0-9]`
+// (alphanumeric only, no underscores or hyphens). Every real provider
+// id — Anthropic native "toolu_" + base64-ish alnum, OpenAI native
+// "call_" + alnum, and the shared.TranslateToolCallID failover output
+// which appends 24 hex chars — is alnum after the prefix. Permitting
+// `_` in the body (as the prior pattern did) produced false positives
+// on legitimate English snake_case like
+// `call_me_back_for_review_team_leader`, because Go's `\b` treats `_`
+// as a word character. See M4 of the adversarial review.
+//
 // The trailing length bound (16+ identifier bytes) matches the lower
 // limit of both providers' id lengths and keeps plain English phrases
 // like "tool called" or "a call back" from tripping the guard.
-var forbiddenToolIDPattern = regexp.MustCompile(`\b(toolu_|call_)[A-Za-z0-9_-]{16,}\b`)
+var forbiddenToolIDPattern = regexp.MustCompile(`\b(toolu_|call_)[A-Za-z0-9]{16,}`)
 
 // ErrInvalidSummary is returned when the summariser produces a parseable
 // but semantically empty summary. Exposed as a sentinel so callers (and
