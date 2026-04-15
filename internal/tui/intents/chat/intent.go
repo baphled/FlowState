@@ -268,9 +268,27 @@ type Intent struct {
 	// Bubble Tea goroutine inside View() and Update handlers. Re-render is
 	// driven by SwarmEventAppendedMsg, not shared-slice mutation.
 	swarmStore streaming.SwarmEventStore
+	// secondaryPaneVisible gates the dual-pane render of the swarm activity
+	// timeline. Toggled via Ctrl+T in handleInputKey. When false, View()
+	// passes an empty string to WithSecondaryContent so ScreenLayout falls
+	// back to single-pane via its existing empty-secondary branch.
+	secondaryPaneVisible bool
 }
 
 var runningInTests bool
+
+// chatHintSuffix is the fixed portion of the chat view's status-bar hint,
+// appended to the dynamic status prefix by View(). Extracted as a package
+// const so the long-line linter is satisfied without sacrificing
+// readability. Ctrl+T: toggle activity was added in Wave 1 / T7; the
+// verbose "PgUp/PgDn: scroll" hint was shortened to "↑/↓: scroll" to keep
+// the line within the 140-column budget while remaining discoverable.
+const chatHintSuffix = "  ·  Alt+Enter: new line" +
+	"  ·  Enter: send" +
+	"  ·  /models /model /help" +
+	"  ·  Ctrl+T: toggle activity" +
+	"  ·  ↑/↓: scroll" +
+	"  ·  Ctrl+C: quit"
 
 // tokenCounterFromConfig builds a token counter from the given intent configuration.
 //
@@ -318,34 +336,35 @@ func NewIntent(cfg IntentConfig) *Intent {
 	}
 
 	return &Intent{
-		app:                 cfg.App,
-		engine:              cfg.Engine,
-		streamer:            cfg.Streamer,
-		sessionManager:      cfg.SessionManager,
-		agentID:             cfg.AgentID,
-		sessionID:           cfg.SessionID,
-		input:               "",
-		width:               80,
-		height:              24,
-		statusBar:           sb,
-		statusIndicator:     widgets.NewStatusIndicator(nil),
-		tokenCount:          0,
-		tokenCounter:        tokenCounterFromConfig(cfg),
-		providerName:        cfg.ProviderName,
-		modelName:           cfg.ModelName,
-		tokenBudget:         cfg.TokenBudget,
-		tickFrame:           0,
-		result:              nil,
-		atBottom:            true,
-		agentRegistry:       cfg.AgentRegistry,
-		sessionStore:        cfg.SessionStore,
-		childSessionLister:  cfg.ChildSessionLister,
-		view:                chat.NewView(),
-		notifications:       notification.NewComponent(notifManager),
-		notificationManager: notifManager,
-		breadcrumbPath:      "Chat",
-		swarmActivity:       swarmactivity.NewSwarmActivityPane(),
-		swarmStore:          streaming.NewMemorySwarmStore(15),
+		app:                  cfg.App,
+		engine:               cfg.Engine,
+		streamer:             cfg.Streamer,
+		sessionManager:       cfg.SessionManager,
+		agentID:              cfg.AgentID,
+		sessionID:            cfg.SessionID,
+		input:                "",
+		width:                80,
+		height:               24,
+		statusBar:            sb,
+		statusIndicator:      widgets.NewStatusIndicator(nil),
+		tokenCount:           0,
+		tokenCounter:         tokenCounterFromConfig(cfg),
+		providerName:         cfg.ProviderName,
+		modelName:            cfg.ModelName,
+		tokenBudget:          cfg.TokenBudget,
+		tickFrame:            0,
+		result:               nil,
+		atBottom:             true,
+		agentRegistry:        cfg.AgentRegistry,
+		sessionStore:         cfg.SessionStore,
+		childSessionLister:   cfg.ChildSessionLister,
+		view:                 chat.NewView(),
+		notifications:        notification.NewComponent(notifManager),
+		notificationManager:  notifManager,
+		breadcrumbPath:       "Chat",
+		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
+		swarmStore:           streaming.NewMemorySwarmStore(15),
+		secondaryPaneVisible: true,
 	}
 }
 
@@ -982,6 +1001,27 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.openModelSelector()
 	case tea.KeyCtrlS:
 		return i.openSessionBrowser()
+	case tea.KeyCtrlT:
+		return i.toggleSecondaryPane()
+	}
+	return i.handleTextInputKey(msg)
+}
+
+// handleTextInputKey processes keys that mutate the input buffer directly
+// (backspace, enter, space, printable runes). Split out of handleInputKey
+// to keep its cyclomatic complexity within the project's gocyclo budget.
+//
+// Expected:
+//   - msg is a tea.KeyMsg whose Type did not match a command-returning key
+//     in handleInputKey.
+//
+// Returns:
+//   - A tea.Cmd when Enter submits a non-empty message; otherwise nil.
+//
+// Side effects:
+//   - Mutates i.input; may call i.updateViewportForInput on Alt+Enter.
+func (i *Intent) handleTextInputKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
 	case tea.KeyBackspace:
 		if i.input != "" {
 			i.input = i.input[:len(i.input)-1]
@@ -1004,6 +1044,21 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		i.input += string(msg.Runes)
 		return nil
 	}
+	return nil
+}
+
+// toggleSecondaryPane flips the secondary-pane visibility flag in response
+// to Ctrl+T (Wave 1 / T7). View() gates its WithSecondaryContent call on
+// this flag so the hidden state falls back to single-pane via
+// ScreenLayout's existing empty-secondary branch.
+//
+// Returns:
+//   - Always nil; Bubble Tea re-renders on the next tick.
+//
+// Side effects:
+//   - Mutates i.secondaryPaneVisible.
+func (i *Intent) toggleSecondaryPane() tea.Cmd {
+	i.secondaryPaneVisible = !i.secondaryPaneVisible
 	return nil
 }
 
@@ -1827,20 +1882,25 @@ func (i *Intent) View() string {
 	sl.WithContent(content).
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
-		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit")
+		WithHelp(status + chatHintSuffix)
 
-	// Populate the secondary pane with the swarm activity timeline. The pane
-	// is width- and height-aware and returns an empty string when dimensions
+	// Populate the secondary pane with the swarm activity timeline when
+	// secondaryPaneVisible is true (Wave 1 / T7 Ctrl+T toggle). The pane is
+	// width- and height-aware and returns an empty string when dimensions
 	// fall below its render thresholds, which pairs with ScreenLayout's
-	// single-pane fallback below the 80-column dual-pane minimum. T7 will
-	// introduce a Ctrl+T visibility toggle; for T3 the pane is always on.
-	if i.swarmActivity != nil {
+	// single-pane fallback below the 80-column dual-pane minimum. When the
+	// user has hidden the pane we explicitly clear secondaryContent to ""
+	// on the cached layout so the empty-secondary branch fires rather than
+	// reusing stale content from a previous visible render.
+	if i.secondaryPaneVisible && i.swarmActivity != nil {
 		contentHeight := sl.GetAvailableContentHeight()
 		var swarmEvents []streaming.SwarmEvent
 		if i.swarmStore != nil {
 			swarmEvents = i.swarmStore.All()
 		}
 		sl.WithSecondaryContent(i.swarmActivity.WithEvents(swarmEvents).Render(i.width, contentHeight))
+	} else {
+		sl.WithSecondaryContent("")
 	}
 
 	return i.renderModalOverlay(sl.Render())
