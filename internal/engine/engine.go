@@ -94,8 +94,17 @@ type Engine struct {
 
 	// knowledgeExtractor is the L3 extractor fired asynchronously from
 	// Stream to distil each completed turn into the session memory
-	// store. Nil disables the feature.
-	knowledgeExtractor *recall.KnowledgeExtractor
+	// store. Nil disables the feature. When knowledgeExtractorFactory
+	// is non-nil it takes precedence — see dispatchKnowledgeExtraction.
+	knowledgeExtractor        *recall.KnowledgeExtractor
+	knowledgeExtractorFactory func(sessionID string) *recall.KnowledgeExtractor
+
+	// extractionWG tracks in-flight knowledge-extraction goroutines so
+	// short-lived CLI entry points (flowstate run) can block until the
+	// background writers finish before the process exits. Without this,
+	// every L3 save dispatched from a one-shot run is orphaned at
+	// process termination.
+	extractionWG sync.WaitGroup
 
 	mu sync.RWMutex
 }
@@ -142,8 +151,20 @@ type Config struct {
 	// KnowledgeExtractor is the optional L3 extractor fired in a
 	// background goroutine after each Stream invocation when
 	// CompressionConfig.SessionMemory.Enabled is true. Nil disables the
-	// feature.
+	// feature. Prefer KnowledgeExtractorFactory for production wiring so
+	// the stream's live sessionID flows into SessionMemoryStore.Save —
+	// this field is retained for single-session tests that bind the
+	// sessionID at construction time.
 	KnowledgeExtractor *recall.KnowledgeExtractor
+
+	// KnowledgeExtractorFactory, when non-nil, takes precedence over
+	// KnowledgeExtractor: dispatchKnowledgeExtraction calls the factory
+	// with the current sessionID so each Stream invocation writes its
+	// memory under the session actually being streamed. App.New wires
+	// this from buildCompressionComponents whenever SessionMemory is
+	// enabled; tests that pin a single sessionID can keep using
+	// KnowledgeExtractor directly.
+	KnowledgeExtractorFactory func(sessionID string) *recall.KnowledgeExtractor
 
 	// SessionMemoryStore is the optional L3 read-side store attached to
 	// the WindowBuilder so distilled facts, conventions, and preferences
@@ -231,7 +252,8 @@ func New(cfg Config) *Engine {
 		compressionConfig:    cfg.CompressionConfig,
 		compressionMetrics:   cfg.CompressionMetrics,
 		recorder:             cfg.Recorder,
-		knowledgeExtractor:   cfg.KnowledgeExtractor,
+		knowledgeExtractor:        cfg.KnowledgeExtractor,
+		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
 	}
 }
 
@@ -797,7 +819,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		defer close(outChan)
 		e.streamWithToolLoop(ctx, sessionID, messages, providerChunks, outChan)
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
-		e.dispatchKnowledgeExtraction(messages)
+		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
 
 	return outChan, nil
@@ -822,15 +844,88 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 //
 // Side effects:
 //   - Spawns a goroutine when the extractor is wired and enabled.
-func (e *Engine) dispatchKnowledgeExtraction(messages []provider.Message) {
-	if e.knowledgeExtractor == nil || !e.compressionConfig.SessionMemory.Enabled {
+func (e *Engine) dispatchKnowledgeExtraction(sessionID string, messages []provider.Message) {
+	if !e.compressionConfig.SessionMemory.Enabled {
+		return
+	}
+
+	extractor := e.resolveKnowledgeExtractor(sessionID)
+	if extractor == nil {
 		return
 	}
 
 	msgsCopy := make([]provider.Message, len(messages))
 	copy(msgsCopy, messages)
 
-	go runKnowledgeExtraction(e.knowledgeExtractor, msgsCopy)
+	e.extractionWG.Add(1)
+	go func() {
+		defer e.extractionWG.Done()
+		runKnowledgeExtraction(extractor, msgsCopy)
+	}()
+}
+
+// WaitForBackgroundExtractions blocks until every in-flight L3
+// extraction goroutine dispatched by dispatchKnowledgeExtraction has
+// returned, or until timeout elapses — whichever comes first. Long-
+// running hosts (flowstate serve) need never call this because the
+// goroutines eventually complete under their own 30-second timeout and
+// the server keeps the process alive. Short-lived CLI hosts (flowstate
+// run) must call this before exiting or the extractions are orphaned
+// at os.Exit and the session-memory store is never saved.
+//
+// Expected:
+//   - timeout is the maximum wall-clock duration to wait. A non-
+//     positive value is treated as "no wait" and the call returns
+//     immediately (retaining the legacy fire-and-forget contract when
+//     the caller does not care).
+//
+// Returns:
+//   - true if every dispatched goroutine finished within the timeout.
+//   - false on timeout; in-flight work continues but the caller is
+//     free to proceed.
+//
+// Side effects:
+//   - Blocks the caller's goroutine for at most timeout.
+func (e *Engine) WaitForBackgroundExtractions(timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		e.extractionWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// resolveKnowledgeExtractor returns the extractor to use for the given
+// sessionID. When a factory is wired (production path via
+// buildCompressionComponents) it is called with the live sessionID so
+// SessionMemoryStore.Save writes under the session actually being
+// streamed. When only the static extractor is wired (single-session
+// tests) it is returned unchanged. Nil signals "feature disabled for
+// this engine".
+//
+// Expected:
+//   - sessionID may be empty; the factory receives it verbatim and is
+//     expected to tolerate that (it will produce a memory-dir of "").
+//
+// Returns:
+//   - The extractor to drive, or nil when neither factory nor static
+//     extractor is wired.
+//
+// Side effects:
+//   - None at this layer. The factory, if supplied, may allocate.
+func (e *Engine) resolveKnowledgeExtractor(sessionID string) *recall.KnowledgeExtractor {
+	if e.knowledgeExtractorFactory != nil {
+		return e.knowledgeExtractorFactory(sessionID)
+	}
+	return e.knowledgeExtractor
 }
 
 // runKnowledgeExtraction is the body of the background goroutine spawned

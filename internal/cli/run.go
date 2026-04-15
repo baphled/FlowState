@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -110,8 +111,21 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	}
 
 	saveSession(cmd, application, sessionID)
+	// Wait for the L3 knowledge-extraction goroutine dispatched by the
+	// stream to finish before the process exits. Without this, each
+	// short-lived run orphans its extraction at os.Exit and the
+	// session-memory store is never saved to disk.
+	if application.Engine != nil {
+		application.Engine.WaitForBackgroundExtractions(backgroundExtractionWait)
+	}
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
 }
+
+// backgroundExtractionWait bounds the pre-exit wait for in-flight L3
+// knowledge extractions. The extractor itself runs under a 30-second
+// LLM timeout; the CLI gives it matching headroom plus a small margin
+// for the final disk write (atomic temp-then-rename).
+const backgroundExtractionWait = 35 * time.Second
 
 // validateRunOptions checks that required options are set.
 //
