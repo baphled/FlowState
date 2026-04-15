@@ -85,6 +85,18 @@ type Engine struct {
 	// spanning both layers. Nil means no metrics are recorded.
 	compressionMetrics *ctxstore.CompressionMetrics
 
+	// sessionCompressionMetrics partitions the cumulative
+	// compressionMetrics counters by sessionID so user-facing surfaces
+	// (flowstate run --stats, the slog compression-metrics line) can
+	// report per-session figures instead of the ever-growing aggregate
+	// a single engine accumulates across many sessions. The aggregate
+	// struct is still bumped in lockstep — it is the cumulative view a
+	// flowstate serve dashboard needs. Nil entries are treated as zero
+	// by SessionCompressionMetrics so a just-started session reports
+	// empty counters rather than stale state from an earlier session.
+	sessionCompressionMetrics   map[string]*ctxstore.CompressionMetrics
+	sessionCompressionMetricsMu sync.Mutex
+
 	// recorder, when non-nil, receives RecordCompressionTokensSaved on
 	// every successful L2 compaction. The delta is OriginalTokens -
 	// SummaryTokens — the same figure the ContextCompactedEvent carries
@@ -287,6 +299,7 @@ func New(cfg Config) *Engine {
 		knowledgeExtractor:        cfg.KnowledgeExtractor,
 		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
 		sessionSplitters:          make(map[string]*sessionSplitterEntry),
+		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
 	}
 	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
 	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
@@ -365,6 +378,16 @@ func (e *Engine) handleSessionEnded(evt any) {
 	// + future Engine.Stop) serialise. Stop is idempotent via sync.Once
 	// inside HotColdSplitter — the lock protects map invariants, not
 	// Stop correctness.
+	// Evict the per-session compression-metrics ledger alongside the
+	// splitter cache so long-running flowstate serve processes do not
+	// accumulate dead entries forever. Done under its own mutex — the
+	// session-metrics map and splitter cache have independent lifetimes
+	// (metrics entries exist for sessions that never allocated a
+	// splitter, e.g. L2-only auto-compaction).
+	e.sessionCompressionMetricsMu.Lock()
+	delete(e.sessionCompressionMetrics, sessionID)
+	e.sessionCompressionMetricsMu.Unlock()
+
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
 
@@ -1858,6 +1881,8 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// WithSplitterOption, constructed below.
 	splitterOpt := ctxstore.WithSplitterOption(e.ensureSessionSplitter(ctx, sessionID))
 
+	microBefore := e.snapshotAggregateMicroCount()
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -1868,35 +1893,19 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget)
 
-	var result ctxstore.BuildResult
-	switch {
-	case len(searchResults) > 0:
-		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults, splitterOpt)
-		if userMessage != "" {
-			userTokens := e.tokenCounter.Count(userMessage)
-			result.Messages = append(result.Messages, provider.Message{
-				Role:    "user",
-				Content: userMessage,
-			})
-			result.TokensUsed += userTokens
-			result.BudgetRemaining -= userTokens
-		}
-	case compactedSummary != "":
-		result = e.windowBuilder.BuildWithSummary(&manifestCopy, e.store, tokenBudget, compactedSummary, splitterOpt)
-		if userMessage != "" {
-			userTokens := e.tokenCounter.Count(userMessage)
-			result.Messages = append(result.Messages, provider.Message{
-				Role:    "user",
-				Content: userMessage,
-			})
-			result.TokensUsed += userTokens
-			result.BudgetRemaining -= userTokens
-		}
-	default:
-		result = e.windowBuilder.BuildContextResult(&manifestCopy, userMessage, e.store, tokenBudget, splitterOpt)
-	}
+	result := e.assembleBuildResult(buildResultInputs{
+		manifest:         &manifestCopy,
+		userMessage:      userMessage,
+		tokenBudget:      tokenBudget,
+		searchResults:    searchResults,
+		compactedSummary: compactedSummary,
+		splitterOpt:      splitterOpt,
+	})
 
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
+
+	e.attributeMicroCompactionToSession(sessionID, microBefore)
+	e.logSessionCompressionMetrics(sessionID)
 
 	e.buildStateMu.Lock()
 	e.lastContextResult = result
@@ -2077,6 +2086,12 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 			e.compressionMetrics.OverheadTokens += -delta
 		}
 	}
+	// Mirror the same deltas onto the per-session ledger so
+	// flowstate run --stats reports the CURRENT session's numbers
+	// instead of the cumulative aggregate. The aggregate above still
+	// grows in lockstep because flowstate serve dashboards depend on
+	// it.
+	e.recordSessionAutoCompaction(sessionID, delta)
 	if e.recorder != nil {
 		// M3/Item 5 — mutually exclusive emit paths. Delta > 0 fires
 		// the savings counter, delta < 0 fires the overhead counter,
@@ -2146,6 +2161,271 @@ func (e *Engine) CompressionMetrics() ctxstore.CompressionMetrics {
 		return ctxstore.CompressionMetrics{}
 	}
 	return *e.compressionMetrics
+}
+
+// SessionCompressionMetrics returns a snapshot of the compression
+// counters accrued under the supplied sessionID only. Unlike
+// CompressionMetrics, which mirrors the engine's cumulative aggregate
+// (the right surface for `flowstate serve` dashboards that outlive
+// any one session), this accessor partitions the counters so that
+// user-facing surfaces — `flowstate run --stats` and the slog
+// compression-metrics line — can report per-session figures. Before
+// this method existed, a single engine handling successive sessions
+// accumulated counters forever; operators reading --stats at the
+// start of a new session saw the carried-forward totals from every
+// previous session and mistook them for current-session values.
+//
+// Expected:
+//   - sessionID identifies the session of interest. An empty string is
+//     treated as a distinct (but usable) bucket rather than rejected,
+//     matching the engine's existing tolerance for missing session
+//     IDs on the read paths.
+//
+// Returns:
+//   - A CompressionMetrics value capturing only the counters that
+//     fired under the supplied sessionID. The zero value is returned
+//     for unknown sessions (never-compacted or already-evicted) so
+//     first-turn --stats calls see honest zeros.
+//
+// Side effects:
+//   - None. The returned value is a copy; mutating it leaves the
+//     engine's live ledger untouched.
+func (e *Engine) SessionCompressionMetrics(sessionID string) ctxstore.CompressionMetrics {
+	e.sessionCompressionMetricsMu.Lock()
+	defer e.sessionCompressionMetricsMu.Unlock()
+	entry, ok := e.sessionCompressionMetrics[sessionID]
+	if !ok || entry == nil {
+		return ctxstore.CompressionMetrics{}
+	}
+	return *entry
+}
+
+// recordSessionAutoCompaction mirrors the compressionMetrics bumps
+// publishContextCompactedEvent already applies to the cumulative
+// aggregate onto the per-session ledger keyed by sessionID. The
+// mapping is intentionally lazy — a session id that never fires
+// compaction never allocates an entry — so the map only grows for
+// sessions that actually produced work. The C1 eviction hook
+// (handleSessionEnded) removes the entry when the session ends, so
+// long-running flowstate serve processes do not accumulate dead
+// per-session ledgers forever.
+//
+// Expected:
+//   - sessionID is the identifier passed into publishContextCompactedEvent.
+//     Empty strings map to the "" bucket deliberately — the caller's
+//     choice determines whether that is meaningful.
+//   - delta is OriginalTokens - SummaryTokens. Positive values bump
+//     TokensSaved; negative values bump OverheadTokens. Zero-deltas
+//     still count the compaction call itself (AutoCompactionCount),
+//     matching the aggregate accounting contract.
+//
+// Side effects:
+//   - Allocates a CompressionMetrics under the supplied sessionID on
+//     first use.
+func (e *Engine) recordSessionAutoCompaction(sessionID string, delta int) {
+	e.sessionCompressionMetricsMu.Lock()
+	defer e.sessionCompressionMetricsMu.Unlock()
+	entry, ok := e.sessionCompressionMetrics[sessionID]
+	if !ok || entry == nil {
+		entry = &ctxstore.CompressionMetrics{}
+		e.sessionCompressionMetrics[sessionID] = entry
+	}
+	entry.AutoCompactionCount++
+	if delta > 0 {
+		entry.TokensSaved += delta
+	} else if delta < 0 {
+		entry.OverheadTokens += -delta
+	}
+}
+
+// recordSessionMicroCompaction mirrors the aggregate
+// MicroCompactionCount bump WindowBuilder applies via its attached
+// *CompressionMetrics onto the per-session ledger. The delta is the
+// number of cold messages HotColdSplitter offloaded on the current
+// Build call, captured via BuildResult.MicroCompactedCount and
+// forwarded here by buildContextWindow.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//   - delta is the non-negative number of cold offloads from the most
+//     recent Build call; zero-deltas are skipped so the map does not
+//     fill with empty entries for sessions that only saw hot-tail
+//     messages.
+//
+// Side effects:
+//   - Allocates a CompressionMetrics under the supplied sessionID on
+//     first use.
+func (e *Engine) recordSessionMicroCompaction(sessionID string, delta int) {
+	if delta <= 0 {
+		return
+	}
+	e.sessionCompressionMetricsMu.Lock()
+	defer e.sessionCompressionMetricsMu.Unlock()
+	entry, ok := e.sessionCompressionMetrics[sessionID]
+	if !ok || entry == nil {
+		entry = &ctxstore.CompressionMetrics{}
+		e.sessionCompressionMetrics[sessionID] = entry
+	}
+	entry.MicroCompactionCount += delta
+}
+
+// buildResultInputs groups the inputs assembleBuildResult needs so
+// the method signature stays inside the project's per-function
+// argument limit. A struct here is more honest than a free-for-all
+// signature: these fields are all parallel context carried between
+// buildContextWindow and the WindowBuilder entry points.
+type buildResultInputs struct {
+	manifest         *agent.Manifest
+	userMessage      string
+	tokenBudget      int
+	searchResults    []recall.SearchResult
+	compactedSummary string
+	splitterOpt      ctxstore.BuildOption
+}
+
+// assembleBuildResult dispatches to the right WindowBuilder entry
+// point given the current mix of semantic search results and
+// auto-compaction summary. The SemanticResults and Summary branches
+// build without the user message and then append it here so token
+// accounting stays in one place; the default branch delegates to
+// BuildContextResult which handles the user message itself.
+//
+// Expected:
+//   - in.manifest is a prepared, non-nil manifest with system prompt
+//     already populated.
+//   - in.userMessage may be empty; an empty string skips the append step.
+//   - in.tokenBudget is the full model context limit.
+//   - in.searchResults may be empty; non-empty selects the semantic path.
+//   - in.compactedSummary may be empty; non-empty selects the summary path.
+//   - in.splitterOpt carries the per-Build HotColdSplitter option.
+//
+// Returns:
+//   - The assembled BuildResult with final message slice and token
+//     accounting.
+//
+// Side effects:
+//   - None beyond what the selected WindowBuilder entry point performs
+//     (logCompressionMetrics, recorder gauge emission).
+func (e *Engine) assembleBuildResult(in buildResultInputs) ctxstore.BuildResult {
+	switch {
+	case len(in.searchResults) > 0:
+		result := e.windowBuilder.BuildWithSemanticResults(in.manifest, e.store, in.tokenBudget, in.searchResults, in.splitterOpt)
+		return e.appendUserMessageToResult(result, in.userMessage)
+	case in.compactedSummary != "":
+		result := e.windowBuilder.BuildWithSummary(in.manifest, e.store, in.tokenBudget, in.compactedSummary, in.splitterOpt)
+		return e.appendUserMessageToResult(result, in.userMessage)
+	default:
+		return e.windowBuilder.BuildContextResult(in.manifest, in.userMessage, e.store, in.tokenBudget, in.splitterOpt)
+	}
+}
+
+// appendUserMessageToResult attaches the user message to a BuildResult
+// produced by the SemanticResults or Summary paths, which build
+// without the user turn so the search/summary body fills the hot
+// portion of the budget first. Token accounting is mirrored so
+// BudgetRemaining stays truthful after the append.
+//
+// Expected:
+//   - result is a BuildResult produced by a WindowBuilder entry point
+//     that did not include the user message.
+//   - userMessage may be empty; empty strings are returned unchanged.
+//
+// Returns:
+//   - The BuildResult with the user message appended (or the
+//     unchanged result when userMessage is empty).
+//
+// Side effects:
+//   - None.
+func (e *Engine) appendUserMessageToResult(result ctxstore.BuildResult, userMessage string) ctxstore.BuildResult {
+	if userMessage == "" {
+		return result
+	}
+	userTokens := e.tokenCounter.Count(userMessage)
+	result.Messages = append(result.Messages, provider.Message{
+		Role:    "user",
+		Content: userMessage,
+	})
+	result.TokensUsed += userTokens
+	result.BudgetRemaining -= userTokens
+	return result
+}
+
+// snapshotAggregateMicroCount captures the aggregate
+// MicroCompactionCount at the start of a Build call so the caller
+// can later compute the per-Build delta. Returns zero when no
+// CompressionMetrics is wired so the caller does not need to
+// nil-check before passing the value into
+// attributeMicroCompactionToSession.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The current aggregate MicroCompactionCount, or zero when no
+//     metrics struct is attached.
+//
+// Side effects:
+//   - None.
+func (e *Engine) snapshotAggregateMicroCount() int {
+	if e.compressionMetrics == nil {
+		return 0
+	}
+	return e.compressionMetrics.MicroCompactionCount
+}
+
+// attributeMicroCompactionToSession bridges the aggregate
+// MicroCompactionCount bump WindowBuilder applies inside a Build call
+// back onto the per-session ledger. The caller captures the aggregate
+// counter before the Build and passes it here as microBefore; the
+// positive delta over the stored value is the number of cold offloads
+// produced under sessionID on this Build. No-op when metrics are not
+// wired or when nothing spilled (hot-tail only).
+//
+// Expected:
+//   - sessionID identifies the active session. Empty strings are
+//     forwarded to recordSessionMicroCompaction unchanged; the caller
+//     owns the policy on empty session IDs.
+//   - microBefore is the aggregate MicroCompactionCount captured at
+//     the start of the Build call.
+//
+// Side effects:
+//   - May allocate a per-session CompressionMetrics entry via
+//     recordSessionMicroCompaction.
+func (e *Engine) attributeMicroCompactionToSession(sessionID string, microBefore int) {
+	if e.compressionMetrics == nil {
+		return
+	}
+	delta := e.compressionMetrics.MicroCompactionCount - microBefore
+	if delta <= 0 {
+		return
+	}
+	e.recordSessionMicroCompaction(sessionID, delta)
+}
+
+// logSessionCompressionMetrics emits the per-session companion to the
+// WindowBuilder "compression metrics" slog line. The aggregate line
+// remains the right signal for flowstate serve dashboards, which
+// outlive any one session; this line carries session_id so operators
+// running flowstate chat/serve can follow per-session figures without
+// parsing the cumulative aggregate. No-op when metrics are not wired.
+//
+// Expected:
+//   - sessionID identifies the session the Build call served.
+//
+// Side effects:
+//   - Writes one slog.Info record at default level when metrics are set.
+func (e *Engine) logSessionCompressionMetrics(sessionID string) {
+	if e.compressionMetrics == nil {
+		return
+	}
+	sessMetrics := e.SessionCompressionMetrics(sessionID)
+	slog.Info("compression metrics session",
+		"session_id", sessionID,
+		"micro_compaction_count", sessMetrics.MicroCompactionCount,
+		"auto_compaction_count", sessMetrics.AutoCompactionCount,
+		"tokens_saved", sessMetrics.TokensSaved,
+		"compression_overhead_tokens", sessMetrics.OverheadTokens,
+	)
 }
 
 // dispatchContextAssemblyHooks fires all registered context assembly hooks, collecting search results.
