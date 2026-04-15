@@ -14,6 +14,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/spf13/cobra"
 )
@@ -277,6 +278,16 @@ func waitForBackgroundExtractions(waiter backgroundExtractionWaiter, timeout tim
 func validateRunOptions(opts *RunOptions) error {
 	if strings.TrimSpace(opts.Prompt) == "" {
 		return errors.New("prompt is required")
+	}
+	// H4 — reject path-unsafe --session values at the CLI gate so no
+	// downstream code (L1 spillover, L3 session-memory) ever builds a
+	// filepath.Join on a traversal sequence. Empty is permitted here
+	// because resolveSessionID generates a UUID in that case; only the
+	// non-empty branch needs checking.
+	if opts.Session != "" {
+		if err := sessionid.Validate(opts.Session); err != nil {
+			return fmt.Errorf("invalid --session value: %w", err)
+		}
 	}
 	return nil
 }
