@@ -133,7 +133,13 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 		waitForBackgroundExtractions(application.Engine, resolveBackgroundExtractionWait(application))
 	}
 	if opts.Stats && application.Engine != nil {
-		writeCompressionStats(cmd.ErrOrStderr(), application.Engine.CompressionMetrics())
+		// Per-session snapshot, not the cumulative aggregate — a long-
+		// running flowstate serve (or interactive chat) process would
+		// otherwise show carried-forward totals from every previous
+		// session that shared the engine, which is the exact bug the
+		// user reported: "the token counter doesn't reset when I start
+		// a new session".
+		writeCompressionStats(cmd.ErrOrStderr(), application.Engine.SessionCompressionMetrics(sessionID))
 	}
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
 }
