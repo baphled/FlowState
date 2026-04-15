@@ -28,6 +28,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/baphled/flowstate/internal/sessionid"
 )
 
 // SessionMemoryMinRelevance is the relevance floor enforced by
@@ -216,6 +218,14 @@ func (s *SessionMemoryStore) Retrieve(entryType string, limit int) []KnowledgeEn
 //   - Creates ${storageDir}/${sessionID}/ when absent.
 //   - Writes a tempfile and renames it into place.
 func (s *SessionMemoryStore) Save(sessionID string) error {
+	// H4 defence-in-depth: the CLI gate validates --session at entry
+	// but this store is also reachable from in-process callers (tests,
+	// future internal API consumers) that bypass the CLI. Revalidate
+	// so no path built under this function can escape storageDir.
+	if err := sessionid.Validate(sessionID); err != nil {
+		return fmt.Errorf("session memory: %w", err)
+	}
+
 	s.mu.RLock()
 	snapshot := make([]KnowledgeEntry, len(s.entries))
 	copy(snapshot, s.entries)
@@ -259,6 +269,13 @@ func (s *SessionMemoryStore) Save(sessionID string) error {
 // Side effects:
 //   - Replaces the store's entries slice on success.
 func (s *SessionMemoryStore) Load(sessionID string) error {
+	// H4 defence-in-depth — symmetry with Save. An attacker who can
+	// plant a memory.json under e.g. ../../etc would have the loader
+	// read attacker-controlled bytes into the in-memory store; the
+	// validator refuses to compose the path in the first place.
+	if err := sessionid.Validate(sessionID); err != nil {
+		return fmt.Errorf("session memory: %w", err)
+	}
 	path := filepath.Join(s.storageDir, sessionID, "memory.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
