@@ -2,7 +2,6 @@ package context_test
 
 import (
 	"bytes"
-	gocontext "context"
 	"fmt"
 	"log"
 	"os"
@@ -564,7 +563,6 @@ var _ = Describe("WindowBuilder", func() {
 	Describe("BuildContext", func() {
 		Context("T15a-compatible entrypoint", func() {
 			It("accepts context and userMessage parameters", func() {
-				ctx := gocontext.Background()
 				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System prompt",
@@ -572,14 +570,13 @@ var _ = Describe("WindowBuilder", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				messages := builder.BuildContext(ctx, manifest, "hello user", store, 4096)
+				messages := builder.BuildContext(manifest, "hello user", store, 4096)
 
 				Expect(messages).NotTo(BeEmpty())
 				Expect(messages[0].Role).To(Equal("system"))
 			})
 
 			It("appends userMessage to context window", func() {
-				ctx := gocontext.Background()
 				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "System",
@@ -587,7 +584,7 @@ var _ = Describe("WindowBuilder", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				messages := builder.BuildContext(ctx, manifest, "new user query", store, 4096)
+				messages := builder.BuildContext(manifest, "new user query", store, 4096)
 
 				lastMsg := messages[len(messages)-1]
 				Expect(lastMsg.Role).To(Equal("user"))
@@ -602,7 +599,6 @@ var _ = Describe("WindowBuilder", func() {
 				log.SetOutput(&logBuf)
 				DeferCleanup(func() { log.SetOutput(origOutput) })
 
-				ctx := gocontext.Background()
 				manifest := &agent.Manifest{
 					Instructions: agent.Instructions{
 						SystemPrompt: "This is a very long system prompt that exceeds the tiny token budget and must be truncated.",
@@ -610,7 +606,7 @@ var _ = Describe("WindowBuilder", func() {
 					ContextManagement: agent.DefaultContextManagement(),
 				}
 
-				_ = builder.BuildContext(ctx, manifest, "test", store, 10)
+				_ = builder.BuildContext(manifest, "test", store, 10)
 
 				Expect(logBuf.String()).To(ContainSubstring("system prompt truncated"))
 			})
