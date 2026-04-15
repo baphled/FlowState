@@ -257,7 +257,8 @@ func (c CompressionConfig) Validate() error {
 				"model identifier when session_memory.enabled is true; " +
 				"the knowledge extractor's chat request requires a " +
 				"`model` field that Ollama and OpenAI-compatible backends " +
-				"reject if empty")
+				"reject if empty (set compression.session_memory.model in " +
+				"your flowstate config)")
 	}
 	if c.SessionMemory.Enabled && c.SessionMemory.WaitTimeout <= 0 {
 		return fmt.Errorf(

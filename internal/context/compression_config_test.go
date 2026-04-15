@@ -211,6 +211,22 @@ var _ = Describe("CompressionConfig", func() {
 			Expect(err.Error()).To(ContainSubstring("model"))
 		})
 
+		// The session_memory.model validation previously stated the
+		// constraint ("must be a non-empty chat model identifier")
+		// without pointing operators at the config key they need to
+		// edit. Operators reading the error in isolation had to trace
+		// it back to the file format to learn where to apply the fix.
+		// Pin the remediation hint so the error stays actionable.
+		It("names the config key when session memory model is missing", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = ""
+
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("compression.session_memory.model"))
+		})
+
 		It("rejects a whitespace-only session memory model", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 			cfg.SessionMemory.Enabled = true
