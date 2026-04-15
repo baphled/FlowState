@@ -26,6 +26,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
+	swarmactivity "github.com/baphled/flowstate/internal/tui/components/swarm_activity"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
@@ -246,6 +247,9 @@ type Intent struct {
 	sessionViewerID       string
 	// eventNotifChan bridges event bus notifications into the Bubble Tea loop.
 	eventNotifChan chan EventBusNotificationMsg
+	// swarmActivity renders the secondary-pane activity timeline. Instantiated
+	// once in NewIntent and reused across View() calls to avoid allocations.
+	swarmActivity *swarmactivity.SwarmActivityPane
 }
 
 var runningInTests bool
@@ -322,6 +326,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		notifications:       notification.NewComponent(notifManager),
 		notificationManager: notifManager,
 		breadcrumbPath:      "Chat",
+		swarmActivity:       swarmactivity.NewSwarmActivityPane(),
 	}
 }
 
@@ -1688,6 +1693,16 @@ func (i *Intent) View() string {
 		WithInput(inputLine).
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
 		WithHelp(status + "  ·  Alt+Enter: new line  ·  Enter: send  ·  /models /model /help  ·  ↑/↓ PgUp/PgDn: scroll  ·  Ctrl+C: quit")
+
+	// Populate the secondary pane with the swarm activity timeline. The pane
+	// is width- and height-aware and returns an empty string when dimensions
+	// fall below its render thresholds, which pairs with ScreenLayout's
+	// single-pane fallback below the 80-column dual-pane minimum. T7 will
+	// introduce a Ctrl+T visibility toggle; for T3 the pane is always on.
+	if i.swarmActivity != nil {
+		contentHeight := sl.GetAvailableContentHeight()
+		sl.WithSecondaryContent(i.swarmActivity.Render(i.width, contentHeight))
+	}
 
 	return i.renderModalOverlay(sl.Render())
 }
