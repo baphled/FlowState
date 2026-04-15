@@ -99,12 +99,22 @@ Compaction honours two ADRs:
 compression:
   micro_compaction:
     enabled: true
+    # Number of most-recent units kept verbatim; must be >= 1 when
+    # micro-compaction is enabled.
     hot_tail_size: 5
+    # Minimum token count for a message to become a micro-compaction
+    # candidate. Below this threshold compaction never fires, so
+    # trivial chat sessions are left untouched.
     token_threshold: 1000
     storage_dir: ~/.flowstate/compacted
+    # Token budget assumed for the pointer placeholder that replaces
+    # an offloaded message.
     placeholder_tokens: 50
   auto_compaction:
     enabled: true
+    # Fraction of the model's context window at which compaction
+    # fires. Must lie in the (0.0, 1.0] interval; values outside are
+    # rejected at config load.
     threshold: 0.75
   session_memory:
     enabled: true
@@ -114,9 +124,29 @@ compression:
     # and OpenAI-compatible backends reject an empty `model` with
     # HTTP 400, so config load fails loud if this key is missing.
     model: llama3.1
+    # Bounds the pre-exit wait for the L3 knowledge-extraction
+    # goroutine on `flowstate run`. Defaults to 35s (30s extractor
+    # timeout + 5s atomic-write margin). Must be > 0 when
+    # session_memory.enabled is true.
+    wait_timeout: 35s
 ```
 
-Metrics are emitted via `slog.Info` with keys `micro_compaction_count`, `auto_compaction_count`, and `tokens_saved`. A successful L2 compaction also publishes a `context.compacted` event on the engine bus with original/summary token counts and latency. A compacted-view cache hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.
+### Metrics and telemetry
+
+Compression activity is observable through three channels:
+
+- `slog.Info("compression metrics", ...)` emits `micro_compaction_count`, `auto_compaction_count`, `tokens_saved`, and `compression_overhead_tokens` for every assembled window.
+- A successful L2 compaction publishes a `context.compacted` event on the engine bus with original/summary token counts and latency.
+- Prometheus counters and gauges surface through the `flowstate serve` `/metrics` endpoint:
+  - `flowstate_compression_tokens_saved_total` — cumulative tokens eliminated by L2, incremented only on net-saving compactions.
+  - `flowstate_compression_overhead_tokens_total` — cumulative absolute tokens added by L2 when the summary scaffold exceeded the compacted range. Paired with the saved counter so a flat tokens-saved value can be disambiguated between "layer disabled" and "every pass produced overhead".
+  - `flowstate_context_window_tokens` — gauge of the most recently assembled window size per agent.
+
+The Prometheus counters are registered per-engine, so the `/metrics` endpoint reflects the `flowstate serve` engine only. Ephemeral `flowstate run` invocations do not feed these counters. A compacted-view cache-hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.
+
+### When compression pays off
+
+Compression savings are asymptotic. With the default `token_threshold: 1000`, micro-compaction never fires on trivial chat — candidate messages need to exceed roughly a screenful of text before the heuristic considers offloading them. The useful win is on long sessions with substantial per-message content (large tool outputs, file reads, retrieval payloads) where the hot tail stays small but the cold range grows without bound. Short conversations should expect zero observable savings.
 
 ## MCP Integration
 
