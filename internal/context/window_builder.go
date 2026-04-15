@@ -548,6 +548,7 @@ func (b *WindowBuilder) logCompressionMetrics() {
 		"micro_compaction_count", b.metrics.MicroCompactionCount,
 		"auto_compaction_count", b.metrics.AutoCompactionCount,
 		"tokens_saved", b.metrics.TokensSaved,
+		"compression_overhead_tokens", b.metrics.OverheadTokens,
 	)
 }
 

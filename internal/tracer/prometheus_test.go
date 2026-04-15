@@ -164,6 +164,41 @@ var _ = Describe("PrometheusRecorder", func() {
 			}).NotTo(Panic())
 		})
 	})
+
+	// Item 5 — RecordCompressionOverheadTokens is the pair to
+	// RecordCompressionTokensSaved. It fires only when the L2 delta is
+	// net-negative so operators can distinguish "layer idle" from "layer
+	// actively costing tokens" in a flat tokens_saved counter.
+	Describe("RecordCompressionOverheadTokens", func() {
+		It("accumulates overhead tokens per agent", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 40)
+			rec.RecordCompressionOverheadTokens("agent-1", 10)
+			rec.RecordCompressionOverheadTokens("agent-2", 25)
+
+			val := counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(50.0))
+
+			val = counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-2"})
+			Expect(val).To(Equal(25.0))
+		})
+
+		It("ignores non-positive overheads to keep the counter monotonic", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 30)
+			rec.RecordCompressionOverheadTokens("agent-1", 0)
+			rec.RecordCompressionOverheadTokens("agent-1", -7)
+
+			val := counterValue(reg, "flowstate_compression_overhead_tokens_total", prometheus.Labels{"agent_id": "agent-1"})
+			Expect(val).To(Equal(30.0))
+		})
+
+		It("documents the paired semantics in the metric Help text", func() {
+			rec.RecordCompressionOverheadTokens("agent-1", 1)
+			family := gatherMetricFamily(reg, "flowstate_compression_overhead_tokens_total")
+
+			Expect(family.GetHelp()).To(ContainSubstring("ADDED"))
+			Expect(family.GetHelp()).To(ContainSubstring("negative"))
+		})
+	})
 })
 
 func gatherMetricFamily(reg *prometheus.Registry, name string) *dto.MetricFamily {

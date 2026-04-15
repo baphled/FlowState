@@ -44,6 +44,7 @@ func (r *recordingRecorder) RecordContextWindowTokens(agentID string, tokens int
 func (r *recordingRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
 	r.savedCalls = append(r.savedCalls, savedObservation{agentID: agentID, tokensSaved: tokensSaved})
 }
+func (r *recordingRecorder) RecordCompressionOverheadTokens(string, int) {}
 
 // TestWindowBuilder_WithRecorder_ReturnsReceiver asserts the fluent
 // setter follows the same convention as WithMetrics / WithSplitter.
