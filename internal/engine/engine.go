@@ -310,16 +310,19 @@ func (e *Engine) handleSessionEnded(evt any) {
 		return
 	}
 
+	// C2: Stop+delete under the same critical section so concurrent
+	// close paths (session.ended handler + StopSessionSplitterForTesting
+	// + future Engine.Stop) serialise. Stop is idempotent via sync.Once
+	// inside HotColdSplitter — the lock protects map invariants, not
+	// Stop correctness.
 	e.splitterMu.Lock()
-	splitter, found := e.sessionSplitters[sessionID]
-	if found {
-		delete(e.sessionSplitters, sessionID)
-	}
-	e.splitterMu.Unlock()
+	defer e.splitterMu.Unlock()
 
+	splitter, found := e.sessionSplitters[sessionID]
 	if !found {
 		return
 	}
+	delete(e.sessionSplitters, sessionID)
 	splitter.Stop()
 }
 
