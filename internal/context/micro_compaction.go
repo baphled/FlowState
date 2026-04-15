@@ -492,8 +492,18 @@ func (s *HotColdSplitter) Split(msgs []provider.Message) SplitResult {
 }
 
 // findColdBoundary returns the index in units up to which (exclusive)
-// units are considered cold. The boundary is rounded down to the nearest
-// unit edge so a tool group is never split.
+// units are considered cold. The boundary is rounded INWARD toward the
+// cold region whenever the naive hot-tail start falls inside a unit
+// (typically a tool group): the straddling unit is promoted to cold
+// rather than split, and the effective hot window is smaller than
+// HotTailSize by the number of messages the straddling group contained.
+//
+// This direction — rounding inward toward cold — is the tool-call
+// atomicity invariant from ADR - Tool-Call Atomicity in Context
+// Compaction. The alternative (round outward toward hot) would keep
+// the hot window closer to HotTailSize but grow it past the configured
+// bound, which would let large groups blow through the caller's token
+// budget.
 //
 // Expected:
 //   - units is the walker output (non-nil, may be empty).
