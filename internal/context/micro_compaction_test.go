@@ -291,7 +291,7 @@ var _ = Describe("HotColdSplitter", func() {
 			}
 		})
 
-		It("never splits a tool group — boundary is rounded outward to unit edges", func() {
+		It("never splits a tool group — boundary is rounded inward to cold at unit edges", func() {
 			compactor := flowctx.NewDefaultMessageCompactor(5)
 			s := flowctx.NewHotColdSplitter(flowctx.HotColdSplitterOptions{
 				Compactor:   compactor,
