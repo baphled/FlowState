@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
@@ -80,6 +81,35 @@ var _ = Describe("swarm activity pane Ctrl+T toggle (Wave 1 / T7)", func() {
 
 			view := intent.View()
 			Expect(view).To(ContainSubstring("Activity Timeline"))
+		})
+	})
+
+	Describe("StreamChunk events arriving while the pane is hidden", func() {
+		It("still records events to the store so toggling back reveals them", func() {
+			// Hide the pane via Ctrl+T.
+			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			Expect(intent.SecondaryPaneVisibleForTest()).To(BeFalse())
+
+			// Send a delegation chunk while the pane is hidden.
+			intent.Update(chat.StreamChunkMsg{
+				DelegationInfo: &provider.DelegationInfo{
+					ChainID:     "chain-hidden",
+					TargetAgent: "background-agent",
+					Status:      "started",
+				},
+			})
+
+			// The store must still reflect the event.
+			events := intent.SwarmStoreForTest().All()
+			Expect(events).To(HaveLen(1),
+				"events must be recorded even when the pane is hidden — the pane is a view, not a filter")
+			Expect(events[0].AgentID).To(Equal("background-agent"))
+
+			// Toggling back reveals the event in the view.
+			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			view := intent.View()
+			Expect(view).To(ContainSubstring("Activity Timeline"))
+			Expect(view).To(ContainSubstring("background-agent"))
 		})
 	})
 
