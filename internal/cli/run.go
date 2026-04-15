@@ -118,16 +118,43 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	// short-lived run orphans its extraction at os.Exit and the
 	// session-memory store is never saved to disk.
 	if application.Engine != nil {
-		waitForBackgroundExtractions(application.Engine, backgroundExtractionWait)
+		waitForBackgroundExtractions(application.Engine, resolveBackgroundExtractionWait(application))
 	}
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
 }
 
-// backgroundExtractionWait bounds the pre-exit wait for in-flight L3
-// knowledge extractions. The extractor itself runs under a 30-second
-// LLM timeout; the CLI gives it matching headroom plus a small margin
-// for the final disk write (atomic temp-then-rename).
-const backgroundExtractionWait = 35 * time.Second
+// defaultBackgroundExtractionWait is the fallback bound applied when
+// application config is unavailable. The extractor itself runs under a
+// 30-second LLM timeout; the CLI gives it matching headroom plus a
+// small margin for the final disk write (atomic temp-then-rename).
+// Callers with access to the loaded CompressionConfig should prefer
+// compression.session_memory.wait_timeout instead.
+const defaultBackgroundExtractionWait = 35 * time.Second
+
+// resolveBackgroundExtractionWait picks the effective pre-exit wait
+// timeout from the loaded CompressionConfig when available, falling
+// back to defaultBackgroundExtractionWait when the config has not been
+// plumbed through (e.g. embedded tests using a minimal App).
+//
+// Expected:
+//   - application is non-nil. Callers that short-circuited on a nil
+//     engine have already returned above.
+//
+// Returns:
+//   - The configured compression.session_memory.wait_timeout when it is
+//     > 0, or defaultBackgroundExtractionWait otherwise.
+//
+// Side effects:
+//   - None.
+func resolveBackgroundExtractionWait(application *app.App) time.Duration {
+	if application == nil || application.Config == nil {
+		return defaultBackgroundExtractionWait
+	}
+	if w := application.Config.Compression.SessionMemory.WaitTimeout; w > 0 {
+		return w
+	}
+	return defaultBackgroundExtractionWait
+}
 
 // backgroundExtractionWaiter is the narrow capability the CLI exit path
 // needs from the engine. Expressed as an interface so tests can supply

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 )
 
 // CompressionConfig configures the three-layer context compression system.
@@ -82,6 +83,12 @@ type SessionMemoryConfig struct {
 	// startup with a clear message rather than hiding it inside a
 	// background extraction goroutine's 30-second timeout.
 	Model string `json:"model" yaml:"model"`
+	// WaitTimeout bounds the pre-exit block for in-flight L3
+	// knowledge-extraction goroutines on `flowstate run`. The extractor
+	// itself runs under a 30-second LLM timeout; the CLI gives it
+	// matching headroom plus a small margin for the final atomic disk
+	// write. Defaults to 35 seconds. Must be > 0 when Enabled is true.
+	WaitTimeout time.Duration `json:"wait_timeout" yaml:"wait_timeout"`
 }
 
 // CompressionMetrics is a per-WindowBuilder counter set that tracks the
@@ -154,8 +161,9 @@ func DefaultCompressionConfig() CompressionConfig {
 			Threshold: 0.75,
 		},
 		SessionMemory: SessionMemoryConfig{
-			Enabled:    false,
-			StorageDir: "~/.flowstate/session-memory",
+			Enabled:     false,
+			StorageDir:  "~/.flowstate/session-memory",
+			WaitTimeout: 35 * time.Second,
 		},
 	}
 }
@@ -226,6 +234,16 @@ func (c CompressionConfig) Validate() error {
 				"the knowledge extractor's chat request requires a " +
 				"`model` field that Ollama and OpenAI-compatible backends " +
 				"reject if empty")
+	}
+	if c.SessionMemory.Enabled && c.SessionMemory.WaitTimeout <= 0 {
+		return fmt.Errorf(
+			"compression: session_memory.wait_timeout must be > 0 when "+
+				"session_memory.enabled is true (got %v); a zero or "+
+				"negative value would orphan in-flight knowledge-"+
+				"extraction goroutines at process exit, leaving partial "+
+				"memory.json.tmp files on disk with no log signal",
+			c.SessionMemory.WaitTimeout,
+		)
 	}
 	return nil
 }
