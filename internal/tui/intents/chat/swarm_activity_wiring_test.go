@@ -184,5 +184,77 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(ok).To(BeTrue())
 			Expect(ev.AgentID).To(Equal("agent-1"))
 		})
+
+		It("maps a delegation chunk first when both DelegationInfo and ToolCallName are present", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				DelegationInfo: &provider.DelegationInfo{
+					ChainID:     "chain-precedence",
+					TargetAgent: "target",
+					Status:      "started",
+				},
+				ToolCallName: "WriteFile",
+				ToolStatus:   "started",
+			}, "agent-1")
+
+			Expect(ok).To(BeTrue())
+			Expect(ev.Type).To(Equal(streaming.EventDelegation),
+				"DelegationInfo must win precedence over ToolCallName")
+			Expect(ev.AgentID).To(Equal("target"))
+		})
+
+		It("maps plan_artifact event type to EventPlan", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypePlanArtifact,
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.Type).To(Equal(streaming.EventPlan))
+			Expect(ev.AgentID).To(Equal("chat-agent"),
+				"plan events must fall back to the chat agent ID")
+		})
+
+		It("maps review_verdict event type to EventReview", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypeReviewVerdict,
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.Type).To(Equal(streaming.EventReview))
+		})
+
+		It("does not record a swarm event for a pure-content status_transition chunk", func() {
+			// status_transition is in the streamingEventMeta set but is not a
+			// SwarmEventType — it should not leak into the activity pane.
+			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypeStatusTransition,
+				Content:   "any",
+			}, "chat-agent")
+			Expect(ok).To(BeFalse(),
+				"status_transition chunks must not produce SwarmEvents")
+		})
+
+		It("returns a tool_call event when only ToolStatus is set and preserves the status", func() {
+			// Mirrors the established contract: ToolCallName OR ToolStatus
+			// triggers a tool_call event, with status defaulting when empty.
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				ToolStatus: "completed",
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.Type).To(Equal(streaming.EventToolCall))
+			Expect(ev.Status).To(Equal("completed"))
+		})
+	})
+
+	Describe("handleInputKey defensive fallthrough", func() {
+		It("returns nil for key types that match no branch (e.g. tea.KeyF1)", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			// tea.KeyF1 does not match any branch in handleInputKey or
+			// handleTextInputKey — the function must return nil without
+			// mutating the swarm store.
+			before := intent.SwarmStoreForTest().All()
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyF1})
+			Expect(cmd).To(BeNil())
+			Expect(intent.SwarmStoreForTest().All()).To(HaveLen(len(before)),
+				"non-matching key types must not touch the swarm store")
+		})
 	})
 })

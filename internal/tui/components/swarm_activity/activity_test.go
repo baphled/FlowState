@@ -70,6 +70,65 @@ var _ = Describe("SwarmActivityPane", func() {
 				}
 				Expect(truncated).To(BeTrue(), "expected at least one line to be truncated with an ellipsis")
 			})
+
+			It("truncates CJK content without splitting a rune mid-byte", func() {
+				// Japanese body — each character is a multi-byte rune and visually
+				// two cells wide. Truncation must measure by visual width, not bytes,
+				// and never emit a half-rune.
+				events := []streaming.SwarmEvent{
+					{
+						Type:    streaming.EventToolCall,
+						Status:  "started",
+						AgentID: "エージェント名",
+					},
+				}
+
+				output := pane.WithEvents(events).Render(20, 5)
+
+				lines := strings.Split(output, "\n")
+				for _, line := range lines {
+					Expect(lipgloss.Width(line)).To(BeNumerically("<=", 20),
+						"no line may exceed the declared width even with multi-byte runes")
+					// Every byte prefix must be valid UTF-8 — if the truncation
+					// split a rune, strings.ToValidUTF8 with a replacement would differ.
+					Expect(strings.ToValidUTF8(line, "?")).To(Equal(line),
+						"truncation must not produce invalid UTF-8")
+				}
+			})
+
+			It("preserves the ▸ bullet glyph when truncation is required", func() {
+				events := []streaming.SwarmEvent{
+					{
+						Type:    streaming.EventDelegation,
+						Status:  "started",
+						AgentID: "an-agent-name-that-is-much-longer-than-any-reasonable-width",
+					},
+				}
+
+				// Width 15 forces aggressive truncation but the bullet should survive.
+				output := pane.WithEvents(events).Render(15, 5)
+
+				body := strings.Split(output, "\n")
+				found := false
+				for _, line := range body[1:] {
+					if strings.Contains(line, "▸") {
+						found = true
+						Expect(lipgloss.Width(line)).To(BeNumerically("<=", 15))
+					}
+				}
+				Expect(found).To(BeTrue(), "the ▸ bullet must survive even the tightest truncation")
+			})
+
+			It("handles emoji and wide glyphs in agent IDs without panicking", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventToolCall, Status: "ok", AgentID: "🤖-bot"},
+					{Type: streaming.EventPlan, Status: "done", AgentID: "测试"},
+				}
+
+				Expect(func() {
+					_ = pane.WithEvents(events).Render(30, 10)
+				}).NotTo(Panic())
+			})
 		})
 
 		Context("with limited height", func() {
@@ -88,6 +147,18 @@ var _ = Describe("SwarmActivityPane", func() {
 
 			It("returns an empty string when height is below the minimum", func() {
 				Expect(pane.Render(80, 1)).To(BeEmpty())
+			})
+
+			It("returns empty for negative dimensions without panicking", func() {
+				Expect(func() { _ = pane.Render(-5, -5) }).NotTo(Panic())
+				Expect(pane.Render(-5, -5)).To(BeEmpty())
+			})
+		})
+
+		Context("at the exact minimum usable thresholds", func() {
+			It("renders at exactly the minimum width (10)", func() {
+				output := pane.Render(10, 5)
+				Expect(output).NotTo(BeEmpty(), "width 10 is the minimum and must render")
 			})
 		})
 	})
