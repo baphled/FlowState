@@ -14,3 +14,8 @@ func ExpandPathsForTest(cfg *AppConfig) {
 func ApplyCompressionDefaultsForTest(cfg *AppConfig) {
 	applyCompressionDefaults(&cfg.Compression, DefaultConfig().Compression)
 }
+
+// ValidateForTest exposes validateConfig for testing.
+func ValidateForTest(cfg *AppConfig) error {
+	return validateConfig(cfg)
+}
