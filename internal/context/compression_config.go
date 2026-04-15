@@ -122,6 +122,12 @@ type CompressionMetrics struct {
 	AutoCompactionCount int
 	// TokensSaved is the running total of tokens eliminated by L2.
 	TokensSaved int
+	// OverheadTokens is the running total of abs(delta) from L2
+	// compactions whose JSON-wrapped summary exceeded the compacted
+	// range. Paired with TokensSaved so a flat tokens_saved value can
+	// be disambiguated: a rising OverheadTokens means the layer is
+	// actively costing tokens rather than sitting idle.
+	OverheadTokens int
 }
 
 // DefaultCompressionConfig returns a CompressionConfig with every layer

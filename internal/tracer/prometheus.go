@@ -17,6 +17,7 @@ type prometheusRecorder struct {
 	providerLatency      *prometheus.HistogramVec
 	contextWindowTokens  *prometheus.GaugeVec
 	compressionTokensSav *prometheus.CounterVec
+	compressionOverhead  *prometheus.CounterVec
 }
 
 // NewPrometheusRecorder returns a Recorder backed by Prometheus metrics registered with reg.
@@ -68,8 +69,20 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 				"delta is a net saving (> 0). Compactions with non-positive " +
 				"savings are NOT subtracted or counted, so a flat counter can " +
 				"mean either 'compaction disabled' or 'every pass produced " +
-				"overhead' — correlate with flowstate_context_window_tokens " +
-				"and event logs to distinguish.",
+				"overhead' — correlate with flowstate_compression_overhead_" +
+				"tokens_total and event logs to distinguish.",
+		}, []string{"agent_id"}),
+		// Item 5 — paired with compressionTokensSav above. Fires only
+		// when auto-compaction produced a net-negative delta; see the
+		// Recorder interface contract for the emit rules.
+		compressionOverhead: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "flowstate_compression_overhead_tokens_total",
+			Help: "Cumulative absolute tokens ADDED by L2 auto-compaction when " +
+				"the summary scaffold exceeded the compacted content. " +
+				"Incremented by abs(OriginalTokens - SummaryTokens) only when " +
+				"the delta is strictly negative. Break-even compactions (delta " +
+				"== 0) increment neither this counter nor " +
+				"flowstate_compression_tokens_saved_total.",
 		}, []string{"agent_id"}),
 	}
 }
@@ -147,4 +160,23 @@ func (p *prometheusRecorder) RecordCompressionTokensSaved(agentID string, tokens
 		return
 	}
 	p.compressionTokensSav.WithLabelValues(agentID).Add(float64(tokensSaved))
+}
+
+// RecordCompressionOverheadTokens adds overheadTokens to the overhead counter.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - overheadTokens is abs(OriginalTokens - SummaryTokens) when that
+//     delta is strictly negative. Non-positive values are ignored to
+//     keep the counter monotonic.
+//
+// Side effects:
+//   - Increments the flowstate_compression_overhead_tokens_total
+//     counter for agentID by overheadTokens when positive; otherwise
+//     no-op.
+func (p *prometheusRecorder) RecordCompressionOverheadTokens(agentID string, overheadTokens int) {
+	if overheadTokens <= 0 {
+		return
+	}
+	p.compressionOverhead.WithLabelValues(agentID).Add(float64(overheadTokens))
 }

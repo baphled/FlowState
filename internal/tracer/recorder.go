@@ -32,6 +32,26 @@ type Recorder interface {
 	// also guards `delta > 0` as defence in depth so investigations
 	// can spot anomalies at the emit point.
 	RecordCompressionTokensSaved(agentID string, tokensSaved int)
+	// RecordCompressionOverheadTokens adds overheadTokens to a running
+	// counter of tokens the auto-compaction layer ADDED to the window
+	// instead of saving — i.e. the absolute value of the delta when
+	// the summary scaffold exceeded the compacted range. Paired with
+	// RecordCompressionTokensSaved so a flat tokens_saved counter can
+	// be disambiguated: "layer disabled" vs "every pass produced
+	// overhead" becomes visible as a rising overhead_tokens_total.
+	//
+	// Contract: implementations MUST silently ignore overheadTokens
+	// values where overheadTokens <= 0 for exactly the same reason as
+	// RecordCompressionTokensSaved — Prometheus counters are monotonic
+	// and negative additions panic the process. Call sites emit with
+	// the absolute value of the net-negative delta; no negative values
+	// should ever reach the recorder in practice, but the guard is
+	// defence in depth.
+	//
+	// Call sites: engine.publishContextCompactedEvent when delta < 0,
+	// with abs(delta) as the argument. delta == 0 is the break-even
+	// case and fires neither counter.
+	RecordCompressionOverheadTokens(agentID string, overheadTokens int)
 }
 
 // NoopRecorder is a Recorder that discards all metrics. Useful for testing.
@@ -100,3 +120,16 @@ func (n *NoopRecorder) RecordContextWindowTokens(_ string, _ int) {}
 // Side effects:
 //   - None.
 func (n *NoopRecorder) RecordCompressionTokensSaved(_ string, _ int) {}
+
+// RecordCompressionOverheadTokens discards the compression overhead delta.
+//
+// Expected:
+//   - agentID is a non-empty string identifying the agent.
+//   - overheadTokens is abs(OriginalTokens - SummaryTokens) when that
+//     delta is strictly negative. The Recorder contract stipulates
+//     non-positive values are ignored; the Noop satisfies that
+//     trivially by discarding every call.
+//
+// Side effects:
+//   - None.
+func (n *NoopRecorder) RecordCompressionOverheadTokens(_ string, _ int) {}
