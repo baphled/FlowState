@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
@@ -30,3 +31,20 @@ func ResolveBackgroundExtractionWaitForTest(application *app.App) time.Duration 
 // so tests can assert both the default-path and overridden-path values
 // without duplicating the 35-second literal.
 const DefaultBackgroundExtractionWaitForTest = defaultBackgroundExtractionWait
+
+// HTTPShutdownerForTest mirrors the unexported httpShutdowner interface
+// so Item 6's regression test can inject a fake server.
+type HTTPShutdownerForTest = httpShutdowner
+
+// EngineShutdownerForTest mirrors the unexported engineShutdowner
+// interface. Item 6 uses it to assert that serve shutdown always
+// invokes Engine.Shutdown; a future refactor of runServe that skips
+// the call must fail this test.
+type EngineShutdownerForTest = engineShutdowner
+
+// PerformServeShutdownForTest exposes the unexported helper so the
+// regression test can drive it without binding a port or wiring up a
+// signal loop.
+func PerformServeShutdownForTest(server HTTPShutdownerForTest, eng EngineShutdownerForTest, out, errOut io.Writer) error {
+	return performServeShutdown(server, eng, out, errOut)
+}
