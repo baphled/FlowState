@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,7 +80,20 @@ type Engine struct {
 	// lastCompactionSummary retains the most recent successful auto-
 	// compaction summary so that T11 rehydration can read the intent,
 	// next_steps, and files_to_restore emitted at compaction time.
+	// This is a cross-session view: the most recent compaction from
+	// ANY session is surfaced here, consistent with the rest of the
+	// engine's cross-session aggregate state (e.compressionMetrics,
+	// e.lastContextResult).
 	lastCompactionSummary *ctxstore.CompactionSummary
+	// sessionCompactionMemo is the H2 per-session memoisation keyed
+	// by sessionID. Each entry holds the cold-range hash whose
+	// compaction produced the cached summary. A subsequent
+	// maybeAutoCompact call with an identical hash for the same
+	// session reuses the cached summary instead of re-invoking the
+	// summariser. Per-session so a hash collision across sessions
+	// does not rob session B of its own ContextCompactedEvent and
+	// per-session metrics bump.
+	sessionCompactionMemo map[string]sessionCompactionMemoEntry
 	// compressionMetrics, when non-nil, is shared with the window
 	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
 	// successful L2 compaction so operators have a single counter set
@@ -301,6 +315,7 @@ func New(cfg Config) *Engine {
 		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
 		sessionSplitters:          make(map[string]*sessionSplitterEntry),
 		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
+		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 	}
 	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
 	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
@@ -338,6 +353,16 @@ func maybeStartIdleSweeper(eng *Engine, cfg Config) {
 type sessionSplitterEntry struct {
 	splitter     *ctxstore.HotColdSplitter
 	lastAccessed time.Time
+}
+
+// sessionCompactionMemoEntry is the per-session H2 memoisation record.
+// Hash is the SHA-256 of the cold-range messages; Summary is the
+// CompactionSummary that call produced. Both fields are required for
+// a hit: reuse is only safe when a summary was actually cached (not
+// just the hash of an uncompacted turn).
+type sessionCompactionMemoEntry struct {
+	hash    [32]byte
+	summary *ctxstore.CompactionSummary
 }
 
 // sweeperStopFunc is a nil-safe idempotent close-once helper. Wrapping
@@ -388,6 +413,15 @@ func (e *Engine) handleSessionEnded(evt any) {
 	e.sessionCompressionMetricsMu.Lock()
 	delete(e.sessionCompressionMetrics, sessionID)
 	e.sessionCompressionMetricsMu.Unlock()
+
+	// H2 — evict the per-session auto-compaction memo alongside the
+	// metrics ledger. Long-running flowstate serve handling many
+	// sessions would otherwise accumulate memo entries forever with
+	// the same lifetime problem the splitter cache and metrics map
+	// had before their own eviction hooks.
+	e.buildStateMu.Lock()
+	delete(e.sessionCompactionMemo, sessionID)
+	e.buildStateMu.Unlock()
 
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
@@ -1957,18 +1991,63 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
 //     on successful compaction (T10b per ADR - Tool-Call Atomicity).
 func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int) string {
-	e.buildStateMu.Lock()
-	e.lastCompactionSummary = nil
-	e.buildStateMu.Unlock()
-
 	threshold, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
+		// Feature disabled or preconditions unmet — clear the cross-
+		// session "last summary" so LastCompactionSummary reflects
+		// the current build rather than stale state from earlier
+		// turns. The per-session memo is NOT cleared on this branch:
+		// disabling compaction for one turn (e.g. tokenBudget <= 0
+		// during a degraded build) should not force the next enabled
+		// turn to re-summarise if the cold prefix has not changed.
+		e.buildStateMu.Lock()
+		e.lastCompactionSummary = nil
+		e.buildStateMu.Unlock()
 		return ""
 	}
 
 	recent, recentTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold)
 	if !fire {
+		// Below threshold — clear the cross-session pointer as
+		// before. Same per-session-memo retention rationale applies.
+		e.buildStateMu.Lock()
+		e.lastCompactionSummary = nil
+		e.buildStateMu.Unlock()
 		return ""
+	}
+
+	// H2 memoisation. Hash the cold-range identity; if the session's
+	// stored entry matches AND a summary is cached, reuse that summary
+	// instead of re-invoking the summariser. Per-session keying: a
+	// hash collision between two sessions does not rob session B of
+	// its own ContextCompactedEvent and per-session metrics bump.
+	currentHash := coldRangeHash(recent)
+	e.buildStateMu.Lock()
+	cached, hit := e.sessionCompactionMemo[sessionID]
+	e.buildStateMu.Unlock()
+	if hit && cached.summary != nil && cached.hash == currentHash {
+		// Reuse — no summariser call. The T10b ContextCompactedEvent
+		// is NOT re-emitted on a memo hit; the event fires on the
+		// work performed, not on the window assembled, so subscribers
+		// see the correct one-compaction-per-summariser-call count.
+		// Surface the reused summary via LastCompactionSummary so
+		// callers who read the engine-level pointer see consistent
+		// state with the summary injected into the built window.
+		summaryJSON, err := json.Marshal(*cached.summary)
+		if err == nil {
+			e.buildStateMu.Lock()
+			e.lastCompactionSummary = cached.summary
+			e.buildStateMu.Unlock()
+			return "[auto-compacted summary]: " + string(summaryJSON)
+		}
+		// Marshal failure on a previously-marshalled struct is a
+		// programming error; fall through to a fresh compaction
+		// rather than returning "" — returning empty would assemble
+		// a window without the summary the threshold says we want.
+		slog.Warn("engine auto-compaction memo remarshal failed; refreshing",
+			"error", err,
+			"recentTokens", recentTokens,
+		)
 	}
 
 	start := time.Now()
@@ -1993,11 +2072,64 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	summaryCopy := summary
 	e.buildStateMu.Lock()
 	e.lastCompactionSummary = &summaryCopy
+	e.sessionCompactionMemo[sessionID] = sessionCompactionMemoEntry{
+		hash:    currentHash,
+		summary: &summaryCopy,
+	}
 	e.buildStateMu.Unlock()
 
 	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
 	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
 	return summaryText
+}
+
+// coldRangeHash produces a deterministic SHA-256 of the given message
+// slice in a form that distinguishes any semantic change: role,
+// content, ModelID, tool-call IDs, and tool-call arguments all
+// contribute. Stable across runs (no map iteration, no time values)
+// so the H2 memoisation decision is reproducible.
+//
+// Expected:
+//   - recent is the cold-range slice passed to autoCompactor.Compact.
+//
+// Returns:
+//   - A 32-byte hash that changes whenever the slice's observable
+//     content changes and matches byte-for-byte on identical inputs.
+//
+// Side effects:
+//   - None. Pure function.
+func coldRangeHash(recent []provider.Message) [32]byte {
+	h := sha256.New()
+	for i := range recent {
+		m := &recent[i]
+		_, _ = h.Write([]byte(m.Role))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(m.Content))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(m.ModelID))
+		_, _ = h.Write([]byte{0})
+		for j := range m.ToolCalls {
+			tc := &m.ToolCalls[j]
+			_, _ = h.Write([]byte(tc.ID))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(tc.Name))
+			_, _ = h.Write([]byte{0})
+			// Arguments is a map — iterate the keys sorted so the
+			// hash does not flap on map-iteration order. Keys are
+			// small strings so the sort cost is negligible.
+			if len(tc.Arguments) > 0 {
+				argsJSON, err := json.Marshal(tc.Arguments)
+				if err == nil {
+					_, _ = h.Write(argsJSON)
+				}
+				_, _ = h.Write([]byte{0})
+			}
+		}
+		_, _ = h.Write([]byte{0, 1}) // message separator
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
 }
 
 // autoCompactionThreshold returns the configured auto-compaction ratio
