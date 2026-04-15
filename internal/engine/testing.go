@@ -72,11 +72,11 @@ func (e *Engine) StopSessionSplitterForTesting(sessionID string) bool {
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
 
-	splitter, ok := e.sessionSplitters[sessionID]
+	entry, ok := e.sessionSplitters[sessionID]
 	if !ok {
 		return false
 	}
 	delete(e.sessionSplitters, sessionID)
-	splitter.Stop()
+	entry.splitter.Stop()
 	return true
 }

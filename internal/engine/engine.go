@@ -113,8 +113,23 @@ type Engine struct {
 	// (StorageDir/SessionID is baked in at construction). Lazy
 	// construction keeps the common "micro-compaction disabled" path
 	// allocation-free. Access is serialised by splitterMu.
-	sessionSplitters map[string]*ctxstore.HotColdSplitter
+	//
+	// Values are sessionSplitterEntry, not bare *HotColdSplitter, so
+	// Item 4's idle sweeper can evict entries that have not been
+	// accessed for longer than compression.micro_compaction.idle_ttl.
+	sessionSplitters map[string]*sessionSplitterEntry
 	splitterMu       sync.Mutex
+
+	// sweeperStop signals the Item 4 idle-TTL splitter sweeper to
+	// exit. Closed exactly once by Shutdown. A channel rather than a
+	// context is used deliberately: context.WithCancel's returned
+	// cancel function is flagged by gosec G118 when stashed on a
+	// struct for later invocation, and the sweeper does not actually
+	// need a request-shaped context — only a stop signal. The paired
+	// sweeperDone channel signals when the goroutine has finished so
+	// Shutdown can return only after the ticker is fully stopped.
+	sweeperStop sweeperStopFunc
+	sweeperDone chan struct{}
 
 	// buildWindowMu serialises the attach-splitter-then-build pair so
 	// that two concurrent buildContextWindow calls for different
@@ -271,15 +286,50 @@ func New(cfg Config) *Engine {
 		recorder:                  cfg.Recorder,
 		knowledgeExtractor:        cfg.KnowledgeExtractor,
 		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
-		sessionSplitters:          make(map[string]*ctxstore.HotColdSplitter),
+		sessionSplitters:          make(map[string]*sessionSplitterEntry),
 	}
-	// Subscribe once for the engine's lifetime. Per-session splitters
-	// leak goroutines + buffered channels on long-running hosts
-	// (flowstate serve) unless evicted on session.ended. See C1 from
-	// the 2026-04-14 adversarial review.
-	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded)
+	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
+	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
 	return eng
 }
+
+// maybeStartIdleSweeper launches the Item 4 background goroutine when
+// MicroCompaction is enabled. Extracted from New so the constructor
+// stays under the funlen gate; also makes the enable-guard site
+// grep-able.
+//
+// Expected:
+//   - eng is a non-nil, freshly constructed Engine.
+//   - cfg is the same Config used to construct eng so the guard's
+//     view of the MicroCompaction block matches New's.
+//
+// Side effects:
+//   - Calls startIdleSweeper when MicroCompaction is enabled and its
+//     IdleTTL is strictly positive; otherwise no-op.
+func maybeStartIdleSweeper(eng *Engine, cfg Config) {
+	if !cfg.CompressionConfig.MicroCompaction.Enabled {
+		return
+	}
+	ttl := cfg.CompressionConfig.MicroCompaction.IdleTTL
+	if ttl <= 0 {
+		return
+	}
+	eng.startIdleSweeper(ttl)
+}
+
+// sessionSplitterEntry pairs a cached HotColdSplitter with the last
+// time ensureSessionSplitter touched it. The idle sweeper uses the
+// timestamp to decide whether an entry has gone stale under
+// compression.micro_compaction.idle_ttl.
+type sessionSplitterEntry struct {
+	splitter     *ctxstore.HotColdSplitter
+	lastAccessed time.Time
+}
+
+// sweeperStopFunc is a nil-safe idempotent close-once helper. Wrapping
+// a sync.Once keeps Shutdown + a second Shutdown trivially safe
+// without exposing the Once to callers.
+type sweeperStopFunc func()
 
 // handleSessionEnded is the session.ended subscription registered in
 // New. On delivery it looks up the HotColdSplitter cached for the
@@ -318,12 +368,113 @@ func (e *Engine) handleSessionEnded(evt any) {
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
 
-	splitter, found := e.sessionSplitters[sessionID]
+	entry, found := e.sessionSplitters[sessionID]
 	if !found {
 		return
 	}
 	delete(e.sessionSplitters, sessionID)
-	splitter.Stop()
+	entry.splitter.Stop()
+}
+
+// startIdleSweeper launches the Item 4 background goroutine that
+// evicts session-splitter cache entries whose last access exceeds
+// idleTTL. The sweep interval is `max(idleTTL/10, 30s)` so small
+// TTLs still get a handful of sweeps per TTL (useful for tests) and
+// large TTLs do not wake the goroutine needlessly often.
+//
+// Expected:
+//   - idleTTL > 0. Engine.New guards this; Validate rejects zero at
+//     config load time.
+//
+// Side effects:
+//   - Starts one goroutine bound to a context that Shutdown cancels.
+func (e *Engine) startIdleSweeper(idleTTL time.Duration) {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	e.sweeperStop = func() { once.Do(func() { close(stop) }) }
+	e.sweeperDone = done
+
+	interval := idleTTL / 10
+	if interval < 30*time.Second {
+		// Floor at a sensible minimum for production so the sweeper
+		// does not spin; tests override by passing a tiny idleTTL and
+		// accepting the correspondingly tiny interval.
+		if idleTTL >= 30*time.Second {
+			interval = 30 * time.Second
+		}
+	}
+
+	// Pass stop and done explicitly so the goroutine can close done
+	// even after Shutdown has nil-ed e.sweeperDone to mark the sweeper
+	// as stopped from the caller's perspective.
+	go e.runIdleSweeper(stop, done, idleTTL, interval)
+}
+
+// runIdleSweeper is the goroutine body spawned by startIdleSweeper.
+// It ticks at `interval` and on each tick evicts every cache entry
+// whose lastAccessed is older than `now - idleTTL`. Eviction is Stop
+// + delete under splitterMu, mirroring handleSessionEnded so both
+// paths are observably identical from the cache's perspective.
+//
+// Expected:
+//   - stop is a non-nil signal channel closed by Shutdown to tell
+//     the sweeper to exit.
+//   - done is a non-nil completion channel the sweeper closes on
+//     exit so Shutdown can block until the ticker is stopped.
+//   - idleTTL and interval are both strictly positive.
+//
+// Side effects:
+//   - Closes done exactly once on exit.
+//   - Stops the internal ticker.
+//   - Invokes sweepIdleSplitters on every tick.
+func (e *Engine) runIdleSweeper(stop <-chan struct{}, done chan<- struct{}, idleTTL, interval time.Duration) {
+	defer close(done)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			e.sweepIdleSplitters(idleTTL)
+		}
+	}
+}
+
+// sweepIdleSplitters evicts every cached splitter whose lastAccessed
+// is older than `time.Now() - idleTTL`. Extracted from runIdleSweeper
+// so unit tests can drive the eviction deterministically without
+// waiting on a ticker — but the production path is strictly the
+// goroutine call site.
+//
+// Expected:
+//   - idleTTL is strictly positive; callers must not pass 0 or
+//     negative values (Engine.New guards this and Validate rejects
+//     misconfigurations at load).
+//
+// Side effects:
+//   - Calls Stop on each evicted splitter outside splitterMu so the
+//     lock hold is proportional to map operations, not persist-worker
+//     drain time.
+func (e *Engine) sweepIdleSplitters(idleTTL time.Duration) {
+	cutoff := time.Now().Add(-idleTTL)
+
+	e.splitterMu.Lock()
+	var toStop []*ctxstore.HotColdSplitter
+	for sessionID, entry := range e.sessionSplitters {
+		if entry.lastAccessed.Before(cutoff) {
+			toStop = append(toStop, entry.splitter)
+			delete(e.sessionSplitters, sessionID)
+		}
+	}
+	e.splitterMu.Unlock()
+
+	for _, s := range toStop {
+		s.Stop()
+	}
 }
 
 // Shutdown drains every engine-owned background resource so callers
@@ -372,13 +523,34 @@ func (e *Engine) handleSessionEnded(evt any) {
 // Safe to call multiple times: the second call finds an empty
 // splitter map and waits briefly for any late extractions.
 func (e *Engine) Shutdown(ctx context.Context) error {
+	// Step 0 (Item 4): stop the idle sweeper before draining splitters
+	// so it cannot concurrently evict entries we're about to snapshot.
+	// The stop helper is idempotent via sync.Once; a second Shutdown
+	// call finds the field cleared and skips the wait.
+	e.splitterMu.Lock()
+	stopSweeper := e.sweeperStop
+	sweeperDone := e.sweeperDone
+	e.sweeperStop = nil
+	e.sweeperDone = nil
+	e.splitterMu.Unlock()
+	if stopSweeper != nil {
+		stopSweeper()
+		if sweeperDone != nil {
+			select {
+			case <-sweeperDone:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
 	// Step 1+2: snapshot, clear, stop.
 	e.splitterMu.Lock()
 	snapshot := make([]*ctxstore.HotColdSplitter, 0, len(e.sessionSplitters))
-	for _, s := range e.sessionSplitters {
-		snapshot = append(snapshot, s)
+	for _, entry := range e.sessionSplitters {
+		snapshot = append(snapshot, entry.splitter)
 	}
-	e.sessionSplitters = make(map[string]*ctxstore.HotColdSplitter)
+	e.sessionSplitters = make(map[string]*sessionSplitterEntry)
 	e.splitterMu.Unlock()
 
 	for _, s := range snapshot {
@@ -509,7 +681,11 @@ func (e *Engine) ensureSessionSplitter(ctx context.Context, sessionID string) *c
 	defer e.splitterMu.Unlock()
 
 	if existing, ok := e.sessionSplitters[sessionID]; ok {
-		return existing
+		// Item 4 — refresh the lastAccessed timestamp so the idle
+		// sweeper treats active sessions as fresh regardless of how
+		// long ago the splitter was constructed.
+		existing.lastAccessed = time.Now()
+		return existing.splitter
 	}
 
 	threshold := micro.TokenThreshold
@@ -536,7 +712,10 @@ func (e *Engine) ensureSessionSplitter(ctx context.Context, sessionID string) *c
 	// session. Lifetime is bounded by process termination (Stop is
 	// reserved for tests).
 	splitter.StartPersistWorker(context.WithoutCancel(ctx))
-	e.sessionSplitters[sessionID] = splitter
+	e.sessionSplitters[sessionID] = &sessionSplitterEntry{
+		splitter:     splitter,
+		lastAccessed: time.Now(),
+	}
 	return splitter
 }
 

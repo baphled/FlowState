@@ -40,5 +40,28 @@ func (e *Engine) LastCompactionSummaryForTest() *ctxstore.CompactionSummary {
 func (e *Engine) SessionSplitterForTest(sessionID string) *ctxstore.HotColdSplitter {
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
-	return e.sessionSplitters[sessionID]
+	entry, ok := e.sessionSplitters[sessionID]
+	if !ok {
+		return nil
+	}
+	return entry.splitter
+}
+
+// PrimeSessionSplitterForTest exposes ensureSessionSplitter so the
+// Item 4 sweeper tests can lazily create a cached splitter without
+// having to assemble a full context window. Production code never
+// calls this; ensureSessionSplitter is invoked from
+// buildContextWindow on the hot path.
+func (e *Engine) PrimeSessionSplitterForTest(sessionID string) *ctxstore.HotColdSplitter {
+	return e.ensureSessionSplitter(context.Background(), sessionID)
+}
+
+// IsIdleSweeperRunningForTest reports whether the Item 4 idle-TTL
+// sweeper goroutine is active. Returns false before Engine.New has
+// started it (micro-compaction disabled) and after Engine.Shutdown
+// has signalled it to stop.
+func (e *Engine) IsIdleSweeperRunningForTest() bool {
+	e.splitterMu.Lock()
+	defer e.splitterMu.Unlock()
+	return e.sweeperStop != nil
 }

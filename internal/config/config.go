@@ -485,6 +485,9 @@ func applyCompressionDefaults(cfg *contextpkg.CompressionConfig, defaults contex
 	if cfg.MicroCompaction.PlaceholderTokens == 0 {
 		cfg.MicroCompaction.PlaceholderTokens = defaults.MicroCompaction.PlaceholderTokens
 	}
+	if cfg.MicroCompaction.IdleTTL == 0 {
+		cfg.MicroCompaction.IdleTTL = defaults.MicroCompaction.IdleTTL
+	}
 	if cfg.AutoCompaction.Threshold == 0 {
 		cfg.AutoCompaction.Threshold = defaults.AutoCompaction.Threshold
 	}

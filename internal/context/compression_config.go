@@ -45,6 +45,13 @@ type MicroCompactionConfig struct {
 	// PlaceholderTokens is the token budget assumed for a pointer placeholder
 	// when computing the compacted window size. Defaults to 50.
 	PlaceholderTokens int `json:"placeholder_tokens" yaml:"placeholder_tokens"`
+	// IdleTTL bounds how long an unused session splitter stays in the
+	// engine's cache before the background sweeper evicts it. A
+	// session-close event already triggers immediate eviction; this
+	// TTL is belt-and-braces for missed events (plugin bug, crash in
+	// the handler). Defaults to 30 minutes. Must be > 0 when
+	// micro-compaction is enabled.
+	IdleTTL time.Duration `json:"idle_ttl" yaml:"idle_ttl"`
 }
 
 // AutoCompactionConfig controls Layer 2 — summary-driven window compaction.
@@ -161,6 +168,7 @@ func DefaultCompressionConfig() CompressionConfig {
 			TokenThreshold:    1000,
 			StorageDir:        "~/.flowstate/compacted",
 			PlaceholderTokens: 50,
+			IdleTTL:           30 * time.Minute,
 		},
 		AutoCompaction: AutoCompactionConfig{
 			Enabled:   false,
@@ -212,6 +220,16 @@ func (c CompressionConfig) Validate() error {
 				"a zero or negative hot tail makes every message cold "+
 				"and defeats the purpose of the feature",
 			c.MicroCompaction.HotTailSize,
+		)
+	}
+	if c.MicroCompaction.Enabled && c.MicroCompaction.IdleTTL <= 0 {
+		return fmt.Errorf(
+			"compression: micro_compaction.idle_ttl must be > 0 when "+
+				"micro_compaction.enabled is true (got %v); a zero or "+
+				"negative value would either evict every cache entry on "+
+				"every sweep or never evict any, defeating the purpose "+
+				"of the idle sweeper",
+			c.MicroCompaction.IdleTTL,
 		)
 	}
 	if c.AutoCompaction.Enabled {
