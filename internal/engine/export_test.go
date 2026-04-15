@@ -31,3 +31,14 @@ func (e *Engine) ContextAssemblyHooksForTest() []pluginpkg.ContextAssemblyHook {
 func (e *Engine) LastCompactionSummaryForTest() *ctxstore.CompactionSummary {
 	return e.LastCompactionSummary()
 }
+
+// SessionSplitterForTest exposes the engine's lazily-cached per-session
+// HotColdSplitter to wiring tests. Returns nil when MicroCompaction is
+// disabled or the session has not built a window yet. Internal
+// test-only accessor — production code MUST route splitter lookup
+// through buildContextWindow.
+func (e *Engine) SessionSplitterForTest(sessionID string) *ctxstore.HotColdSplitter {
+	e.splitterMu.Lock()
+	defer e.splitterMu.Unlock()
+	return e.sessionSplitters[sessionID]
+}
