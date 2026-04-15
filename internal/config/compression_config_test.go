@@ -149,6 +149,7 @@ compression:
   session_memory:
     enabled: true
     storage_dir: /tmp/memory
+    model: llama3.1
 `
 				configPath := filepath.Join(tempDir, "config.yaml")
 				Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
@@ -164,10 +165,34 @@ compression:
 				Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.70))
 				Expect(cfg.Compression.SessionMemory.Enabled).To(BeTrue())
 				Expect(cfg.Compression.SessionMemory.StorageDir).To(Equal("/tmp/memory"))
+				Expect(cfg.Compression.SessionMemory.Model).To(Equal("llama3.1"))
 
 				// Missing numeric fields still pick up defaults.
 				Expect(cfg.Compression.MicroCompaction.TokenThreshold).To(Equal(1000))
 				Expect(cfg.Compression.MicroCompaction.PlaceholderTokens).To(Equal(50))
+			})
+		})
+
+		// M6 — enabling session memory without an explicit model is a
+		// startup error. The extractor's chat request requires a model
+		// string and the provider-default fallback previously papered
+		// over the misconfiguration for OpenAI/Anthropic/Ollama while
+		// leaving every other provider silently broken. Fail loud.
+		Context("when session memory is enabled without a model", func() {
+			It("returns a startup error naming the missing field", func() {
+				configContent := `
+compression:
+  session_memory:
+    enabled: true
+    storage_dir: /tmp/memory
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
+
+				_, err := config.LoadConfigFromPath(configPath)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("session_memory"))
+				Expect(err.Error()).To(ContainSubstring("model"))
 			})
 		})
 	})
