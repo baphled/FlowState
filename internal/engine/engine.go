@@ -131,10 +131,12 @@ type Engine struct {
 	sweeperStop sweeperStopFunc
 	sweeperDone chan struct{}
 
-	// Item 3 removed buildWindowMu. The splitter now flows through
-	// WindowBuilder as a per-call BuildOption, so concurrent Build*
-	// invocations on the shared builder cannot contaminate each
-	// other's splitter. No other invariants depended on the mutex.
+	// Item 3 removed the splitter-scoped buildWindowMu. Per-build
+	// engine-owned state (lastContextResult, lastCompactionSummary)
+	// is serialised under this narrower mutex instead; the splitter
+	// itself is no longer involved because Build* receives it as a
+	// per-call option.
+	buildStateMu sync.Mutex
 
 	mu sync.RWMutex
 }
@@ -1896,7 +1898,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
+	e.buildStateMu.Lock()
 	e.lastContextResult = result
+	e.buildStateMu.Unlock()
 	e.publishContextWindowEvents(sessionID, manifestCopy.Instructions.SystemPrompt, tokenBudget, result)
 
 	return result.Messages
@@ -1930,7 +1934,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
 //     on successful compaction (T10b per ADR - Tool-Call Atomicity).
 func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int) string {
+	e.buildStateMu.Lock()
 	e.lastCompactionSummary = nil
+	e.buildStateMu.Unlock()
 
 	threshold, ok := e.autoCompactionThreshold(tokenBudget)
 	if !ok {
@@ -1962,7 +1968,9 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	}
 
 	summaryCopy := summary
+	e.buildStateMu.Lock()
 	e.lastCompactionSummary = &summaryCopy
+	e.buildStateMu.Unlock()
 
 	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
 	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
@@ -2110,6 +2118,8 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 // Side effects:
 //   - None.
 func (e *Engine) LastCompactionSummary() *ctxstore.CompactionSummary {
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
 	return e.lastCompactionSummary
 }
 
@@ -2355,8 +2365,8 @@ func (e *Engine) LoadedSkills() []skill.Skill {
 // Side effects:
 //   - None.
 func (e *Engine) LastContextResult() ctxstore.BuildResult {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
 	return e.lastContextResult
 }
 
