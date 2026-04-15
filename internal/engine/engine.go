@@ -280,19 +280,78 @@ func New(cfg Config) *Engine {
 		bus = eventbus.NewEventBus()
 	}
 
-	var chain *hook.Chain
-	if cfg.HookChain != nil {
-		chain = cfg.HookChain
-	} else if cfg.FailoverManager != nil {
-		streamHook := failover.NewStreamHook(cfg.FailoverManager, bus, cfg.Manifest.ID)
-		chain = hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
-			return streamHook.Execute(next)
-		})
+	resolved := resolvedEngineDeps{
+		windowBuilder: windowBuilder,
+		bus:           bus,
+		chain:         resolveHookChain(cfg, bus),
+		assemblyHooks: buildContextAssemblyHooks(cfg),
+		streamTimeout: timeout,
 	}
 
-	assemblyHooks := buildContextAssemblyHooks(cfg)
+	eng := assembleEngine(cfg, resolved)
+	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
+	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
+	return eng
+}
 
-	eng := &Engine{
+// resolvedEngineDeps groups the dependencies New has already resolved
+// (timeouts defaulted, hook chain selected, assembly hooks composed)
+// so assembleEngine can accept a single struct argument and stay
+// inside the revive argument-limit gate. Not exported — this is a
+// purely internal bundle for New → assembleEngine.
+type resolvedEngineDeps struct {
+	windowBuilder *ctxstore.WindowBuilder
+	bus           *eventbus.EventBus
+	chain         *hook.Chain
+	assemblyHooks []plugin.ContextAssemblyHook
+	streamTimeout time.Duration
+}
+
+// resolveHookChain picks the hook chain used by New. An explicit
+// cfg.HookChain wins; otherwise, if a FailoverManager is configured a
+// default chain wrapping the stream-failover hook is constructed.
+// Extracted so New stays inside the funlen gate.
+//
+// Expected:
+//   - cfg is the Config being handed to New.
+//   - bus is the resolved event bus (non-nil).
+//
+// Returns:
+//   - The hook.Chain to install on the engine, or nil when neither
+//     override nor failover manager asks for one.
+//
+// Side effects:
+//   - None; pure wiring.
+func resolveHookChain(cfg Config, bus *eventbus.EventBus) *hook.Chain {
+	if cfg.HookChain != nil {
+		return cfg.HookChain
+	}
+	if cfg.FailoverManager == nil {
+		return nil
+	}
+	streamHook := failover.NewStreamHook(cfg.FailoverManager, bus, cfg.Manifest.ID)
+	return hook.NewChain(func(next hook.HandlerFunc) hook.HandlerFunc {
+		return streamHook.Execute(next)
+	})
+}
+
+// assembleEngine builds the Engine struct literal from the resolved
+// components. Separated from New so the constructor's branching is
+// isolated from the field wiring and both stay under the funlen gate.
+//
+// Expected:
+//   - cfg is the Config handed to New.
+//   - deps carries dependencies New has already resolved (timeouts
+//     defaulted, hook chain selected, assembly hooks composed).
+//
+// Returns:
+//   - A newly allocated *Engine with every map initialised.
+//
+// Side effects:
+//   - None; the event subscription and sweeper start are performed by
+//     the caller after assembly.
+func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
+	return &Engine{
 		chatProvider:              cfg.ChatProvider,
 		embeddingProvider:         cfg.EmbeddingProvider,
 		failoverManager:           cfg.FailoverManager,
@@ -301,19 +360,19 @@ func New(cfg Config) *Engine {
 		skills:                    cfg.Skills,
 		store:                     cfg.Store,
 		chainStore:                cfg.ChainStore,
-		windowBuilder:             windowBuilder,
+		windowBuilder:             deps.windowBuilder,
 		recallBroker:              cfg.RecallBroker,
-		contextAssemblyHooks:      assemblyHooks,
+		contextAssemblyHooks:      deps.assemblyHooks,
 		tokenCounter:              cfg.TokenCounter,
-		streamTimeout:             timeout,
-		hookChain:                 chain,
+		streamTimeout:             deps.streamTimeout,
+		hookChain:                 deps.chain,
 		toolRegistry:              cfg.ToolRegistry,
 		permissionHandler:         cfg.PermissionHandler,
 		providerRegistry:          cfg.Registry,
 		agentRegistry:             cfg.AgentRegistry,
 		agentsFileLoader:          cfg.AgentsFileLoader,
 		agentOverrides:            make(map[string]string),
-		bus:                       bus,
+		bus:                       deps.bus,
 		systemPromptDirty:         true,
 		mcpServerTools:            cfg.MCPServerTools,
 		autoCompactor:             cfg.AutoCompactor,
@@ -327,9 +386,6 @@ func New(cfg Config) *Engine {
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
 	}
-	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
-	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
-	return eng
 }
 
 // maybeStartIdleSweeper launches the Item 4 background goroutine when
@@ -2041,32 +2097,8 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	// hash collision between two sessions does not rob session B of
 	// its own ContextCompactedEvent and per-session metrics bump.
 	currentHash := coldRangeHash(recent)
-	e.buildStateMu.Lock()
-	cached, hit := e.sessionCompactionMemo[sessionID]
-	e.buildStateMu.Unlock()
-	if hit && cached.summary != nil && cached.hash == currentHash {
-		// Reuse — no summariser call. The T10b ContextCompactedEvent
-		// is NOT re-emitted on a memo hit; the event fires on the
-		// work performed, not on the window assembled, so subscribers
-		// see the correct one-compaction-per-summariser-call count.
-		// Surface the reused summary via LastCompactionSummary so
-		// callers who read the engine-level pointer see consistent
-		// state with the summary injected into the built window.
-		summaryJSON, err := json.Marshal(*cached.summary)
-		if err == nil {
-			e.buildStateMu.Lock()
-			e.lastCompactionSummary = cached.summary
-			e.buildStateMu.Unlock()
-			return "[auto-compacted summary]: " + string(summaryJSON)
-		}
-		// Marshal failure on a previously-marshalled struct is a
-		// programming error; fall through to a fresh compaction
-		// rather than returning "" — returning empty would assemble
-		// a window without the summary the threshold says we want.
-		slog.Warn("engine auto-compaction memo remarshal failed; refreshing",
-			"error", err,
-			"recentTokens", recentTokens,
-		)
+	if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
+		return reused
 	}
 
 	start := time.Now()
@@ -2104,6 +2136,57 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
 	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
 	return summaryText
+}
+
+// reuseMemoisedSummary looks up the per-session H2 memo and returns a
+// previously-produced summary text when the cold-range hash matches
+// the cached entry. Extracted from maybeAutoCompact so the funlen gate
+// on the trigger stays comfortably green and the reuse policy
+// (no event re-emission, no metrics re-bump) is one self-contained
+// block.
+//
+// Expected:
+//   - sessionID identifies the active session (keys the memo map).
+//   - currentHash is coldRangeHash(recent) for the turn being built.
+//   - recentTokens is carried only for logging on the marshal-failure
+//     branch.
+//
+// Returns:
+//   - (summaryText, true) on a memo hit; the caller should return
+//     summaryText verbatim.
+//   - ("", false) on a miss OR on a hit whose remarshal failed (fall
+//     through to fresh compaction in the caller — the threshold says
+//     a summary is wanted).
+//
+// Side effects:
+//   - Updates e.lastCompactionSummary on hit so the engine-level
+//     pointer stays consistent with the summary injected into the
+//     assembled window.
+//   - Logs a warning on remarshal failure.
+func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, recentTokens int) (string, bool) {
+	e.buildStateMu.Lock()
+	cached, hit := e.sessionCompactionMemo[sessionID]
+	e.buildStateMu.Unlock()
+	if !hit || cached.summary == nil || cached.hash != currentHash {
+		return "", false
+	}
+	summaryJSON, err := json.Marshal(*cached.summary)
+	if err != nil {
+		// Marshal failure on a previously-marshalled struct is a
+		// programming error; signal a miss so the caller falls through
+		// to a fresh compaction rather than returning "" — returning
+		// empty would assemble a window without the summary the
+		// threshold says we want.
+		slog.Warn("engine auto-compaction memo remarshal failed; refreshing",
+			"error", err,
+			"recentTokens", recentTokens,
+		)
+		return "", false
+	}
+	e.buildStateMu.Lock()
+	e.lastCompactionSummary = cached.summary
+	e.buildStateMu.Unlock()
+	return "[auto-compacted summary]: " + string(summaryJSON), true
 }
 
 // maybeRehydrate resolves the FilesToRestore listed on the session's

@@ -718,8 +718,17 @@ When to use: Testing purposes
 
 	Describe("Context assembly hook wiring", func() {
 		It("passes configured custom hooks into the engine", func() {
+			// config.DefaultConfig pins Providers.Default to "anthropic"; the
+			// test doubles in this suite do not register anthropic and the
+			// sibling specs already switch to openai with a test API key
+			// (see "wires plugin config into startup runtime" above).
+			// Mirror that pattern so app.New succeeds and the assertion
+			// actually reaches the contextAssemblyHooks field under test.
+			os.Setenv("OPENAI_API_KEY", "test-key-hook-wiring-custom")
+			DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
 			customHook := func(context.Context, *pluginpkg.ContextAssemblyPayload) error { return nil }
 			cfg := config.DefaultConfig()
+			cfg.Providers.Default = "openai"
 			cfg.DataDir = tempDir
 			cfg.ContextAssemblyHooks = []pluginpkg.ContextAssemblyHook{customHook}
 
@@ -733,7 +742,14 @@ When to use: Testing purposes
 		})
 
 		It("includes only the recall hook when no custom hooks are configured", func() {
+			// Same rationale as the preceding spec: the anthropic default
+			// cannot resolve under the test doubles; using openai with a
+			// throwaway key exercises the identical wiring path on a
+			// provider the test fixtures register.
+			os.Setenv("OPENAI_API_KEY", "test-key-hook-wiring-default")
+			DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
 			cfg := config.DefaultConfig()
+			cfg.Providers.Default = "openai"
 			cfg.DataDir = tempDir
 			cfg.ContextAssemblyHooks = nil
 

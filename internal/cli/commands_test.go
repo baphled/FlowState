@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -537,8 +538,25 @@ var _ = Describe("CLI Commands", func() {
 	})
 
 	Describe("root with flag overrides", func() {
+		// Flag-override specs invoke initApp which reinitialises the app
+		// via app.New(cfg) against the baseCfg carried on application.Config.
+		// NewForTest currently plumbs config.DefaultConfig through, whose
+		// Providers.Default is "anthropic" — a provider no test fixture
+		// registers. Exporting an OPENAI_API_KEY and switching the app's
+		// baseCfg default to openai (which IS registered by app.New) lets
+		// the reinit succeed so the real assertion — that the override
+		// directory flows through — actually runs. Cleaned up after each
+		// spec so the env mutation stays scoped.
+		BeforeEach(func() {
+			Expect(os.Setenv("OPENAI_API_KEY", "test-key-flag-overrides")).To(Succeed())
+		})
+		AfterEach(func() {
+			Expect(os.Unsetenv("OPENAI_API_KEY")).To(Succeed())
+		})
+
 		It("applies agents-dir override", func() {
 			testApp := createTestApp("", "")
+			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--agents-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
@@ -547,6 +565,7 @@ var _ = Describe("CLI Commands", func() {
 
 		It("applies skills-dir override", func() {
 			testApp := createTestApp("", "")
+			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--skills-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
@@ -555,6 +574,7 @@ var _ = Describe("CLI Commands", func() {
 
 		It("applies sessions-dir override", func() {
 			testApp := createTestApp("", "")
+			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--sessions-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
