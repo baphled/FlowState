@@ -62,6 +62,7 @@ type ScreenLayout struct {
 	TerminalInfo        *terminal.Info
 	UseFullWidth        bool
 	theme               themes.Theme
+	secondaryContent    string
 }
 
 // NewScreenLayout creates a new ScreenLayout with default settings.
@@ -169,6 +170,21 @@ func (sl *ScreenLayout) WithTitle(title, subtitle string) *ScreenLayout {
 //   - None.
 func (sl *ScreenLayout) WithContent(content string) *ScreenLayout {
 	sl.Content = content
+	return sl
+}
+
+// WithSecondaryContent sets the secondary pane content used by dual-pane renders.
+//
+// Expected:
+//   - Must be a valid string.
+//
+// Returns:
+//   - A fully initialized ScreenLayout ready for use.
+//
+// Side effects:
+//   - None.
+func (sl *ScreenLayout) WithSecondaryContent(content string) *ScreenLayout {
+	sl.secondaryContent = content
 	return sl
 }
 
