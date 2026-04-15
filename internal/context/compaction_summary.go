@@ -47,7 +47,18 @@ type CompactionSummary struct {
 	// on rehydration. Paths are absolute, as emitted by earlier turns.
 	FilesToRestore []string `json:"files_to_restore"`
 	// CompactedAt is the wall-clock time the summary was produced.
-	CompactedAt time.Time `json:"compacted_at"`
+	//
+	// Server-only: the JSON tag is `-` so the field is never emitted on
+	// marshal and never read on unmarshal. AutoCompactor.Compact stamps
+	// it from time.Now().UTC() after a successful summariser response
+	// parse. The earlier schema shipped `json:"compacted_at"` without
+	// `omitempty`, which meant a drifting summariser could emit a
+	// legitimately-shaped RFC3339 value that silently populated the
+	// struct before being overwritten — the overwrite was correct but
+	// the field's provenance was not visible in the type. Making the
+	// field wire-invisible is the honest contract: callers must treat
+	// it as server-authoritative.
+	CompactedAt time.Time `json:"-"`
 	// OriginalTokenCount is the total token count of the pre-summary range.
 	OriginalTokenCount int `json:"original_token_count"`
 	// SummaryTokenCount is the token count of the produced summary text

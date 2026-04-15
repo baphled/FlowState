@@ -52,8 +52,12 @@ func TestCompactionSummary_RoundTrip_PreservesEveryField(t *testing.T) {
 	if !equalStrings(decoded.FilesToRestore, original.FilesToRestore) {
 		t.Errorf("FilesToRestore: got %v want %v", decoded.FilesToRestore, original.FilesToRestore)
 	}
-	if !decoded.CompactedAt.Equal(original.CompactedAt) {
-		t.Errorf("CompactedAt: got %v want %v", decoded.CompactedAt, original.CompactedAt)
+	// CompactedAt is intentionally server-only (json:"-") — see C3. It
+	// must NOT survive the JSON round-trip; the decoded value is the
+	// zero time. Callers (AutoCompactor.Compact) server-stamp it after
+	// unmarshal.
+	if !decoded.CompactedAt.IsZero() {
+		t.Errorf("CompactedAt: got %v; expected zero (server-only field)", decoded.CompactedAt)
 	}
 	if decoded.OriginalTokenCount != original.OriginalTokenCount {
 		t.Errorf("OriginalTokenCount: got %d want %d", decoded.OriginalTokenCount, original.OriginalTokenCount)
@@ -78,9 +82,10 @@ func TestCompactionSummary_RoundTrip_ZeroValue(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	// Zero time renders as "0001-01-01T00:00:00Z"; nil slices render as null.
+	// CompactedAt is server-only (json:"-") and never appears in the
+	// wire encoding. Nil slices render as null.
 	want := `{"intent":"","key_decisions":null,"errors":null,"next_steps":null,` +
-		`"files_to_restore":null,"compacted_at":"0001-01-01T00:00:00Z",` +
+		`"files_to_restore":null,` +
 		`"original_token_count":0,"summary_token_count":0}`
 	if string(data) != want {
 		t.Errorf("zero-value JSON mismatch\n got: %s\nwant: %s", string(data), want)
@@ -221,8 +226,12 @@ func TestCompactionSummary_Unmarshal_MalformedReturnsError(t *testing.T) {
 		"truncated":        `{"intent": "oops"`,
 		"not json":         `this is not json at all`,
 		"wrong type int":   `{"original_token_count": "not-an-int"}`,
-		"wrong type time":  `{"compacted_at": 12345}`,
 		"wrong type slice": `{"key_decisions": "should-be-array"}`,
+		// `compacted_at` wrong-type case removed: per C3 the field is
+		// server-only (json:"-"), so any emitted value — well-formed or
+		// not — is silently ignored at unmarshal time. Regression
+		// coverage for that ignore-semantic lives in
+		// TestAutoCompactor_Compact_LLMEmittedValidRFC3339_IsIgnored.
 	}
 
 	for name, input := range cases {
