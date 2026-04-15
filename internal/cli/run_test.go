@@ -210,4 +210,20 @@ var _ = Describe("run command", func() {
 		Expect(out.String()).To(ContainSubstring("--agent"))
 		Expect(out.String()).To(ContainSubstring("--json"))
 	})
+
+	// The --session flag accepts arbitrary strings, but the CLI
+	// validator rejects path separators and leading dots, and
+	// auto-generates an ID when the flag is empty. Without that
+	// information in the help text, the operator only discovers the
+	// rules by triggering them. Pin the help text to the minimum
+	// useful guidance so future wording changes stay operator-facing.
+	It("documents auto-generation and validation rules in --session help", func() {
+		testApp := createTestApp("", "")
+		err := runCmd(testApp, "run", "--help")
+		Expect(err).NotTo(HaveOccurred())
+		help := out.String()
+		Expect(help).To(ContainSubstring("Generated automatically"))
+		Expect(help).To(ContainSubstring("path separators"))
+		Expect(help).To(ContainSubstring("leading dot"))
+	})
 })
