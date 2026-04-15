@@ -85,8 +85,34 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	select {
 	case <-ctx.Done():
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Shutting down server...")
-		return server.Shutdown(context.Background())
+		if err := server.Shutdown(context.Background()); err != nil {
+			return err
+		}
+		// H3: drain engine-owned background work before returning.
+		// http.Server.Shutdown only waits for HTTP handlers; without
+		// this call, session splitters' persist workers and L3
+		// knowledge-extraction goroutines get killed at process exit,
+		// orphaning `.tmp` files on disk.
+		if application.Engine != nil {
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), engineShutdownTimeout)
+			defer drainCancel()
+			if err := application.Engine.Shutdown(drainCtx); err != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: engine shutdown did not complete within %s: %v\n",
+					engineShutdownTimeout, err,
+				)
+			}
+		}
+		return nil
 	case err := <-errChan:
 		return err
 	}
 }
+
+// engineShutdownTimeout bounds the wait for engine-owned background
+// goroutines (splitter persist workers + L3 extractions) to drain
+// after http.Server.Shutdown returns. 30s matches the L3
+// extractor's per-run LLM deadline so an extraction in flight at
+// SIGTERM has headroom to finish; persist workers complete in
+// sub-second for realistic channel depths.
+const engineShutdownTimeout = 30 * time.Second
