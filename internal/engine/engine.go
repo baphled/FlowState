@@ -2119,6 +2119,31 @@ func (e *Engine) LastCompactionSummary() *ctxstore.CompactionSummary {
 	return e.lastCompactionSummary
 }
 
+// CompressionMetrics returns a snapshot of the per-engine compression
+// counters (micro/auto counts, tokens saved, overhead tokens). The
+// returned value is a copy; callers may retain it without affecting
+// live accounting. Item 2 exposes this so `flowstate run --stats` can
+// emit a per-turn summary before exit, sidestepping the limitation
+// that ephemeral CLI processes do not feed the /metrics endpoint.
+//
+// Expected:
+//   - None; safe to call at any point in the engine lifecycle. Returns
+//     a zero-valued struct when compression metrics were not wired
+//     (e.g. the CompressionMetrics field was nil in Config).
+//
+// Returns:
+//   - A CompressionMetrics value capturing the current counters. Zero
+//     when no compression metrics are attached to the engine.
+//
+// Side effects:
+//   - None.
+func (e *Engine) CompressionMetrics() ctxstore.CompressionMetrics {
+	if e.compressionMetrics == nil {
+		return ctxstore.CompressionMetrics{}
+	}
+	return *e.compressionMetrics
+}
+
 // dispatchContextAssemblyHooks fires all registered context assembly hooks, collecting search results.
 // Each hook receives a mutable ContextAssemblyPayload and may populate SearchResults.
 // Hook errors are logged but do not prevent subsequent hooks or assembly from proceeding.
