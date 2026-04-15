@@ -1880,10 +1880,14 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 			e.compressionMetrics.TokensSaved += delta
 		}
 	}
-	if e.recorder != nil {
-		// Recorder itself guards against non-positive deltas, but we
-		// still pass through the raw value so callers can inspect the
-		// call site for anomalies during investigation.
+	if e.recorder != nil && delta > 0 {
+		// M3 — double-guarded. The Recorder interface contract mandates
+		// implementations ignore non-positive deltas (the Prometheus
+		// backend would otherwise panic when a counter is added with a
+		// negative value), but we also guard here so overhead
+		// compactions produce zero metric traffic rather than a no-op
+		// call. This matches the slog `tokens_saved` field semantics:
+		// only net savings are reported.
 		e.recorder.RecordCompressionTokensSaved(agentID, delta)
 	}
 	if e.bus == nil {

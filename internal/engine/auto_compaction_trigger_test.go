@@ -117,6 +117,23 @@ func newTestEngineWithCompactor(
 	return newTestEngineWithCompactorAndRecorder(t, summariser, threshold, enabled, nil)
 }
 
+// newTestEngineWithCompactorRecorderAndMetrics extends
+// newTestEngineWithCompactorAndRecorder with an explicit
+// *ctxstore.CompressionMetrics so tests can assert engine-side
+// accounting (TokensSaved, AutoCompactionCount). Passing nil matches
+// the legacy behaviour where no metrics struct is wired.
+func newTestEngineWithCompactorRecorderAndMetrics(
+	t *testing.T,
+	summariser ctxstore.Summariser,
+	threshold float64,
+	enabled bool,
+	recorder tracer.Recorder,
+	metrics *ctxstore.CompressionMetrics,
+) (*engine.Engine, *recall.FileContextStore) {
+	t.Helper()
+	return newTestEngineWithCompactorOptions(t, summariser, threshold, enabled, recorder, metrics)
+}
+
 // newTestEngineWithCompactorAndRecorder extends newTestEngineWithCompactor
 // with an optional tracer.Recorder so tests can assert that the engine
 // emits the RecordCompressionTokensSaved counter on successful compaction.
@@ -126,6 +143,22 @@ func newTestEngineWithCompactorAndRecorder(
 	threshold float64,
 	enabled bool,
 	recorder tracer.Recorder,
+) (*engine.Engine, *recall.FileContextStore) {
+	t.Helper()
+	return newTestEngineWithCompactorOptions(t, summariser, threshold, enabled, recorder, nil)
+}
+
+// newTestEngineWithCompactorOptions is the shared body for the
+// compactor test-engine constructors. Keeping a single assembly point
+// means future T10 tests can add optional knobs without fanning out a
+// new helper per permutation.
+func newTestEngineWithCompactorOptions(
+	t *testing.T,
+	summariser ctxstore.Summariser,
+	threshold float64,
+	enabled bool,
+	recorder tracer.Recorder,
+	metrics *ctxstore.CompressionMetrics,
 ) (*engine.Engine, *recall.FileContextStore) {
 	t.Helper()
 
@@ -161,13 +194,14 @@ func newTestEngineWithCompactorAndRecorder(
 	}
 
 	eng := engine.New(engine.Config{
-		ChatProvider:      &t10FakeProvider{},
-		Manifest:          testManifest,
-		Store:             store,
-		TokenCounter:      counter,
-		AutoCompactor:     compactor,
-		CompressionConfig: cfg,
-		Recorder:          recorder,
+		ChatProvider:       &t10FakeProvider{},
+		Manifest:           testManifest,
+		Store:              store,
+		TokenCounter:       counter,
+		AutoCompactor:      compactor,
+		CompressionConfig:  cfg,
+		CompressionMetrics: metrics,
+		Recorder:           recorder,
 	})
 
 	return eng, store
@@ -487,6 +521,72 @@ func TestBuildContextWindowAutoCompaction_EmitsCompressionTokensSavedCounter(t *
 	if calls[0].tokensSaved != expectedDelta {
 		t.Fatalf("recorder tokensSaved = %d; want OriginalTokens-SummaryTokens = %d",
 			calls[0].tokensSaved, expectedDelta)
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_OverheadSummary_NoRecorderCall
+// is the M3 counterpart to the positive-path emits-counter test. When a
+// compaction's JSON-wrapped summary is as large or larger than the
+// range it replaces (SummaryTokens >= OriginalTokens), the delta is
+// non-positive and the engine must:
+//
+//   - NOT invoke the Recorder at all, so the Prometheus counter stays
+//     exactly where it was (a Counter.Add(negativeValue) call would
+//     panic the process).
+//   - NOT increment CompressionMetrics.TokensSaved in the engine-side
+//     accounting struct — a `> 0` guard exists there too.
+//   - Still increment AutoCompactionCount so operators can observe
+//     that the layer ran, even when it did not produce a saving.
+//
+// The test rigs an overhead-producing summary by using a verbose
+// Intent whose whitespace-split token count exceeds the 70-token
+// compacted range the engine is set up with.
+func TestBuildContextWindowAutoCompaction_OverheadSummary_NoRecorderCall(t *testing.T) {
+	t.Parallel()
+
+	// Build a summary whose JSON, wrapped with the
+	// "[auto-compacted summary]: " prefix, has more whitespace-split
+	// words than the 70-token compacted range. The wordTokenCounter
+	// counts one token per whitespace-separated word.
+	overheadSummary := ctxstore.CompactionSummary{
+		Intent: strings.Repeat("an intentionally verbose intent string that pads the summary ", 8) +
+			"past the seventy-word compacted range it replaces",
+		KeyDecisions: []string{"accept the overhead", "let the guards swallow the delta"},
+		Errors:       []string{},
+		NextSteps:    []string{"assert metrics stay at zero"},
+	}
+	data, err := json.Marshal(overheadSummary)
+	if err != nil {
+		t.Fatalf("marshal overhead summary: %v", err)
+	}
+
+	summariser := &recordingSummariser{response: string(data)}
+	rec := &engineTestRecorder{}
+	metrics := &ctxstore.CompressionMetrics{}
+	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, 0.60, true, rec, metrics)
+
+	seedMessages(t, store)
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-overhead", "next user turn")
+
+	// Compaction must still have run exactly once.
+	if summariser.calls.Load() != 1 {
+		t.Fatalf("summariser calls = %d; want 1 (overhead path must still invoke the compactor)", summariser.calls.Load())
+	}
+	if metrics.AutoCompactionCount != 1 {
+		t.Fatalf("AutoCompactionCount = %d; want 1", metrics.AutoCompactionCount)
+	}
+
+	// TokensSaved must stay at zero — the engine metrics struct has a
+	// `> 0` guard on the delta.
+	if metrics.TokensSaved != 0 {
+		t.Fatalf("metrics.TokensSaved = %d; want 0 for overhead compaction", metrics.TokensSaved)
+	}
+
+	// Recorder must not have been invoked at all. The Prometheus
+	// backend's own guard ignores non-positive deltas, but the engine
+	// guards too so overhead compactions produce zero metric traffic.
+	if calls := rec.saved(); len(calls) != 0 {
+		t.Fatalf("RecordCompressionTokensSaved calls = %d; want 0 for overhead compaction (deltas: %+v)", len(calls), calls)
 	}
 }
 
