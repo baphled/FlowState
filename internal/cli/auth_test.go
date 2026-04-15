@@ -29,7 +29,17 @@ var _ = Describe("Auth Commands", func() {
 		originalDr = os.Getenv("XDG_CONFIG_HOME")
 		Expect(os.Setenv("XDG_CONFIG_HOME", tmpDir)).To(Succeed())
 
+		// config.DefaultConfig pins Providers.Default to "anthropic"; the
+		// Auth suite runs without any real anthropic registration so
+		// app.New returns "provider anthropic not found" before the
+		// test body ever executes. Switch to the openai provider with
+		// a throwaway test key — mirroring the pattern already used by
+		// internal/app/app_test.go — so app bootstrap succeeds and the
+		// downstream credential-format assertions actually run.
+		Expect(os.Setenv("OPENAI_API_KEY", "test-key-auth-suite")).To(Succeed())
+
 		cfg := config.DefaultConfig()
+		cfg.Providers.Default = "openai"
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
 
@@ -38,6 +48,7 @@ var _ = Describe("Auth Commands", func() {
 	})
 
 	AfterEach(func() {
+		Expect(os.Unsetenv("OPENAI_API_KEY")).To(Succeed())
 		if originalDr != "" {
 			Expect(os.Setenv("XDG_CONFIG_HOME", originalDr)).To(Succeed())
 		} else {
