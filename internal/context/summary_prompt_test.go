@@ -57,22 +57,33 @@ var _ = Describe("RenderSummaryPrompt", func() {
 			Expect(out).To(ContainSubstring("Refer to tool calls by name and purpose only"))
 		})
 
-		It("references every CompactionSummary field by name", func() {
+		It("references every LLM-authored CompactionSummary field by name", func() {
 			out, err := flowctx.RenderSummaryPrompt(msgs)
 
 			Expect(err).NotTo(HaveOccurred())
+			// `compacted_at` is intentionally excluded: the caller stamps
+			// that field server-side after parse, so the prompt must not
+			// teach the model to emit it (any non-RFC3339 value breaks
+			// json.Unmarshal into time.Time).
 			for _, field := range []string{
 				"intent",
 				"key_decisions",
 				"errors",
 				"next_steps",
 				"files_to_restore",
-				"compacted_at",
 				"original_token_count",
 				"summary_token_count",
 			} {
 				Expect(out).To(ContainSubstring("`" + field + "`"))
 			}
+		})
+
+		It("does not mention `compacted_at` or the legacy placeholder", func() {
+			out, err := flowctx.RenderSummaryPrompt(msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).NotTo(ContainSubstring("compacted_at"))
+			Expect(out).NotTo(ContainSubstring("PLACEHOLDER_COMPACTED_AT"))
 		})
 
 		It("instructs JSON-only output with no preamble or fences", func() {
