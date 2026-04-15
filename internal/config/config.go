@@ -343,7 +343,31 @@ func LoadConfigFromPath(path string) (*AppConfig, error) {
 
 	applyDefaults(cfg)
 	expandPaths(cfg)
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("validating config file %q: %w", cleanPath, err)
+	}
 	return cfg, nil
+}
+
+// validateConfig runs post-load invariants over the fully-defaulted
+// configuration. It is the single choke-point for cross-field rules
+// that cannot be encoded in struct tags or default-fill logic.
+//
+// Expected:
+//   - cfg has had applyDefaults and expandPaths run against it.
+//
+// Returns:
+//   - nil when every rule holds.
+//   - The first rule violation with enough context for the operator
+//     to identify the offending YAML key.
+//
+// Side effects:
+//   - None.
+func validateConfig(cfg *AppConfig) error {
+	if err := cfg.Compression.Validate(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ValidateMCPServers validates that all MCP servers have required fields.

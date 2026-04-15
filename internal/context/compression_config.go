@@ -1,5 +1,7 @@
 package context
 
+import "fmt"
+
 // CompressionConfig configures the three-layer context compression system.
 //
 // All three layers (MicroCompaction, AutoCompaction, SessionMemory) default
@@ -140,4 +142,41 @@ func DefaultCompressionConfig() CompressionConfig {
 			StorageDir: "~/.flowstate/session-memory",
 		},
 	}
+}
+
+// Validate returns an error when the CompressionConfig is internally
+// inconsistent. It is the startup backstop for shapes that cannot
+// function at runtime — the intent is to fail loud at load rather than
+// produce silently wrong windows.
+//
+// Current rules:
+//
+//   - When MicroCompaction.Enabled is true, HotTailSize must be >= 1.
+//     findColdBoundary uses `len(units) - HotTailSize` as the naive
+//     cold boundary; with HotTailSize <= 0 every unit is cold, which
+//     spills the entire conversation to disk on every turn. That is
+//     never what the operator wanted — a zero hot tail only makes
+//     sense when the feature is off.
+//
+// Expected:
+//   - Called from config loaders after defaults have been applied.
+//
+// Returns:
+//   - nil when every rule holds.
+//   - A diagnostic error naming the offending field and section when
+//     a rule is violated.
+//
+// Side effects:
+//   - None.
+func (c CompressionConfig) Validate() error {
+	if c.MicroCompaction.Enabled && c.MicroCompaction.HotTailSize < 1 {
+		return fmt.Errorf(
+			"compression: micro_compaction.hot_tail_size must be >= 1 "+
+				"when micro_compaction.enabled is true (got %d); "+
+				"a zero or negative hot tail makes every message cold "+
+				"and defeats the purpose of the feature",
+			c.MicroCompaction.HotTailSize,
+		)
+	}
+	return nil
 }
