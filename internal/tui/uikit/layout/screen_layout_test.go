@@ -492,6 +492,32 @@ var _ = Describe("ScreenLayout Pinned Layout", func() {
 			Expect(contentLine).NotTo(ContainSubstring("│"),
 				"single-pane render must not include the '│' separator")
 		})
+
+		// Accessibility B1: the dual-pane separator must NOT be styled with
+		// the default theme's BorderColor (#3d4454 → ~1.68:1 contrast on the
+		// default #1a1f2e background, below WCAG 1.4.11's 3:1 floor). We
+		// assert the raw (un-stripped) output does not embed an ANSI escape
+		// setting the foreground to #3d4454 on any line containing '│'.
+		It("does not style the separator with the low-contrast BorderColor", func() {
+			info := &terminal.Info{Width: 120, Height: 24, IsValid: true}
+			rendered := layout.NewScreenLayout(info).
+				WithTheme(theme).
+				WithContent("PRIMARY").
+				WithSecondaryContent("SECONDARY").
+				Render()
+
+			// Lipgloss encodes truecolor foreground as
+			//   ESC[38;2;R;G;Bm
+			// For #3d4454 that's 61;68;84.
+			lowContrastFg := "\x1b[38;2;61;68;84m"
+			Expect(rendered).NotTo(ContainSubstring(lowContrastFg),
+				"separator must not render with theme BorderColor (#3d4454) — fails WCAG 1.4.11 Non-Text Contrast")
+
+			// Sanity: the separator glyph must still be present in the output.
+			stripped := stripAnsi(rendered)
+			Expect(stripped).To(ContainSubstring("│"),
+				"separator glyph must still render after dropping the low-contrast override")
+		})
 	})
 
 	Describe("Available Content Height Calculation", func() {

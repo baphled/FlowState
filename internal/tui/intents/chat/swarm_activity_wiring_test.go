@@ -47,10 +47,14 @@ var _ = Describe("swarm activity pane wiring", func() {
 	})
 
 	Describe("Intent constructor seeds the swarm event store", func() {
-		It("initialises an empty MemorySwarmStore with capacity 15", func() {
+		It("initialises an empty MemorySwarmStore with the default capacity", func() {
 			store := intent.SwarmStoreForTest()
 			Expect(store).NotTo(BeNil())
 			Expect(store.All()).To(BeEmpty())
+
+			memStore, ok := store.(*streaming.MemorySwarmStore)
+			Expect(ok).To(BeTrue(), "chat intent must use MemorySwarmStore")
+			Expect(memStore.Capacity()).To(Equal(streaming.DefaultSwarmStoreCapacity))
 		})
 	})
 

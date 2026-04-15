@@ -14,16 +14,20 @@ import (
 var _ = Describe("MemorySwarmStore", func() {
 	Describe("NewMemorySwarmStore", func() {
 		It("returns an empty store", func() {
-			store := streaming.NewMemorySwarmStore(15)
+			store := streaming.NewMemorySwarmStore(200)
 			Expect(store).NotTo(BeNil())
 			Expect(store.All()).To(BeEmpty())
 		})
 
 		It("applies the default capacity when capacity <= 0", func() {
+			// The exported DefaultSwarmStoreCapacity is the contract; we
+			// pin the numeric value too so changes are deliberate.
+			Expect(streaming.DefaultSwarmStoreCapacity).To(Equal(200))
+
 			store := streaming.NewMemorySwarmStore(0)
-			Expect(store.Capacity()).To(Equal(15))
+			Expect(store.Capacity()).To(Equal(streaming.DefaultSwarmStoreCapacity))
 			negative := streaming.NewMemorySwarmStore(-5)
-			Expect(negative.Capacity()).To(Equal(15))
+			Expect(negative.Capacity()).To(Equal(streaming.DefaultSwarmStoreCapacity))
 		})
 
 		It("honours a positive capacity argument", func() {
@@ -34,7 +38,7 @@ var _ = Describe("MemorySwarmStore", func() {
 
 	Describe("Append", func() {
 		It("records a single event", func() {
-			store := streaming.NewMemorySwarmStore(15)
+			store := streaming.NewMemorySwarmStore(200)
 			ev := streaming.SwarmEvent{
 				ID:        "evt-1",
 				Type:      streaming.EventDelegation,
@@ -51,8 +55,11 @@ var _ = Describe("MemorySwarmStore", func() {
 		})
 
 		It("evicts the oldest events when capacity is exceeded", func() {
-			store := streaming.NewMemorySwarmStore(15)
-			for idx := range 17 {
+			store := streaming.NewMemorySwarmStore(200)
+			// Overflow by two so we verify both the capacity cap and that
+			// the two oldest entries were evicted in FIFO order.
+			const total = 202
+			for idx := range total {
 				store.Append(streaming.SwarmEvent{
 					ID:   fmt.Sprintf("evt-%d", idx),
 					Type: streaming.EventToolCall,
@@ -60,16 +67,16 @@ var _ = Describe("MemorySwarmStore", func() {
 			}
 
 			all := store.All()
-			Expect(all).To(HaveLen(15))
+			Expect(all).To(HaveLen(200))
 			// Oldest two (evt-0, evt-1) were evicted; evt-2 is now the head.
 			Expect(all[0].ID).To(Equal("evt-2"))
-			Expect(all[len(all)-1].ID).To(Equal("evt-16"))
+			Expect(all[len(all)-1].ID).To(Equal("evt-201"))
 		})
 	})
 
 	Describe("All", func() {
 		It("returns a defensive copy callers can mutate safely", func() {
-			store := streaming.NewMemorySwarmStore(15)
+			store := streaming.NewMemorySwarmStore(200)
 			store.Append(streaming.SwarmEvent{ID: "evt-1"})
 
 			out := store.All()
@@ -82,7 +89,7 @@ var _ = Describe("MemorySwarmStore", func() {
 
 	Describe("Clear", func() {
 		It("removes all events from the store", func() {
-			store := streaming.NewMemorySwarmStore(15)
+			store := streaming.NewMemorySwarmStore(200)
 			store.Append(streaming.SwarmEvent{ID: "evt-1"})
 			store.Append(streaming.SwarmEvent{ID: "evt-2"})
 
@@ -94,7 +101,7 @@ var _ = Describe("MemorySwarmStore", func() {
 
 	Describe("concurrent Append", func() {
 		It("does not race under heavy concurrent writes", func() {
-			store := streaming.NewMemorySwarmStore(15)
+			store := streaming.NewMemorySwarmStore(200)
 			const goroutines = 10
 			const perGoroutine = 100
 
@@ -113,9 +120,9 @@ var _ = Describe("MemorySwarmStore", func() {
 			}
 			wg.Wait()
 
-			// With 1000 appends and capacity 15, the store must hold exactly
-			// 15 events and All() must not panic.
-			Expect(store.All()).To(HaveLen(15))
+			// With 1000 appends and capacity 200, the store must hold exactly
+			// 200 events and All() must not panic.
+			Expect(store.All()).To(HaveLen(200))
 		})
 	})
 })

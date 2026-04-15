@@ -363,7 +363,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		notificationManager:  notifManager,
 		breadcrumbPath:       "Chat",
 		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
-		swarmStore:           streaming.NewMemorySwarmStore(15),
+		swarmStore:           streaming.NewMemorySwarmStore(streaming.DefaultSwarmStoreCapacity),
 		secondaryPaneVisible: true,
 	}
 }
@@ -2166,7 +2166,22 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"  /model <provider>/<model> - Switch to a model\n" +
 				"  /agent <agent-id> - Switch to an agent\n" +
 				"  /agents - List all available agents\n" +
-				"  /help - Show this help message"
+				"  /help - Show this help message\n" +
+				"\n" +
+				"Keybindings:\n" +
+				"  Enter        - Send message\n" +
+				"  Alt+Enter    - New line\n" +
+				"  Tab          - Toggle active agent\n" +
+				"  Esc          - Dismiss modal / picker / session viewer\n" +
+				"  Ctrl+C       - Cancel stream, save session, and quit\n" +
+				"  Ctrl+D       - Open delegation picker\n" +
+				"  Ctrl+A       - Open agent picker\n" +
+				"  Ctrl+P       - Open model selector\n" +
+				"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
+				"  Ctrl+T       - Toggle swarm activity pane (visible by default)\n" +
+				"  Up/Down      - Scroll viewport line by line\n" +
+				"  PgUp/PgDn    - Scroll viewport by page\n" +
+				"  Home/End     - Jump to top / bottom of viewport"
 
 		default:
 			response = "Unknown command: /" + command
