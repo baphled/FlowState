@@ -2,6 +2,7 @@ package context_test
 
 import (
 	"math"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -40,6 +41,17 @@ var _ = Describe("CompressionConfig", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 
 			Expect(cfg.SessionMemory.StorageDir).To(Equal("~/.flowstate/session-memory"))
+		})
+
+		// Item 7 — wait_timeout bounds the pre-exit block for the L3
+		// knowledge-extraction goroutine. The previous constant in
+		// internal/cli/run.go used 35 seconds (30s extractor timeout +
+		// 5s disk-write margin); that remains the default when the
+		// operator does not override it in YAML.
+		It("defaults session-memory wait timeout to 35s", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+
+			Expect(cfg.SessionMemory.WaitTimeout).To(Equal(35 * time.Second))
 		})
 	})
 
@@ -178,6 +190,49 @@ var _ = Describe("CompressionConfig", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 			cfg.SessionMemory.Enabled = false
 			cfg.SessionMemory.Model = ""
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		// Item 7 — wait_timeout must be positive when session-memory is
+		// enabled. A zero or negative value would either skip the wait
+		// entirely (orphaning the extractor at os.Exit) or be rejected
+		// by the engine as nonsensical; catching it at load keeps the
+		// failure mode explicit.
+		It("rejects zero session-memory wait timeout when session-memory is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = "llama3.1"
+			cfg.SessionMemory.WaitTimeout = 0
+
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("wait_timeout"))
+			Expect(err.Error()).To(ContainSubstring("session_memory"))
+		})
+
+		It("rejects negative session-memory wait timeout when session-memory is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = "llama3.1"
+			cfg.SessionMemory.WaitTimeout = -1 * time.Second
+
+			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		It("ignores session-memory wait timeout when session-memory is disabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = false
+			cfg.SessionMemory.WaitTimeout = 0
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts a custom session-memory wait timeout when session-memory is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = "llama3.1"
+			cfg.SessionMemory.WaitTimeout = 60 * time.Second
 
 			Expect(cfg.Validate()).To(Succeed())
 		})

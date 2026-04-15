@@ -482,6 +482,9 @@ func applyCompressionDefaults(cfg *contextpkg.CompressionConfig, defaults contex
 	if cfg.SessionMemory.StorageDir == "" {
 		cfg.SessionMemory.StorageDir = defaults.SessionMemory.StorageDir
 	}
+	if cfg.SessionMemory.WaitTimeout == 0 {
+		cfg.SessionMemory.WaitTimeout = defaults.SessionMemory.WaitTimeout
+	}
 }
 
 // mergeCategoryRouting applies user overrides on top of the default routing map.
