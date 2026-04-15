@@ -100,8 +100,8 @@ var _ = Describe("L1 micro-compaction end-to-end", Label("integration"), func() 
 	})
 
 	It("compacts old units, leaves canonical history untouched, and spills atomically", func() {
-		builder := flowctx.NewWindowBuilder(simpleCounter{}).WithSplitter(splitter)
-		result := builder.BuildContext(context.Background(), manifest, "next user message", store, 100000)
+		builder := flowctx.NewWindowBuilder(simpleCounter{})
+		result := builder.BuildContext(manifest, "next user message", store, 100000, flowctx.WithSplitterOption(splitter))
 
 		splitter.Stop() // ensure persist worker has drained before we inspect disk
 
@@ -149,7 +149,7 @@ var _ = Describe("L1 micro-compaction end-to-end", Label("integration"), func() 
 
 	It("leaves the recall store identical when compaction is disabled (no splitter attached)", func() {
 		builder := flowctx.NewWindowBuilder(simpleCounter{})
-		result := builder.BuildContext(context.Background(), manifest, "next", store, 100000)
+		result := builder.BuildContext(manifest, "next", store, 100000)
 
 		Expect(store.AllMessages()).To(Equal(sentinel))
 		// Without a splitter, no placeholder strings appear.
@@ -169,8 +169,8 @@ var _ = Describe("L1 micro-compaction end-to-end", Label("integration"), func() 
 		small.StartPersistWorker(context.Background())
 		defer small.Stop()
 
-		builder := flowctx.NewWindowBuilder(simpleCounter{}).WithSplitter(small)
-		result := builder.BuildContext(context.Background(), manifest, "next", store, 100000)
+		builder := flowctx.NewWindowBuilder(simpleCounter{})
+		result := builder.BuildContext(manifest, "next", store, 100000, flowctx.WithSplitterOption(small))
 		small.Stop()
 
 		assertNoOrphanToolMessages(result)
