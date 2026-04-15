@@ -1961,7 +1961,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	e.lastCompactionSummary = nil
 	e.buildStateMu.Unlock()
 
-	threshold, ok := e.autoCompactionThreshold(tokenBudget)
+	threshold, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
 		return ""
 	}
@@ -2006,19 +2006,35 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 // missing, so the caller can short-circuit without inspecting fields
 // individually.
 //
+// Precedence (H3 audit — per-agent override):
+//
+//   - manifest.ContextManagement.CompactionThreshold when > 0 — the
+//     per-agent override configured in the agent manifest.
+//   - e.compressionConfig.AutoCompaction.Threshold otherwise — the
+//     global configuration fallback.
+//
+// Callers supplying a manifest with CompactionThreshold == 0 inherit
+// the global, which is what tests and agents that have not opted in
+// want. A negative manifest value is rejected at manifest load; a
+// negative global is rejected at config load; this function trusts
+// both invariants and only range-checks the final resolved value as
+// defence in depth.
+//
 // Expected:
+//   - manifest is the active agent manifest (non-nil — the caller
+//     buildContextWindow always hands in a prepared copy).
 //   - tokenBudget is the model context limit passed through from
 //     buildContextWindow.
 //
 // Returns:
 //   - (threshold, true) when the feature is enabled, the AutoCompactor
 //     is wired, the store and counter are present, tokenBudget is
-//     positive, and the configured threshold is positive.
+//     positive, and the resolved threshold is positive.
 //   - (0, false) otherwise.
 //
 // Side effects:
 //   - None.
-func (e *Engine) autoCompactionThreshold(tokenBudget int) (float64, bool) {
+func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget int) (float64, bool) {
 	if e.autoCompactor == nil || !e.compressionConfig.AutoCompaction.Enabled {
 		return 0, false
 	}
@@ -2029,6 +2045,9 @@ func (e *Engine) autoCompactionThreshold(tokenBudget int) (float64, bool) {
 		return 0, false
 	}
 	threshold := e.compressionConfig.AutoCompaction.Threshold
+	if manifest != nil && manifest.ContextManagement.CompactionThreshold > 0 {
+		threshold = manifest.ContextManagement.CompactionThreshold
+	}
 	if threshold <= 0 {
 		return 0, false
 	}

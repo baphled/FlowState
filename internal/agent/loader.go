@@ -54,6 +54,9 @@ func LoadManifestJSON(path string) (*Manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing JSON: %w", err)
 	}
+	if err := validateContextManagement(&m); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	applyDefaults(&m)
 	return &m, nil
 }
@@ -103,6 +106,9 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 		m.Name = derivedID
 	}
 
+	if err := validateContextManagement(&m); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	applyDefaults(&m)
 	return &m, nil
 }
@@ -175,6 +181,36 @@ func extractFrontmatter(content string) (string, string, error) {
 		return "", content, errors.New("invalid frontmatter format")
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+// validateContextManagement enforces the H3 range contract on
+// user-supplied ContextManagement fields. Called by both
+// LoadManifestJSON and LoadManifestMarkdown before applyDefaults so
+// the check targets the operator's raw input, not the default-filled
+// value. Zero is allowed — it is the sentinel that means "inherit
+// global" at the engine trigger.
+//
+// Expected:
+//   - m is a non-nil pointer to a freshly-unmarshalled Manifest. All
+//     string normalisation (ID/Name derivation from the file name)
+//     may or may not have run yet; validation is independent of it.
+//
+// Returns:
+//   - nil when every range-checked field is in its legal range.
+//   - A sentinel error naming the failing field when any rule fails.
+//
+// Side effects:
+//   - None.
+func validateContextManagement(m *Manifest) error {
+	t := m.ContextManagement.CompactionThreshold
+	// Use strict bounds (0, 1]. Zero is "inherit"; anything negative
+	// is a ratio nonsense; anything >1 exceeds the budget. This
+	// mirrors the range enforced by ctxstore.CompressionConfig for
+	// the global threshold — keeps the contract consistent.
+	if t < 0 || t > 1 {
+		return fmt.Errorf("context_management.compaction_threshold: %v is out of range (0, 1]", t)
+	}
+	return nil
 }
 
 // applyDefaults populates zero-valued fields in a Manifest with sensible defaults.
