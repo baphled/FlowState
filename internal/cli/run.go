@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -23,6 +24,12 @@ type RunOptions struct {
 	Agent   string
 	JSON    bool
 	Session string
+	// Stats toggles a one-line compression summary printed to stderr
+	// before exit. Item 2's workaround for the fact that ephemeral
+	// `flowstate run` processes do not feed the /metrics endpoint
+	// served by `flowstate serve` (each CLI invocation is its own
+	// process with its own Prometheus registry).
+	Stats bool
 }
 
 // runResponse represents the JSON response from a non-interactive prompt execution.
@@ -72,6 +79,11 @@ func newRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.Agent, "agent", opts.Agent, "Agent to use (default: worker)")
 	flags.BoolVar(&opts.JSON, "json", false, "Output result as JSON")
 	flags.StringVar(&opts.Session, "session", "", "Session ID to use/resume")
+	flags.BoolVar(&opts.Stats, "stats", false,
+		"Print a one-line compression summary to stderr before exit "+
+			"(micro/auto counts, tokens saved, overhead tokens). "+
+			"Use this for ad-hoc visibility; the /metrics endpoint "+
+			"served by `flowstate serve` does not see ephemeral runs.")
 
 	return cmd
 }
@@ -120,7 +132,34 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	if application.Engine != nil {
 		waitForBackgroundExtractions(application.Engine, resolveBackgroundExtractionWait(application))
 	}
+	if opts.Stats && application.Engine != nil {
+		writeCompressionStats(cmd.ErrOrStderr(), application.Engine.CompressionMetrics())
+	}
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
+}
+
+// writeCompressionStats emits the Item 2 ad-hoc per-turn compression
+// summary. Goes to stderr so it does not corrupt JSON output on stdout
+// when --json is also set. The format is intentionally compact —
+// key=value on a single line — so operators can grep it easily in
+// pipelines without needing to parse structured output.
+//
+// Expected:
+//   - out is a non-nil writer.
+//   - metrics may be the zero value when the engine was not wired
+//     with a CompressionMetrics struct; the function still emits a
+//     single line of zeros so the flag behaves consistently.
+//
+// Side effects:
+//   - Writes one line to out.
+func writeCompressionStats(out io.Writer, metrics ctxstore.CompressionMetrics) {
+	_, _ = fmt.Fprintf(out,
+		"compression: micro=%d auto=%d tokens_saved=%d overhead=%d\n",
+		metrics.MicroCompactionCount,
+		metrics.AutoCompactionCount,
+		metrics.TokensSaved,
+		metrics.OverheadTokens,
+	)
 }
 
 // defaultBackgroundExtractionWait is the fallback bound applied when
