@@ -74,6 +74,47 @@ var _ = Describe("CompressionConfig", func() {
 			Expect(cfg.Validate()).To(Succeed())
 		})
 
+		// Item 4 — idle_ttl bounds how long an unused session splitter
+		// is kept in the engine cache before the background sweeper
+		// evicts it. A zero or negative value would either evict every
+		// entry on every sweep pass or never evict any, neither of
+		// which is the operator's intent. Catch the misconfiguration
+		// at load time.
+		It("defaults micro-compaction idle_ttl to 30 minutes", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+
+			Expect(cfg.MicroCompaction.IdleTTL).To(Equal(30 * time.Minute))
+		})
+
+		It("rejects zero idle_ttl when micro-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = true
+			cfg.MicroCompaction.HotTailSize = 3
+			cfg.MicroCompaction.IdleTTL = 0
+
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("idle_ttl"))
+			Expect(err.Error()).To(ContainSubstring("micro_compaction"))
+		})
+
+		It("rejects negative idle_ttl when micro-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = true
+			cfg.MicroCompaction.HotTailSize = 3
+			cfg.MicroCompaction.IdleTTL = -1 * time.Second
+
+			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		It("ignores idle_ttl when micro-compaction is disabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = false
+			cfg.MicroCompaction.IdleTTL = 0
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
 		It("accepts hot_tail_size of zero when micro-compaction is disabled", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 			cfg.MicroCompaction.Enabled = false
