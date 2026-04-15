@@ -114,7 +114,11 @@ compression:
     enabled: true
     # Fraction of the model's context window at which compaction
     # fires. Must lie in the (0.0, 1.0] interval; values outside are
-    # rejected at config load.
+    # rejected at config load. A per-agent override is available via
+    # the agent manifest's `context_management.compaction_threshold`
+    # field: when non-zero it wins over this global. Precedence is
+    # manifest > global > 0 (disabled). The same (0, 1] range is
+    # enforced at manifest load.
     threshold: 0.75
   session_memory:
     enabled: true

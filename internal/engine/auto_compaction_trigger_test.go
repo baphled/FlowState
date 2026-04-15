@@ -205,13 +205,23 @@ func newTestEngineWithCompactorOptions(
 	cfg.AutoCompaction.Enabled = enabled
 	cfg.AutoCompaction.Threshold = threshold
 
+	// H3 — the T10 helper wires a global auto-compaction threshold
+	// via cfg.AutoCompaction.Threshold above. The new manifest-over-
+	// global precedence means DefaultContextManagement()'s 0.75 would
+	// silently override the caller's `threshold` argument. Zero-ing
+	// the manifest field restores the original "global wins" contract
+	// these tests depend on. Tests that specifically want to exercise
+	// the per-agent override live in auto_compaction_manifest_threshold_test.go.
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+
 	testManifest := agent.Manifest{
 		ID:   "t10-agent",
 		Name: "T10 Agent",
 		Instructions: agent.Instructions{
 			SystemPrompt: "sys",
 		},
-		ContextManagement: agent.DefaultContextManagement(),
+		ContextManagement: cm,
 	}
 
 	eng := engine.New(engine.Config{
