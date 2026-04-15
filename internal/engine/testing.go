@@ -64,15 +64,19 @@ func (e *Engine) BuildContextWindowForTesting(ctx context.Context, sessionID str
 //     builds for the same session would rebuild a new splitter. Tests
 //     using this helper must not reuse the sessionID afterwards.
 func (e *Engine) StopSessionSplitterForTesting(sessionID string) bool {
+	// C2: Stop+delete under the same critical section so this helper
+	// and the session.ended handler cannot interleave a mid-close
+	// map read with a mid-Stop channel close. Stop is idempotent via
+	// sync.Once, so the lock is about map-invariant clarity rather
+	// than Stop correctness.
 	e.splitterMu.Lock()
+	defer e.splitterMu.Unlock()
+
 	splitter, ok := e.sessionSplitters[sessionID]
-	if ok {
-		delete(e.sessionSplitters, sessionID)
-	}
-	e.splitterMu.Unlock()
 	if !ok {
 		return false
 	}
+	delete(e.sessionSplitters, sessionID)
 	splitter.Stop()
 	return true
 }
