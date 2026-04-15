@@ -110,6 +110,31 @@ log_level: info
 			})
 		})
 
+		Context("when micro-compaction is enabled with hot_tail_size of zero", func() {
+			// H4 regression. Under the current default-fill logic,
+			// writing `hot_tail_size: 0` in YAML is indistinguishable
+			// from omitting it — defaults fill the zero back to 5. The
+			// attack surface is any codepath that bypasses the default
+			// fill: direct struct construction, future pointer-tagged
+			// YAML fields, or a drifting merge-helper. Validation at
+			// load time is the backstop; it rejects the shape
+			// regardless of how it arrived.
+			It("returns a startup error rather than silently promoting every message to cold", func() {
+				// Build a config whose HotTailSize survives the
+				// applyCompressionDefaults pass: set Enabled true (so
+				// the check fires) and HotTailSize to a non-zero
+				// negative (−0 is indistinguishable from 0 at YAML
+				// load, but negatives survive the default fill).
+				cfg := &config.AppConfig{}
+				cfg.Compression.MicroCompaction.Enabled = true
+				cfg.Compression.MicroCompaction.HotTailSize = -1
+
+				err := config.ValidateForTest(cfg)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("hot_tail_size"))
+			})
+		})
+
 		Context("when the compression section overrides a subset of fields", func() {
 			It("round-trips provided values and fills the rest from defaults", func() {
 				configContent := `

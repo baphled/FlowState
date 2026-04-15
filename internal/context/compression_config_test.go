@@ -40,4 +40,51 @@ var _ = Describe("CompressionConfig", func() {
 			Expect(cfg.SessionMemory.StorageDir).To(Equal("~/.flowstate/session-memory"))
 		})
 	})
+
+	// H4 — Reject `hot_tail_size: 0` at config validation when
+	// micro-compaction is enabled. findColdBoundary treats zero as
+	// "everything is cold", which quietly spills the entire window on
+	// every turn. Catch it at load time instead.
+	Describe("Validate", func() {
+		It("accepts the default configuration", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts micro-compaction enabled with a sensible hot tail", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = true
+			cfg.MicroCompaction.HotTailSize = 3
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts hot_tail_size of zero when micro-compaction is disabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = false
+			cfg.MicroCompaction.HotTailSize = 0
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("rejects hot_tail_size of zero when micro-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = true
+			cfg.MicroCompaction.HotTailSize = 0
+
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("hot_tail_size"))
+			Expect(err.Error()).To(ContainSubstring("micro_compaction"))
+		})
+
+		It("rejects negative hot_tail_size when micro-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.MicroCompaction.Enabled = true
+			cfg.MicroCompaction.HotTailSize = -1
+
+			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+	})
 })
