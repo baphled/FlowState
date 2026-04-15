@@ -26,17 +26,23 @@ type buildOptions struct {
 	summary         string
 	semanticResults []recall.SearchResult
 	logWarnings     bool
+	// splitter is the per-call HotColdSplitter (Item 3). Nil means
+	// the caller did not supply WithSplitterOption for this Build.
+	splitter *HotColdSplitter
 }
 
 // WindowBuilder constructs context windows for agent conversations.
+//
+// Builders are safe to share across sessions. The splitter is supplied
+// per-call via BuildOption so concurrent callers do not race each
+// other's attachment (Item 3). Stateful fields (sessionMemory,
+// metrics, recorder) are attached via WithXxx setters and treated as
+// read-only after the engine has finished wiring; callers that need
+// to rebind those mid-flight must coordinate externally as before.
 type WindowBuilder struct {
 	counter    TokenCounter
 	chainLocks map[string]*sync.RWMutex
 	chainMu    sync.Mutex
-	// splitter, when non-nil, applies L1 micro-compaction to the recent
-	// messages slice before they are appended to the window. When nil,
-	// the existing skill-pair-aware path runs unchanged.
-	splitter *HotColdSplitter
 	// sessionMemory, when non-nil, causes buildInternal to prepend a
 	// "[session memory]:" block after the system prompt so facts,
 	// conventions, and preferences distilled in prior turns are visible
@@ -54,6 +60,66 @@ type WindowBuilder struct {
 	recorder tracer.Recorder
 }
 
+// BuildOption configures a single Build* call. Options are applied in
+// order to a freshly-constructed buildCall for each invocation, so
+// different goroutines calling Build* on a shared WindowBuilder see
+// their own per-call state — no cross-contamination of splitters or
+// other per-call inputs.
+type BuildOption func(*buildCall)
+
+// buildCall carries the per-invocation state threaded into the
+// internal build helpers. Fields populated by BuildOption; the zero
+// value corresponds to "no options supplied", equivalent to the
+// pre-Item-3 behaviour of a builder with no splitter attached.
+type buildCall struct {
+	// splitter, when non-nil, routes the recent messages slice through
+	// HotColdSplitter.Split before assembly. Nil preserves the legacy
+	// skill-pair-aware path.
+	splitter *HotColdSplitter
+}
+
+// WithSplitterOption is the Item 3 replacement for the deprecated
+// WithSplitter setter. Pass it to any Build* call to enable L1
+// micro-compaction on that single invocation. A nil splitter is
+// equivalent to supplying no option at all.
+//
+// Expected:
+//   - splitter is the HotColdSplitter bound to the currently-active
+//     session. The caller (engine) is responsible for constructing
+//     one per sessionID; the builder does not cache it.
+//
+// Returns:
+//   - A BuildOption that stores splitter on the per-call state.
+//
+// Side effects:
+//   - None (applied later inside Build*).
+func WithSplitterOption(splitter *HotColdSplitter) BuildOption {
+	return func(c *buildCall) { c.splitter = splitter }
+}
+
+// applyBuildOptions collects the supplied options into a buildCall.
+// Centralised so every Build* entry point has identical handling.
+//
+// Expected:
+//   - opts may be empty, contain nil entries, or contain any mix of
+//     BuildOption values produced by the WithXxxOption constructors.
+//
+// Returns:
+//   - A buildCall populated by applying every non-nil option in
+//     order. The zero value is returned when opts is empty.
+//
+// Side effects:
+//   - None. Options mutate the local buildCall only.
+func applyBuildOptions(opts []BuildOption) buildCall {
+	var call buildCall
+	for _, o := range opts {
+		if o != nil {
+			o(&call)
+		}
+	}
+	return call
+}
+
 // NewWindowBuilder creates a new context window builder with the given token counter.
 //
 // Expected:
@@ -67,39 +133,6 @@ type WindowBuilder struct {
 //   - None.
 func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 	return &WindowBuilder{counter: counter, chainLocks: make(map[string]*sync.RWMutex)}
-}
-
-// WithSplitter attaches an L1 HotColdSplitter to the builder. Subsequent
-// appendRecentMessages calls will route the recent slice through the
-// splitter before assembly.
-//
-// Known race: this setter mutates a shared field on a builder that is
-// reused across sessions. Correctness today depends on every caller
-// holding engine.buildWindowMu around the WithSplitter→Build* pair
-// (see internal/engine/engine.go:1682 "Attach-splitter-then-build must
-// be a single critical section"). A future code path that bypasses
-// buildWindowMu will race silently. M2 of the adversarial review
-// proposed moving the splitter to a per-call BuildOption; the refactor
-// touches seven public Build* signatures and is deferred for its own
-// delivery rather than expanding the scope of the current Medium-fix
-// cycle. See docs at the `splitter` field and the engine call site
-// for the interim constraint.
-//
-// Follow-up M2 (deferred): replace this setter with a per-call
-// BuildOption so the shared WindowBuilder can be used concurrently
-// without the engine's external lock.
-//
-// Expected:
-//   - splitter may be nil to detach a previously-attached splitter.
-//
-// Returns:
-//   - The receiver, for chaining.
-//
-// Side effects:
-//   - Mutates the builder. Callers MUST coordinate concurrent use.
-func (b *WindowBuilder) WithSplitter(splitter *HotColdSplitter) *WindowBuilder {
-	b.splitter = splitter
-	return b
 }
 
 // WithMetrics attaches a *CompressionMetrics counter set to the
@@ -169,14 +202,14 @@ func (b *WindowBuilder) WithSessionMemory(store *recall.SessionMemoryStore) *Win
 //
 // Side effects:
 //   - None.
-func (b *WindowBuilder) Build(manifest *agent.Manifest, store *recall.FileContextStore, tokenBudget int) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, buildOptions{})
+func (b *WindowBuilder) Build(manifest *agent.Manifest, store *recall.FileContextStore, tokenBudget int, opts ...BuildOption) BuildResult {
+	call := applyBuildOptions(opts)
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{splitter: call.splitter})
 }
 
 // BuildContext constructs a context window and appends the user message.
 //
 // Expected:
-//   - ctx is a valid context.Context.
 //   - manifest is a non-nil agent manifest.
 //   - userMessage is the user's input text; may be empty.
 //   - store is a non-nil recall.FileContextStore.
@@ -187,15 +220,20 @@ func (b *WindowBuilder) Build(manifest *agent.Manifest, store *recall.FileContex
 //
 // Side effects:
 //   - Logs a warning if the system prompt exceeds the token budget.
+//
+// Note: Item 3 dropped the unused context.Context parameter (it was
+// discarded via `_ = ctx`) so the variadic BuildOption slot brings
+// the argument count to exactly 5, satisfying the project's
+// argument-limit lint rule without a nolint escape hatch.
 func (b *WindowBuilder) BuildContext(
-	ctx context.Context,
 	manifest *agent.Manifest,
 	userMessage string,
 	store *recall.FileContextStore,
 	tokenBudget int,
+	opts ...BuildOption,
 ) []provider.Message {
-	_ = ctx
-	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true})
+	call := applyBuildOptions(opts)
+	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true, splitter: call.splitter})
 
 	if userMessage != "" {
 		result.Messages = append(result.Messages, provider.Message{
@@ -210,7 +248,6 @@ func (b *WindowBuilder) BuildContext(
 // BuildContextResult constructs a context window and returns the full BuildResult including token counts.
 //
 // Expected:
-//   - ctx is a valid context.Context.
 //   - manifest is a non-nil agent manifest.
 //   - userMessage is the user's input text; may be empty.
 //   - store is a non-nil recall.FileContextStore.
@@ -221,15 +258,19 @@ func (b *WindowBuilder) BuildContext(
 //
 // Side effects:
 //   - Logs a warning if the system prompt exceeds the token budget.
+//
+// Note: same context-drop as BuildContext — the ctx parameter was
+// vestigial (`_ = ctx`) so removing it keeps the variadic slot
+// within the argument-limit lint budget.
 func (b *WindowBuilder) BuildContextResult(
-	ctx context.Context,
 	manifest *agent.Manifest,
 	userMessage string,
 	store *recall.FileContextStore,
 	tokenBudget int,
+	opts ...BuildOption,
 ) BuildResult {
-	_ = ctx
-	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true})
+	call := applyBuildOptions(opts)
+	result := b.buildInternal(manifest, store, tokenBudget, buildOptions{logWarnings: true, splitter: call.splitter})
 
 	if userMessage != "" {
 		userTokens := b.counter.Count(userMessage)
@@ -284,9 +325,12 @@ func (b *WindowBuilder) BuildContextWithChainResult(
 	manifest *agent.Manifest,
 	userMessage string,
 	opts ChainBuildOptions,
+	buildOpts ...BuildOption,
 ) BuildResult {
 	_ = ctx
-	result := b.buildInternalWithChain(manifest, opts.store, opts.chainStore, opts.tokenBudget, buildOptions{logWarnings: true})
+	call := applyBuildOptions(buildOpts)
+	inner := buildOptions{logWarnings: true, splitter: call.splitter}
+	result := b.buildInternalWithChain(manifest, opts.store, opts.chainStore, opts.tokenBudget, inner)
 
 	if userMessage != "" {
 		userTokens := b.counter.Count(userMessage)
@@ -316,8 +360,10 @@ func (b *WindowBuilder) BuildWithSummary(
 	store *recall.FileContextStore,
 	tokenBudget int,
 	summary string,
+	opts ...BuildOption,
 ) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, buildOptions{summary: summary})
+	call := applyBuildOptions(opts)
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{summary: summary, splitter: call.splitter})
 }
 
 // BuildWithSemanticResults constructs a context window including semantic search results.
@@ -338,8 +384,10 @@ func (b *WindowBuilder) BuildWithSemanticResults(
 	store *recall.FileContextStore,
 	tokenBudget int,
 	semanticResults []recall.SearchResult,
+	opts ...BuildOption,
 ) BuildResult {
-	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults})
+	call := applyBuildOptions(opts)
+	return b.buildInternal(manifest, store, tokenBudget, buildOptions{semanticResults: semanticResults, splitter: call.splitter})
 }
 
 // buildInternalWithChain constructs a context window with chain context assembly.
@@ -380,7 +428,7 @@ func (b *WindowBuilder) buildInternalWithChain(
 	messages, budget = b.appendChainContext(messages, budget, chainStore)
 
 	state := &messageState{messages: messages, seenIDs: seenIDs, budget: budget, truncated: truncated}
-	b.appendRecentMessages(store, manifest, state)
+	b.appendRecentMessages(store, manifest, state, opts.splitter)
 	messages = state.messages
 	truncated = state.truncated
 
@@ -487,7 +535,7 @@ func (b *WindowBuilder) buildInternal(
 	messages, seenIDs, budget = b.appendSemanticResults(messages, seenIDs, budget, opts.semanticResults)
 
 	state := &messageState{messages: messages, seenIDs: seenIDs, budget: budget, truncated: truncated}
-	b.appendRecentMessages(store, manifest, state)
+	b.appendRecentMessages(store, manifest, state, opts.splitter)
 	messages = state.messages
 	truncated = state.truncated
 
@@ -781,6 +829,7 @@ func (b *WindowBuilder) appendRecentMessages(
 	store *recall.FileContextStore,
 	manifest *agent.Manifest,
 	state *messageState,
+	splitter *HotColdSplitter,
 ) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
@@ -789,8 +838,8 @@ func (b *WindowBuilder) appendRecentMessages(
 
 	recentMessages := store.GetRecent(slidingWindowSize)
 
-	if b.splitter != nil {
-		b.appendCompactedRecentMessages(recentMessages, state)
+	if splitter != nil {
+		b.appendCompactedRecentMessages(recentMessages, state, splitter)
 		return
 	}
 
@@ -821,8 +870,9 @@ func (b *WindowBuilder) appendRecentMessages(
 func (b *WindowBuilder) appendCompactedRecentMessages(
 	recentMessages []provider.Message,
 	state *messageState,
+	splitter *HotColdSplitter,
 ) {
-	split := b.splitter.Split(recentMessages)
+	split := splitter.Split(recentMessages)
 
 	if b.metrics != nil {
 		b.metrics.MicroCompactionCount += len(split.ColdRecords)

@@ -131,12 +131,10 @@ type Engine struct {
 	sweeperStop sweeperStopFunc
 	sweeperDone chan struct{}
 
-	// buildWindowMu serialises the attach-splitter-then-build pair so
-	// that two concurrent buildContextWindow calls for different
-	// sessions cannot see each other's splitter on the shared
-	// WindowBuilder. Scoped to this path only; the broader engine
-	// locking via mu is unchanged.
-	buildWindowMu sync.Mutex
+	// Item 3 removed buildWindowMu. The splitter now flows through
+	// WindowBuilder as a per-call BuildOption, so concurrent Build*
+	// invocations on the shared builder cannot contaminate each
+	// other's splitter. No other invariants depended on the mutex.
 
 	mu sync.RWMutex
 }
@@ -628,15 +626,13 @@ func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
 	if cfg.Recorder != nil {
 		builder = builder.WithRecorder(cfg.Recorder)
 	}
-	// Splitter attachment is deliberately deferred to
-	// Engine.ensureSessionSplitter — each HotColdSplitter is bound to
-	// a specific {StorageDir, SessionID} pair so a process-wide
-	// instance cannot serve multiple sessions. The engine lazily
-	// constructs one splitter per live sessionID inside
-	// buildContextWindow, attaches it via WithSplitter under
-	// buildWindowMu, then runs the build. This keeps the existing
-	// public constructor signature stable while fixing the gap where
-	// MicroCompaction.Enabled was a silent no-op in production.
+	// Splitter attachment is deferred to buildContextWindow: each
+	// HotColdSplitter is bound to a specific {StorageDir, SessionID}
+	// pair, so a process-wide instance cannot serve multiple
+	// sessions. Engine.ensureSessionSplitter constructs one splitter
+	// per live sessionID, and Item 3 passes it into each Build* call
+	// via ctxstore.WithSplitterOption so the shared WindowBuilder is
+	// safe to use concurrently.
 	return builder
 }
 
@@ -1853,14 +1849,12 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	tokenBudget := e.ModelContextLimit()
 	systemPrompt := e.BuildSystemPrompt()
 
-	// Attach-splitter-then-build must be a single critical section so
-	// concurrent sessions do not swap each other's splitter on the
-	// shared WindowBuilder between the WithSplitter call and the
-	// Build* call. The swap happens outside e.mu so the existing
-	// manifest RLock can coexist with the build.
-	e.buildWindowMu.Lock()
-	defer e.buildWindowMu.Unlock()
-	e.windowBuilder.WithSplitter(e.ensureSessionSplitter(ctx, sessionID))
+	// Item 3 — splitter is a per-Build option so the shared
+	// WindowBuilder no longer needs external serialisation to avoid
+	// cross-session contamination. The previous buildWindowMu has
+	// been removed; each Build* call receives its own splitter via
+	// WithSplitterOption, constructed below.
+	splitterOpt := ctxstore.WithSplitterOption(e.ensureSessionSplitter(ctx, sessionID))
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -1875,7 +1869,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	var result ctxstore.BuildResult
 	switch {
 	case len(searchResults) > 0:
-		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults)
+		result = e.windowBuilder.BuildWithSemanticResults(&manifestCopy, e.store, tokenBudget, searchResults, splitterOpt)
 		if userMessage != "" {
 			userTokens := e.tokenCounter.Count(userMessage)
 			result.Messages = append(result.Messages, provider.Message{
@@ -1886,7 +1880,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			result.BudgetRemaining -= userTokens
 		}
 	case compactedSummary != "":
-		result = e.windowBuilder.BuildWithSummary(&manifestCopy, e.store, tokenBudget, compactedSummary)
+		result = e.windowBuilder.BuildWithSummary(&manifestCopy, e.store, tokenBudget, compactedSummary, splitterOpt)
 		if userMessage != "" {
 			userTokens := e.tokenCounter.Count(userMessage)
 			result.Messages = append(result.Messages, provider.Message{
@@ -1897,7 +1891,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			result.BudgetRemaining -= userTokens
 		}
 	default:
-		result = e.windowBuilder.BuildContextResult(ctx, &manifestCopy, userMessage, e.store, tokenBudget)
+		result = e.windowBuilder.BuildContextResult(&manifestCopy, userMessage, e.store, tokenBudget, splitterOpt)
 	}
 
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
