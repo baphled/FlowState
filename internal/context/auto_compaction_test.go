@@ -463,6 +463,84 @@ func TestAutoCompactor_Compact_RejectsSummaryWithOpenAIToolID(t *testing.T) {
 	}
 }
 
+// TestAutoCompactor_Compact_AllowsEnglishPhrasesWithUnderscoredCallPrefix
+// pins M4 — the prior regex treated `_` as a word character in its `\b`
+// anchors and allowed up to {16,} alphanumeric-plus-`_-` characters in
+// the body. English snake_case phrases like
+// `call_me_back_for_review_team_leader` therefore tripped the guard as
+// a false positive. Real provider-emitted and translated tool-call ids
+// have only alphanumeric characters after the prefix (see
+// shared.TranslateToolCallID hex suffix, and the wire IDs produced by
+// the Anthropic and OpenAI APIs), so tightening the body character
+// class to `[A-Za-z0-9]` is both safe and precise.
+func TestAutoCompactor_Compact_AllowsEnglishPhrasesWithUnderscoredCallPrefix(t *testing.T) {
+	t.Parallel()
+
+	phrases := []string{
+		"call_me_back_for_review_team_leader",
+		"please call_me_back_for_review_team_leader soon",
+		"the call_handler_impl_function_name is documented",
+		"register the call_back_hook_when_the_user_asks listener",
+	}
+
+	for _, phrase := range phrases {
+		p := phrase
+		t.Run(p, func(t *testing.T) {
+			t.Parallel()
+			summariser := &fakeSummariser{
+				response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+					s.Intent = p
+				}),
+			}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			if _, err := compactor.Compact(context.Background(), sampleMessages()); err != nil {
+				t.Fatalf("Compact: legitimate English phrase tripped forbidden-id guard: phrase=%q err=%v", p, err)
+			}
+		})
+	}
+}
+
+// TestAutoCompactor_Compact_StillRejectsRealProviderIDs is the
+// complementary M4 positive guard — the tightened regex must still
+// reject every real-world tool-call id shape:
+//
+//   - Anthropic native: "toolu_" + base64-ish alnum (e.g. toolu_01ABC...).
+//   - OpenAI native: "call_" + alnum (e.g. call_1234567890abcdef).
+//   - Translated (shared.TranslateToolCallID): prefix + 24 hex chars,
+//     all alnum, emitted when failover rewrites an id.
+func TestAutoCompactor_Compact_StillRejectsRealProviderIDs(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"anthropic-native":  "the earlier toolu_01ABCDEF0123456789 call failed",
+		"openai-native":     "the earlier call_1234567890abcdef run",
+		"translated-openai": "the failover produced call_abcdef1234567890abcdef01",
+		"translated-anth":   "the failover produced toolu_abcdef1234567890abcdef01",
+	}
+
+	for name, phrase := range cases {
+		p := phrase
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			summariser := &fakeSummariser{
+				response: sampleSummaryJSON(t, func(s *contextpkg.CompactionSummary) {
+					s.Intent = p
+				}),
+			}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			_, err := compactor.Compact(context.Background(), sampleMessages())
+			if err == nil {
+				t.Fatalf("Compact: real tool-call id slipped the tightened regex: phrase=%q", p)
+			}
+			if !errors.Is(err, contextpkg.ErrInvalidSummary) {
+				t.Fatalf("Compact: err = %v; want ErrInvalidSummary", err)
+			}
+		})
+	}
+}
+
 // TestAutoCompactor_Compact_AllowsSummaryThatMerelyMentionsToolWord
 // asserts the regex is a precise id matcher, not a word filter. A
 // summary that uses the literal word "tool" (very common) must not be
