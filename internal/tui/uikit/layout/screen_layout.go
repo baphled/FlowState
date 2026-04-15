@@ -471,11 +471,7 @@ func (sl *ScreenLayout) Render() string {
 		}
 	}
 
-	contentStyle := lipgloss.NewStyle().
-		Width(sl.TerminalInfo.Width).
-		Height(contentAreaHeight).
-		MaxHeight(contentAreaHeight)
-	contentView := contentStyle.Render(contentToRender)
+	contentView := sl.composeContentBand(contentToRender, sl.TerminalInfo.Width, contentAreaHeight, theme)
 
 	var allParts []string
 	if header != "" {
@@ -498,6 +494,83 @@ func (sl *ScreenLayout) Render() string {
 	}
 
 	return rendered
+}
+
+// dualPaneMinWidth is the minimum terminal width at which the secondary
+// pane is rendered. Below this threshold the layout falls back to a
+// single-pane render so that the primary content remains readable.
+const dualPaneMinWidth = 80
+
+// dualPaneSeparator is the vertical rule drawn between the primary and
+// secondary panes. A single rune keeps the split arithmetic exact.
+const dualPaneSeparator = "│"
+
+// composeContentBand renders the central content band. When a secondary
+// pane is configured and the terminal is wide enough, the band is split
+// 70/30 with a single separator column between the panes; otherwise it
+// falls back to a single-pane render covering the full width.
+//
+// Expected:
+//   - primary is the already style-applied primary content.
+//   - totalWidth is the terminal width in columns.
+//   - height is the vertical space available for the content band.
+//   - theme provides separator styling.
+//
+// Returns:
+//   - The rendered content band sized to totalWidth x height.
+//
+// Side effects:
+//   - None.
+func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height int, theme themes.Theme) string {
+	if sl.secondaryContent == "" || totalWidth < dualPaneMinWidth {
+		single := lipgloss.NewStyle().
+			Width(totalWidth).
+			Height(height).
+			MaxHeight(height)
+		return single.Render(primary)
+	}
+
+	primaryWidth, secondaryWidth := splitPaneWidths(totalWidth)
+
+	primaryStyle := lipgloss.NewStyle().
+		Width(primaryWidth).
+		Height(height).
+		MaxHeight(height)
+	secondaryStyle := lipgloss.NewStyle().
+		Width(secondaryWidth).
+		Height(height).
+		MaxHeight(height)
+	separatorStyle := lipgloss.NewStyle().
+		Foreground(theme.BorderColor()).
+		Height(height)
+
+	separatorCol := separatorStyle.Render(strings.Repeat(dualPaneSeparator+"\n", height-1) + dualPaneSeparator)
+
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		primaryStyle.Render(primary),
+		separatorCol,
+		secondaryStyle.Render(sl.secondaryContent),
+	)
+}
+
+// splitPaneWidths computes the integer-math 70/30 split for the dual-pane
+// band. Primary absorbs at most one extra column when the available width
+// is not divisible by ten, matching the contract matrix in the ADR.
+//
+// Expected:
+//   - totalWidth is the terminal width; caller must ensure totalWidth >= dualPaneMinWidth.
+//
+// Returns:
+//   - primaryWidth, secondaryWidth such that primaryWidth + 1 + secondaryWidth == totalWidth.
+//
+// Side effects:
+//   - None.
+func splitPaneWidths(totalWidth int) (int, int) {
+	available := totalWidth - 1 // reserve one column for the separator
+	primary := (available * 7) / 10
+	secondary := available - primary
+	return primary, secondary
 }
 
 // dimContent applies a dimming effect to the content.
