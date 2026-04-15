@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // Minimum usable dimensions below which the pane renders nothing.
@@ -38,6 +40,7 @@ var defaultItems = []string{
 type SwarmActivityPane struct {
 	title       string
 	items       []string
+	events      []streaming.SwarmEvent
 	headerStyle lipgloss.Style
 	bodyStyle   lipgloss.Style
 }
@@ -91,22 +94,90 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+// WithEvents swaps the pane's body source from placeholder items to the
+// supplied swarm events. Passing a nil or empty slice preserves the
+// placeholder fallback so Wave 1 transition tests continue to render.
+//
+// Expected:
+//   - events is the ordered list of events (oldest first) to render.
+//
+// Returns:
+//   - The receiver, to support fluent builder-style configuration.
+//
+// Side effects:
+//   - Stores a reference to the supplied slice on the receiver. Callers
+//     that mutate the slice afterwards will see the change reflected on
+//     the next Render; the chat intent always supplies a fresh
+//     SwarmEventStore.All() copy so this is safe in practice.
+func (p *SwarmActivityPane) WithEvents(events []streaming.SwarmEvent) *SwarmActivityPane {
+	p.events = events
+	return p
+}
+
 // bodyLines returns the styled, width-truncated body lines.
 //
 // Expected:
 //   - width is the visible cell budget per line.
 //
 // Returns:
-//   - A slice of styled lines, one per placeholder item.
+//   - A slice of styled lines, one per active body entry (events when set,
+//     placeholder items otherwise).
 //
 // Side effects:
 //   - None.
 func (p *SwarmActivityPane) bodyLines(width int) []string {
-	out := make([]string, 0, len(p.items))
-	for _, item := range p.items {
+	source := p.activeBodySource()
+	out := make([]string, 0, len(source))
+	for _, item := range source {
 		out = append(out, p.bodyStyle.Render(truncate(item, width)))
 	}
 	return out
+}
+
+// activeBodySource returns the raw, unstyled body strings to render.
+//
+// When events are set, they take precedence and are formatted as
+// "▸ {Type} · {AgentID} · {Status}" so the pane surfaces real swarm
+// activity. An empty events slice is treated as "no events yet" and falls
+// back to the placeholder items introduced in T5 so tests during the
+// Wave 1 transition still render content.
+//
+// Returns:
+//   - The slice of body strings in render order (oldest first).
+//
+// Side effects:
+//   - None.
+func (p *SwarmActivityPane) activeBodySource() []string {
+	if len(p.events) == 0 {
+		return p.items
+	}
+	out := make([]string, 0, len(p.events))
+	for _, ev := range p.events {
+		out = append(out, formatEvent(ev))
+	}
+	return out
+}
+
+// formatEvent renders a single SwarmEvent as a concise activity line.
+//
+// Expected:
+//   - ev is a populated SwarmEvent.
+//
+// Returns:
+//   - A single-line string of the form "▸ {Type} · {AgentID} · {Status}".
+//
+// Side effects:
+//   - None.
+func formatEvent(ev streaming.SwarmEvent) string {
+	agent := ev.AgentID
+	if agent == "" {
+		agent = "-"
+	}
+	status := ev.Status
+	if status == "" {
+		status = "-"
+	}
+	return "▸ " + string(ev.Type) + " · " + agent + " · " + status
 }
 
 // truncate shortens s so that its visual width does not exceed max cells,

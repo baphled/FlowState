@@ -356,6 +356,21 @@ func (i *Intent) LastEscTimeForTest() time.Time {
 	return i.lastEscTime
 }
 
+// SwarmStoreForTest returns the swarm event store for test assertions.
+func (i *Intent) SwarmStoreForTest() streaming.SwarmEventStore {
+	return i.swarmStore
+}
+
+// SetSwarmStoreForTest replaces the swarm event store for test isolation.
+func (i *Intent) SetSwarmStoreForTest(store streaming.SwarmEventStore) {
+	i.swarmStore = store
+}
+
+// SwarmEventFromChunkForTest exposes swarmEventFromChunk for test assertions.
+func SwarmEventFromChunkForTest(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
+	return swarmEventFromChunk(msg, fallbackAgent)
+}
+
 // InstallStreamCancelForTest installs a cancellable context cancel func on the
 // intent and returns a pointer to a flag that will flip to true when the cancel
 // function is invoked. Useful for asserting double-Esc cancellation without a
