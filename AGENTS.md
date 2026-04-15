@@ -47,6 +47,40 @@ git branch -d feature/my-feature
 | **Full check** | `make check` |
 | **Install hooks** | `make install-hooks` |
 
+## Keybindings
+
+The chat intent's keyboard shortcuts are listed below. Use `Ctrl+T` to toggle the swarm activity pane that renders delegation, tool-call, plan, and review events in real time. The activity pane is visible by default; toggling hides it and falls back to a single-pane layout.
+
+### Chat intent
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send the current message |
+| `Alt+Enter` | Insert a new line in the input buffer |
+| `Tab` | Cycle the active agent |
+| `Esc` | Dismiss modals, pickers, or the session viewer; otherwise no-op |
+| `Ctrl+C` | Cancel the active stream, save the session, and quit |
+| `Ctrl+D` | Open the delegation picker |
+| `Ctrl+A` | Open the agent picker |
+| `Ctrl+P` | Open the model selector |
+| `Ctrl+S` | Open the session browser |
+| `Ctrl+T` | Toggle the swarm activity pane (visible by default) |
+| `↑` / `↓` | Scroll the message viewport line by line |
+| `PgUp` / `PgDn` | Scroll the message viewport a page at a time |
+| `Home` / `End` | Jump to the top or bottom of the message viewport |
+
+### Reserved bindings
+
+The following bindings are reserved for later waves of the Multi-Agent Chat UX plan and are **not yet active**:
+
+- `Ctrl+G` — reserved for the Wave 2 session tree.
+- `Ctrl+E` — reserved for the Wave 3 event-detail drill-down.
+
+### Notes
+
+- **Narrow terminals.** On terminals narrower than 80 columns the activity pane is suppressed; the `Ctrl+T` keybinding remains bound but has no visible effect.
+- **`Ctrl+S` and XOFF.** Some terminals intercept `Ctrl+S` as XOFF flow-control, which can present as an apparent freeze. If you hit this, run `stty -ixon` before launching FlowState.
+
 ## Commit Rules (MANDATORY — NO EXCEPTIONS)
 
 **CRITICAL: ALL commits MUST use `make ai-commit`. NEVER use `git commit` directly.**
