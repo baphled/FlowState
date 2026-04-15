@@ -1,6 +1,10 @@
 package context
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"math"
+)
 
 // CompressionConfig configures the three-layer context compression system.
 //
@@ -157,6 +161,12 @@ func DefaultCompressionConfig() CompressionConfig {
 //     spills the entire conversation to disk on every turn. That is
 //     never what the operator wanted — a zero hot tail only makes
 //     sense when the feature is off.
+//   - When AutoCompaction.Enabled is true, Threshold must be a finite
+//     float in the (0.0, 1.0] interval. A value outside this range is
+//     either inert (ratios never exceed it) or pathological (fires on
+//     every turn). NaN is specifically rejected because Go's ordering
+//     operators return false against NaN, so the ratio compare in
+//     maybeAutoCompact would silently never trigger.
 //
 // Expected:
 //   - Called from config loaders after defaults have been applied.
@@ -177,6 +187,25 @@ func (c CompressionConfig) Validate() error {
 				"and defeats the purpose of the feature",
 			c.MicroCompaction.HotTailSize,
 		)
+	}
+	if c.AutoCompaction.Enabled {
+		t := c.AutoCompaction.Threshold
+		if math.IsNaN(t) {
+			return errors.New(
+				"compression: auto_compaction.threshold must be a finite " +
+					"fraction in (0.0, 1.0] when auto_compaction.enabled is " +
+					"true; got NaN, which never compares true and would " +
+					"silently disable the layer")
+		}
+		if t <= 0.0 || t > 1.0 {
+			return fmt.Errorf(
+				"compression: auto_compaction.threshold must be in the "+
+					"(0.0, 1.0] interval when auto_compaction.enabled is "+
+					"true (got %v); values <= 0 never trigger, values > 1 "+
+					"trigger every turn",
+				t,
+			)
+		}
 	}
 	return nil
 }
