@@ -32,6 +32,15 @@ func (e *Engine) LastCompactionSummaryForTest() *ctxstore.CompactionSummary {
 	return e.LastCompactionSummary()
 }
 
+// SessionCompressionMetricsForTest is a thin re-export of the public
+// SessionCompressionMetrics method, matching the naming convention of
+// the other For-Test helpers in this file. Tests read the per-session
+// compression ledger through this to keep the assertion surface
+// consistent.
+func (e *Engine) SessionCompressionMetricsForTest(sessionID string) ctxstore.CompressionMetrics {
+	return e.SessionCompressionMetrics(sessionID)
+}
+
 // SessionSplitterForTest exposes the engine's lazily-cached per-session
 // HotColdSplitter to wiring tests. Returns nil when MicroCompaction is
 // disabled or the session has not built a window yet. Internal

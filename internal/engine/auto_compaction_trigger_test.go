@@ -138,16 +138,21 @@ func newTestEngineWithCompactor(
 // *ctxstore.CompressionMetrics so tests can assert engine-side
 // accounting (TokensSaved, AutoCompactionCount). Passing nil matches
 // the legacy behaviour where no metrics struct is wired.
+//
+// The threshold/enabled parameters removed by this signature reflect
+// the observed call-site reality: every caller wires the default 0.60
+// fraction with compaction enabled. Callers that eventually need
+// different values should call newTestEngineWithCompactorOptions
+// directly rather than re-introducing always-same parameters here
+// (unparam would flag them again).
 func newTestEngineWithCompactorRecorderAndMetrics(
 	t *testing.T,
 	summariser ctxstore.Summariser,
-	threshold float64,
-	enabled bool,
 	recorder tracer.Recorder,
 	metrics *ctxstore.CompressionMetrics,
 ) (*engine.Engine, *recall.FileContextStore) {
 	t.Helper()
-	return newTestEngineWithCompactorOptions(t, summariser, threshold, enabled, recorder, metrics)
+	return newTestEngineWithCompactorOptions(t, summariser, 0.60, true, recorder, metrics)
 }
 
 // newTestEngineWithCompactorAndRecorder extends newTestEngineWithCompactor
@@ -581,7 +586,7 @@ func TestBuildContextWindowAutoCompaction_OverheadSummary_RecordsOverheadCounter
 	summariser := &recordingSummariser{response: string(data)}
 	rec := &engineTestRecorder{}
 	metrics := &ctxstore.CompressionMetrics{}
-	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, 0.60, true, rec, metrics)
+	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, rec, metrics)
 
 	seedMessages(t, store)
 	_ = eng.BuildContextWindowForTest(context.Background(), "session-overhead", "next user turn")
@@ -632,7 +637,7 @@ func TestBuildContextWindowAutoCompaction_NetSavings_NoOverheadCounter(t *testin
 	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
 	rec := &engineTestRecorder{}
 	metrics := &ctxstore.CompressionMetrics{}
-	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, 0.60, true, rec, metrics)
+	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, rec, metrics)
 
 	seedMessages(t, store)
 	_ = eng.BuildContextWindowForTest(context.Background(), "session-savings", "next user turn")
