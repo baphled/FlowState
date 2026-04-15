@@ -521,6 +521,11 @@ const dualPaneSeparator = "│"
 //
 // Side effects:
 //   - None.
+//
+// theme is retained for future themed separator accents; the Wave 1
+// accessibility fix intentionally drops the Foreground override.
+//
+//nolint:unparam // see note above.
 func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height int, theme themes.Theme) string {
 	if sl.secondaryContent == "" || totalWidth < dualPaneMinWidth {
 		single := lipgloss.NewStyle().
@@ -532,6 +537,12 @@ func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height in
 
 	primaryWidth, secondaryWidth := splitPaneWidths(totalWidth)
 
+	// The separator inherits the terminal default foreground rather than
+	// theme.BorderColor(). BorderColor (~#3d4454) on the default background
+	// yields ~1.68:1 contrast — below the WCAG 1.4.11 Non-Text Contrast
+	// floor of 3:1. Rendering without a Foreground override lets the glyph
+	// pick up the theme's ForegroundColor (~10.15:1). The theme parameter
+	// is retained for future themed accents. See Wave 1 accessibility B1.
 	primaryStyle := lipgloss.NewStyle().
 		Width(primaryWidth).
 		Height(height).
@@ -541,7 +552,6 @@ func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height in
 		Height(height).
 		MaxHeight(height)
 	separatorStyle := lipgloss.NewStyle().
-		Foreground(theme.BorderColor()).
 		Height(height)
 
 	separatorCol := separatorStyle.Render(strings.Repeat(dualPaneSeparator+"\n", height-1) + dualPaneSeparator)

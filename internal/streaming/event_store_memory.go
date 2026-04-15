@@ -2,9 +2,18 @@ package streaming
 
 import "sync"
 
-// defaultSwarmStoreCapacity is the fallback capacity applied when
+// DefaultSwarmStoreCapacity is the fallback capacity applied when
 // NewMemorySwarmStore is invoked with a non-positive capacity.
-const defaultSwarmStoreCapacity = 15
+//
+// 200 events is roughly 3 minutes of typical activity (~1 event/sec during
+// active delegation). This matches the "what did my agents just do?" live-
+// awareness contract without claiming scroll-back history — Wave 3 owns
+// persistent event storage. The capacity exceeds the visible body line
+// count on tall terminals (a 60-row terminal shows ~40 body lines in the
+// activity pane) while keeping memory trivial: 200 × sizeof(SwarmEvent)
+// is well under 80 KB per chat session. Raising the value is a behavioural
+// change — update the matching test fixtures when it moves again.
+const DefaultSwarmStoreCapacity = 200
 
 // MemorySwarmStore is a thread-safe, fixed-capacity, oldest-first-eviction
 // in-memory implementation of SwarmEventStore.
@@ -23,7 +32,7 @@ type MemorySwarmStore struct {
 //
 // Expected:
 //   - capacity is the maximum number of events the store retains; values <= 0
-//     fall back to defaultSwarmStoreCapacity.
+//     fall back to DefaultSwarmStoreCapacity.
 //
 // Returns:
 //   - A ready-to-use *MemorySwarmStore.
@@ -32,7 +41,7 @@ type MemorySwarmStore struct {
 //   - None.
 func NewMemorySwarmStore(capacity int) *MemorySwarmStore {
 	if capacity <= 0 {
-		capacity = defaultSwarmStoreCapacity
+		capacity = DefaultSwarmStoreCapacity
 	}
 	return &MemorySwarmStore{
 		events:   make([]SwarmEvent, 0, capacity),
