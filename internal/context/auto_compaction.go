@@ -300,6 +300,18 @@ func validateSummary(summary CompactionSummary) error {
 	if len(summary.NextSteps) == 0 {
 		return fmt.Errorf("%w: field next_steps is empty", ErrInvalidSummary)
 	}
+	// M1 — each NextSteps entry must be non-empty after TrimSpace.
+	// `len(NextSteps) == 0` alone accepts `[""]` and `[" "]`, both of
+	// which render as blank continuation bullets at rehydration time.
+	// NextSteps is the continuation anchor; every entry is expected to
+	// carry a concrete follow-up, and a summariser producing blanks is
+	// either drifting or confused — either way the safe response is
+	// to reject.
+	for i, step := range summary.NextSteps {
+		if strings.TrimSpace(step) == "" {
+			return fmt.Errorf("%w: field next_steps[%d] is empty after trim", ErrInvalidSummary, i)
+		}
+	}
 	if field, leak, ok := findForbiddenToolID(summary); ok {
 		return fmt.Errorf("%w: field %s leaks forbidden tool-call identifier %q", ErrInvalidSummary, field, leak)
 	}
