@@ -142,7 +142,13 @@ Compression activity is observable through three channels:
   - `flowstate_compression_overhead_tokens_total` — cumulative absolute tokens added by L2 when the summary scaffold exceeded the compacted range. Paired with the saved counter so a flat tokens-saved value can be disambiguated between "layer disabled" and "every pass produced overhead".
   - `flowstate_context_window_tokens` — gauge of the most recently assembled window size per agent.
 
-The Prometheus counters are registered per-engine, so the `/metrics` endpoint reflects the `flowstate serve` engine only. Ephemeral `flowstate run` invocations do not feed these counters. A compacted-view cache-hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.
+The Prometheus counters are registered per-engine, so the `/metrics` endpoint reflects the `flowstate serve` engine only. Ephemeral `flowstate run` invocations are separate processes with their own Prometheus registry and do not feed these counters. For ad-hoc per-turn visibility on the CLI path use `flowstate run --stats`, which prints a one-line summary to stderr:
+
+```
+compression: micro=N auto=N tokens_saved=N overhead=N
+```
+
+`--stats` writes to stderr so it composes cleanly with `--json` on stdout. A compacted-view cache-hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.
 
 ### When compression pays off
 
