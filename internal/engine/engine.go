@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,14 @@ type Engine struct {
 	// does not rob session B of its own ContextCompactedEvent and
 	// per-session metrics bump.
 	sessionCompactionMemo map[string]sessionCompactionMemoEntry
+	// sessionRehydrated tracks which sessions have already consumed
+	// their compaction summary's FilesToRestore, so the next turn
+	// after a compaction rehydrates exactly once rather than re-
+	// reading the same files on every subsequent build. The set
+	// invalidates when the compaction summary changes (a fresh
+	// compaction produced a new summary with its own FilesToRestore)
+	// and on session.ended.
+	sessionRehydrated map[string]struct{}
 	// compressionMetrics, when non-nil, is shared with the window
 	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
 	// successful L2 compaction so operators have a single counter set
@@ -316,6 +325,7 @@ func New(cfg Config) *Engine {
 		sessionSplitters:          make(map[string]*sessionSplitterEntry),
 		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
+		sessionRehydrated:         make(map[string]struct{}),
 	}
 	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
 	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
@@ -419,8 +429,10 @@ func (e *Engine) handleSessionEnded(evt any) {
 	// sessions would otherwise accumulate memo entries forever with
 	// the same lifetime problem the splitter cache and metrics map
 	// had before their own eviction hooks.
+	// H1 — same lifetime for the rehydration-consumed flag.
 	e.buildStateMu.Lock()
 	delete(e.sessionCompactionMemo, sessionID)
+	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
 	e.splitterMu.Lock()
@@ -1950,6 +1962,13 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 		splitterOpt:      splitterOpt,
 	})
 
+	// H1 — rehydrate FilesToRestore once per compaction summary.
+	// Must happen after assembleBuildResult so the rehydrated
+	// messages are inserted into the already-formed window rather
+	// than participating in token-budget decisions for which the
+	// WindowBuilder has no knowledge of the extra content.
+	result.Messages = e.maybeRehydrate(sessionID, result.Messages)
+
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
 	e.attributeMicroCompactionToSession(sessionID, microBefore)
@@ -2076,11 +2095,153 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		hash:    currentHash,
 		summary: &summaryCopy,
 	}
+	// H1 — a fresh compaction produces a new summary with its own
+	// FilesToRestore. Clear the consumed flag so buildContextWindow
+	// knows to rehydrate against this new summary on the next turn.
+	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
 
 	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
 	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
 	return summaryText
+}
+
+// maybeRehydrate resolves the FilesToRestore listed on the session's
+// current CompactionSummary and returns a new message slice with the
+// file contents inserted just before the trailing user turn, or
+// before the tail if no user turn is present.
+//
+// Consume-once semantics: the first call after a fresh compaction
+// reads the files and sets the sessionRehydrated flag; subsequent
+// builds that see the same summary skip the disk I/O and return msgs
+// unchanged. The flag clears when a new compaction produces a new
+// summary (see maybeAutoCompact) and when the session ends.
+//
+// Graceful degradation on missing files: the audit flagged re-read
+// of moved/deleted files as a real risk. A read failure on any
+// listed path logs a warning and skips that file; the rest of the
+// rehydration still fires. The build never aborts.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//   - msgs is the already-assembled window, including the trailing
+//     user turn the Summary path appends via appendUserMessageToResult.
+//
+// Returns:
+//   - msgs unchanged when rehydration is not applicable (no summary,
+//     no autoCompactor, no FilesToRestore, already consumed).
+//   - A new slice with one provider.Message per rehydrated file
+//     inserted before the trailing user turn, when applicable.
+//
+// Side effects:
+//   - One os.ReadFile per listed path on the consume turn.
+//   - Sets e.sessionRehydrated[sessionID] on a successful rehydration.
+func (e *Engine) maybeRehydrate(sessionID string, msgs []provider.Message) []provider.Message {
+	if e.autoCompactor == nil {
+		return msgs
+	}
+	e.buildStateMu.Lock()
+	summary := e.lastCompactionSummary
+	_, consumed := e.sessionRehydrated[sessionID]
+	e.buildStateMu.Unlock()
+	if summary == nil || consumed || len(summary.FilesToRestore) == 0 {
+		return msgs
+	}
+
+	rehydrated, err := e.autoCompactor.Rehydrate(*summary)
+	if err != nil {
+		// Rehydrate's all-or-nothing contract returns on first
+		// read failure. The engine relaxes that into best-effort:
+		// we log the failure and fall back to per-file reads so a
+		// single missing entry does not rob the turn of the rest.
+		slog.Warn("engine rehydration failed; falling back to per-file reads",
+			"session_id", sessionID,
+			"error", err,
+		)
+		rehydrated = e.rehydrateBestEffort(sessionID, summary)
+	}
+
+	// Mark consumed even on a best-effort path — re-reading next
+	// turn will not make missing files suddenly present, and re-
+	// reading present files duplicates the content in-window.
+	e.buildStateMu.Lock()
+	e.sessionRehydrated[sessionID] = struct{}{}
+	e.buildStateMu.Unlock()
+
+	if len(rehydrated) == 0 {
+		return msgs
+	}
+	return insertBeforeUserTurn(msgs, rehydrated)
+}
+
+// rehydrateBestEffort iterates FilesToRestore and reads each in turn,
+// logging missing entries and returning the subset that was readable.
+// Used when AutoCompactor.Rehydrate's all-or-nothing contract trips
+// on a single missing file but the engine wants to continue with the
+// readable remainder.
+//
+// Expected:
+//   - summary carries FilesToRestore the caller has already
+//     confirmed is non-empty.
+//
+// Returns:
+//   - A slice of provider.Message (one per successfully-read file,
+//     plus a system anchor message matching Rehydrate's shape).
+//
+// Side effects:
+//   - os.ReadFile per path; slog.Warn on per-file failures.
+func (e *Engine) rehydrateBestEffort(sessionID string, summary *ctxstore.CompactionSummary) []provider.Message {
+	msgs := make([]provider.Message, 0, 1+len(summary.FilesToRestore))
+	msgs = append(msgs, provider.Message{
+		Role:    "system",
+		Content: "Session rehydrated. Continuing from: " + summary.Intent,
+	})
+	for _, path := range summary.FilesToRestore {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			slog.Warn("engine rehydration: file unreadable, skipping",
+				"session_id", sessionID, "path", path, "error", err)
+			continue
+		}
+		msgs = append(msgs, provider.Message{
+			Role:    "tool",
+			Content: string(data),
+		})
+	}
+	if len(msgs) == 1 {
+		// Only the anchor with no files — no point injecting.
+		return nil
+	}
+	return msgs
+}
+
+// insertBeforeUserTurn splices rehydrated messages into msgs just
+// before the trailing user turn when one exists; appends to the end
+// otherwise. Keeps the injected content in the natural position —
+// tool contexts sit ahead of the user's current turn, not after it.
+//
+// Expected:
+//   - msgs is non-nil.
+//   - rehydrated is non-empty.
+//
+// Returns:
+//   - A new slice with rehydrated messages inserted.
+//
+// Side effects:
+//   - None. Allocates a new slice.
+func insertBeforeUserTurn(msgs, rehydrated []provider.Message) []provider.Message {
+	idx := len(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			idx = i
+			break
+		}
+	}
+	out := make([]provider.Message, 0, len(msgs)+len(rehydrated))
+	out = append(out, msgs[:idx]...)
+	out = append(out, rehydrated...)
+	out = append(out, msgs[idx:]...)
+	return out
 }
 
 // coldRangeHash produces a deterministic SHA-256 of the given message
