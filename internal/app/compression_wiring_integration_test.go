@@ -134,10 +134,22 @@ func runWiringScenario(t *testing.T) wiringScenario {
 	fake := &compressionFakeProvider{summaryJSON: buildCompressionSummaryJSON(t)}
 	compression := buildCompressionComponents(cfg, nil, fake, recorder)
 
+	// Explicitly inherit the global AutoCompaction.Threshold (0.60 in
+	// cfg above) by zeroing the per-agent override. The H3 precedence
+	// rule in engine.autoCompactionThreshold treats
+	// manifest.ContextManagement.CompactionThreshold > 0 as an agent-
+	// specific override of the global; DefaultContextManagement sets
+	// it to 0.75, which would mask the global the test's token budget
+	// is configured against (ratio 0.70 would sit below 0.75 and L2
+	// would never fire). Zero means "use the global", which is what
+	// this wiring test — which exists to prove the global-config path
+	// activates L2 end-to-end — actually wants.
+	ctxMgmt := agent.DefaultContextManagement()
+	ctxMgmt.CompactionThreshold = 0
 	manifest := agent.Manifest{
 		ID:                "compression-agent",
 		Name:              "Compression Agent",
-		ContextManagement: agent.DefaultContextManagement(),
+		ContextManagement: ctxMgmt,
 	}
 	if compression.summariserAdapter != nil {
 		compression.summariserAdapter.WithManifest(&manifest)

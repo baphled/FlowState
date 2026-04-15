@@ -35,6 +35,7 @@ func TestSessionMemoryStore_Save_RejectsUnsafeSessionID(t *testing.T) {
 
 	for _, id := range cases {
 		t.Run(id, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			store := recall.NewSessionMemoryStore(dir)
 			err := store.Save(id)
@@ -75,6 +76,7 @@ func TestSessionMemoryStore_Load_RejectsUnsafeSessionID(t *testing.T) {
 
 	for _, id := range cases {
 		t.Run(id, func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			store := recall.NewSessionMemoryStore(dir)
 			err := store.Load(id)
