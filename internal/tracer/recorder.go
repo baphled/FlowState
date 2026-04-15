@@ -16,9 +16,21 @@ type Recorder interface {
 	RecordContextWindowTokens(agentID string, tokens int)
 	// RecordCompressionTokensSaved adds tokensSaved to a running counter
 	// of tokens eliminated by L2 auto-compaction for the given agent.
-	// Non-positive deltas are ignored so noisy call sites cannot corrupt
-	// the cumulative value. Call sites: engine.maybeAutoCompact on
-	// successful compaction, using OriginalTokens - SummaryTokens.
+	//
+	// Contract: implementations MUST silently ignore any tokensSaved
+	// value where tokensSaved <= 0. This is load-bearing for the
+	// Prometheus backend — counters cannot decrease without panicking
+	// the process — but the same contract is mandatory for any custom
+	// implementation so call sites can remain layered: the engine
+	// passes through the raw delta (OriginalTokens - SummaryTokens) for
+	// diagnostic visibility, and the recorder is the sole enforcer of
+	// monotonicity. The NoopRecorder in this package and the real
+	// prometheusRecorder are both compliant.
+	//
+	// Call sites: engine.publishContextCompactedEvent on successful
+	// compaction, using OriginalTokens - SummaryTokens. The call site
+	// also guards `delta > 0` as defence in depth so investigations
+	// can spot anomalies at the emit point.
 	RecordCompressionTokensSaved(agentID string, tokensSaved int)
 }
 
@@ -79,7 +91,11 @@ func (n *NoopRecorder) RecordContextWindowTokens(_ string, _ int) {}
 //
 // Expected:
 //   - agentID is a non-empty string identifying the agent.
-//   - tokensSaved is the non-negative delta of tokens eliminated.
+//   - tokensSaved is the delta OriginalTokens - SummaryTokens as
+//     computed by the call site. The contract on the Recorder
+//     interface stipulates non-positive values are ignored; the
+//     Noop implementation trivially satisfies that by discarding
+//     everything.
 //
 // Side effects:
 //   - None.

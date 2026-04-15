@@ -55,7 +55,21 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 		}, []string{"agent_id"}),
 		compressionTokensSav: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
 			Name: "flowstate_compression_tokens_saved_total",
-			Help: "Cumulative tokens eliminated by L2 auto-compaction per agent.",
+			// M3 — the Help text is the honest contract: gross tokens
+			// removed only when auto-compaction produced a net saving.
+			// Compactions whose JSON-wrapped summary is as large or
+			// larger than the replaced range are neither counted nor
+			// subtracted — a Prometheus counter cannot decrease, and
+			// subtracting silently would lie to dashboards. Operators
+			// should read this counter as "cumulative win", not
+			// "cumulative work done".
+			Help: "Cumulative tokens eliminated by L2 auto-compaction per agent. " +
+				"Incremented by OriginalTokens - SummaryTokens only when the " +
+				"delta is a net saving (> 0). Compactions with non-positive " +
+				"savings are NOT subtracted or counted, so a flat counter can " +
+				"mean either 'compaction disabled' or 'every pass produced " +
+				"overhead' — correlate with flowstate_context_window_tokens " +
+				"and event logs to distinguish.",
 		}, []string{"agent_id"}),
 	}
 }
