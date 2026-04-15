@@ -92,6 +92,9 @@ type wiringScenario struct {
 	compression     compressionComponents
 	messages        []provider.Message
 	compactedEvents *atomic.Int64
+	microStorageDir string
+	sessionID       string
+	eng             *engine.Engine
 }
 
 // runWiringScenario builds the compression components, wires them into
@@ -111,6 +114,13 @@ func runWiringScenario(t *testing.T) wiringScenario {
 	cfg := &config.AppConfig{
 		CategoryRouting: engine.DefaultCategoryRouting(),
 		Compression: ctxstore.CompressionConfig{
+			MicroCompaction: ctxstore.MicroCompactionConfig{
+				Enabled:           true,
+				HotTailSize:       2,
+				TokenThreshold:    5,
+				StorageDir:        filepath.Join(tempDir, "compacted"),
+				PlaceholderTokens: 10,
+			},
 			AutoCompaction: ctxstore.AutoCompactionConfig{Enabled: true, Threshold: 0.60},
 			SessionMemory: ctxstore.SessionMemoryConfig{
 				Enabled:    true,
@@ -165,7 +175,8 @@ func runWiringScenario(t *testing.T) wiringScenario {
 		store.Append(provider.Message{Role: "assistant", Content: content})
 	}
 
-	msgs := eng.BuildContextWindowForTesting(context.Background(), "session-wiring", "next turn")
+	const sessionID = "session-wiring"
+	msgs := eng.BuildContextWindowForTesting(context.Background(), sessionID, "next turn")
 
 	return wiringScenario{
 		manifest:        manifest,
@@ -174,6 +185,9 @@ func runWiringScenario(t *testing.T) wiringScenario {
 		compression:     compression,
 		messages:        msgs,
 		compactedEvents: &compactedEvents,
+		microStorageDir: filepath.Join(tempDir, "compacted"),
+		sessionID:       sessionID,
+		eng:             eng,
 	}
 }
 
@@ -233,6 +247,7 @@ func wiringAssertions() []wiringAssertion {
 		{"Prometheus counters land on the shared metrics registry", assertPrometheusMetricsObserved},
 		{"ContextCompactedEvent is published on the engine bus", assertContextCompactedEventPublished},
 		{"L3 session-memory store was constructed", assertSessionMemoryStoreConstructed},
+		{"L1 HotColdSplitter spills cold units to disk", assertMicroCompactionSpillFilesWritten},
 	}
 }
 
@@ -306,6 +321,39 @@ func assertContextCompactedEventPublished(t *testing.T, s wiringScenario) {
 	t.Helper()
 	if got := s.compactedEvents.Load(); got < 1 {
 		t.Errorf("EventContextCompacted publications = %d; want >= 1", got)
+	}
+}
+
+// assertMicroCompactionSpillFilesWritten proves the L1 wiring gap is
+// closed: with MicroCompaction.Enabled = true, a TokenThreshold small
+// enough to qualify the transcript's units, and a concrete StorageDir
+// configured, the engine must attach a HotColdSplitter on the
+// WindowBuilder and the splitter must land at least one spillover
+// payload on disk under StorageDir/SessionID/.
+//
+// The check stops the cached splitter first so the async persist
+// worker drains deterministically before we read the directory. On
+// HEAD prior to the fix this assertion fails because
+// buildWindowBuilder never called WithSplitter — the spill directory
+// is absent altogether (ReadDir returns ENOENT).
+func assertMicroCompactionSpillFilesWritten(t *testing.T, s wiringScenario) {
+	t.Helper()
+	if stopped := s.eng.StopSessionSplitterForTesting(s.sessionID); !stopped {
+		t.Fatalf("engine cached no splitter for session %q; MicroCompaction wiring is disconnected", s.sessionID)
+	}
+	spillDir := filepath.Join(s.microStorageDir, s.sessionID)
+	entries, err := os.ReadDir(spillDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v — splitter never created the session spill directory", spillDir, err)
+	}
+	jsonCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			jsonCount++
+		}
+	}
+	if jsonCount == 0 {
+		t.Fatalf("spill dir %s contains no .json payloads; HotColdSplitter never executed against the recall store", spillDir)
 	}
 }
 
