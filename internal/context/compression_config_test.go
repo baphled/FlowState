@@ -140,5 +140,46 @@ var _ = Describe("CompressionConfig", func() {
 
 			Expect(cfg.Validate()).To(Succeed())
 		})
+
+		// M6 — the knowledge extractor issues a chat request per turn
+		// to distill session memory. Ollama (and every OpenAI-compat
+		// provider) rejects empty `model` with HTTP 400, and silently
+		// defaulting to a provider-specific fallback has historically
+		// hidden the misconfiguration. Require the model explicitly
+		// at load when the feature is enabled.
+		It("rejects session memory enabled without an explicit model", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = ""
+
+			err := cfg.Validate()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("session_memory"))
+			Expect(err.Error()).To(ContainSubstring("model"))
+		})
+
+		It("rejects a whitespace-only session memory model", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = "   "
+
+			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		It("accepts session memory enabled with an explicit model", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = true
+			cfg.SessionMemory.Model = "llama3.1"
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("ignores missing session memory model when session memory is disabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.SessionMemory.Enabled = false
+			cfg.SessionMemory.Model = ""
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
 	})
 })
