@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -116,7 +117,7 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	// short-lived run orphans its extraction at os.Exit and the
 	// session-memory store is never saved to disk.
 	if application.Engine != nil {
-		application.Engine.WaitForBackgroundExtractions(backgroundExtractionWait)
+		waitForBackgroundExtractions(application.Engine, backgroundExtractionWait)
 	}
 	return writeRunOutput(cmd, opts, agentName, sessionID, response)
 }
@@ -126,6 +127,50 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 // LLM timeout; the CLI gives it matching headroom plus a small margin
 // for the final disk write (atomic temp-then-rename).
 const backgroundExtractionWait = 35 * time.Second
+
+// backgroundExtractionWaiter is the narrow capability the CLI exit path
+// needs from the engine. Expressed as an interface so tests can supply
+// a test double that deterministically returns false on timeout — the
+// real engine's WaitForBackgroundExtractions would require spinning an
+// actual goroutine past the deadline, which is slow and flaky.
+type backgroundExtractionWaiter interface {
+	// WaitForBackgroundExtractions blocks until every dispatched
+	// extraction finishes or timeout elapses. Returns true on clean
+	// finish, false on timeout. Callers on timeout must assume session-
+	// memory state is incomplete.
+	WaitForBackgroundExtractions(timeout time.Duration) bool
+}
+
+// waitForBackgroundExtractions drives the pre-exit wait and surfaces a
+// structured warning on timeout. The prior call site threw the return
+// value away, leaving operators with no signal when the wait expired:
+// partial `memory.json.tmp` files could be left on disk without any
+// log entry to point at the run where it happened.
+//
+// Expected:
+//   - waiter is non-nil. Callers that have no engine (embedded tests)
+//     must short-circuit before invoking this helper.
+//   - timeout is the maximum duration to block.
+//
+// Returns:
+//   - None. Timeout is not an error for the run command — the prompt
+//     response has already been written; surfacing the timeout as an
+//     error would mask that success.
+//
+// Side effects:
+//   - Blocks the caller for up to timeout.
+//   - Emits slog.Warn on timeout with the configured timeout in
+//     seconds so operators can correlate partial session-memory state
+//     with the specific run.
+func waitForBackgroundExtractions(waiter backgroundExtractionWaiter, timeout time.Duration) {
+	if waiter.WaitForBackgroundExtractions(timeout) {
+		return
+	}
+	slog.Warn(
+		"knowledge extraction timed out before exit; session memory may be incomplete",
+		"timeout_seconds", int(timeout/time.Second),
+	)
+}
 
 // validateRunOptions checks that required options are set.
 //
