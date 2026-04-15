@@ -140,6 +140,29 @@ var _ = Describe("PrometheusRecorder", func() {
 			val := counterValue(reg, "flowstate_compression_tokens_saved_total", prometheus.Labels{"agent_id": "agent-1"})
 			Expect(val).To(Equal(100.0))
 		})
+
+		// M3 — the counter Help text must honestly describe the
+		// semantics operators see: overhead compactions are neither
+		// counted nor subtracted. Without this, dashboard authors have
+		// no way to know whether a flat counter means "compaction off"
+		// or "compaction running but every pass is net-costing tokens".
+		It("documents the counter semantics in the metric Help text", func() {
+			rec.RecordCompressionTokensSaved("agent-1", 1)
+			family := gatherMetricFamily(reg, "flowstate_compression_tokens_saved_total")
+
+			Expect(family.GetHelp()).To(ContainSubstring("net saving"))
+			Expect(family.GetHelp()).To(ContainSubstring("non-positive"))
+		})
+
+		// M3 — calling the recorder with a non-positive delta must be a
+		// silent no-op. Prometheus counters panic when decremented, so
+		// a future caller passing a raw overhead delta would crash the
+		// process. This test pins the no-panic contract explicitly.
+		It("does not panic when called with a negative delta", func() {
+			Expect(func() {
+				rec.RecordCompressionTokensSaved("agent-1", -999)
+			}).NotTo(Panic())
+		})
 	})
 })
 
