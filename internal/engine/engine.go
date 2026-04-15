@@ -241,7 +241,7 @@ func New(cfg Config) *Engine {
 
 	assemblyHooks := buildContextAssemblyHooks(cfg)
 
-	return &Engine{
+	eng := &Engine{
 		chatProvider:              cfg.ChatProvider,
 		embeddingProvider:         cfg.EmbeddingProvider,
 		failoverManager:           cfg.FailoverManager,
@@ -273,6 +273,54 @@ func New(cfg Config) *Engine {
 		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
 		sessionSplitters:          make(map[string]*ctxstore.HotColdSplitter),
 	}
+	// Subscribe once for the engine's lifetime. Per-session splitters
+	// leak goroutines + buffered channels on long-running hosts
+	// (flowstate serve) unless evicted on session.ended. See C1 from
+	// the 2026-04-14 adversarial review.
+	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded)
+	return eng
+}
+
+// handleSessionEnded is the session.ended subscription registered in
+// New. On delivery it looks up the HotColdSplitter cached for the
+// ended session and tears it down: delete from the cache under the
+// mutex, then Stop the splitter to drain its persist worker. When
+// no splitter is cached (MicroCompaction disabled, or the session
+// never built a window) the call is a silent no-op.
+//
+// Expected:
+//   - evt is a *events.SessionEvent whose Data.SessionID names the
+//     session being closed. Other event types arriving on the topic
+//     are ignored defensively.
+//
+// Returns:
+//   - None. Errors from Stop are not propagated — the worker either
+//     drains cleanly or logs its own failures via slog.
+//
+// Side effects:
+//   - Removes one entry from sessionSplitters under splitterMu.
+//   - Joins the splitter's persist-worker goroutine via Stop.
+func (e *Engine) handleSessionEnded(evt any) {
+	sessionEvt, ok := evt.(*events.SessionEvent)
+	if !ok {
+		return
+	}
+	sessionID := sessionEvt.Data.SessionID
+	if sessionID == "" {
+		return
+	}
+
+	e.splitterMu.Lock()
+	splitter, found := e.sessionSplitters[sessionID]
+	if found {
+		delete(e.sessionSplitters, sessionID)
+	}
+	e.splitterMu.Unlock()
+
+	if !found {
+		return
+	}
+	splitter.Stop()
 }
 
 // buildContextAssemblyHooks constructs the context assembly hook chain from config.
