@@ -79,7 +79,10 @@ func newRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVarP(&opts.Prompt, "prompt", "p", "", "The prompt to send to the agent (required)")
 	flags.StringVar(&opts.Agent, "agent", opts.Agent, "Agent to use (default: worker)")
 	flags.BoolVar(&opts.JSON, "json", false, "Output result as JSON")
-	flags.StringVar(&opts.Session, "session", "", "Session ID to use/resume")
+	flags.StringVar(&opts.Session, "session", "",
+		"Session ID to use or resume. Generated automatically if "+
+			"omitted. Must not contain path separators or a leading "+
+			"dot.")
 	flags.BoolVar(&opts.Stats, "stats", false,
 		"Print a one-line compression summary to stderr before exit "+
 			"(micro/auto counts, tokens saved, overhead tokens). "+

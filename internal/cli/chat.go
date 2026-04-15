@@ -52,7 +52,10 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.Agent, "agent", "", "Agent to use for the chat session")
 	flags.StringVar(&opts.Message, "message", "", "Initial message to send")
 	flags.StringVar(&opts.Model, "model", "", "Model to use for the chat session")
-	flags.StringVar(&opts.Session, "session", "", "Session ID to resume")
+	flags.StringVar(&opts.Session, "session", "",
+		"Session ID to use or resume. Generated automatically if "+
+			"omitted. Must not contain path separators or a leading "+
+			"dot.")
 	flags.StringVar(&opts.Output, "output", "text", "Output format: text or json")
 	flags.StringVar(&opts.Verbosity, "verbosity", "standard", "Verbosity level: minimal, standard, or verbose")
 
