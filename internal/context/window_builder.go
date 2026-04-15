@@ -73,6 +73,22 @@ func NewWindowBuilder(counter TokenCounter) *WindowBuilder {
 // appendRecentMessages calls will route the recent slice through the
 // splitter before assembly.
 //
+// Known race: this setter mutates a shared field on a builder that is
+// reused across sessions. Correctness today depends on every caller
+// holding engine.buildWindowMu around the WithSplitter→Build* pair
+// (see internal/engine/engine.go:1682 "Attach-splitter-then-build must
+// be a single critical section"). A future code path that bypasses
+// buildWindowMu will race silently. M2 of the adversarial review
+// proposed moving the splitter to a per-call BuildOption; the refactor
+// touches seven public Build* signatures and is deferred for its own
+// delivery rather than expanding the scope of the current Medium-fix
+// cycle. See docs at the `splitter` field and the engine call site
+// for the interim constraint.
+//
+// Follow-up M2 (deferred): replace this setter with a per-call
+// BuildOption so the shared WindowBuilder can be used concurrently
+// without the engine's external lock.
+//
 // Expected:
 //   - splitter may be nil to detach a previously-attached splitter.
 //
