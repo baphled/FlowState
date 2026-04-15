@@ -54,8 +54,15 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the FlowState HTTP API server",
-		Long:  "Start the FlowState HTTP API server.",
-		Args:  cobra.NoArgs,
+		Long: "Start the FlowState HTTP API server.\n\n" +
+			"The server exposes a Prometheus /metrics endpoint. Compression " +
+			"counters registered there (flowstate_compression_tokens_saved_total, " +
+			"flowstate_compression_overhead_tokens_total, " +
+			"flowstate_context_window_tokens) reflect THIS serve process's engine " +
+			"only. Ephemeral `flowstate run` invocations are separate processes " +
+			"with their own Prometheus registry and do NOT feed these counters. " +
+			"Use `flowstate run --stats` for a per-turn summary on the CLI path.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServe(cmd, getApp(), opts)
 		},
