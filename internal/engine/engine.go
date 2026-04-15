@@ -326,6 +326,79 @@ func (e *Engine) handleSessionEnded(evt any) {
 	splitter.Stop()
 }
 
+// Shutdown drains every engine-owned background resource so callers
+// that are about to exit (flowstate serve on SIGTERM, test teardown)
+// can guarantee no orphaned work. It is H3's fix for the gap where
+// http.Server.Shutdown drained HTTP handlers but left splitter
+// persist workers and L3 knowledge-extraction goroutines to be
+// killed at os.Exit, orphaning `.tmp` files on disk.
+//
+// Steps, in order:
+//
+//  1. Snapshot the sessionSplitters map under splitterMu and clear
+//     it. Callers that call ensureSessionSplitter concurrent with
+//     Shutdown and construct a fresh splitter are acceptable — they
+//     will not be tracked by this Shutdown invocation, but the
+//     engine is at end-of-life so they would be discarded at exit
+//     anyway. Production callers serialise Shutdown with the HTTP
+//     server's Shutdown so this race does not arise in practice.
+//
+//  2. Stop every snapshotted splitter outside the lock. Stop is
+//     idempotent via sync.Once; any concurrent close (session.ended
+//     or StopSessionSplitterForTesting) is a no-op.
+//
+//  3. Wait for in-flight knowledge-extraction goroutines under the
+//     provided ctx deadline. The goroutines are already bounded
+//     internally by a 30-second per-extractor timeout; ctx bounds
+//     the outer wait.
+//
+// Expected:
+//   - ctx carries the shutdown deadline and MUST be non-nil. Callers
+//     that want an unbounded wait should pass context.Background()
+//     explicitly; the helper does not silently substitute one so
+//     misuse surfaces as a nil-deref rather than an accidental
+//     infinite drain.
+//
+// Returns:
+//   - ctx.Err() when the ctx deadline expires before extractions
+//     finish; nil otherwise. Splitter Stop does not return errors.
+//
+// Side effects:
+//   - Drains persist workers (blocks until each returns).
+//   - Waits up to ctx deadline for extraction goroutines.
+//   - Leaves sessionSplitters empty; subsequent ensureSessionSplitter
+//     calls reconstruct fresh splitters.
+//
+// Safe to call multiple times: the second call finds an empty
+// splitter map and waits briefly for any late extractions.
+func (e *Engine) Shutdown(ctx context.Context) error {
+	// Step 1+2: snapshot, clear, stop.
+	e.splitterMu.Lock()
+	snapshot := make([]*ctxstore.HotColdSplitter, 0, len(e.sessionSplitters))
+	for _, s := range e.sessionSplitters {
+		snapshot = append(snapshot, s)
+	}
+	e.sessionSplitters = make(map[string]*ctxstore.HotColdSplitter)
+	e.splitterMu.Unlock()
+
+	for _, s := range snapshot {
+		s.Stop()
+	}
+
+	// Step 3: bounded wait for extractions.
+	done := make(chan struct{})
+	go func() {
+		e.extractionWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // buildContextAssemblyHooks constructs the context assembly hook chain from config.
 // If a RecallBroker is provided, it is auto-registered as the first hook.
 // Any explicitly configured hooks are appended after the broker hook.
