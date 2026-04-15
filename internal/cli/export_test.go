@@ -12,5 +12,5 @@ func WaitForBackgroundExtractionsForTest(waiter BackgroundExtractionWaiterForTes
 // BackgroundExtractionWaiterForTest mirrors the unexported package
 // interface so external test packages can satisfy it.
 type BackgroundExtractionWaiterForTest interface {
-	WaitForBackgroundExtractions(timeout time.Duration) bool
+	WaitForBackgroundExtractions(timeout time.Duration) error
 }
