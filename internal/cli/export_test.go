@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 )
 
 // WaitForBackgroundExtractionsForTest exposes the unexported helper so
@@ -47,4 +48,11 @@ type EngineShutdownerForTest = engineShutdowner
 // signal loop.
 func PerformServeShutdownForTest(server HTTPShutdownerForTest, eng EngineShutdownerForTest, out, errOut io.Writer) error {
 	return performServeShutdown(server, eng, out, errOut)
+}
+
+// WriteCompressionStatsForTest exposes the unexported helper so Item 2's
+// --stats test can assert the one-line format without standing up a
+// full run.
+func WriteCompressionStatsForTest(out io.Writer, metrics ctxstore.CompressionMetrics) {
+	writeCompressionStats(out, metrics)
 }
