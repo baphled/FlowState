@@ -36,3 +36,43 @@ import (
 func (e *Engine) BuildContextWindowForTesting(ctx context.Context, sessionID string, userMessage string) []provider.Message {
 	return e.buildContextWindow(ctx, sessionID, userMessage)
 }
+
+// StopSessionSplitterForTesting flushes and shuts down the
+// HotColdSplitter cached for the given sessionID so integration tests
+// in sibling packages can make deterministic filesystem assertions
+// against the L1 spillover directory.
+//
+// Production code MUST NOT call this — splitters own their own
+// lifecycle tied to the engine's lifetime. The helper exists only
+// because the persist worker drains asynchronously and a test that
+// reads the spillover directory immediately after Build would
+// otherwise race the worker goroutine.
+//
+// Expected:
+//   - sessionID identifies a session that has previously invoked
+//     buildContextWindow. If no splitter is cached, the call is a
+//     no-op.
+//
+// Returns:
+//   - true when a cached splitter was found and stopped; false when
+//     the session had no splitter (micro-compaction disabled or the
+//     session never built a window).
+//
+// Side effects:
+//   - Blocks until the worker goroutine exits.
+//   - Removes the splitter from the per-session cache so subsequent
+//     builds for the same session would rebuild a new splitter. Tests
+//     using this helper must not reuse the sessionID afterwards.
+func (e *Engine) StopSessionSplitterForTesting(sessionID string) bool {
+	e.splitterMu.Lock()
+	splitter, ok := e.sessionSplitters[sessionID]
+	if ok {
+		delete(e.sessionSplitters, sessionID)
+	}
+	e.splitterMu.Unlock()
+	if !ok {
+		return false
+	}
+	splitter.Stop()
+	return true
+}

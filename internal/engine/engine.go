@@ -106,6 +106,23 @@ type Engine struct {
 	// process termination.
 	extractionWG sync.WaitGroup
 
+	// sessionSplitters caches one HotColdSplitter per sessionID when
+	// Compression.MicroCompaction.Enabled. Splitters own a persist
+	// worker goroutine plus a buffered channel, so sharing a single
+	// splitter across sessions would cross-contaminate storage paths
+	// (StorageDir/SessionID is baked in at construction). Lazy
+	// construction keeps the common "micro-compaction disabled" path
+	// allocation-free. Access is serialised by splitterMu.
+	sessionSplitters map[string]*ctxstore.HotColdSplitter
+	splitterMu       sync.Mutex
+
+	// buildWindowMu serialises the attach-splitter-then-build pair so
+	// that two concurrent buildContextWindow calls for different
+	// sessions cannot see each other's splitter on the shared
+	// WindowBuilder. Scoped to this path only; the broader engine
+	// locking via mu is unchanged.
+	buildWindowMu sync.Mutex
+
 	mu sync.RWMutex
 }
 
@@ -254,6 +271,7 @@ func New(cfg Config) *Engine {
 		recorder:                  cfg.Recorder,
 		knowledgeExtractor:        cfg.KnowledgeExtractor,
 		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
+		sessionSplitters:          make(map[string]*ctxstore.HotColdSplitter),
 	}
 }
 
@@ -314,7 +332,88 @@ func buildWindowBuilder(cfg Config) *ctxstore.WindowBuilder {
 	if cfg.Recorder != nil {
 		builder = builder.WithRecorder(cfg.Recorder)
 	}
+	// Splitter attachment is deliberately deferred to
+	// Engine.ensureSessionSplitter — each HotColdSplitter is bound to
+	// a specific {StorageDir, SessionID} pair so a process-wide
+	// instance cannot serve multiple sessions. The engine lazily
+	// constructs one splitter per live sessionID inside
+	// buildContextWindow, attaches it via WithSplitter under
+	// buildWindowMu, then runs the build. This keeps the existing
+	// public constructor signature stable while fixing the gap where
+	// MicroCompaction.Enabled was a silent no-op in production.
 	return builder
+}
+
+// ensureSessionSplitter returns the cached HotColdSplitter for
+// sessionID, constructing one on first use. Returns nil when
+// MicroCompaction is disabled or the storage configuration is
+// incomplete, so callers can branch on "no L1 for this session"
+// without inspecting the config themselves.
+//
+// The splitter's persist worker is started eagerly on construction:
+// Split is called non-blockingly on the hot path and would drop
+// spillover jobs if the worker were not draining. Stop is NOT called
+// by the engine; splitters own goroutines that exit when the process
+// terminates, matching the fire-and-forget lifecycle of the recall
+// store's writer. Tests that need deterministic flushing use
+// SessionSplitterForTest to grab the instance and Stop it explicitly.
+//
+// Expected:
+//   - ctx is the live request context. The persist worker is started
+//     with context.WithoutCancel(ctx) so splitter lifetime tracks the
+//     engine rather than the originating request — a completed Stream
+//     call must not tear down the worker mid-drain.
+//   - sessionID is the id of the session currently calling
+//     buildContextWindow. An empty sessionID is treated as "no L1"
+//     because HotColdSplitter keys its storage path on it.
+//
+// Returns:
+//   - A *HotColdSplitter when MicroCompaction is enabled, a storage
+//     directory is configured, and sessionID is non-empty.
+//   - nil when any precondition fails.
+//
+// Side effects:
+//   - May spawn one persist worker goroutine per previously-unseen
+//     sessionID and take splitterMu briefly.
+func (e *Engine) ensureSessionSplitter(ctx context.Context, sessionID string) *ctxstore.HotColdSplitter {
+	micro := e.compressionConfig.MicroCompaction
+	if !micro.Enabled || micro.StorageDir == "" || sessionID == "" {
+		return nil
+	}
+
+	e.splitterMu.Lock()
+	defer e.splitterMu.Unlock()
+
+	if existing, ok := e.sessionSplitters[sessionID]; ok {
+		return existing
+	}
+
+	threshold := micro.TokenThreshold
+	if threshold <= 0 {
+		threshold = 1000
+	}
+	compactor := ctxstore.NewDefaultMessageCompactor(threshold)
+
+	splitter := ctxstore.NewHotColdSplitter(ctxstore.HotColdSplitterOptions{
+		Compactor:   compactor,
+		HotTailSize: micro.HotTailSize,
+		StorageDir:  micro.StorageDir,
+		SessionID:   sessionID,
+	})
+	if splitter == nil {
+		// Compactor was nil — treat as misconfiguration but don't
+		// panic on the hot path. Returning nil collapses to
+		// "no L1 this session" which is the safe default.
+		return nil
+	}
+	// Detach from the request cancellation chain: when a Stream ends,
+	// its context is cancelled, but the splitter's persist worker
+	// must keep draining pending jobs for future turns in the same
+	// session. Lifetime is bounded by process termination (Stop is
+	// reserved for tests).
+	splitter.StartPersistWorker(context.WithoutCancel(ctx))
+	e.sessionSplitters[sessionID] = splitter
+	return splitter
 }
 
 // SetAgentOverrides sets the agent-specific configuration overrides, such as prompt appends.
@@ -1437,6 +1536,15 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	tokenBudget := e.ModelContextLimit()
 	systemPrompt := e.BuildSystemPrompt()
+
+	// Attach-splitter-then-build must be a single critical section so
+	// concurrent sessions do not swap each other's splitter on the
+	// shared WindowBuilder between the WithSplitter call and the
+	// Build* call. The swap happens outside e.mu so the existing
+	// manifest RLock can coexist with the build.
+	e.buildWindowMu.Lock()
+	defer e.buildWindowMu.Unlock()
+	e.windowBuilder.WithSplitter(e.ensureSessionSplitter(ctx, sessionID))
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
