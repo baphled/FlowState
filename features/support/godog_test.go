@@ -72,4 +72,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterAutoCompactionSteps(ctx)
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
+	RegisterDualPaneLayoutSteps(ctx)
 }
