@@ -367,6 +367,37 @@ var _ = Describe("ScreenLayout Pinned Layout", func() {
 		})
 	})
 
+	Describe("WithSecondaryContent", func() {
+		It("should return the same ScreenLayout pointer for chaining", func() {
+			view := layout.NewScreenLayout(termInfo)
+
+			result := view.WithSecondaryContent("secondary pane")
+
+			Expect(result).To(BeIdenticalTo(view), "builder must preserve pointer identity for chainability")
+		})
+
+		It("should store the supplied secondary content", func() {
+			view := layout.NewScreenLayout(termInfo).
+				WithSecondaryContent("secondary pane")
+
+			Expect(layout.SecondaryContent(view)).To(Equal("secondary pane"))
+		})
+
+		It("should default to empty when WithSecondaryContent is never called", func() {
+			view := layout.NewScreenLayout(termInfo)
+
+			Expect(layout.SecondaryContent(view)).To(BeEmpty())
+		})
+
+		It("should overwrite the stored value when called twice", func() {
+			view := layout.NewScreenLayout(termInfo).
+				WithSecondaryContent("first").
+				WithSecondaryContent("second")
+
+			Expect(layout.SecondaryContent(view)).To(Equal("second"))
+		})
+	})
+
 	Describe("Available Content Height Calculation", func() {
 		It("should calculate available content height correctly", func() {
 			logo := NewMockLogo("LOGO\nLINE2\nLINE3") // 3 lines
