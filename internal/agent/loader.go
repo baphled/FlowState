@@ -208,7 +208,17 @@ func validateContextManagement(m *Manifest) error {
 	// mirrors the range enforced by ctxstore.CompressionConfig for
 	// the global threshold — keeps the contract consistent.
 	if t < 0 || t > 1 {
-		return fmt.Errorf("context_management.compaction_threshold: %v is out of range (0, 1]", t)
+		// Mirror the richer wording used by
+		// ctxstore.CompressionConfig.Validate for
+		// auto_compaction.threshold: the range alone tells operators
+		// nothing about *why* the bound matters. Spell out the two
+		// failure modes so the error is self-diagnosing.
+		return fmt.Errorf(
+			"context_management.compaction_threshold must be in the "+
+				"(0.0, 1.0] interval (got %v); values <= 0 never "+
+				"trigger compaction, values > 1 trigger every turn",
+			t,
+		)
 	}
 	return nil
 }
