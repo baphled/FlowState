@@ -93,6 +93,18 @@ type EventBusNotificationMsg struct {
 	ToolError     *events.ToolExecuteErrorEvent
 }
 
+// SwarmEventAppendedMsg signals that a new entry has been written to the
+// swarm event store by a stream worker goroutine and the activity pane
+// should re-render. The message carries no payload: readers fetch the
+// current snapshot via swarmStore.All() so they always see the latest
+// consistent view, independent of delivery order.
+//
+// Per the ADR thread-safety contract, the chat intent never mutates the
+// activity history slice directly from stream goroutines — producers
+// Append to the store under its mutex, then post this message back into
+// the Bubble Tea event loop which renders on the main goroutine.
+type SwarmEventAppendedMsg struct{}
+
 // tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
 //
 // Returns:
@@ -250,6 +262,12 @@ type Intent struct {
 	// swarmActivity renders the secondary-pane activity timeline. Instantiated
 	// once in NewIntent and reused across View() calls to avoid allocations.
 	swarmActivity *swarmactivity.SwarmActivityPane
+	// swarmStore holds delegation and tool-call events feeding the activity
+	// pane. Thread-safe by construction: stream worker goroutines mutate via
+	// Append under the store's mutex; the chat intent reads via All() on the
+	// Bubble Tea goroutine inside View() and Update handlers. Re-render is
+	// driven by SwarmEventAppendedMsg, not shared-slice mutation.
+	swarmStore streaming.SwarmEventStore
 }
 
 var runningInTests bool
@@ -327,6 +345,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		notificationManager: notifManager,
 		breadcrumbPath:      "Chat",
 		swarmActivity:       swarmactivity.NewSwarmActivityPane(),
+		swarmStore:          streaming.NewMemorySwarmStore(15),
 	}
 }
 
@@ -548,7 +567,23 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return i.handleBackgroundTaskCompleted(msg)
 	case EventBusNotificationMsg:
 		return i.handleEventBusNotification(msg)
+	case SwarmEventAppendedMsg:
+		return i.handleSwarmEventAppended()
 	}
+	return nil
+}
+
+// handleSwarmEventAppended acknowledges a newly-stored swarm event. The
+// pane re-reads swarmStore.All() in View() so no state mutation is
+// required here; returning from Update is sufficient to trigger Bubble
+// Tea's next render cycle.
+//
+// Returns:
+//   - A nil tea.Cmd; no follow-up work is required.
+//
+// Side effects:
+//   - None; the store was mutated by the producer goroutine.
+func (i *Intent) handleSwarmEventAppended() tea.Cmd {
 	return nil
 }
 
@@ -1212,8 +1247,10 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	case "harness_attempt_start", "harness_complete", "harness_critic_feedback":
 		return i.handleHarnessEvent(msg)
 	case streaming.EventTypePlanArtifact, streaming.EventTypeReviewVerdict, streaming.EventTypeStatusTransition:
+		i.recordSwarmEvent(msg)
 		return i.handleStreamingEvent(msg)
 	}
+	i.recordSwarmEvent(msg)
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
 	if !msg.Done && msg.Next != nil {
@@ -1304,6 +1341,104 @@ func (i *Intent) handleStreamingEvent(msg StreamChunkMsg) tea.Cmd {
 		return tea.Batch(msg.Next, tickSpinner())
 	}
 	return tickSpinner()
+}
+
+// recordSwarmEvent projects a StreamChunkMsg onto the swarm activity store
+// when the chunk carries delegation, tool-call, plan-artefact, or
+// review-verdict metadata. Chunks that do not map onto a SwarmEventType
+// are ignored so the activity pane stays focused on high-signal events.
+//
+// Expected:
+//   - msg is the current streaming chunk delivered to the Bubble Tea loop.
+//
+// Side effects:
+//   - Appends a derived SwarmEvent to i.swarmStore under the store mutex.
+func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) {
+	if i.swarmStore == nil {
+		return
+	}
+	ev, ok := swarmEventFromChunk(msg, i.agentID)
+	if !ok {
+		return
+	}
+	i.swarmStore.Append(ev)
+}
+
+// swarmEventFromChunk converts a StreamChunkMsg into a SwarmEvent suitable
+// for the activity timeline.
+//
+// Expected:
+//   - msg is the StreamChunkMsg under consideration.
+//   - fallbackAgent is the chat intent's agent ID, used when the chunk
+//     does not carry its own agent identity (for example plan/review
+//     event types).
+//
+// Returns:
+//   - The derived SwarmEvent.
+//   - true if the chunk mapped onto a SwarmEventType; false when it
+//     carried no actionable activity metadata.
+//
+// Side effects:
+//   - None.
+func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
+	// Delegation chunks are identified by DelegationInfo presence.
+	if msg.DelegationInfo != nil {
+		agentID := msg.DelegationInfo.TargetAgent
+		if agentID == "" {
+			agentID = fallbackAgent
+		}
+		return streaming.SwarmEvent{
+			ID:        msg.DelegationInfo.ChainID,
+			Type:      streaming.EventDelegation,
+			Status:    msg.DelegationInfo.Status,
+			Timestamp: time.Now(),
+			AgentID:   agentID,
+			Metadata: map[string]interface{}{
+				"source_agent": msg.DelegationInfo.SourceAgent,
+				"description":  msg.DelegationInfo.Description,
+			},
+		}, true
+	}
+
+	// Tool-call chunks carry a ToolCallName or ToolStatus transition.
+	if msg.ToolCallName != "" || msg.ToolStatus != "" {
+		status := msg.ToolStatus
+		if status == "" {
+			status = "started"
+		}
+		return streaming.SwarmEvent{
+			Type:      streaming.EventToolCall,
+			Status:    status,
+			Timestamp: time.Now(),
+			AgentID:   fallbackAgent,
+			Metadata: map[string]interface{}{
+				"tool_name": msg.ToolCallName,
+				"is_error":  msg.ToolIsError,
+			},
+		}, true
+	}
+
+	// Plan and review events flow through EventType discriminators.
+	switch msg.EventType {
+	case streaming.EventTypePlanArtifact:
+		return streaming.SwarmEvent{
+			Type:      streaming.EventPlan,
+			Status:    "completed",
+			Timestamp: time.Now(),
+			AgentID:   fallbackAgent,
+			Metadata:  map[string]interface{}{"content": msg.Content},
+		}, true
+	case streaming.EventTypeReviewVerdict:
+		return streaming.SwarmEvent{
+			Type:      streaming.EventReview,
+			Status:    "completed",
+			Timestamp: time.Now(),
+			AgentID:   fallbackAgent,
+			Metadata:  map[string]interface{}{"content": msg.Content},
+		}, true
+	}
+
+	return streaming.SwarmEvent{}, false
 }
 
 // streamingEventMeta returns the display title and notification level for a streaming event type.
@@ -1701,7 +1836,11 @@ func (i *Intent) View() string {
 	// introduce a Ctrl+T visibility toggle; for T3 the pane is always on.
 	if i.swarmActivity != nil {
 		contentHeight := sl.GetAvailableContentHeight()
-		sl.WithSecondaryContent(i.swarmActivity.Render(i.width, contentHeight))
+		var swarmEvents []streaming.SwarmEvent
+		if i.swarmStore != nil {
+			swarmEvents = i.swarmStore.All()
+		}
+		sl.WithSecondaryContent(i.swarmActivity.WithEvents(swarmEvents).Render(i.width, contentHeight))
 	}
 
 	return i.renderModalOverlay(sl.Render())
