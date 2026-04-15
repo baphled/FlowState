@@ -474,7 +474,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider)
 	sessionMgr := session.NewManager(streamer)
-	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr)
+	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
 		streamer,
 		params.agentRegistry,
@@ -2067,7 +2067,30 @@ func startSessionRecorder(recorder *sessionrecorder.Recorder, eng *engine.Engine
 	}
 }
 
-// defaultSessionRecordingDir returns the default directory for session recording output.
+// sessionsDirFromCfg mirrors App.SessionsDir but works on a bare
+// AppConfig so wireSessionRecorder can compute the recording-dir
+// derivation before the App instance is assembled.
+//
+// Expected:
+//   - cfg may be nil.
+//
+// Returns:
+//   - filepath.Join(cfg.DataDir, "sessions") when cfg and DataDir are set.
+//   - Empty string otherwise.
+//
+// Side effects:
+//   - None.
+func sessionsDirFromCfg(cfg *config.AppConfig) string {
+	if cfg == nil || cfg.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(cfg.DataDir, "sessions")
+}
+
+// defaultSessionRecordingDir returns the user-cache-dir fallback path
+// for session recordings. Callers should prefer resolveSessionRecordingDir
+// which honours the configured sessions-dir first; the fallback exists
+// only for embedded/test paths that have no sessions directory at all.
 //
 // Returns:
 //   - A path under the user's cache directory, or a temp directory fallback.
@@ -2082,6 +2105,39 @@ func defaultSessionRecordingDir() string {
 	return filepath.Join(cacheDir, "flowstate", "session-recordings")
 }
 
+// resolveSessionRecordingDir picks the effective session-recording
+// directory by applying the documented precedence chain:
+//
+//  1. cfg.SessionRecordingDir when non-empty (explicit YAML override)
+//  2. <sessionsDir>/recordings when sessionsDir is non-empty (derived
+//     from --sessions-dir or cfg.DataDir/sessions)
+//  3. defaultSessionRecordingDir fallback under os.UserCacheDir
+//
+// The derived option is the Item 1 fix: test runs passing an isolated
+// --sessions-dir kept writing into the real ~/.cache because the
+// recorder ignored the flag. Routing recordings under sessions-dir
+// gives one mental model (one flag, one tree) and keeps test isolation
+// intact.
+//
+// Expected:
+//   - cfg may be nil; nil is treated as "no YAML override".
+//   - sessionsDir may be empty; that path takes the cache-dir fallback.
+//
+// Returns:
+//   - The resolved absolute or relative path.
+//
+// Side effects:
+//   - None.
+func resolveSessionRecordingDir(cfg *config.AppConfig, sessionsDir string) string {
+	if cfg != nil && cfg.SessionRecordingDir != "" {
+		return cfg.SessionRecordingDir
+	}
+	if sessionsDir != "" {
+		return filepath.Join(sessionsDir, "recordings")
+	}
+	return defaultSessionRecordingDir()
+}
+
 // wireSessionRecorder creates and attaches a session recorder to the session
 // manager when session recording is enabled in the configuration. The returned
 // recorder must be started separately via its Start method to begin subscribing
@@ -2093,19 +2149,20 @@ func defaultSessionRecordingDir() string {
 //
 // Returns: the recorder when session recording is enabled, nil otherwise.
 // Side effects: creates a Recorder and wires it to the session manager.
-func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager) *sessionrecorder.Recorder {
+func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager, sessionsDir string) *sessionrecorder.Recorder {
 	if cfg == nil || !cfg.SessionRecording {
 		return nil
 	}
 
-	recorder := sessionrecorder.New(defaultSessionRecordingDir())
+	dir := resolveSessionRecordingDir(cfg, sessionsDir)
+	recorder := sessionrecorder.New(dir)
 	if err := recorder.Init(); err != nil {
 		log.Printf("warning: initialising session recorder: %v", err)
 		return nil
 	}
 
 	sessionMgr.SetRecorder(recorder)
-	log.Printf("info: session recording enabled, writing to %s", defaultSessionRecordingDir())
+	log.Printf("info: session recording enabled, writing to %s", dir)
 	return recorder
 }
 

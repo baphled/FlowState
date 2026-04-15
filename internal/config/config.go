@@ -36,7 +36,16 @@ type AppConfig struct {
 	// ContextAssemblyHooks lets callers inject custom context assembly hooks at runtime.
 	ContextAssemblyHooks []pluginpkg.ContextAssemblyHook `json:"-" yaml:"-"`
 	SessionRecording     bool                            `json:"session_recording" yaml:"session_recording"`
-	Qdrant               QdrantConfig                    `json:"qdrant" yaml:"qdrant"`
+	// SessionRecordingDir overrides the filesystem location the
+	// session recorder writes to. When empty the effective directory
+	// is derived from the active sessions directory (--sessions-dir
+	// or cfg.DataDir/sessions) via `<sessionsDir>/recordings`. When
+	// that derivation is unavailable the recorder falls back to the
+	// user cache dir. Expressed as a top-level YAML key rather than
+	// a nested session_recording block so the existing boolean
+	// `session_recording` remains a non-breaking literal.
+	SessionRecordingDir string       `json:"session_recording_dir" yaml:"session_recording_dir"`
+	Qdrant              QdrantConfig `json:"qdrant" yaml:"qdrant"`
 	// Compression controls the three-layer context compression system
 	// (micro-compaction, auto-compaction, session-memory). All layers
 	// default to disabled; see internal/context.DefaultCompressionConfig.
