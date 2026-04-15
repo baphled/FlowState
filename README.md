@@ -109,6 +109,11 @@ compression:
   session_memory:
     enabled: true
     storage_dir: ~/.flowstate/session-memory
+    # Mandatory when session_memory.enabled is true. The knowledge
+    # extractor's chat request requires a model identifier; Ollama
+    # and OpenAI-compatible backends reject an empty `model` with
+    # HTTP 400, so config load fails loud if this key is missing.
+    model: llama3.1
 ```
 
 Metrics are emitted via `slog.Info` with keys `micro_compaction_count`, `auto_compaction_count`, and `tokens_saved`. A successful L2 compaction also publishes a `context.compacted` event on the engine bus with original/summary token counts and latency. A compacted-view cache hit counter is deliberately out of scope for this delivery; see ADR - View-Only Context Compaction §3 ("Caching Is a Permitted Extension") for the deferred design.

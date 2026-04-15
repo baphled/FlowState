@@ -2209,19 +2209,17 @@ func buildCompressionComponents(
 		// shared across invocations so cross-session recall still works
 		// (retrieval is content-typed, not session-scoped).
 		store := out.sessionMemoryStore
-		// The chat request the extractor issues must carry a model —
-		// Ollama and several OpenAI-compatible backends reject empty
-		// Model with HTTP 400. Fall back to the configured default so
-		// extraction is never accidentally silenced by a wiring gap.
-		model := cfg.Providers.Ollama.Model
-		if model == "" {
-			switch cfg.Providers.Default {
-			case "openai":
-				model = cfg.Providers.OpenAI.Model
-			case "anthropic":
-				model = cfg.Providers.Anthropic.Model
-			}
-		}
+		// M6 — the chat model is taken from the explicit
+		// `compression.session_memory.model` config key. Config
+		// validation rejects an empty or whitespace-only value at
+		// load, so by the time we reach this branch the model is
+		// guaranteed non-empty. The previous implementation tried to
+		// fall back to provider defaults (Ollama > OpenAI > Anthropic)
+		// via a switch on `cfg.Providers.Default`; that fallback only
+		// covered three providers and left custom providers silently
+		// broken with an HTTP 400 at first extraction. Requiring an
+		// explicit model removes the guesswork.
+		model := cfg.Compression.SessionMemory.Model
 		out.knowledgeExtractorFactory = func(sessionID string) *recall.KnowledgeExtractor {
 			if sessionID == "" {
 				sessionID = "default"

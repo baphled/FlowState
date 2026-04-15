@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // CompressionConfig configures the three-layer context compression system.
@@ -70,6 +71,17 @@ type SessionMemoryConfig struct {
 	// persisted. Defaults to ~/.flowstate/session-memory (tilde expanded
 	// at load time).
 	StorageDir string `json:"storage_dir" yaml:"storage_dir"`
+	// Model is the chat model the knowledge extractor uses when issuing
+	// distillation calls to the underlying provider. Mandatory when
+	// Enabled is true — Ollama and the OpenAI-compatible backends
+	// (github-copilot, openzen, ollama-openai-compat, zai) all reject
+	// an empty `model` with HTTP 400, and the previous provider-default
+	// fallback in internal/app/app.go only covered a subset of
+	// providers, leaving custom providers silently broken. Making the
+	// model explicit at config load surfaces the misconfiguration at
+	// startup with a clear message rather than hiding it inside a
+	// background extraction goroutine's 30-second timeout.
+	Model string `json:"model" yaml:"model"`
 }
 
 // CompressionMetrics is a per-WindowBuilder counter set that tracks the
@@ -206,6 +218,14 @@ func (c CompressionConfig) Validate() error {
 				t,
 			)
 		}
+	}
+	if c.SessionMemory.Enabled && strings.TrimSpace(c.SessionMemory.Model) == "" {
+		return errors.New(
+			"compression: session_memory.model must be a non-empty chat " +
+				"model identifier when session_memory.enabled is true; " +
+				"the knowledge extractor's chat request requires a " +
+				"`model` field that Ollama and OpenAI-compatible backends " +
+				"reject if empty")
 	}
 	return nil
 }
