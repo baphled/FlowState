@@ -29,12 +29,14 @@ import (
 	"github.com/baphled/flowstate/internal/tracer"
 )
 
-// engineTestRecorder captures RecordCompressionTokensSaved calls so
-// the auto-compaction wiring test can assert the delta.
+// engineTestRecorder captures RecordCompressionTokensSaved and
+// RecordCompressionOverheadTokens calls so the auto-compaction wiring
+// tests can assert both net-saving and net-negative deltas.
 type engineTestRecorder struct {
 	tracer.NoopRecorder
-	mu         sync.Mutex
-	savedCalls []engineSavedCall
+	mu            sync.Mutex
+	savedCalls    []engineSavedCall
+	overheadCalls []engineSavedCall
 }
 
 type engineSavedCall struct {
@@ -48,11 +50,25 @@ func (r *engineTestRecorder) RecordCompressionTokensSaved(agentID string, tokens
 	r.savedCalls = append(r.savedCalls, engineSavedCall{agentID: agentID, tokensSaved: tokensSaved})
 }
 
+func (r *engineTestRecorder) RecordCompressionOverheadTokens(agentID string, tokens int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.overheadCalls = append(r.overheadCalls, engineSavedCall{agentID: agentID, tokensSaved: tokens})
+}
+
 func (r *engineTestRecorder) saved() []engineSavedCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]engineSavedCall, len(r.savedCalls))
 	copy(out, r.savedCalls)
+	return out
+}
+
+func (r *engineTestRecorder) overhead() []engineSavedCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]engineSavedCall, len(r.overheadCalls))
+	copy(out, r.overheadCalls)
 	return out
 }
 
@@ -524,24 +540,26 @@ func TestBuildContextWindowAutoCompaction_EmitsCompressionTokensSavedCounter(t *
 	}
 }
 
-// TestBuildContextWindowAutoCompaction_OverheadSummary_NoRecorderCall
-// is the M3 counterpart to the positive-path emits-counter test. When a
-// compaction's JSON-wrapped summary is as large or larger than the
-// range it replaces (SummaryTokens >= OriginalTokens), the delta is
-// non-positive and the engine must:
+// TestBuildContextWindowAutoCompaction_OverheadSummary_RecordsOverheadCounter
+// is the M3 counterpart to the positive-path emits-counter test, now
+// extended by Item 5. When a compaction's JSON-wrapped summary is as
+// large or larger than the range it replaces (SummaryTokens >=
+// OriginalTokens), the delta is non-positive and the engine must:
 //
-//   - NOT invoke the Recorder at all, so the Prometheus counter stays
-//     exactly where it was (a Counter.Add(negativeValue) call would
-//     panic the process).
+//   - NOT invoke RecordCompressionTokensSaved (would panic the
+//     Prometheus counter if it tried to subtract).
 //   - NOT increment CompressionMetrics.TokensSaved in the engine-side
 //     accounting struct — a `> 0` guard exists there too.
 //   - Still increment AutoCompactionCount so operators can observe
 //     that the layer ran, even when it did not produce a saving.
+//   - Invoke RecordCompressionOverheadTokens with abs(delta) so the
+//     honest-telemetry counter `flowstate_compression_overhead_tokens_total`
+//     reflects the cost of every net-negative compaction.
 //
 // The test rigs an overhead-producing summary by using a verbose
 // Intent whose whitespace-split token count exceeds the 70-token
 // compacted range the engine is set up with.
-func TestBuildContextWindowAutoCompaction_OverheadSummary_NoRecorderCall(t *testing.T) {
+func TestBuildContextWindowAutoCompaction_OverheadSummary_RecordsOverheadCounter(t *testing.T) {
 	t.Parallel()
 
 	// Build a summary whose JSON, wrapped with the
@@ -582,11 +600,51 @@ func TestBuildContextWindowAutoCompaction_OverheadSummary_NoRecorderCall(t *test
 		t.Fatalf("metrics.TokensSaved = %d; want 0 for overhead compaction", metrics.TokensSaved)
 	}
 
-	// Recorder must not have been invoked at all. The Prometheus
-	// backend's own guard ignores non-positive deltas, but the engine
-	// guards too so overhead compactions produce zero metric traffic.
+	// The savings recorder must not have been invoked at all. The
+	// Prometheus backend's own guard ignores non-positive deltas, but
+	// the engine guards too so overhead compactions produce zero
+	// savings-counter traffic.
 	if calls := rec.saved(); len(calls) != 0 {
 		t.Fatalf("RecordCompressionTokensSaved calls = %d; want 0 for overhead compaction (deltas: %+v)", len(calls), calls)
+	}
+
+	// Item 5 — the overhead recorder MUST fire exactly once with the
+	// absolute cost so operators can spot "compaction wasted tokens"
+	// outcomes without having to diff against tokens_saved.
+	overhead := rec.overhead()
+	if len(overhead) != 1 {
+		t.Fatalf("RecordCompressionOverheadTokens calls = %d; want 1 for overhead compaction", len(overhead))
+	}
+	if overhead[0].tokensSaved <= 0 {
+		t.Fatalf("overhead recorder observed %d tokens; want strictly > 0 (abs of the delta)", overhead[0].tokensSaved)
+	}
+}
+
+// TestBuildContextWindowAutoCompaction_NetSavings_NoOverheadCounter is
+// the guard against double-counting introduced by Item 5. When the
+// compaction is a net saving the engine MUST NOT invoke the overhead
+// recorder — that counter's semantics are "wasted tokens", and emitting
+// on the win path would confuse the dashboards the counter was added
+// for.
+func TestBuildContextWindowAutoCompaction_NetSavings_NoOverheadCounter(t *testing.T) {
+	t.Parallel()
+
+	summariser := &recordingSummariser{response: buildSummaryJSON(t)}
+	rec := &engineTestRecorder{}
+	metrics := &ctxstore.CompressionMetrics{}
+	eng, store := newTestEngineWithCompactorRecorderAndMetrics(t, summariser, 0.60, true, rec, metrics)
+
+	seedMessages(t, store)
+	_ = eng.BuildContextWindowForTest(context.Background(), "session-savings", "next user turn")
+
+	if summariser.calls.Load() != 1 {
+		t.Fatalf("summariser calls = %d; want 1", summariser.calls.Load())
+	}
+	if saved := rec.saved(); len(saved) != 1 {
+		t.Fatalf("RecordCompressionTokensSaved calls = %d; want 1 on net-savings path", len(saved))
+	}
+	if overhead := rec.overhead(); len(overhead) != 0 {
+		t.Fatalf("RecordCompressionOverheadTokens calls = %d; want 0 on net-savings path", len(overhead))
 	}
 }
 

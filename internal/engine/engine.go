@@ -1891,17 +1891,24 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 		e.compressionMetrics.AutoCompactionCount++
 		if delta > 0 {
 			e.compressionMetrics.TokensSaved += delta
+		} else if delta < 0 {
+			// Item 5 — honest accounting for the cost the layer added.
+			e.compressionMetrics.OverheadTokens += -delta
 		}
 	}
-	if e.recorder != nil && delta > 0 {
-		// M3 — double-guarded. The Recorder interface contract mandates
-		// implementations ignore non-positive deltas (the Prometheus
-		// backend would otherwise panic when a counter is added with a
-		// negative value), but we also guard here so overhead
-		// compactions produce zero metric traffic rather than a no-op
-		// call. This matches the slog `tokens_saved` field semantics:
-		// only net savings are reported.
-		e.recorder.RecordCompressionTokensSaved(agentID, delta)
+	if e.recorder != nil {
+		// M3/Item 5 — mutually exclusive emit paths. Delta > 0 fires
+		// the savings counter, delta < 0 fires the overhead counter,
+		// and delta == 0 (break-even) fires neither so we do not
+		// double-count or produce misleading traffic. The Recorder
+		// interface contract also mandates implementations ignore
+		// non-positive values, so the guards here are defence in depth.
+		switch {
+		case delta > 0:
+			e.recorder.RecordCompressionTokensSaved(agentID, delta)
+		case delta < 0:
+			e.recorder.RecordCompressionOverheadTokens(agentID, -delta)
+		}
 	}
 	if e.bus == nil {
 		return

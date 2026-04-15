@@ -332,6 +332,7 @@ type spyRecorder struct {
 	latencyCalls     []latencyCall
 	contextWindowObs []contextWindowCall
 	tokensSavedCalls []tokensSavedCall
+	overheadCalls    []tokensSavedCall
 }
 
 type contextWindowCall struct {
@@ -366,6 +367,10 @@ func (s *spyRecorder) RecordContextWindowTokens(agentID string, tokens int) {
 
 func (s *spyRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
 	s.tokensSavedCalls = append(s.tokensSavedCalls, tokensSavedCall{agentID: agentID, tokensSaved: tokensSaved})
+}
+
+func (s *spyRecorder) RecordCompressionOverheadTokens(agentID string, overheadTokens int) {
+	s.overheadCalls = append(s.overheadCalls, tokensSavedCall{agentID: agentID, tokensSaved: overheadTokens})
 }
 
 var _ tracer.Recorder = (*spyRecorder)(nil)
