@@ -1,6 +1,8 @@
 package context_test
 
 import (
+	"math"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -85,6 +87,58 @@ var _ = Describe("CompressionConfig", func() {
 			cfg.MicroCompaction.HotTailSize = -1
 
 			Expect(cfg.Validate()).To(HaveOccurred())
+		})
+
+		// M5 — auto-compaction threshold must be constrained to the
+		// (0.0, 1.0] interval. Silently accepting 0.0001 or 1.5 (both
+		// representable, neither useful) produces a layer that fires
+		// every turn or never fires, with no diagnostic. NaN is a
+		// further trap since comparisons against it are always false;
+		// the auto-compaction ratio check would therefore never
+		// trigger. Catching these at load keeps the runtime path free
+		// of silent misconfigurations.
+		DescribeTable("rejects out-of-range auto-compaction thresholds",
+			func(threshold float64, wantSubstring string) {
+				cfg := flowctx.DefaultCompressionConfig()
+				cfg.AutoCompaction.Enabled = true
+				cfg.AutoCompaction.Threshold = threshold
+
+				err := cfg.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("auto_compaction"))
+				Expect(err.Error()).To(ContainSubstring("threshold"))
+				if wantSubstring != "" {
+					Expect(err.Error()).To(ContainSubstring(wantSubstring))
+				}
+			},
+			Entry("zero threshold", 0.0, ""),
+			Entry("negative threshold", -0.1, ""),
+			Entry("threshold above 1.0", 1.5, ""),
+			Entry("NaN threshold", math.NaN(), "NaN"),
+		)
+
+		It("accepts a threshold of 0.5 when auto-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.AutoCompaction.Enabled = true
+			cfg.AutoCompaction.Threshold = 0.5
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("accepts a threshold of exactly 1.0 when auto-compaction is enabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.AutoCompaction.Enabled = true
+			cfg.AutoCompaction.Threshold = 1.0
+
+			Expect(cfg.Validate()).To(Succeed())
+		})
+
+		It("ignores out-of-range thresholds when auto-compaction is disabled", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+			cfg.AutoCompaction.Enabled = false
+			cfg.AutoCompaction.Threshold = 1.5
+
+			Expect(cfg.Validate()).To(Succeed())
 		})
 	})
 })
