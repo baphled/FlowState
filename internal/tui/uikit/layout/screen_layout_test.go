@@ -398,6 +398,102 @@ var _ = Describe("ScreenLayout Pinned Layout", func() {
 		})
 	})
 
+	Describe("Dual-Pane Rendering", func() {
+		// renderDualPane builds a layout of the supplied width and returns
+		// the content-band lines (between header and footer). Width of each
+		// line is used to verify the 70/30 split — every content line is
+		// padded to terminalWidth so lipgloss composition is visible.
+		renderDualPane := func(width int, primary, secondary string) []string {
+			info := &terminal.Info{Width: width, Height: 24, IsValid: true}
+			view := layout.NewScreenLayout(info).
+				WithTheme(theme).
+				WithContent(primary).
+				WithSecondaryContent(secondary)
+			rendered := view.Render()
+			return strings.Split(stripAnsi(rendered), "\n")
+		}
+
+		// findContentLine locates the first rendered line that contains the
+		// primary pane body. That's the line where we measure the split.
+		findContentLine := func(lines []string, needle string) string {
+			for _, line := range lines {
+				if strings.Contains(line, needle) {
+					return line
+				}
+			}
+			return ""
+		}
+
+		DescribeTable("renders dual-pane with 70/30 split and single separator",
+			func(width, expectedPrimary, expectedSecondary int) {
+				lines := renderDualPane(width, "PRIMARY", "SECONDARY")
+
+				line := findContentLine(lines, "PRIMARY")
+				Expect(line).NotTo(BeEmpty(), "primary content line must exist")
+				Expect(line).To(ContainSubstring("SECONDARY"), "secondary content must share the same horizontal band")
+				Expect([]rune(line)).To(HaveLen(width), "content line must span full terminal width")
+
+				// Separator column is expected at position expectedPrimary
+				// (0-indexed). That single rune should be the box-drawing
+				// vertical bar.
+				runes := []rune(line)
+				Expect(string(runes[expectedPrimary])).To(Equal("│"),
+					"separator '│' must sit at column %d (width=%d)", expectedPrimary, width)
+
+				// Exactly one separator column on the content line.
+				Expect(strings.Count(line, "│")).To(Equal(1),
+					"content line must contain exactly one '│' separator")
+
+				// Invariants from ADR.
+				Expect(expectedPrimary+1+expectedSecondary).To(Equal(width),
+					"primary + separator + secondary must equal width")
+				Expect(expectedPrimary).To(BeNumerically(">=", expectedSecondary),
+					"primary pane must be at least as wide as secondary")
+			},
+			Entry("80 cols → 55 / 1 / 24", 80, 55, 24),
+			Entry("81 cols → 56 / 1 / 24 (odd)", 81, 56, 24),
+			Entry("82 cols → 56 / 1 / 25", 82, 56, 25),
+			Entry("100 cols → 69 / 1 / 30", 100, 69, 30),
+			Entry("101 cols → 70 / 1 / 30 (odd)", 101, 70, 30),
+			Entry("120 cols → 83 / 1 / 36", 120, 83, 36),
+			Entry("121 cols → 84 / 1 / 36 (odd)", 121, 84, 36),
+		)
+
+		It("falls back to single-pane when width is below the 80-col threshold", func() {
+			lines := renderDualPane(79, "PRIMARY", "SECONDARY")
+
+			line := findContentLine(lines, "PRIMARY")
+			Expect(line).NotTo(BeEmpty(), "primary content line must exist")
+			Expect(line).NotTo(ContainSubstring("│"),
+				"no separator should be rendered below the dual-pane threshold")
+			Expect(line).NotTo(ContainSubstring("SECONDARY"),
+				"secondary content must be suppressed below the dual-pane threshold")
+		})
+
+		It("renders single-pane when secondary content is empty", func() {
+			info := &terminal.Info{Width: 120, Height: 24, IsValid: true}
+			view := layout.NewScreenLayout(info).
+				WithTheme(theme).
+				WithContent("PRIMARY ONLY")
+
+			rendered := view.Render()
+			stripped := stripAnsi(rendered)
+			lines := strings.Split(stripped, "\n")
+
+			var contentLine string
+			for _, line := range lines {
+				if strings.Contains(line, "PRIMARY ONLY") {
+					contentLine = line
+					break
+				}
+			}
+
+			Expect(contentLine).NotTo(BeEmpty())
+			Expect(contentLine).NotTo(ContainSubstring("│"),
+				"single-pane render must not include the '│' separator")
+		})
+	})
+
 	Describe("Available Content Height Calculation", func() {
 		It("should calculate available content height correctly", func() {
 			logo := NewMockLogo("LOGO\nLINE2\nLINE3") // 3 lines
