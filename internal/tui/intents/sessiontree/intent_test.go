@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/sessiontree"
 )
 
@@ -202,12 +203,364 @@ var _ = Describe("SessionTreeIntent", func() {
 			Expect(cmd).To(BeNil())
 		})
 
-		It("returns nil for unhandled messages", func() {
-			intent = sessiontree.New("root", []sessiontree.SessionNode{
-				{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+		Context("cursor navigation with arrow keys", func() {
+			var sessions []sessiontree.SessionNode
+
+			BeforeEach(func() {
+				sessions = []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+					{SessionID: "child-2", AgentID: "writer", ParentID: "root"},
+					{SessionID: "grandchild-1", AgentID: "analyst", ParentID: "child-1"},
+				}
 			})
-			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyUp})
-			Expect(cmd).To(BeNil())
+
+			Describe("KeyUp", func() {
+				It("moves cursor up one position in the flat display list", func() {
+					intent = sessiontree.New("root", sessions)
+					// Move cursor down first so we can move up.
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					Expect(intent.CursorID()).NotTo(Equal("root"))
+
+					intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+					Expect(intent.CursorID()).To(Equal("root"))
+				})
+
+				It("clamps at the top (index 0) without wrapping", func() {
+					intent = sessiontree.New("root", sessions)
+					// Cursor starts at root which is index 0.
+					intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+					Expect(intent.CursorID()).To(Equal("root"))
+				})
+
+				It("returns nil cmd", func() {
+					intent = sessiontree.New("root", sessions)
+					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+					Expect(cmd).To(BeNil())
+				})
+			})
+
+			Describe("KeyDown", func() {
+				It("moves cursor down one position in the flat display list", func() {
+					intent = sessiontree.New("root", sessions)
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					// Depth-first: root, child-1, grandchild-1, child-2.
+					Expect(intent.CursorID()).To(Equal("child-1"))
+				})
+
+				It("clamps at the bottom (last index) without wrapping", func() {
+					intent = sessiontree.New("root", sessions)
+					// Move to the very bottom.
+					for range 10 {
+						intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					}
+					Expect(intent.CursorID()).To(Equal("child-2"))
+				})
+
+				It("returns nil cmd", func() {
+					intent = sessiontree.New("root", sessions)
+					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					Expect(cmd).To(BeNil())
+				})
+
+				It("traverses depth-first order correctly", func() {
+					intent = sessiontree.New("root", sessions)
+
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					Expect(intent.CursorID()).To(Equal("child-1"))
+
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					Expect(intent.CursorID()).To(Equal("grandchild-1"))
+
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+					Expect(intent.CursorID()).To(Equal("child-2"))
+				})
+			})
+		})
+
+		Describe("Enter key (selection)", func() {
+			var sessions []sessiontree.SessionNode
+
+			BeforeEach(func() {
+				sessions = []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				}
+			})
+
+			It("returns a non-nil command", func() {
+				intent = sessiontree.New("root", sessions)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).NotTo(BeNil())
+			})
+
+			It("sets result with the selected session ID", func() {
+				intent = sessiontree.New("root", sessions)
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				result := intent.Result()
+				Expect(result).NotTo(BeNil())
+
+				data, ok := result.Data.(sessiontree.Result)
+				Expect(ok).To(BeTrue())
+				Expect(data.SelectedSessionID).To(Equal("root"))
+				Expect(data.Cancelled).To(BeFalse())
+			})
+
+			It("selects the node under the cursor after navigation", func() {
+				intent = sessiontree.New("root", sessions)
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				result := intent.Result()
+				Expect(result).NotTo(BeNil())
+
+				data, ok := result.Data.(sessiontree.Result)
+				Expect(ok).To(BeTrue())
+				Expect(data.SelectedSessionID).To(Equal("child-1"))
+			})
+
+			It("emits a non-nil cmd via tea.Sequence with result reflecting selection", func() {
+				intent = sessiontree.New("root", sessions)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(cmd).NotTo(BeNil())
+
+				// tea.Sequence returns an internal sequenceMsg that the runtime
+				// processes in order: SelectedMsg first, then DismissModalMsg.
+				// We verify the result state which is set synchronously.
+				result := intent.Result()
+				Expect(result).NotTo(BeNil())
+
+				data, ok := result.Data.(sessiontree.Result)
+				Expect(ok).To(BeTrue())
+				Expect(data.SelectedSessionID).To(Equal("root"))
+				Expect(data.Cancelled).To(BeFalse())
+			})
+		})
+
+		Describe("Escape key (cancel)", func() {
+			var sessions []sessiontree.SessionNode
+
+			BeforeEach(func() {
+				sessions = []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				}
+			})
+
+			It("returns a non-nil command", func() {
+				intent = sessiontree.New("root", sessions)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEscape})
+				Expect(cmd).NotTo(BeNil())
+			})
+
+			It("sets result with Cancelled true", func() {
+				intent = sessiontree.New("root", sessions)
+				intent.Update(tea.KeyMsg{Type: tea.KeyEscape})
+				result := intent.Result()
+				Expect(result).NotTo(BeNil())
+
+				data, ok := result.Data.(sessiontree.Result)
+				Expect(ok).To(BeTrue())
+				Expect(data.Cancelled).To(BeTrue())
+				Expect(data.SelectedSessionID).To(BeEmpty())
+			})
+
+			It("emits DismissModalMsg", func() {
+				intent = sessiontree.New("root", sessions)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEscape})
+				Expect(cmd).NotTo(BeNil())
+
+				msg := cmd()
+				_, ok := msg.(intents.DismissModalMsg)
+				Expect(ok).To(BeTrue(), "escape should emit DismissModalMsg, got %T", msg)
+			})
+		})
+
+		Describe("r key (refresh)", func() {
+			It("rebuilds the tree and preserves cursor on existing node", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+					{SessionID: "child-2", AgentID: "writer", ParentID: "root"},
+				}
+				intent = sessiontree.New("root", sessions)
+				// Move cursor to child-1.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("child-1"))
+
+				// Refresh: cursor should remain on child-1.
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				Expect(intent.CursorID()).To(Equal("child-1"))
+			})
+
+			It("falls back to nearest surviving ancestor when cursor node is deleted", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+					{SessionID: "grandchild-1", AgentID: "analyst", ParentID: "child-1"},
+				}
+				intent = sessiontree.New("root", sessions)
+				// Move cursor to grandchild-1.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("grandchild-1"))
+
+				// Refresh with grandchild-1 removed; cursor should fall back to child-1.
+				reducedSessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				}
+				intent.SetSessions(reducedSessions)
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				Expect(intent.CursorID()).To(Equal("child-1"))
+			})
+
+			It("falls back to root when entire subtree is deleted", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+					{SessionID: "grandchild-1", AgentID: "analyst", ParentID: "child-1"},
+				}
+				intent = sessiontree.New("root", sessions)
+				// Move cursor to grandchild-1.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("grandchild-1"))
+
+				// Refresh with only root remaining.
+				rootOnly := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				}
+				intent.SetSessions(rootOnly)
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				Expect(intent.CursorID()).To(Equal("root"))
+			})
+
+			It("returns nil cmd", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				}
+				intent = sessiontree.New("root", sessions)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				Expect(cmd).To(BeNil())
+			})
+		})
+
+		Describe("WindowSizeMsg", func() {
+			It("stores width and height", func() {
+				intent = sessiontree.New("root", []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				})
+				intent.Update(tea.WindowSizeMsg{Width: 132, Height: 50})
+				Expect(intent.Width()).To(Equal(132))
+				Expect(intent.Height()).To(Equal(50))
+			})
+		})
+
+		Describe("unhandled messages", func() {
+			It("returns nil for non-key non-window messages", func() {
+				intent = sessiontree.New("root", []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				})
+				// Send an arbitrary message type that Update does not handle.
+				cmd := intent.Update("arbitrary-string-msg")
+				Expect(cmd).To(BeNil())
+			})
+
+			It("returns nil for unhandled key types", func() {
+				intent = sessiontree.New("root", []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyTab})
+				Expect(cmd).To(BeNil())
+			})
+
+			It("returns nil for non-r rune keys", func() {
+				intent = sessiontree.New("root", []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+				Expect(cmd).To(BeNil())
+			})
+		})
+
+		Describe("edge cases", func() {
+			It("handles arrow keys on empty session list gracefully", func() {
+				intent = sessiontree.New("", nil)
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(cmd).To(BeNil())
+				cmd = intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+				Expect(cmd).To(BeNil())
+			})
+
+			It("defaults cursor to index 0 when cursorID is not in the flat list", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				}
+				intent = sessiontree.New("root", sessions)
+				// Force cursor to a non-existent ID to exercise fallback.
+				intent.SetCursor("non-existent")
+				// Moving down from fallback index 0 should land on the second node.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("child-1"))
+			})
+
+			It("walks multiple ancestors before finding a survivor on refresh", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+					{SessionID: "grandchild-1", AgentID: "analyst", ParentID: "child-1"},
+					{SessionID: "great-grandchild-1", AgentID: "intern", ParentID: "grandchild-1"},
+				}
+				intent = sessiontree.New("root", sessions)
+				// Navigate to great-grandchild-1.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("great-grandchild-1"))
+
+				// Remove grandchild-1 and great-grandchild-1; child-1 and root survive.
+				intent.SetSessions([]sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				// Must walk great-grandchild-1 -> grandchild-1 (gone) -> child-1 (survives).
+				Expect(intent.CursorID()).To(Equal("child-1"))
+			})
+
+			It("falls back to new root when cursor root node no longer exists", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+				}
+				intent = sessiontree.New("root", sessions)
+				Expect(intent.CursorID()).To(Equal("root"))
+
+				// Replace entire tree with a different root.
+				intent.SetSessions([]sessiontree.SessionNode{
+					{SessionID: "new-root", AgentID: "new-orchestrator", ParentID: ""},
+				})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				// Cursor root is gone, parent chain yields "" which exits loop,
+				// falls back to first node in new lines.
+				Expect(intent.CursorID()).To(Equal("new-root"))
+			})
+
+			It("handles refresh when all sessions are removed", func() {
+				sessions := []sessiontree.SessionNode{
+					{SessionID: "root", AgentID: "orchestrator", ParentID: ""},
+					{SessionID: "child-1", AgentID: "researcher", ParentID: "root"},
+				}
+				intent = sessiontree.New("root", sessions)
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				Expect(intent.CursorID()).To(Equal("child-1"))
+
+				// Remove all sessions and refresh.
+				intent.SetSessions(nil)
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+				// With no sessions, cursor remains unchanged (no lines to fall back to).
+				Expect(intent.CursorID()).To(Equal("child-1"))
+			})
 		})
 	})
 
