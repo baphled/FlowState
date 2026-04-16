@@ -163,6 +163,195 @@ var _ = Describe("SwarmActivityPane", func() {
 		})
 	})
 
+	Describe("WithVisibleTypes", func() {
+		var pane *swarmactivity.SwarmActivityPane
+
+		BeforeEach(func() {
+			pane = swarmactivity.NewSwarmActivityPane()
+		})
+
+		It("is chainable and returns the receiver", func() {
+			out := pane.WithVisibleTypes(map[streaming.SwarmEventType]bool{
+				streaming.EventDelegation: true,
+				streaming.EventToolCall:   true,
+				streaming.EventPlan:       true,
+				streaming.EventReview:     true,
+			})
+			Expect(out).To(BeIdenticalTo(pane))
+		})
+
+		Context("with default (all visible)", func() {
+			It("does not render a filter indicator line", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "started", AgentID: "a1"},
+					{Type: streaming.EventToolCall, Status: "ok", AgentID: "a2"},
+				}
+				output := pane.WithEvents(events).Render(80, 10)
+				Expect(output).NotTo(ContainSubstring("[D]"))
+				Expect(output).NotTo(ContainSubstring("[T]"))
+				Expect(output).NotTo(ContainSubstring("[P]"))
+				Expect(output).NotTo(ContainSubstring("[R]"))
+			})
+
+			It("does not render a count summary in the header", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "started", AgentID: "a1"},
+				}
+				output := pane.WithEvents(events).Render(80, 10)
+				Expect(output).NotTo(ContainSubstring("showing"))
+			})
+		})
+
+		Context("with one type hidden", func() {
+			var events []streaming.SwarmEvent
+
+			BeforeEach(func() {
+				events = []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "started", AgentID: "del-agent"},
+					{Type: streaming.EventToolCall, Status: "ok", AgentID: "tool-agent"},
+					{Type: streaming.EventPlan, Status: "done", AgentID: "plan-agent"},
+				}
+				pane.WithEvents(events).WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: true,
+					streaming.EventToolCall:   false,
+					streaming.EventPlan:       true,
+					streaming.EventReview:     true,
+				})
+			})
+
+			It("excludes the hidden type from the rendered body", func() {
+				output := pane.Render(80, 10)
+				Expect(output).To(ContainSubstring("delegation"))
+				Expect(output).To(ContainSubstring("plan"))
+				Expect(output).NotTo(ContainSubstring("tool_call"))
+			})
+
+			It("renders the filter indicator line", func() {
+				output := pane.Render(80, 10)
+				Expect(output).To(ContainSubstring("[D]"))
+				Expect(output).To(ContainSubstring("[T]"))
+				Expect(output).To(ContainSubstring("[P]"))
+				Expect(output).To(ContainSubstring("[R]"))
+			})
+
+			It("renders a count summary showing 2 of 3", func() {
+				output := pane.Render(80, 10)
+				Expect(output).To(ContainSubstring("showing 2 of 3"))
+			})
+		})
+
+		Context("with multiple types hidden", func() {
+			It("only renders matching event types", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "s", AgentID: "a1"},
+					{Type: streaming.EventToolCall, Status: "s", AgentID: "a2"},
+					{Type: streaming.EventPlan, Status: "s", AgentID: "a3"},
+					{Type: streaming.EventReview, Status: "s", AgentID: "a4"},
+				}
+				pane.WithEvents(events).WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: false,
+					streaming.EventToolCall:   false,
+					streaming.EventPlan:       true,
+					streaming.EventReview:     false,
+				})
+
+				output := pane.Render(80, 10)
+				Expect(output).To(ContainSubstring("plan"))
+				Expect(output).NotTo(ContainSubstring("delegation"))
+				Expect(output).NotTo(ContainSubstring("tool_call"))
+				Expect(output).NotTo(ContainSubstring("review"))
+				Expect(output).To(ContainSubstring("showing 1 of 4"))
+			})
+		})
+
+		Context("with all types hidden", func() {
+			It("renders only the header and filter indicator with no event lines", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "s", AgentID: "a1"},
+					{Type: streaming.EventToolCall, Status: "s", AgentID: "a2"},
+				}
+				pane.WithEvents(events).WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: false,
+					streaming.EventToolCall:   false,
+					streaming.EventPlan:       false,
+					streaming.EventReview:     false,
+				})
+
+				output := pane.Render(80, 10)
+				Expect(output).To(ContainSubstring("Activity Timeline"))
+				Expect(output).To(ContainSubstring("showing 0 of 2"))
+				// No event body lines (no bullet markers).
+				lines := strings.Split(output, "\n")
+				for _, line := range lines {
+					Expect(line).NotTo(ContainSubstring("▸"))
+				}
+			})
+		})
+
+		Context("count indicator accuracy", func() {
+			It("reports the correct counts for mixed visibility", func() {
+				events := make([]streaming.SwarmEvent, 0, 10)
+				for range 5 {
+					events = append(events, streaming.SwarmEvent{
+						Type: streaming.EventDelegation, Status: "s", AgentID: "a",
+					})
+				}
+				for range 5 {
+					events = append(events, streaming.SwarmEvent{
+						Type: streaming.EventToolCall, Status: "s", AgentID: "b",
+					})
+				}
+				pane.WithEvents(events).WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: true,
+					streaming.EventToolCall:   false,
+					streaming.EventPlan:       true,
+					streaming.EventReview:     true,
+				})
+
+				output := pane.Render(80, 20)
+				Expect(output).To(ContainSubstring("showing 5 of 10"))
+			})
+		})
+
+		Context("filter indicator format", func() {
+			It("contains all four type labels when filtering is active", func() {
+				events := []streaming.SwarmEvent{
+					{Type: streaming.EventDelegation, Status: "s", AgentID: "a"},
+				}
+				pane.WithEvents(events).WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: true,
+					streaming.EventToolCall:   true,
+					streaming.EventPlan:       true,
+					streaming.EventReview:     false, // one hidden to activate filter line
+				})
+
+				output := pane.Render(80, 10)
+				// All four tags must appear in the output.
+				Expect(output).To(ContainSubstring("[D]"))
+				Expect(output).To(ContainSubstring("[T]"))
+				Expect(output).To(ContainSubstring("[P]"))
+				Expect(output).To(ContainSubstring("[R]"))
+			})
+		})
+
+		Context("without events (placeholder mode)", func() {
+			It("does not render count summary even when filter is active", func() {
+				pane.WithVisibleTypes(map[streaming.SwarmEventType]bool{
+					streaming.EventDelegation: false,
+					streaming.EventToolCall:   true,
+					streaming.EventPlan:       true,
+					streaming.EventReview:     true,
+				})
+
+				output := pane.Render(80, 10)
+				// Placeholder mode: no count summary since events slice is empty.
+				Expect(output).NotTo(ContainSubstring("showing"))
+				// But filter indicator IS rendered because a type is hidden.
+				Expect(output).To(ContainSubstring("[D]"))
+			})
+		})
+	})
+
 	Describe("WithEvents", func() {
 		var pane *swarmactivity.SwarmActivityPane
 
