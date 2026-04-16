@@ -75,4 +75,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterDualPaneLayoutSteps(ctx)
 	RegisterSessionTreeNavigationSteps(ctx)
 	RegisterSwarmActivityTimelineSteps(ctx)
+	RegisterMultiAgentChatUXE2ESteps(ctx)
 }

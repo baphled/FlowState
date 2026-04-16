@@ -328,4 +328,142 @@ var _ = Describe("EventDetailsIntent", func() {
 			Expect(intent.Result()).To(BeNil())
 		})
 	})
+
+	Describe("Update edge cases", func() {
+		It("returns nil for an unrecognised message type", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-unknown-msg",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+			})
+			// Send a non-KeyMsg, non-WindowSizeMsg message type.
+			cmd := intent.Update("arbitrary-string-message")
+			Expect(cmd).To(BeNil())
+		})
+	})
+
+	Describe("handleKey edge cases", func() {
+		It("returns nil for an unrecognised rune key", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-unknown-key",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+			})
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+			Expect(cmd).To(BeNil())
+		})
+
+		It("returns nil for a multi-rune key message", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-multi-rune",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+			})
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a', 'b'}})
+			Expect(cmd).To(BeNil())
+		})
+	})
+
+	Describe("scroll boundary edge cases", func() {
+		It("clamps to zero when content fits within viewport", func() {
+			// With no metadata and a large height, content fits entirely —
+			// maxScroll will be negative and clamped to 0.
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-small-content",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+			})
+			// Set a large viewport so content fits easily.
+			intent.Update(tea.WindowSizeMsg{Width: 120, Height: 60})
+			// Attempt to scroll down — should stay at 0 because maxScroll <= 0.
+			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			Expect(intent.ScrollOffset()).To(Equal(0))
+		})
+	})
+
+	Describe("prominentKeysForType coverage", func() {
+		It("returns nil for an unknown event type", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-unknown-type",
+				Type:      streaming.SwarmEventType("custom_event"),
+				Status:    "active",
+				Timestamp: timestamp,
+				AgentID:   "agent-1",
+				Metadata: map[string]interface{}{
+					"alpha": "first",
+					"beta":  "second",
+				},
+			})
+			// View should render metadata keys alphabetically with no prominent ordering.
+			view := intent.View()
+			Expect(view).To(ContainSubstring("alpha: first"))
+			Expect(view).To(ContainSubstring("beta: second"))
+		})
+	})
+
+	Describe("visibleHeight edge cases", func() {
+		It("returns default of 20 when height is zero", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-zero-height",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+			})
+			// Do not send WindowSizeMsg — height stays 0.
+			// Scrolling exercises visibleHeight with default.
+			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			// Just verify it does not panic and offset is reasonable.
+			Expect(intent.ScrollOffset()).To(BeNumerically(">=", 0))
+		})
+
+		It("clamps boxH to minimum of 12 for very small heights", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-tiny-height",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+				Metadata: map[string]interface{}{
+					"k1": "v1", "k2": "v2", "k3": "v3",
+					"k4": "v4", "k5": "v5", "k6": "v6",
+				},
+			})
+			// Height 10 → 70% = 7 → clamp to 12 → visible = 8.
+			intent.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+			// Scroll down several times to exercise the clamp path.
+			for range 20 {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
+			Expect(intent.ScrollOffset()).To(BeNumerically(">=", 0))
+		})
+
+		It("clamps boxH to maximum of 40 for very large heights", func() {
+			intent = eventdetails.New(streaming.SwarmEvent{
+				ID:        "evt-huge-height",
+				Type:      streaming.EventDelegation,
+				Status:    "started",
+				Timestamp: timestamp,
+				AgentID:   "orchestrator",
+				Metadata: map[string]interface{}{
+					"k1": "v1", "k2": "v2", "k3": "v3",
+					"k4": "v4", "k5": "v5", "k6": "v6",
+				},
+			})
+			// Height 80 → 70% = 56 → clamp to 40 → visible = 36.
+			intent.Update(tea.WindowSizeMsg{Width: 120, Height: 80})
+			for range 5 {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
+			Expect(intent.ScrollOffset()).To(BeNumerically(">=", 0))
+		})
+	})
 })

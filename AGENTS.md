@@ -71,6 +71,21 @@ The chat intent's keyboard shortcuts are listed below. Use `Ctrl+T` to toggle th
 | `PgUp` / `PgDn` | Scroll the message viewport a page at a time |
 | `Home` / `End` | Jump to the top or bottom of the message viewport |
 
+### Session tree modal (`Ctrl+G`)
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate session tree |
+| `Enter` | Select session |
+| `Esc` | Close modal |
+
+### Event details modal (`Ctrl+E`)
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` / `j` / `k` | Scroll event details |
+| `Esc` | Close modal |
+
 ### Notes
 
 - **Narrow terminals.** On terminals narrower than 80 columns the activity pane is suppressed; the `Ctrl+T` keybinding remains bound but has no visible effect.
@@ -214,6 +229,28 @@ type ContentProvider interface {
 asScreen := render.AsScreen(myComponent, layout)
 asModal := render.AsModal(myComponent, background, w, h, theme)
 ```
+
+### Multi-Agent Chat UX
+
+The chat intent uses a dual-pane layout with a 70/30 horizontal split
+(`ScreenLayout.WithSecondaryContent()` in `internal/tui/uikit/layout/`). The
+primary pane renders the conversation; the secondary pane shows a live swarm
+activity timeline of delegation, tool-call, plan, and review events.
+
+Key components:
+
+| Component | Location |
+|-----------|----------|
+| **SwarmEvent model** | `internal/streaming/swarm_event.go` |
+| **MemorySwarmStore** | `internal/streaming/event_store_memory.go` |
+| **JSONL persistence** | `internal/streaming/swarm_event_persistence.go` |
+| **Session tree modal** | `internal/tui/intents/sessiontree/` |
+| **Event details modal** | `internal/tui/intents/eventdetails/` |
+| **Dual-pane layout** | `internal/tui/uikit/layout/screen_layout.go` |
+
+Events are persisted in JSONL format (one JSON object per line, RFC3339
+timestamps, `omitempty` on metadata). See `docs/design/swarm_event_model.md`
+for the full schema and persistence contract.
 
 ## Code Style and Documentation
 
