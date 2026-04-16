@@ -164,6 +164,18 @@ type SessionLister interface {
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
 }
 
+// SwarmEventPersister is an optional interface that a SessionLister may
+// implement to support persisting and restoring SwarmEvent activity timelines
+// alongside session data. The chat intent type-asserts the session store at
+// save/load time — implementations that do not support event persistence are
+// silently skipped.
+type SwarmEventPersister interface {
+	// SaveEvents persists events for a session. Empty slices produce no file.
+	SaveEvents(sessionID string, evs []streaming.SwarmEvent) error
+	// LoadEvents restores events for a session. Missing files return nil, nil.
+	LoadEvents(sessionID string) ([]streaming.SwarmEvent, error)
+}
+
 // SessionChildLister lists child sessions visible to the session manager.
 type SessionChildLister interface {
 	// ChildSessions returns child sessions for the given parent session ID.
@@ -1640,8 +1652,24 @@ func (i *Intent) saveSession() tea.Cmd {
 		SystemPrompt: i.engine.BuildSystemPrompt(),
 		LoadedSkills: skillNames,
 	}
+	// Capture swarm events outside the closure so All() is called on the
+	// Bubble Tea goroutine (same as other field reads above). The store's
+	// mutex ensures a consistent snapshot even when stream workers append
+	// concurrently.
+	var swarmEvents []streaming.SwarmEvent
+	if i.swarmStore != nil {
+		swarmEvents = i.swarmStore.All()
+	}
 	return func() tea.Msg {
-		return SessionSavedMsg{Err: sessionStore.Save(sessionID, store, meta)}
+		saveErr := sessionStore.Save(sessionID, store, meta)
+		// Persist swarm events alongside the session when the store
+		// supports it. Errors are intentionally swallowed: event loss
+		// is tolerable, but a failed session save is not.
+		if ep, ok := sessionStore.(SwarmEventPersister); ok && len(swarmEvents) > 0 {
+			//nolint:errcheck // Event persistence is best-effort; session save must not fail for events.
+			ep.SaveEvents(sessionID, swarmEvents)
+		}
+		return SessionSavedMsg{Err: saveErr}
 	}
 }
 
@@ -2757,6 +2785,15 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {
 		lastToolCallName = i.replayStoredMessage(sm, lastToolCallName)
+	}
+	// Restore swarm events when the session store supports persistence.
+	// Missing event files are handled gracefully (old sessions).
+	if ep, ok := i.sessionStore.(SwarmEventPersister); ok && i.swarmStore != nil {
+		if restored, err := ep.LoadEvents(msg.SessionID); err == nil {
+			for idx := range restored {
+				i.swarmStore.Append(restored[idx])
+			}
+		}
 	}
 	i.atBottom = true
 	i.refreshViewport()
