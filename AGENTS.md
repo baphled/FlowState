@@ -64,6 +64,7 @@ The chat intent's keyboard shortcuts are listed below. Use `Ctrl+T` to toggle th
 | `Ctrl+A` | Open the agent picker |
 | `Ctrl+P` | Open the model selector |
 | `Ctrl+S` | Open the session browser |
+| `Ctrl+G` | Open the session tree overlay |
 | `Ctrl+T` | Toggle the swarm activity pane (visible by default) |
 | `↑` / `↓` | Scroll the message viewport line by line |
 | `PgUp` / `PgDn` | Scroll the message viewport a page at a time |
@@ -73,7 +74,6 @@ The chat intent's keyboard shortcuts are listed below. Use `Ctrl+T` to toggle th
 
 The following bindings are reserved for later waves of the Multi-Agent Chat UX plan and are **not yet active**:
 
-- `Ctrl+G` — reserved for the Wave 2 session tree.
 - `Ctrl+E` — reserved for the Wave 3 event-detail drill-down.
 
 ### Notes
