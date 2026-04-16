@@ -33,6 +33,7 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 	"github.com/baphled/flowstate/internal/tui/uikit/feedback"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
+	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
 	"github.com/baphled/flowstate/internal/tui/uikit/theme"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 	"github.com/baphled/flowstate/internal/tui/views/chat"
@@ -175,6 +176,8 @@ type SessionManager interface {
 	EnsureSession(sessionID string, agentID string)
 	// SendMessage sends a message to the session and returns streamed chunks.
 	SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error)
+	// GetSession retrieves a session by ID for ancestry traversal.
+	GetSession(id string) (*session.Session, error)
 }
 
 // IntentConfig holds the configuration for creating a new chat Intent.
@@ -273,6 +276,10 @@ type Intent struct {
 	// passes an empty string to WithSecondaryContent so ScreenLayout falls
 	// back to single-pane via its existing empty-secondary branch.
 	secondaryPaneVisible bool
+	// sessionTrail holds the session-ancestry breadcrumb trail built by
+	// walking ParentID links via the session manager. Refreshed on
+	// construction and session switch.
+	sessionTrail *navigation.SessionTrail
 }
 
 var runningInTests bool
@@ -335,7 +342,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		cfg.Engine.SetModelPreference(cfg.ProviderName, cfg.ModelName)
 	}
 
-	return &Intent{
+	intent := &Intent{
 		app:                  cfg.App,
 		engine:               cfg.Engine,
 		streamer:             cfg.Streamer,
@@ -365,7 +372,10 @@ func NewIntent(cfg IntentConfig) *Intent {
 		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
 		swarmStore:           streaming.NewMemorySwarmStore(streaming.DefaultSwarmStoreCapacity),
 		secondaryPaneVisible: true,
+		sessionTrail:         navigation.NewSessionTrail(),
 	}
+	intent.refreshSessionTrail()
+	return intent
 }
 
 // SetCompletionChannel attaches a channel that receives background task completion
@@ -2588,7 +2598,47 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	i.atBottom = true
 	i.refreshViewport()
 	i.syncStatusBar()
+	i.refreshSessionTrail()
 	return nil
+}
+
+// refreshSessionTrail walks the ParentID chain via the session manager to
+// rebuild the session-ancestry trail. A visited-set guards against circular
+// parent references.
+//
+// Expected:
+//   - sessionManager may be nil; the method returns silently in that case.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Replaces i.sessionTrail with a freshly computed trail in root-first order.
+func (i *Intent) refreshSessionTrail() {
+	if i.sessionManager == nil {
+		return
+	}
+	var items []navigation.SessionTrailItem
+	visited := map[string]bool{}
+	id := i.sessionID
+	for id != "" && !visited[id] {
+		visited[id] = true
+		sess, err := i.sessionManager.GetSession(id)
+		if err != nil {
+			break
+		}
+		items = append(items, navigation.SessionTrailItem{
+			SessionID: sess.ID,
+			AgentID:   sess.AgentID,
+			Label:     sess.AgentID,
+		})
+		id = sess.ParentID
+	}
+	// Reverse to root-first order.
+	for l, r := 0, len(items)-1; l < r; l, r = l+1, r-1 {
+		items[l], items[r] = items[r], items[l]
+	}
+	i.sessionTrail = i.sessionTrail.WithItems(items)
 }
 
 // replayStoredMessage adds a single stored message to the chat view during session restore.
