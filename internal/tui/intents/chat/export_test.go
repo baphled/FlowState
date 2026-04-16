@@ -434,3 +434,12 @@ func (i *Intent) SessionTrailHeightForTest() int {
 func (i *Intent) RenderSessionTrailLineForTest() string {
 	return i.renderSessionTrailLine()
 }
+
+// SetChildSessionListerForTest sets the child session lister for testing purposes.
+func SetChildSessionListerForTest(i *Intent, lister SessionChildLister) {
+	i.childSessionLister = lister
+}
+
+// ShowModalMsgForTest is a type alias for tuiintents.ShowModalMsg exported for
+// test assertions in external test packages.
+type ShowModalMsgForTest = tuiintents.ShowModalMsg

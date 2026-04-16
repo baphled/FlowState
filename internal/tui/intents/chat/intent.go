@@ -31,6 +31,7 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
+	"github.com/baphled/flowstate/internal/tui/intents/sessiontree"
 	"github.com/baphled/flowstate/internal/tui/uikit/feedback"
 	"github.com/baphled/flowstate/internal/tui/uikit/layout"
 	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
@@ -287,13 +288,13 @@ var runningInTests bool
 // chatHintSuffix is the fixed portion of the chat view's status-bar hint,
 // appended to the dynamic status prefix by View(). Extracted as a package
 // const so the long-line linter is satisfied without sacrificing
-// readability. Ctrl+T: toggle activity was added in Wave 1 / T7; the
-// verbose "PgUp/PgDn: scroll" hint was shortened to "↑/↓: scroll" to keep
-// the line within the 140-column budget while remaining discoverable.
+// readability. Ctrl+G: tree was added in Wave 2 / T14b; "toggle activity"
+// was shortened to "activity" to keep the line within the 140-column budget.
 const chatHintSuffix = "  ·  Alt+Enter: new line" +
 	"  ·  Enter: send" +
 	"  ·  /models /model /help" +
-	"  ·  Ctrl+T: toggle activity" +
+	"  ·  Ctrl+G: tree" +
+	"  ·  Ctrl+T: activity" +
 	"  ·  ↑/↓: scroll" +
 	"  ·  Ctrl+C: quit"
 
@@ -592,14 +593,12 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
 		return i.handleSessionLoaded(msg)
+	case sessiontree.SelectedMsg:
+		return i.handleSessionTreeSelection(msg)
 	case BackgroundTaskCompletedMsg:
 		return i.handleBackgroundTaskCompleted(msg)
-	case EventBusNotificationMsg:
-		return i.handleEventBusNotification(msg)
-	case SwarmEventAppendedMsg:
-		return i.handleSwarmEventAppended()
 	}
-	return nil
+	return i.handleMiscMsg(msg)
 }
 
 // handleSwarmEventAppended acknowledges a newly-stored swarm event. The
@@ -613,6 +612,28 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 // Side effects:
 //   - None; the store was mutated by the producer goroutine.
 func (i *Intent) handleSwarmEventAppended() tea.Cmd {
+	return nil
+}
+
+// handleMiscMsg dispatches low-frequency messages that do not warrant
+// individual cases in the main Update switch, keeping its cyclomatic
+// complexity within the project's gocyclo budget.
+//
+// Expected:
+//   - msg is a tea.Msg that was not matched by Update's type switch.
+//
+// Returns:
+//   - A tea.Cmd from the matched handler, or nil for unrecognised messages.
+//
+// Side effects:
+//   - Depends on the concrete message type handled.
+func (i *Intent) handleMiscMsg(msg tea.Msg) tea.Cmd {
+	switch m := msg.(type) {
+	case EventBusNotificationMsg:
+		return i.handleEventBusNotification(m)
+	case SwarmEventAppendedMsg:
+		return i.handleSwarmEventAppended()
+	}
 	return nil
 }
 
@@ -1013,6 +1034,8 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.openSessionBrowser()
 	case tea.KeyCtrlT:
 		return i.toggleSecondaryPane()
+	case tea.KeyCtrlG:
+		return i.openSessionTree()
 	}
 	return i.handleTextInputKey(msg)
 }
@@ -2253,6 +2276,7 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"  Ctrl+A       - Open agent picker\n" +
 				"  Ctrl+P       - Open model selector\n" +
 				"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
+				"  Ctrl+G       - Open session tree\n" +
 				"  Ctrl+T       - Toggle swarm activity pane (visible by default)\n" +
 				"  Up/Down      - Scroll viewport line by line\n" +
 				"  PgUp/PgDn    - Scroll viewport by page\n" +
@@ -2382,6 +2406,54 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 		})
 		return tuiintents.ShowModalMsg{Modal: browserIntent}
 	}
+}
+
+// openSessionTree creates and shows the session tree as a modal overlay.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the session tree, or nil
+//     if no child session lister is available or listing fails.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openSessionTree() tea.Cmd {
+	if i.childSessionLister == nil {
+		return nil
+	}
+	sessions, err := i.childSessionLister.AllSessions()
+	if err != nil {
+		return nil
+	}
+	nodes := make([]sessiontree.SessionNode, len(sessions))
+	for idx, s := range sessions {
+		nodes[idx] = sessiontree.SessionNode{
+			SessionID: s.ID,
+			AgentID:   s.AgentID,
+			ParentID:  s.ParentID,
+		}
+	}
+	tree := sessiontree.New(i.sessionID, nodes)
+	return func() tea.Msg {
+		return tuiintents.ShowModalMsg{Modal: tree}
+	}
+}
+
+// handleSessionTreeSelection processes a session tree selection by switching
+// to the chosen session and refreshing the ancestry trail.
+//
+// Expected:
+//   - msg.SessionID is a non-empty string matching an existing session.
+//
+// Returns:
+//   - A tea.Cmd from switchToSession that loads the session asynchronously.
+//
+// Side effects:
+//   - Updates sessionID and triggers async session load.
+//   - Refreshes the session trail via the loaded-session handler chain.
+func (i *Intent) handleSessionTreeSelection(msg sessiontree.SelectedMsg) tea.Cmd {
+	i.sessionID = msg.SessionID
+	i.refreshSessionTrail()
+	return i.switchToSession(msg.SessionID)
 }
 
 // openDelegationPicker opens the delegation list modal.
