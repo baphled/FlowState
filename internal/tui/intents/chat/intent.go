@@ -29,6 +29,7 @@ import (
 	swarmactivity "github.com/baphled/flowstate/internal/tui/components/swarm_activity"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
+	"github.com/baphled/flowstate/internal/tui/intents/eventdetails"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 	"github.com/baphled/flowstate/internal/tui/intents/sessiontree"
@@ -294,6 +295,7 @@ const chatHintSuffix = "  ·  Alt+Enter: new line" +
 	"  ·  Enter: send" +
 	"  ·  /models /model /help" +
 	"  ·  Ctrl+G: tree" +
+	"  ·  Ctrl+E: event" +
 	"  ·  Ctrl+T: activity" +
 	"  ·  ↑/↓: scroll" +
 	"  ·  Ctrl+C: quit"
@@ -1036,6 +1038,8 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.toggleSecondaryPane()
 	case tea.KeyCtrlG:
 		return i.openSessionTree()
+	case tea.KeyCtrlE:
+		return i.openEventDetails()
 	}
 	return i.handleTextInputKey(msg)
 }
@@ -2277,6 +2281,7 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"  Ctrl+P       - Open model selector\n" +
 				"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
 				"  Ctrl+G       - Open session tree\n" +
+				"  Ctrl+E       - Open event details (most recent swarm event)\n" +
 				"  Ctrl+T       - Toggle swarm activity pane (visible by default)\n" +
 				"  Up/Down      - Scroll viewport line by line\n" +
 				"  PgUp/PgDn    - Scroll viewport by page\n" +
@@ -2435,6 +2440,27 @@ func (i *Intent) openSessionTree() tea.Cmd {
 	tree := sessiontree.New(i.sessionID, nodes)
 	return func() tea.Msg {
 		return tuiintents.ShowModalMsg{Modal: tree}
+	}
+}
+
+// openEventDetails creates and shows the event details modal for the most
+// recent SwarmEvent in the swarm store.
+//
+// Returns:
+//   - A tea.Cmd that emits a ShowModalMsg to display the event details, or nil
+//     if the swarm store is empty.
+//
+// Side effects:
+//   - None.
+func (i *Intent) openEventDetails() tea.Cmd {
+	allEvents := i.swarmStore.All()
+	if len(allEvents) == 0 {
+		return nil
+	}
+	latest := allEvents[len(allEvents)-1]
+	detail := eventdetails.New(latest)
+	return func() tea.Msg {
+		return tuiintents.ShowModalMsg{Modal: detail}
 	}
 }
 
