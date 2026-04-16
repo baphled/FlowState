@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
+	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
@@ -402,4 +403,24 @@ func (i *Intent) StreamCancelClearedForTest() bool {
 // when it consumes the corresponding context.Canceled chunk.
 func (i *Intent) UserCancelledForTest() bool {
 	return i.userCancelled
+}
+
+// SessionTrailForTest returns the session trail for test assertions.
+func SessionTrailForTest(i *Intent) *navigation.SessionTrail {
+	return i.sessionTrail
+}
+
+// RefreshSessionTrailForTest exposes refreshSessionTrail for test assertions.
+func RefreshSessionTrailForTest(i *Intent) {
+	i.refreshSessionTrail()
+}
+
+// SetSessionManagerForTest sets the session manager for testing purposes.
+func (i *Intent) SetSessionManagerForTest(mgr SessionManager) {
+	i.sessionManager = mgr
+}
+
+// SetSessionIDForTest sets the session ID for testing purposes.
+func (i *Intent) SetSessionIDForTest(id string) {
+	i.sessionID = id
 }
