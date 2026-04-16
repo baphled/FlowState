@@ -34,12 +34,12 @@ const (
 // without recompiling producers; producers are expected to use stable string
 // keys (for example "tool_name", "source_agent") for downstream filtering.
 type SwarmEvent struct {
-	ID        string
-	Type      SwarmEventType
-	Status    string
-	Timestamp time.Time
-	AgentID   string
-	Metadata  map[string]interface{}
+	ID        string                 `json:"id"`
+	Type      SwarmEventType         `json:"type"`
+	Status    string                 `json:"status"`
+	Timestamp time.Time              `json:"timestamp"`
+	AgentID   string                 `json:"agent_id"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // SwarmEventStore is a thread-safe append-only store for SwarmEvent entries
