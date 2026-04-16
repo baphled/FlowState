@@ -1148,3 +1148,87 @@ func RenderOverlay(background, modalContent string, termWidth, termHeight int, t
 func RenderOverlayWithDefaultTheme(background, modalContent string, termWidth, termHeight int) string {
 	return RenderOverlay(background, modalContent, termWidth, termHeight, themes.NewDefaultTheme())
 }
+
+// RenderBorderedOverlay renders content inside a rounded-border box centred on a dimmed background.
+//
+// The box is sized to 80% of termW by 70% of termH, clamped to min 40x12 and max 120x40.
+// The background is dimmed and the bordered box is composited on top, centred both
+// horizontally and vertically.
+//
+// Expected:
+//   - bg: background content string to dim behind the overlay.
+//   - content: the text to display inside the bordered box.
+//   - termW: terminal width in columns.
+//   - termH: terminal height in rows.
+//   - theme: styling theme (uses default if nil).
+//
+// Returns:
+//   - string: the composited overlay output with exactly termH lines.
+//
+// Side effects:
+//   - None.
+func RenderBorderedOverlay(bg, content string, termW, termH int, theme themes.Theme) string {
+	if theme == nil {
+		theme = themes.NewDefaultTheme()
+	}
+
+	// Calculate box dimensions: 80% width, 70% height, clamped.
+	boxW := clampInt(termW*80/100, 40, 120)
+	boxH := clampInt(termH*70/100, 12, 40)
+
+	// Border consumes 2 columns and 2 rows, so inner dimensions are reduced.
+	borderedStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.BorderColor()).
+		Width(boxW - 2).
+		Height(boxH - 2)
+
+	borderedBox := borderedStyle.Render(content)
+
+	// Dim the background.
+	dimmedBg := DimContent(bg)
+
+	// Split into lines for compositing.
+	bgLines := normalizeBackgroundLines(strings.Split(dimmedBg, "\n"), termW, termH)
+	modalLines := strings.Split(borderedBox, "\n")
+
+	// Centre vertically.
+	startY := (termH - len(modalLines)) / 2
+	if startY < 0 {
+		startY = 0
+	}
+
+	result := make([]string, termH)
+	copy(result, bgLines)
+
+	for i, line := range modalLines {
+		idx := startY + i
+		if idx >= 0 && idx < termH {
+			result[idx] = lipgloss.PlaceHorizontal(termW, lipgloss.Center, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// clampInt returns v clamped to [lo, hi].
+//
+// Expected:
+//   - v: the value to clamp.
+//   - lo: the minimum bound (inclusive).
+//   - hi: the maximum bound (inclusive).
+//
+// Returns:
+//   - int: v if lo <= v <= hi, otherwise the nearest bound.
+//
+// Side effects:
+//   - None.
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
