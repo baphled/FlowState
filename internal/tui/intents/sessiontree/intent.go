@@ -19,15 +19,26 @@ type Result struct {
 	Cancelled         bool
 }
 
+// SelectedMsg carries the session ID selected by the user in the tree.
+//
+// It is emitted as the first message in a tea.Sequence when the user presses
+// Enter, guaranteeing the chat intent receives the selection before the
+// dispatcher tears down the modal via DismissModalMsg.
+type SelectedMsg struct {
+	SessionID string
+}
+
 // Intent displays a hierarchical session tree as a modal overlay.
 //
 // It implements the intents.Intent interface. The tree is built once at
 // construction from a flat list of SessionNode values. Keyboard navigation
-// is deferred to a later task; Update currently handles only WindowSizeMsg.
+// supports arrow keys, Enter selection, Escape cancel, and r-refresh with
+// NodeID cursor invariant.
 type Intent struct {
 	currentSessionID string
 	cursorID         string
 	sessions         []SessionNode
+	parentMap        map[string]string
 	root             *treeNode
 	lines            []displayLine
 	result           *intents.IntentResult
@@ -70,19 +81,234 @@ func (i *Intent) Init() tea.Cmd {
 // Update handles messages from the Bubble Tea event loop.
 //
 // Expected:
-//   - msg is a valid tea.Msg, typically a tea.WindowSizeMsg.
+//   - msg is a valid tea.Msg (tea.KeyMsg, tea.WindowSizeMsg, etc.).
 //
 // Returns:
-//   - A tea.Cmd, or nil when no command is needed.
+//   - A tea.Cmd: tea.Sequence for Enter, a DismissModalMsg cmd for Escape, or nil.
 //
 // Side effects:
-//   - Stores window dimensions when a WindowSizeMsg is received.
+//   - Modifies cursorID on arrow key presses.
+//   - Sets result on Enter or Escape.
+//   - Rebuilds tree on r key press.
+//   - Stores window dimensions on WindowSizeMsg.
 func (i *Intent) Update(msg tea.Msg) tea.Cmd {
-	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
-		i.width = wsm.Width
-		i.height = wsm.Height
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		i.width = msg.Width
+		i.height = msg.Height
+		return nil
+
+	case tea.KeyMsg:
+		return i.handleKey(msg)
 	}
+
 	return nil
+}
+
+// handleKey processes keyboard input for navigation, selection, cancellation,
+// and refresh.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the Bubble Tea event loop.
+//
+// Returns:
+//   - A tea.Cmd for Enter (tea.Sequence) or Escape (DismissModalMsg), nil otherwise.
+//
+// Side effects:
+//   - Updates cursorID for arrow keys.
+//   - Sets result for Enter or Escape.
+//   - Rebuilds tree and resolves cursor fallback for r key.
+func (i *Intent) handleKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyUp:
+		i.moveCursor(-1)
+		return nil
+
+	case tea.KeyDown:
+		i.moveCursor(1)
+		return nil
+
+	case tea.KeyEnter:
+		return i.selectCurrent()
+
+	case tea.KeyEscape:
+		return i.cancel()
+
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 && msg.Runes[0] == 'r' {
+			i.refresh()
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// moveCursor shifts the cursor by delta positions in the flat display list.
+//
+// Expected:
+//   - delta is -1 (up) or +1 (down).
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates cursorID to the node at the new flat index. Clamps to bounds.
+//   - Rebuilds display lines to reflect the new cursor position.
+func (i *Intent) moveCursor(delta int) {
+	if len(i.lines) == 0 {
+		return
+	}
+
+	idx := i.cursorFlatIndex()
+	idx += delta
+
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(i.lines) {
+		idx = len(i.lines) - 1
+	}
+
+	i.cursorID = i.lines[idx].sessionID
+	i.rebuildTree()
+}
+
+// cursorFlatIndex returns the index of the current cursor in the flat display
+// list, or 0 if the cursor is not found.
+//
+// Returns:
+//   - An int representing the flat index of the cursor.
+//
+// Side effects:
+//   - None.
+func (i *Intent) cursorFlatIndex() int {
+	for idx, line := range i.lines {
+		if line.sessionID == i.cursorID {
+			return idx
+		}
+	}
+	return 0
+}
+
+// selectCurrent emits a SelectedMsg followed by a DismissModalMsg via
+// tea.Sequence, and records the result.
+//
+// Returns:
+//   - A tea.Cmd that delivers SelectedMsg then DismissModalMsg in order.
+//
+// Side effects:
+//   - Sets the intent result with the selected session ID.
+func (i *Intent) selectCurrent() tea.Cmd {
+	selectedID := i.cursorID
+	i.result = &intents.IntentResult{
+		Data: Result{SelectedSessionID: selectedID},
+	}
+
+	return tea.Sequence(
+		func() tea.Msg { return SelectedMsg{SessionID: selectedID} },
+		func() tea.Msg { return intents.DismissModalMsg{} },
+	)
+}
+
+// cancel emits a DismissModalMsg and records a cancelled result.
+//
+// Returns:
+//   - A tea.Cmd that delivers DismissModalMsg.
+//
+// Side effects:
+//   - Sets the intent result with Cancelled true.
+func (i *Intent) cancel() tea.Cmd {
+	i.result = &intents.IntentResult{
+		Data: Result{Cancelled: true},
+	}
+	return func() tea.Msg { return intents.DismissModalMsg{} }
+}
+
+// refresh rebuilds the tree from the current sessions and resolves cursor
+// position using the NodeID cursor invariant.
+//
+// If the current cursorID no longer exists in the rebuilt tree, the cursor
+// walks its parent chain in the original session list until a surviving
+// ancestor is found. If no ancestor survives, the cursor moves to root.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Rebuilds root, lines, and potentially updates cursorID.
+func (i *Intent) refresh() {
+	oldCursorID := i.cursorID
+
+	// Snapshot the parent map from the PREVIOUS tree so deleted nodes can
+	// still be walked up to their ancestors after the rebuild.
+	oldParentMap := i.parentMap
+
+	i.rebuildTree()
+
+	// Check whether the cursor node survived the rebuild.
+	if i.nodeExistsInLines(oldCursorID) {
+		i.cursorID = oldCursorID
+		i.rebuildTree()
+		return
+	}
+
+	// Walk parent chain to find nearest surviving ancestor.
+	current := oldCursorID
+	for {
+		parent, ok := oldParentMap[current]
+		if !ok || parent == "" {
+			break
+		}
+		if i.nodeExistsInLines(parent) {
+			i.cursorID = parent
+			i.rebuildTree()
+			return
+		}
+		current = parent
+	}
+
+	// No ancestor found; fall back to root.
+	if len(i.lines) > 0 {
+		i.cursorID = i.lines[0].sessionID
+	}
+	i.rebuildTree()
+}
+
+// nodeExistsInLines checks whether a session ID appears in the current flat
+// display list.
+//
+// Expected:
+//   - sessionID is a non-empty string.
+//
+// Returns:
+//   - true if the node is present in lines, false otherwise.
+//
+// Side effects:
+//   - None.
+func (i *Intent) nodeExistsInLines(sessionID string) bool {
+	for _, line := range i.lines {
+		if line.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// buildParentMap creates a lookup from session ID to parent ID using the
+// current sessions slice.
+//
+// Returns:
+//   - A map[string]string where keys are session IDs and values are parent IDs.
+//
+// Side effects:
+//   - None.
+func (i *Intent) buildParentMap() map[string]string {
+	m := make(map[string]string, len(i.sessions))
+	for _, s := range i.sessions {
+		m[s.SessionID] = s.ParentID
+	}
+	return m
 }
 
 // View renders the session tree interface.
@@ -138,6 +364,21 @@ func (i *Intent) SetCursor(sessionID string) {
 	i.rebuildTree()
 }
 
+// SetSessions replaces the session list used for tree rebuilds.
+//
+// Expected:
+//   - sessions is a flat list of SessionNode values.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Updates the sessions field. Does not rebuild the tree; call refresh
+//     (r key) or rebuildTree explicitly to apply changes.
+func (i *Intent) SetSessions(sessions []SessionNode) {
+	i.sessions = sessions
+}
+
 // Width returns the stored terminal width from the last WindowSizeMsg.
 //
 // Returns:
@@ -160,14 +401,16 @@ func (i *Intent) Height() int {
 	return i.height
 }
 
-// rebuildTree constructs the internal tree and flattens it for display.
+// rebuildTree constructs the internal tree, flattens it for display, and
+// rebuilds the parent lookup map.
 //
 // Returns:
 //   - Nothing.
 //
 // Side effects:
-//   - Updates root and lines fields.
+//   - Updates root, lines, and parentMap fields.
 func (i *Intent) rebuildTree() {
+	i.parentMap = i.buildParentMap()
 	i.root = buildTree(i.sessions)
 	i.lines = flattenTree(i.root, i.currentSessionID, i.cursorID)
 }
