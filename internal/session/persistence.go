@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 const metaFileSuffix = ".meta.json"
@@ -116,4 +118,82 @@ func loadMetaFile(path string) *Session {
 		Status:    meta.Status,
 		CreatedAt: meta.CreatedAt,
 	}
+}
+
+const eventsFileSuffix = ".events.jsonl"
+
+// PersistSwarmEvents writes SwarmEvent entries to a JSONL file in sessionsDir.
+// When events is empty or nil no file is created and any existing events file
+// for the session is left untouched.
+//
+// Expected:
+//   - sessionsDir is the directory to write the events file into (created if absent).
+//   - sessionID is a non-empty string identifying the session.
+//   - events may be nil or empty (produces no file).
+//
+// Returns:
+//   - An error if the directory cannot be created or the file cannot be written.
+//
+// Side effects:
+//   - Creates sessionsDir (including parents) when it does not exist.
+//   - Writes <sessionsDir>/<sessionID>.events.jsonl to disk via atomic rename.
+func PersistSwarmEvents(sessionsDir string, sessionID string, events []streaming.SwarmEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(sessionsDir, 0o750); err != nil {
+		return err
+	}
+
+	path := filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
+	tmpPath := path + ".tmp"
+
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	if err := streaming.WriteEventsJSONL(f, events); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
+}
+
+// LoadSwarmEvents reads SwarmEvent entries from a JSONL file in sessionsDir.
+// When no events file exists for the session an empty slice is returned without
+// error, providing backward compatibility with sessions created before event
+// persistence was introduced.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//
+// Returns:
+//   - A slice of SwarmEvent entries (may be empty).
+//   - An error only when the file exists but cannot be read.
+//
+// Side effects:
+//   - Reads a file from disk.
+func LoadSwarmEvents(sessionsDir string, sessionID string) ([]streaming.SwarmEvent, error) {
+	path := filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	return streaming.ReadEventsJSONL(f)
 }

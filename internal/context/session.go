@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // SessionInfo describes a saved session's metadata.
@@ -296,6 +298,38 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 		return fmt.Errorf("marshalling session: %w", err)
 	}
 	return os.WriteFile(sessionPath, updated, 0o600)
+}
+
+// SaveEvents persists SwarmEvent entries for a session to a JSONL file
+// co-located with the session data. Empty event slices produce no file.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying the session.
+//   - events may be nil or empty (no file is created).
+//
+// Returns:
+//   - An error if the file cannot be written.
+//
+// Side effects:
+//   - Writes <baseDir>/<sessionID>.events.jsonl to disk.
+func (s *FileSessionStore) SaveEvents(sessionID string, events []streaming.SwarmEvent) error {
+	return session.PersistSwarmEvents(s.baseDir, sessionID, events)
+}
+
+// LoadEvents reads SwarmEvent entries for a session from a JSONL file.
+// Returns an empty slice without error when no events file exists.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying the session.
+//
+// Returns:
+//   - A slice of SwarmEvent entries (may be empty/nil).
+//   - An error only when the file exists but cannot be read.
+//
+// Side effects:
+//   - Reads a file from disk.
+func (s *FileSessionStore) LoadEvents(sessionID string) ([]streaming.SwarmEvent, error) {
+	return session.LoadSwarmEvents(s.baseDir, sessionID)
 }
 
 // GenerateTitle generates a session title from the first user message in the message list.
