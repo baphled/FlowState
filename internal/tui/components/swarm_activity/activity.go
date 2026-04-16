@@ -1,6 +1,7 @@
 package swarmactivity
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -38,11 +39,13 @@ var defaultItems = []string{
 //
 //nolint:revive // Stuttering name mandated by the multi-agent chat UX API contract.
 type SwarmActivityPane struct {
-	title       string
-	items       []string
-	events      []streaming.SwarmEvent
-	headerStyle lipgloss.Style
-	bodyStyle   lipgloss.Style
+	title        string
+	items        []string
+	events       []streaming.SwarmEvent
+	visibleTypes map[streaming.SwarmEventType]bool
+	headerStyle  lipgloss.Style
+	bodyStyle    lipgloss.Style
+	dimStyle     lipgloss.Style
 }
 
 // NewSwarmActivityPane constructs a pane with placeholder timeline items.
@@ -57,10 +60,17 @@ type SwarmActivityPane struct {
 //   - None.
 func NewSwarmActivityPane() *SwarmActivityPane {
 	return &SwarmActivityPane{
-		title:       headerText,
-		items:       append([]string(nil), defaultItems...),
+		title: headerText,
+		items: append([]string(nil), defaultItems...),
+		visibleTypes: map[streaming.SwarmEventType]bool{
+			streaming.EventDelegation: true,
+			streaming.EventToolCall:   true,
+			streaming.EventPlan:       true,
+			streaming.EventReview:     true,
+		},
 		headerStyle: lipgloss.NewStyle().Bold(true),
 		bodyStyle:   lipgloss.NewStyle(),
+		dimStyle:    lipgloss.NewStyle().Faint(true),
 	}
 }
 
@@ -81,11 +91,23 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 	}
 
 	lines := make([]string, 0, height)
-	lines = append(lines, p.headerStyle.Render(truncate(p.title, width)))
+
+	// Header with optional count summary.
+	headerLine := p.title + p.countSummary()
+	lines = append(lines, p.headerStyle.Render(truncate(headerLine, width)))
+
+	// Filter indicator line when at least one type is hidden.
+	filterActive := p.isFilterActive()
+	if filterActive {
+		lines = append(lines, truncate(p.filterIndicatorLine(), width))
+	}
 
 	body := p.bodyLines(width)
 	// Drop oldest (top of body) if total lines would exceed height.
-	bodyBudget := height - 1
+	bodyBudget := height - len(lines)
+	if bodyBudget < 0 {
+		bodyBudget = 0
+	}
 	if len(body) > bodyBudget {
 		body = body[len(body)-bodyBudget:]
 	}
@@ -112,6 +134,93 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 func (p *SwarmActivityPane) WithEvents(events []streaming.SwarmEvent) *SwarmActivityPane {
 	p.events = events
 	return p
+}
+
+// WithVisibleTypes sets the per-type visibility filter. Each key maps a
+// SwarmEventType to its visibility; true means visible, false means hidden.
+// When filtering is active (at least one type hidden), the pane renders a
+// filter indicator line below the header and appends a count summary.
+//
+// Expected:
+//   - types is a map whose keys are SwarmEventType values. Missing keys are
+//     treated as hidden.
+//
+// Returns:
+//   - The receiver, to support fluent builder-style configuration.
+//
+// Side effects:
+//   - Replaces the receiver's visibleTypes map.
+func (p *SwarmActivityPane) WithVisibleTypes(types map[streaming.SwarmEventType]bool) *SwarmActivityPane {
+	p.visibleTypes = types
+	return p
+}
+
+// isFilterActive reports whether at least one event type is hidden.
+//
+// Returns:
+//   - true when at least one type in visibleTypes is false.
+//
+// Side effects:
+//   - None.
+func (p *SwarmActivityPane) isFilterActive() bool {
+	for _, vis := range p.visibleTypes {
+		if !vis {
+			return true
+		}
+	}
+	return false
+}
+
+// filterIndicatorLine renders the "[D] [T] [P] [R]" indicator showing which
+// types are active or dimmed.
+//
+// Returns:
+//   - A space-separated string of type tags, with hidden types rendered faint.
+//
+// Side effects:
+//   - None.
+func (p *SwarmActivityPane) filterIndicatorLine() string {
+	type entry struct {
+		label  string
+		evType streaming.SwarmEventType
+	}
+	entries := []entry{
+		{"D", streaming.EventDelegation},
+		{"T", streaming.EventToolCall},
+		{"P", streaming.EventPlan},
+		{"R", streaming.EventReview},
+	}
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		tag := "[" + e.label + "]"
+		if !p.visibleTypes[e.evType] {
+			tag = p.dimStyle.Render(tag)
+		}
+		parts = append(parts, tag)
+	}
+	return strings.Join(parts, " ")
+}
+
+// countSummary returns "showing X of Y" when filtering is active and events
+// are present. It returns empty string otherwise.
+//
+// Returns:
+//   - A formatted count string, or empty when no filtering is active.
+//
+// Side effects:
+//   - None.
+func (p *SwarmActivityPane) countSummary() string {
+	if len(p.events) == 0 || !p.isFilterActive() {
+		return ""
+	}
+	total := len(p.events)
+	shown := 0
+	for _, ev := range p.events {
+		if p.visibleTypes[ev.Type] {
+			shown++
+		}
+	}
+	return fmt.Sprintf(" (showing %d of %d)", shown, total)
 }
 
 // bodyLines returns the styled, width-truncated body lines.
@@ -153,6 +262,9 @@ func (p *SwarmActivityPane) activeBodySource() []string {
 	}
 	out := make([]string, 0, len(p.events))
 	for _, ev := range p.events {
+		if !p.visibleTypes[ev.Type] {
+			continue
+		}
 		out = append(out, formatEvent(ev))
 	}
 	return out
