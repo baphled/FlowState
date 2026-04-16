@@ -73,4 +73,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
 	RegisterDualPaneLayoutSteps(ctx)
+	RegisterSessionTreeNavigationSteps(ctx)
 }
