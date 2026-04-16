@@ -440,6 +440,11 @@ func SetChildSessionListerForTest(i *Intent, lister SessionChildLister) {
 	i.childSessionLister = lister
 }
 
+// OpenEventDetailsForTest exposes openEventDetails for test assertions.
+func (i *Intent) OpenEventDetailsForTest() tea.Cmd {
+	return i.openEventDetails()
+}
+
 // ShowModalMsgForTest is a type alias for tuiintents.ShowModalMsg exported for
 // test assertions in external test packages.
 type ShowModalMsgForTest = tuiintents.ShowModalMsg
