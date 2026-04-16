@@ -424,3 +424,13 @@ func (i *Intent) SetSessionManagerForTest(mgr SessionManager) {
 func (i *Intent) SetSessionIDForTest(id string) {
 	i.sessionID = id
 }
+
+// SessionTrailHeightForTest returns the session trail height for test assertions.
+func (i *Intent) SessionTrailHeightForTest() int {
+	return i.sessionTrailHeight()
+}
+
+// RenderSessionTrailLineForTest exposes renderSessionTrailLine for test assertions.
+func (i *Intent) RenderSessionTrailLineForTest() string {
+	return i.renderSessionTrailLine()
+}

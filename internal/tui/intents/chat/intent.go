@@ -1110,11 +1110,67 @@ func (i *Intent) notificationHeight() int {
 func (i *Intent) computeViewportHeight() int {
 	extraLines := i.inputLineCount() - 1
 	footerHeight := 8 + extraLines
-	vpHeight := i.height - footerHeight - i.notificationHeight()
+	vpHeight := i.height - footerHeight - i.notificationHeight() - i.sessionTrailHeight()
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
 	return vpHeight
+}
+
+// sessionTrailHeight returns the number of rows consumed by the session trail
+// header. Returns 1 when the trail renders non-empty content, 0 otherwise.
+//
+// Expected:
+//   - i.sessionTrail is non-nil (guaranteed by NewIntent).
+//
+// Returns:
+//   - 1 when the trail has renderable items, 0 when empty.
+//
+// Side effects:
+//   - None.
+func (i *Intent) sessionTrailHeight() int {
+	if i.sessionTrail == nil || len(i.sessionTrail.Items()) == 0 {
+		return 0
+	}
+	return 1
+}
+
+// dualPanePrimaryWidth mirrors the 70/30 split from layout.splitPaneWidths
+// (which is unexported). When the secondary pane is visible and the terminal
+// is at least 80 columns wide, the primary content gets 70% of the available
+// width minus the separator column. Otherwise the full terminal width is used.
+const chatDualPaneMinWidth = 80
+
+// renderSessionTrailLine renders the session trail breadcrumb styled faint.
+// Returns an empty string when the trail is empty, so the caller can skip
+// the header row entirely.
+//
+// Expected:
+//   - i.sessionTrail is non-nil.
+//   - i.width reflects the current terminal width.
+//
+// Returns:
+//   - A styled trail string, or "" when the trail is empty.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderSessionTrailLine() string {
+	if i.sessionTrail == nil {
+		return ""
+	}
+
+	primaryWidth := i.width
+	if i.secondaryPaneVisible && i.width >= chatDualPaneMinWidth {
+		available := i.width - 1
+		primaryWidth = (available * 7) / 10
+	}
+
+	trail := i.sessionTrail.Render(primaryWidth)
+	if trail == "" {
+		return ""
+	}
+
+	return lipgloss.NewStyle().Faint(true).Render(trail)
 }
 
 // updateViewportForInput adjusts the viewport height to account for multiline
@@ -1870,6 +1926,15 @@ func (i *Intent) View() string {
 
 	if notifView := i.notifications.View(); notifView != "" {
 		content = notifView + "\n" + content
+	}
+
+	// Prepend the session trail breadcrumb when the ancestry walk produced
+	// a non-empty trail. The trail is rendered at the primary pane width
+	// (70% in dual-pane, full in single-pane) and styled faint so it reads
+	// as navigation context rather than primary content. It consumes one
+	// row from the content area (accounted for in computeViewportHeight).
+	if trailLine := i.renderSessionTrailLine(); trailLine != "" {
+		content = trailLine + "\n" + content
 	}
 
 	var inputLine string
