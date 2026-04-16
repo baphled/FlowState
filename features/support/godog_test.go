@@ -74,4 +74,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterCompressionE2ESteps(ctx)
 	RegisterDualPaneLayoutSteps(ctx)
 	RegisterSessionTreeNavigationSteps(ctx)
+	RegisterSwarmActivityTimelineSteps(ctx)
 }
