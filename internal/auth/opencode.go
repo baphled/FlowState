@@ -13,12 +13,23 @@ type OpenCodeAuth struct {
 	GitHubCopilot *ProviderAuth `json:"github-copilot,omitempty"`
 	OpenZen       *ProviderAuth `json:"openzen,omitempty"`
 	ZAI           *ProviderAuth `json:"zai,omitempty"`
+	// ZAICodingPlan is the OpenCode alias for Z.AI's coding-plan subscription.
+	// Newer OpenCode versions write this top-level key with a `key` field
+	// instead of `access`. Use ZAI-preferred normalisation in
+	// LoadOpenCodeAuthFrom so callers see a single ZAI entry.
+	ZAICodingPlan *ProviderAuth `json:"zai-coding-plan,omitempty"`
 }
 
 // ProviderAuth holds a single provider's authentication credentials.
+//
+// `Access` is the canonical access-token/API-key field. Some OpenCode
+// auth.json entries (notably `zai-coding-plan`) write the token under `key`
+// rather than `access`; both are accepted so the Access field is populated
+// whichever the upstream writer chose.
 type ProviderAuth struct {
 	Type    string `json:"type"`
 	Access  string `json:"access"`
+	Key     string `json:"key,omitempty"`
 	Refresh string `json:"refresh"`
 	Expires int64  `json:"expires"`
 }
@@ -56,11 +67,41 @@ func LoadOpenCodeAuthFrom(path string) (*OpenCodeAuth, error) {
 		return nil, fmt.Errorf("parsing opencode auth: %w", err)
 	}
 
-	if auth.GitHubCopilot == nil && auth.Anthropic == nil && auth.ZAI == nil && auth.OpenZen == nil {
+	normaliseProviderAuth(auth.Anthropic)
+	normaliseProviderAuth(auth.GitHubCopilot)
+	normaliseProviderAuth(auth.OpenZen)
+	normaliseProviderAuth(auth.ZAI)
+	normaliseProviderAuth(auth.ZAICodingPlan)
+
+	// Fall back to the OpenCode `zai-coding-plan` alias when no canonical
+	// `zai` entry is present (or it has no usable token).
+	if (auth.ZAI == nil || auth.ZAI.Access == "") && auth.ZAICodingPlan != nil && auth.ZAICodingPlan.Access != "" {
+		auth.ZAI = auth.ZAICodingPlan
+	}
+
+	if auth.GitHubCopilot == nil && auth.Anthropic == nil && auth.ZAI == nil && auth.OpenZen == nil && auth.ZAICodingPlan == nil {
 		return nil, ErrNoCredentials
 	}
 
 	return &auth, nil
+}
+
+// normaliseProviderAuth fills Access from Key when Access is empty. Some
+// OpenCode auth entries (e.g. `zai-coding-plan`) use `key` instead of
+// `access`; callers should see a single canonical field.
+//
+// Expected:
+//   - pa may be nil; the function no-ops in that case.
+//
+// Side effects:
+//   - Mutates the pointed-to ProviderAuth when Access is empty and Key is set.
+func normaliseProviderAuth(pa *ProviderAuth) {
+	if pa == nil {
+		return
+	}
+	if pa.Access == "" && pa.Key != "" {
+		pa.Access = pa.Key
+	}
 }
 
 // LoadOpenCodeAuthFromHome loads OpenCode credentials from the default home location.
