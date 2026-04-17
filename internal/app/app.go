@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,12 +133,12 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: agents seeded to %q", cfg.AgentDir)
 	}
 
-	providerRegistry, ollamaProvider := setupProviders(cfg)
+	providerRegistry, ollamaProvider, providerFailures := setupProvidersWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
-	if _, err := providerRegistry.Get(cfg.Providers.Default); err != nil {
-		return nil, fmt.Errorf("getting default provider: %w", err)
+	if err := resolveDefaultProvider(providerRegistry, providerFailures, cfg.Providers.Default); err != nil {
+		return nil, err
 	}
 	sessionStore, learningStore, err := createDataStores(cfg, ollamaProvider)
 	if err != nil {
@@ -2301,7 +2302,40 @@ func buildCompressionComponents(
 //   - Reads OPENAI_API_KEY and ANTHROPIC_API_KEY environment variables.
 //   - Registers providers with the registry if initialisation succeeds.
 func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
+	registry, ollamaProv, _ := setupProvidersWithFailures(cfg)
+	return registry, ollamaProv
+}
+
+// errOpenAINoKey is returned when OpenAI has no API key from any source. It is
+// defined so tests and the error-surface helper can match it programmatically
+// without coupling to a specific log-message string.
+var errOpenAINoKey = errors.New(
+	"no API key (set OPENAI_API_KEY or providers.openai.api_key)",
+)
+
+// setupProvidersWithFailures initialises providers and also reports why any of
+// them failed to register. The failures map is keyed by provider name and
+// contains the underlying error returned by the provider constructor (or a
+// synthetic "no API key" error for OpenAI which is skipped when no key is set).
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider configuration.
+//
+// Returns:
+//   - A provider.Registry containing all successfully initialised providers.
+//   - The Ollama provider instance (may be nil if initialisation failed).
+//   - A map of provider-name to constructor error for each failed provider.
+//
+// Side effects:
+//   - Reads OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN, ZAI_API_KEY,
+//     OPENZEN_API_KEY environment variables.
+//   - Logs a warning for each provider that fails to register.
+//   - Registers providers with the registry if initialisation succeeds.
+func setupProvidersWithFailures(
+	cfg *config.AppConfig,
+) (*provider.Registry, *ollama.Provider, map[string]error) {
 	providerRegistry := provider.NewRegistry()
+	failures := make(map[string]error)
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -2309,58 +2343,183 @@ func setupProviders(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider
 	}
 	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
 
-	ollamaProvider, err := ollama.New(cfg.Providers.Ollama.Host)
-	if err == nil {
-		providerRegistry.Register(ollamaProvider)
-	}
+	ollamaProvider, ollamaErr := ollama.New(cfg.Providers.Ollama.Host)
+	recordProvider(providerRegistry, failures, "ollama", ollamaProvider, ollamaErr)
 
-	openaiKey := os.Getenv("OPENAI_API_KEY")
-	if openaiKey == "" {
-		openaiKey = cfg.Providers.OpenAI.APIKey
+	openaiProvider, openaiErr := buildOpenAIProvider(cfg)
+	recordProvider(providerRegistry, failures, "openai", openaiProvider, openaiErr)
+
+	anthropicKey := resolveProviderKey("ANTHROPIC_API_KEY", cfg.Providers.Anthropic.APIKey)
+	anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
+	recordProvider(providerRegistry, failures, "anthropic", anthropicProvider, anthropicErr)
+
+	githubToken := resolveProviderKey("GITHUB_TOKEN", cfg.Providers.GitHub.APIKey)
+	copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
+	recordProvider(providerRegistry, failures, "copilot", copilotProvider, copilotErr)
+
+	zaiKey := resolveProviderKey("ZAI_API_KEY", cfg.Providers.ZAI.APIKey)
+	zaiProvider, zaiErr := zai.NewFromOpenCodeOrConfig(opencodePath, zaiKey)
+	recordProvider(providerRegistry, failures, "zai", zaiProvider, zaiErr)
+
+	openzenKey := resolveProviderKey("OPENZEN_API_KEY", cfg.Providers.OpenZen.APIKey)
+	openzenProvider, openzenErr := openzen.NewFromOpenCodeOrConfig(opencodePath, openzenKey)
+	recordProvider(providerRegistry, failures, "openzen", openzenProvider, openzenErr)
+
+	return providerRegistry, ollamaProvider, failures
+}
+
+// resolveProviderKey returns the value of envVar if set, otherwise the
+// fallback from application configuration.
+//
+// Expected:
+//   - envVar is a non-empty environment variable name.
+//
+// Returns:
+//   - The environment variable value, or cfgValue if the variable is unset.
+//
+// Side effects:
+//   - Reads the given environment variable.
+func resolveProviderKey(envVar, cfgValue string) string {
+	if v := os.Getenv(envVar); v != "" {
+		return v
 	}
-	if openaiKey != "" {
-		openaiProvider, openaiErr := openai.New(openaiKey)
-		if openaiErr == nil {
-			providerRegistry.Register(openaiProvider)
+	return cfgValue
+}
+
+// buildOpenAIProvider constructs the OpenAI provider from the configured key,
+// returning errOpenAINoKey when no key is available so the caller records a
+// uniform failure message.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with OpenAI provider configuration.
+//
+// Returns:
+//   - The constructed provider and nil on success.
+//   - A nil provider and the constructor error, or errOpenAINoKey if no key.
+//
+// Side effects:
+//   - Reads the OPENAI_API_KEY environment variable.
+func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
+	key := resolveProviderKey("OPENAI_API_KEY", cfg.Providers.OpenAI.APIKey)
+	if key == "" {
+		return nil, errOpenAINoKey
+	}
+	return openai.New(key)
+}
+
+// recordProvider registers a provider on success or records the error under
+// name in the failures map. Logs a warning on failure so startup diagnostics
+// remain visible even when the failure is not fatal.
+//
+// Expected:
+//   - registry and failures are non-nil.
+//   - p implements provider.Provider when err is nil.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Registers p with registry on success.
+//   - Mutates failures on failure.
+//   - Logs a warning on failure.
+func recordProvider(
+	registry *provider.Registry,
+	failures map[string]error,
+	name string,
+	p provider.Provider,
+	err error,
+) {
+	if err == nil {
+		registry.Register(p)
+		return
+	}
+	failures[name] = err
+	log.Printf("warning: provider %q unavailable: %v", name, err)
+}
+
+// resolveDefaultProvider verifies the default provider is registered and
+// returns a diagnostic error that surfaces the list of registered providers
+// and the reason the default provider failed to register, if any.
+//
+// Expected:
+//   - registry is non-nil and already populated by setupProvidersWithFailures.
+//   - failures is the per-provider failure map from setupProvidersWithFailures.
+//     May be nil.
+//   - defaultName is the provider name resolved from cfg.Providers.Default.
+//
+// Returns:
+//   - nil if the default provider is registered.
+//   - An error wrapping the lookup failure with diagnostic context otherwise.
+//
+// Side effects:
+//   - None.
+func resolveDefaultProvider(
+	registry *provider.Registry,
+	failures map[string]error,
+	defaultName string,
+) error {
+	if _, err := registry.Get(defaultName); err != nil {
+		return fmt.Errorf(
+			"getting default provider %q: %w",
+			defaultName,
+			describeProviderResolutionFailure(
+				defaultName,
+				registry.List(),
+				failures,
+				err,
+			),
+		)
+	}
+	return nil
+}
+
+// describeProviderResolutionFailure returns an error whose message surfaces the
+// full diagnostic context for a missing default provider: the list of
+// successfully registered providers and the per-provider failure reasons.
+// This makes startup failures actionable from stderr alone, rather than
+// requiring the user to grep the log file at ~/.local/share/flowstate/flowstate.log.
+//
+// Expected:
+//   - requested is the name of the provider resolved from cfg.Providers.Default.
+//   - registered is the list of provider names that successfully registered.
+//   - failures is a map of provider-name to the constructor error. May be nil or empty.
+//   - lookupErr is the error returned by provider.Registry.Get for the requested provider.
+//
+// Returns:
+//   - An error wrapping lookupErr with additional context. Never nil.
+//
+// Side effects:
+//   - None.
+func describeProviderResolutionFailure(
+	requested string,
+	registered []string,
+	failures map[string]error,
+	lookupErr error,
+) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%v\n  registered: %v", lookupErr, registered)
+	if failure, ok := failures[requested]; ok && failure != nil {
+		fmt.Fprintf(&b, "\n  %s failure: %v", requested, failure)
+	}
+	if len(failures) > 0 {
+		// Emit other failures in a stable order so the error message is
+		// deterministic in tests and log analysis.
+		names := make([]string, 0, len(failures))
+		for name := range failures {
+			if name == requested {
+				continue
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			b.WriteString("\n  other failures:")
+			for _, name := range names {
+				fmt.Fprintf(&b, "\n    %s: %v", name, failures[name])
+			}
 		}
 	}
-
-	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
-	if anthropicKey == "" {
-		anthropicKey = cfg.Providers.Anthropic.APIKey
-	}
-	anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
-	if anthropicErr == nil {
-		providerRegistry.Register(anthropicProvider)
-	}
-
-	githubToken := os.Getenv("GITHUB_TOKEN")
-	if githubToken == "" {
-		githubToken = cfg.Providers.GitHub.APIKey
-	}
-	copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
-	if copilotErr == nil {
-		providerRegistry.Register(copilotProvider)
-	}
-
-	zaiKey := os.Getenv("ZAI_API_KEY")
-	if zaiKey == "" {
-		zaiKey = cfg.Providers.ZAI.APIKey
-	}
-	zaiProvider, zaiErr := zai.NewFromOpenCodeOrConfig(opencodePath, zaiKey)
-	if zaiErr == nil {
-		providerRegistry.Register(zaiProvider)
-	}
-
-	openzenKey := os.Getenv("OPENZEN_API_KEY")
-	if openzenKey == "" {
-		openzenKey = cfg.Providers.OpenZen.APIKey
-	}
-	openzenProvider, openzenErr := openzen.NewFromOpenCodeOrConfig(opencodePath, openzenKey)
-	if openzenErr == nil {
-		providerRegistry.Register(openzenProvider)
-	}
-	return providerRegistry, ollamaProvider
+	return errors.New(b.String())
 }
 
 // buildConfigProviderPreferences constructs a provider preference list from application
@@ -2424,6 +2583,26 @@ func buildConfigProviderPreferences(cfg *config.AppConfig) []provider.ModelPrefe
 //   - Initialises provider instances and registers them in the registry.
 func RegisterProvidersForTest(cfg *config.AppConfig) (*provider.Registry, *ollama.Provider) {
 	return setupProviders(cfg)
+}
+
+// RegisterProvidersWithFailuresForTest is a test helper that exposes
+// setupProvidersWithFailures so tests can assert which providers failed to
+// register and the reason for each failure.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider configuration.
+//
+// Returns:
+//   - The provider registry with all successfully registered providers.
+//   - The Ollama provider instance (may be nil if initialisation failed).
+//   - A map from provider name to constructor error for each failed provider.
+//
+// Side effects:
+//   - Same as setupProvidersWithFailures: reads environment variables and logs warnings.
+func RegisterProvidersWithFailuresForTest(
+	cfg *config.AppConfig,
+) (*provider.Registry, *ollama.Provider, map[string]error) {
+	return setupProvidersWithFailures(cfg)
 }
 
 // BuildHookChainForTest is a test helper that exposes buildHookChain for testing.
