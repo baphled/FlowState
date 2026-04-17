@@ -142,6 +142,41 @@ var _ = Describe("LoadOpenCodeAuth", func() {
 		})
 	})
 
+	Context("when auth.json contains OpenCode zai-coding-plan key", func() {
+		It("loads the alias into ZAI with Access populated from 'key'", func() {
+			authPath := filepath.Join(tmpDir, "auth.json")
+			jsonContent := `{
+  "zai-coding-plan": {
+    "type": "api",
+    "key": "zai_coding_plan_key"
+  }
+}`
+			Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+			authData, err := auth.LoadOpenCodeAuthFrom(authPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(authData).NotTo(BeNil())
+			Expect(authData.ZAI).NotTo(BeNil())
+			Expect(authData.ZAI.Access).To(Equal("zai_coding_plan_key"))
+		})
+	})
+
+	Context("when both zai and zai-coding-plan are present", func() {
+		It("prefers the zai entry", func() {
+			authPath := filepath.Join(tmpDir, "auth.json")
+			jsonContent := `{
+  "zai": {"type": "oauth", "access": "primary"},
+  "zai-coding-plan": {"type": "api", "key": "secondary"}
+}`
+			Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
+
+			authData, err := auth.LoadOpenCodeAuthFrom(authPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(authData.ZAI).NotTo(BeNil())
+			Expect(authData.ZAI.Access).To(Equal("primary"))
+		})
+	})
+
 	Context("when auth.json contains no provider credentials", func() {
 		It("returns ErrNoCredentials", func() {
 			authPath := filepath.Join(tmpDir, "auth.json")

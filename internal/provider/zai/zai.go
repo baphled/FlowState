@@ -372,14 +372,38 @@ func zaiAccessTokenFromFile(path string) (string, error) {
 	}
 
 	var raw struct {
-		ZAI *auth.ProviderAuth `json:"zai,omitempty"`
+		ZAI           *auth.ProviderAuth `json:"zai,omitempty"`
+		ZAICodingPlan *auth.ProviderAuth `json:"zai-coding-plan,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return "", fmt.Errorf("parsing opencode auth: %w", err)
 	}
-	if raw.ZAI == nil || raw.ZAI.Access == "" {
-		return "", nil
+	if tok := providerAuthToken(raw.ZAI); tok != "" {
+		return tok, nil
 	}
+	if tok := providerAuthToken(raw.ZAICodingPlan); tok != "" {
+		return tok, nil
+	}
+	return "", nil
+}
 
-	return raw.ZAI.Access, nil
+// providerAuthToken returns the canonical access token from a ProviderAuth,
+// falling back to the alias `key` field when `access` is empty.
+//
+// Expected:
+//   - pa may be nil.
+//
+// Returns:
+//   - The access token if present, otherwise an empty string.
+//
+// Side effects:
+//   - None.
+func providerAuthToken(pa *auth.ProviderAuth) string {
+	if pa == nil {
+		return ""
+	}
+	if pa.Access != "" {
+		return pa.Access
+	}
+	return pa.Key
 }
