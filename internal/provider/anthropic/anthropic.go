@@ -116,7 +116,11 @@ func NewOAuth(token string) (*Provider, error) {
 func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
 	token, err := tm.EnsureToken(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("obtaining initial token: %w", err)
+		return nil, fmt.Errorf(
+			"anthropic OAuth token refresh failed "+
+				"(re-authenticate via `opencode auth login anthropic`): %w",
+			err,
+		)
 	}
 	return &Provider{
 		client:       newOAuthClient(token),

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -134,9 +135,23 @@ func (r *HTTPTokenRefresher) doRefreshRequest(
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf(
+				"token refresh: status %d: reading body: %w",
+				resp.StatusCode, readErr,
+			)
+		}
+		trimmed := strings.TrimSpace(string(body))
+		if trimmed == "" {
+			return nil, fmt.Errorf(
+				"token refresh: status %d", resp.StatusCode,
+			)
+		}
 		return nil, fmt.Errorf(
-			"token refresh: status %d", resp.StatusCode,
+			"token refresh: status %d: %s",
+			resp.StatusCode, trimmed,
 		)
 	}
 	return resp, nil

@@ -71,6 +71,12 @@ var _ = Describe("HTTPTokenRefresher", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("status 401"))
 		})
+
+		It("includes the response body in the error for diagnosis", func() {
+			_, err := refresher.Refresh(ctx, "bad-refresh")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`"invalid"`))
+		})
 	})
 
 	Context("when the endpoint returns invalid JSON", func() {
