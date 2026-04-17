@@ -681,6 +681,64 @@ When to use: Testing purposes
 				Expect(err.Error()).To(ContainSubstring("getting default provider"))
 				Expect(application).To(BeNil())
 			})
+
+			It("surfaces the failure reason for the missing default provider", func() {
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() {
+					os.Unsetenv("OPENAI_API_KEY")
+					os.Unsetenv("ANTHROPIC_API_KEY")
+				})
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.Providers.OpenAI.APIKey = ""
+				cfg.Providers.Anthropic.APIKey = ""
+
+				application, err := app.New(cfg)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("getting default provider"))
+				Expect(err.Error()).To(ContainSubstring("openai"))
+				// The reason for openai's failure should be visible to the user
+				// so they can act without grepping the log file.
+				Expect(err.Error()).To(Or(
+					ContainSubstring("OPENAI_API_KEY"),
+					ContainSubstring("api_key"),
+					ContainSubstring("no API key"),
+				))
+				Expect(application).To(BeNil())
+			})
+		})
+
+		Describe("RegisterProvidersWithFailuresForTest", func() {
+			It("returns the failure reason for providers that did not register", func() {
+				os.Unsetenv("OPENAI_API_KEY")
+				os.Unsetenv("ANTHROPIC_API_KEY")
+				DeferCleanup(func() {
+					os.Unsetenv("OPENAI_API_KEY")
+					os.Unsetenv("ANTHROPIC_API_KEY")
+				})
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.OpenAI.APIKey = ""
+				cfg.Providers.Anthropic.APIKey = ""
+
+				registry, _, failures := app.RegisterProvidersWithFailuresForTest(cfg)
+
+				Expect(registry).NotTo(BeNil())
+				Expect(failures).To(HaveKey("openai"))
+				Expect(failures["openai"]).To(HaveOccurred())
+				Expect(failures["openai"].Error()).NotTo(BeEmpty())
+			})
 		})
 
 		Context("with plugin configuration", func() {
