@@ -482,6 +482,26 @@ var _ = Describe("ZAI Provider", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
+
+		It("reads zai-coding-plan top-level key with 'key' field (OpenCode alias)", func() {
+			path := filepath.Join(dir, "auth.json")
+			Expect(os.WriteFile(path, []byte(`{"zai-coding-plan":{"type":"api","key":"zai-coding-key"}}`), 0o600)).To(Succeed())
+
+			p, err := zai.NewFromOpenCodeOrConfig(path, "")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p).NotTo(BeNil())
+		})
+
+		It("prefers zai/access when both keys are present", func() {
+			path := filepath.Join(dir, "auth.json")
+			Expect(os.WriteFile(path, []byte(
+				`{"zai":{"type":"oauth","access":"primary"},"zai-coding-plan":{"type":"api","key":"secondary"}}`,
+			), 0o600)).To(Succeed())
+
+			p, err := zai.NewFromOpenCodeOrConfig(path, "")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p).NotTo(BeNil())
+		})
 	})
 
 	Describe("Z.AI error code classification", func() {
