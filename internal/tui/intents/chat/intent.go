@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -327,6 +328,22 @@ type Intent struct {
 	// walking ParentID links via the session manager. Refreshed on
 	// construction and session switch.
 	sessionTrail *navigation.SessionTrail
+	// turnUserMessage captures the current turn's user prompt so the
+	// premature-delegation-misfire detector (P7/C2) can inspect it for
+	// @<agent-name> mentions when the first assistant chunk arrives.
+	// Cleared on msg.Done so stale prompts from a previous turn cannot
+	// leak into detection for a new one.
+	turnUserMessage string
+	// turnHasText is true once any text content has been emitted for the
+	// current assistant turn. The P7/C2 detector only fires when the
+	// very first content-bearing chunk is a bare tool_use — if the
+	// assistant speaks before tool-calling, the reply is not the
+	// misfire pattern.
+	turnHasText bool
+	// prematureWarningFired gates the P7/C2 warning to at most one
+	// notification per user turn so a chain of misfired tool_use chunks
+	// does not spam the notification area.
+	prematureWarningFired bool
 }
 
 var runningInTests bool
@@ -1487,6 +1504,20 @@ func (i *Intent) flushThinking(done bool) {
 //   - Calls handleStreamChunk and refreshViewport.
 //   - Intercepts harness_retry events before standard chunk processing.
 func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
+	// P7/C2: inspect the chunk for the premature-delegation-misfire
+	// signature before handing off to the main dispatch branches. The
+	// detection is cheap (string scans + a registry lookup) and must
+	// see every chunk so the "first chunk with no preceding text"
+	// signal is accurate.
+	i.maybeWarnPrematureDelegationMisfire(msg)
+	// Track whether any text content has been emitted this turn so
+	// subsequent tool_use chunks are not misattributed to the misfire
+	// pattern. A chunk may carry Content, ToolCallName, or both; only
+	// genuine text content flips the flag.
+	if msg.Content != "" {
+		i.turnHasText = true
+	}
+
 	switch msg.EventType {
 	case "harness_retry":
 		return i.handleHarnessRetry(msg)
@@ -1499,6 +1530,9 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	appendedCmd := i.recordSwarmEvent(msg)
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
+	if msg.Done {
+		i.resetTurnState()
+	}
 	if !msg.Done && msg.Next != nil {
 		return batchCmds(tea.Batch(msg.Next, tickSpinner()), appendedCmd)
 	}
@@ -1506,6 +1540,52 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		return batchCmds(i.saveSession(), appendedCmd)
 	}
 	return batchCmds(tickSpinner(), appendedCmd)
+}
+
+// maybeWarnPrematureDelegationMisfire adds a notification when the current
+// chunk matches the P7/C2 misfire signature. Fires at most once per user
+// turn (gated by prematureWarningFired).
+//
+// Expected:
+//   - msg is the chunk being processed by handleStreamChunkMsg.
+//
+// Side effects:
+//   - On detection, adds a warning Notification via the notification
+//     manager and flips prematureWarningFired so subsequent chunks in
+//     the same turn are silent.
+func (i *Intent) maybeWarnPrematureDelegationMisfire(msg StreamChunkMsg) {
+	if i.prematureWarningFired {
+		return
+	}
+	warning := detectPrematureDelegationMisfire(
+		i.agentID, i.agentRegistry, i.turnUserMessage, msg, i.turnHasText,
+	)
+	if warning == "" {
+		return
+	}
+	if i.notificationManager == nil {
+		return
+	}
+	i.notificationManager.Add(notification.Notification{
+		ID:        "premature-delegation-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Delegation mismatch",
+		Message:   warning,
+		Level:     notification.LevelWarning,
+		Duration:  8 * time.Second,
+		CreatedAt: time.Now(),
+	})
+	i.prematureWarningFired = true
+}
+
+// resetTurnState clears the per-turn detection fields at the end of a
+// streaming turn so the next user prompt starts with a clean slate.
+//
+// Side effects:
+//   - Clears turnUserMessage, turnHasText, and prematureWarningFired.
+func (i *Intent) resetTurnState() {
+	i.turnUserMessage = ""
+	i.turnHasText = false
+	i.prematureWarningFired = false
 }
 
 // batchCmds merges a primary command with an optional follow-up command,
@@ -1964,6 +2044,101 @@ func (i *Intent) refreshViewport() {
 	}
 }
 
+// atMentionPattern matches @-mentions for agent names in a user message.
+// It captures the name token immediately after "@", allowing letters,
+// digits, underscores, and hyphens (the character set used in agent IDs
+// and aliases across the manifest corpus). The leading boundary is
+// enforced with a non-alphanumeric preceding character OR start-of-line so
+// "email@example.com" does not match.
+var atMentionPattern = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_-])@([a-zA-Z0-9_][a-zA-Z0-9_-]*)`)
+
+// extractAtMentions returns the set of @-mentioned names found in the
+// given message, preserving their original casing. The names are filtered
+// downstream via the agent registry's GetByNameOrAlias helper.
+//
+// Expected:
+//   - message is the raw user prompt.
+//
+// Returns:
+//   - A slice of mention tokens without the leading "@"; empty if none.
+//
+// Side effects:
+//   - None.
+func extractAtMentions(message string) []string {
+	matches := atMentionPattern.FindAllStringSubmatch(message, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 && m[1] != "" {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// detectPrematureDelegationMisfire returns a user-facing warning message
+// when the P7/C2 signature is detected: an agent whose manifest sets
+// can_delegate:false emits a bare tool_use as the very first content of
+// its reply, yet the user's prompt referenced another agent via an
+// @<name> mention that matches a known registry entry.
+//
+// The detection is intentionally conservative — all three signals must
+// align. A return value of "" means the current chunk is not a misfire.
+//
+// Expected:
+//   - agentID is the currently active agent; may be empty (no detection).
+//   - reg is the agent registry; when nil, detection is skipped.
+//   - userMsg is the current turn's user prompt.
+//   - msg is the chunk under inspection.
+//   - hasText is true when some text content has already been emitted
+//     during this turn (i.e. the chunk is not the first content).
+//
+// Returns:
+//   - A short warning message when the misfire pattern matches.
+//   - "" in every other case.
+//
+// Side effects:
+//   - None.
+func detectPrematureDelegationMisfire(
+	agentID string,
+	reg *agent.Registry,
+	userMsg string,
+	msg StreamChunkMsg,
+	hasText bool,
+) string {
+	// Signal 1: first content of the turn must be a tool_use start.
+	if msg.ToolCallName == "" || hasText {
+		return ""
+	}
+	// Signal 2: current agent must be in the registry and unable to delegate.
+	if reg == nil || agentID == "" {
+		return ""
+	}
+	manifest, ok := reg.Get(agentID)
+	if !ok || manifest == nil || manifest.Delegation.CanDelegate {
+		return ""
+	}
+	// Signal 3: user message must reference a known agent via @-mention.
+	mentions := extractAtMentions(userMsg)
+	if len(mentions) == 0 {
+		return ""
+	}
+	var target string
+	for _, name := range mentions {
+		if _, found := reg.GetByNameOrAlias(name); found {
+			target = name
+			break
+		}
+	}
+	if target == "" {
+		return ""
+	}
+	return "Agent " + agentID + " cannot delegate but your prompt mentioned @" + target +
+		" — this tool call may be off-target. Switch to a delegating agent to route the request."
+}
+
 // detectAgentFromInput examines the message for planner or executor keywords and returns the matching agent.
 //
 // Expected:
@@ -2084,6 +2259,13 @@ func (i *Intent) sendMessage() tea.Cmd {
 			}
 		}
 	}
+
+	// P7/C2: capture this turn's user message and reset the per-turn
+	// flags so the premature-delegation-misfire detector sees a clean
+	// slate for the first chunk that comes back from the stream.
+	i.turnUserMessage = userMessage
+	i.turnHasText = false
+	i.prematureWarningFired = false
 
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
 	i.view.StartStreaming()
