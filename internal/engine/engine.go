@@ -1206,6 +1206,15 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 		}
 	}
 
+	// P12: suggest_delegate is a read-only escape hatch wired into every
+	// non-delegating agent's engine. It must always be visible to the
+	// model, even when the manifest restricts capabilities.tools to a
+	// fixed list — otherwise the model has no legitimate way to signal
+	// "the user wants me to delegate but I cannot". The corresponding
+	// tool is only attached to the engine for CanDelegate=false agents,
+	// so this flag is a no-op when the tool is absent.
+	allowed["suggest_delegate"] = true
+
 	return allowed
 }
 
