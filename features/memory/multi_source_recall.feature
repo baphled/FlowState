@@ -8,12 +8,10 @@ Feature: Multi-Source Recall
     Given FlowState is running
     And the agent system is initialised
 
-  # @wip — the MCP memory source (internal/recall/mcp_memory_source.go)
-  # and the vault-rag recall source exist, but the BDD harness needed to
-  # drive a full agent-Q&A round-trip through the recall broker and assert
-  # on the shape of the response is not yet wired. Tagged @wip so the
-  # default `~@wip` filter skips them and `GODOG_TAGS=@wip` re-enables.
-  @wip
+  # P9b: the multi-source glue in features/support/recall_learning_steps.go
+  # wires MCPMemorySource and vault.Source behind the recall broker using
+  # in-process stubs so scenarios exercise the real broker fan-out without
+  # a live MCP memory / vault-rag server.
   Scenario: Recall from the MCP memory graph
     Given FlowState is configured with an MCP memory server
     And I have previously asked the agent to remember that "the project deadline is Friday"
@@ -21,7 +19,6 @@ Feature: Multi-Source Recall
     Then the response should mention that the deadline is Friday
     And the agent should recognise the information came from the memory graph
 
-  @wip
   Scenario: Recall from the vault-rag knowledge base
     Given FlowState is configured with the vault-rag MCP server
     And my knowledge base contains a note about "British English conventions"
