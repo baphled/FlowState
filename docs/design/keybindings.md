@@ -20,7 +20,7 @@ point when reporting "the key does nothing".
 | `Ctrl+S` | Open session browser | May freeze on terminals with flow control; run `stty -ixon` once per shell. |
 | `Ctrl+G` | Open session tree | |
 | `Ctrl+E` | Open event details modal | **Collision warning** — see below. |
-| `Ctrl+T` | Toggle swarm activity pane | **Collision warning** — see below. |
+| `Ctrl+T` | Cycle activity-timeline filter profile | **Collision warning** — see below. P11 repurposed this from pane-toggle. |
 | `Up` / `Down` | Scroll viewport line by line | |
 | `PgUp` / `PgDn` | Scroll viewport, or event-details modal, by page | P8 T1: modal now supports pagination. |
 | `Home` / `End` | Jump to top / bottom of viewport or modal | P8 T1: modal now supports these. |
@@ -32,8 +32,8 @@ point when reporting "the key does nothing".
 - **tmux** uses `Ctrl+B t` as the default prefix for clock, but many users
   remap to `Ctrl+A` or `Ctrl+T`. If you've rebound tmux to `Ctrl+T`, it will
   intercept the key before FlowState sees it. Configure tmux with a different
-  prefix, or accept that the activity pane toggle is unavailable inside that
-  pane.
+  prefix, or accept that the activity-timeline filter cycle is unavailable
+  inside that pane.
 - **GNU Screen** passes `Ctrl+T` through by default, so no collision.
 - **Many IDEs** (VS Code, JetBrains, Sublime) bind `Ctrl+T` to "quick open by
   symbol". That matters only when running FlowState inside an IDE's

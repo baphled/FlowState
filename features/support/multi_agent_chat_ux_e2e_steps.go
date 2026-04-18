@@ -70,7 +70,6 @@ func registerE2EWave1Steps(sc *godog.ScenarioContext, s *e2eMultiAgentChatSteps)
 	sc.Step(`^the operator views the chat$`, s.theOperatorViewsTheChat)
 	sc.Step(`^the output shows a dual-pane layout$`, s.theOutputShowsADualPaneLayout)
 	sc.Step(`^the e2e operator toggles the activity pane$`, s.theE2EOperatorTogglesTheActivityPane)
-	sc.Step(`^the activity pane is hidden$`, s.theActivityPaneIsHidden)
 	sc.Step(`^the activity pane is restored$`, s.theActivityPaneIsRestored)
 }
 
@@ -188,28 +187,10 @@ func (s *e2eMultiAgentChatSteps) theOutputShowsADualPaneLayout() error {
 	return nil
 }
 
-// theActivityPaneIsHidden asserts the chat Intent view no longer contains
-// the activity timeline header after a Ctrl+T toggle.
-//
-// Returns:
-//   - nil if the header is absent; error otherwise.
-//
-// Side effects:
-//   - None.
-func (s *e2eMultiAgentChatSteps) theActivityPaneIsHidden() error {
-	if s.chatIntent == nil {
-		return errors.New("chat intent has not been created")
-	}
-	view := s.chatIntent.View()
-	s.lastRender = view
-	if strings.Contains(view, activityTimelineHeader) {
-		return fmt.Errorf("expected %q to be absent after toggle", activityTimelineHeader)
-	}
-	return nil
-}
-
-// theE2EOperatorTogglesTheActivityPane sends a Ctrl+T key to the chat Intent
-// to toggle the activity pane visibility.
+// theE2EOperatorTogglesTheActivityPane sends a Ctrl+T key to the chat
+// Intent. P11 changed Ctrl+T semantics: the key now cycles the swarm
+// filter profile rather than hiding the pane, so the step only mutates
+// intent state and lets the follow-up assertion inspect the view.
 //
 // Returns:
 //   - nil on success; error if no intent exists.
@@ -226,7 +207,9 @@ func (s *e2eMultiAgentChatSteps) theE2EOperatorTogglesTheActivityPane() error {
 }
 
 // theActivityPaneIsRestored asserts the activity timeline header is visible
-// again after the second Ctrl+T toggle.
+// in the rendered view. Under P11 the pane stays visible across every
+// Ctrl+T press, so this step captures the "still there" invariant rather
+// than a "restored from hidden" transition.
 //
 // Returns:
 //   - nil if the header is present; error otherwise.
@@ -240,7 +223,7 @@ func (s *e2eMultiAgentChatSteps) theActivityPaneIsRestored() error {
 	view := s.chatIntent.View()
 	s.lastRender = view
 	if !strings.Contains(view, activityTimelineHeader) {
-		return fmt.Errorf("expected %q in view after second Ctrl+T", activityTimelineHeader)
+		return fmt.Errorf("expected %q in view after Ctrl+T cycling", activityTimelineHeader)
 	}
 	return nil
 }
