@@ -86,4 +86,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSessionTreeNavigationSteps(ctx)
 	RegisterSwarmActivityTimelineSteps(ctx)
 	RegisterMultiAgentChatUXE2ESteps(ctx)
+	RegisterRecallLearningSteps(ctx)
 }
