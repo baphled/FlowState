@@ -204,6 +204,47 @@ When to use: Testing purposes
 			Expect(err).NotTo(HaveOccurred())
 			Expect(application.API).To(BeNil())
 		})
+
+		Describe("Startup orphan-tmp scan (P10 T1)", func() {
+			It("removes leftover .events.jsonl.tmp files under the sessions directory", func() {
+				sessionsDir := filepath.Join(tempDir, "sessions")
+				Expect(os.MkdirAll(sessionsDir, 0o755)).To(Succeed())
+
+				orphan := filepath.Join(sessionsDir, "crashed.events.jsonl.tmp")
+				Expect(os.WriteFile(orphan, []byte("half-written"), 0o600)).To(Succeed())
+
+				// Unrelated files in the same directory must remain untouched.
+				unrelated := filepath.Join(sessionsDir, "keep.json")
+				Expect(os.WriteFile(unrelated, []byte("{}"), 0o600)).To(Succeed())
+				keepEvents := filepath.Join(sessionsDir, "keep.events.jsonl")
+				Expect(os.WriteFile(keepEvents, []byte("{}\n"), 0o600)).To(Succeed())
+
+				application, err := app.NewForTest(app.TestConfig{DataDir: tempDir})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+
+				Expect(orphan).NotTo(BeAnExistingFile(),
+					"app startup must sweep orphan .events.jsonl.tmp files left behind "+
+						"by a crashed compaction so they do not accumulate across runs")
+				Expect(unrelated).To(BeAnExistingFile(),
+					"the scan must only target .events.jsonl.tmp files and leave "+
+						"unrelated session data alone")
+				Expect(keepEvents).To(BeAnExistingFile(),
+					"the scan must not delete live .events.jsonl files; only the "+
+						".tmp sibling is orphaned")
+			})
+
+			It("tolerates a missing sessions directory", func() {
+				// If the app has never run before, the sessions dir does not
+				// exist yet when startup begins. The scan must not error —
+				// NewFileSessionStore creates the directory, so the scan is
+				// effectively a no-op on first boot.
+				emptyDir := filepath.Join(tempDir, "fresh-install")
+				application, err := app.NewForTest(app.TestConfig{DataDir: emptyDir})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+			})
+		})
 	})
 
 	Describe("Config provider keys", func() {

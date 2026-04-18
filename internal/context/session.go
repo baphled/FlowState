@@ -300,6 +300,37 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 	return os.WriteFile(sessionPath, updated, 0o600)
 }
 
+// Delete removes the session's persisted state from disk. Both the session
+// JSON file and the co-located `.events.jsonl` (plus any stale `.tmp`
+// sibling) are removed so a deleted session leaves no residual artefacts
+// behind.
+//
+// Missing files are tolerated — Delete is an idempotent housekeeping
+// operation and callers should not have to pre-stat the session before
+// invoking it.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying the session.
+//
+// Returns:
+//   - An error only when an unexpected filesystem failure occurs while
+//     removing an existing file.
+//
+// Side effects:
+//   - Removes <baseDir>/<sessionID>.json when present.
+//   - Removes <baseDir>/<sessionID>.events.jsonl and its `.tmp` sibling
+//     when present (via session.RemoveSwarmEventsForSession).
+func (s *FileSessionStore) Delete(sessionID string) error {
+	sessionPath := filepath.Join(s.baseDir, sessionID+".json")
+	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing session file: %w", err)
+	}
+	if err := session.RemoveSwarmEventsForSession(s.baseDir, sessionID); err != nil {
+		return fmt.Errorf("removing session events: %w", err)
+	}
+	return nil
+}
+
 // SaveEvents persists SwarmEvent entries for a session to a JSONL file
 // co-located with the session data. Empty event slices produce no file.
 //
