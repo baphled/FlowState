@@ -79,9 +79,9 @@ bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
 	GODOG_TAGS="@smoke" go test -v ./features/... -run "Test"
 
-bdd-wip: ## Run WIP BDD tests
+bdd-wip: ## Run WIP BDD tests (scenarios tagged @wip)
 	@echo "Running WIP tests..."
-	go test -v ./features/... -run "Test"
+	GODOG_TAGS="@wip" go test -v ./features/... -run "Test"
 
 bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
 	@echo "Running feature: $(FEATURE)"
