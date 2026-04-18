@@ -24,6 +24,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tracer"
 )
@@ -60,6 +61,17 @@ type Engine struct {
 	preferredModel       string
 	bus                  *eventbus.EventBus
 	mcpServerTools       map[string][]string
+
+	// toolCallCorrelator assigns a stable FlowState-internal identifier to
+	// every tool call observed on the stream path and reuses it whenever
+	// the same logical call is referenced again — whether by the same
+	// provider on a later chunk or by a different provider after a
+	// failover (the P14 contract). Emitted on StreamChunk.InternalToolCallID
+	// so downstream consumers (activity pane coalesce, event details modal,
+	// persisted SwarmEvent entries) can pair tool_call / tool_result events
+	// without tripping over the disjoint native ID spaces the providers use.
+	// Lazily constructed if not supplied in Config.
+	toolCallCorrelator *streaming.ToolCallCorrelator
 
 	cachedSystemPrompt string
 	systemPromptDirty  bool
@@ -253,6 +265,17 @@ type Config struct {
 	//     auto-compaction with the positive delta of tokens eliminated.
 	// Nil leaves both emission sites silent (no-op recorder semantics).
 	Recorder tracer.Recorder
+
+	// ToolCallCorrelator is the P14 registry that assigns a stable
+	// FlowState-internal identifier to every tool call observed on the
+	// stream path. The engine stamps StreamChunk.InternalToolCallID from
+	// this registry on every tool-related chunk so downstream consumers
+	// can pair tool_call and tool_result events across a provider
+	// failover boundary. Nil is tolerated — the engine lazily constructs
+	// an internal correlator at New time; prefer passing one explicitly
+	// when the registry must outlive a single Engine (e.g. an App that
+	// recycles engines across chats within the same session).
+	ToolCallCorrelator *streaming.ToolCallCorrelator
 }
 
 // New creates a new Engine from the given configuration.
@@ -385,7 +408,30 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
+		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 	}
+}
+
+// resolveToolCallCorrelator returns the ToolCallCorrelator the engine
+// should use. An explicit cfg.ToolCallCorrelator wins so callers that
+// share a correlator across multiple engines (e.g. an App recycling
+// engines) can keep session-scoped registrations alive. Otherwise the
+// engine lazy-constructs its own — single-engine workflows and tests
+// require no ceremony.
+//
+// Expected:
+//   - cfg is the Config handed to New.
+//
+// Returns:
+//   - A non-nil ToolCallCorrelator.
+//
+// Side effects:
+//   - None; purely functional.
+func resolveToolCallCorrelator(cfg Config) *streaming.ToolCallCorrelator {
+	if cfg.ToolCallCorrelator != nil {
+		return cfg.ToolCallCorrelator
+	}
+	return streaming.NewToolCallCorrelator()
 }
 
 // maybeStartIdleSweeper launches the Item 4 background goroutine when
@@ -490,6 +536,13 @@ func (e *Engine) handleSessionEnded(evt any) {
 	delete(e.sessionCompactionMemo, sessionID)
 	delete(e.sessionRehydrated, sessionID)
 	e.buildStateMu.Unlock()
+
+	// P14 — release the tool-call correlator entries owned by the ended
+	// session so the registry does not grow unbounded across a long-
+	// running process. No-op when no tool calls were observed.
+	if e.toolCallCorrelator != nil {
+		e.toolCallCorrelator.ForgetSession(sessionID)
+	}
 
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
@@ -1626,9 +1679,17 @@ func (e *Engine) streamWithToolLoop(
 		if isError {
 			resultContent = "Error: " + toolResult.Error.Error()
 		}
+		// P14: re-resolve the internal id so the tool_result chunk carries
+		// the same InternalToolCallID as the originating tool_call — the
+		// registry is idempotent on a repeat lookup so this is O(1) and
+		// matches the call even when a failover replayed the call under a
+		// different native id.
 		outChan <- provider.StreamChunk{
 			EventType:  "tool_result",
 			ToolCallID: result.toolCall.ID,
+			InternalToolCallID: e.toolCallCorrelator.InternalID(
+				sessionID, result.toolCall.ID, result.toolCall.Name, result.toolCall.Arguments,
+			),
 			ToolResult: &provider.ToolResultInfo{
 				Content: resultContent,
 				IsError: isError,
@@ -1761,6 +1822,12 @@ func (e *Engine) processStreamChunks(
 						ReasoningContent: responseContent.String(),
 					}))
 				}
+				// P14: stamp the FlowState-internal id so downstream
+				// consumers can pair this call with its eventual result
+				// even if a failover rewrites the provider-scoped id.
+				chunk.InternalToolCallID = e.toolCallCorrelator.InternalID(
+					sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
+				)
 				outChan <- chunk
 				return streamChunkResult{
 					toolCall:        chunk.ToolCall,
