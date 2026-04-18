@@ -4,9 +4,9 @@ Feature: Dual-pane ScreenLayout
   primary chat pane occupies roughly 70% of the viewport width, while a
   secondary activity pane renders the remaining 30%. The activity pane
   is only shown when secondary content has been supplied. An operator
-  may also collapse the activity pane on demand by pressing Ctrl+T,
-  and restore it by pressing Ctrl+T again. This feature captures the
-  behaviour of that layout and its toggle.
+  may cycle the activity-timeline filter profile on demand by pressing
+  Ctrl+T (P11); the pane itself remains visible across the cycle so the
+  user always has somewhere to see the effect of their filter choice.
   """
 
   Background:
@@ -29,21 +29,22 @@ Feature: Dual-pane ScreenLayout
     Then the rendered output should contain a single pane
     And the primary pane should occupy the full width
 
-  @ui @dual-pane @wave1
-  Scenario: Operator presses Ctrl+T and the activity pane hides
+  @ui @dual-pane @wave1 @p11
+  Scenario: Operator presses Ctrl+T and the activity pane remains visible
     Given the primary content is "primary pane body"
     And the secondary content is "activity pane body"
     And the activity pane is visible
     When the operator presses Ctrl+T
-    Then the activity pane should be hidden
-    And the primary pane should occupy the full width
+    Then the activity pane should be visible
+    And the primary pane should occupy roughly 70% of the width
+    And the secondary pane should occupy roughly 30% of the width
 
-  @ui @dual-pane @wave1
-  Scenario: Operator presses Ctrl+T again and the activity pane is restored
+  @ui @dual-pane @wave1 @p11
+  Scenario: Operator cycles Ctrl+T three times and returns to the default profile
     Given the primary content is "primary pane body"
     And the secondary content is "activity pane body"
-    And the activity pane has been hidden via Ctrl+T
-    When the operator presses Ctrl+T
+    And the activity pane is visible
+    When the operator presses Ctrl+T three times
     Then the activity pane should be visible
     And the primary pane should occupy roughly 70% of the width
     And the secondary pane should occupy roughly 30% of the width

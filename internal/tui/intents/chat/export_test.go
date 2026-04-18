@@ -509,3 +509,29 @@ func (i *Intent) SwarmVisibleTypesForTest() map[streaming.SwarmEventType]bool {
 // ShowModalMsgForTest is a type alias for tuiintents.ShowModalMsg exported for
 // test assertions in external test packages.
 type ShowModalMsgForTest = tuiintents.ShowModalMsg
+
+// SwarmFilterProfileAllForTest exposes the profileAll sentinel for P11
+// cycle-order assertions. Tests compare against this rather than hard-coded
+// integers so the cycle can be reordered without touching every test file.
+func SwarmFilterProfileAllForTest() int {
+	return int(swarmFilterProfileAll)
+}
+
+// SwarmFilterProfileToolsOnlyForTest exposes the profileToolsOnly sentinel
+// for P11 cycle-order assertions.
+func SwarmFilterProfileToolsOnlyForTest() int {
+	return int(swarmFilterProfileToolsOnly)
+}
+
+// SwarmFilterProfileDelegationsOnlyForTest exposes the
+// profileDelegationsOnly sentinel for P11 cycle-order assertions.
+func SwarmFilterProfileDelegationsOnlyForTest() int {
+	return int(swarmFilterProfileDelegationsOnly)
+}
+
+// SwarmFilterProfileForTest returns the chat intent's current
+// swarmFilterProfile as an int so test code in an external package can
+// compare it against the *ForTest sentinels.
+func (i *Intent) SwarmFilterProfileForTest() int {
+	return int(i.swarmFilterProfile)
+}

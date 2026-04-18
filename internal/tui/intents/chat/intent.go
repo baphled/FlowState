@@ -315,14 +315,24 @@ type Intent struct {
 	// swarmVisibleTypes is the authoritative per-type visibility filter
 	// applied to the activity pane on every render. The chat intent owns
 	// this map (P3 A3) so transient filter churn on the pane cannot
-	// silently hide non-tool_call event types, and so a future Ctrl+T
-	// toggle (P8) has a single place to mutate visibility. Defaulted to
-	// all-types-visible at construction.
+	// silently hide non-tool_call event types, and so the P11 Ctrl+T filter
+	// cycler has a single place to mutate visibility. Defaulted to
+	// all-types-visible at construction. Rebuilt in handleFilterToggle from
+	// swarmFilterProfile whenever the user presses Ctrl+T.
 	swarmVisibleTypes map[streaming.SwarmEventType]bool
+	// swarmFilterProfile tracks which preset the user has cycled to via
+	// Ctrl+T (P11). The authoritative swarmVisibleTypes map is derived
+	// from this field; callers that mutate swarmVisibleTypes directly are
+	// expected to keep it consistent with the profile (or reset to
+	// swarmFilterProfileAll, which is the constructor default).
+	swarmFilterProfile swarmFilterProfile
 	// secondaryPaneVisible gates the dual-pane render of the swarm activity
-	// timeline. Toggled via Ctrl+T in handleInputKey. When false, View()
-	// passes an empty string to WithSecondaryContent so ScreenLayout falls
-	// back to single-pane via its existing empty-secondary branch.
+	// timeline. P11 repurposed Ctrl+T for filter-profile cycling, so the
+	// pane is no longer keyboard-toggleable; this flag remains on the
+	// struct for programmatic callers and future slash-command support.
+	// When false, View() passes an empty string to WithSecondaryContent so
+	// ScreenLayout falls back to single-pane via its existing
+	// empty-secondary branch.
 	secondaryPaneVisible bool
 	// sessionTrail holds the session-ancestry breadcrumb trail built by
 	// walking ParentID links via the session manager. Refreshed on
@@ -358,7 +368,7 @@ const chatHintSuffix = "  ·  Alt+Enter: new line" +
 	"  ·  /models /model /help" +
 	"  ·  Ctrl+G: tree" +
 	"  ·  Ctrl+E: event" +
-	"  ·  Ctrl+T: activity" +
+	"  ·  Ctrl+T: filter" +
 	"  ·  ↑/↓: scroll" +
 	"  ·  Ctrl+C: quit"
 
@@ -381,8 +391,8 @@ func tokenCounterFromConfig(cfg IntentConfig) contextpkg.TokenCounter {
 
 // defaultSwarmVisibleTypes returns a fresh map with every known
 // SwarmEventType marked visible. Used as the initial value of the chat
-// intent's swarmVisibleTypes field (P3 A3) and, in future, as the reset
-// target for a "show all" affordance behind Ctrl+T.
+// intent's swarmVisibleTypes field (P3 A3) and as the reset target for
+// the P11 swarmFilterProfileAll preset behind Ctrl+T.
 //
 // Returns:
 //   - A new map keyed by SwarmEventType with all known types set to true.
@@ -397,6 +407,116 @@ func defaultSwarmVisibleTypes() map[streaming.SwarmEventType]bool {
 		streaming.EventPlan:       true,
 		streaming.EventReview:     true,
 	}
+}
+
+// swarmFilterProfile is the P11 filter preset enum the chat intent cycles
+// through each time the user presses Ctrl+T. Profiles are chosen so that no
+// state ever leaves every type hidden — the cycle is safe, and the P8
+// "All events hidden" recovery hint remains reachable only via programmatic
+// mutation of swarmVisibleTypes, not via the keyboard.
+type swarmFilterProfile int
+
+const (
+	// SwarmFilterProfileAll: shows every SwarmEventType. It is the
+	// constructor default and the wrap-around target of the cycle.
+	swarmFilterProfileAll swarmFilterProfile = iota
+	// SwarmFilterProfileToolsOnly: shows only EventToolCall and
+	// EventToolResult — the noisy, high-frequency events. Useful when the
+	// user wants to watch what the agent is touching in real time.
+	swarmFilterProfileToolsOnly
+	// SwarmFilterProfileDelegationsOnly: hides the noisy tool events and
+	// leaves only the higher-signal delegation, plan, and review events.
+	swarmFilterProfileDelegationsOnly
+)
+
+// swarmFilterProfileName returns the human-readable label rendered in the
+// activity pane footer when the profile is non-default. Returns the empty
+// string for swarmFilterProfileAll so the default state stays visually
+// quiet.
+//
+// Expected:
+//   - p is one of the three defined swarmFilterProfile constants.
+//
+// Returns:
+//   - A short, user-facing profile label, or "" for the default profile.
+//
+// Side effects:
+//   - None.
+func swarmFilterProfileName(p swarmFilterProfile) string {
+	switch p {
+	case swarmFilterProfileAll:
+		return ""
+	case swarmFilterProfileToolsOnly:
+		return "Tool calls only"
+	case swarmFilterProfileDelegationsOnly:
+		return "Delegations + plan + review"
+	}
+	return ""
+}
+
+// swarmVisibleTypesForProfile returns a fresh visibleTypes map shaped by
+// the given profile. The returned map is safe for the caller to mutate; no
+// shared state is retained.
+//
+// Expected:
+//   - p is one of the three defined swarmFilterProfile constants. Unknown
+//     values fall through to the all-visible default so callers cannot
+//     accidentally render an all-hidden pane by passing a zero value of a
+//     future enum extension.
+//
+// Returns:
+//   - A map keyed by SwarmEventType with booleans reflecting the profile.
+//
+// Side effects:
+//   - None.
+func swarmVisibleTypesForProfile(p swarmFilterProfile) map[streaming.SwarmEventType]bool {
+	switch p {
+	case swarmFilterProfileToolsOnly:
+		return map[streaming.SwarmEventType]bool{
+			streaming.EventDelegation: false,
+			streaming.EventToolCall:   true,
+			streaming.EventToolResult: true,
+			streaming.EventPlan:       false,
+			streaming.EventReview:     false,
+		}
+	case swarmFilterProfileDelegationsOnly:
+		return map[streaming.SwarmEventType]bool{
+			streaming.EventDelegation: true,
+			streaming.EventToolCall:   false,
+			streaming.EventToolResult: false,
+			streaming.EventPlan:       true,
+			streaming.EventReview:     true,
+		}
+	default:
+		// swarmFilterProfileAll and any unknown enum extension fall back
+		// to the all-visible map so callers cannot accidentally hide
+		// every type by passing a zero or out-of-range value.
+		return defaultSwarmVisibleTypes()
+	}
+}
+
+// nextSwarmFilterProfile returns the profile that follows p in the P11
+// cycle: all -> toolsOnly -> delegationsOnly -> all.
+//
+// Expected:
+//   - p is one of the three defined swarmFilterProfile constants. Unknown
+//     values wrap to the all-visible default so the cycle is self-healing.
+//
+// Returns:
+//   - The next profile in the cycle.
+//
+// Side effects:
+//   - None.
+func nextSwarmFilterProfile(p swarmFilterProfile) swarmFilterProfile {
+	switch p {
+	case swarmFilterProfileAll:
+		return swarmFilterProfileToolsOnly
+	case swarmFilterProfileToolsOnly:
+		return swarmFilterProfileDelegationsOnly
+	case swarmFilterProfileDelegationsOnly:
+		return swarmFilterProfileAll
+	}
+	return swarmFilterProfileAll
 }
 
 // NewIntent creates a new chat Intent from the given configuration.
@@ -457,6 +577,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
 		swarmStore:           buildSwarmStore(cfg.SessionStore, cfg.SessionID),
 		swarmVisibleTypes:    defaultSwarmVisibleTypes(),
+		swarmFilterProfile:   swarmFilterProfileAll,
 		secondaryPaneVisible: true,
 		sessionTrail:         navigation.NewSessionTrail(),
 	}
@@ -1150,7 +1271,7 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyCtrlS:
 		return i.openSessionBrowser()
 	case tea.KeyCtrlT:
-		return i.toggleSecondaryPane()
+		return i.handleFilterToggle()
 	case tea.KeyCtrlG:
 		return i.openSessionTree()
 	case tea.KeyCtrlE:
@@ -1199,18 +1320,25 @@ func (i *Intent) handleTextInputKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// toggleSecondaryPane flips the secondary-pane visibility flag in response
-// to Ctrl+T (Wave 1 / T7). View() gates its WithSecondaryContent call on
-// this flag so the hidden state falls back to single-pane via
-// ScreenLayout's existing empty-secondary branch.
+// handleFilterToggle advances the chat intent's swarmFilterProfile to the
+// next preset in the P11 cycle and rebuilds swarmVisibleTypes from the new
+// profile. View() reasserts the map on every render so the change is
+// picked up on the next Bubble Tea tick without any additional plumbing.
+//
+// The cycle is designed to skip any all-hidden state so the user cannot
+// accidentally blank the timeline by mashing Ctrl+T. The P8 "All events
+// hidden" recovery hint remains reachable only via programmatic visibility
+// mutation, which preserves its role as a safety net rather than a normal
+// keyboard state.
 //
 // Returns:
 //   - Always nil; Bubble Tea re-renders on the next tick.
 //
 // Side effects:
-//   - Mutates i.secondaryPaneVisible.
-func (i *Intent) toggleSecondaryPane() tea.Cmd {
-	i.secondaryPaneVisible = !i.secondaryPaneVisible
+//   - Mutates i.swarmFilterProfile and i.swarmVisibleTypes.
+func (i *Intent) handleFilterToggle() tea.Cmd {
+	i.swarmFilterProfile = nextSwarmFilterProfile(i.swarmFilterProfile)
+	i.swarmVisibleTypes = swarmVisibleTypesForProfile(i.swarmFilterProfile)
 	return nil
 }
 
@@ -2504,41 +2632,51 @@ func (i *Intent) View() string {
 		WithStatusBar(i.statusBar.RenderContent(i.width)).
 		WithHelp(status + chatHintSuffix)
 
-	// Populate the secondary pane with the swarm activity timeline when
-	// secondaryPaneVisible is true (Wave 1 / T7 Ctrl+T toggle). The pane is
-	// width- and height-aware and returns an empty string when dimensions
-	// fall below its render thresholds, which pairs with ScreenLayout's
-	// single-pane fallback below the 80-column dual-pane minimum. When the
-	// user has hidden the pane we explicitly clear secondaryContent to ""
-	// on the cached layout so the empty-secondary branch fires rather than
-	// reusing stale content from a previous visible render.
-	if i.secondaryPaneVisible && i.swarmActivity != nil && i.width >= layout.DualPaneMinWidth {
-		contentHeight := sl.GetAvailableContentHeight()
-		var swarmEvents []streaming.SwarmEvent
-		if i.swarmStore != nil {
-			swarmEvents = i.swarmStore.All()
-		}
-		// P1/A2: render the activity pane at the secondary-pane width
-		// (~30% of i.width) rather than the full terminal width. Passing
-		// i.width caused long lines to render at terminal width and then
-		// be cropped by the composite layout, masking truncation bugs and
-		// breaking the pane's own overflow arithmetic.
-		_, secondaryWidth := layout.SplitPaneWidths(i.width)
-		// P3 A3: the chat intent is the authoritative source of
-		// visibility. Reassert the map on every render so a transient
-		// mutation on the pane (test code, future filter UI) cannot
-		// leave non-tool_call types silently hidden across renders.
-		sl.WithSecondaryContent(
-			i.swarmActivity.
-				WithEvents(swarmEvents).
-				WithVisibleTypes(i.swarmVisibleTypes).
-				Render(secondaryWidth, contentHeight),
-		)
-	} else {
-		sl.WithSecondaryContent("")
-	}
+	i.applySecondaryPaneContent(sl)
 
 	return i.renderModalOverlay(sl.Render())
+}
+
+// applySecondaryPaneContent populates the cached ScreenLayout's secondary
+// pane with the swarm activity timeline when the layout has room and the
+// pane is enabled. When disabled or below the dual-pane width threshold it
+// explicitly clears secondaryContent so the single-pane fallback fires
+// rather than reusing stale content from a previous visible render.
+//
+// Expected:
+//   - sl is the non-nil cached ScreenLayout already populated with content,
+//     input, status-bar, and help strings.
+//
+// Side effects:
+//   - Calls WithSecondaryContent on sl.
+func (i *Intent) applySecondaryPaneContent(sl *layout.ScreenLayout) {
+	if !i.secondaryPaneVisible || i.swarmActivity == nil || i.width < layout.DualPaneMinWidth {
+		sl.WithSecondaryContent("")
+		return
+	}
+	contentHeight := sl.GetAvailableContentHeight()
+	var swarmEvents []streaming.SwarmEvent
+	if i.swarmStore != nil {
+		swarmEvents = i.swarmStore.All()
+	}
+	// P1/A2: render the activity pane at the secondary-pane width
+	// (~30% of i.width) rather than the full terminal width. Passing
+	// i.width caused long lines to render at terminal width and then be
+	// cropped by the composite layout, masking truncation bugs and
+	// breaking the pane's own overflow arithmetic.
+	_, secondaryWidth := layout.SplitPaneWidths(i.width)
+	// P3 A3: the chat intent is the authoritative source of visibility.
+	// Reassert the map on every render so a transient mutation on the
+	// pane cannot leave non-tool_call types silently hidden across
+	// renders. P11 also wires the active filter-profile label through so
+	// the pane can surface the current preset to the user.
+	sl.WithSecondaryContent(
+		i.swarmActivity.
+			WithEvents(swarmEvents).
+			WithVisibleTypes(i.swarmVisibleTypes).
+			WithProfileName(swarmFilterProfileName(i.swarmFilterProfile)).
+			Render(secondaryWidth, contentHeight),
+	)
 }
 
 // renderModalOverlay applies loading or error modal overlays to the base view.
@@ -2815,7 +2953,7 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
 				"  Ctrl+G       - Open session tree\n" +
 				"  Ctrl+E       - Open event details (may shadow terminal-muxer/IDE bindings)\n" +
-				"  Ctrl+T       - Toggle swarm activity pane (may shadow terminal-muxer/IDE bindings)\n" +
+				"  Ctrl+T       - Cycle activity-timeline filter profile (may shadow terminal-muxer/IDE bindings)\n" +
 				"  Up/Down      - Scroll viewport line by line\n" +
 				"  PgUp/PgDn    - Scroll viewport or event-details modal by page\n" +
 				"  Home/End     - Jump to top / bottom of viewport or event-details modal\n" +

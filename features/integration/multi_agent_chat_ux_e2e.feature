@@ -2,21 +2,22 @@ Feature: Multi-Agent Chat UX end-to-end
   """
   Comprehensive smoke test exercising the full operator journey through the
   Multi-Agent Chat UX across all three waves. Validates that dual-pane layout,
-  activity pane toggling, session trail navigation, swarm event timeline
-  rendering, and event filtering work together as a cohesive experience.
+  Ctrl+T filter cycling (P11), session trail navigation, swarm event
+  timeline rendering, and event filtering work together as a cohesive
+  experience.
   """
 
   @e2e @smoke @multi-agent-ux
-  Scenario: Full operator journey through dual-pane layout and toggle
+  Scenario: Full operator journey through dual-pane layout and filter cycle
     # Wave 1: Dual-pane layout renders correctly
     Given a chat intent with a 120x40 terminal
     And the swarm activity pane is visible by default
     When the operator views the chat
     Then the output shows a dual-pane layout
 
-    # Wave 1: Toggle hides and restores
+    # P11: Ctrl+T cycles the filter profile — the pane stays visible
     When the e2e operator toggles the activity pane
-    Then the activity pane is hidden
+    Then the activity pane is restored
     When the e2e operator toggles the activity pane
     Then the activity pane is restored
 
