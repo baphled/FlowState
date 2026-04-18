@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -12,6 +13,7 @@ type ToolFactory struct {
 	tokenCounter TokenCounter
 	model        string
 	topK         int
+	bus          *eventbus.EventBus
 }
 
 // NewToolFactory creates a new ToolFactory.
@@ -26,13 +28,17 @@ type ToolFactory struct {
 //
 // Side effects:
 //   - None.
-func NewToolFactory(store *FileContextStore, embedder provider.Provider, tokenCounter TokenCounter, model string) *ToolFactory {
+func NewToolFactory(
+	store *FileContextStore, embedder provider.Provider, tokenCounter TokenCounter,
+	model string, bus *eventbus.EventBus,
+) *ToolFactory {
 	return &ToolFactory{
 		store:        store,
 		embedder:     embedder,
 		tokenCounter: tokenCounter,
 		model:        model,
 		topK:         5,
+		bus:          bus,
 	}
 }
 
@@ -47,10 +53,12 @@ func NewToolFactory(store *FileContextStore, embedder provider.Provider, tokenCo
 // Side effects:
 //   - None.
 func (f *ToolFactory) Tools() []tool.Tool {
+	summarize := NewSummarizeContextTool(f.store, f.embedder, 2, f.tokenCounter, f.model)
+	summarize.SetEventBus(f.bus)
 	return []tool.Tool{
-		NewSearchContextTool(f.store, f.embedder, f.topK),
+		NewSearchContextTool(f.store, f.embedder, f.topK, f.bus),
 		NewGetMessagesTool(f.store),
-		NewSummarizeContextTool(f.store, f.embedder, 2, f.tokenCounter, f.model),
+		summarize,
 	}
 }
 
@@ -68,7 +76,7 @@ func (f *ToolFactory) Tools() []tool.Tool {
 func (f *ToolFactory) ToolsWithChainStore(chainStore ChainContextStore) []tool.Tool {
 	tools := f.Tools()
 	if chainStore != nil {
-		chainTool := NewChainSearchTool(chainStore, f.embedder, f.store)
+		chainTool := NewChainSearchTool(chainStore, f.embedder, f.store, f.bus)
 		tools = append(tools, chainTool)
 	}
 	return tools

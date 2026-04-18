@@ -85,7 +85,7 @@ var _ = Describe("ContextTools", func() {
 			mockProv = &mockProvider{
 				embedResult: []float64{0.1, 0.2, 0.3},
 			}
-			searchTool = recall.NewSearchContextTool(store, mockProv, 5)
+			searchTool = recall.NewSearchContextTool(store, mockProv, 5, nil)
 		})
 
 		It("returns correct name", func() {

@@ -3,6 +3,7 @@ package recall
 import (
 	"reflect"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -37,6 +38,7 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 	embedder := loadRecallEmbedder(configValue.FieldByName("EmbeddingProvider"))
 	tokenCounter := loadRecallTokenCounter(configValue.FieldByName("TokenCounter"))
 	model := loadRecallModelName(configValue.FieldByName("Manifest"))
+	bus := loadRecallEventBus(configValue.FieldByName("EventBus"))
 
 	if !toolsField.IsValid() || !toolsField.CanSet() || toolsField.Kind() != reflect.Slice {
 		return nil
@@ -46,7 +48,7 @@ func RegisterRecallTools(cfg any) []tool.Tool {
 		return nil
 	}
 
-	factory := NewToolFactory(store, embedder, tokenCounter, model)
+	factory := NewToolFactory(store, embedder, tokenCounter, model, bus)
 	recallTools := factory.Tools()
 	currentTools := make([]tool.Tool, 0, toolsField.Len()+len(recallTools))
 	for i := range toolsField.Len() {
@@ -155,4 +157,26 @@ func loadRecallModelName(field reflect.Value) string {
 		return ""
 	}
 	return model.String()
+}
+
+// loadRecallEventBus extracts an EventBus from a reflected field.
+//
+// Expected:
+//   - field contains an *eventbus.EventBus value or nil.
+//
+// Returns:
+//   - The EventBus when present.
+//   - Nil when the field is invalid, nil, or of the wrong type.
+//
+// Side effects:
+//   - None.
+func loadRecallEventBus(field reflect.Value) *eventbus.EventBus {
+	if !field.IsValid() || field.IsNil() {
+		return nil
+	}
+	bus, ok := field.Interface().(*eventbus.EventBus)
+	if !ok {
+		return nil
+	}
+	return bus
 }
