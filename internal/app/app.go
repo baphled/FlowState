@@ -144,6 +144,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	runOrphanEventTmpScan(filepath.Join(cfg.DataDir, "sessions"))
 	pluginRT := setupPluginRuntime(cfg)
 	wireFailoverManager(pluginRT, providerRegistry)
 	runtime, err := setupEngine(setupEngineParams{
@@ -2768,6 +2769,44 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 	return sessionStore, learningStore, nil
 }
 
+// runOrphanEventTmpScan sweeps leftover `.events.jsonl.tmp` files from
+// sessionsDir. Such files only exist as intermediate staging files for a
+// SwarmEvent compaction; a surviving one after process shutdown means a
+// previous run crashed mid-rename and left a half-written stager behind.
+//
+// Called once during app startup after the session store is constructed
+// and before the TUI launches. Errors do NOT block startup — they are
+// logged at WARN and the boot continues so a disk-level problem with the
+// sessions directory cannot prevent the app from coming up.
+//
+// Expected:
+//   - sessionsDir is the directory where sessions are persisted. A missing
+//     directory is treated as a no-op by the underlying helper.
+//
+// Returns:
+//   - Nothing. Diagnostics go through slog.
+//
+// Side effects:
+//   - Deletes matching files from disk.
+//   - Emits an slog.Warn on failure and an slog.Info when one or more
+//     orphans were swept (quiet on the zero-removed happy path).
+func runOrphanEventTmpScan(sessionsDir string) {
+	removed, err := session.CleanupOrphanEventTmpFiles(sessionsDir)
+	if err != nil {
+		slog.Warn("orphan events.jsonl.tmp scan failed at startup",
+			"sessions_dir", sessionsDir,
+			"error", err,
+		)
+		return
+	}
+	if removed > 0 {
+		slog.Info("swept orphan events.jsonl.tmp files at startup",
+			"sessions_dir", sessionsDir,
+			"removed", removed,
+		)
+	}
+}
+
 // createContextStore initialises the context store for managing conversation context.
 //
 // Expected:
@@ -3108,6 +3147,7 @@ func NewForTest(tc TestConfig) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating session store: %w", err)
 	}
+	runOrphanEventTmpScan(tc.SessionsDir)
 
 	// Learning store is nil when Qdrant is not configured (graceful degradation)
 	var learningStore learning.Store
