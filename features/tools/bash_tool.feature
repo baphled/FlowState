@@ -55,11 +55,10 @@ Feature: Bash Tool
     Then I should see an indicator that the command is running
     And when complete, I should see the output
 
-  @wip
   Scenario: Cancel running command
     Given the AI is running a long command
-    When I press Ctrl+c
-    Then the command should be terminated
+    When I press Ctrl+k
+    Then the stream is cancelled and a notification confirms
     And the AI should be informed of the cancellation
 
   Scenario: Working directory context
