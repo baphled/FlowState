@@ -126,6 +126,11 @@ const eventsFileSuffix = ".events.jsonl"
 // When events is empty or nil no file is created and any existing events file
 // for the session is left untouched.
 //
+// This is the snapshot-on-save entry point preserved for callers that have
+// not yet migrated to the P4 append-on-write WAL. For new call sites use
+// AppendSwarmEventToSession (per-event, hot path) or CompactSwarmEventsForSession
+// (close-time authoritative rewrite) instead.
+//
 // Expected:
 //   - sessionsDir is the directory to write the events file into (created if absent).
 //   - sessionID is a non-empty string identifying the session.
@@ -136,36 +141,79 @@ const eventsFileSuffix = ".events.jsonl"
 //
 // Side effects:
 //   - Creates sessionsDir (including parents) when it does not exist.
-//   - Writes <sessionsDir>/<sessionID>.events.jsonl to disk via atomic rename.
+//   - Writes <sessionsDir>/<sessionID>.events.jsonl to disk via atomic rename + fsync.
 func PersistSwarmEvents(sessionsDir string, sessionID string, events []streaming.SwarmEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-
 	if err := os.MkdirAll(sessionsDir, 0o750); err != nil {
 		return err
 	}
+	return streaming.CompactSwarmEvents(eventsPath(sessionsDir, sessionID), events)
+}
 
-	path := filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
-	tmpPath := path + ".tmp"
-
-	f, err := os.Create(tmpPath)
-	if err != nil {
+// AppendSwarmEventToSession appends a single event to the session's JSONL
+// WAL, creating the file if absent. The parent sessionsDir is created on
+// first write so callers do not have to pre-create it.
+//
+// Durability: streaming.AppendSwarmEvent fsyncs before returning, so on
+// successful return the event is on stable storage.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//   - ev is a populated SwarmEvent.
+//
+// Returns:
+//   - An error if the directory cannot be created or the append fails.
+//
+// Side effects:
+//   - Appends one JSONL line to <sessionsDir>/<sessionID>.events.jsonl.
+//   - Fsyncs the file before returning.
+func AppendSwarmEventToSession(sessionsDir string, sessionID string, ev streaming.SwarmEvent) error {
+	if err := os.MkdirAll(sessionsDir, 0o750); err != nil {
 		return err
 	}
+	return streaming.AppendSwarmEvent(eventsPath(sessionsDir, sessionID), ev)
+}
 
-	if err := streaming.WriteEventsJSONL(f, events); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+// CompactSwarmEventsForSession rewrites the session's JSONL file from the
+// supplied in-memory snapshot using the atomic fsync-and-rename dance in
+// streaming.CompactSwarmEvents. This is the close-time authority for the
+// event stream: any events appended via the WAL but missing from the
+// snapshot are discarded.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//   - events may be nil or empty (rewrites the file as zero-byte).
+//
+// Returns:
+//   - An error if the directory cannot be created or the compact fails.
+//
+// Side effects:
+//   - Writes <sessionsDir>/<sessionID>.events.jsonl via temp-file + rename.
+//   - Fsyncs the temp file before rename.
+func CompactSwarmEventsForSession(sessionsDir string, sessionID string, events []streaming.SwarmEvent) error {
+	if err := os.MkdirAll(sessionsDir, 0o750); err != nil {
 		return err
 	}
+	return streaming.CompactSwarmEvents(eventsPath(sessionsDir, sessionID), events)
+}
 
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	return os.Rename(tmpPath, path)
+// eventsPath returns the canonical events-file path for a session.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//
+// Returns:
+//   - <sessionsDir>/<sessionID>.events.jsonl as a filesystem-joined path.
+//
+// Side effects:
+//   - None.
+func eventsPath(sessionsDir string, sessionID string) string {
+	return filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
 }
 
 // LoadSwarmEvents reads SwarmEvent entries from a JSONL file in sessionsDir.

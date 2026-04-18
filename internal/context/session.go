@@ -303,6 +303,10 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 // SaveEvents persists SwarmEvent entries for a session to a JSONL file
 // co-located with the session data. Empty event slices produce no file.
 //
+// Post-P4 this routes to the compaction path — the close-time authority
+// that rewrites the JSONL file atomically with fsync and rename. Per-event
+// durability during streaming is handled by AppendEvent (the WAL path).
+//
 // Expected:
 //   - sessionID is a non-empty string identifying the session.
 //   - events may be nil or empty (no file is created).
@@ -311,9 +315,33 @@ func (s *FileSessionStore) SetTitle(sessionID string, title string) error {
 //   - An error if the file cannot be written.
 //
 // Side effects:
-//   - Writes <baseDir>/<sessionID>.events.jsonl to disk.
+//   - Writes <baseDir>/<sessionID>.events.jsonl to disk via temp-file, fsync,
+//     and rename.
 func (s *FileSessionStore) SaveEvents(sessionID string, events []streaming.SwarmEvent) error {
 	return session.PersistSwarmEvents(s.baseDir, sessionID, events)
+}
+
+// AppendEvent writes a single event to the session's JSONL WAL and fsyncs
+// the file before returning. This is the hot-path durability entry point
+// used by the chat intent's persistedSwarmStore decorator (P4). Callers are
+// expected to invoke it from stream worker goroutines; errors surface to
+// the caller so the decorator can log them without blocking the stream.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying the session.
+//   - ev is a populated SwarmEvent (producers stamp SchemaVersion and UTC
+//     timestamps at creation; this method does not rewrite either).
+//
+// Returns:
+//   - An error if the directory cannot be created, the append fails, or
+//     the fsync fails.
+//
+// Side effects:
+//   - Creates baseDir if absent.
+//   - Appends one JSONL line to <baseDir>/<sessionID>.events.jsonl and
+//     fsyncs the file before returning.
+func (s *FileSessionStore) AppendEvent(sessionID string, ev streaming.SwarmEvent) error {
+	return session.AppendSwarmEventToSession(s.baseDir, sessionID, ev)
 }
 
 // LoadEvents reads SwarmEvent entries for a session from a JSONL file.

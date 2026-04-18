@@ -186,9 +186,15 @@ type SessionLister interface {
 // silently skipped.
 type SwarmEventPersister interface {
 	// SaveEvents persists events for a session. Empty slices produce no file.
+	// Callers migrated to the P4 WAL should prefer AppendEvent for per-event
+	// durability and SaveEvents only for close-time compaction.
 	SaveEvents(sessionID string, evs []streaming.SwarmEvent) error
 	// LoadEvents restores events for a session. Missing files return nil, nil.
 	LoadEvents(sessionID string) ([]streaming.SwarmEvent, error)
+	// AppendEvent writes a single event to the session's WAL and fsyncs
+	// before returning. Implementations must be safe to call from producer
+	// goroutines on the streaming hot path.
+	AppendEvent(sessionID string, ev streaming.SwarmEvent) error
 }
 
 // SessionChildLister lists child sessions visible to the session manager.
@@ -432,13 +438,44 @@ func NewIntent(cfg IntentConfig) *Intent {
 		notificationManager:  notifManager,
 		breadcrumbPath:       "Chat",
 		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
-		swarmStore:           streaming.NewMemorySwarmStore(streaming.DefaultSwarmStoreCapacity),
+		swarmStore:           buildSwarmStore(cfg.SessionStore, cfg.SessionID),
 		swarmVisibleTypes:    defaultSwarmVisibleTypes(),
 		secondaryPaneVisible: true,
 		sessionTrail:         navigation.NewSessionTrail(),
 	}
 	intent.refreshSessionTrail()
 	return intent
+}
+
+// buildSwarmStore constructs the per-intent SwarmEventStore. When the
+// session store satisfies SwarmEventPersister, the returned store is a
+// write-through decorator that persists every Append to the session's
+// JSONL WAL (P4). Otherwise a plain in-memory store is returned so tests
+// and embedded callers without a persister continue to work.
+//
+// Expected:
+//   - sessionStore may be nil or any SessionLister implementation; only
+//     implementations that also satisfy SwarmEventPersister get the WAL
+//     wrapper.
+//   - sessionID may be empty; the wrapper closes over it so appends routed
+//     after a session rename go to the original file (rename is out of
+//     scope for P4).
+//
+// Returns:
+//   - A SwarmEventStore ready for use by the chat intent.
+//
+// Side effects:
+//   - None until Append/All/Clear is invoked.
+func buildSwarmStore(sessionStore SessionLister, sessionID string) streaming.SwarmEventStore {
+	mem := streaming.NewMemorySwarmStore(streaming.DefaultSwarmStoreCapacity)
+	ep, ok := sessionStore.(SwarmEventPersister)
+	if !ok || sessionID == "" {
+		return mem
+	}
+	appendFn := func(ev streaming.SwarmEvent) error {
+		return ep.AppendEvent(sessionID, ev)
+	}
+	return streaming.NewPersistedSwarmStore(mem, appendFn)
 }
 
 // SetCompletionChannel attaches a channel that receives background task completion
@@ -1668,11 +1705,12 @@ func delegationSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Sw
 		agentID = fallbackAgent
 	}
 	return streaming.SwarmEvent{
-		ID:        ensureEventID(msg.DelegationInfo.ChainID),
-		Type:      streaming.EventDelegation,
-		Status:    msg.DelegationInfo.Status,
-		Timestamp: time.Now(),
-		AgentID:   agentID,
+		ID:            ensureEventID(msg.DelegationInfo.ChainID),
+		Type:          streaming.EventDelegation,
+		Status:        msg.DelegationInfo.Status,
+		Timestamp:     time.Now().UTC(),
+		AgentID:       agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
 		Metadata: map[string]interface{}{
 			"source_agent": msg.DelegationInfo.SourceAgent,
 			"description":  msg.DelegationInfo.Description,
@@ -1700,11 +1738,12 @@ func toolCallSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Swar
 		status = "started"
 	}
 	return streaming.SwarmEvent{
-		ID:        ensureEventID(msg.ToolCallID),
-		Type:      streaming.EventToolCall,
-		Status:    status,
-		Timestamp: time.Now(),
-		AgentID:   fallbackAgent,
+		ID:            ensureEventID(msg.ToolCallID),
+		Type:          streaming.EventToolCall,
+		Status:        status,
+		Timestamp:     time.Now().UTC(),
+		AgentID:       fallbackAgent,
+		SchemaVersion: streaming.CurrentSchemaVersion,
 		Metadata: map[string]interface{}{
 			"tool_name": msg.ToolCallName,
 			"is_error":  msg.ToolIsError,
@@ -1756,11 +1795,12 @@ func toolResultSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Sw
 		status = "error"
 	}
 	return streaming.SwarmEvent{
-		ID:        ensureEventID(msg.ToolCallID),
-		Type:      streaming.EventToolResult,
-		Status:    status,
-		Timestamp: time.Now(),
-		AgentID:   fallbackAgent,
+		ID:            ensureEventID(msg.ToolCallID),
+		Type:          streaming.EventToolResult,
+		Status:        status,
+		Timestamp:     time.Now().UTC(),
+		AgentID:       fallbackAgent,
+		SchemaVersion: streaming.CurrentSchemaVersion,
 		Metadata: map[string]interface{}{
 			"content":  msg.ToolResult,
 			"is_error": msg.ToolIsError,
@@ -1785,12 +1825,13 @@ func toolResultSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Sw
 //   - None.
 func planOrReviewSwarmEvent(evType streaming.SwarmEventType, msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
 	return streaming.SwarmEvent{
-		ID:        ensureEventID(""),
-		Type:      evType,
-		Status:    "completed",
-		Timestamp: time.Now(),
-		AgentID:   fallbackAgent,
-		Metadata:  map[string]interface{}{"content": msg.Content},
+		ID:            ensureEventID(""),
+		Type:          evType,
+		Status:        "completed",
+		Timestamp:     time.Now().UTC(),
+		AgentID:       fallbackAgent,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      map[string]interface{}{"content": msg.Content},
 	}
 }
 
