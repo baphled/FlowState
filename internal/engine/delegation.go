@@ -833,6 +833,9 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 // child session identified by sessionID.
 //
 // Expected:
+//   - ctx bounds the accumulator goroutine so a cancelled delegation turn
+//     drops promptly instead of parking on rawCh. Passed through from the
+//     delegation call site's own context.
 //   - rawCh is the stream from target.engine.Stream.
 //   - sessionID is the child session identifier returned by createChildSession.
 //   - agentID identifies the delegated agent.
@@ -842,11 +845,15 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 //
 // Side effects:
 //   - When messageAppender is set, spawns a goroutine that calls AppendMessage.
-func (d *DelegateTool) wrapWithAccumulator(rawCh <-chan provider.StreamChunk, sessionID, agentID string) <-chan provider.StreamChunk {
+func (d *DelegateTool) wrapWithAccumulator(
+	ctx context.Context,
+	rawCh <-chan provider.StreamChunk,
+	sessionID, agentID string,
+) <-chan provider.StreamChunk {
 	if d.messageAppender == nil {
 		return rawCh
 	}
-	return session.AccumulateStream(d.messageAppender, sessionID, agentID, rawCh)
+	return session.AccumulateStream(ctx, d.messageAppender, sessionID, agentID, rawCh)
 }
 
 // withHarnessEvents wires harness lifecycle events into outChan for harness-enabled targets.
@@ -1101,7 +1108,7 @@ func (d *DelegateTool) executeSync(
 	}
 
 	chunks = d.withHarnessEvents(ctx, target, chunks, outChan, hasOutput)
-	chunks = d.wrapWithAccumulator(chunks, delegateSessionID, target.agentID)
+	chunks = d.wrapWithAccumulator(ctx, chunks, delegateSessionID, target.agentID)
 
 	result, err := d.collectWithProgress(ctx, chunks, time.Now())
 	if err != nil {
@@ -1220,7 +1227,7 @@ func (d *DelegateTool) executeBackgroundTask(
 		return "", fmt.Errorf("delegation failed: %w", err)
 	}
 
-	chunks = d.wrapWithAccumulator(chunks, sessionIDFromContext(ctx), target.agentID)
+	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
 
 	result, err := d.collectDelegationResult(chunks)
 	closeStore()

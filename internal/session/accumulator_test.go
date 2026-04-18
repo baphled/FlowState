@@ -1,6 +1,8 @@
 package session_test
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -24,7 +26,7 @@ var _ = Describe("AccumulateStream", func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 
 		var chunks []provider.StreamChunk
 		for chunk := range out {
@@ -40,7 +42,7 @@ var _ = Describe("AccumulateStream", func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 		drainChannel(out)
 
 		Expect(appender.messages).To(HaveLen(1))
@@ -63,7 +65,7 @@ var _ = Describe("AccumulateStream", func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 		drainChannel(out)
 
 		var toolResults []session.Message
@@ -90,7 +92,7 @@ var _ = Describe("AccumulateStream", func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 		drainChannel(out)
 
 		var assistantMsgs []session.Message
@@ -109,7 +111,7 @@ var _ = Describe("AccumulateStream", func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(appender, "my-session", "my-agent", rawCh)
+		out := session.AccumulateStream(context.Background(), appender, "my-session", "my-agent", rawCh)
 		drainChannel(out)
 
 		Expect(appender.sessionIDs).To(ContainElement("my-session"))
@@ -128,7 +130,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var toolCalls []session.Message
@@ -157,7 +159,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			roles := make([]string, 0, len(appender.messages))
@@ -194,7 +196,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var toolErrors []session.Message
@@ -215,7 +217,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var thinkingMsgs []session.Message
@@ -235,7 +237,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var thinkingMsgs []session.Message
@@ -264,7 +266,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var delegationMsgs []session.Message
@@ -289,7 +291,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var delegationMsgs []session.Message
@@ -313,7 +315,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			for _, m := range appender.messages {
@@ -329,7 +331,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Content: " world"}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var assistantMsgs []session.Message
@@ -349,7 +351,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Thinking: " thought"}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var thinkingMsgs []session.Message
@@ -368,7 +370,7 @@ var _ = Describe("AccumulateStream", func() {
 			rawCh <- provider.StreamChunk{Done: true}
 			close(rawCh)
 
-			out := session.AccumulateStream(appender, "sess-1", "agent-1", rawCh)
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
 			drainChannel(out)
 
 			var assistantMsgs []session.Message

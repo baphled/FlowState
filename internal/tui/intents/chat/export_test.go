@@ -381,10 +381,12 @@ func (i *Intent) SecondaryPaneVisibleForTest() bool {
 // InstallStreamCancelForTest installs a cancellable context cancel func on the
 // intent and returns a pointer to a flag that will flip to true when the cancel
 // function is invoked. Useful for asserting double-Esc cancellation without a
-// live stream.
+// live stream. The matching streamCtx is also installed so readNextChunk's
+// ctx-aware select path exercises the same context the cancel func governs.
 func (i *Intent) InstallStreamCancelForTest() *bool {
 	cancelled := false
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	i.streamCtx = ctx
 	i.streamCancel = func() {
 		cancelled = true
 		cancel()
@@ -403,6 +405,23 @@ func (i *Intent) StreamCancelClearedForTest() bool {
 // when it consumes the corresponding context.Canceled chunk.
 func (i *Intent) UserCancelledForTest() bool {
 	return i.userCancelled
+}
+
+// CancelActiveStreamForTest exposes cancelActiveStream for test assertions.
+// Used by the P1/D1 stream-cancel specs to simulate a double-Esc interrupt
+// without a live stream pipeline.
+func (i *Intent) CancelActiveStreamForTest() {
+	i.cancelActiveStream()
+}
+
+// FireStreamCancelForTest invokes the stored streamCancel function without
+// running the full cancelActiveStream cleanup, leaving streamCtx populated
+// so the D1 specs can assert the ctx-aware select observes Done() on a
+// context that is still addressable from the reader path.
+func (i *Intent) FireStreamCancelForTest() {
+	if i.streamCancel != nil {
+		i.streamCancel()
+	}
 }
 
 // SessionTrailForTest returns the session trail for test assertions.
