@@ -309,6 +309,44 @@ var _ = Describe("streamEventHandler", func() {
 				Expect(shouldSend).To(BeFalse())
 			})
 		})
+
+		Context("P2 T1: ToolCallID propagation from Anthropic tool_use blocks", func() {
+			It("populates StreamChunk.ToolCallID from the Anthropic tool_use block ID", func() {
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "tool_use",
+						ID:   "toolu_01PROPAGATE",
+						Name: "bash",
+					},
+				})
+
+				chunk, shouldSend := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 0,
+				})
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.EventType).To(Equal("tool_call"))
+				Expect(chunk.ToolCallID).To(Equal("toolu_01PROPAGATE"),
+					"tool_call StreamChunk must carry the upstream tool_use block ID so the "+
+						"intent layer can correlate start/result events")
+			})
+
+			It("leaves ToolCallID empty for non-tool chunks", func() {
+				chunk, shouldSend := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type: "content_block_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type: "text_delta",
+						Text: "hello",
+					},
+				})
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.ToolCallID).To(Equal(""))
+			})
+		})
 	})
 
 	Describe("sendChunk helper", func() {

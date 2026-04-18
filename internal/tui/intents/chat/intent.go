@@ -61,6 +61,12 @@ type StreamChunkMsg struct {
 	Next           tea.Cmd
 	// ModelID is the model that produced this chunk, stamped by the engine at stream time.
 	ModelID string
+	// ToolCallID propagates provider.StreamChunk.ToolCallID (P2 T1). It is the
+	// upstream provider's tool-use identifier and correlates tool_call chunks
+	// with the subsequent tool_result chunk. The intent layer uses this as the
+	// stable ID on derived SwarmEvent entries so the activity pane can pair
+	// start and result events into a single line (P3).
+	ToolCallID string
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -1547,64 +1553,192 @@ func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) {
 // Side effects:
 //   - None.
 func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
-	// Delegation chunks are identified by DelegationInfo presence.
 	if msg.DelegationInfo != nil {
-		agentID := msg.DelegationInfo.TargetAgent
-		if agentID == "" {
-			agentID = fallbackAgent
-		}
-		return streaming.SwarmEvent{
-			ID:        msg.DelegationInfo.ChainID,
-			Type:      streaming.EventDelegation,
-			Status:    msg.DelegationInfo.Status,
-			Timestamp: time.Now(),
-			AgentID:   agentID,
-			Metadata: map[string]interface{}{
-				"source_agent": msg.DelegationInfo.SourceAgent,
-				"description":  msg.DelegationInfo.Description,
-			},
-		}, true
+		return delegationSwarmEvent(msg, fallbackAgent), true
 	}
-
-	// Tool-call chunks carry a ToolCallName or ToolStatus transition.
 	if msg.ToolCallName != "" || msg.ToolStatus != "" {
-		status := msg.ToolStatus
-		if status == "" {
-			status = "started"
-		}
-		return streaming.SwarmEvent{
-			Type:      streaming.EventToolCall,
-			Status:    status,
-			Timestamp: time.Now(),
-			AgentID:   fallbackAgent,
-			Metadata: map[string]interface{}{
-				"tool_name": msg.ToolCallName,
-				"is_error":  msg.ToolIsError,
-			},
-		}, true
+		return toolCallSwarmEvent(msg, fallbackAgent), true
 	}
-
-	// Plan and review events flow through EventType discriminators.
+	if isToolResultChunk(msg) {
+		return toolResultSwarmEvent(msg, fallbackAgent), true
+	}
 	switch msg.EventType {
 	case streaming.EventTypePlanArtifact:
-		return streaming.SwarmEvent{
-			Type:      streaming.EventPlan,
-			Status:    "completed",
-			Timestamp: time.Now(),
-			AgentID:   fallbackAgent,
-			Metadata:  map[string]interface{}{"content": msg.Content},
-		}, true
+		return planOrReviewSwarmEvent(streaming.EventPlan, msg, fallbackAgent), true
 	case streaming.EventTypeReviewVerdict:
-		return streaming.SwarmEvent{
-			Type:      streaming.EventReview,
-			Status:    "completed",
-			Timestamp: time.Now(),
-			AgentID:   fallbackAgent,
-			Metadata:  map[string]interface{}{"content": msg.Content},
-		}, true
+		return planOrReviewSwarmEvent(streaming.EventReview, msg, fallbackAgent), true
 	}
-
 	return streaming.SwarmEvent{}, false
+}
+
+// delegationSwarmEvent constructs an EventDelegation SwarmEvent from a chunk
+// carrying DelegationInfo.
+//
+// Expected:
+//   - msg.DelegationInfo is non-nil.
+//   - fallbackAgent is the chat intent's agent ID used when DelegationInfo
+//     carries no TargetAgent.
+//
+// Returns:
+//   - A populated SwarmEvent with EventDelegation type and the DelegationInfo
+//     ChainID as its ID (generated UUID when ChainID is empty).
+//
+// Side effects:
+//   - None.
+func delegationSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
+	agentID := msg.DelegationInfo.TargetAgent
+	if agentID == "" {
+		agentID = fallbackAgent
+	}
+	return streaming.SwarmEvent{
+		ID:        ensureEventID(msg.DelegationInfo.ChainID),
+		Type:      streaming.EventDelegation,
+		Status:    msg.DelegationInfo.Status,
+		Timestamp: time.Now(),
+		AgentID:   agentID,
+		Metadata: map[string]interface{}{
+			"source_agent": msg.DelegationInfo.SourceAgent,
+			"description":  msg.DelegationInfo.Description,
+		},
+	}
+}
+
+// toolCallSwarmEvent constructs an EventToolCall SwarmEvent from a chunk
+// carrying tool-call start/status metadata.
+//
+// Expected:
+//   - msg carries a non-empty ToolCallName or ToolStatus.
+//   - fallbackAgent is the chat intent's agent ID (used as AgentID).
+//
+// Returns:
+//   - A SwarmEvent with EventToolCall type. ID is the upstream tool-use ID
+//     when the provider surfaces one (msg.ToolCallID), otherwise a generated
+//     UUID.
+//
+// Side effects:
+//   - None.
+func toolCallSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
+	status := msg.ToolStatus
+	if status == "" {
+		status = "started"
+	}
+	return streaming.SwarmEvent{
+		ID:        ensureEventID(msg.ToolCallID),
+		Type:      streaming.EventToolCall,
+		Status:    status,
+		Timestamp: time.Now(),
+		AgentID:   fallbackAgent,
+		Metadata: map[string]interface{}{
+			"tool_name": msg.ToolCallName,
+			"is_error":  msg.ToolIsError,
+		},
+	}
+}
+
+// isToolResultChunk reports whether a chunk carries a tool-result payload.
+//
+// A chunk is a tool_result when it either carries the explicit "tool_result"
+// EventType (emitted by the engine after tool execution) or when the intent
+// layer observes a ToolCallID plus ToolResult body without any tool-call
+// start/status fields.
+//
+// Expected:
+//   - msg is the chunk under consideration.
+//
+// Returns:
+//   - true when the chunk should map to EventToolResult.
+//
+// Side effects:
+//   - None.
+func isToolResultChunk(msg StreamChunkMsg) bool {
+	if msg.EventType == "tool_result" {
+		return true
+	}
+	return msg.ToolCallID != "" && msg.ToolResult != ""
+}
+
+// toolResultSwarmEvent constructs an EventToolResult SwarmEvent from a chunk
+// that carries the output (or error) of a completed tool call.
+//
+// The ID is the originating tool_call's ID (msg.ToolCallID) so the P3 coalesce
+// state machine can pair call and result into a single pane line.
+//
+// Expected:
+//   - msg carries a tool_result payload (see isToolResultChunk).
+//   - fallbackAgent is the chat intent's agent ID (used as AgentID).
+//
+// Returns:
+//   - A SwarmEvent with EventToolResult type. Status is "error" when
+//     ToolIsError is true, otherwise "completed".
+//
+// Side effects:
+//   - None.
+func toolResultSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
+	status := "completed"
+	if msg.ToolIsError {
+		status = "error"
+	}
+	return streaming.SwarmEvent{
+		ID:        ensureEventID(msg.ToolCallID),
+		Type:      streaming.EventToolResult,
+		Status:    status,
+		Timestamp: time.Now(),
+		AgentID:   fallbackAgent,
+		Metadata: map[string]interface{}{
+			"content":  msg.ToolResult,
+			"is_error": msg.ToolIsError,
+		},
+	}
+}
+
+// planOrReviewSwarmEvent constructs a plan or review SwarmEvent. Both share
+// the same shape (a completed event carrying the content body) and the only
+// difference is the discriminator.
+//
+// Expected:
+//   - evType is either streaming.EventPlan or streaming.EventReview.
+//   - msg.Content holds the plan/review body.
+//   - fallbackAgent is the chat intent's agent ID (used as AgentID).
+//
+// Returns:
+//   - A SwarmEvent of the supplied type with a generated UUID (since providers
+//     do not surface an ID for these event kinds).
+//
+// Side effects:
+//   - None.
+func planOrReviewSwarmEvent(evType streaming.SwarmEventType, msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
+	return streaming.SwarmEvent{
+		ID:        ensureEventID(""),
+		Type:      evType,
+		Status:    "completed",
+		Timestamp: time.Now(),
+		AgentID:   fallbackAgent,
+		Metadata:  map[string]interface{}{"content": msg.Content},
+	}
+}
+
+// ensureEventID returns id when non-empty, otherwise a freshly generated UUID.
+//
+// P2 T3 invariant: every SwarmEvent produced by swarmEventFromChunk must have
+// a non-empty ID so the P3 coalesce state machine and persistence round-trip
+// never key on the empty string. Providers that surface an upstream tool-use
+// ID (Anthropic block.ID, OpenAI tool_call.id) are passed through so tool_call
+// and tool_result events share the same ID; delegation events reuse the
+// DelegationInfo.ChainID; plan and review events get a generated UUID.
+//
+// Expected:
+//   - id may be empty.
+//
+// Returns:
+//   - id when non-empty, otherwise a new UUID v4 string.
+//
+// Side effects:
+//   - None (uuid.NewString allocates a random UUID but has no I/O).
+func ensureEventID(id string) string {
+	if id != "" {
+		return id
+	}
+	return uuid.NewString()
 }
 
 // streamingEventMeta returns the display title and notification level for a streaming event type.
@@ -1936,6 +2070,7 @@ func buildStreamChunkMsg(i *Intent, chunk provider.StreamChunk) StreamChunkMsg {
 		DelegationInfo: chunk.DelegationInfo,
 		Thinking:       chunk.Thinking,
 		ModelID:        chunk.ModelID,
+		ToolCallID:     chunk.ToolCallID,
 	}
 
 	if chunk.ToolResult != nil {
@@ -1996,6 +2131,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		DelegationInfo: chunk.DelegationInfo,
 		Thinking:       chunk.Thinking,
 		ModelID:        chunk.ModelID,
+		ToolCallID:     chunk.ToolCallID,
 	}
 
 	if chunk.ToolResult != nil {
