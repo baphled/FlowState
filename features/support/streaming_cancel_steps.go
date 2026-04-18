@@ -62,7 +62,14 @@ func (s *StepDefinitions) theAgentStreamsALongResponse() error {
 		return errors.New("test app or mock provider is not initialised")
 	}
 	s.app.provider.SetLongStream(true)
+	// streamFullLen is later read by theResponseShouldBeIncomplete from the
+	// step-executing goroutine; the write happens-before the drain goroutine
+	// starts (iSend installs it), so this setter is technically race-free
+	// today. Guard it anyway so the invariant "all stream-cancel fields are
+	// mutex-protected" is uniform and holds under future refactors.
+	s.streamMu.Lock()
 	s.streamFullLen = LongStreamFullLen()
+	s.streamMu.Unlock()
 	return nil
 }
 
@@ -85,6 +92,10 @@ func (s *StepDefinitions) iSend(text string) error {
 	s.app.messages = append(s.app.messages, msg)
 
 	ctx, cancel := context.WithCancel(s.ctx)
+
+	// Initialise all streaming-cancel state under the mutex so no
+	// observer can see a half-constructed pre-send snapshot.
+	s.streamMu.Lock()
 	s.streamCtx = ctx
 	s.streamCancel = cancel
 	s.streamDrainDone = make(chan struct{})
@@ -94,6 +105,8 @@ func (s *StepDefinitions) iSend(text string) error {
 	s.streamUserEscd = false
 	s.streamDoneChunkRx = false
 	s.responseParts = nil
+	drainDone := s.streamDrainDone
+	s.streamMu.Unlock()
 
 	ch, err := s.app.provider.Stream(ctx, ChatRequest{
 		Model:    "mock",
@@ -101,15 +114,21 @@ func (s *StepDefinitions) iSend(text string) error {
 	})
 	if err != nil {
 		cancel()
-		close(s.streamDrainDone)
+		close(drainDone)
 		return err
 	}
 
 	go func() {
-		defer close(s.streamDrainDone)
+		defer close(drainDone)
 		for chunk := range ch {
+			// Every field written here is also read by step
+			// assertions on the godog goroutine, so each chunk
+			// mutation is guarded. The mutex is held only for the
+			// duration of the state write, not across channel reads.
+			s.streamMu.Lock()
 			if chunk.Error != nil {
 				s.streamErrSeen = true
+				s.streamMu.Unlock()
 				continue
 			}
 			if chunk.Done {
@@ -117,6 +136,7 @@ func (s *StepDefinitions) iSend(text string) error {
 			}
 			s.responseParts = append(s.responseParts, chunk.Content)
 			s.streamedLen += len(chunk.Content)
+			s.streamMu.Unlock()
 		}
 	}()
 
@@ -135,7 +155,16 @@ func (s *StepDefinitions) iSend(text string) error {
 func (s *StepDefinitions) iSeeTokensAppearing() error {
 	deadline := time.Now().Add(streamTokensWaitBudget)
 	for time.Now().Before(deadline) {
-		if hasVisibleToken(s.responseParts) {
+		// Take a snapshot of the slice header under the mutex, then
+		// inspect the snapshot lock-free. The snapshot is safe to
+		// read outside the lock because hasVisibleToken only reads
+		// the string contents captured at snapshot time — the drain
+		// goroutine never mutates strings already appended, only the
+		// slice header (pointer/len/cap).
+		s.streamMu.Lock()
+		parts := s.responseParts
+		s.streamMu.Unlock()
+		if hasVisibleToken(parts) {
 			return nil
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -172,15 +201,22 @@ func hasVisibleToken(parts []string) bool {
 // Side effects:
 //   - Invokes s.streamCancel and records that the user initiated the cancel.
 func (s *StepDefinitions) iPressEscapeTwiceWithin500ms() error {
-	if s.streamCancel == nil {
+	// Copy the cancel func under the mutex so we do not call it while
+	// holding the lock (context.cancel can call into user code).
+	s.streamMu.Lock()
+	cancel := s.streamCancel
+	s.streamMu.Unlock()
+	if cancel == nil {
 		return errors.New("no active stream to cancel; call `I send` first")
 	}
 	// First Esc arms the interrupt; second Esc within the window fires it.
 	// The mock harness models this directly via streamCancel — the 500ms
 	// timing is enforced at the TUI layer, validated by the Ginkgo specs.
+	s.streamMu.Lock()
 	s.streamUserEscd = true
-	s.streamCancel()
 	s.streamCancelled = true
+	s.streamMu.Unlock()
+	cancel()
 	return nil
 }
 
@@ -193,14 +229,23 @@ func (s *StepDefinitions) iPressEscapeTwiceWithin500ms() error {
 // Side effects:
 //   - None.
 func (s *StepDefinitions) theStreamShouldBeCancelled() error {
-	if !s.streamCancelled {
+	// Snapshot the drain channel and the cancelled flag together under
+	// the mutex so we observe a consistent view. Channel sends (close)
+	// from the drain goroutine happen-before the receive below, so the
+	// waiting select is safe once we've captured the channel reference.
+	s.streamMu.Lock()
+	cancelled := s.streamCancelled
+	drainDone := s.streamDrainDone
+	s.streamMu.Unlock()
+
+	if !cancelled {
 		return errors.New("stream was never cancelled by the test")
 	}
-	if s.streamDrainDone == nil {
+	if drainDone == nil {
 		return errors.New("no drain goroutine to await")
 	}
 	select {
-	case <-s.streamDrainDone:
+	case <-drainDone:
 		return nil
 	case <-time.After(streamDrainWaitBudget):
 		return fmt.Errorf("stream drain did not complete within %s after cancel", streamDrainWaitBudget)
@@ -217,10 +262,15 @@ func (s *StepDefinitions) theStreamShouldBeCancelled() error {
 // Side effects:
 //   - None.
 func (s *StepDefinitions) noErrorShouldBeShown() error {
-	if !s.streamUserEscd {
+	s.streamMu.Lock()
+	userEscd := s.streamUserEscd
+	errSeen := s.streamErrSeen
+	s.streamMu.Unlock()
+
+	if !userEscd {
 		return errors.New("no user-initiated cancel recorded; preconditions not met")
 	}
-	if s.streamErrSeen {
+	if errSeen {
 		return errors.New("expected no error chunk after user-initiated cancel, but one was observed")
 	}
 	return nil
@@ -236,18 +286,24 @@ func (s *StepDefinitions) noErrorShouldBeShown() error {
 // Side effects:
 //   - None.
 func (s *StepDefinitions) theResponseShouldBeIncomplete() error {
-	if s.streamFullLen == 0 {
+	s.streamMu.Lock()
+	fullLen := s.streamFullLen
+	doneChunkRx := s.streamDoneChunkRx
+	streamedLen := s.streamedLen
+	s.streamMu.Unlock()
+
+	if fullLen == 0 {
 		return errors.New("streamFullLen is zero; `the agent streams a long response` was not called")
 	}
-	if s.streamDoneChunkRx {
+	if doneChunkRx {
 		return errors.New(
 			"expected partial response but the stream emitted its final Done chunk — cancel did not interrupt mid-stream",
 		)
 	}
-	if s.streamedLen >= s.streamFullLen {
+	if streamedLen >= fullLen {
 		return fmt.Errorf(
 			"expected partial response (< %d bytes), got complete response (%d bytes)",
-			s.streamFullLen, s.streamedLen,
+			fullLen, streamedLen,
 		)
 	}
 	return nil
