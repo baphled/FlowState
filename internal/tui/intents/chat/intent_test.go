@@ -613,7 +613,7 @@ var _ = Describe("ChatIntent", func() {
 	Describe("ToolPermissionMsg handling", func() {
 		Context("when a ToolPermissionMsg is received", func() {
 			It("shows permission prompt in the view", func() {
-				responseChan := make(chan bool, 1)
+				responseChan := make(chan chat.ToolPermissionDecision, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "dangerous_tool",
 					Arguments: map[string]interface{}{"file": "/etc/passwd"},
@@ -622,13 +622,17 @@ var _ = Describe("ChatIntent", func() {
 				view := intent.View()
 				Expect(view).To(ContainSubstring("PERMISSION"))
 				Expect(view).To(ContainSubstring("dangerous_tool"))
-				Expect(view).To(ContainSubstring("y/n"))
+				// Post-P17.S3 the prompt advertises all three keys so
+				// users know 's' is an option alongside y/n.
+				Expect(view).To(ContainSubstring("[y]"))
+				Expect(view).To(ContainSubstring("[n]"))
+				Expect(view).To(ContainSubstring("[s]"))
 			})
 		})
 
 		Context("when user approves with 'y'", func() {
-			It("sends true on response channel", func() {
-				responseChan := make(chan bool, 1)
+			It("sends an Approved decision on response channel", func() {
+				responseChan := make(chan chat.ToolPermissionDecision, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "test_tool",
 					Arguments: map[string]interface{}{},
@@ -637,13 +641,15 @@ var _ = Describe("ChatIntent", func() {
 
 				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 
-				Eventually(responseChan).Should(Receive(BeTrue()))
+				Eventually(responseChan).Should(Receive(Equal(
+					chat.ToolPermissionDecision{Approved: true, Remember: false},
+				)))
 			})
 		})
 
 		Context("when user denies with 'n'", func() {
-			It("sends false on response channel", func() {
-				responseChan := make(chan bool, 1)
+			It("sends a denied decision on response channel", func() {
+				responseChan := make(chan chat.ToolPermissionDecision, 1)
 				intent.Update(chat.ToolPermissionMsg{
 					ToolName:  "test_tool",
 					Arguments: map[string]interface{}{},
@@ -652,7 +658,9 @@ var _ = Describe("ChatIntent", func() {
 
 				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 
-				Eventually(responseChan).Should(Receive(BeFalse()))
+				Eventually(responseChan).Should(Receive(Equal(
+					chat.ToolPermissionDecision{Approved: false, Remember: false},
+				)))
 			})
 		})
 	})

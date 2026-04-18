@@ -163,10 +163,48 @@ func tickSessionViewer() tea.Cmd {
 }
 
 // ToolPermissionMsg requests user approval for a tool invocation.
+//
+// P17.S3 extends the request/response shape with a session-scoped
+// "remember" signal. Callers send ToolPermissionMsg, the user replies
+// with y/n/s, and the intent echoes a ToolPermissionDecision on the
+// Response channel. When Decision.Remember is true the intent will
+// auto-approve future requests for the same ToolName until the session
+// switches (handleSessionLoaded clears the cache).
 type ToolPermissionMsg struct {
-	ToolName  string
+	// ToolName identifies the tool invocation the user must authorise.
+	// Used both as the display label and as the cache key for
+	// session-scoped approval memory.
+	ToolName string
+	// Arguments carry the tool's call parameters so the UI can show
+	// the user what they're approving.
 	Arguments map[string]interface{}
-	Response  chan<- bool
+	// Response is the channel on which the user's decision is
+	// published. Callers own the channel and must drain it on every
+	// send to avoid deadlocks. The channel type carries a
+	// ToolPermissionDecision so callers can tell an "approve once"
+	// (Remember=false) from an "approve and remember" (Remember=true).
+	Response chan<- ToolPermissionDecision
+	// Remember, when already true on the inbound message, signals that
+	// an earlier approval has been cached and the prompt must not be
+	// shown. In normal use the caller sets it to false and the intent
+	// sets it on the outbound ToolPermissionDecision when the user
+	// presses 's'. Kept on the request side so callers that bypass the
+	// emission check can still round-trip the flag.
+	Remember bool
+}
+
+// ToolPermissionDecision is the tri-state response to a
+// ToolPermissionMsg. Approve/deny live on Approved; the session-scoped
+// remember signal lives on Remember so a single channel type covers the
+// y/n/s input surface without needing a new enum.
+type ToolPermissionDecision struct {
+	// Approved is true for 'y' (approve once) and 's' (approve and
+	// remember). False for 'n' (deny).
+	Approved bool
+	// Remember is true only for 's'. When the caller observes a
+	// Remember=true approval, it should cache the ToolName as
+	// auto-approved for the remainder of the session.
+	Remember bool
 }
 
 // AppShell abstracts app methods needed by the chat intent.
@@ -249,38 +287,46 @@ type IntentConfig struct {
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
-	app                 AppShell
-	engine              *engine.Engine
-	streamer            Streamer
-	sessionManager      SessionManager
-	agentID             string
-	sessionID           string
-	input               string
-	width               int
-	height              int
-	statusBar           *layout.StatusBar
-	statusIndicator     *widgets.StatusIndicator
-	tokenCount          int
-	responseTokenCount  int
-	tokenCounter        contextpkg.TokenCounter
-	providerName        string
-	modelName           string
-	tokenBudget         int
-	tickFrame           int
-	streamChan          <-chan provider.StreamChunk
-	pendingPermission   *ToolPermissionMsg
-	result              *tuiintents.IntentResult
-	msgViewport         *viewport.Model
-	vpReady             bool
-	atBottom            bool
-	agentRegistry       *agent.Registry
-	sessionStore        SessionLister
-	childSessionLister  SessionChildLister
-	view                *chat.View
-	loadingModal        *feedback.Modal
-	errorModal          *feedback.Modal
-	notifications       *notification.Component
-	notificationManager notification.Manager
+	app                AppShell
+	engine             *engine.Engine
+	streamer           Streamer
+	sessionManager     SessionManager
+	agentID            string
+	sessionID          string
+	input              string
+	width              int
+	height             int
+	statusBar          *layout.StatusBar
+	statusIndicator    *widgets.StatusIndicator
+	tokenCount         int
+	responseTokenCount int
+	tokenCounter       contextpkg.TokenCounter
+	providerName       string
+	modelName          string
+	tokenBudget        int
+	tickFrame          int
+	streamChan         <-chan provider.StreamChunk
+	pendingPermission  *ToolPermissionMsg
+	// sessionApprovedTools is the P17.S3 session-scoped approval cache.
+	// Populated when the user resolves a prompt with the 's' key
+	// (ToolPermissionDecision.Remember=true); consulted by
+	// handleToolPermission to auto-approve future requests for the
+	// same ToolName without re-prompting. Cleared on session switch
+	// via handleSessionLoaded so approvals cannot leak across
+	// sessions.
+	sessionApprovedTools map[string]struct{}
+	result               *tuiintents.IntentResult
+	msgViewport          *viewport.Model
+	vpReady              bool
+	atBottom             bool
+	agentRegistry        *agent.Registry
+	sessionStore         SessionLister
+	childSessionLister   SessionChildLister
+	view                 *chat.View
+	loadingModal         *feedback.Modal
+	errorModal           *feedback.Modal
+	notifications        *notification.Component
+	notificationManager  notification.Manager
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
 	activeThinking string
@@ -554,37 +600,38 @@ func NewIntent(cfg IntentConfig) *Intent {
 	}
 
 	intent := &Intent{
-		app:                 cfg.App,
-		engine:              cfg.Engine,
-		streamer:            cfg.Streamer,
-		sessionManager:      cfg.SessionManager,
-		agentID:             cfg.AgentID,
-		sessionID:           cfg.SessionID,
-		input:               "",
-		width:               80,
-		height:              24,
-		statusBar:           sb,
-		statusIndicator:     widgets.NewStatusIndicator(nil),
-		tokenCount:          0,
-		tokenCounter:        tokenCounterFromConfig(cfg),
-		providerName:        cfg.ProviderName,
-		modelName:           cfg.ModelName,
-		tokenBudget:         cfg.TokenBudget,
-		tickFrame:           0,
-		result:              nil,
-		atBottom:            true,
-		agentRegistry:       cfg.AgentRegistry,
-		sessionStore:        cfg.SessionStore,
-		childSessionLister:  cfg.ChildSessionLister,
-		view:                chat.NewView(),
-		notifications:       notification.NewComponent(notifManager),
-		notificationManager: notifManager,
-		breadcrumbPath:      "Chat",
-		swarmActivity:       swarmactivity.NewSwarmActivityPane(),
-		swarmStore:          buildSwarmStore(cfg.SessionStore, cfg.SessionID),
-		swarmVisibleTypes:   defaultSwarmVisibleTypes(),
-		swarmFilterProfile:  swarmFilterProfileAll,
-		sessionTrail:        navigation.NewSessionTrail(),
+		app:                  cfg.App,
+		engine:               cfg.Engine,
+		streamer:             cfg.Streamer,
+		sessionManager:       cfg.SessionManager,
+		agentID:              cfg.AgentID,
+		sessionID:            cfg.SessionID,
+		input:                "",
+		width:                80,
+		height:               24,
+		statusBar:            sb,
+		statusIndicator:      widgets.NewStatusIndicator(nil),
+		tokenCount:           0,
+		tokenCounter:         tokenCounterFromConfig(cfg),
+		providerName:         cfg.ProviderName,
+		modelName:            cfg.ModelName,
+		tokenBudget:          cfg.TokenBudget,
+		tickFrame:            0,
+		result:               nil,
+		atBottom:             true,
+		agentRegistry:        cfg.AgentRegistry,
+		sessionStore:         cfg.SessionStore,
+		childSessionLister:   cfg.ChildSessionLister,
+		view:                 chat.NewView(),
+		notifications:        notification.NewComponent(notifManager),
+		notificationManager:  notifManager,
+		breadcrumbPath:       "Chat",
+		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
+		swarmStore:           buildSwarmStore(cfg.SessionStore, cfg.SessionID),
+		swarmVisibleTypes:    defaultSwarmVisibleTypes(),
+		swarmFilterProfile:   swarmFilterProfileAll,
+		sessionTrail:         navigation.NewSessionTrail(),
+		sessionApprovedTools: map[string]struct{}{},
 	}
 	intent.refreshSessionTrail()
 	return intent
@@ -2803,7 +2850,13 @@ func (i *Intent) View() string {
 	var inputLine string
 	switch {
 	case i.pendingPermission != nil:
-		inputLine = fmt.Sprintf("[PERMISSION] Allow tool %q? (y/n)", i.pendingPermission.ToolName)
+		// P17.S3: prompt includes the new 's' key. "[y] approve once",
+		// "[n] deny", "[s] approve + remember" matches the handler
+		// semantics in handlePermissionKey so the UI stays truthful.
+		inputLine = fmt.Sprintf(
+			"[PERMISSION] Allow tool %q? [y] approve once  [n] deny  [s] approve + remember",
+			i.pendingPermission.ToolName,
+		)
 	default:
 		inputLine = i.renderInputLine()
 	}
@@ -3161,14 +3214,34 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 	}
 }
 
-// handleToolPermission processes a tool permission request by entering permission mode.
+// handleToolPermission processes a tool permission request. When the
+// tool's name already appears in the session-scoped approval cache
+// (P17.S3), the prompt is suppressed and the caller is immediately sent
+// an Approved+Remember=true decision on the response channel — the user
+// pressed 's' earlier in the session and has authorised future uses of
+// this tool. Otherwise the intent enters permission mode and stores the
+// request for the handlePermissionKey handler.
 //
 // Expected:
-//   - msg contains tool details and a response channel.
+//   - msg contains tool details and a response channel. The channel
+//     must have at least capacity-1 buffering OR a consumer goroutine,
+//     otherwise the auto-approve send will block and deadlock the
+//     intent — callers own this contract.
 //
 // Side effects:
-//   - Switches the intent to "permission" mode and stores the pending request.
+//   - Cache hit: sends ToolPermissionDecision{Approved:true,Remember:true}
+//     on msg.Response and clears the pending permission (no prompt is
+//     shown to the user).
+//   - Cache miss: stores msg on i.pendingPermission and enters
+//     permission mode so View() renders the prompt.
 func (i *Intent) handleToolPermission(msg ToolPermissionMsg) {
+	if _, remembered := i.sessionApprovedTools[msg.ToolName]; remembered {
+		if msg.Response != nil {
+			msg.Response <- ToolPermissionDecision{Approved: true, Remember: true}
+		}
+		i.pendingPermission = nil
+		return
+	}
 	i.pendingPermission = &msg
 }
 
@@ -3719,8 +3792,18 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 		i.errorModal = feedback.NewErrorModal("Session Error", "Failed to load session: "+msg.Err.Error())
 		return nil
 	}
-	i.engine.SetContextStore(msg.Store, msg.SessionID)
+	if i.engine != nil {
+		// The engine is optional in test-minimal constructions (BDD
+		// fixtures that drive the intent without a full engine wired
+		// in). Production callers always supply one.
+		i.engine.SetContextStore(msg.Store, msg.SessionID)
+	}
 	i.view = chat.NewView()
+	// P17.S3: session switch wipes the approval cache so 's'-granted
+	// approvals cannot leak across sessions. Re-initialised as an
+	// empty map to keep nil-vs-empty distinctions predictable in the
+	// rest of the code (handleToolPermission iterates over it).
+	i.sessionApprovedTools = map[string]struct{}{}
 	i.syncViewAgentMeta()
 	var lastToolCallName string
 	for _, sm := range msg.Store.GetStoredMessages() {
@@ -3895,26 +3978,58 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	return nil
 }
 
-// handlePermissionKey processes key input during permission mode.
+// handlePermissionKey processes key input during permission mode. It
+// accepts three runes (case-insensitive):
+//
+//   - 'y': approve this one invocation only.
+//   - 'n': deny.
+//   - 's': approve AND remember for the rest of the session — the
+//     tool's name is inserted into sessionApprovedTools so
+//     handleToolPermission can auto-approve future identical requests
+//     without prompting.
+//
+// Any other rune is ignored (permission mode stays active).
 //
 // Expected:
 //   - msg is a tea.KeyMsg while in permission mode.
 //
 // Returns:
-//   - A tea.Cmd to execute, or nil.
+//   - Always nil; cancellation is a side effect.
 //
 // Side effects:
-//   - Sends approval/denial on the response channel and returns to normal mode.
+//   - Calls resolvePermission with the approval and remember flags
+//     corresponding to the key.
+//   - On 's', inserts the pending tool name into
+//     sessionApprovedTools before resolvePermission clears the pending
+//     request.
 func (i *Intent) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.Type != tea.KeyRunes || len(msg.Runes) == 0 {
 		return nil
 	}
 
-	switch msg.Runes[0] {
+	// Normalise to lowercase so 'Y'/'N'/'S' work the same as y/n/s.
+	// Shift-capitalised presses are a common user mistake and there's
+	// no conflicting binding in permission mode.
+	r := msg.Runes[0]
+	switch r {
+	case 'Y':
+		r = 'y'
+	case 'N':
+		r = 'n'
+	case 'S':
+		r = 's'
+	}
+
+	switch r {
 	case 'y':
-		i.resolvePermission(true)
+		i.resolvePermission(true, false)
 	case 'n':
-		i.resolvePermission(false)
+		i.resolvePermission(false, false)
+	case 's':
+		if i.pendingPermission != nil {
+			i.sessionApprovedTools[i.pendingPermission.ToolName] = struct{}{}
+		}
+		i.resolvePermission(true, true)
 	}
 	return nil
 }
@@ -3923,13 +4038,21 @@ func (i *Intent) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
 //
 // Expected:
 //   - approved indicates whether the user accepted the tool call.
+//   - remember indicates whether the approval should be cached for the
+//     rest of the session (only meaningful when approved is true; 's'
+//     is the only path that sets it to true).
 //
 // Side effects:
-//   - Sends the decision on the pending permission's response channel.
-//   - Clears the pending permission and returns to normal mode.
-func (i *Intent) resolvePermission(approved bool) {
+//   - Sends a ToolPermissionDecision on the pending permission's
+//     response channel when one is attached.
+//   - Clears the pending permission and returns the intent to normal
+//     input mode.
+func (i *Intent) resolvePermission(approved, remember bool) {
 	if i.pendingPermission != nil && i.pendingPermission.Response != nil {
-		i.pendingPermission.Response <- approved
+		i.pendingPermission.Response <- ToolPermissionDecision{
+			Approved: approved,
+			Remember: remember,
+		}
 	}
 	i.pendingPermission = nil
 }
