@@ -64,14 +64,13 @@ Feature: Session Management
     And it should contain messages 1 through 3
     And the original session should be unchanged
 
-  @wip
   Scenario: Delete a session
     Given I have a session named "Old Session"
     When I delete "Old Session"
     Then it should no longer appear in the session list
     And I should be prompted to confirm deletion
 
-  @enrichment @wip
+  @enrichment
   Scenario: Session includes system prompt and skills
     Given I have an active session with messages
     And the session has a system prompt and loaded skills
@@ -80,7 +79,7 @@ Feature: Session Management
     Then the session should contain a non-empty system prompt
     And the session should contain loaded skills
 
-  @enrichment @wip
+  @enrichment
   Scenario: Session includes agent ID
     Given I have an active session with messages
     And the session has an agent ID of "planner"
