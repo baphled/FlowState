@@ -120,4 +120,89 @@ var _ = Describe("persistedSwarmStore decorator (P4)", func() {
 		Expect(func() { store.Append(sampleEvent("a")) }).NotTo(Panic())
 		Expect(inner.All()).To(HaveLen(1))
 	})
+
+	// P5/B2 — session isolation regression gate.
+	//
+	// On session switch the chat intent Clears the in-memory store and then
+	// restores the events it just loaded from disk. Clear must not delete the
+	// on-disk JSONL file (we are about to re-read those same bytes into a
+	// new in-memory store) and restore must not re-fire the AppendFunc (that
+	// would double every event on every session switch).
+	Describe("P5 restore-mode contract", func() {
+		It("Clear does not invoke the disk AppendFunc", func() {
+			inner := streaming.NewMemorySwarmStore(10)
+			appender := &recordingAppender{}
+			store := streaming.NewPersistedSwarmStore(inner, appender.Append)
+
+			store.Append(sampleEvent("a"))
+			Expect(appender.Events()).To(HaveLen(1))
+
+			store.Clear()
+
+			// Clear is an in-memory operation: the AppendFunc must not be
+			// invoked with some kind of "delete" sentinel and the disk file
+			// must remain untouched. We observe this indirectly via the
+			// appender record count.
+			Expect(appender.Events()).To(HaveLen(1),
+				"Clear must not fire the disk AppendFunc")
+			Expect(inner.All()).To(BeEmpty())
+		})
+
+		It("RestoreEvents appends to the in-memory store without firing the AppendFunc", func() {
+			inner := streaming.NewMemorySwarmStore(10)
+			appender := &recordingAppender{}
+			store := streaming.NewPersistedSwarmStore(inner, appender.Append)
+
+			restored := []streaming.SwarmEvent{
+				sampleEvent("r1"),
+				sampleEvent("r2"),
+				sampleEvent("r3"),
+			}
+
+			// RestoreEvents is the non-WAL entry point used by
+			// handleSessionLoaded. It must populate the underlying memory
+			// store without writing anything to disk.
+			restorer, ok := store.(streaming.EventRestorer)
+			Expect(ok).To(BeTrue(),
+				"persistedSwarmStore must implement EventRestorer for P5")
+
+			restorer.RestoreEvents(restored)
+
+			Expect(inner.All()).To(HaveLen(3))
+			Expect(appender.Events()).To(BeEmpty(),
+				"RestoreEvents must NOT fire the disk AppendFunc — "+
+					"otherwise every session switch doubles the on-disk events")
+		})
+
+		It("RestoreEvents on a plain MemorySwarmStore populates the store", func() {
+			// The chat intent's SessionStore can be a plain MemorySwarmStore
+			// in test scenarios or in embedded callers without persistence.
+			// The restore path is shared, so MemorySwarmStore must also
+			// satisfy the restore contract.
+			mem := streaming.NewMemorySwarmStore(10)
+			restorer, ok := streaming.SwarmEventStore(mem).(streaming.EventRestorer)
+			Expect(ok).To(BeTrue(),
+				"MemorySwarmStore must implement EventRestorer for P5")
+
+			restorer.RestoreEvents([]streaming.SwarmEvent{
+				sampleEvent("m1"),
+				sampleEvent("m2"),
+			})
+
+			Expect(mem.All()).To(HaveLen(2))
+		})
+
+		It("RestoreEvents with an empty slice is a no-op", func() {
+			inner := streaming.NewMemorySwarmStore(10)
+			appender := &recordingAppender{}
+			store := streaming.NewPersistedSwarmStore(inner, appender.Append)
+
+			restorer, _ := store.(streaming.EventRestorer)
+			Expect(func() { restorer.RestoreEvents(nil) }).NotTo(Panic())
+			Expect(func() { restorer.RestoreEvents([]streaming.SwarmEvent{}) }).NotTo(Panic())
+
+			Expect(inner.All()).To(BeEmpty())
+			Expect(appender.Events()).To(BeEmpty())
+		})
+	})
 })

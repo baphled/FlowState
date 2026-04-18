@@ -8,6 +8,28 @@ import "log/slog"
 // without knowing the filesystem layout.
 type AppendFunc func(ev SwarmEvent) error
 
+// EventRestorer is the restore-mode contract for a SwarmEventStore. Stores
+// that satisfy this interface accept a bulk population of previously
+// persisted events WITHOUT firing any disk-write hooks.
+//
+// The distinction matters on session switch (P5/B2): the chat intent loads
+// session B's JSONL events from disk, Clears the in-memory store, then
+// repopulates it with the loaded events. Routing those events through the
+// normal Append path would re-fire the WAL AppendFunc and double the
+// on-disk file on every switch. RestoreEvents is the explicit non-WAL entry
+// point for this case.
+//
+// Implementations must:
+//   - Be safe for concurrent call with other store methods.
+//   - Preserve insertion order and apply capacity-aware eviction identically
+//     to the equivalent stream of Appends.
+//   - Tolerate nil or empty slices as a no-op (not an error).
+type EventRestorer interface {
+	// RestoreEvents populates the store from a previously persisted slice
+	// without invoking any disk-write hooks on the store.
+	RestoreEvents(events []SwarmEvent)
+}
+
 // persistedSwarmStore decorates an underlying SwarmEventStore with a
 // write-through hook that forwards every Append to disk. The design keeps
 // MemorySwarmStore untouched and opts in to persistence per-session at
@@ -95,4 +117,38 @@ func (s *persistedSwarmStore) All() []SwarmEvent {
 //   - Mutates the underlying store.
 func (s *persistedSwarmStore) Clear() {
 	s.inner.Clear()
+}
+
+// RestoreEvents populates the inner store from a previously persisted slice
+// without invoking the disk AppendFunc. This is the non-WAL entry point used
+// by session switch (P5/B2): the caller has already read the events from
+// disk, so re-firing the WAL would double the on-disk file on every restore.
+//
+// If the inner store also satisfies EventRestorer (the default
+// MemorySwarmStore does), the call is forwarded directly. Otherwise the
+// decorator falls back to the underlying Append path — which for a store
+// with no AppendFunc is still safe, but callers wrapping a non-restorable
+// store in a persistedSwarmStore risk double-writes and should audit the
+// wrapping order.
+//
+// Expected:
+//   - events is any slice (including nil) of previously persisted entries.
+//
+// Side effects:
+//   - Mutates the inner store. Never invokes s.append.
+func (s *persistedSwarmStore) RestoreEvents(events []SwarmEvent) {
+	if len(events) == 0 {
+		return
+	}
+	if restorer, ok := s.inner.(EventRestorer); ok {
+		restorer.RestoreEvents(events)
+		return
+	}
+	// Fallback: the inner store does not expose a restore path. Route
+	// through Append on the inner store directly — NOT through s.Append —
+	// so the AppendFunc on the decorator does not fire. This preserves
+	// the restore contract for any SwarmEventStore implementation.
+	for idx := range events {
+		s.inner.Append(events[idx])
+	}
 }
