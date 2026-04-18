@@ -15,11 +15,26 @@ type SwarmEventType string
 // EventToolCall maps to the provider-agnostic tool call pipeline event
 // (EventTypeToolCall) and intentionally uses the "tool_call" string rather
 // than "tool" so downstream subscribers see identical discriminators.
+//
+// ID invariants (P2):
+//   - Every persisted SwarmEvent MUST have a non-empty ID.
+//   - EventDelegation events MUST use the DelegationInfo.ChainID as their ID.
+//   - An EventToolCall and its matching EventToolResult MUST share the same
+//     ID so downstream consumers can coalesce them (tool-call state machine
+//     in P3 relies on this contract). The shared ID is the upstream
+//     provider's tool-use ID (Anthropic block.ID, OpenAI tool_call.id), or a
+//     generated UUID when the provider omits one.
+//   - EventPlan and EventReview events use a generated UUID.
 const (
 	// EventDelegation identifies delegation transitions (start, progress, completion).
 	EventDelegation SwarmEventType = "delegation"
 	// EventToolCall identifies tool call lifecycle transitions.
 	EventToolCall SwarmEventType = "tool_call"
+	// EventToolResult identifies a tool-call completion event carrying the
+	// tool's output (or error). An EventToolResult shares its ID with the
+	// originating EventToolCall so the P3 state machine can coalesce the
+	// pair into a single pane line keyed on ID.
+	EventToolResult SwarmEventType = "tool_result"
 	// EventPlan identifies plan artefact events.
 	EventPlan SwarmEventType = "plan"
 	// EventReview identifies review verdict events.

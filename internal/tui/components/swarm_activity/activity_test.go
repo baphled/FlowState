@@ -163,6 +163,29 @@ var _ = Describe("SwarmActivityPane", func() {
 		})
 	})
 
+	Describe("default visibleTypes P2 T2 (EventToolResult)", func() {
+		It("includes EventToolResult in the pane's default visibility map", func() {
+			pane := swarmactivity.NewSwarmActivityPane()
+
+			// An event of type tool_result must render with defaults so the
+			// coalesce state machine in P3 can observe it flowing through
+			// the pane without an explicit WithVisibleTypes() call.
+			events := []streaming.SwarmEvent{
+				{
+					ID:      "toolu_01TR",
+					Type:    streaming.EventToolResult,
+					Status:  "completed",
+					AgentID: "tool-agent",
+				},
+			}
+			output := pane.WithEvents(events).Render(80, 10)
+			Expect(output).To(ContainSubstring("tool_result"),
+				"EventToolResult must render with the default visible-types map "+
+					"so the tool-call coalesce path in P3 can rely on it flowing "+
+					"through the pane by default")
+		})
+	})
+
 	Describe("WithVisibleTypes", func() {
 		var pane *swarmactivity.SwarmActivityPane
 

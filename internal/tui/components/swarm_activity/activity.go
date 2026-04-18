@@ -65,6 +65,7 @@ func NewSwarmActivityPane() *SwarmActivityPane {
 		visibleTypes: map[streaming.SwarmEventType]bool{
 			streaming.EventDelegation: true,
 			streaming.EventToolCall:   true,
+			streaming.EventToolResult: true,
 			streaming.EventPlan:       true,
 			streaming.EventReview:     true,
 		},

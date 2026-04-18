@@ -92,6 +92,15 @@ type StreamChunk struct {
 	ToolCall       *ToolCall
 	ToolResult     *ToolResultInfo
 	DelegationInfo *DelegationInfo
+	// ToolCallID carries the upstream provider's tool-use identifier (Anthropic
+	// block.ID for tool_use blocks, OpenAI tool_calls[].id) on every chunk
+	// associated with a tool call. Populated by providers on tool_call chunks,
+	// and re-populated by the engine on the tool_result chunk emitted after a
+	// tool executes. The ID is empty on chunks unrelated to tool calls.
+	//
+	// Consumers use this as a stable correlation key to pair tool_call and
+	// tool_result events without guessing on (agent, name, timestamp).
+	ToolCallID string
 	// Event carries a streaming.ProgressEvent or other streaming.Event implementation.
 	// Set by the streaming infrastructure (not by providers directly) to convey typed
 	// progress data to consumers such as SSE and WebSocket handlers.
