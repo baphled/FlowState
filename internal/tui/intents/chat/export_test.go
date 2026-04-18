@@ -172,11 +172,6 @@ func (i *Intent) SaveSessionForTest() tea.Cmd {
 	return i.saveSession()
 }
 
-// ActiveToolCallForTest returns the current activeToolCall value for test assertions.
-func (i *Intent) ActiveToolCallForTest() string {
-	return i.activeToolCall
-}
-
 // AllViewMessagesForTest returns all messages from the chat view for test assertions.
 func (i *Intent) AllViewMessagesForTest() []chatview.Message {
 	return i.view.Messages()
@@ -223,11 +218,6 @@ func ToolResultMessageForTest(toolName, result string, isError bool) chatview.Me
 // AtBottomForTest returns whether the viewport is tracking the bottom position for test assertions.
 func (i *Intent) AtBottomForTest() bool {
 	return i.atBottom
-}
-
-// NotificationManagerForTest returns the notification manager for test assertions.
-func (i *Intent) NotificationManagerForTest() notification.Manager {
-	return i.notifications.Manager()
 }
 
 // NotificationsViewForTest returns the rendered notification view for test assertions.
@@ -405,13 +395,6 @@ func (i *Intent) InstallStreamCancelForTest() *bool {
 // cleared (i.e. cancelActiveStream ran).
 func (i *Intent) StreamCancelClearedForTest() bool {
 	return i.streamCancel == nil
-}
-
-// UserCancelledForTest reports whether the intent currently has a pending
-// user-initiated cancel marker. Set by double-Esc, cleared by handleStreamChunk
-// when it consumes the corresponding context.Canceled chunk.
-func (i *Intent) UserCancelledForTest() bool {
-	return i.userCancelled
 }
 
 // CancelActiveStreamForTest exposes cancelActiveStream for test assertions.

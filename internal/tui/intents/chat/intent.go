@@ -1308,6 +1308,8 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.openEventDetails()
 	case tea.KeyCtrlX:
 		return i.openExternalEditor()
+	case tea.KeyCtrlK:
+		return i.cancelActiveTool()
 	}
 	return i.handleTextInputKey(msg)
 }
@@ -2456,6 +2458,55 @@ func (i *Intent) cancelActiveStream() {
 		i.streamCancel = nil
 	}
 	i.streamCtx = nil
+}
+
+// cancelActiveTool implements the Ctrl+K tool-cancel key (P17.S2).
+//
+// The engine does not currently expose a tool-scoped cancel API, so the
+// honest behaviour is: if a tool is mid-execution, cancel the entire
+// turn via the same path double-Esc takes. When no tool is running the
+// key is a no-op — we deliberately do not cancel pure text streams
+// because users already have double-Esc for that.
+//
+// A notification fires on success so users understand Ctrl+K did
+// something even though the UI may take a tick to settle back into the
+// idle state.
+//
+// Expected:
+//   - Called from handleInputKey on tea.KeyCtrlK.
+//
+// Returns:
+//   - Always nil — cancellation is a side effect; no follow-up Cmd is
+//     required because cancelActiveStream wakes the stream consumer and
+//     the existing stream-end path handles the rest.
+//
+// Side effects:
+//   - When a tool is active: sets i.userCancelled, cancels the stream
+//     context, clears i.view's streaming state, and surfaces a
+//     "Tool execution cancelled." info notification.
+//   - When no tool is active: does nothing.
+func (i *Intent) cancelActiveTool() tea.Cmd {
+	if i.activeToolCall == "" {
+		return nil
+	}
+	// Mark this as a user cancel so handleStreamChunk does not surface
+	// the inevitable context.Canceled error as a provider failure.
+	i.userCancelled = true
+	i.cancelActiveStream()
+	i.view.SetStreaming(false, "")
+	i.activeToolCall = ""
+	if i.notificationManager != nil {
+		i.notificationManager.Add(notification.Notification{
+			ID:        "tool-cancel-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+			Title:     "Tool cancelled",
+			Message:   "Tool execution cancelled.",
+			Level:     notification.LevelInfo,
+			Duration:  4 * time.Second,
+			CreatedAt: time.Now(),
+		})
+	}
+	i.refreshViewport()
+	return nil
 }
 
 // doubleEscWindow is the maximum interval between two Esc presses that still

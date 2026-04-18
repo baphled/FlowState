@@ -4,6 +4,8 @@ import (
 	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/baphled/flowstate/internal/tui/components/notification"
 )
 
 // This file exposes a narrow set of hooks intended for external test
@@ -80,6 +82,90 @@ func (i *Intent) OpenExternalEditorForTest() tea.Cmd {
 //   - Unconditionally removes msg.TempPath when non-empty.
 func (i *Intent) HandleExternalEditorFinishedForTest(msg ExternalEditorFinishedMsg) tea.Cmd {
 	return i.handleExternalEditorFinished(msg)
+}
+
+// NotificationManagerForTest returns the chat intent's notification
+// manager so tests (in and out of the chat package) can inspect active
+// notifications without reaching into unexported fields.
+//
+// Returns:
+//   - The notification.Manager backing the intent's notifications
+//     component.
+//
+// Side effects:
+//   - None.
+func (i *Intent) NotificationManagerForTest() notification.Manager {
+	return i.notifications.Manager()
+}
+
+// SetActiveToolCallForTest stamps the chat intent's activeToolCall
+// field so tests can simulate the "a tool is currently executing"
+// state without having to prime the full streaming pipeline.
+//
+// Expected:
+//   - name is the display name that would normally be stored by
+//     handleStreamChunkMsg when a tool-call chunk arrives.
+//
+// Side effects:
+//   - Replaces i.activeToolCall.
+func (i *Intent) SetActiveToolCallForTest(name string) {
+	i.activeToolCall = name
+}
+
+// ActiveToolCallForTest returns the intent's current activeToolCall
+// field so tests can assert the cancel path clears it.
+//
+// Returns:
+//   - The current tool-call name, or "" when no tool is active.
+//
+// Side effects:
+//   - None.
+func (i *Intent) ActiveToolCallForTest() string {
+	return i.activeToolCall
+}
+
+// SetStreamCancelForTest installs a cancel closure on the chat intent so
+// the Ctrl+K flow can observe and invoke it without having to wire a
+// real streaming provider. Typical usage pairs a sync.Once-backed fake
+// with SetActiveToolCallForTest so the test starts in a realistic
+// "tool mid-execution" state.
+//
+// Expected:
+//   - cancel is any idempotent function; nil clears the current cancel.
+//
+// Side effects:
+//   - Replaces i.streamCancel.
+func (i *Intent) SetStreamCancelForTest(cancel func()) {
+	i.streamCancel = cancel
+}
+
+// CancelActiveToolForTest exposes cancelActiveTool so BDD step glue can
+// drive the Ctrl+K branch directly without rerouting through the full
+// key-message dispatch chain.
+//
+// Returns:
+//   - The tea.Cmd from cancelActiveTool (always nil; see its contract).
+//
+// Side effects:
+//   - Whatever side effects cancelActiveTool produces on the primed
+//     Intent: stream cancel, view streaming flag, notification,
+//     viewport refresh.
+func (i *Intent) CancelActiveToolForTest() tea.Cmd {
+	return i.cancelActiveTool()
+}
+
+// UserCancelledForTest exposes the internal userCancelled flag so
+// tests can assert cancelActiveTool marked the cancel as user-
+// initiated (gating handleStreamChunk's error-surfacing path).
+//
+// Returns:
+//   - True when cancelActiveStream was invoked by a user action since
+//     the last reset; false otherwise.
+//
+// Side effects:
+//   - None.
+func (i *Intent) UserCancelledForTest() bool {
+	return i.userCancelled
 }
 
 // SetEditorProcessRunnerForTest replaces the package-level editor
