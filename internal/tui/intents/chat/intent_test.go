@@ -1790,13 +1790,16 @@ func stubManifestWithProvider(_, _ string) agent.Manifest {
 }
 
 type stubSessionLister struct {
-	saveCalled bool
-	savedID    string
-	savedMeta  contextpkg.SessionMetadata
-	saveErr    error
-	loadStore  *recall.FileContextStore
-	loadErr    error
-	sessions   []contextpkg.SessionInfo
+	saveCalled   bool
+	savedID      string
+	savedMeta    contextpkg.SessionMetadata
+	saveErr      error
+	loadStore    *recall.FileContextStore
+	loadErr      error
+	sessions     []contextpkg.SessionInfo
+	deleteCalled bool
+	deletedID    string
+	deleteErr    error
 }
 
 func (s *stubSessionLister) List() []contextpkg.SessionInfo { return s.sessions }
@@ -1818,6 +1821,12 @@ func (s *stubSessionLister) Save(sessionID string, _ *recall.FileContextStore, m
 	s.savedID = sessionID
 	s.savedMeta = meta
 	return s.saveErr
+}
+
+func (s *stubSessionLister) Delete(sessionID string) error {
+	s.deleteCalled = true
+	s.deletedID = sessionID
+	return s.deleteErr
 }
 
 var _ = Describe("skill_load tool call handling", func() {

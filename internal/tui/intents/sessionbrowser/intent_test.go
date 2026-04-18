@@ -1,6 +1,7 @@
 package sessionbrowser_test
 
 import (
+	"errors"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,6 +11,18 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 )
+
+// recordingDeleter captures delete calls for assertions and optionally
+// returns a configured error.
+type recordingDeleter struct {
+	calls []string
+	err   error
+}
+
+func (d *recordingDeleter) Delete(sessionID string) error {
+	d.calls = append(d.calls, sessionID)
+	return d.err
+}
 
 var _ = Describe("SessionBrowserIntent", func() {
 	var (
@@ -243,6 +256,232 @@ var _ = Describe("SessionBrowserIntent", func() {
 				Update(tea.Msg) tea.Cmd
 				View() string
 			} = intent
+		})
+	})
+
+	Describe("delete affordance (P10b)", func() {
+		var deleter *recordingDeleter
+
+		BeforeEach(func() {
+			deleter = &recordingDeleter{}
+			intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+				Sessions:        sessions,
+				Deleter:         deleter,
+				ActiveSessionID: "",
+			})
+		})
+
+		Describe("d key opens the confirmation modal", func() {
+			It("does not open confirmation when New Session is selected", func() {
+				// selection at 0 → New Session row
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				Expect(intent.IsConfirmingDelete()).To(BeFalse())
+			})
+
+			It("opens the confirmation modal for the selected session", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				Expect(intent.IsConfirmingDelete()).To(BeTrue())
+			})
+
+			It("shows the session name and activity timeline wording in the prompt", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("First Session"))
+				Expect(view).To(ContainSubstring("activity timeline"))
+				Expect(view).To(ContainSubstring("(y/N)"))
+			})
+		})
+
+		Describe("confirming delete invokes the store", func() {
+			It("calls Delete with the selected session ID on y", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+				Expect(deleter.calls).To(Equal([]string{"session-1"}))
+			})
+
+			It("calls Delete on uppercase Y", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}})
+				Expect(deleter.calls).To(Equal([]string{"session-1"}))
+			})
+
+			It("calls Delete on Enter", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				Expect(deleter.calls).To(Equal([]string{"session-1"}))
+			})
+
+			It("emits a SessionDeletedMsg after a successful delete", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+				Expect(cmd).NotTo(BeNil())
+
+				msg := cmd()
+				deleted, ok := msg.(sessionbrowser.SessionDeletedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(deleted.SessionID).To(Equal("session-1"))
+				Expect(deleted.Err).ToNot(HaveOccurred())
+			})
+		})
+
+		Describe("cancelling delete", func() {
+			It("does not call Delete when user presses n", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+				Expect(deleter.calls).To(BeEmpty())
+			})
+
+			It("does not call Delete when user presses Esc", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				Expect(deleter.calls).To(BeEmpty())
+			})
+
+			It("closes the confirmation modal after cancel", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+				Expect(intent.IsConfirmingDelete()).To(BeFalse())
+			})
+		})
+
+		Describe("after a successful delete", func() {
+			BeforeEach(func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+			})
+
+			It("removes the session from the in-memory list", func() {
+				view := intent.View()
+				Expect(view).NotTo(ContainSubstring("First Session"))
+				Expect(view).To(ContainSubstring("Second Session"))
+			})
+
+			It("keeps selection on the same row (now pointing at the next session)", func() {
+				// Was at index 1 (First Session); First Session removed; index 1
+				// should now point at Second Session (which moved up).
+				Expect(intent.SelectedSession()).To(Equal(1))
+			})
+
+			It("clears the confirming state", func() {
+				Expect(intent.IsConfirmingDelete()).To(BeFalse())
+			})
+		})
+
+		Describe("deleting the last session in the list", func() {
+			BeforeEach(func() {
+				// Navigate to the second (last) session at index 2.
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+			})
+
+			It("moves selection to the previous session", func() {
+				// Was at index 2 (last); after removal, selection should move
+				// up to the remaining session at index 1.
+				Expect(intent.SelectedSession()).To(Equal(1))
+			})
+		})
+
+		Describe("deleting the only remaining session", func() {
+			BeforeEach(func() {
+				sessions = []sessionbrowser.SessionEntry{
+					{ID: "only", Title: "Only Session", MessageCount: 1, LastActive: time.Now()},
+				}
+				deleter = &recordingDeleter{}
+				intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+					Sessions: sessions,
+					Deleter:  deleter,
+				})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+			})
+
+			It("does not crash and shows an empty-state row", func() {
+				view := intent.View()
+				Expect(view).To(ContainSubstring("No sessions yet"))
+			})
+
+			It("snaps selection to the New Session row", func() {
+				Expect(intent.SelectedSession()).To(Equal(0))
+			})
+		})
+
+		Describe("failed delete", func() {
+			BeforeEach(func() {
+				deleter.err = errors.New("disk full")
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			})
+
+			It("emits a SessionDeletedMsg carrying the error", func() {
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+				Expect(cmd).NotTo(BeNil())
+
+				msg := cmd()
+				deleted, ok := msg.(sessionbrowser.SessionDeletedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(deleted.SessionID).To(Equal("session-1"))
+				Expect(deleted.Err).To(HaveOccurred())
+				Expect(deleted.Err.Error()).To(ContainSubstring("disk full"))
+			})
+
+			It("does not remove the session from the list", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("First Session"))
+			})
+		})
+
+		Describe("cannot delete the currently active session", func() {
+			BeforeEach(func() {
+				intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+					Sessions:        sessions,
+					Deleter:         deleter,
+					ActiveSessionID: "session-1",
+				})
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown}) // select session-1 (active)
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+			})
+
+			It("does not open the confirmation modal", func() {
+				Expect(intent.IsConfirmingDelete()).To(BeFalse())
+			})
+
+			It("does not call Delete", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+				Expect(deleter.calls).To(BeEmpty())
+			})
+
+			It("shows a cannot-delete-active message in the view", func() {
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Cannot delete the active session"))
+			})
+		})
+
+		Describe("no deleter configured", func() {
+			BeforeEach(func() {
+				intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+					Sessions: sessions,
+				})
+			})
+
+			It("does not open the confirmation modal when d is pressed", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+				Expect(intent.IsConfirmingDelete()).To(BeFalse())
+			})
 		})
 	})
 })

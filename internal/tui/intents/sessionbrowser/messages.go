@@ -16,3 +16,11 @@ type SessionLoadedMsg struct {
 	Store     *recall.FileContextStore
 	Err       error
 }
+
+// SessionDeletedMsg is sent after the browser attempts to delete a session
+// via the configured Deleter. A non-nil Err indicates the deletion failed;
+// the session remains in the in-memory list so the user can retry.
+type SessionDeletedMsg struct {
+	SessionID string
+	Err       error
+}

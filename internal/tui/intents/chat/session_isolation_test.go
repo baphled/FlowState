@@ -58,6 +58,8 @@ func (p *persistingSessionLister) Save(sessionID string, _ *recall.FileContextSt
 	return nil
 }
 
+func (p *persistingSessionLister) Delete(_ string) error { return nil }
+
 func (p *persistingSessionLister) SaveEvents(sessionID string, evs []streaming.SwarmEvent) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
