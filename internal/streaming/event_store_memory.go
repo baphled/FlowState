@@ -95,6 +95,42 @@ func (s *MemorySwarmStore) Clear() {
 	s.events = s.events[:0]
 }
 
+// RestoreEvents populates the store from a previously persisted slice of
+// events without invoking any disk-write side effects.
+//
+// Restore is semantically distinct from Append:
+//   - Append routes through the full persistence chain (the persistedSwarmStore
+//     decorator writes one JSONL line to the session's WAL per event).
+//   - Restore is invoked after the caller has already read those JSONL lines
+//     back from disk, so re-writing them would double the file on every
+//     session switch and quickly corrupt long-lived sessions.
+//
+// Session-switch callers are expected to invoke Clear() first so restored
+// events replace (rather than augment) the in-memory view. The events are
+// inserted in order, with oldest-first eviction when the slice exceeds
+// capacity — this mirrors the behaviour a stream of equivalent Appends would
+// produce, so the visible slice after restore is deterministic.
+//
+// Expected:
+//   - events is any slice (including nil) of previously persisted entries.
+//
+// Side effects:
+//   - Mutates the internal slice under the store mutex. No disk I/O.
+func (s *MemorySwarmStore) RestoreEvents(events []SwarmEvent) {
+	if len(events) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for idx := range events {
+		if len(s.events) >= s.capacity {
+			copy(s.events, s.events[1:])
+			s.events = s.events[:len(s.events)-1]
+		}
+		s.events = append(s.events, events[idx])
+	}
+}
+
 // Capacity returns the configured capacity for test assertions.
 //
 // Returns:

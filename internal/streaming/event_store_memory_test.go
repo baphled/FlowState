@@ -99,6 +99,46 @@ var _ = Describe("MemorySwarmStore", func() {
 		})
 	})
 
+	Describe("RestoreEvents", func() {
+		It("appends every event in insertion order", func() {
+			store := streaming.NewMemorySwarmStore(200)
+			events := []streaming.SwarmEvent{
+				{ID: "r1", Type: streaming.EventToolCall},
+				{ID: "r2", Type: streaming.EventDelegation},
+				{ID: "r3", Type: streaming.EventPlan},
+			}
+
+			store.RestoreEvents(events)
+
+			all := store.All()
+			Expect(all).To(HaveLen(3))
+			Expect(all[0].ID).To(Equal("r1"))
+			Expect(all[1].ID).To(Equal("r2"))
+			Expect(all[2].ID).To(Equal("r3"))
+		})
+
+		It("respects the capacity when restoring more events than fit", func() {
+			store := streaming.NewMemorySwarmStore(3)
+			events := []streaming.SwarmEvent{
+				{ID: "r1"}, {ID: "r2"}, {ID: "r3"}, {ID: "r4"}, {ID: "r5"},
+			}
+
+			store.RestoreEvents(events)
+
+			all := store.All()
+			Expect(all).To(HaveLen(3))
+			Expect(all[0].ID).To(Equal("r3"))
+			Expect(all[len(all)-1].ID).To(Equal("r5"))
+		})
+
+		It("is a no-op for a nil or empty slice", func() {
+			store := streaming.NewMemorySwarmStore(200)
+			Expect(func() { store.RestoreEvents(nil) }).NotTo(Panic())
+			Expect(func() { store.RestoreEvents([]streaming.SwarmEvent{}) }).NotTo(Panic())
+			Expect(store.All()).To(BeEmpty())
+		})
+	})
+
 	Describe("concurrent Append", func() {
 		It("does not race under heavy concurrent writes", func() {
 			store := streaming.NewMemorySwarmStore(200)
