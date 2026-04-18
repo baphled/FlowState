@@ -27,7 +27,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(mgr, sess.ID, "agent-a", rawCh)
+		out := session.AccumulateStream(context.Background(), mgr, sess.ID, "agent-a", rawCh)
 		drainChannel(out)
 
 		retrieved, err := mgr.GetSession(sess.ID)
@@ -45,7 +45,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		rawCh := make(chan provider.StreamChunk)
 		close(rawCh)
 
-		out := session.AccumulateStream(mgr, sess.ID, "agent-a", rawCh)
+		out := session.AccumulateStream(context.Background(), mgr, sess.ID, "agent-a", rawCh)
 		drainChannel(out)
 
 		retrieved, err := mgr.GetSession(sess.ID)
@@ -61,7 +61,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		rawCh <- provider.StreamChunk{Error: context.DeadlineExceeded}
 		close(rawCh)
 
-		out := session.AccumulateStream(mgr, sess.ID, "agent-a", rawCh)
+		out := session.AccumulateStream(context.Background(), mgr, sess.ID, "agent-a", rawCh)
 
 		var received []provider.StreamChunk
 		for chunk := range out {
@@ -137,7 +137,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		rawCh <- provider.StreamChunk{Done: true}
 		close(rawCh)
 
-		out := session.AccumulateStream(mgr, sess.ID, "agent-a", rawCh)
+		out := session.AccumulateStream(context.Background(), mgr, sess.ID, "agent-a", rawCh)
 		drainChannel(out)
 
 		retrieved, err := mgr.GetSession(sess.ID)
@@ -157,7 +157,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		rawCh := make(chan provider.StreamChunk)
 		close(rawCh)
 
-		out := session.AccumulateStream(mgr, sess.ID, "agent-a", rawCh)
+		out := session.AccumulateStream(context.Background(), mgr, sess.ID, "agent-a", rawCh)
 
 		Eventually(out).Should(BeClosed())
 
