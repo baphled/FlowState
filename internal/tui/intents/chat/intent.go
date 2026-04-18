@@ -104,15 +104,24 @@ type EventBusNotificationMsg struct {
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
 // swarm event store by a stream worker goroutine and the activity pane
-// should re-render. The message carries no payload: readers fetch the
-// current snapshot via swarmStore.All() so they always see the latest
-// consistent view, independent of delivery order.
+// should re-render. Readers fetch the current snapshot via swarmStore.All()
+// so they always see the latest consistent view, independent of delivery
+// order.
+//
+// The ID field carries the appended SwarmEvent.ID for telemetry and for
+// tests that want to assert correlation — handlers must not rely on it for
+// correctness because the store is the source of truth.
 //
 // Per the ADR thread-safety contract, the chat intent never mutates the
 // activity history slice directly from stream goroutines — producers
 // Append to the store under its mutex, then post this message back into
 // the Bubble Tea event loop which renders on the main goroutine.
-type SwarmEventAppendedMsg struct{}
+type SwarmEventAppendedMsg struct {
+	// ID is the SwarmEvent.ID of the newly appended event. Optional
+	// (empty when unavailable, for example when dispatched after a
+	// restore loop rather than a single append).
+	ID string
+}
 
 // tickSpinner returns a Cmd that fires a SpinnerTickMsg after a short delay.
 //
@@ -296,6 +305,13 @@ type Intent struct {
 	// Bubble Tea goroutine inside View() and Update handlers. Re-render is
 	// driven by SwarmEventAppendedMsg, not shared-slice mutation.
 	swarmStore streaming.SwarmEventStore
+	// swarmVisibleTypes is the authoritative per-type visibility filter
+	// applied to the activity pane on every render. The chat intent owns
+	// this map (P3 A3) so transient filter churn on the pane cannot
+	// silently hide non-tool_call event types, and so a future Ctrl+T
+	// toggle (P8) has a single place to mutate visibility. Defaulted to
+	// all-types-visible at construction.
+	swarmVisibleTypes map[streaming.SwarmEventType]bool
 	// secondaryPaneVisible gates the dual-pane render of the swarm activity
 	// timeline. Toggled via Ctrl+T in handleInputKey. When false, View()
 	// passes an empty string to WithSecondaryContent so ScreenLayout falls
@@ -338,6 +354,26 @@ func tokenCounterFromConfig(cfg IntentConfig) contextpkg.TokenCounter {
 		return contextpkg.NewTiktokenCounterWithResolver(cfg.ModelResolver, cfg.ProviderName)
 	}
 	return contextpkg.NewTiktokenCounter()
+}
+
+// defaultSwarmVisibleTypes returns a fresh map with every known
+// SwarmEventType marked visible. Used as the initial value of the chat
+// intent's swarmVisibleTypes field (P3 A3) and, in future, as the reset
+// target for a "show all" affordance behind Ctrl+T.
+//
+// Returns:
+//   - A new map keyed by SwarmEventType with all known types set to true.
+//
+// Side effects:
+//   - None.
+func defaultSwarmVisibleTypes() map[streaming.SwarmEventType]bool {
+	return map[streaming.SwarmEventType]bool{
+		streaming.EventDelegation: true,
+		streaming.EventToolCall:   true,
+		streaming.EventToolResult: true,
+		streaming.EventPlan:       true,
+		streaming.EventReview:     true,
+	}
 }
 
 // NewIntent creates a new chat Intent from the given configuration.
@@ -397,6 +433,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		breadcrumbPath:       "Chat",
 		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
 		swarmStore:           streaming.NewMemorySwarmStore(streaming.DefaultSwarmStoreCapacity),
+		swarmVisibleTypes:    defaultSwarmVisibleTypes(),
 		secondaryPaneVisible: true,
 		sessionTrail:         navigation.NewSessionTrail(),
 	}
@@ -1419,19 +1456,46 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	case "harness_attempt_start", "harness_complete", "harness_critic_feedback":
 		return i.handleHarnessEvent(msg)
 	case streaming.EventTypePlanArtifact, streaming.EventTypeReviewVerdict, streaming.EventTypeStatusTransition:
-		i.recordSwarmEvent(msg)
-		return i.handleStreamingEvent(msg)
+		appendedCmd := i.recordSwarmEvent(msg)
+		return batchCmds(i.handleStreamingEvent(msg), appendedCmd)
 	}
-	i.recordSwarmEvent(msg)
+	appendedCmd := i.recordSwarmEvent(msg)
 	i.handleStreamChunk(msg)
 	i.refreshViewport()
 	if !msg.Done && msg.Next != nil {
-		return tea.Batch(msg.Next, tickSpinner())
+		return batchCmds(tea.Batch(msg.Next, tickSpinner()), appendedCmd)
 	}
 	if msg.Done {
-		return i.saveSession()
+		return batchCmds(i.saveSession(), appendedCmd)
 	}
-	return tickSpinner()
+	return batchCmds(tickSpinner(), appendedCmd)
+}
+
+// batchCmds merges a primary command with an optional follow-up command,
+// returning the primary alone when the follow-up is nil and a tea.Batch
+// otherwise. Extracted so the stream-chunk handler can splice in a
+// SwarmEventAppendedMsg dispatch (P3 B7) without reshaping every return
+// site into a conditional batch.
+//
+// Expected:
+//   - primary is the main command the handler already returns.
+//   - follow is an optional extra command to run alongside primary; may be nil.
+//
+// Returns:
+//   - primary when follow is nil.
+//   - tea.Batch(primary, follow) when both are non-nil.
+//   - follow when primary is nil and follow is not.
+//
+// Side effects:
+//   - None.
+func batchCmds(primary, follow tea.Cmd) tea.Cmd {
+	if follow == nil {
+		return primary
+	}
+	if primary == nil {
+		return follow
+	}
+	return tea.Batch(primary, follow)
 }
 
 // handleHarnessRetry commits any partial response to history, adds a system
@@ -1520,20 +1584,33 @@ func (i *Intent) handleStreamingEvent(msg StreamChunkMsg) tea.Cmd {
 // review-verdict metadata. Chunks that do not map onto a SwarmEventType
 // are ignored so the activity pane stays focused on high-signal events.
 //
+// When an event is appended, the returned tea.Cmd posts a
+// SwarmEventAppendedMsg carrying the event's ID back into the Bubble Tea
+// event loop (P3 B7). This closes the "idle update" gap where a
+// background goroutine appending an event would not trigger a re-render
+// until the next keystroke.
+//
 // Expected:
 //   - msg is the current streaming chunk delivered to the Bubble Tea loop.
 //
+// Returns:
+//   - A tea.Cmd resolving to SwarmEventAppendedMsg when an event was
+//     appended, or nil when the chunk carried no actionable metadata or
+//     the store is nil.
+//
 // Side effects:
 //   - Appends a derived SwarmEvent to i.swarmStore under the store mutex.
-func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) {
+func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) tea.Cmd {
 	if i.swarmStore == nil {
-		return
+		return nil
 	}
 	ev, ok := swarmEventFromChunk(msg, i.agentID)
 	if !ok {
-		return
+		return nil
 	}
 	i.swarmStore.Append(ev)
+	appended := SwarmEventAppendedMsg{ID: ev.ID}
+	return func() tea.Msg { return appended }
 }
 
 // swarmEventFromChunk converts a StreamChunkMsg into a SwarmEvent suitable
@@ -2224,7 +2301,16 @@ func (i *Intent) View() string {
 		// be cropped by the composite layout, masking truncation bugs and
 		// breaking the pane's own overflow arithmetic.
 		_, secondaryWidth := layout.SplitPaneWidths(i.width)
-		sl.WithSecondaryContent(i.swarmActivity.WithEvents(swarmEvents).Render(secondaryWidth, contentHeight))
+		// P3 A3: the chat intent is the authoritative source of
+		// visibility. Reassert the map on every render so a transient
+		// mutation on the pane (test code, future filter UI) cannot
+		// leave non-tool_call types silently hidden across renders.
+		sl.WithSecondaryContent(
+			i.swarmActivity.
+				WithEvents(swarmEvents).
+				WithVisibleTypes(i.swarmVisibleTypes).
+				Render(secondaryWidth, contentHeight),
+		)
 	} else {
 		sl.WithSecondaryContent("")
 	}

@@ -15,6 +15,13 @@ const (
 	minRenderHeight = 2
 	headerText      = "Activity Timeline"
 	ellipsis        = "…"
+	// EmptyStateText is shown once a caller has explicitly asserted that
+	// the loaded timeline is empty (see hasSeenRealEvents). It differs
+	// from the placeholder items so the user can distinguish "still
+	// loading" (P3 A1 placeholders) from "genuinely no activity yet"
+	// (this text). Defined as a package-internal constant so P3 tests can
+	// assert the rendered string without hard-coding a magic literal.
+	emptyStateText = "No activity yet"
 )
 
 // defaultItems holds the placeholder timeline entries shown until T6 wires
@@ -46,6 +53,15 @@ type SwarmActivityPane struct {
 	headerStyle  lipgloss.Style
 	bodyStyle    lipgloss.Style
 	dimStyle     lipgloss.Style
+	// hasSeenRealEvents flips to true the first time a caller passes a
+	// non-nil events slice to WithEvents. Once set, the pane never falls
+	// back to placeholder items — an empty slice is treated as a genuine
+	// "no activity yet" state rather than "still loading".
+	//
+	// This preserves the useful placeholder affordance during early app
+	// startup (before any session has been loaded) while preventing the
+	// confusing permanent-placeholder case for brand-new, empty sessions.
+	hasSeenRealEvents bool
 }
 
 // NewSwarmActivityPane constructs a pane with placeholder timeline items.
@@ -118,11 +134,21 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 }
 
 // WithEvents swaps the pane's body source from placeholder items to the
-// supplied swarm events. Passing a nil or empty slice preserves the
-// placeholder fallback so Wave 1 transition tests continue to render.
+// supplied swarm events.
+//
+// A nil slice is interpreted as "no caller has asserted a loaded state
+// yet" and leaves the placeholder-mode flag unchanged. A non-nil slice —
+// even an empty one — flips the pane into loaded mode: on subsequent
+// renders the pane displays either the events or an explicit empty-state
+// message ("No activity yet"), never the placeholder items again.
+//
+// This distinction lets early app startup continue to show placeholders
+// while a brand-new, genuinely empty session can surface the right
+// messaging after first session load.
 //
 // Expected:
-//   - events is the ordered list of events (oldest first) to render.
+//   - events is the ordered list of events (oldest first) to render, or
+//     nil to preserve placeholder-mode semantics.
 //
 // Returns:
 //   - The receiver, to support fluent builder-style configuration.
@@ -132,8 +158,12 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 //     that mutate the slice afterwards will see the change reflected on
 //     the next Render; the chat intent always supplies a fresh
 //     SwarmEventStore.All() copy so this is safe in practice.
+//   - Flips hasSeenRealEvents to true when events is non-nil.
 func (p *SwarmActivityPane) WithEvents(events []streaming.SwarmEvent) *SwarmActivityPane {
 	p.events = events
+	if events != nil {
+		p.hasSeenRealEvents = true
+	}
 	return p
 }
 
@@ -246,11 +276,22 @@ func (p *SwarmActivityPane) bodyLines(width int) []string {
 
 // activeBodySource returns the raw, unstyled body strings to render.
 //
-// When events are set, they take precedence and are formatted as
-// "▸ {Type} · {AgentID} · {Status}" so the pane surfaces real swarm
-// activity. An empty events slice is treated as "no events yet" and falls
-// back to the placeholder items introduced in T5 so tests during the
-// Wave 1 transition still render content.
+// The pane operates in one of three modes:
+//
+//  1. Placeholder mode — hasSeenRealEvents is false (no caller has
+//     asserted a loaded state). The pane shows illustrative items so
+//     early startup has visible content. Once a caller passes a non-nil
+//     slice to WithEvents this mode is never re-entered.
+//
+//  2. Loaded-with-events mode — hasSeenRealEvents is true and the events
+//     slice is non-empty. Body lines flow through coalesceToolCalls so
+//     tool_call / tool_result pairs collapse into one line; other types
+//     pass through untouched.
+//
+//  3. Loaded-empty mode — hasSeenRealEvents is true but there are no
+//     events (brand-new session). The pane shows an explicit
+//     "No activity yet" message rather than reverting to placeholders,
+//     distinguishing the genuine empty state from still-loading.
 //
 // Returns:
 //   - The slice of body strings in render order (oldest first).
@@ -258,17 +299,13 @@ func (p *SwarmActivityPane) bodyLines(width int) []string {
 // Side effects:
 //   - None.
 func (p *SwarmActivityPane) activeBodySource() []string {
-	if len(p.events) == 0 {
+	if !p.hasSeenRealEvents {
 		return p.items
 	}
-	out := make([]string, 0, len(p.events))
-	for _, ev := range p.events {
-		if !p.visibleTypes[ev.Type] {
-			continue
-		}
-		out = append(out, formatEvent(ev))
+	if len(p.events) == 0 {
+		return []string{emptyStateText}
 	}
-	return out
+	return coalesceToolCalls(p.events, p.visibleTypes)
 }
 
 // formatEvent renders a single SwarmEvent as a concise activity line.

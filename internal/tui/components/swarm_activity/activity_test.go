@@ -163,14 +163,22 @@ var _ = Describe("SwarmActivityPane", func() {
 		})
 	})
 
-	Describe("default visibleTypes P2 T2 (EventToolResult)", func() {
-		It("includes EventToolResult in the pane's default visibility map", func() {
+	Describe("default visibleTypes P2 T2 / P3 coalesce (EventToolResult)", func() {
+		It("coalesces a matching tool_call + tool_result into the call's line with the result's status", func() {
 			pane := swarmactivity.NewSwarmActivityPane()
 
-			// An event of type tool_result must render with defaults so the
-			// coalesce state machine in P3 can observe it flowing through
-			// the pane without an explicit WithVisibleTypes() call.
+			// P3 A4: tool_result events no longer render as their own
+			// line. Instead, the default visibility must allow the
+			// coalesce step to find the tool_result and derive the
+			// tool_call's displayed status from it. Verify end-to-end:
+			// two events in, one line out, with the result's status.
 			events := []streaming.SwarmEvent{
+				{
+					ID:      "toolu_01TR",
+					Type:    streaming.EventToolCall,
+					Status:  "started",
+					AgentID: "tool-agent",
+				},
 				{
 					ID:      "toolu_01TR",
 					Type:    streaming.EventToolResult,
@@ -179,10 +187,20 @@ var _ = Describe("SwarmActivityPane", func() {
 				},
 			}
 			output := pane.WithEvents(events).Render(80, 10)
-			Expect(output).To(ContainSubstring("tool_result"),
-				"EventToolResult must render with the default visible-types map "+
-					"so the tool-call coalesce path in P3 can rely on it flowing "+
-					"through the pane by default")
+			Expect(output).To(ContainSubstring("tool_call"),
+				"the coalesced line must identify itself as a tool_call")
+			Expect(output).To(ContainSubstring("completed"),
+				"the coalesced line's status must reflect the paired tool_result")
+			// Count body bullet lines: coalesce yields exactly one.
+			lines := strings.Split(output, "\n")
+			bullets := 0
+			for _, line := range lines {
+				if strings.Contains(line, "▸") {
+					bullets++
+				}
+			}
+			Expect(bullets).To(Equal(1),
+				"tool_call + tool_result with the same ID must collapse into one body line")
 		})
 	})
 
@@ -420,10 +438,25 @@ var _ = Describe("SwarmActivityPane", func() {
 			Expect(output).NotTo(ContainSubstring("Plan: Wave 2"))
 		})
 
-		It("falls back to placeholder items when supplied an empty slice", func() {
+		It("shows the empty-state text when supplied an explicit empty slice", func() {
+			// P3 A1: an empty-but-non-nil slice is the caller's way of
+			// asserting "I've loaded state; the timeline is genuinely
+			// empty". The pane must switch to the empty-state text and
+			// never revert to placeholder items again.
 			output := pane.WithEvents([]streaming.SwarmEvent{}).Render(80, 10)
 
-			// Placeholder fallback preserves T5 behaviour during Wave 1 transition.
+			Expect(output).To(ContainSubstring("Activity Timeline"))
+			Expect(output).To(ContainSubstring("No activity yet"))
+			Expect(output).NotTo(ContainSubstring("Plan: Wave 2"))
+		})
+
+		It("preserves placeholder mode when supplied a nil slice", func() {
+			// A nil slice is not an assertion of loaded state — it signals
+			// "no snapshot available yet" (early startup). Placeholder
+			// items must remain visible so the pane has useful content
+			// before a session is loaded.
+			output := pane.WithEvents(nil).Render(80, 10)
+
 			Expect(output).To(ContainSubstring("Activity Timeline"))
 			Expect(output).To(ContainSubstring("▸"))
 		})

@@ -464,6 +464,30 @@ func (i *Intent) OpenEventDetailsForTest() tea.Cmd {
 	return i.openEventDetails()
 }
 
+// RecordSwarmEventForTest exposes recordSwarmEvent for test assertions.
+// The returned tea.Cmd resolves to a SwarmEventAppendedMsg when a
+// SwarmEvent was appended, or nil when the chunk carried no actionable
+// metadata. Tests use this to verify the P3 B7 dispatch contract without
+// reaching into the full streaming pipeline.
+func (i *Intent) RecordSwarmEventForTest(msg StreamChunkMsg) tea.Cmd {
+	return i.recordSwarmEvent(msg)
+}
+
+// SwarmVisibleTypesForTest returns a defensive copy of the chat intent's
+// authoritative swarmVisibleTypes map for test assertions. Tests use this
+// to verify the P3 A3 contract that the intent holds visibility state and
+// reasserts it on every render.
+func (i *Intent) SwarmVisibleTypesForTest() map[streaming.SwarmEventType]bool {
+	if i.swarmVisibleTypes == nil {
+		return nil
+	}
+	out := make(map[streaming.SwarmEventType]bool, len(i.swarmVisibleTypes))
+	for k, v := range i.swarmVisibleTypes {
+		out[k] = v
+	}
+	return out
+}
+
 // ShowModalMsgForTest is a type alias for tuiintents.ShowModalMsg exported for
 // test assertions in external test packages.
 type ShowModalMsgForTest = tuiintents.ShowModalMsg
