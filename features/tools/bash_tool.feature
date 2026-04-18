@@ -66,9 +66,8 @@ Feature: Bash Tool
     When the AI runs "pwd"
     Then the output should show "/home/user/projects"
 
-  @wip
   Scenario: Remember permission for session
     Given bash tool permission is set to "ask"
     When the AI requests to run "ls"
-    And I approve with "remember for session"
-    Then subsequent "ls" commands should auto-approve
+    And I approve with "remember for session" using the "s" key
+    Then subsequent "ls" requests auto-approve without prompting
