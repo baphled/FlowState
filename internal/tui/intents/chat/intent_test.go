@@ -389,7 +389,8 @@ var _ = Describe("ChatIntent", func() {
 					// New: Keybindings section surfaces runtime bindings.
 					Expect(lastMsg.Content).To(ContainSubstring("Keybindings:"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+T"))
-					Expect(lastMsg.Content).To(ContainSubstring("Toggle swarm activity pane"))
+					// P11 repurposed Ctrl+T from pane-toggle to filter-profile cycling.
+					Expect(lastMsg.Content).To(ContainSubstring("Cycle activity-timeline filter profile"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+S"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+C"))
 					Expect(lastMsg.Content).To(ContainSubstring("Alt+Enter"))

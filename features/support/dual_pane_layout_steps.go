@@ -94,19 +94,20 @@ func registerDualPaneRenderSteps(sc *godog.ScenarioContext, s *DualPaneLayoutSte
 	sc.Step(`^the primary pane should occupy the full width$`, s.thePrimaryPaneShouldOccupyTheFullWidth)
 }
 
-// registerDualPaneToggleSteps wires up the Ctrl+T toggle steps backed by
-// chat.Intent and SecondaryPaneVisibleForTest.
+// registerDualPaneToggleSteps wires up the Ctrl+T filter-cycle steps backed
+// by chat.Intent. P11 changed Ctrl+T semantics from pane-toggle to
+// filter-profile cycling, so the step registrations focus on the invariant
+// that the pane remains visible across presses.
 //
 // Expected:
 //   - sc is a valid godog ScenarioContext; s is non-nil.
 //
 // Side effects:
-//   - Registers toggle step definitions on the scenario context.
+//   - Registers cycle step definitions on the scenario context.
 func registerDualPaneToggleSteps(sc *godog.ScenarioContext, s *DualPaneLayoutSteps) {
 	sc.Step(`^the activity pane is visible$`, s.theActivityPaneIsVisible)
-	sc.Step(`^the activity pane has been hidden via Ctrl\+T$`, s.theActivityPaneHasBeenHiddenViaCtrlT)
 	sc.Step(`^the operator presses Ctrl\+T$`, s.theOperatorPressesCtrlT)
-	sc.Step(`^the activity pane should be hidden$`, s.theActivityPaneShouldBeHidden)
+	sc.Step(`^the operator presses Ctrl\+T three times$`, s.theOperatorPressesCtrlTThreeTimes)
 	sc.Step(`^the activity pane should be visible$`, s.theActivityPaneShouldBeVisible)
 }
 
@@ -358,31 +359,10 @@ func (s *DualPaneLayoutSteps) theActivityPaneIsVisible() error {
 	return nil
 }
 
-// theActivityPaneHasBeenHiddenViaCtrlT constructs the chat.Intent (if
-// needed), sends a Ctrl+T key, and asserts the secondary pane is now
-// hidden. Used as a precondition for the "press Ctrl+T again" scenario.
-//
-// Returns:
-//   - nil if the pane is hidden after the toggle; error otherwise.
-//
-// Side effects:
-//   - Lazily constructs s.intent and applies one Ctrl+T toggle.
-func (s *DualPaneLayoutSteps) theActivityPaneHasBeenHiddenViaCtrlT() error {
-	if err := s.ensureIntent(); err != nil {
-		return err
-	}
-	s.intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-	view := s.intent.View()
-	if strings.Contains(view, activityTimelineHeader) {
-		return fmt.Errorf("expected %q to be absent after Ctrl+T precondition", activityTimelineHeader)
-	}
-	s.lastRender = view
-	return nil
-}
-
 // theOperatorPressesCtrlT sends a Ctrl+T key to the chat.Intent and
 // refreshes the cached render so subsequent assertions read the latest
-// View output.
+// View output. P11 semantics: this cycles the swarm filter profile; it
+// does not hide the pane.
 //
 // Returns:
 //   - nil on success; error if the Intent has not been constructed.
@@ -398,27 +378,30 @@ func (s *DualPaneLayoutSteps) theOperatorPressesCtrlT() error {
 	return nil
 }
 
-// theActivityPaneShouldBeHidden asserts the chat.Intent's rendered View no
-// longer contains the activity timeline header. The View output is the
-// authoritative public signal that the secondary pane has collapsed.
+// theOperatorPressesCtrlTThreeTimes exercises the full P11 filter cycle
+// (profileAll -> profileToolsOnly -> profileDelegationsOnly -> profileAll)
+// so scenarios can assert that the pane remains visible across a complete
+// wrap-around.
 //
 // Returns:
-//   - nil if the header is absent from View; error otherwise.
+//   - nil on success; error if the Intent has not been constructed.
 //
 // Side effects:
-//   - None.
-func (s *DualPaneLayoutSteps) theActivityPaneShouldBeHidden() error {
+//   - Mutates s.intent state three times and refreshes s.lastRender.
+func (s *DualPaneLayoutSteps) theOperatorPressesCtrlTThreeTimes() error {
 	if err := s.ensureIntent(); err != nil {
 		return err
 	}
-	if strings.Contains(s.intent.View(), activityTimelineHeader) {
-		return fmt.Errorf("expected %q to be absent after Ctrl+T", activityTimelineHeader)
+	for range 3 {
+		s.intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	}
+	s.lastRender = s.intent.View()
 	return nil
 }
 
 // theActivityPaneShouldBeVisible asserts the chat.Intent's rendered View
-// contains the activity timeline header again after a restore.
+// contains the activity timeline header. P11: the pane stays visible
+// regardless of how many Ctrl+T presses the operator has issued.
 //
 // Returns:
 //   - nil if the header is present in View; error otherwise.
@@ -430,7 +413,7 @@ func (s *DualPaneLayoutSteps) theActivityPaneShouldBeVisible() error {
 		return err
 	}
 	if !strings.Contains(s.intent.View(), activityTimelineHeader) {
-		return fmt.Errorf("expected %q in View after second Ctrl+T", activityTimelineHeader)
+		return fmt.Errorf("expected %q in View after Ctrl+T cycling", activityTimelineHeader)
 	}
 	return nil
 }

@@ -50,9 +50,15 @@ type SwarmActivityPane struct {
 	items        []string
 	events       []streaming.SwarmEvent
 	visibleTypes map[streaming.SwarmEventType]bool
-	headerStyle  lipgloss.Style
-	bodyStyle    lipgloss.Style
-	dimStyle     lipgloss.Style
+	// profileName is the short, user-facing label for the active filter
+	// profile (P11). When non-empty, the pane renders it on the header line
+	// so the user can see at a glance which Ctrl+T preset they are in. The
+	// default (profileAll) case leaves this empty so the default state
+	// stays visually quiet.
+	profileName string
+	headerStyle lipgloss.Style
+	bodyStyle   lipgloss.Style
+	dimStyle    lipgloss.Style
 	// hasSeenRealEvents flips to true the first time a caller passes a
 	// non-nil events slice to WithEvents. Once set, the pane never falls
 	// back to placeholder items — an empty slice is treated as a genuine
@@ -119,6 +125,15 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 		lines = append(lines, truncate(p.filterIndicatorLine(), width))
 	}
 
+	// Profile label line (P11) when the user has cycled away from the
+	// default. Rendered faint on its own line so the full label fits even
+	// at the 30% secondary-pane width; callers that don't set a profile
+	// name (the default profileAll state) skip this line entirely so the
+	// default layout is unchanged.
+	if label := p.profileLabelLine(); label != "" {
+		lines = append(lines, truncate(label, width))
+	}
+
 	body := p.bodyLines(width)
 	// Drop oldest (top of body) if total lines would exceed height.
 	bodyBudget := height - len(lines)
@@ -167,6 +182,24 @@ func (p *SwarmActivityPane) WithEvents(events []streaming.SwarmEvent) *SwarmActi
 	return p
 }
 
+// WithProfileName sets the P11 filter-profile label rendered on the pane's
+// header line. An empty string clears the label; callers use this to leave
+// the default (all-types-visible) profile visually quiet.
+//
+// Expected:
+//   - name is a short, user-facing profile label (e.g. "Tool calls only")
+//     or "" to suppress the label entirely.
+//
+// Returns:
+//   - The receiver, to support fluent builder-style configuration.
+//
+// Side effects:
+//   - Replaces the receiver's profileName field.
+func (p *SwarmActivityPane) WithProfileName(name string) *SwarmActivityPane {
+	p.profileName = name
+	return p
+}
+
 // WithVisibleTypes sets the per-type visibility filter. Each key maps a
 // SwarmEventType to its visibility; true means visible, false means hidden.
 // When filtering is active (at least one type hidden), the pane renders a
@@ -184,6 +217,23 @@ func (p *SwarmActivityPane) WithEvents(events []streaming.SwarmEvent) *SwarmActi
 func (p *SwarmActivityPane) WithVisibleTypes(types map[streaming.SwarmEventType]bool) *SwarmActivityPane {
 	p.visibleTypes = types
 	return p
+}
+
+// profileLabelLine returns the standalone, faint-styled profile label line
+// rendered below the filter indicator (P11). Empty when no profile name is
+// set, so the default profileAll state keeps the existing two-line header
+// layout unchanged.
+//
+// Returns:
+//   - A bracketed, faint profile label on its own line, or "" when unset.
+//
+// Side effects:
+//   - None.
+func (p *SwarmActivityPane) profileLabelLine() string {
+	if p.profileName == "" {
+		return ""
+	}
+	return p.dimStyle.Render("[" + p.profileName + "]")
 }
 
 // isFilterActive reports whether at least one event type is hidden.

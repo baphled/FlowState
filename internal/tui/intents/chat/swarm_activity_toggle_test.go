@@ -1,8 +1,6 @@
 package chat_test
 
 import (
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,7 +9,14 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
-var _ = Describe("swarm activity pane Ctrl+T toggle (Wave 1 / T7)", func() {
+// Ctrl+T semantics changed in P11: it no longer toggles secondary-pane
+// visibility (Wave 1 / T7), it now cycles through the swarm filter
+// profiles. This file keeps the Wave-1-era invariants that remain
+// meaningful — the pane stays visible across Ctrl+T presses, events keep
+// being recorded regardless of which profile is active, and the status-bar
+// hint continues to advertise Ctrl+T — and rewrites the old "hides the
+// pane" expectations to match the new behaviour.
+var _ = Describe("swarm activity pane Ctrl+T binding (P11)", func() {
 	var intent *chat.Intent
 
 	BeforeEach(func() {
@@ -41,93 +46,76 @@ var _ = Describe("swarm activity pane Ctrl+T toggle (Wave 1 / T7)", func() {
 		})
 	})
 
-	Describe("Ctrl+T hides the pane", func() {
+	Describe("Ctrl+T does NOT toggle pane visibility (P11 changed semantics)", func() {
 		BeforeEach(func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 		})
 
-		It("flips the field to false", func() {
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeFalse())
+		It("leaves secondaryPaneVisible unchanged", func() {
+			Expect(intent.SecondaryPaneVisibleForTest()).To(BeTrue(),
+				"P11 repurposed Ctrl+T for filter cycling — the pane must stay visible")
 		})
 
-		It("omits the Activity Timeline header from View()", func() {
+		It("keeps the Activity Timeline header rendered", func() {
 			view := intent.View()
-			Expect(view).NotTo(ContainSubstring("Activity Timeline"))
+			Expect(view).To(ContainSubstring("Activity Timeline"))
 		})
+	})
 
-		It("falls back to single-pane with no vertical separator at column 70", func() {
-			view := intent.View()
-			// The dual-pane separator '│' appears at column 70 when rendered
-			// via ScreenLayout's 70/30 branch. Single-pane rendering must not
-			// contain the separator as a structural column marker.
-			// We scan each line: no line should have '│' at byte-column 70
-			// for single-pane fallback.
-			for _, line := range strings.Split(view, "\n") {
-				runes := []rune(line)
-				if len(runes) > 70 && runes[70] == '│' {
-					Fail("expected no separator at column 70 in single-pane fallback, got: " + line)
-				}
+	Describe("Ctrl+T across the full cycle keeps the pane visible", func() {
+		It("shows the timeline after each of four presses (cycle length 3 + wrap)", func() {
+			for press := range 4 {
+				intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Activity Timeline"),
+					"timeline must remain visible across the whole cycle (press %d)", press)
 			}
 		})
 	})
 
-	Describe("Ctrl+T twice restores visibility", func() {
-		It("flips the field back to true and re-renders the timeline", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeFalse())
-
-			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeTrue())
-
-			view := intent.View()
-			Expect(view).To(ContainSubstring("Activity Timeline"))
-		})
-	})
-
-	Describe("StreamChunk events arriving while the pane is hidden", func() {
-		It("still records events to the store so toggling back reveals them", func() {
-			// Hide the pane via Ctrl+T.
-			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeFalse())
-
-			// Send a delegation chunk while the pane is hidden.
+	Describe("StreamChunk events continue to be recorded across Ctrl+T presses", func() {
+		It("stores events regardless of the active filter profile", func() {
+			// Send a delegation chunk; it must be recorded whatever profile is active.
 			intent.Update(chat.StreamChunkMsg{
 				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-hidden",
+					ChainID:     "chain-initial",
 					TargetAgent: "background-agent",
 					Status:      "started",
 				},
 			})
-
-			// The store must still reflect the event.
 			events := intent.SwarmStoreForTest().All()
 			Expect(events).To(HaveLen(1),
-				"events must be recorded even when the pane is hidden — the pane is a view, not a filter")
-			Expect(events[0].AgentID).To(Equal("background-agent"))
+				"delegation must be stored before any filter cycling")
 
-			// Toggling back reveals the event in the view.
+			// Cycle to profileToolsOnly (hides delegation).
 			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			view := intent.View()
-			Expect(view).To(ContainSubstring("Activity Timeline"))
-			Expect(view).To(ContainSubstring("background-agent"))
+			intent.Update(chat.StreamChunkMsg{
+				DelegationInfo: &provider.DelegationInfo{
+					ChainID:     "chain-hidden",
+					TargetAgent: "other-agent",
+					Status:      "started",
+				},
+			})
+
+			events = intent.SwarmStoreForTest().All()
+			Expect(events).To(HaveLen(2),
+				"events must be recorded even when the active profile hides them — the filter is a view, not a gate")
 		})
 	})
 
 	Describe("status-bar hint advertises Ctrl+T", func() {
-		It("contains the Ctrl+T substring when the pane is visible", func() {
-			view := intent.View()
-			Expect(view).To(ContainSubstring("Ctrl+T"))
-		})
-
-		It("contains the Ctrl+T substring when the pane is hidden", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			view := intent.View()
-			Expect(view).To(ContainSubstring("Ctrl+T"))
+		It("contains the Ctrl+T substring at every point in the cycle", func() {
+			for press := range 3 {
+				view := intent.View()
+				Expect(view).To(ContainSubstring("Ctrl+T"),
+					"status hint must advertise Ctrl+T at press %d", press)
+				intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+			}
 		})
 	})
 
 	Describe("Update return value for Ctrl+T", func() {
-		It("returns no command on toggle (state mutation only)", func() {
+		It("returns no command on filter cycle (state mutation only)", func() {
 			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 			Expect(cmd).To(BeNil())
 		})
