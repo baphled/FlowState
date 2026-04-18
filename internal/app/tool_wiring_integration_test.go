@@ -156,5 +156,73 @@ var _ = Describe("Tool wiring integration", func() {
 			}
 			Expect(toolNames).NotTo(ContainElement("delegate"))
 		})
+
+		// P12: non-delegating agents get suggest_delegate as an escape hatch.
+		It("includes the suggest_delegate tool in the provider request", func() {
+			// Register a router so suggest_delegate has a valid to_agent.
+			routerManifest := agent.Manifest{
+				ID:   "router",
+				Name: "Router",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&routerManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+
+			_, err := eng.Stream(context.Background(), "executor", "hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+
+			toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, tool := range spy.capturedRequest.Tools {
+				toolNames = append(toolNames, tool.Name)
+			}
+			Expect(toolNames).To(ContainElement("suggest_delegate"))
+			Expect(toolNames).NotTo(ContainElement("delegate"))
+		})
+	})
+
+	// P12: when the manifest restricts capabilities.tools to a fixed list
+	// (e.g. real executor.md lists [bash, file, web]), the engine's
+	// buildAllowedToolSet must still surface suggest_delegate to the
+	// provider — otherwise the escape hatch is invisible to the model.
+	Context("when the non-delegating manifest restricts capabilities.tools", func() {
+		It("still includes suggest_delegate in the provider request", func() {
+			restrictedManifest := agent.Manifest{
+				ID:   "restricted-executor",
+				Name: "Restricted Executor",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "web"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+			agentReg.Register(&restrictedManifest)
+			routerManifest := agent.Manifest{
+				ID:   "router",
+				Name: "Router",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&routerManifest)
+
+			buildTestEngine(restrictedManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, restrictedManifest)
+
+			_, err := eng.Stream(context.Background(), "restricted-executor", "hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, t := range spy.capturedRequest.Tools {
+				toolNames = append(toolNames, t.Name)
+			}
+			Expect(toolNames).To(ContainElement("suggest_delegate"),
+				"suggest_delegate must bypass the manifest tool filter so non-delegating agents always have the escape hatch")
+		})
 	})
 })
