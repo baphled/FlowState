@@ -10,6 +10,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // P5/B9 — failover regression gates.
@@ -123,51 +124,45 @@ var _ = Describe("Failover event identity invariants (P5/B9 regression gate)", f
 		})
 	})
 
-	// --- Contract 2: tool_use_id is NOT translated across providers ------
+	// --- Contract 2: tool_use_id translates across providers (P14 FIXED) --
 	//
-	// KNOWN ISSUE: failover does not translate tool_use_id between providers.
-	// This test pins the current behaviour so a future fix flips the
-	// assertion intentionally rather than silently changing the contract.
+	// P14 landed: a FlowState-internal ToolCallCorrelator (lives in
+	// internal/streaming) assigns a stable InternalToolCallID to every
+	// logical tool call and reuses it whenever the same logical call is
+	// observed again — whether by the same provider on a later chunk or
+	// by a different provider after a failover under its own id scheme.
+	// The engine stamps this id on StreamChunk.InternalToolCallID on
+	// the way to the consumer.
 	//
-	// The scenario: a tool_call chunk is started on provider A with ID
-	// "A-tool-123", then provider A fails (simulated here by making B the
-	// active provider on retry). Provider B emits the tool_result with its
-	// own ID "B-tool-456" because it never saw A's ID. The consumer
-	// observes two uncorrelated events with different IDs.
+	// Historical note (P5 pinned this as KNOWN ISSUE): before P14, the
+	// raw provider-scoped ToolCallID on failover was disjoint across the
+	// two providers' ID spaces, which broke downstream coalesce in the
+	// activity pane and the Ctrl+E details modal. This test previously
+	// asserted that disjointness as a regression gate against silent
+	// reshaping. With P14 in place, the gate flips: the internal id
+	// resolved via the correlator must be identical on both sides.
 	//
-	// See `project_flowstate_failover_bugs` memory note for the proper fix
-	// (ID translation table scoped per session) — out of scope for P5.
-	Describe("tool_use_id translation across providers (KNOWN ISSUE)", func() {
-		// KNOWN ISSUE: failover breaks tool_use_id correlation —
-		// see failover_bugs memory note.
-		It("surfaces different ToolCallIDs for the call and the result across failover", func() {
+	// The underlying provider-scoped ToolCallID is still disjoint —
+	// that is intentional. The audit-trail contract keeps ToolCallID as
+	// the native id the provider actually used; the correlator provides
+	// the cross-provider identity on InternalToolCallID.
+	Describe("tool_use_id translation across providers (P14 FIXED)", func() {
+		It("resolves the call on provider A and the result on provider B to the same InternalToolCallID", func() {
 			const callID = "A-tool-123"
 			const resultID = "B-tool-456"
+			const sessionID = "session-P14-failover"
 
-			// Provider A: emits a tool_call chunk then fails. In the current
-			// hook model, a "failure after first chunk" is not a failover
-			// trigger — so we simulate the observable by having the base
-			// handler route directly to B after A's initial attempt. The
-			// StreamHook already covers the "A fails, B takes over" path
-			// in contract 1; here we just assert that the ID space is
-			// disjoint.
-			//
-			// The minimal observable is: a ToolCall ID minted on A cannot
-			// appear on any chunk served after failover to B, because
-			// there is no translation table.
 			registry.Register(&mockStreamProvider{
 				name: "providerA-tool",
 				streamFn: successStreamFn(
 					provider.StreamChunk{
 						ToolCallID: callID,
 						ToolCall: &provider.ToolCall{
-							ID:   callID,
-							Name: "bash",
+							ID:        callID,
+							Name:      "bash",
+							Arguments: map[string]any{"cmd": "ls"},
 						},
 					},
-					// Stream ends without Done=true so the consumer
-					// sees a clean close; in the real failover scenario
-					// this is where the transport error lands.
 				),
 			})
 			registry.Register(&mockStreamProvider{
@@ -175,6 +170,11 @@ var _ = Describe("Failover event identity invariants (P5/B9 regression gate)", f
 				streamFn: successStreamFn(
 					provider.StreamChunk{
 						ToolCallID: resultID,
+						ToolCall: &provider.ToolCall{
+							ID:        resultID,
+							Name:      "bash",
+							Arguments: map[string]any{"cmd": "ls"},
+						},
 						ToolResult: &provider.ToolResultInfo{
 							Content: "output",
 						},
@@ -183,38 +183,51 @@ var _ = Describe("Failover event identity invariants (P5/B9 regression gate)", f
 				),
 			})
 
-			// Capture IDs produced by both providers directly (not through
-			// the failover hook — the point of this test is to pin that
-			// the IDs are disjoint, not to verify the failover flow itself,
-			// which contract 1 already covers).
+			// Drive both providers through the same correlator (the role
+			// the engine plays in the real failover path — see engine.go
+			// processStreamChunks + the tool_result emission site). The
+			// correlator is session-scoped; the same sessionID on both
+			// sides is what unlocks cross-provider translation.
+			correlator := streaming.NewToolCallCorrelator()
+
 			a, _ := registry.Get("providerA-tool")
 			chA, _ := a.Stream(context.Background(), provider.ChatRequest{})
 			b, _ := registry.Get("providerB-tool")
 			chB, _ := b.Stream(context.Background(), provider.ChatRequest{})
 
-			var idsA, idsB []string
+			var internalA, internalB []string
 			for chunk := range chA {
-				if chunk.ToolCallID != "" {
-					idsA = append(idsA, chunk.ToolCallID)
+				if chunk.ToolCall == nil {
+					continue
 				}
+				internalA = append(internalA, correlator.InternalID(
+					sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
+				))
 			}
 			for chunk := range chB {
-				if chunk.ToolCallID != "" {
-					idsB = append(idsB, chunk.ToolCallID)
+				if chunk.ToolCall == nil {
+					continue
 				}
+				internalB = append(internalB, correlator.InternalID(
+					sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
+				))
 			}
 
-			// The gate: the ID spaces are disjoint today. A fix that
-			// translates IDs would replace idsB with [callID], which should
-			// flip this assertion to Equal — that is the signal the fix
-			// landed. Keep this comment in place so the future author sees
-			// exactly what to change.
-			Expect(idsA).To(Equal([]string{callID}))
-			Expect(idsB).To(Equal([]string{resultID}))
-			Expect(idsA).NotTo(Equal(idsB),
-				"KNOWN ISSUE: failover does not translate tool_use_id "+
-					"across providers. When a fix lands, flip this "+
-					"assertion to Expect(idsA).To(Equal(idsB)).")
+			// The gate (post-P14): the correlator resolves both sides to
+			// the same InternalToolCallID via fuzzy match on
+			// (tool_name, args-fingerprint), even though the native
+			// ToolCallID values remain disjoint. Regressions here point
+			// to either the correlator's fuzzy path breaking or the
+			// engine failing to consult it on the emission sites.
+			Expect(internalA).To(HaveLen(1))
+			Expect(internalB).To(HaveLen(1))
+			Expect(internalA).To(Equal(internalB),
+				"P14 contract: the ToolCallCorrelator must resolve a "+
+					"call on provider A and the same logical call on "+
+					"provider B (different native ids, same tool_name "+
+					"and args) to the same InternalToolCallID. A "+
+					"regression here breaks downstream cross-provider "+
+					"coalesce on the activity pane and Ctrl+E modal.")
 		})
 	})
 })

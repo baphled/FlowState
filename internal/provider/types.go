@@ -98,9 +98,22 @@ type StreamChunk struct {
 	// and re-populated by the engine on the tool_result chunk emitted after a
 	// tool executes. The ID is empty on chunks unrelated to tool calls.
 	//
-	// Consumers use this as a stable correlation key to pair tool_call and
-	// tool_result events without guessing on (agent, name, timestamp).
+	// Consumers use InternalToolCallID (not this field) for cross-provider
+	// correlation; ToolCallID is retained for audit trails and for surfaces
+	// that need the provider-native id verbatim (Ctrl+E details modal).
 	ToolCallID string
+	// InternalToolCallID is the FlowState-internal, session-scoped identifier
+	// that survives provider failover. Populated by the engine on every
+	// chunk associated with a tool call via streaming.ToolCallCorrelator —
+	// providers do not populate this field.
+	//
+	// The same logical tool call emitted from two different providers (the
+	// failover case: provider A's "toolu_01abc" is replayed to provider B as
+	// "call_xyz123") resolves to the same InternalToolCallID so downstream
+	// coalesce logic pairs the tool_call and tool_result correctly.
+	//
+	// Empty on chunks unrelated to tool calls.
+	InternalToolCallID string
 	// Event carries a streaming.ProgressEvent or other streaming.Event implementation.
 	// Set by the streaming infrastructure (not by providers directly) to convey typed
 	// progress data to consumers such as SSE and WebSocket handlers.
