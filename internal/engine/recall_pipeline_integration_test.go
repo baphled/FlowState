@@ -183,9 +183,13 @@ var _ = Describe("Recall Pipeline Integration", Label("integration", "recall-pip
 		tmpDir, err = os.MkdirTemp("", "recall-pipeline-test")
 		Expect(err).NotTo(HaveOccurred())
 		store = learning.NewJSONFileStore(filepath.Join(tmpDir, "learning.json"))
+		// P13: the recall-pipeline tests exercise the broker hook
+		// end-to-end, so the shared manifest explicitly opts into
+		// recall via UsesRecall.
 		manifest = agent.Manifest{
-			ID:   "test-agent",
-			Name: "Test Agent",
+			ID:         "test-agent",
+			Name:       "Test Agent",
+			UsesRecall: true,
 			Instructions: agent.Instructions{
 				SystemPrompt: "You are a test agent.",
 			},

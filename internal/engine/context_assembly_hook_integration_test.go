@@ -91,9 +91,14 @@ var _ = Describe("Context Assembly Hook Integration", Label("integration", "cont
 			modelLimitFn: func(model string) int { return 8192 },
 		}
 		broker = &contextAssemblyBroker{}
+		// P13: the broker hook now only fires for manifests that opt in
+		// via UsesRecall. The existing assembly-hook integration tests
+		// assert the broker IS queried, so the shared manifest explicitly
+		// opts in here.
 		manifest = agent.Manifest{
-			ID:   "test-agent",
-			Name: "Test Agent",
+			ID:         "test-agent",
+			Name:       "Test Agent",
+			UsesRecall: true,
 			Instructions: agent.Instructions{
 				SystemPrompt: "You are a test agent.",
 			},

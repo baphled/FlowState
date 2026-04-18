@@ -7,6 +7,10 @@ aliases:
   - synthesis
   - strategy
 complexity: deep
+# P13: evidence synthesis benefits from recalled observations from prior
+# research turns and distilled memory. Keep recall on for analyst so the
+# context window includes prior findings relevant to the synthesis task.
+uses_recall: true
 capabilities:
   tools:
     - file

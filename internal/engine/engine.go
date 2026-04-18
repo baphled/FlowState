@@ -698,11 +698,17 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 }
 
 // buildContextAssemblyHooks constructs the context assembly hook chain from config.
-// If a RecallBroker is provided, it is auto-registered as the first hook.
+// If a RecallBroker is provided, it is auto-registered as the first hook —
+// but the registered hook itself is a no-op when the engine's manifest does
+// not opt in via UsesRecall (P13). The hook inspects payload.AgentID and the
+// captured manifest flag so recall fires only for agents that benefit from it.
 // Any explicitly configured hooks are appended after the broker hook.
 //
 // Expected:
 //   - cfg may contain a RecallBroker and/or ContextAssemblyHooks.
+//   - cfg.Manifest.UsesRecall determines whether the broker hook runs. The
+//     default (false) is opt-out — agents must declare uses_recall: true in
+//     their manifest to participate.
 //
 // Returns:
 //   - A slice of ContextAssemblyHook functions for dispatch during context assembly.
@@ -713,7 +719,21 @@ func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
 	var hooks []plugin.ContextAssemblyHook
 	if cfg.RecallBroker != nil {
 		broker := cfg.RecallBroker
+		// Capture the opt-in flag by value so the hook closure does not
+		// share mutable state with the Config struct after engine
+		// construction — each engine instance is bound to one manifest,
+		// so this flag is effectively constant for the engine's
+		// lifetime.
+		usesRecall := cfg.Manifest.UsesRecall
 		hooks = append(hooks, func(ctx context.Context, payload *plugin.ContextAssemblyPayload) error {
+			if !usesRecall {
+				// P13 opt-in gate: agent did not declare uses_recall:true
+				// in its manifest. Skip the broker query entirely — this
+				// is the primary win of P13, removing per-turn query
+				// overhead and context pollution for agents that do not
+				// benefit from recalled observations.
+				return nil
+			}
 			observations, err := broker.Query(ctx, payload.UserMessage, 5)
 			if err != nil {
 				return err

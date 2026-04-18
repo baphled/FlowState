@@ -7,6 +7,10 @@ aliases:
   - reviewer
   - validation
 complexity: medium
+# P13: plan-reviewer evaluates a single plan handed to it through the
+# coordination store. It does not benefit from recalled discussions —
+# the plan itself is the input. Keep off.
+uses_recall: false
 capabilities:
   tools:
     - bash

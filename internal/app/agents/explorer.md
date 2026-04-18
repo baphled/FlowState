@@ -8,6 +8,10 @@ aliases:
   - codebase
   - research
 complexity: low
+# P13: explorer performs read-only, evidence-first codebase searches.
+# Each investigation starts fresh from file-system grounded queries;
+# recalled observations would inject stale context. Keep off.
+uses_recall: false
 capabilities:
   tools:
     - bash

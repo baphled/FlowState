@@ -8,6 +8,10 @@ aliases:
   - docs
   - external-refs
 complexity: low
+# P13: librarian queries external documentation and registries per task.
+# Recall would dilute the externally-sourced evidence with prior internal
+# notes — keep off.
+uses_recall: false
 capabilities:
   tools:
     - web
