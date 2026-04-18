@@ -2,13 +2,13 @@
 
 This document records the known technical debt items identified during the review cycle for the deterministic planning loop. It is intended to help future engineers understand the current risks, prioritise remediation, and separate low-risk maintenance from pre-deployment work.
 
-**Last Updated:** 2026-03-27
+**Last Updated:** 2026-04-18
 
 ## Debt Register
 
 | ID | Title | Description | Severity | Owner | Resolution path |
 | --- | --- | --- | --- | --- | --- |
-| TD-01 | Background task eviction not wired | `BackgroundTaskManager.EvictCompleted()` exists and is tested, but it has no production callers. The tasks map can grow with total delegations per session, although the current circuit breaker keeps the impact limited. | LOW | Engine team | Call `EvictCompleted()` at the end of each planning loop iteration in `internal/engine/engine.go`. |
+| TD-01 | ~~Background task eviction not wired~~ | **RESOLVED.** `EvictCompleted()` is called via `defer e.evictCompletedBackgroundTasks()` in `streamWithToolLoop()` at `internal/engine/engine.go:1649`. | ~~LOW~~ | Engine team | Resolved. |
 | TD-02 | No HTTP authentication | No authentication is enforced on any HTTP endpoint in `internal/api/server.go`. This is acceptable for local development, but it must be addressed before any network-accessible deployment. | MEDIUM (pre-deployment) | API team | Add authentication middleware to `setupRoutes()` before network deployment. |
 | TD-03 | Request bodies are read without limits | `handleChat`, `handleCreateSession`, and `handleSessionMessage` do not use `http.MaxBytesReader`, which leaves them open to large payload abuse. | MEDIUM (pre-deployment) | API team | Wrap `r.Body` with `http.MaxBytesReader` in each handler. |
 | TD-04 | WebSocket origin is not validated | `websocket.Accept(w, r, nil)` passes nil options in `internal/api/websocket.go:42`, which creates a Cross-Site WebSocket Hijacking risk. | MEDIUM (pre-deployment) | API team | Pass `&websocket.AcceptOptions{OriginPatterns: []string{"localhost:*"}}` or an equivalent validated origin policy. |

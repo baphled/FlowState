@@ -2,8 +2,12 @@ package recall
 
 import (
 	"context"
+	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -13,6 +17,7 @@ type ChainSearchTool struct {
 	embedder   provider.Provider
 	store      *FileContextStore
 	topK       int
+	bus        *eventbus.EventBus
 }
 
 // NewChainSearchTool creates a new ChainSearchTool.
@@ -27,12 +32,16 @@ type ChainSearchTool struct {
 //
 // Side effects:
 //   - None.
-func NewChainSearchTool(chainStore ChainContextStore, embedder provider.Provider, store *FileContextStore) *ChainSearchTool {
+func NewChainSearchTool(
+	chainStore ChainContextStore, embedder provider.Provider,
+	store *FileContextStore, bus *eventbus.EventBus,
+) *ChainSearchTool {
 	return &ChainSearchTool{
 		chainStore: chainStore,
 		embedder:   embedder,
 		store:      store,
 		topK:       5,
+		bus:        bus,
 	}
 }
 
@@ -103,7 +112,28 @@ func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.R
 		return t.fallbackToRecent()
 	}
 
+	start := time.Now()
+	agentID, ok := input.Arguments["agent_id"].(string)
+	if !ok {
+		agentID = ""
+	}
+
 	results, err := t.chainStore.Search(ctx, query, t.topK)
+
+	if t.bus != nil {
+		sid, ok := ctx.Value(session.IDKey{}).(string)
+		if !ok {
+			sid = ""
+		}
+		t.bus.Publish(events.EventRecallChainSearched, events.NewRecallChainSearchEvent(events.RecallChainSearchEventData{
+			SessionID: sid,
+			AgentID:   agentID,
+			Query:     query,
+			Results:   len(results),
+			LatencyMS: time.Since(start).Milliseconds(),
+		}))
+	}
+
 	if err != nil || len(results) == 0 {
 		return t.fallbackToRecent()
 	}

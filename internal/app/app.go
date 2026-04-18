@@ -1117,7 +1117,10 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		contextStore := a.Engine.ContextStore()
 		if contextStore != nil && a.ollamaProvider != nil {
 			tokenCounter := ctxstore.NewTiktokenCounter()
-			factory := recall.NewToolFactory(contextStore, a.ollamaProvider, tokenCounter, a.Config.Providers.Ollama.Model)
+			factory := recall.NewToolFactory(
+				contextStore, a.ollamaProvider, tokenCounter,
+				a.Config.Providers.Ollama.Model, a.Engine.EventBus(),
+			)
 			tools = append(tools, factory.ToolsWithChainStore(a.Engine.ChainStore())...)
 		}
 	}

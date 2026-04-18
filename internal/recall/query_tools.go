@@ -7,7 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -17,6 +20,7 @@ type SearchContextTool struct {
 	store    *FileContextStore
 	embedder provider.Provider
 	topK     int
+	bus      *eventbus.EventBus
 }
 
 // NewSearchContextTool creates a new SearchContextTool with the given store and embedder.
@@ -31,11 +35,12 @@ type SearchContextTool struct {
 //
 // Side effects:
 //   - None.
-func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, topK int) *SearchContextTool {
+func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, topK int, bus *eventbus.EventBus) *SearchContextTool {
 	return &SearchContextTool{
 		store:    store,
 		embedder: embedder,
 		topK:     topK,
+		bus:      bus,
 	}
 }
 
@@ -96,6 +101,8 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 		return t.fallbackToRecent()
 	}
 
+	start := time.Now()
+
 	vector, err := t.embedder.Embed(ctx, provider.EmbedRequest{
 		Input: query,
 		Model: t.store.model,
@@ -105,6 +112,20 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 	}
 
 	results := t.store.Search(vector, t.topK)
+
+	if t.bus != nil {
+		sid, ok := ctx.Value(session.IDKey{}).(string)
+		if !ok {
+			sid = ""
+		}
+		t.bus.Publish(events.EventRecallSearched, events.NewRecallSearchEvent(events.RecallSearchEventData{
+			SessionID: sid,
+			Query:     query,
+			Results:   len(results),
+			LatencyMS: time.Since(start).Milliseconds(),
+		}))
+	}
+
 	if len(results) == 0 {
 		return tool.Result{Output: ""}, nil
 	}
@@ -284,6 +305,7 @@ type SummarizeContextTool struct {
 	maxDepth int
 	counter  TokenCounter
 	model    string
+	bus      *eventbus.EventBus
 }
 
 // TokenCounter defines methods for counting tokens in text.
@@ -309,7 +331,8 @@ type TokenCounter interface {
 // Side effects:
 //   - None.
 func NewSummarizeContextTool(
-	store *FileContextStore, p provider.Provider, maxDepth int, counter TokenCounter, model string,
+	store *FileContextStore, p provider.Provider, maxDepth int,
+	counter TokenCounter, model string,
 ) *SummarizeContextTool {
 	return &SummarizeContextTool{
 		store:    store,
@@ -318,6 +341,11 @@ func NewSummarizeContextTool(
 		counter:  counter,
 		model:    model,
 	}
+}
+
+// SetEventBus configures the event bus for recall event emission.
+func (t *SummarizeContextTool) SetEventBus(bus *eventbus.EventBus) {
+	t.bus = bus
 }
 
 // Name returns the tool name.
@@ -380,8 +408,8 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (t
 		focus = ""
 	}
 	depth := extractInt(input.Arguments, "depth", 1)
-	start := extractInt(input.Arguments, "start", -1)
-	end := extractInt(input.Arguments, "end", -1)
+	startIdx := extractInt(input.Arguments, "start", -1)
+	endIdx := extractInt(input.Arguments, "end", -1)
 
 	if depth > t.maxDepth {
 		depth = t.maxDepth
@@ -391,8 +419,8 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (t
 	}
 
 	var messages []provider.Message
-	if start >= 0 && end >= 0 {
-		messages = t.store.GetRange(start, end)
+	if startIdx >= 0 && endIdx >= 0 {
+		messages = t.store.GetRange(startIdx, endIdx)
 	} else {
 		messages = t.store.AllMessages()
 	}
@@ -401,10 +429,31 @@ func (t *SummarizeContextTool) Execute(ctx context.Context, input tool.Input) (t
 		return tool.Result{Output: "No conversation history"}, nil
 	}
 
+	originalTokens := t.counter.Count(formatMessages(messages))
+	start := time.Now()
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	return t.summarize(ctx, messages, focus, depth)
+	result, err := t.summarize(ctx, messages, focus, depth)
+	if err != nil {
+		return result, err
+	}
+
+	if t.bus != nil {
+		sid, ok := ctx.Value(session.IDKey{}).(string)
+		if !ok {
+			sid = ""
+		}
+		t.bus.Publish(events.EventRecallSummarized, events.NewRecallSummarizedEvent(events.RecallSummarizedEventData{
+			SessionID:      sid,
+			OriginalTokens: originalTokens,
+			SummaryTokens:  t.counter.Count(result.Output),
+			LatencyMS:      time.Since(start).Milliseconds(),
+		}))
+	}
+
+	return result, nil
 }
 
 // summarize recursively summarises conversation messages using the provider's chat API.
@@ -480,7 +529,7 @@ type QueryTools struct {
 //   - None.
 func NewContextQueryTools(store *FileContextStore, p provider.Provider, counter TokenCounter, summaryModel string) *QueryTools {
 	return &QueryTools{
-		Search:    NewSearchContextTool(store, p, 5),
+		Search:    NewSearchContextTool(store, p, 5, nil),
 		GetMsgs:   NewGetMessagesTool(store),
 		Summarize: NewSummarizeContextTool(store, p, 2, counter, summaryModel),
 	}
