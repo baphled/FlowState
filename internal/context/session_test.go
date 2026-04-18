@@ -3,10 +3,12 @@ package context_test
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/streaming"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -287,6 +289,65 @@ var _ = Describe("SessionPersistence", func() {
 			}
 			title := context.GenerateTitle(messages)
 			Expect(title).To(Equal("Untitled Session"))
+		})
+	})
+
+	Describe("Delete (P10 T2)", func() {
+		It("removes the session file and the events JSONL when both exist", func() {
+			ctxStore, err := recall.NewFileContextStore(
+				filepath.Join(contextDir, "ctx.json"),
+				"text-embedding-ada-002",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			ctxStore.Append(provider.Message{Role: "user", Content: "Hi"})
+
+			Expect(sessionStore.Save("to-delete", ctxStore, context.SessionMetadata{})).To(Succeed())
+			Expect(sessionStore.AppendEvent("to-delete", streaming.SwarmEvent{
+				ID:            "evt-1",
+				Type:          streaming.EventPlan,
+				Status:        "completed",
+				Timestamp:     time.Now().UTC(),
+				AgentID:       "planner",
+				SchemaVersion: streaming.CurrentSchemaVersion,
+			})).To(Succeed())
+
+			sessionPath := filepath.Join(sessionsDir, "to-delete.json")
+			eventsPath := filepath.Join(sessionsDir, "to-delete.events.jsonl")
+			Expect(sessionPath).To(BeAnExistingFile())
+			Expect(eventsPath).To(BeAnExistingFile())
+
+			Expect(sessionStore.Delete("to-delete")).To(Succeed())
+
+			Expect(sessionPath).NotTo(BeAnExistingFile())
+			Expect(eventsPath).NotTo(BeAnExistingFile())
+		})
+
+		It("tolerates a missing events file", func() {
+			ctxStore, err := recall.NewFileContextStore(
+				filepath.Join(contextDir, "ctx.json"),
+				"text-embedding-ada-002",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			ctxStore.Append(provider.Message{Role: "user", Content: "Hi"})
+
+			Expect(sessionStore.Save("no-events", ctxStore, context.SessionMetadata{})).To(Succeed())
+
+			sessionPath := filepath.Join(sessionsDir, "no-events.json")
+			eventsPath := filepath.Join(sessionsDir, "no-events.events.jsonl")
+			Expect(sessionPath).To(BeAnExistingFile())
+			Expect(eventsPath).NotTo(BeAnExistingFile())
+
+			Expect(sessionStore.Delete("no-events")).To(Succeed())
+
+			Expect(sessionPath).NotTo(BeAnExistingFile())
+		})
+
+		It("tolerates a missing session file", func() {
+			// Session-delete is an idempotent housekeeping operation — if the
+			// session file has already been removed (e.g. by a partial earlier
+			// delete) the second call must still succeed so the caller does
+			// not need to pre-stat.
+			Expect(sessionStore.Delete("never-saved")).To(Succeed())
 		})
 	})
 })
