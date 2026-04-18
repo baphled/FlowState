@@ -18,16 +18,39 @@ type SessionEntry struct {
 	LastActive   time.Time
 }
 
+// SessionDeleter removes a persisted session and its co-located activity
+// timeline. It is the narrow interface satisfied by FileSessionStore so the
+// browser intent can trigger deletions without importing the full session
+// store surface.
+type SessionDeleter interface {
+	// Delete removes the session identified by sessionID. Idempotent —
+	// a missing session is not considered an error.
+	Delete(sessionID string) error
+}
+
 // IntentConfig holds configuration for the session browser intent.
 type IntentConfig struct {
+	// Sessions is the list of saved sessions to display.
 	Sessions []SessionEntry
+	// Deleter, when non-nil, enables the 'd' keybinding to delete a session.
+	// Leaving it nil disables the delete affordance entirely.
+	Deleter SessionDeleter
+	// ActiveSessionID, when non-empty, marks a session as the currently-open
+	// one; pressing 'd' on it will surface a "cannot delete" message
+	// instead of opening the confirmation modal.
+	ActiveSessionID string
 }
 
 // Intent allows users to browse and select from a list of sessions.
 type Intent struct {
-	sessions        []SessionEntry
-	selectedSession int
-	result          *intents.IntentResult
+	sessions         []SessionEntry
+	selectedSession  int
+	result           *intents.IntentResult
+	deleter          SessionDeleter
+	activeSessionID  string
+	confirmingDelete bool
+	pendingDeleteIdx int
+	activeBlockMsg   string
 }
 
 // NewIntent creates a new session browser intent from the given configuration.
@@ -45,6 +68,8 @@ func NewIntent(cfg IntentConfig) *Intent {
 		sessions:        cfg.Sessions,
 		selectedSession: 0,
 		result:          nil,
+		deleter:         cfg.Deleter,
+		activeSessionID: cfg.ActiveSessionID,
 	}
 }
 
@@ -88,13 +113,22 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 // Side effects:
 //   - Mutates selection index and result state based on the key pressed.
 func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
+	if i.confirmingDelete {
+		return i.handleConfirmDeleteKey(msg)
+	}
+	// Typed rune handling — 'd' opens the delete confirmation.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'd' {
+		return i.requestDelete()
+	}
 	switch msg.Type {
 	case tea.KeyUp:
+		i.activeBlockMsg = ""
 		if i.selectedSession > 0 {
 			i.selectedSession--
 		}
 		return nil
 	case tea.KeyDown:
+		i.activeBlockMsg = ""
 		if i.selectedSession < i.itemCount()-1 {
 			i.selectedSession++
 		}
@@ -106,6 +140,113 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return i.dismissModal()
 	}
 	return nil
+}
+
+// requestDelete transitions the browser into confirming-delete state for the
+// currently-selected session, provided the row represents a deletable saved
+// session and a Deleter is configured. The New Session row and the active
+// session are refused — the latter surfaces a blocking message in the view.
+//
+// Returns:
+//   - nil (state change only).
+//
+// Side effects:
+//   - May set confirmingDelete, pendingDeleteIdx, or activeBlockMsg.
+func (i *Intent) requestDelete() tea.Cmd {
+	if i.deleter == nil {
+		return nil
+	}
+	if i.selectedSession == 0 {
+		return nil
+	}
+	sessionIdx := i.selectedSession - 1
+	if sessionIdx >= len(i.sessions) {
+		return nil
+	}
+	if i.sessions[sessionIdx].ID == i.activeSessionID && i.activeSessionID != "" {
+		i.activeBlockMsg = "Cannot delete the active session. Switch sessions first."
+		return nil
+	}
+	i.confirmingDelete = true
+	i.pendingDeleteIdx = sessionIdx
+	i.activeBlockMsg = ""
+	return nil
+}
+
+// handleConfirmDeleteKey routes keypresses while the confirm-delete prompt is
+// visible. Y/Enter confirm the delete; anything else cancels.
+//
+// Expected:
+//   - msg is a valid tea.KeyMsg.
+//
+// Returns:
+//   - A tea.Cmd that emits SessionDeletedMsg on confirm, or nil on cancel.
+//
+// Side effects:
+//   - Clears confirmingDelete regardless of outcome.
+func (i *Intent) handleConfirmDeleteKey(msg tea.KeyMsg) tea.Cmd {
+	if msg.Type == tea.KeyEnter {
+		return i.performDelete()
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		r := msg.Runes[0]
+		if r == 'y' || r == 'Y' {
+			return i.performDelete()
+		}
+	}
+	// Anything else cancels.
+	i.confirmingDelete = false
+	return nil
+}
+
+// performDelete invokes the configured Deleter and, on success, removes the
+// session from the in-memory list and adjusts the selection index. On
+// failure the list is left untouched so the user can retry. Either way a
+// SessionDeletedMsg is emitted carrying the outcome.
+//
+// Returns:
+//   - A tea.Cmd that emits a SessionDeletedMsg.
+//
+// Side effects:
+//   - Clears confirmingDelete.
+//   - Mutates sessions and selectedSession on success.
+func (i *Intent) performDelete() tea.Cmd {
+	idx := i.pendingDeleteIdx
+	i.confirmingDelete = false
+	if idx < 0 || idx >= len(i.sessions) {
+		return nil
+	}
+	id := i.sessions[idx].ID
+	err := i.deleter.Delete(id)
+	if err == nil {
+		i.sessions = append(i.sessions[:idx], i.sessions[idx+1:]...)
+		i.adjustSelectionAfterDelete(idx)
+	}
+	return func() tea.Msg { return SessionDeletedMsg{SessionID: id, Err: err} }
+}
+
+// adjustSelectionAfterDelete keeps the cursor on a sensible row after a
+// session is removed from the list. If the deleted row was the last session
+// the cursor snaps up one row; otherwise the same visual row is retained,
+// which naturally surfaces the next-newer session.
+//
+// Expected:
+//   - deletedIdx is the 0-based session index that was just removed.
+//
+// Side effects:
+//   - Updates selectedSession.
+func (i *Intent) adjustSelectionAfterDelete(deletedIdx int) {
+	// Cursor position in the list is sessionIndex+1 (0 is the New Session row).
+	// If we removed the last session, the previous row becomes the cursor's
+	// new home; otherwise keep the cursor where it was.
+	maxSessionIdx := len(i.sessions) - 1
+	if maxSessionIdx < 0 {
+		i.selectedSession = 0
+		return
+	}
+	if deletedIdx > maxSessionIdx {
+		i.selectedSession = maxSessionIdx + 1
+	}
 }
 
 // selectCurrent confirms the currently highlighted item.
@@ -198,6 +339,10 @@ func (i *Intent) renderContent() string {
 	}
 	lines = append(lines, newSessionPrefix+"\u271a New Session")
 
+	if len(i.sessions) == 0 {
+		lines = append(lines, "  No sessions yet")
+	}
+
 	for idx, session := range i.sessions {
 		prefix := "  "
 		if idx+1 == i.selectedSession {
@@ -206,12 +351,33 @@ func (i *Intent) renderContent() string {
 		lines = append(lines, prefix+formatSession(session))
 	}
 
+	if i.activeBlockMsg != "" {
+		lines = append(lines, "", i.activeBlockMsg)
+	}
+
+	if i.confirmingDelete && i.pendingDeleteIdx >= 0 && i.pendingDeleteIdx < len(i.sessions) {
+		target := i.sessions[i.pendingDeleteIdx].Title
+		lines = append(lines, "", fmt.Sprintf("Delete session '%s' and its activity timeline? (y/N)", target))
+	}
+
 	var buf strings.Builder
 	for _, line := range lines {
 		buf.WriteString(line)
 		buf.WriteString("\n")
 	}
 	return buf.String()
+}
+
+// IsConfirmingDelete reports whether the browser is currently prompting the
+// user to confirm a destructive delete.
+//
+// Returns:
+//   - true when the confirmation prompt is visible, false otherwise.
+//
+// Side effects:
+//   - None.
+func (i *Intent) IsConfirmingDelete() bool {
+	return i.confirmingDelete
 }
 
 // formatSession formats a session entry for display.

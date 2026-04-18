@@ -189,6 +189,9 @@ type SessionLister interface {
 	Load(sessionID string) (*recall.FileContextStore, error)
 	// Save persists the session store to disk with the provided metadata.
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
+	// Delete removes a session's persisted state (metadata + activity timeline).
+	// Missing files are tolerated — Delete is idempotent.
+	Delete(sessionID string) error
 }
 
 // SwarmEventPersister is an optional interface that a SessionLister may
@@ -841,6 +844,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
 		return i.handleSessionLoaded(msg)
+	case sessionbrowser.SessionDeletedMsg:
+		return i.handleSessionDeleted(msg)
 	case sessiontree.SelectedMsg:
 		return i.handleSessionTreeSelection(msg)
 	case BackgroundTaskCompletedMsg:
@@ -3199,7 +3204,9 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 			}
 		}
 		browserIntent := sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
-			Sessions: entries,
+			Sessions:        entries,
+			Deleter:         i.sessionStore,
+			ActiveSessionID: i.sessionID,
 		})
 		return tuiintents.ShowModalMsg{Modal: browserIntent}
 	}
@@ -3386,6 +3393,46 @@ func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
 			Err:       err,
 		}
 	}
+}
+
+// handleSessionDeleted surfaces the outcome of a session delete as a toast
+// notification. Success emits a short info-level message; failure emits an
+// error-level message carrying the underlying error text. The in-memory
+// session list inside the browser has already been updated at this point —
+// this handler's only job is user feedback.
+//
+// Expected:
+//   - msg is a sessionbrowser.SessionDeletedMsg from the browser intent.
+//
+// Returns:
+//   - nil (no follow-up command).
+//
+// Side effects:
+//   - Adds a Notification to notificationManager when one is configured.
+func (i *Intent) handleSessionDeleted(msg sessionbrowser.SessionDeletedMsg) tea.Cmd {
+	if i.notificationManager == nil {
+		return nil
+	}
+	if msg.Err != nil {
+		i.notificationManager.Add(notification.Notification{
+			ID:        "session-delete-error-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+			Title:     "Delete failed",
+			Message:   msg.Err.Error(),
+			Level:     notification.LevelError,
+			Duration:  8 * time.Second,
+			CreatedAt: time.Now(),
+		})
+		return nil
+	}
+	i.notificationManager.Add(notification.Notification{
+		ID:        "session-delete-ok-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Session deleted",
+		Message:   msg.SessionID,
+		Level:     notification.LevelSuccess,
+		Duration:  4 * time.Second,
+		CreatedAt: time.Now(),
+	})
+	return nil
 }
 
 // toolCallSummary extracts the primary argument from a tool call and formats it as "toolName: arg".
