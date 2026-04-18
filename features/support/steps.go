@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -148,6 +149,13 @@ type StepDefinitions struct {
 	// asynchronous send, mirroring the TUI's streamCancel function that is
 	// invoked on double-Esc. streamDrainDone closes when the background
 	// drain goroutine exits.
+	//
+	// streamMu guards every field below that is written by the drain
+	// goroutine in iSend and read from the step-executing goroutine in
+	// iSeeTokensAppearing / theStreamShouldBeCancelled / etc. Without this
+	// mutex, the race detector flags streaming_cancel_steps.go:118 (write)
+	// against :138 / :158 (reads) — the P1-era regression tracked in P9/T1.
+	streamMu        sync.Mutex
 	streamCtx       context.Context
 	streamCancel    context.CancelFunc
 	streamDrainDone chan struct{}
@@ -159,6 +167,11 @@ type StepDefinitions struct {
 	streamFullLen     int
 	streamUserEscd    bool
 	streamDoneChunkRx bool
+	// responseParts is the ordered list of chunks collected by the drain
+	// goroutine. It is also exposed to non-cancel scenarios via other
+	// reset sites; those scenarios execute serially so they don't contend
+	// with the mutex. Access to this field from the streaming-cancel
+	// scenario MUST go through streamMu.
 }
 
 // TestApp represents a test application instance.
