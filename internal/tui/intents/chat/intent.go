@@ -3099,6 +3099,52 @@ func (i *Intent) renderSessionContent(sess *session.Session) string {
 	return v.RenderContent(i.width)
 }
 
+// resetAndRestoreSwarmEvents clears the in-memory swarm event store and
+// re-populates it from the session's persisted WAL on session switch.
+//
+// P5/B2 contract:
+//  1. Clear() runs unconditionally — this severs any events that belonged to
+//     the previously active session so they cannot leak into the new session's
+//     timeline or, under the P4 append-on-write WAL, into the new session's
+//     on-disk file.
+//  2. Restore routes through streaming.EventRestorer when the store supports
+//     it, bypassing the WAL AppendFunc. The events were just read from disk;
+//     re-appending via the WAL path would double the on-disk file on every
+//     session switch and quickly corrupt long-lived sessions.
+//  3. Stores that do not satisfy EventRestorer fall back to Append — best-
+//     effort for legacy wrappers; the default stores all support restore.
+//
+// Expected:
+//   - sessionID identifies the session being loaded.
+//
+// Side effects:
+//   - Mutates i.swarmStore via Clear + restore.
+//   - Reads the persisted WAL via i.sessionStore.LoadEvents when available.
+func (i *Intent) resetAndRestoreSwarmEvents(sessionID string) {
+	if i.swarmStore == nil {
+		return
+	}
+	i.swarmStore.Clear()
+	ep, ok := i.sessionStore.(SwarmEventPersister)
+	if !ok {
+		return
+	}
+	restored, err := ep.LoadEvents(sessionID)
+	if err != nil || len(restored) == 0 {
+		return
+	}
+	if restorer, ok := i.swarmStore.(streaming.EventRestorer); ok {
+		restorer.RestoreEvents(restored)
+		return
+	}
+	// Fallback for stores that do not implement the restore contract. The
+	// default stores (MemorySwarmStore, persistedSwarmStore) both satisfy
+	// EventRestorer, so this branch is reserved for future wrappers.
+	for idx := range restored {
+		i.swarmStore.Append(restored[idx])
+	}
+}
+
 // handleSessionLoaded processes the result of an async session load.
 //
 // Expected:
@@ -3125,15 +3171,7 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	for _, sm := range msg.Store.GetStoredMessages() {
 		lastToolCallName = i.replayStoredMessage(sm, lastToolCallName)
 	}
-	// Restore swarm events when the session store supports persistence.
-	// Missing event files are handled gracefully (old sessions).
-	if ep, ok := i.sessionStore.(SwarmEventPersister); ok && i.swarmStore != nil {
-		if restored, err := ep.LoadEvents(msg.SessionID); err == nil {
-			for idx := range restored {
-				i.swarmStore.Append(restored[idx])
-			}
-		}
-	}
+	i.resetAndRestoreSwarmEvents(msg.SessionID)
 	i.atBottom = true
 	i.refreshViewport()
 	i.syncStatusBar()
