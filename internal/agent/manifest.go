@@ -35,6 +35,14 @@ type Manifest struct {
 	Loop *LoopConfig `json:"loop,omitempty" yaml:"loop,omitempty"`
 	// OrchestratorMeta describes how orchestrators should reference and invoke this agent.
 	OrchestratorMeta OrchestratorMetadata `json:"orchestrator_meta" yaml:"orchestrator_meta"`
+	// UsesRecall (P13) controls whether this agent's context-assembly
+	// pipeline queries the RecallBroker. Defaults to false so recall is
+	// opt-in per agent — tool-focused executors, routers, and other
+	// agents that do not benefit from recalled observations avoid the
+	// wasted query and the context-window pollution that comes with it.
+	// Set to true only for agents whose reasoning genuinely benefits
+	// from prior distilled knowledge (e.g. evidence synthesis roles).
+	UsesRecall bool `json:"uses_recall" yaml:"uses_recall"`
 }
 
 // UnmarshalJSON deserialises a manifest while defaulting aliases to an empty slice.

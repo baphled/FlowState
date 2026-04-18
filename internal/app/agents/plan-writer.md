@@ -7,6 +7,10 @@ aliases:
   - plan-generation
   - writer
 complexity: medium
+# P13: plan-writer generates plans from explicit evidence delivered via
+# the coordination store. Recall would blur the evidence boundary — the
+# plan must come from the provided inputs, not past turns. Keep off.
+uses_recall: false
 capabilities:
   tools:
     - bash

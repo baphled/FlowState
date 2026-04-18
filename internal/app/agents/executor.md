@@ -7,6 +7,10 @@ aliases:
   - task-runner
   - implement
 complexity: deep
+# P13: tool-focused executor runs predefined plans. Recall would pollute
+# the context window with unrelated prior discussions without changing
+# the step-by-step execution outcome — keep off.
+uses_recall: false
 capabilities:
   tools:
     - bash
