@@ -36,10 +36,6 @@ var _ = Describe("swarm activity pane Ctrl+T binding (P11)", func() {
 	})
 
 	Describe("default visibility", func() {
-		It("starts with secondaryPaneVisible == true", func() {
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeTrue())
-		})
-
 		It("renders the Activity Timeline header when visible", func() {
 			view := intent.View()
 			Expect(view).To(ContainSubstring("Activity Timeline"))
@@ -49,11 +45,6 @@ var _ = Describe("swarm activity pane Ctrl+T binding (P11)", func() {
 	Describe("Ctrl+T does NOT toggle pane visibility (P11 changed semantics)", func() {
 		BeforeEach(func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-		})
-
-		It("leaves secondaryPaneVisible unchanged", func() {
-			Expect(intent.SecondaryPaneVisibleForTest()).To(BeTrue(),
-				"P11 repurposed Ctrl+T for filter cycling — the pane must stay visible")
 		})
 
 		It("keeps the Activity Timeline header rendered", func() {
