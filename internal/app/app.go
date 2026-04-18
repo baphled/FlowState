@@ -240,9 +240,11 @@ func configureApplicationAfterBuild(
 
 	app.setAgentOverridesFromConfig(cfg, eng)
 	app.wireDelegateToolIfEnabled(eng, defaultManifest)
+	app.wireSuggestDelegateToolIfDisabled(eng, defaultManifest)
 	if runtime.setEnsureTools != nil {
 		runtime.setEnsureTools(func(m agent.Manifest) {
 			app.wireDelegateToolIfEnabled(eng, m)
+			app.wireSuggestDelegateToolIfDisabled(eng, m)
 		})
 	}
 	if app.backgroundManager != nil && app.API != nil {
@@ -332,10 +334,13 @@ func buildApp(params appBuildParams) *App {
 
 	app.setAgentOverridesFromConfig(cfg, runtime.engine)
 	app.restorePersistedSessions()
-	app.wireDelegateToolIfEnabled(runtime.engine, selectDefaultManifest(agentRegistry, cfg.DefaultAgent))
+	defaultForRuntime := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
+	app.wireDelegateToolIfEnabled(runtime.engine, defaultForRuntime)
+	app.wireSuggestDelegateToolIfDisabled(runtime.engine, defaultForRuntime)
 	if runtime.setEnsureTools != nil {
 		runtime.setEnsureTools(func(m agent.Manifest) {
 			app.wireDelegateToolIfEnabled(runtime.engine, m)
+			app.wireSuggestDelegateToolIfDisabled(runtime.engine, m)
 		})
 	}
 	if app.backgroundManager != nil && app.API != nil {
@@ -941,6 +946,30 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		eng.AddTool(coordinationtool.New(coordinationStore))
 	}
+}
+
+// wireSuggestDelegateToolIfDisabled adds a SuggestDelegateTool to the engine
+// when the manifest has can_delegate=false. This is the inverse of
+// wireDelegateToolIfEnabled: a given agent is offered either delegate (can
+// delegate) or suggest_delegate (cannot), never both. The tool returns a
+// structured payload the chat UI renders as a "switch agent?" prompt, giving
+// the model a legitimate escape hatch when the user references an @<agent>
+// the current non-delegating agent cannot reach directly. See also P7 — the
+// premature-delegation warning path remains active as a defence-in-depth
+// signal for models that ignore this tool.
+//
+// Expected:
+//   - eng is a fully initialised Engine.
+//   - manifest is the agent manifest to inspect for delegation configuration.
+//
+// Side effects:
+//   - Appends a SuggestDelegateTool to the engine's tool set when
+//     can_delegate is false. Does nothing when can_delegate is true.
+func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest agent.Manifest) {
+	if manifest.Delegation.CanDelegate {
+		return
+	}
+	eng.AddTool(engine.NewSuggestDelegateTool(a.Registry, manifest.ID))
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.

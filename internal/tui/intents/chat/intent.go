@@ -3,6 +3,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1638,6 +1639,10 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	// see every chunk so the "first chunk with no preceding text"
 	// signal is accurate.
 	i.maybeWarnPrematureDelegationMisfire(msg)
+	// P12: inspect the chunk for a suggest_delegate tool_result payload
+	// and surface a switch-agent notification when the model took the
+	// legitimate escape hatch.
+	i.maybeNotifySuggestDelegate(msg)
 	// Track whether any text content has been emitted this turn so
 	// subsequent tool_use chunks are not misattributed to the misfire
 	// pattern. A chunk may carry Content, ToolCallName, or both; only
@@ -1714,6 +1719,65 @@ func (i *Intent) resetTurnState() {
 	i.turnUserMessage = ""
 	i.turnHasText = false
 	i.prematureWarningFired = false
+}
+
+// maybeNotifySuggestDelegate inspects a chunk for a suggest_delegate
+// tool_result payload (Phase 12). When the payload carries the
+// "switch_agent" suggestion marker, surface a one-line actionable
+// notification prompting the user to switch to a delegating agent so the
+// target can be reached. Malformed or unrelated payloads are ignored
+// silently — the P7 warning path remains the defence-in-depth signal.
+//
+// Expected:
+//   - msg is the chunk being processed by handleStreamChunkMsg.
+//
+// Side effects:
+//   - On a valid switch_agent payload, adds an info-level Notification
+//     via the notification manager.
+func (i *Intent) maybeNotifySuggestDelegate(msg StreamChunkMsg) {
+	if msg.ToolResult == "" {
+		return
+	}
+	if msg.ToolCallName != "suggest_delegate" {
+		return
+	}
+	if i.notificationManager == nil {
+		return
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(msg.ToolResult), &payload); err != nil {
+		return
+	}
+	suggestion, ok := payload["suggestion"].(string)
+	if !ok || suggestion != "switch_agent" {
+		return
+	}
+
+	toAgent, ok := payload["to_agent"].(string)
+	if !ok {
+		toAgent = ""
+	}
+	targetAgent, ok := payload["target_agent"].(string)
+	if !ok {
+		targetAgent = ""
+	}
+	userPrompt, ok := payload["user_prompt"].(string)
+	if !ok {
+		userPrompt = ""
+	}
+	if userPrompt == "" {
+		userPrompt = "Switch to " + toAgent + " to delegate to @" + targetAgent + "?"
+	}
+
+	i.notificationManager.Add(notification.Notification{
+		ID:        "suggest-delegate-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Switch agent suggested",
+		Message:   userPrompt,
+		Level:     notification.LevelInfo,
+		Duration:  10 * time.Second,
+		CreatedAt: time.Now(),
+	})
 }
 
 // batchCmds merges a primary command with an optional follow-up command,
