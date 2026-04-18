@@ -306,7 +306,10 @@ var _ = Describe("SwarmActivityPane", func() {
 		})
 
 		Context("with all types hidden", func() {
-			It("renders only the header and filter indicator with no event lines", func() {
+			It("renders a helpful 'all hidden' message instead of a bare count (P8 T3)", func() {
+				// F17: "showing 0 of 2" is ambiguous when the user has
+				// filtered everything out. Replace with actionable guidance
+				// that tells them how to recover.
 				events := []streaming.SwarmEvent{
 					{Type: streaming.EventDelegation, Status: "s", AgentID: "a1"},
 					{Type: streaming.EventToolCall, Status: "s", AgentID: "a2"},
@@ -320,7 +323,11 @@ var _ = Describe("SwarmActivityPane", func() {
 
 				output := pane.Render(80, 10)
 				Expect(output).To(ContainSubstring("Activity Timeline"))
-				Expect(output).To(ContainSubstring("showing 0 of 2"))
+				// The old bare "showing 0 of 2" must be gone — it was the
+				// confusing case; keep the actionable message instead.
+				Expect(output).NotTo(ContainSubstring("showing 0 of 2"))
+				Expect(output).To(ContainSubstring("All events hidden"))
+				Expect(output).To(ContainSubstring("[T]"))
 				// No event body lines (no bullet markers).
 				lines := strings.Split(output, "\n")
 				for _, line := range lines {

@@ -11,23 +11,39 @@ pipeline events for rendering in the Bubble Tea TUI. The model lives at
 
 ```go
 type SwarmEvent struct {
-    ID        string                 `json:"id"`
-    Type      SwarmEventType         `json:"type"`
-    Status    string                 `json:"status"`
-    Timestamp time.Time              `json:"timestamp"`
-    AgentID   string                 `json:"agent_id"`
-    Metadata  map[string]interface{} `json:"metadata,omitempty"`
+    ID            string                 `json:"id"`
+    Type          SwarmEventType         `json:"type"`
+    Status        string                 `json:"status"`
+    Timestamp     time.Time              `json:"timestamp"`
+    AgentID       string                 `json:"agent_id"`
+    Metadata      map[string]interface{} `json:"metadata,omitempty"`
+    SchemaVersion int                    `json:"schema_version,omitempty"`
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ID` | `string` | Unique identifier for the event. |
+| `ID` | `string` | Unique identifier for the event. Required (P2 ID invariant). |
 | `Type` | `SwarmEventType` | Category discriminator (see Event Types below). |
 | `Status` | `string` | Lifecycle state (e.g. `"started"`, `"completed"`, `"error"`). |
-| `Timestamp` | `time.Time` | When the event occurred. Serialised as RFC3339. |
+| `Timestamp` | `time.Time` | When the event occurred. Serialised as RFC3339. **UTC invariant (P4):** producers stamp `time.Now().UTC()` so every persisted timestamp ends in `Z`. |
 | `AgentID` | `string` | Originating agent identifier. |
 | `Metadata` | `map[string]interface{}` | Event-specific data with stable string keys. Omitted from JSON when empty. |
+| `SchemaVersion` | `int` | On-disk shape version (P4). Emitters stamp `CurrentSchemaVersion`; legacy files written before P4 decode this as zero and the loader treats zero as implicit v1 for backward compatibility. Omitted from JSON when zero. |
+
+### Schema versioning (P4)
+
+`CurrentSchemaVersion` (currently `1`) is the version stamp applied to every
+`SwarmEvent` produced by the running code. The loader tolerates mixed-version
+files:
+
+- **Version 0 (implicit)**: files written before P4 — no `schema_version`
+  field was emitted. Treated as equivalent to v1.
+- **Version 1 (current)**: adds `schema_version` to the on-disk shape.
+- **Version > `CurrentSchemaVersion`**: loader counts these into
+  `FutureSchemaLineCount` (surfaced via `slog.Warn`) and passes them through
+  unchanged so a newer writer's events are not silently discarded during a
+  rolling upgrade.
 
 ## Event Types
 
@@ -127,21 +143,66 @@ back to the default.
 
 ## Persistence
 
-Events are persisted in JSONL format (JSON Lines) via two functions in
-`internal/streaming/swarm_event_persistence.go`:
+Events are persisted in JSONL format (JSON Lines) via functions in
+`internal/streaming/swarm_event_persistence.go`. The P4 model is a
+write-ahead log (WAL): each event is appended and `fsync`-ed on write, and
+the file is compacted to the current ring-buffer snapshot when the session
+closes.
 
 | Function | Signature | Behaviour |
 |----------|-----------|-----------|
-| `WriteEventsJSONL` | `(w io.Writer, events []SwarmEvent) error` | Writes one JSON object per line. Timestamps encode as RFC3339. An empty slice produces no output. |
-| `ReadEventsJSONL` | `(r io.Reader) ([]SwarmEvent, error)` | Reads JSON Lines, returning parsed events. Corrupted lines are silently skipped. Returns an error only on reader failure (not parse errors). |
+| `AppendSwarmEvent` | `(path string, ev SwarmEvent) error` | Appends one JSONL line, calls `f.Sync()` before close. Acquires the per-path session lock for the duration of the write. The stream worker calls this on every store `Append`. |
+| `CompactSwarmEvents` | `(path string, events []SwarmEvent) error` | Rewrites the entire file from the supplied snapshot via a temp file + `fsync` + atomic rename. Called on session close so the file shrinks back to the ring buffer's size. Acquires the per-path session lock. |
+| `WriteEventsJSONL` | `(w io.Writer, events []SwarmEvent) error` | Byte-identical encoder used by both `AppendSwarmEvent` and `CompactSwarmEvents`. Safe to call with any `io.Writer`; no locking. |
+| `ReadEventsJSONL` | `(r io.Reader) ([]SwarmEvent, error)` | Reads JSON Lines, returning parsed events. Uses a 1 MiB scanner buffer (P4 B3). Corrupted lines are counted and skipped — `FutureSchemaLineCount` and `CorruptLineCount` surface diagnostics without discarding the timeline. |
 
 ### Format rules
 
 - One JSON object per line (no pretty-printing).
-- Timestamps in RFC3339 format (standard `encoding/json` behaviour for `time.Time`).
-- `metadata` field carries `omitempty` — absent when the map is nil or empty.
+- Timestamps in RFC3339 format (standard `encoding/json` behaviour for `time.Time`); **always UTC** (`Z` suffix) from P4 onwards.
+- `metadata` and `schema_version` fields carry `omitempty`.
 - Empty lines are skipped on read.
-- Corrupted lines are skipped gracefully; a single bad line does not discard the timeline.
+- Corrupted lines are skipped gracefully; a single bad line does not discard the timeline, and parse errors increment a counter logged at `slog.Warn`.
+- Scanner buffer is sized to **1 MiB per line** so large metadata blobs (plan artefacts, tool outputs) round-trip without being truncated.
+
+### WAL + compact-on-close flow (P4)
+
+```
+┌──────────────┐      AppendSwarmEvent           ┌──────────────────┐
+│ stream       │ ──────────────────────────────▶ │  .events.jsonl   │
+│ worker       │     (O_APPEND + f.Sync())       │  (append-only)   │
+└──────────────┘                                  └──────────────────┘
+                                                           │
+                                                   session close
+                                                           ▼
+                                              ┌──────────────────────┐
+                                              │  CompactSwarmEvents  │
+                                              │  tmp file + rename   │
+                                              │  f.Sync() before     │
+                                              │  atomic rename       │
+                                              └──────────────────────┘
+```
+
+- Append is the hot path: one `O_APPEND|O_CREATE` open, one encode, one
+  `f.Sync`, one close. This closes the blocker window where a crash between
+  in-memory append and the next snapshot save previously lost events.
+- Compact is the cold path: on session close, the chat intent hands the
+  full ring-buffer snapshot to `CompactSwarmEvents`, which writes to
+  `<path>.tmp`, `fsync`s, and atomically renames over the original. This
+  keeps the file bounded to the store's capacity (default 200 events)
+  regardless of how long the session ran.
+
+### Per-session write lock (P6)
+
+`AppendSwarmEvent`, `CompactSwarmEvents`, and the tmp-cleanup helper all
+acquire a per-path mutex from `sessionLocks` (declared in
+`internal/streaming/persistence_lock.go`) before touching the filesystem.
+The lock key is the absolute events file path, so two writers that
+independently compute the same path for one session serialise correctly.
+This prevents a compact-time atomic rename from landing between an
+appender's `OpenFile` and its `Write`, and guards concurrent `saveSession`
+goroutines from interleaving output. Unit tests cover the race under
+`go test -race` with 10 concurrent appenders.
 
 ## Examples
 

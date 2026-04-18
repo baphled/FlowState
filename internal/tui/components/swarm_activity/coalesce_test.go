@@ -204,6 +204,123 @@ func TestCoalesceToolCalls_RespectsVisibilityFilter(t *testing.T) {
 	}
 }
 
+// TestCoalesceToolCalls_EvictionWithFilter_ShowsRecentVisibleEvents verifies
+// that when the caller hands the pane a post-eviction slice (the store has
+// already trimmed the oldest events) and a visibility filter hides a type,
+// the pane renders the most-recent-N-visible events rather than producing
+// gaps or stale lines. This closes the F16 QA gap: ring-buffer eviction and
+// filtering were each tested in isolation, but not their interaction.
+func TestCoalesceToolCalls_EvictionWithFilter_ShowsRecentVisibleEvents(t *testing.T) {
+	// Simulate a pane that has a small capacity (imagine the store's ring
+	// buffer has already evicted the oldest). Surviving events are mixed
+	// types; caller then hides EventPlan. The pane must render every
+	// surviving non-plan event, in order, with no duplicates or gaps.
+	surviving := []streaming.SwarmEvent{
+		// These three are what remained after eviction of older events.
+		{ID: "d1", Type: streaming.EventDelegation, Status: "started", AgentID: "qa"},
+		{ID: "p1", Type: streaming.EventPlan, Status: "done", AgentID: "planner"},
+		{ID: "d2", Type: streaming.EventDelegation, Status: "completed", AgentID: "qa"},
+	}
+	vis := map[streaming.SwarmEventType]bool{
+		streaming.EventDelegation: true,
+		streaming.EventToolCall:   true,
+		streaming.EventToolResult: true,
+		streaming.EventPlan:       false, // hidden
+		streaming.EventReview:     true,
+	}
+
+	lines := swarmactivity.CoalesceToolCallsForTest(surviving, vis)
+
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 surviving, visible lines (d1, d2), got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "delegation") || !strings.Contains(lines[0], "started") {
+		t.Errorf("expected first line to be d1 delegation/started, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "delegation") || !strings.Contains(lines[1], "completed") {
+		t.Errorf("expected second line to be d2 delegation/completed, got %q", lines[1])
+	}
+	// Plan event must be dropped.
+	for _, line := range lines {
+		if strings.Contains(line, "plan") {
+			t.Errorf("expected plan lines to be hidden, got %q", line)
+		}
+	}
+}
+
+// TestCoalesceToolCalls_EvictedCall_OrphanResultStillSuppressed verifies that
+// when the tool_call was evicted by the ring buffer but its tool_result
+// survived, the pane still behaves gracefully — the lone tool_result is
+// suppressed (not rendered as a ghost "result" line), and nothing panics.
+func TestCoalesceToolCalls_EvictedCall_OrphanResultStillSuppressed(t *testing.T) {
+	// Only the result survived; the call was evicted.
+	events := []streaming.SwarmEvent{
+		{
+			ID:      "toolu_01SURVIVED",
+			Type:    streaming.EventToolResult,
+			Status:  "completed",
+			AgentID: "tool-agent",
+			Metadata: map[string]interface{}{
+				"content": "output body",
+			},
+		},
+		// A normal delegation follows so we can confirm order is preserved.
+		{ID: "d1", Type: streaming.EventDelegation, Status: "completed", AgentID: "qa"},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("coalesceToolCalls must not panic on an evicted tool_call; got: %v", r)
+		}
+	}()
+
+	lines := swarmactivity.CoalesceToolCallsForTest(events, defaultVisible())
+
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line (orphan result dropped, delegation kept), got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "delegation") {
+		t.Errorf("expected surviving line to be the delegation, got %q", lines[0])
+	}
+}
+
+// TestCoalesceToolCalls_SurvivingCall_EvictedResult_ShowsInflightStatus
+// verifies the mirror-image case: the tool_call survived but its
+// tool_result was evicted. The pane must show the call with its own
+// (inflight) status — no ghost "completed" line, no panic.
+func TestCoalesceToolCalls_SurvivingCall_EvictedResult_ShowsInflightStatus(t *testing.T) {
+	events := []streaming.SwarmEvent{
+		{
+			ID:      "toolu_01LONELY",
+			Type:    streaming.EventToolCall,
+			Status:  "running",
+			AgentID: "tool-agent",
+			Metadata: map[string]interface{}{
+				"tool_name": "slow_tool",
+			},
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("coalesceToolCalls must not panic when a tool_result is evicted; got: %v", r)
+		}
+	}()
+
+	lines := swarmactivity.CoalesceToolCallsForTest(events, defaultVisible())
+
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line (surviving call only), got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "running") {
+		t.Errorf("expected surviving call to show its in-flight status 'running', got %q", lines[0])
+	}
+	// Must not fabricate a "completed" suffix.
+	if strings.Contains(lines[0], "completed") {
+		t.Errorf("expected surviving call not to claim completion, got %q", lines[0])
+	}
+}
+
 // defaultVisible returns a visibility map with all types enabled.
 func defaultVisible() map[streaming.SwarmEventType]bool {
 	return map[streaming.SwarmEventType]bool{
