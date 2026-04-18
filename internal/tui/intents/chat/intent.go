@@ -65,10 +65,20 @@ type StreamChunkMsg struct {
 	ModelID string
 	// ToolCallID propagates provider.StreamChunk.ToolCallID (P2 T1). It is the
 	// upstream provider's tool-use identifier and correlates tool_call chunks
-	// with the subsequent tool_result chunk. The intent layer uses this as the
-	// stable ID on derived SwarmEvent entries so the activity pane can pair
-	// start and result events into a single line (P3).
+	// with the subsequent tool_result chunk within a single provider. Retained
+	// on chunks and surfaced by the Ctrl+E event-details modal for the audit
+	// trail; downstream coalesce now keys on InternalToolCallID instead so
+	// cross-provider failover correlates correctly (P14b).
 	ToolCallID string
+	// InternalToolCallID propagates provider.StreamChunk.InternalToolCallID
+	// (P14a). It is the FlowState-internal, session-scoped identifier minted
+	// by streaming.ToolCallCorrelator and stamped by the engine on every
+	// tool-related chunk before forwarding it to consumers. Same logical
+	// tool call observed on two different providers resolves to the same
+	// InternalToolCallID even though the providers' native ToolCallIDs
+	// are disjoint — this is the contract the activity pane coalesce and
+	// the event-details modal depend on for cross-provider pairing.
+	InternalToolCallID string
 }
 
 // SpinnerTickMsg is sent periodically to advance the chat spinner animation.
@@ -2009,17 +2019,25 @@ func toolCallSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Swar
 	if status == "" {
 		status = "started"
 	}
+	metadata := map[string]interface{}{
+		"tool_name": msg.ToolCallName,
+		"is_error":  msg.ToolIsError,
+	}
+	// Preserve the native provider-scoped id as metadata for the Ctrl+E
+	// details modal's audit trail, even when the SwarmEvent.ID itself is
+	// the FlowState-internal id (P14b). Empty ToolCallID is omitted so
+	// persisted events stay clean.
+	if msg.ToolCallID != "" {
+		metadata["provider_tool_use_id"] = msg.ToolCallID
+	}
 	return streaming.SwarmEvent{
-		ID:            ensureEventID(msg.ToolCallID),
+		ID:            ensureEventID(preferredCorrelationID(msg)),
 		Type:          streaming.EventToolCall,
 		Status:        status,
 		Timestamp:     time.Now().UTC(),
 		AgentID:       fallbackAgent,
 		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata: map[string]interface{}{
-			"tool_name": msg.ToolCallName,
-			"is_error":  msg.ToolIsError,
-		},
+		Metadata:      metadata,
 	}
 }
 
@@ -2066,17 +2084,24 @@ func toolResultSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.Sw
 	if msg.ToolIsError {
 		status = "error"
 	}
+	metadata := map[string]interface{}{
+		"content":  msg.ToolResult,
+		"is_error": msg.ToolIsError,
+	}
+	// Preserve the native provider-scoped id alongside the internal one
+	// (P14b audit trail). The SwarmEvent.ID itself is the internal id so
+	// coalesce pairs across a provider failover.
+	if msg.ToolCallID != "" {
+		metadata["provider_tool_use_id"] = msg.ToolCallID
+	}
 	return streaming.SwarmEvent{
-		ID:            ensureEventID(msg.ToolCallID),
+		ID:            ensureEventID(preferredCorrelationID(msg)),
 		Type:          streaming.EventToolResult,
 		Status:        status,
 		Timestamp:     time.Now().UTC(),
 		AgentID:       fallbackAgent,
 		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata: map[string]interface{}{
-			"content":  msg.ToolResult,
-			"is_error": msg.ToolIsError,
-		},
+		Metadata:      metadata,
 	}
 }
 
@@ -2129,6 +2154,33 @@ func ensureEventID(id string) string {
 		return id
 	}
 	return uuid.NewString()
+}
+
+// preferredCorrelationID chooses the identifier to seed a tool-call or
+// tool-result SwarmEvent.ID with. It prefers the FlowState-internal id
+// stamped by the engine (P14a) so coalesce pairs a tool_call on provider
+// A with its tool_result on provider B even when the providers mint
+// disjoint native tool-use ids. The native ToolCallID is the fallback —
+// used for pre-P14 chunk fixtures in tests and as a defensive path when
+// the engine has not yet wired the correlator on a given code path.
+//
+// An empty return value is tolerated; ensureEventID mints a UUID when
+// neither id was surfaced on the chunk (for example a provider that
+// omits ids entirely, which P2 T3's invariant already covers).
+//
+// Expected:
+//   - msg is any StreamChunkMsg whose ID fields may be empty.
+//
+// Returns:
+//   - msg.InternalToolCallID when non-empty; otherwise msg.ToolCallID.
+//
+// Side effects:
+//   - None.
+func preferredCorrelationID(msg StreamChunkMsg) string {
+	if msg.InternalToolCallID != "" {
+		return msg.InternalToolCallID
+	}
+	return msg.ToolCallID
 }
 
 // streamingEventMeta returns the display title and notification level for a streaming event type.
@@ -2553,16 +2605,17 @@ func buildStreamChunkMsg(i *Intent, chunk provider.StreamChunk) StreamChunkMsg {
 	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
-		Content:        chunk.Content,
-		Error:          chunk.Error,
-		Done:           chunk.Done,
-		EventType:      chunk.EventType,
-		ToolCallName:   toolCallName,
-		ToolStatus:     toolStatus,
-		DelegationInfo: chunk.DelegationInfo,
-		Thinking:       chunk.Thinking,
-		ModelID:        chunk.ModelID,
-		ToolCallID:     chunk.ToolCallID,
+		Content:            chunk.Content,
+		Error:              chunk.Error,
+		Done:               chunk.Done,
+		EventType:          chunk.EventType,
+		ToolCallName:       toolCallName,
+		ToolStatus:         toolStatus,
+		DelegationInfo:     chunk.DelegationInfo,
+		Thinking:           chunk.Thinking,
+		ModelID:            chunk.ModelID,
+		ToolCallID:         chunk.ToolCallID,
+		InternalToolCallID: chunk.InternalToolCallID,
 	}
 
 	if chunk.ToolResult != nil {
@@ -2614,16 +2667,17 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
-		Content:        chunk.Content,
-		Error:          chunk.Error,
-		Done:           chunk.Done,
-		EventType:      chunk.EventType,
-		ToolCallName:   toolCallName,
-		ToolStatus:     toolStatus,
-		DelegationInfo: chunk.DelegationInfo,
-		Thinking:       chunk.Thinking,
-		ModelID:        chunk.ModelID,
-		ToolCallID:     chunk.ToolCallID,
+		Content:            chunk.Content,
+		Error:              chunk.Error,
+		Done:               chunk.Done,
+		EventType:          chunk.EventType,
+		ToolCallName:       toolCallName,
+		ToolStatus:         toolStatus,
+		DelegationInfo:     chunk.DelegationInfo,
+		Thinking:           chunk.Thinking,
+		ModelID:            chunk.ModelID,
+		ToolCallID:         chunk.ToolCallID,
+		InternalToolCallID: chunk.InternalToolCallID,
 	}
 
 	if chunk.ToolResult != nil {
