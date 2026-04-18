@@ -1,6 +1,9 @@
 package streaming
 
-import "sync"
+import (
+	"maps"
+	"sync"
+)
 
 // DefaultSwarmStoreCapacity is the fallback capacity applied when
 // NewMemorySwarmStore is invoked with a non-positive capacity.
@@ -72,6 +75,14 @@ func (s *MemorySwarmStore) Append(ev SwarmEvent) {
 
 // All returns a defensive copy of the stored events, oldest first.
 //
+// Each returned SwarmEvent's Metadata map is shallow-cloned via maps.Clone
+// so callers (the Ctrl+E details modal, future filter UIs) can mutate the
+// top-level map without racing against concurrent Append calls. The values
+// inside the map are not deep-copied — callers that mutate nested maps or
+// slices share those with the store and must synchronise externally. In
+// practice producers use string and primitive values so this is a
+// sufficient defence.
+//
 // Returns:
 //   - A freshly allocated slice the caller may freely mutate.
 //
@@ -82,6 +93,11 @@ func (s *MemorySwarmStore) All() []SwarmEvent {
 	defer s.mu.Unlock()
 	out := make([]SwarmEvent, len(s.events))
 	copy(out, s.events)
+	for i := range out {
+		if out[i].Metadata != nil {
+			out[i].Metadata = maps.Clone(out[i].Metadata)
+		}
+	}
 	return out
 }
 

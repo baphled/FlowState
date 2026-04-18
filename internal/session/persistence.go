@@ -216,6 +216,47 @@ func eventsPath(sessionsDir string, sessionID string) string {
 	return filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
 }
 
+// RemoveSwarmEventsForSession deletes the session's JSONL events file and
+// any leftover .tmp sibling. Missing files are not an error. The helper
+// exists so a future session-delete code path can call a single function
+// rather than reach into the streaming package directly.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//
+// Returns:
+//   - An error only when an unexpected filesystem failure occurs (missing
+//     files are tolerated).
+//
+// Side effects:
+//   - Deletes <sessionsDir>/<sessionID>.events.jsonl and
+//     <sessionsDir>/<sessionID>.events.jsonl.tmp from disk if they exist.
+func RemoveSwarmEventsForSession(sessionsDir string, sessionID string) error {
+	return streaming.RemoveSwarmEvents(eventsPath(sessionsDir, sessionID))
+}
+
+// CleanupOrphanEventTmpFiles scans sessionsDir for *.events.jsonl.tmp files
+// and removes them. A surviving .tmp file is always an orphan — it only
+// exists as an intermediate staging file for a compact that crashed
+// mid-rename. Run this at startup before any session file reads to keep
+// the sessions directory tidy.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files. A non-existent
+//     directory is treated as a no-op rather than an error so callers do
+//     not need to pre-check.
+//
+// Returns:
+//   - The number of .tmp files successfully removed.
+//   - An error only when the directory read or a Remove call fails.
+//
+// Side effects:
+//   - Deletes files from disk.
+func CleanupOrphanEventTmpFiles(sessionsDir string) (int, error) {
+	return streaming.CleanupOrphanTmpFiles(sessionsDir)
+}
+
 // LoadSwarmEvents reads SwarmEvent entries from a JSONL file in sessionsDir.
 // When no events file exists for the session an empty slice is returned without
 // error, providing backward compatibility with sessions created before event
