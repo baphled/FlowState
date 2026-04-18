@@ -8,6 +8,7 @@ package vault
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/learning"
@@ -62,6 +63,20 @@ func NewVaultSource(client mcp.Client, serverName, vault string) *Source {
 // Returns: A slice of recall.Observation, or an empty slice if no results or on error.
 // Side effects: Calls the "query_vault" tool on the MCP server and parses the result.
 func (v *Source) Query(ctx context.Context, query string, limit int) ([]recall.Observation, error) {
+	// P7/C1 defence-in-depth: when the source was constructed with an
+	// empty (or whitespace-only) vault string, short-circuit before
+	// touching the MCP server. The vault string is the scope of the
+	// query — with no scope there is nothing meaningful to ask of
+	// vault-rag, and asking anyway spams the MCP server with
+	// {question, vault:"", top_k} requests that always return non-JSON.
+	// The broker construction path in app.buildRecallBroker avoids
+	// attaching this source at all when vault is unset, so reaching
+	// this point means a future caller bypassed that gate — return
+	// cleanly rather than surfacing the bug as log noise.
+	if strings.TrimSpace(v.vault) == "" {
+		return []recall.Observation{}, nil
+	}
+
 	agentID := agentIDFromContext(ctx)
 
 	args := map[string]any{

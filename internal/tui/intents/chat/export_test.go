@@ -192,6 +192,24 @@ func (i *Intent) HandleStreamChunkForTest(msg StreamChunkMsg) {
 	i.handleStreamChunk(msg)
 }
 
+// HandleStreamChunkMsgForTest exposes handleStreamChunkMsg for test
+// assertions. Used by the P7/C2 specs to exercise the full dispatch path —
+// including the premature-delegation-misfire detector — without standing up
+// a provider stream.
+func (i *Intent) HandleStreamChunkMsgForTest(msg StreamChunkMsg) tea.Cmd {
+	return i.handleStreamChunkMsg(msg)
+}
+
+// SetTurnUserMessageForTest seeds the per-turn user message the chat intent
+// uses to detect premature delegation misfires (P7/C2). Production code
+// populates this field from sendMessage; tests use this hook to bypass the
+// full send path and drive only the chunk handler.
+func SetTurnUserMessageForTest(i *Intent, msg string) {
+	i.turnUserMessage = msg
+	i.turnHasText = false
+	i.prematureWarningFired = false
+}
+
 // ToolCallSummaryForTest exposes toolCallSummary for test assertions.
 func ToolCallSummaryForTest(name string, args map[string]interface{}) string {
 	return toolCallSummary(name, args)

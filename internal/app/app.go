@@ -2893,8 +2893,16 @@ type recallBrokerParams struct {
 	ollamaProvider embedRequester
 }
 
-// buildRecallBroker constructs a recall.Broker wired with MCP memory, vault, and
-// optionally Qdrant-backed sources.
+// buildRecallBroker constructs a recall.Broker wired with MCP memory and,
+// when configured, Qdrant- and vault-rag-backed sources.
+//
+// This is the default construction path used from setupEngine. It does not
+// thread a vault path because the AppConfig currently has no vault field;
+// vault-rag is therefore disabled until a caller opts in via
+// buildRecallBrokerWithVault. See P7/C1 in the Activity Timeline & Cancel
+// Fix Plan for why this gate matters: attaching a VaultSource with an empty
+// vault string caused 185 auto-hook query_vault invocations per session and
+// led to a non-JSON decode path the engine silently switched on.
 //
 // Expected:
 //   - params.cfg is a non-nil application config; cfg.Qdrant.URL may be empty.
@@ -2908,23 +2916,55 @@ type recallBrokerParams struct {
 //     nil, a no-op embedder is used and Qdrant queries surface a clear error.
 //
 // Returns:
-//   - A non-nil recall.Broker with MCP memory and vault sources always attached.
+//   - A non-nil recall.Broker with MCP memory always attached.
 //   - When cfg.Qdrant.URL is non-empty the Qdrant learning source is also included.
+//   - The vault source is not attached (use buildRecallBrokerWithVault).
 //
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
 func buildRecallBroker(params recallBrokerParams) recall.Broker {
+	// P7/C1: the vault path is empty in today's config schema, so do not
+	// attach the vault source. When the AppConfig grows a vault field
+	// (tracked as follow-up work in §6.3 Decision 3 Option 2), callers
+	// should switch to buildRecallBrokerWithVault with the configured
+	// string.
+	return buildRecallBrokerWithVault(params, "")
+}
+
+// buildRecallBrokerWithVault constructs a recall.Broker with an explicit
+// vault path. When vaultPath is empty or whitespace-only the vault source
+// is omitted; when non-empty a vault-rag source is attached that will
+// query MCP on every broker.Query.
+//
+// Expected:
+//   - params is the same input bundle as buildRecallBroker.
+//   - vaultPath is the vault scope passed to vaultrecall.NewVaultSource; an
+//     empty string disables the source.
+//
+// Returns:
+//   - A non-nil recall.Broker wired with MCP memory and, conditionally,
+//     vault and Qdrant sources.
+//
+// Side effects:
+//   - None; connections are established lazily per-request.
+func buildRecallBrokerWithVault(params recallBrokerParams, vaultPath string) recall.Broker {
 	_ = params.chatProvider // retained for compatibility; embeddings use Ollama.
 	cfg := params.cfg
 	memClient := learning.NewMCPMemoryClient(params.mcpClient, "memory")
 	memSource := recall.NewMCPMemorySource(recall.NewMCPLearningSource(memClient, nil))
-	vaultSource := vaultrecall.NewVaultSource(params.mcpClient, "vault-rag", "")
 	sessionSrc := recall.NewSessionSource(params.contextStore)
 	chainSrc := recall.NewChainSource(params.chainStore)
 
+	extras := []recall.Source{memSource}
+	if strings.TrimSpace(vaultPath) != "" {
+		extras = append(extras, vaultrecall.NewVaultSource(params.mcpClient, "vault-rag", vaultPath))
+	} else {
+		slog.Warn("vault path unset; vault-rag recall source disabled — set a vault path to enable Obsidian-backed recall")
+	}
+
 	if cfg.Qdrant.URL == "" {
 		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL to enable vector recall")
-		return recall.NewRecallBroker(sessionSrc, chainSrc, nil, nil, memSource, vaultSource)
+		return recall.NewRecallBroker(sessionSrc, chainSrc, nil, nil, extras...)
 	}
 	col := cfg.Qdrant.Collection
 	if col == "" {
@@ -2933,7 +2973,7 @@ func buildRecallBroker(params recallBrokerParams) recall.Broker {
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(params.ollamaProvider)
 	source := qdrantrecall.NewSource(client, embedder, col)
-	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, memSource, vaultSource)
+	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, extras...)
 }
 
 // buildDistiller constructs a StructuredDistiller backed by Qdrant when configured.

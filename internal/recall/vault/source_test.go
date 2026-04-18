@@ -14,8 +14,9 @@ import (
 )
 
 type stubMCPClient struct {
-	result *mcp.ToolResult
-	err    error
+	result    *mcp.ToolResult
+	err       error
+	callCount int
 }
 
 func (s *stubMCPClient) Connect(_ context.Context, _ mcp.ServerConfig) error { return nil }
@@ -25,6 +26,7 @@ func (s *stubMCPClient) ListTools(_ context.Context, _ string) ([]mcp.ToolInfo, 
 	return nil, nil
 }
 func (s *stubMCPClient) CallTool(_ context.Context, _, _ string, _ map[string]any) (*mcp.ToolResult, error) {
+	s.callCount++
 	return s.result, s.err
 }
 
@@ -120,5 +122,51 @@ var _ = Describe("VaultSource", func() {
 		results, err := source.Query(ctx, "test", 5)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(results).To(BeEmpty())
+	})
+
+	// P7/C1 defence-in-depth: when the source was constructed with an empty
+	// vault string (the current default wiring in app.buildRecallBroker until
+	// a config field is introduced), Query must not call the MCP server at
+	// all. The previous behaviour sent `{question, vault:"", top_k}` on every
+	// user turn and produced 185 debug log lines per session complaining that
+	// the MCP returned non-JSON content. The vault string is the scope of
+	// the query; with no scope there is nothing meaningful to ask.
+	Describe("P7/C1 empty-vault defence-in-depth", func() {
+		It("returns an empty slice without calling the MCP client when vault is empty", func() {
+			stubMC.result = &mcp.ToolResult{Content: `{"chunks":[]}`, IsError: false}
+			source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "")
+
+			results, err := source.Query(ctx, "any query", 5)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(results).To(BeEmpty())
+			Expect(stubMC.callCount).To(Equal(0),
+				"Query must short-circuit without invoking CallTool when the source was constructed with an empty vault string")
+		})
+
+		It("returns an empty slice without calling the MCP client when vault is whitespace-only", func() {
+			stubMC.result = &mcp.ToolResult{Content: `{"chunks":[]}`, IsError: false}
+			source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "   \t ")
+
+			results, err := source.Query(ctx, "any query", 5)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(results).To(BeEmpty())
+			Expect(stubMC.callCount).To(Equal(0),
+				"Query must short-circuit on whitespace-only vault string as well")
+		})
+
+		It("still calls the MCP client when vault is a non-empty string", func() {
+			// Regression guard: the defence-in-depth gate must not break the
+			// happy path.
+			stubMC.result = &mcp.ToolResult{Content: `{"chunks":[]}`, IsError: false}
+			source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+
+			_, err := source.Query(ctx, "any query", 5)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stubMC.callCount).To(Equal(1),
+				"non-empty vault must still reach the MCP server")
+		})
 	})
 })
