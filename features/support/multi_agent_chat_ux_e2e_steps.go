@@ -404,11 +404,14 @@ func (s *e2eMultiAgentChatSteps) theTimelineDoesNotShowDelegationEvents() error 
 	return nil
 }
 
-// theCountShowsFilteredResults asserts the rendered pane contains a
-// "showing X of Y" count summary indicating that filtering is active.
+// theCountShowsFilteredResults asserts the rendered pane surfaces a
+// filter-status indicator in the header. Two shapes are accepted (P8 T3):
+// the numeric "showing X of Y" form used when some events remain visible,
+// and the "All events hidden" recovery hint used when the user has
+// filtered everything out. Either form signals that filtering is active.
 //
 // Returns:
-//   - nil if found; error otherwise.
+//   - nil if either form is found; error otherwise.
 //
 // Side effects:
 //   - None.
@@ -416,8 +419,10 @@ func (s *e2eMultiAgentChatSteps) theCountShowsFilteredResults() error {
 	if s.paneRender == "" {
 		return errors.New("activity pane has not been rendered")
 	}
-	if !strings.Contains(s.paneRender, "showing") || !strings.Contains(s.paneRender, "of") {
-		return fmt.Errorf("expected count summary 'showing X of Y' in render, got:\n%s", s.paneRender)
+	hasCount := strings.Contains(s.paneRender, "showing") && strings.Contains(s.paneRender, "of")
+	hasAllHidden := strings.Contains(s.paneRender, "All events hidden")
+	if !hasCount && !hasAllHidden {
+		return fmt.Errorf("expected filter status ('showing X of Y' or 'All events hidden') in render, got:\n%s", s.paneRender)
 	}
 	return nil
 }
