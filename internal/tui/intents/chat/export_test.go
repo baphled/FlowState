@@ -390,12 +390,6 @@ func SwarmEventFromChunkForTest(msg StreamChunkMsg, fallbackAgent string) (strea
 	return swarmEventFromChunk(msg, fallbackAgent)
 }
 
-// SecondaryPaneVisibleForTest returns the current secondary-pane visibility
-// flag for test assertions. Introduced in T7 alongside the Ctrl+T toggle.
-func (i *Intent) SecondaryPaneVisibleForTest() bool {
-	return i.secondaryPaneVisible
-}
-
 // InstallStreamCancelForTest installs a cancellable context cancel func on the
 // intent and returns a pointer to a flag that will flip to true when the cancel
 // function is invoked. Useful for asserting double-Esc cancellation without a

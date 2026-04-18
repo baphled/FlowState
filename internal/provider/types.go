@@ -186,22 +186,6 @@ type Error struct {
 	RawError    error
 }
 
-// NewProviderError constructs a provider error with the supplied metadata.
-//
-// Expected:
-//   - provider identifies the upstream provider.
-//   - errorType identifies the provider failure classification.
-//   - message contains the provider-facing error message.
-//
-// Returns:
-//   - A provider error populated with the supplied metadata.
-//
-// Side effects:
-//   - None.
-func NewProviderError(provider string, errorType ErrorType, message string) *Error {
-	return &Error{Provider: provider, ErrorType: errorType, Message: message}
-}
-
 // Error returns a human-readable description of the provider error.
 //
 // Expected:

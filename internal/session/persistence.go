@@ -128,8 +128,7 @@ const eventsFileSuffix = ".events.jsonl"
 //
 // This is the snapshot-on-save entry point preserved for callers that have
 // not yet migrated to the P4 append-on-write WAL. For new call sites use
-// AppendSwarmEventToSession (per-event, hot path) or CompactSwarmEventsForSession
-// (close-time authoritative rewrite) instead.
+// AppendSwarmEventToSession (per-event, hot path) instead.
 //
 // Expected:
 //   - sessionsDir is the directory to write the events file into (created if absent).
@@ -175,30 +174,6 @@ func AppendSwarmEventToSession(sessionsDir string, sessionID string, ev streamin
 		return err
 	}
 	return streaming.AppendSwarmEvent(eventsPath(sessionsDir, sessionID), ev)
-}
-
-// CompactSwarmEventsForSession rewrites the session's JSONL file from the
-// supplied in-memory snapshot using the atomic fsync-and-rename dance in
-// streaming.CompactSwarmEvents. This is the close-time authority for the
-// event stream: any events appended via the WAL but missing from the
-// snapshot are discarded.
-//
-// Expected:
-//   - sessionsDir is the directory containing session files.
-//   - sessionID is a non-empty string identifying the session.
-//   - events may be nil or empty (rewrites the file as zero-byte).
-//
-// Returns:
-//   - An error if the directory cannot be created or the compact fails.
-//
-// Side effects:
-//   - Writes <sessionsDir>/<sessionID>.events.jsonl via temp-file + rename.
-//   - Fsyncs the temp file before rename.
-func CompactSwarmEventsForSession(sessionsDir string, sessionID string, events []streaming.SwarmEvent) error {
-	if err := os.MkdirAll(sessionsDir, 0o750); err != nil {
-		return err
-	}
-	return streaming.CompactSwarmEvents(eventsPath(sessionsDir, sessionID), events)
 }
 
 // eventsPath returns the canonical events-file path for a session.

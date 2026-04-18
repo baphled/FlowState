@@ -340,14 +340,6 @@ type Intent struct {
 	// expected to keep it consistent with the profile (or reset to
 	// swarmFilterProfileAll, which is the constructor default).
 	swarmFilterProfile swarmFilterProfile
-	// secondaryPaneVisible gates the dual-pane render of the swarm activity
-	// timeline. P11 repurposed Ctrl+T for filter-profile cycling, so the
-	// pane is no longer keyboard-toggleable; this flag remains on the
-	// struct for programmatic callers and future slash-command support.
-	// When false, View() passes an empty string to WithSecondaryContent so
-	// ScreenLayout falls back to single-pane via its existing
-	// empty-secondary branch.
-	secondaryPaneVisible bool
 	// sessionTrail holds the session-ancestry breadcrumb trail built by
 	// walking ParentID links via the session manager. Refreshed on
 	// construction and session switch.
@@ -562,38 +554,37 @@ func NewIntent(cfg IntentConfig) *Intent {
 	}
 
 	intent := &Intent{
-		app:                  cfg.App,
-		engine:               cfg.Engine,
-		streamer:             cfg.Streamer,
-		sessionManager:       cfg.SessionManager,
-		agentID:              cfg.AgentID,
-		sessionID:            cfg.SessionID,
-		input:                "",
-		width:                80,
-		height:               24,
-		statusBar:            sb,
-		statusIndicator:      widgets.NewStatusIndicator(nil),
-		tokenCount:           0,
-		tokenCounter:         tokenCounterFromConfig(cfg),
-		providerName:         cfg.ProviderName,
-		modelName:            cfg.ModelName,
-		tokenBudget:          cfg.TokenBudget,
-		tickFrame:            0,
-		result:               nil,
-		atBottom:             true,
-		agentRegistry:        cfg.AgentRegistry,
-		sessionStore:         cfg.SessionStore,
-		childSessionLister:   cfg.ChildSessionLister,
-		view:                 chat.NewView(),
-		notifications:        notification.NewComponent(notifManager),
-		notificationManager:  notifManager,
-		breadcrumbPath:       "Chat",
-		swarmActivity:        swarmactivity.NewSwarmActivityPane(),
-		swarmStore:           buildSwarmStore(cfg.SessionStore, cfg.SessionID),
-		swarmVisibleTypes:    defaultSwarmVisibleTypes(),
-		swarmFilterProfile:   swarmFilterProfileAll,
-		secondaryPaneVisible: true,
-		sessionTrail:         navigation.NewSessionTrail(),
+		app:                 cfg.App,
+		engine:              cfg.Engine,
+		streamer:            cfg.Streamer,
+		sessionManager:      cfg.SessionManager,
+		agentID:             cfg.AgentID,
+		sessionID:           cfg.SessionID,
+		input:               "",
+		width:               80,
+		height:              24,
+		statusBar:           sb,
+		statusIndicator:     widgets.NewStatusIndicator(nil),
+		tokenCount:          0,
+		tokenCounter:        tokenCounterFromConfig(cfg),
+		providerName:        cfg.ProviderName,
+		modelName:           cfg.ModelName,
+		tokenBudget:         cfg.TokenBudget,
+		tickFrame:           0,
+		result:              nil,
+		atBottom:            true,
+		agentRegistry:       cfg.AgentRegistry,
+		sessionStore:        cfg.SessionStore,
+		childSessionLister:  cfg.ChildSessionLister,
+		view:                chat.NewView(),
+		notifications:       notification.NewComponent(notifManager),
+		notificationManager: notifManager,
+		breadcrumbPath:      "Chat",
+		swarmActivity:       swarmactivity.NewSwarmActivityPane(),
+		swarmStore:          buildSwarmStore(cfg.SessionStore, cfg.SessionID),
+		swarmVisibleTypes:   defaultSwarmVisibleTypes(),
+		swarmFilterProfile:  swarmFilterProfileAll,
+		sessionTrail:        navigation.NewSessionTrail(),
 	}
 	intent.refreshSessionTrail()
 	return intent
@@ -1446,7 +1437,7 @@ func (i *Intent) renderSessionTrailLine() string {
 	}
 
 	primaryWidth := i.width
-	if i.secondaryPaneVisible && i.width >= chatDualPaneMinWidth {
+	if i.width >= chatDualPaneMinWidth {
 		available := i.width - 1
 		primaryWidth = (available * 7) / 10
 	}
@@ -2761,10 +2752,10 @@ func (i *Intent) View() string {
 }
 
 // applySecondaryPaneContent populates the cached ScreenLayout's secondary
-// pane with the swarm activity timeline when the layout has room and the
-// pane is enabled. When disabled or below the dual-pane width threshold it
-// explicitly clears secondaryContent so the single-pane fallback fires
-// rather than reusing stale content from a previous visible render.
+// pane with the swarm activity timeline when the layout has room. Below
+// the dual-pane width threshold it explicitly clears secondaryContent so
+// the single-pane fallback fires rather than reusing stale content from
+// a previous visible render.
 //
 // Expected:
 //   - sl is the non-nil cached ScreenLayout already populated with content,
@@ -2773,7 +2764,7 @@ func (i *Intent) View() string {
 // Side effects:
 //   - Calls WithSecondaryContent on sl.
 func (i *Intent) applySecondaryPaneContent(sl *layout.ScreenLayout) {
-	if !i.secondaryPaneVisible || i.swarmActivity == nil || i.width < layout.DualPaneMinWidth {
+	if i.swarmActivity == nil || i.width < layout.DualPaneMinWidth {
 		sl.WithSecondaryContent("")
 		return
 	}

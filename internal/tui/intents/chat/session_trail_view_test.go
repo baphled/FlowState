@@ -160,8 +160,7 @@ var _ = Describe("Session trail in View()", func() {
 			chat.RefreshSessionTrailForTest(intent)
 			// Width 100, dual-pane visible → primary = ((100-1)*7)/10 = 69.
 			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-			// secondaryPaneVisible defaults to true; ensure swarmActivity is set
-			// so dual-pane actually activates.
+			// Ensure swarmActivity is set so dual-pane actually activates.
 
 			view := intent.View()
 			// The trail should be rendered. With dual-pane, the trail is clamped
