@@ -151,7 +151,8 @@ func (h *streamEventHandler) handleContentBlockStop(
 	delete(h.pendingToolCalls, event.Index)
 	delete(h.toolArgsBuf, event.Index)
 	return provider.StreamChunk{
-		EventType: "tool_call",
-		ToolCall:  tc,
+		EventType:  "tool_call",
+		ToolCall:   tc,
+		ToolCallID: tc.ID,
 	}, true
 }

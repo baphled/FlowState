@@ -247,6 +247,130 @@ var _ = Describe("swarm activity pane wiring", func() {
 		})
 	})
 
+	Describe("P2 T3: SwarmEvent.ID is populated for every event kind", func() {
+		It("uses the DelegationInfo.ChainID for delegation events", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				DelegationInfo: &provider.DelegationInfo{
+					ChainID:     "chain-id-42",
+					TargetAgent: "engineer",
+					Status:      "started",
+				},
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.ID).To(Equal("chain-id-42"),
+				"delegation ID must equal the ChainID so downstream correlation works")
+		})
+
+		It("uses the chunk's ToolCallID for tool_call events when provided", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				ToolCallID:   "toolu_01ABC",
+				ToolCallName: "bash",
+				ToolStatus:   "started",
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.ID).To(Equal("toolu_01ABC"),
+				"tool_call ID must equal the upstream provider's tool-use ID "+
+					"so the P3 coalesce state machine can match start and result")
+		})
+
+		It("generates a non-empty ID for a tool_call chunk missing ToolCallID", func() {
+			// Providers that don't supply a tool-use ID must still yield events
+			// with non-empty IDs — the P3 state machine must never key on "".
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "bash",
+				ToolStatus:   "started",
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.ID).NotTo(BeEmpty(),
+				"tool_call events must always have a non-empty ID, even when "+
+					"the provider did not surface a tool-use ID")
+		})
+
+		It("generates a non-empty ID for plan events", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypePlanArtifact,
+				Content:   "plan body",
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.ID).NotTo(BeEmpty(),
+				"plan events must have a generated non-empty ID for persistence "+
+					"and event-details lookup")
+		})
+
+		It("generates a non-empty ID for review events", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypeReviewVerdict,
+				Content:   "PASS",
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.ID).NotTo(BeEmpty(),
+				"review events must have a generated non-empty ID for persistence "+
+					"and event-details lookup")
+		})
+
+		It("produces distinct IDs for successive plan chunks (UUID uniqueness)", func() {
+			ev1, ok1 := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypePlanArtifact,
+				Content:   "plan 1",
+			}, "chat-agent")
+			ev2, ok2 := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType: streaming.EventTypePlanArtifact,
+				Content:   "plan 2",
+			}, "chat-agent")
+			Expect(ok1).To(BeTrue())
+			Expect(ok2).To(BeTrue())
+			Expect(ev1.ID).NotTo(Equal(ev2.ID),
+				"distinct plan events must produce distinct IDs")
+		})
+	})
+
+	Describe("P2 T3: tool_result chunk mapping", func() {
+		It("emits an EventToolResult event when chunk has ToolCallID and ToolResult but no call metadata", func() {
+			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType:   "tool_result",
+				ToolCallID:  "toolu_01RESULT",
+				ToolResult:  "output from bash",
+				ToolIsError: false,
+			}, "chat-agent")
+			Expect(ok).To(BeTrue())
+			Expect(ev.Type).To(Equal(streaming.EventToolResult),
+				"a tool_result chunk must map to EventToolResult, not EventToolCall")
+			Expect(ev.ID).To(Equal("toolu_01RESULT"),
+				"tool_result's ID must equal the originating tool_call's ID so the "+
+					"coalesce state machine can pair them")
+		})
+
+		It("tool_result's ID matches the originating tool_call's ID", func() {
+			// This is the core correlation invariant that P3 will rely on:
+			// tool_call -> tool_result with the same ToolCallID must produce
+			// two SwarmEvents whose IDs are identical.
+			call, okCall := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				ToolCallID:   "toolu_01MATCH",
+				ToolCallName: "bash",
+				ToolStatus:   "started",
+			}, "chat-agent")
+			result, okResult := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType:  "tool_result",
+				ToolCallID: "toolu_01MATCH",
+				ToolResult: "output",
+			}, "chat-agent")
+
+			Expect(okCall).To(BeTrue())
+			Expect(okResult).To(BeTrue())
+			Expect(call.Type).To(Equal(streaming.EventToolCall))
+			Expect(result.Type).To(Equal(streaming.EventToolResult))
+			Expect(call.ID).To(Equal(result.ID),
+				"tool_call and tool_result with the same ToolCallID must share an ID")
+		})
+
+		It("does not produce a tool_result event when a chunk carries only content", func() {
+			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				Content: "hello",
+			}, "chat-agent")
+			Expect(ok).To(BeFalse())
+		})
+	})
+
 	Describe("handleInputKey defensive fallthrough", func() {
 		It("returns nil for key types that match no branch (e.g. tea.KeyF1)", func() {
 			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})

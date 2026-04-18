@@ -1598,7 +1598,8 @@ func (e *Engine) streamWithToolLoop(
 			resultContent = "Error: " + toolResult.Error.Error()
 		}
 		outChan <- provider.StreamChunk{
-			EventType: "tool_result",
+			EventType:  "tool_result",
+			ToolCallID: result.toolCall.ID,
 			ToolResult: &provider.ToolResultInfo{
 				Content: resultContent,
 				IsError: isError,

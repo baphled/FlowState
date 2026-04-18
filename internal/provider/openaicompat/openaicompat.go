@@ -204,7 +204,8 @@ func RunStream(
 			if tc, ok := acc.JustFinishedToolCall(); ok {
 				emitted[tc.Index] = true
 				shared.SendChunk(ctx, ch, provider.StreamChunk{
-					EventType: "tool_call",
+					EventType:  "tool_call",
+					ToolCallID: tc.ID,
 					ToolCall: &provider.ToolCall{
 						ID:        tc.ID,
 						Name:      tc.Name,
@@ -292,7 +293,8 @@ func flushAccumulatedToolCalls(
 		}
 		emitted[i] = true
 		shared.SendChunk(ctx, ch, provider.StreamChunk{
-			EventType: "tool_call",
+			EventType:  "tool_call",
+			ToolCallID: tc.ID,
 			ToolCall: &provider.ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,

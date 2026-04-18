@@ -38,6 +38,34 @@ var _ = Describe("StreamChunk with tool result", func() {
 	})
 })
 
+var _ = Describe("StreamChunk ToolCallID (P2 T1)", func() {
+	It("stores the upstream provider's tool-use ID on the chunk", func() {
+		chunk := StreamChunk{
+			EventType:  "tool_call",
+			ToolCallID: "toolu_01ABCDEF",
+			ToolCall:   &ToolCall{ID: "toolu_01ABCDEF", Name: "bash"},
+		}
+
+		Expect(chunk.ToolCallID).To(Equal("toolu_01ABCDEF"))
+	})
+
+	It("stores the tool-call ID on a tool_result chunk so the intent layer can correlate", func() {
+		chunk := StreamChunk{
+			EventType:  "tool_result",
+			ToolCallID: "toolu_01ABCDEF",
+			ToolResult: &ToolResultInfo{Content: "output"},
+		}
+
+		Expect(chunk.ToolCallID).To(Equal("toolu_01ABCDEF"))
+		Expect(chunk.ToolResult).NotTo(BeNil())
+	})
+
+	It("is the empty string on a zero-value chunk", func() {
+		chunk := StreamChunk{}
+		Expect(chunk.ToolCallID).To(Equal(""))
+	})
+})
+
 var _ = Describe("DelegationInfo", func() {
 	It("stores delegation metadata", func() {
 		startedAt := time.Now().UTC().Truncate(time.Second)
