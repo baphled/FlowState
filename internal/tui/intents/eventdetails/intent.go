@@ -103,6 +103,22 @@ func (i *Intent) handleKey(msg tea.KeyMsg) tea.Cmd {
 		i.scroll(1)
 		return nil
 
+	case tea.KeyPgUp:
+		i.scroll(-i.pageDelta())
+		return nil
+
+	case tea.KeyPgDown:
+		i.scroll(i.pageDelta())
+		return nil
+
+	case tea.KeyHome:
+		i.jumpToTop()
+		return nil
+
+	case tea.KeyEnd:
+		i.jumpToBottom()
+		return nil
+
 	case tea.KeyEscape:
 		return i.dismiss()
 
@@ -120,6 +136,45 @@ func (i *Intent) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	return nil
+}
+
+// pageDelta returns the number of lines to scroll on PgUp/PgDn. It is sized
+// to visibleHeight - 1 so one line of context remains visible across a page
+// jump; this mirrors standard pager (less/vim) conventions.
+//
+// Returns:
+//   - The per-page scroll delta; never less than 1.
+//
+// Side effects:
+//   - None.
+func (i *Intent) pageDelta() int {
+	delta := i.visibleHeight() - 1
+	if delta < 1 {
+		delta = 1
+	}
+	return delta
+}
+
+// jumpToTop moves the scroll offset to the first line of the rendered
+// content. Symmetric with jumpToBottom for Home/End navigation.
+//
+// Side effects:
+//   - Sets scrollOffset to 0.
+func (i *Intent) jumpToTop() {
+	i.scrollOffset = 0
+}
+
+// jumpToBottom moves the scroll offset to the last visible page of content.
+// When content fits within the viewport, this is a no-op (offset stays 0).
+//
+// Side effects:
+//   - Sets scrollOffset to the clamped max scroll position.
+func (i *Intent) jumpToBottom() {
+	maxScroll := i.contentLineCount() - i.visibleHeight()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	i.scrollOffset = maxScroll
 }
 
 // scroll adjusts the scroll offset by delta, clamping to valid bounds.
@@ -225,7 +280,8 @@ func (i *Intent) renderContent() string {
 	}
 
 	// Footer hint.
-	parts = append(parts, "", lipgloss.NewStyle().Faint(true).Render("Esc: close  \u2191/\u2193 j/k: scroll"))
+	footer := "Esc: close  \u2191/\u2193 j/k: scroll  PgUp/PgDn: page  Home/End: jump"
+	parts = append(parts, "", lipgloss.NewStyle().Faint(true).Render(footer))
 
 	return strings.Join(parts, "\n")
 }

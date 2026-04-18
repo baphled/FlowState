@@ -235,8 +235,14 @@ func (p *SwarmActivityPane) filterIndicatorLine() string {
 // countSummary returns "showing X of Y" when filtering is active and events
 // are present. It returns empty string otherwise.
 //
+// When every type is hidden and at least one event exists, the bare
+// "showing 0 of N" is replaced with an actionable hint because the numeric
+// summary on its own confuses users (QA finding F17: "is this a bug or
+// did I turn off everything?"). The hint tells them how to recover.
+//
 // Returns:
-//   - A formatted count string, or empty when no filtering is active.
+//   - A formatted count string, an actionable hint, or empty when no
+//     filtering is active.
 //
 // Side effects:
 //   - None.
@@ -250,6 +256,11 @@ func (p *SwarmActivityPane) countSummary() string {
 		if p.visibleTypes[ev.Type] {
 			shown++
 		}
+	}
+	// P8 T3: when the user has hidden every type, the raw count is
+	// misleading. Surface an explicit recovery hint instead.
+	if shown == 0 {
+		return " — All events hidden (press [T] to toggle filters)"
 	}
 	return fmt.Sprintf(" (showing %d of %d)", shown, total)
 }

@@ -2814,11 +2814,14 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"  Ctrl+P       - Open model selector\n" +
 				"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
 				"  Ctrl+G       - Open session tree\n" +
-				"  Ctrl+E       - Open event details (most recent swarm event)\n" +
-				"  Ctrl+T       - Toggle swarm activity pane (visible by default)\n" +
+				"  Ctrl+E       - Open event details (may shadow terminal-muxer/IDE bindings)\n" +
+				"  Ctrl+T       - Toggle swarm activity pane (may shadow terminal-muxer/IDE bindings)\n" +
 				"  Up/Down      - Scroll viewport line by line\n" +
-				"  PgUp/PgDn    - Scroll viewport by page\n" +
-				"  Home/End     - Jump to top / bottom of viewport"
+				"  PgUp/PgDn    - Scroll viewport or event-details modal by page\n" +
+				"  Home/End     - Jump to top / bottom of viewport or event-details modal\n" +
+				"\n" +
+				"See docs/design/keybindings.md for a note on Ctrl+T / Ctrl+E\n" +
+				"collisions with tmux, screen, and common IDEs."
 
 		default:
 			response = "Unknown command: /" + command

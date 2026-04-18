@@ -409,6 +409,119 @@ var _ = Describe("EventDetailsIntent", func() {
 		})
 	})
 
+	Describe("pagination keys (P8 T1)", func() {
+		// Build a large-metadata event so the rendered content overflows the
+		// viewport and pagination keys have somewhere to go.
+		var bigEvent streaming.SwarmEvent
+
+		BeforeEach(func() {
+			metadata := make(map[string]interface{}, 40)
+			for i := range 40 {
+				key := "key_"
+				// Pad the key so sort order is stable and each line is distinct.
+				if i < 10 {
+					key += "0"
+				}
+				key += string(rune('a' + (i % 26)))
+				metadata[key] = i
+			}
+			bigEvent = streaming.SwarmEvent{
+				ID:        "evt-big",
+				Type:      streaming.EventPlan,
+				Status:    "created",
+				Timestamp: timestamp,
+				AgentID:   "planner",
+				Metadata:  metadata,
+			}
+		})
+
+		Context("PgDown", func() {
+			It("scrolls down by a page (visibleHeight - 1)", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				// Height 30 -> 70% = 21 -> clamp range 12..40 -> 21 -> visible = 17.
+				// Page jump = visible - 1 = 16.
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				Expect(intent.ScrollOffset()).To(Equal(16))
+			})
+
+			It("clamps PgDown to the max scroll offset", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				// Jam PgDown repeatedly — should never exceed max.
+				for range 50 {
+					intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				}
+				offset := intent.ScrollOffset()
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				Expect(intent.ScrollOffset()).To(Equal(offset))
+			})
+		})
+
+		Context("PgUp", func() {
+			It("scrolls up by a page (visibleHeight - 1)", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				// Move down two pages first so PgUp has something to undo.
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				before := intent.ScrollOffset()
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+				Expect(intent.ScrollOffset()).To(Equal(before - 16))
+			})
+
+			It("clamps PgUp at zero", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+				Expect(intent.ScrollOffset()).To(Equal(0))
+			})
+		})
+
+		Context("Home", func() {
+			It("jumps to the top", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				// Move down several lines first.
+				for range 10 {
+					intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				}
+				Expect(intent.ScrollOffset()).To(BeNumerically(">", 0))
+				intent.Update(tea.KeyMsg{Type: tea.KeyHome})
+				Expect(intent.ScrollOffset()).To(Equal(0))
+			})
+		})
+
+		Context("End", func() {
+			It("jumps to the bottom (max scroll offset)", func() {
+				intent = eventdetails.New(bigEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnd})
+				// End must land at the same offset as repeated PgDown clamps to.
+				endOffset := intent.ScrollOffset()
+				Expect(endOffset).To(BeNumerically(">", 0))
+				// Verify End-then-PgDown is a no-op (already at bottom).
+				intent.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				Expect(intent.ScrollOffset()).To(Equal(endOffset))
+			})
+
+			It("is a no-op when content already fits in the viewport", func() {
+				// Minimal event with no metadata fits in any sane viewport.
+				smallEvent := streaming.SwarmEvent{
+					ID:        "evt-tiny",
+					Type:      streaming.EventDelegation,
+					Status:    "started",
+					Timestamp: timestamp,
+					AgentID:   "orchestrator",
+				}
+				intent = eventdetails.New(smallEvent)
+				intent.Update(tea.WindowSizeMsg{Width: 120, Height: 60})
+				intent.Update(tea.KeyMsg{Type: tea.KeyEnd})
+				Expect(intent.ScrollOffset()).To(Equal(0))
+			})
+		})
+	})
+
 	Describe("visibleHeight edge cases", func() {
 		It("returns default of 20 when height is zero", func() {
 			intent = eventdetails.New(streaming.SwarmEvent{
