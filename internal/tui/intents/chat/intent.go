@@ -823,6 +823,8 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case ToolPermissionMsg:
 		i.handleToolPermission(msg)
 		return nil
+	case ExternalEditorFinishedMsg:
+		return i.handleExternalEditorFinished(msg)
 	case SessionSavedMsg:
 		return nil
 	case SpinnerTickMsg:
@@ -831,6 +833,27 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 		return i.handleSessionViewerTick()
 	case notification.TickMsg:
 		return i.notifications.Update(msg)
+	}
+	return i.handleNavigationMsg(msg)
+}
+
+// handleNavigationMsg consumes session-navigation and background-task
+// messages that do not merit their own slot in the top-level Update
+// switch. Split out to keep Update's cyclomatic complexity within the
+// project's gocyclo budget after P17.S1 added ExternalEditorFinishedMsg.
+//
+// Expected:
+//   - msg is any tea.Msg that did not match one of the high-frequency
+//     cases handled inline in Update.
+//
+// Returns:
+//   - A tea.Cmd from the corresponding sub-handler, or whatever
+//     handleMiscMsg returns when no navigation case matches.
+//
+// Side effects:
+//   - Whatever side effects the delegated handler produces.
+func (i *Intent) handleNavigationMsg(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
 	case sessionbrowser.SessionSelectedMsg:
 		return i.handleSessionResult(msg)
 	case sessionbrowser.SessionLoadedMsg:
@@ -1283,6 +1306,8 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.openSessionTree()
 	case tea.KeyCtrlE:
 		return i.openEventDetails()
+	case tea.KeyCtrlX:
+		return i.openExternalEditor()
 	}
 	return i.handleTextInputKey(msg)
 }
