@@ -2,6 +2,18 @@ package streaming
 
 import "time"
 
+// CurrentSchemaVersion is the version stamp applied to every SwarmEvent
+// produced after P4. The field travels with the event on disk so future
+// format migrations can detect mixed-version files and either migrate on
+// load or refuse to downgrade.
+//
+// Version history:
+//   - 0 (implicit): legacy files written before P4 — no schema_version
+//     field was emitted; the loader treats zero as equivalent to v1 for
+//     backward compatibility.
+//   - 1: current. Adds schema_version to the on-disk shape.
+const CurrentSchemaVersion = 1
+
 // SwarmEventType identifies the category of swarm activity captured by the
 // multi-agent chat activity timeline.
 //
@@ -55,6 +67,12 @@ type SwarmEvent struct {
 	Timestamp time.Time              `json:"timestamp"`
 	AgentID   string                 `json:"agent_id"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	// SchemaVersion marks the on-disk shape version (P4). Events produced
+	// by the current code stamp CurrentSchemaVersion; files persisted before
+	// P4 decode this field as zero and the loader treats 0 as implicit v1
+	// for forward compatibility. Kept omitempty so legacy round-trips (no
+	// stamped version) do not regress.
+	SchemaVersion int `json:"schema_version,omitempty"`
 }
 
 // SwarmEventStore is a thread-safe append-only store for SwarmEvent entries
