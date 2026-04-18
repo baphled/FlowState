@@ -19,11 +19,6 @@ import (
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
-// SetRunningInTestsForTest toggles test-mode behaviour for chat intent initialisation.
-func SetRunningInTestsForTest(running bool) {
-	runningInTests = running
-}
-
 // FormatErrorMessageForTest exposes FormatErrorMessage for test assertions.
 func FormatErrorMessageForTest(err error) string {
 	return chatview.FormatErrorMessage(err)

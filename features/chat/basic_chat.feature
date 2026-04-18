@@ -42,10 +42,9 @@ Feature: Basic Chat
     Then I should be in normal mode
     And the input should be cleared
 
-  @wip
   Scenario: Edit message in external editor
     Given I am in insert mode
-    When I press Ctrl+e
+    When I press Ctrl+x
     Then my $EDITOR should open
     And when I save and exit
     Then the editor content should appear in the input
