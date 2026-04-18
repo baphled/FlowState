@@ -456,7 +456,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		return nil, err
 	}
 
-	accumCh := AccumulateStream(m, sessionID, agentID, rawCh)
+	accumCh := AccumulateStream(ctx, m, sessionID, agentID, rawCh)
 
 	if m.recorder != nil {
 		teedCh := make(chan provider.StreamChunk, 64)

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -51,6 +52,11 @@ type streamAccumState struct {
 // messages into the appender while forwarding every chunk to the returned channel.
 //
 // Expected:
+//   - ctx bounds the lifetime of the accumulator goroutine so a cancelled
+//     stream (e.g. the user pressing Esc twice mid-response) stops
+//     persisting and closes the forwarded channel promptly rather than
+//     waiting for rawCh to drain. Callers with no cancellation need should
+//     pass context.Background().
 //   - appender is a valid MessageAppender used to persist accumulated messages.
 //   - sessionID and agentID are valid identifiers for the active session.
 //   - rawCh is the stream channel containing provider chunks.
@@ -60,8 +66,12 @@ type streamAccumState struct {
 //
 // Side effects:
 //   - Spawns a goroutine that appends messages via appender.AppendMessage.
-//   - The returned channel is closed once rawCh is fully consumed.
+//   - The returned channel is closed once rawCh is fully consumed OR ctx
+//     is cancelled, whichever happens first. On ctx cancellation the
+//     flushThinking / flushContent finalisers still run so any
+//     already-accumulated partial content is not lost.
 func AccumulateStream(
+	ctx context.Context,
 	appender MessageAppender,
 	sessionID, agentID string,
 	rawCh <-chan provider.StreamChunk,
@@ -70,12 +80,35 @@ func AccumulateStream(
 	go func() {
 		defer close(accumCh)
 		s := &streamAccumState{sessionID: sessionID, agentID: agentID}
-		for chunk := range rawCh {
-			applyChunk(appender, s, chunk)
-			accumCh <- chunk
+		// P1/D2: ctx-aware select so a cancelled streaming turn does not
+		// park the accumulator goroutine forever on a rawCh whose
+		// producer has already abandoned the stream. Mirrors the D1 fix
+		// in readNextChunk at the chat-intent layer.
+		for {
+			select {
+			case chunk, ok := <-rawCh:
+				if !ok {
+					flushThinking(appender, s)
+					flushContent(appender, s)
+					return
+				}
+				applyChunk(appender, s, chunk)
+				// Forward the chunk, but do not park on the accumCh send
+				// past ctx.Done() — otherwise a slow consumer plus a
+				// cancelled ctx would still deadlock.
+				select {
+				case accumCh <- chunk:
+				case <-ctx.Done():
+					flushThinking(appender, s)
+					flushContent(appender, s)
+					return
+				}
+			case <-ctx.Done():
+				flushThinking(appender, s)
+				flushContent(appender, s)
+				return
+			}
 		}
-		flushThinking(appender, s)
-		flushContent(appender, s)
 	}()
 	return accumCh
 }

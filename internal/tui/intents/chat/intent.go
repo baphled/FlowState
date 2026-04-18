@@ -249,6 +249,11 @@ type Intent struct {
 	activeToolCall string
 	activeThinking string
 	streamCancel   context.CancelFunc
+	// streamCtx is the cancellable context for the current streaming
+	// producer. Stored alongside streamCancel so readNextChunk can
+	// select on ctx.Done() and unblock when the user triggers the
+	// double-Esc interrupt (P1/D1). Nil when no stream is active.
+	streamCtx context.Context
 	// lastEscTime records when Esc was last pressed while streaming, enabling
 	// the 500ms double-press window that cancels an active stream.
 	lastEscTime time.Time
@@ -755,6 +760,7 @@ func (i *Intent) handleBackgroundTaskCompleted(msg BackgroundTaskCompletedMsg) t
 		i.cancelActiveStream()
 		ctx, cancel := context.WithCancel(context.Background())
 		i.streamCancel = cancel
+		i.streamCtx = ctx
 		cmds = append(cmds, func() tea.Msg {
 			var stream <-chan provider.StreamChunk
 			var err error
@@ -1749,12 +1755,15 @@ func detectAgentFromInput(message string) string {
 // cancelActiveStream cancels the context of the current streaming producer, if any.
 //
 // Side effects:
-//   - Calls the stored cancel function and clears it.
+//   - Calls the stored cancel function and clears both streamCancel and
+//     streamCtx so a subsequent readNextChunk sees a nil context and
+//     falls back to its channel-only receive path.
 func (i *Intent) cancelActiveStream() {
 	if i.streamCancel != nil {
 		i.streamCancel()
 		i.streamCancel = nil
 	}
+	i.streamCtx = nil
 }
 
 // doubleEscWindow is the maximum interval between two Esc presses that still
@@ -1839,6 +1848,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.cancelActiveStream()
 	ctx, cancel := context.WithCancel(context.Background())
 	i.streamCancel = cancel
+	i.streamCtx = ctx
 
 	return func() tea.Msg {
 		var stream <-chan provider.StreamChunk
@@ -1861,15 +1871,59 @@ func (i *Intent) sendMessage() tea.Cmd {
 // Returns:
 //   - A StreamChunkMsg with the next chunk's content, error, and done state.
 //   - If the channel is closed, returns StreamChunkMsg{Done: true}.
+//   - If the stream context is cancelled (P1/D1), returns
+//     StreamChunkMsg{Done: true, Error: ctx.Err()} immediately — even when
+//     the provider goroutine keeps emitting chunks. formatStreamError
+//     already suppresses display of context.Canceled whilst userCancelled
+//     is set, so a user-initiated double-Esc cancel does not surface as
+//     an error.
 //
 // Side effects:
-//   - Blocks until a chunk is available on the stream channel.
+//   - Blocks until either a chunk is available on the stream channel or
+//     the stream context is cancelled, whichever happens first.
 func (i *Intent) readNextChunk() tea.Msg {
+	// P1/D1: watch ctx.Done() alongside the channel receive so a
+	// double-Esc cancellation actually unblocks the reader goroutine.
+	// The previous naked `<-i.streamChan` parked forever even after
+	// streamCancel fired, since the provider goroutine kept producing
+	// chunks into the buffered channel without honouring ctx at every
+	// send site.
+	if ctx := i.streamCtx; ctx != nil {
+		select {
+		case chunk, ok := <-i.streamChan:
+			if !ok {
+				return StreamChunkMsg{Done: true}
+			}
+			return buildStreamChunkMsg(i, chunk)
+		case <-ctx.Done():
+			return StreamChunkMsg{Done: true, Error: ctx.Err()}
+		}
+	}
 	chunk, ok := <-i.streamChan
 	if !ok {
 		return StreamChunkMsg{Done: true}
 	}
+	return buildStreamChunkMsg(i, chunk)
+}
 
+// buildStreamChunkMsg converts a provider.StreamChunk into a
+// StreamChunkMsg, wiring up the Next continuation so the Tea loop
+// schedules a follow-up readNextChunk call whenever the chunk is not the
+// final one. Extracted from readNextChunk so the ctx-aware select and
+// the non-ctx fallback produce identical messages.
+//
+// Expected:
+//   - i is the owning Intent; used only to thread a continuation closure
+//     back into i.readNextChunk.
+//   - chunk is the raw chunk just received from the stream channel.
+//
+// Returns:
+//   - A fully populated StreamChunkMsg including Next when !chunk.Done.
+//
+// Side effects:
+//   - None. The continuation captured in msg.Next does not run until the
+//     Tea loop schedules it.
+func buildStreamChunkMsg(i *Intent, chunk provider.StreamChunk) StreamChunkMsg {
 	toolCallName, toolStatus := extractToolInfo(chunk.ToolCall)
 
 	msg := StreamChunkMsg{
@@ -2022,13 +2076,19 @@ func (i *Intent) View() string {
 	// user has hidden the pane we explicitly clear secondaryContent to ""
 	// on the cached layout so the empty-secondary branch fires rather than
 	// reusing stale content from a previous visible render.
-	if i.secondaryPaneVisible && i.swarmActivity != nil {
+	if i.secondaryPaneVisible && i.swarmActivity != nil && i.width >= layout.DualPaneMinWidth {
 		contentHeight := sl.GetAvailableContentHeight()
 		var swarmEvents []streaming.SwarmEvent
 		if i.swarmStore != nil {
 			swarmEvents = i.swarmStore.All()
 		}
-		sl.WithSecondaryContent(i.swarmActivity.WithEvents(swarmEvents).Render(i.width, contentHeight))
+		// P1/A2: render the activity pane at the secondary-pane width
+		// (~30% of i.width) rather than the full terminal width. Passing
+		// i.width caused long lines to render at terminal width and then
+		// be cropped by the composite layout, masking truncation bugs and
+		// breaking the pane's own overflow arithmetic.
+		_, secondaryWidth := layout.SplitPaneWidths(i.width)
+		sl.WithSecondaryContent(i.swarmActivity.WithEvents(swarmEvents).Render(secondaryWidth, contentHeight))
 	} else {
 		sl.WithSecondaryContent("")
 	}
@@ -2475,14 +2535,30 @@ func (i *Intent) openSessionTree() tea.Cmd {
 // recent SwarmEvent in the swarm store.
 //
 // Returns:
-//   - A tea.Cmd that emits a ShowModalMsg to display the event details, or nil
-//     if the swarm store is empty.
+//   - A tea.Cmd that emits a ShowModalMsg to display the event details, or
+//     nil if the swarm store is empty. In the empty case a short-lived
+//     informational notification is added so the user sees feedback rather
+//     than the key being silently dropped (P1/B11).
 //
 // Side effects:
-//   - None.
+//   - When the store is empty, appends a notification via the notification
+//     manager and refreshes the viewport so it renders immediately.
 func (i *Intent) openEventDetails() tea.Cmd {
 	allEvents := i.swarmStore.All()
 	if len(allEvents) == 0 {
+		// P1/B11: surface user feedback on an empty timeline. Previously
+		// this path returned nil, so Ctrl+E appeared to do nothing.
+		if i.notificationManager != nil {
+			i.notificationManager.Add(notification.Notification{
+				ID:        "event-details-empty-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+				Title:     "Activity Timeline",
+				Message:   "No activity events to inspect yet",
+				Level:     notification.LevelInfo,
+				Duration:  3 * time.Second,
+				CreatedAt: time.Now(),
+			})
+			i.refreshViewport()
+		}
 		return nil
 	}
 	latest := allEvents[len(allEvents)-1]

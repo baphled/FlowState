@@ -535,7 +535,7 @@ func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height in
 		return single.Render(primary)
 	}
 
-	primaryWidth, secondaryWidth := splitPaneWidths(totalWidth)
+	primaryWidth, secondaryWidth := SplitPaneWidths(totalWidth)
 
 	// The separator inherits the terminal default foreground rather than
 	// theme.BorderColor(). BorderColor (~#3d4454) on the default background
@@ -564,9 +564,14 @@ func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height in
 	)
 }
 
-// splitPaneWidths computes the integer-math 70/30 split for the dual-pane
+// SplitPaneWidths computes the integer-math 70/30 split for the dual-pane
 // band. Primary absorbs at most one extra column when the available width
 // is not divisible by ten, matching the contract matrix in the ADR.
+//
+// Exported so the chat intent can size the secondary pane's content with
+// the exact width the layout will reserve for it, fixing the P1/A2
+// regression where the pane was rendered at full terminal width and then
+// cropped into the 30% column.
 //
 // Expected:
 //   - totalWidth is the terminal width; caller must ensure totalWidth >= dualPaneMinWidth.
@@ -576,12 +581,18 @@ func (sl *ScreenLayout) composeContentBand(primary string, totalWidth, height in
 //
 // Side effects:
 //   - None.
-func splitPaneWidths(totalWidth int) (int, int) {
+func SplitPaneWidths(totalWidth int) (int, int) {
 	available := totalWidth - 1 // reserve one column for the separator
 	primary := (available * 7) / 10
 	secondary := available - primary
 	return primary, secondary
 }
+
+// DualPaneMinWidth exposes the minimum terminal width at which the
+// secondary pane is rendered. Below this threshold the layout falls back
+// to a single-pane render, and callers should skip secondary-pane work
+// entirely rather than sizing against a pane that will not appear.
+const DualPaneMinWidth = dualPaneMinWidth
 
 // dimContent applies a dimming effect to the content.
 // Uses Faint(true) for consistency with feedback.DimContent().
