@@ -1899,14 +1899,14 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			Arguments: toolCall.Arguments,
 		}
 
-		sanitised, valErr := ValidateToolArgs(t.Schema(), input.Arguments)
+		validated, valErr := ValidateToolArgs(t.Schema(), input.Arguments)
 		if valErr != nil {
 			slog.Warn("tool argument validation failed", "tool", toolCall.Name, "error", valErr)
 			result := tool.Result{Output: valErr.Error(), Error: valErr}
 			e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, valErr)
 			return result, nil
 		}
-		input.Arguments = sanitised
+		input.Arguments = validated
 
 		toolCtx, cancel := context.WithTimeout(ctx, e.toolTimeout)
 		result, err := t.Execute(toolCtx, input)
