@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
@@ -119,6 +120,8 @@ func registerDualPaneToggleSteps(sc *godog.ScenarioContext, s *DualPaneLayoutSte
 		`^the rendered chat Intent view should not contain the Activity Timeline header$`,
 		s.theRenderedViewShouldNotContainActivityTimelineHeader,
 	)
+	sc.Step(`^every rendered row should be at most (\d+) cells wide$`, s.everyRenderedRowShouldBeAtMostCellsWide)
+	sc.Step(`^the help hints "([^"]*)", "([^"]*)" should remain visible$`, s.theHelpHintsShouldRemainVisible)
 }
 
 // aScreenLayoutIsInitialisedWithATerminalSizeOf constructs a ScreenLayout
@@ -782,6 +785,71 @@ func (s *DualPaneLayoutSteps) theRenderedViewShouldNotContainActivityTimelineHea
 			"expected single-pane fallback (no %q header) at width %d, got render:\n%s",
 			activityTimelineHeader, s.terminalWidth, s.lastRender,
 		)
+	}
+	return nil
+}
+
+// everyRenderedRowShouldBeAtMostCellsWide asserts that no row in the last
+// captured chat.Intent.View output exceeds the supplied cell budget. The
+// step exists because a footer separator hardcoded to 100 glyphs and a
+// 157-cell status-bar hint previously pushed rendered rows past the
+// terminal width on narrow terminals, cascading into dual-pane column
+// misalignment when the terminal wrapped the overflow.
+//
+// Expected:
+//   - width is a positive cell count.
+//
+// Returns:
+//   - nil when every row fits; error with the first offending row otherwise.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) everyRenderedRowShouldBeAtMostCellsWide(width int) error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	if width < 1 {
+		return fmt.Errorf("width must be positive, got %d", width)
+	}
+	for i, line := range strings.Split(s.lastRender, "\n") {
+		w := lipgloss.Width(line)
+		if w > width {
+			return fmt.Errorf(
+				"row %d is %d cells wide, exceeds terminal width %d; row=%q",
+				i, w, width, line,
+			)
+		}
+	}
+	return nil
+}
+
+// theHelpHintsShouldRemainVisible asserts that both supplied hint tokens
+// still appear in the rendered view after footer wrap. The complement of
+// the width invariant: shrinking the footer mustn't be done by dropping
+// hints — wrap, don't truncate.
+//
+// Expected:
+//   - firstHint and secondHint are substring tokens expected in the view.
+//
+// Returns:
+//   - nil when both tokens appear; error naming the missing token otherwise.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) theHelpHintsShouldRemainVisible(firstHint, secondHint string) error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	for _, hint := range []string{firstHint, secondHint} {
+		if hint == "" {
+			continue
+		}
+		if !strings.Contains(s.lastRender, hint) {
+			return fmt.Errorf(
+				"help hint %q missing from render at width %d (truncation drops hints, wrap preserves them)",
+				hint, s.terminalWidth,
+			)
+		}
 	}
 	return nil
 }

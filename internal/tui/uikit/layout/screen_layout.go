@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
 	"github.com/baphled/flowstate/internal/ui/terminal"
@@ -387,28 +388,109 @@ func (sl *ScreenLayout) buildHeaderParts(theme themes.Theme) []string {
 func (sl *ScreenLayout) buildFooterParts(theme themes.Theme) []string {
 	var parts []string
 
+	width := sl.TerminalInfo.Width
+	if width < 1 {
+		width = 1
+	}
+
 	hasFooterContent := sl.HelpText != "" || sl.InputLine != "" || sl.StatusBarContent != ""
 	if sl.ShowFooter && sl.ShowFooterSeparator && hasFooterContent {
-		separator := strings.Repeat("─", 100)
+		// The separator MUST match the terminal width so it spans the full
+		// render without inflating the composed view beyond TerminalInfo.Width.
+		// A hardcoded run of 100 glyphs pads the view too narrow at W>100 and
+		// too wide at W<100; the latter cascades into dual-pane column
+		// misalignment when the rendered row overflows and the terminal wraps
+		// it. See dual_pane_view_width_test.go for the pinning spec.
+		separator := strings.Repeat("─", width)
 		separatorStyle := lipgloss.NewStyle().Foreground(theme.BorderColor())
 		parts = append(parts, "", separatorStyle.Render(separator))
 	}
 
 	if sl.InputLine != "" {
 		inputStyle := lipgloss.NewStyle().Foreground(theme.PrimaryColor())
-		parts = append(parts, inputStyle.Render(sl.InputLine))
+		// Multi-line input: truncate each line so a very long word pasted into
+		// the prompt cannot push the footer wider than the terminal.
+		parts = append(parts, inputStyle.Render(truncateToWidth(sl.InputLine, width)))
 	}
 
 	if sl.StatusBarContent != "" {
-		parts = append(parts, sl.StatusBarContent)
+		parts = append(parts, truncateToWidth(sl.StatusBarContent, width))
 	}
 
 	if sl.ShowFooter && sl.HelpText != "" {
 		helpStyle := lipgloss.NewStyle().Foreground(theme.MutedColor())
-		parts = append(parts, helpStyle.Render(sl.HelpText))
+		// The help text can embed hint suffixes that exceed terminal width on
+		// narrow terminals (e.g. the chat intent's 157-cell Ctrl+G/Ctrl+E/...
+		// suffix at W=80). Word-wrap (breaking on " " so the "  ·  " token
+		// separators stay in the middle of a wrap boundary rather than being
+		// split) keeps every hint advertised to the user while enforcing the
+		// per-row terminal-width invariant. Truncation was considered and
+		// rejected: it silently drops Ctrl+T / Ctrl+C hints on narrow
+		// terminals, violating the existing swarm-activity hint test.
+		parts = append(parts, helpStyle.Render(wrapToWidth(sl.HelpText, width)))
 	}
 
 	return parts
+}
+
+// truncateToWidth shortens each line of s so its ANSI-aware cell width does
+// not exceed width. Multi-line inputs are handled line-by-line so embedded
+// newlines in InputLine (multi-line prompts) survive truncation.
+//
+// Expected:
+//   - width >= 1.
+//
+// Returns:
+//   - The input unchanged when every line already fits, otherwise a copy
+//     with over-wide lines truncated via ansi.Truncate (no ellipsis — the
+//     footer already uses an abbreviated hint suffix and adding a trailing
+//     character would steal a cell from the last hint token).
+//
+// Side effects:
+//   - None.
+func truncateToWidth(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	if !strings.ContainsRune(s, '\n') {
+		if lipgloss.Width(s) <= width {
+			return s
+		}
+		return ansi.Truncate(s, width, "")
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if lipgloss.Width(line) > width {
+			lines[i] = ansi.Truncate(line, width, "")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// wrapToWidth word-wraps s to width cells without dropping content. Unlike
+// truncateToWidth it preserves the full string so hint suffixes like Ctrl+T
+// and Ctrl+C remain advertised to the user on narrow terminals. The trailing
+// footer rows consumed by the wrap are accounted for by buildFooterParts
+// feeding GetAvailableContentHeight (which measures the joined footer
+// height, not the raw HelpText height).
+//
+// Expected:
+//   - width >= 1.
+//
+// Returns:
+//   - The input unchanged when every line already fits, otherwise the
+//     ansi-aware wrapped result with each line <= width cells.
+//
+// Side effects:
+//   - None.
+func wrapToWidth(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	if lipgloss.Width(s) <= width && !strings.ContainsRune(s, '\n') {
+		return s
+	}
+	return ansi.Wrap(s, width, " ")
 }
 
 // GetAvailableContentHeight calculates the height available for content between header and footer.
