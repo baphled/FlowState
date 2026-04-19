@@ -414,6 +414,16 @@ func (i *Intent) FireStreamCancelForTest() {
 	}
 }
 
+// HandleEscapeKeyForTest exposes handleEscapeKey for the D1-suppress specs so
+// they can drive the real double-Esc path (not just cancelActiveStream).
+// The escape key handler is the only code path that both sets userCancelled
+// and invokes cancelActiveStream, so tests exercising "post-cancel chunks
+// must not render" must go through it to catch regressions in ordering or in
+// the userCancelled flag.
+func (i *Intent) HandleEscapeKeyForTest() tea.Cmd {
+	return i.handleEscapeKey()
+}
+
 // SessionTrailForTest returns the session trail for test assertions.
 func SessionTrailForTest(i *Intent) *navigation.SessionTrail {
 	return i.sessionTrail

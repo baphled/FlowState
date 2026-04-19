@@ -1727,6 +1727,26 @@ func (i *Intent) flushThinking(done bool) {
 //   - Calls handleStreamChunk and refreshViewport.
 //   - Intercepts harness_retry events before standard chunk processing.
 func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
+	// D1 post-cancel suppression: once the user has triggered double-Esc,
+	// handleEscapeKey has already set userCancelled, cancelled the stream
+	// context, and flipped view.streaming off. Chunks that were already
+	// buffered in the provider channel (or that race the cancel across the
+	// Update loop) MUST NOT reach handleStreamChunk; otherwise view
+	// content keeps accumulating and the user sees the model "still
+	// continuing" after pressing Esc twice. Drop every chunk whilst
+	// userCancelled is latched, never chain msg.Next (so the reader
+	// goroutine stops pulling), and clear the flag only when a terminal
+	// Done chunk arrives — at which point the turn is genuinely finished
+	// and the next user prompt starts from a clean slate. resetTurnState
+	// mirrors the normal Done path so the P7/C2 premature-delegation
+	// detector sees a fresh turn on the next user message.
+	if i.userCancelled {
+		if msg.Done {
+			i.userCancelled = false
+			i.resetTurnState()
+		}
+		return nil
+	}
 	// P7/C2: inspect the chunk for the premature-delegation-misfire
 	// signature before handing off to the main dispatch branches. The
 	// detection is cheap (string scans + a registry lookup) and must
