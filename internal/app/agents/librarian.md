@@ -8,10 +8,9 @@ aliases:
   - docs
   - external-refs
 complexity: low
-# P13: librarian queries external documentation and registries per task.
-# Recall would dilute the externally-sourced evidence with prior internal
-# notes — keep off.
-uses_recall: false
+# P13: Core job is looking up references — recall over prior observations
+# is existential for this agent.
+uses_recall: true
 capabilities:
   tools:
     - web

@@ -7,10 +7,9 @@ aliases:
   - orchestration
   - coordinator
 complexity: deep
-# P13: planner is a router/coordinator. Its decisions come from the
-# current task description plus the structured outputs of delegated
-# specialists, not from its own recalled memory. Keep off.
-uses_recall: false
+# P13: Planning benefits from recalled prior investigations, delegations,
+# and decisions.
+uses_recall: true
 capabilities:
   tools:
     - delegate
