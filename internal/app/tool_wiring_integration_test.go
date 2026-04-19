@@ -9,7 +9,19 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/tool"
+	skilltool "github.com/baphled/flowstate/internal/tool/skill"
+	todotool "github.com/baphled/flowstate/internal/tool/todo"
 )
+
+// emptySkillLoader satisfies skilltool.Loader with a zero-skill set so the
+// skill_load tool can register at construction without touching disk.
+type emptySkillLoader struct{}
+
+func (emptySkillLoader) LoadAll() ([]skill.Skill, error) {
+	return nil, nil
+}
 
 // spyProvider captures the ChatRequest sent to the provider for assertion in tests.
 type spyProvider struct {
@@ -181,6 +193,154 @@ var _ = Describe("Tool wiring integration", func() {
 			}
 			Expect(toolNames).To(ContainElement("suggest_delegate"))
 			Expect(toolNames).NotTo(ContainElement("delegate"))
+		})
+	})
+
+	// Diagnostic for session-1776611908809856897 (planner session, 8 messages,
+	// ToolCalls=None on every assistant turn, model emitted tool-call-shaped
+	// JSON as plain content). The canonical planner manifest declares
+	// capabilities.tools = [delegate, coordination_store, skill_load, todowrite].
+	// If any of those four names fails to reach req.Tools, the model cannot
+	// legitimately call the tool and falls back to hallucinating JSON. The
+	// existing "includes the delegate tool" test above only probes delegate;
+	// this context asserts the whole planner profile so a regression that
+	// silently drops one of the other three shows up immediately.
+	Context("when streaming as planner with the canonical tool profile", func() {
+		It("exposes delegate, coordination_store, skill_load and todowrite", func() {
+			plannerManifest := agent.Manifest{
+				ID:   "planner",
+				Name: "Planner",
+				Capabilities: agent.Capabilities{
+					Tools: []string{
+						"delegate",
+						"coordination_store",
+						"skill_load",
+						"todowrite",
+					},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&plannerManifest)
+
+			// Build the engine already seeded with the two static tools
+			// (skill_load, todowrite) that the real buildTools() registers
+			// at startup. wireDelegateToolIfEnabled supplies the remaining
+			// delegate, background_output, background_cancel and
+			// coordination_store when the manifest opts in.
+			twc := &toolWiringCallbacks{
+				hasTool: func(name string) bool {
+					if eng == nil {
+						return false
+					}
+					return eng.HasTool(name)
+				},
+				ensureTools: func(m agent.Manifest) {
+					if ensureToolsFn != nil {
+						ensureToolsFn(m)
+					}
+				},
+				schemaRebuilder: func() []provider.Tool {
+					if eng == nil {
+						return nil
+					}
+					return eng.ToolSchemas()
+				},
+			}
+
+			hookChain := buildHookChain(hookChainConfig{
+				manifestGetter: func() agent.Manifest {
+					if eng != nil {
+						return eng.Manifest()
+					}
+					return plannerManifest
+				},
+				twc: twc,
+			})
+
+			staticTools := []tool.Tool{
+				skilltool.New(emptySkillLoader{}),
+				todotool.New(todotool.NewMemoryStore()),
+			}
+
+			eng = engine.New(engine.Config{
+				Manifest:      plannerManifest,
+				AgentRegistry: agentReg,
+				Registry:      providerReg,
+				ChatProvider:  spy,
+				HookChain:     hookChain,
+				Tools:         staticTools,
+			})
+
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			ensureToolsFn = func(m agent.Manifest) {
+				application.wireDelegateToolIfEnabled(eng, m)
+			}
+
+			_, err := eng.Stream(context.Background(), "planner", "list the plans")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			names := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, t := range spy.capturedRequest.Tools {
+				names = append(names, t.Name)
+			}
+
+			Expect(names).To(ContainElements(
+				"delegate",
+				"coordination_store",
+				"skill_load",
+				"todowrite",
+			), "every tool declared in planner.md capabilities.tools must reach the provider request; "+
+				"any missing entry forces the model to hallucinate tool-call-shaped JSON as content")
+		})
+	})
+
+	// Idempotency: if wireDelegateToolIfEnabled runs twice for the same
+	// manifest — which happens when ensureTools fires on a manifest switch
+	// back to a delegating agent after a non-delegating detour, or when the
+	// setup path and the App-build path both wire the default manifest at
+	// startup — the engine must not end up with duplicate delegate,
+	// background_output, background_cancel or coordination_store entries in
+	// its tool registry. Duplicate entries corrupt the provider tool schema
+	// (the OpenAI SDK forbids duplicate function names) and confuse the
+	// allowed-set filter.
+	Context("when wireDelegateToolIfEnabled is invoked twice for the same manifest", func() {
+		It("does not duplicate delegation tools in the engine", func() {
+			plannerManifest := agent.Manifest{
+				ID:   "planner",
+				Name: "Planner",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate", "coordination_store"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&plannerManifest)
+			buildTestEngine(executorManifest)
+
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+
+			_, err := eng.Stream(context.Background(), "planner", "hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			counts := map[string]int{}
+			for _, t := range spy.capturedRequest.Tools {
+				counts[t.Name]++
+			}
+
+			Expect(counts["delegate"]).To(Equal(1),
+				"delegate must appear exactly once even after wireDelegateToolIfEnabled is called twice")
+			Expect(counts["background_output"]).To(Equal(1),
+				"background_output must appear exactly once")
+			Expect(counts["background_cancel"]).To(Equal(1),
+				"background_cancel must appear exactly once")
+			Expect(counts["coordination_store"]).To(Equal(1),
+				"coordination_store must appear exactly once")
 		})
 	})
 

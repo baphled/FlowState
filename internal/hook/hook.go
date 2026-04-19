@@ -81,7 +81,13 @@ func (c *Chain) Execute(handler HandlerFunc) HandlerFunc {
 func LoggingHook() Hook {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-			log.Printf("[hook] request started with %d messages", len(req.Messages))
+			// Surface the tool count so "no tools attached" bugs show up on
+			// the first log line instead of hiding until someone reads the
+			// raw session JSON. Diagnostic for session-1776611908809856897,
+			// where the planner emitted tool-call-shaped JSON as content
+			// and operators could not tell from logs whether req.Tools was
+			// empty at the moment of the stream request.
+			log.Printf("[hook] request started with %d messages tools=%d", len(req.Messages), len(req.Tools))
 			start := time.Now()
 
 			resultChan, err := next(ctx, req)

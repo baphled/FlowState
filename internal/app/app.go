@@ -973,12 +973,24 @@ func (a *App) buildDelegateMaps(
 // manifest permits delegation. Each target agent gets its own isolated engine
 // instance to prevent state corruption during delegation.
 //
+// This function is idempotent: when the engine already has a DelegateTool
+// (typical on the ensureTools callback path after a manifest switch, or when
+// both setupEngine and buildApp run the wiring for the default manifest at
+// startup) the existing tool is reconfigured for the new manifest instead of
+// a duplicate being appended. Duplicates break provider tool schemas (OpenAI
+// forbids two functions with the same name) and corrupt the allowed-set
+// filter because the first *DelegateTool in the slice is the one that
+// answers SetManifest, while a later copy is what gets filtered out.
+//
 // Expected:
 //   - eng is a fully initialised Engine.
 //   - manifest is the agent manifest to inspect for delegation configuration.
 //
 // Side effects:
-//   - Appends a DelegateTool to the engine's tool set when can_delegate is true.
+//   - Appends DelegateTool / BackgroundOutputTool / BackgroundCancelTool and
+//     optionally CoordinationTool when they are not already present.
+//   - Rebinds an existing DelegateTool to the new manifest's delegation and
+//     source agent when it is already registered.
 //   - Creates isolated engine instances for each delegation target.
 func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
 	if !manifest.Delegation.CanDelegate {
@@ -994,14 +1006,56 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 
 	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
 
-	delegateTool := engine.NewDelegateToolWithBackground(
-		engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
-	).WithStreamers(streamers)
-	delegateTool.WithRegistry(a.Registry)
+	if !eng.HasTool("delegate") {
+		delegateTool := engine.NewDelegateToolWithBackground(
+			engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
+		).WithStreamers(streamers)
+		a.configureDelegateTool(delegateTool)
+		eng.AddTool(delegateTool)
+	} else if dt, ok := eng.GetDelegateTool(); ok {
+		// The engine already has a DelegateTool — likely wired at startup
+		// for the default manifest. Refresh its bindings so the new
+		// manifest's delegation allowlist, source agent, and per-target
+		// engines take effect without leaking a stale duplicate tool into
+		// the registry.
+		dt.SetDelegation(manifest.Delegation)
+		dt.SetSourceAgentID(manifest.ID)
+		dt.WithStreamers(streamers)
+		a.configureDelegateTool(dt)
+	}
+
+	if !eng.HasTool("background_output") {
+		eng.AddTool(engine.NewBackgroundOutputTool(bgManager))
+	}
+	if !eng.HasTool("background_cancel") {
+		eng.AddTool(engine.NewBackgroundCancelTool(bgManager))
+	}
+
+	if a.hasCoordinationTool(manifest.Capabilities.Tools) && !eng.HasTool("coordination_store") {
+		eng.AddTool(coordinationtool.New(coordinationStore))
+	}
+}
+
+// configureDelegateTool applies the App-level dependencies (registry,
+// embedding discovery, category resolver, session manager integration,
+// store factory, sessions directory) to a DelegateTool regardless of
+// whether the tool was just constructed or is being rebound after a
+// manifest switch. Extracted so both the "add" and "rebind" paths share a
+// single source of truth and the rebind path cannot silently drift from
+// the first-time wiring.
+//
+// Expected:
+//   - dt is a non-nil DelegateTool that has already been constructed with a
+//     valid engines map, manifest and background-task manager.
+//
+// Side effects:
+//   - Mutates dt's injected dependencies in place.
+func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
+	dt.WithRegistry(a.Registry)
 
 	if embedder := a.resolveEmbedder(); embedder != nil {
 		ed := discovery.NewEmbeddingDiscovery(a.Registry, embedder)
-		delegateTool.SetEmbeddingDiscovery(ed)
+		dt.SetEmbeddingDiscovery(ed)
 	}
 
 	categoryRouting := map[string]engine.CategoryConfig{}
@@ -1010,26 +1064,17 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	}
 	resolver := engine.NewCategoryResolver(categoryRouting).
 		WithModelLister(a.ListModels)
-	delegateTool.WithCategoryResolver(resolver)
+	dt.WithCategoryResolver(resolver)
 
 	if a.sessionManager != nil {
-		delegateTool.WithSessionCreator(a.sessionManager)
-		delegateTool.WithMessageAppender(a.sessionManager)
-		delegateTool.WithSessionManager(a.sessionManager)
+		dt.WithSessionCreator(a.sessionManager)
+		dt.WithMessageAppender(a.sessionManager)
+		dt.WithSessionManager(a.sessionManager)
 	}
 
 	if a.Config != nil {
-		delegateTool.WithStoreFactory(newDelegateStoreFactory(a.SessionsDir()))
-		delegateTool.WithSessionsDir(a.SessionsDir())
-	}
-
-	eng.AddTool(delegateTool)
-
-	eng.AddTool(engine.NewBackgroundOutputTool(bgManager))
-	eng.AddTool(engine.NewBackgroundCancelTool(bgManager))
-
-	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
-		eng.AddTool(coordinationtool.New(coordinationStore))
+		dt.WithStoreFactory(newDelegateStoreFactory(a.SessionsDir()))
+		dt.WithSessionsDir(a.SessionsDir())
 	}
 }
 
