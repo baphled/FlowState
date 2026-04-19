@@ -1,4 +1,4 @@
-.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
+.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
 
 # Binary name
 BINARY_NAME=flowstate
@@ -131,7 +131,11 @@ check-keyword-adr: ## Fail if high-risk policy keywords lack a paired ADR (Guard
 	@echo "Checking high-risk keyword + ADR pairing..."
 	@bash scripts/check-keyword-adr.sh
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr ## Run all checks
+check-gating-drift: ## Flag struct fields whose docstring names a gating identifier the package never reads (Guard 3)
+	@echo "Checking docstring-vs-impl gating drift..."
+	@go run ./cmd/gatingdrift/... ./internal/...
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift ## Run all checks
 
 #
 # Dependencies
