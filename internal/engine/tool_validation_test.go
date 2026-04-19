@@ -32,17 +32,37 @@ var _ = Describe("ValidateToolArgs", func() {
 	})
 
 	Context("with unknown arguments", func() {
-		It("strips unknown keys", func() {
+		It("returns an error naming each unknown key and leaves the args untouched", func() {
 			args := map[string]interface{}{
 				"query":         "hello",
 				"session_id":    "1234567890",
 				"subagent_type": "query_vault",
 			}
 			result, err := engine.ValidateToolArgs(schema, args)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(HaveKey("query"))
-			Expect(result).NotTo(HaveKey("session_id"))
-			Expect(result).NotTo(HaveKey("subagent_type"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unknown"))
+			Expect(err.Error()).To(ContainSubstring("session_id"))
+			Expect(err.Error()).To(ContainSubstring("subagent_type"))
+			Expect(err.Error()).NotTo(ContainSubstring("query"))
+			// The args map must not be mutated — silent stripping is the
+			// behaviour we are eliminating, so callers must see the args
+			// the model produced, not a sanitised copy.
+			Expect(args).To(HaveKey("query"))
+			Expect(args).To(HaveKey("session_id"))
+			Expect(args).To(HaveKey("subagent_type"))
+			Expect(result).To(BeNil())
+		})
+	})
+
+	Context("with both unknown keys and missing required keys", func() {
+		It("surfaces the unknown-key error first so the model can self-correct", func() {
+			args := map[string]interface{}{
+				"session_id": "abc",
+			}
+			_, err := engine.ValidateToolArgs(schema, args)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unknown"))
+			Expect(err.Error()).To(ContainSubstring("session_id"))
 		})
 	})
 
