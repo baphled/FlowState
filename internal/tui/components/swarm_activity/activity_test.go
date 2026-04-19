@@ -56,24 +56,24 @@ var _ = Describe("SwarmActivityPane", func() {
 		})
 
 		Context("with limited width", func() {
-			It("truncates long body lines with an ellipsis suffix", func() {
+			It("wraps long body lines onto continuation rows without ellipsis", func() {
+				// T5 Gotcha (Multi-Agent Chat UX Plan): "text wrapping for
+				// narrow panes". Body rows must never be truncated with an
+				// ellipsis — the status and agent context are load-bearing.
 				output := pane.Render(20, 10)
 				lines := strings.Split(output, "\n")
-				// At least one body line must have been truncated.
-				var truncated bool
+				// No body line contains the ellipsis glyph.
 				for _, line := range lines[1:] {
-					if strings.HasSuffix(line, "…") {
-						truncated = true
-					}
+					Expect(line).NotTo(ContainSubstring("…"),
+						"body rows must wrap, not truncate with an ellipsis")
 					// No body line exceeds the declared width when measured visually.
 					Expect(lipgloss.Width(line)).To(BeNumerically("<=", 20))
 				}
-				Expect(truncated).To(BeTrue(), "expected at least one line to be truncated with an ellipsis")
 			})
 
-			It("truncates CJK content without splitting a rune mid-byte", func() {
+			It("wraps CJK content without splitting a rune mid-byte", func() {
 				// Japanese body — each character is a multi-byte rune and visually
-				// two cells wide. Truncation must measure by visual width, not bytes,
+				// two cells wide. Wrapping must measure by visual width, not bytes,
 				// and never emit a half-rune.
 				events := []streaming.SwarmEvent{
 					{
@@ -89,14 +89,14 @@ var _ = Describe("SwarmActivityPane", func() {
 				for _, line := range lines {
 					Expect(lipgloss.Width(line)).To(BeNumerically("<=", 20),
 						"no line may exceed the declared width even with multi-byte runes")
-					// Every byte prefix must be valid UTF-8 — if the truncation
+					// Every byte prefix must be valid UTF-8 — if the wrap
 					// split a rune, strings.ToValidUTF8 with a replacement would differ.
 					Expect(strings.ToValidUTF8(line, "?")).To(Equal(line),
-						"truncation must not produce invalid UTF-8")
+						"wrapping must not produce invalid UTF-8")
 				}
 			})
 
-			It("preserves the ▸ bullet glyph when truncation is required", func() {
+			It("preserves the ▸ bullet glyph on the first wrapped segment", func() {
 				events := []streaming.SwarmEvent{
 					{
 						Type:    streaming.EventDelegation,
@@ -105,8 +105,10 @@ var _ = Describe("SwarmActivityPane", func() {
 					},
 				}
 
-				// Width 15 forces aggressive truncation but the bullet should survive.
-				output := pane.WithEvents(events).Render(15, 5)
+				// Width 15 forces aggressive wrapping but the bullet must
+				// still appear on the first body segment so the row remains
+				// visually identifiable as a timeline entry.
+				output := pane.WithEvents(events).Render(15, 10)
 
 				body := strings.Split(output, "\n")
 				found := false
@@ -116,7 +118,7 @@ var _ = Describe("SwarmActivityPane", func() {
 						Expect(lipgloss.Width(line)).To(BeNumerically("<=", 15))
 					}
 				}
-				Expect(found).To(BeTrue(), "the ▸ bullet must survive even the tightest truncation")
+				Expect(found).To(BeTrue(), "the ▸ bullet must survive on the first wrapped segment")
 			})
 
 			It("handles emoji and wide glyphs in agent IDs without panicking", func() {

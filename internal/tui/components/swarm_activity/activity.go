@@ -36,10 +36,15 @@ var defaultItems = []string{
 
 // SwarmActivityPane renders a secondary-pane timeline of swarm events.
 //
-// The pane is width- and height-aware: long lines are truncated with an
-// ellipsis (never wrapped) and total line count is clamped to the supplied
-// height. Below minimum thresholds the pane renders nothing, allowing the
-// dual-pane layout in T2 to fall back to a single-pane view gracefully.
+// The pane is width- and height-aware: body rows that exceed the pane
+// width are wrapped onto continuation lines (Multi-Agent Chat UX
+// Implementation Plan, T5 Gotcha: "text wrapping for narrow panes"),
+// preserving the full agent and status context that operators rely on.
+// Header, filter-indicator, and profile-label lines remain bounded
+// metadata and are truncated with an ellipsis when they overflow.
+// Total line count is clamped to the supplied height. Below minimum
+// thresholds the pane renders nothing, allowing the dual-pane layout in
+// T2 to fall back to a single-pane view gracefully.
 //
 // The name intentionally repeats the package qualifier to distinguish it
 // from other pane types in the TUI at the call site.
@@ -315,14 +320,22 @@ func (p *SwarmActivityPane) countSummary() string {
 	return fmt.Sprintf(" (showing %d of %d)", shown, total)
 }
 
-// bodyLines returns the styled, width-truncated body lines.
+// bodyLines returns the styled, width-wrapped body lines.
+//
+// Body rows that exceed width are wrapped onto one or more continuation
+// lines so the full event context (agent, status, metadata) is preserved
+// for operators. This implements the Multi-Agent Chat UX Implementation
+// Plan's T5 Gotcha: "Component must respect width/height constraints
+// (text wrapping for narrow panes)". Truncation with ellipsis is reserved
+// for bounded metadata lines (header, filter indicator, profile label)
+// where overflow does not destroy user-facing context.
 //
 // Expected:
 //   - width is the visible cell budget per line.
 //
 // Returns:
-//   - A slice of styled lines, one per active body entry (events when set,
-//     placeholder items otherwise).
+//   - A slice of styled lines. Each source entry contributes one or more
+//     rendered lines (events when set, placeholder items otherwise).
 //
 // Side effects:
 //   - None.
@@ -330,7 +343,9 @@ func (p *SwarmActivityPane) bodyLines(width int) []string {
 	source := p.activeBodySource()
 	out := make([]string, 0, len(source))
 	for _, item := range source {
-		out = append(out, p.bodyStyle.Render(truncate(item, width)))
+		for _, segment := range wrapLine(item, width) {
+			out = append(out, p.bodyStyle.Render(segment))
+		}
 	}
 	return out
 }
@@ -427,6 +442,49 @@ func formatEvent(ev streaming.SwarmEvent) string {
 		status = "-"
 	}
 	return "▸ " + humanLabel(ev.Type) + " · " + agent + " · " + status
+}
+
+// wrapLine splits s into one or more segments whose visual width each
+// fits within limit, preserving every rune intact.
+//
+// Wrapping is rune-safe and width-aware: segments are closed when adding
+// the next rune would exceed limit, then a fresh segment begins. Empty
+// and whitespace-only inputs return a single-element slice so callers
+// can iterate uniformly. A non-positive limit degrades to returning the
+// input unchanged — callers guard for width below minRenderWidth at the
+// Render entry point.
+//
+// Expected:
+//   - limit >= 1; smaller values short-circuit to a no-op.
+//
+// Returns:
+//   - A slice of segments, each with lipgloss.Width <= limit.
+//
+// Side effects:
+//   - None.
+func wrapLine(s string, limit int) []string {
+	if limit <= 0 {
+		return []string{s}
+	}
+	if lipgloss.Width(s) <= limit {
+		return []string{s}
+	}
+
+	segments := make([]string, 0, 2)
+	var current strings.Builder
+	current.Grow(len(s))
+	for _, r := range s {
+		next := current.String() + string(r)
+		if lipgloss.Width(next) > limit {
+			segments = append(segments, current.String())
+			current.Reset()
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	return segments
 }
 
 // truncate shortens s so that its visual width does not exceed max cells,
