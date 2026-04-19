@@ -424,6 +424,25 @@ func (i *Intent) HandleEscapeKeyForTest() tea.Cmd {
 	return i.handleEscapeKey()
 }
 
+// BeginTurnForTest invokes the production beginTurn helper so the D1
+// stall-regression specs exercise the exact same per-turn reset path that
+// sendMessage runs before starting a fresh stream. Intentionally delegates
+// to the production method rather than mirroring its body, so a regression
+// that drops the userCancelled clear from beginTurn fails both the
+// production sendMessage path and this test's assertions.
+//
+// Expected:
+//   - userMessage is the user input the production call would capture for
+//     the premature-delegation-misfire detector. Tests that do not care
+//     about that detector pass an empty string.
+//
+// Side effects:
+//   - Whatever beginTurn does: clears turnUserMessage, turnHasText,
+//     prematureWarningFired, and userCancelled.
+func (i *Intent) BeginTurnForTest(userMessage string) {
+	i.beginTurn(userMessage)
+}
+
 // SessionTrailForTest returns the session trail for test assertions.
 func SessionTrailForTest(i *Intent) *navigation.SessionTrail {
 	return i.sessionTrail
