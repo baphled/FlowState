@@ -107,3 +107,36 @@ Feature: Dual-pane ScreenLayout
     When the chat Intent view is rendered
     Then the rendered chat Intent view should not contain the dual-pane separator
     And the rendered chat Intent view should not contain the Activity Timeline header
+
+  @ui @dual-pane @wave1 @footer-width-invariant
+  Scenario Outline: Footer separator and help text stay within terminal width
+    A rendered row that exceeds terminal width wraps in the terminal
+    emulator and shifts the dual-pane separator column off-grid on the
+    wrapped continuation — the Activity Timeline pane then appears to
+    "shrink" because the right half of every over-wide row bleeds into
+    the next display row's primary column.
+
+    Two footer-side offenders must NOT produce over-wide rows:
+
+      1. `buildFooterParts` separator: previously hardcoded to 100 glyphs
+         regardless of TerminalInfo.Width, making the footer 20 cells wider
+         than an 80-column terminal and 20 cells narrower than a 120-column
+         one.
+
+      2. The chat intent status-bar hint (chatHintSuffix) is a fixed
+         157-cell string advertising Ctrl+G/Ctrl+E/Ctrl+T and friends; at
+         W in {80, 100, 120, 140} it overflows. Truncation was rejected
+         because it silently drops Ctrl+C: quit / Ctrl+T hints (violating
+         the swarm-activity-toggle hint assertion). Word-wrap preserves
+         every hint while keeping every rendered row <= W.
+    Given a chat Intent sized to <width>x40 with the activity pane visible
+    When the chat Intent view is rendered
+    Then every rendered row should be at most <width> cells wide
+    And the help hints "Ctrl+C", "Ctrl+T" should remain visible
+
+    Examples:
+      | width |
+      | 80    |
+      | 100   |
+      | 120   |
+      | 140   |
