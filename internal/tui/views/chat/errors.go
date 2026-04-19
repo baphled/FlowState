@@ -72,21 +72,30 @@ func buildHTTPErrorDisplay(matches []string) string {
 	return sb.String()
 }
 
-// buildFallbackDisplay returns a truncated single-line error for unparseable messages.
+// buildFallbackDisplay returns a single-line error marker for unparseable
+// messages.
+//
+// P18a switched the fallback prefix to a compact "[ERROR: …]" marker so
+// error blocks in the transcript read uniformly regardless of whether the
+// underlying failure was network, auth, quota, or miscellaneous provider
+// noise. The marker reuses the terminal's error-tone styling at the
+// renderer layer — the prefix itself is plain ASCII so copy/paste and
+// log-scraping remain trivial.
 //
 // Expected:
 //   - errMsg is the raw error string.
 //
 // Returns:
-//   - A single line prefixed with ⚠ Error:, truncated if longer than maxFallbackLength.
+//   - A single line of the form "[ERROR: <msg>]", truncated if the
+//     underlying message exceeds maxFallbackLength.
 //
 // Side effects:
 //   - None.
 func buildFallbackDisplay(errMsg string) string {
 	if len(errMsg) > maxFallbackLength {
-		return "⚠ Error: " + errMsg[:maxFallbackLength] + "..."
+		return "[ERROR: " + errMsg[:maxFallbackLength] + "...]"
 	}
-	return "⚠ Error: " + errMsg
+	return "[ERROR: " + errMsg + "]"
 }
 
 // extractProviderFromURL extracts a provider name from an API URL hostname.
@@ -150,31 +159,4 @@ func extractDetailFromBody(body string) string {
 		return matches[1]
 	}
 	return ""
-}
-
-// IsLogWorthy determines which errors are critical enough to log to stderr.
-//
-// Expected:
-//   - err may be nil (returns false immediately).
-//
-// Returns:
-//   - true if the error should be logged to stderr, false otherwise.
-//
-// Critical errors include: missing configuration, authentication failures,
-// and complete provider failures. Non-critical errors (partial responses, timeouts)
-// are logged to the chat but not stderr.
-//
-// Side effects:
-//   - None.
-func IsLogWorthy(err error) bool {
-	if err == nil {
-		return false
-	}
-	errMsg := err.Error()
-	return strings.Contains(errMsg, "no model preferences") ||
-		strings.Contains(errMsg, "API key") ||
-		strings.Contains(errMsg, "invalid") ||
-		strings.Contains(errMsg, "required") ||
-		strings.Contains(errMsg, "all providers failed") ||
-		strings.Contains(errMsg, "authentication")
 }

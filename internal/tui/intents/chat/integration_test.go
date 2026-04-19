@@ -259,7 +259,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 				messages := testIntent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Role).To(Equal("assistant"))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 			})
 		})
 
@@ -303,7 +303,7 @@ var _ = Describe("Chat Intent Integration", Label("integration"), func() {
 				messages := testIntent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Content).To(ContainSubstring("Partial response"))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 				Expect(messages[0].Content).To(ContainSubstring("connection lost"))
 			})
 		})

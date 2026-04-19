@@ -4006,31 +4006,67 @@ func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
 	return nil
 }
 
-// noResponseShouldBeAppendedToMessages is a step definition.
+// noResponseShouldBeAppendedToMessages asserts — when a P18a scenario
+// has installed a StreamErrorSteps instance — that the chat transcript
+// contains only the error marker as the assistant message. For
+// pre-P18a scenarios the step is a no-op.
 //
-// Expected: No response is appended to messages.
-// Returns: nil on success.
-// Side effects: None.
+// Expected:
+//   - None; delegates to the active P18a view when present.
+//
+// Returns:
+//   - nil when no view is installed or when the active scenario's
+//     assertion passes; an error otherwise.
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) noResponseShouldBeAppendedToMessages() error {
-	return nil
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.noResponseShouldBeAppendedToMessages()
 }
 
-// theErrorShouldBeLoggedToStderr is a step definition.
+// theErrorShouldBeLoggedToStderr asserts — when a P18a scenario has
+// installed a StreamErrorSteps instance — that a "stream critical
+// error" slog.Error line reached the captured stderr. For pre-P18a
+// scenarios the step is a no-op.
 //
-// Expected: Error is logged to stderr.
-// Returns: nil on success.
-// Side effects: None.
+// Expected:
+//   - None; delegates to the active P18a steps when present.
+//
+// Returns:
+//   - nil when no instance is installed or when the active scenario's
+//     assertion passes; an error otherwise.
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) theErrorShouldBeLoggedToStderr() error {
-	return nil
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.theErrorShouldBeLoggedToStderr()
 }
 
-// thePartialContentShouldBePreserved is a step definition.
+// thePartialContentShouldBePreserved asserts — when a P18a scenario has
+// installed a StreamErrorSteps instance — that any content streamed
+// before the error is still visible in the transcript. For pre-P18a
+// scenarios the step is a no-op.
 //
-// Expected: Partial content is preserved.
-// Returns: nil on success.
-// Side effects: None.
+// Expected:
+//   - None; delegates to the active P18a view when present.
+//
+// Returns:
+//   - nil when no view is installed or when the active scenario's
+//     assertion passes; an error otherwise.
+//
+// Side effects:
+//   - None.
 func (s *StepDefinitions) thePartialContentShouldBePreserved() error {
-	return nil
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.thePartialContentShouldBePreserved()
 }
 
 // iShouldBeReturnedToTheChatView is a step definition.
@@ -4824,31 +4860,67 @@ func (s *StepDefinitions) navigateToModelIndex(idx int) {
 	}
 }
 
-// iSendAMessageThatFailsWith is a step definition.
+// iSendAMessageThatFailsWith drives the S3 critical-error scenario: it
+// delegates to the active P18a StreamErrorSteps instance so the real
+// chat view receives an error chunk with the supplied text and the
+// slog.Error capture is armed. For pre-P18a scenarios the step is a
+// no-op to preserve back-compat.
 //
-// Expected: Message is sent and fails with error.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iSendAMessageThatFailsWith(_ string) error {
-	return nil
+// Expected:
+//   - errText is the error-marker substring the scenario specifies.
+//
+// Returns:
+//   - nil when no active P18a scenario is present or when the delegate
+//     succeeds; the delegate's error otherwise.
+//
+// Side effects:
+//   - Delegates side effects to the active StreamErrorSteps instance.
+func (s *StepDefinitions) iSendAMessageThatFailsWith(errText string) error {
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.iSendAMessageThatFailsWith(errText)
 }
 
-// iSendAMessageThatReceivesThenFailsWith is a step definition.
+// iSendAMessageThatReceivesThenFailsWith drives the S2 partial-plus-error
+// scenario via the active P18a StreamErrorSteps instance. For pre-P18a
+// scenarios the step is a no-op.
 //
-// Expected: Message is sent, receives response, then fails.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iSendAMessageThatReceivesThenFailsWith(_, _ string) error {
-	return nil
+// Expected:
+//   - partial is the first non-empty content chunk.
+//   - errText is the error-marker substring for the terminating chunk.
+//
+// Returns:
+//   - nil when no active P18a scenario is present or when the delegate
+//     succeeds; the delegate's error otherwise.
+//
+// Side effects:
+//   - Delegates side effects to the active StreamErrorSteps instance.
+func (s *StepDefinitions) iSendAMessageThatReceivesThenFailsWith(partial, errText string) error {
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.iSendAMessageThatReceivesThenFailsWith(partial, errText)
 }
 
-// iSendAMessageThatWillFailWith is a step definition.
+// iSendAMessageThatWillFailWith drives the S1 error-only scenario via
+// the active P18a StreamErrorSteps instance. For pre-P18a scenarios the
+// step is a no-op.
 //
-// Expected: Message is sent and will fail with error.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iSendAMessageThatWillFailWith(_ string) error {
-	return nil
+// Expected:
+//   - errText is the error-marker substring the scenario specifies.
+//
+// Returns:
+//   - nil when no active P18a scenario is present or when the delegate
+//     succeeds; the delegate's error otherwise.
+//
+// Side effects:
+//   - Delegates side effects to the active StreamErrorSteps instance.
+func (s *StepDefinitions) iSendAMessageThatWillFailWith(errText string) error {
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.iSendAMessageThatWillFailWith(errText)
 }
 
 // iShouldMoveToNextStep is a step definition.
@@ -4935,13 +5007,32 @@ func (s *StepDefinitions) iShouldSeeHeader(header string) error {
 	return nil
 }
 
-// iShouldSeeInTheChat is a step definition.
+// iShouldSeeInTheChat asserts the given substring is present in the chat
+// transcript of the currently-active scenario.
 //
-// Expected: Text is visible in chat.
-// Returns: nil on success.
-// Side effects: None.
-func (s *StepDefinitions) iShouldSeeInTheChat(_ string) error {
-	return nil
+// The step is shared: P18a streaming-error scenarios install a
+// StreamErrorSteps instance (via activeStreamErrorSteps) for the
+// duration of the scenario, and this function delegates the real
+// assertion to that instance. Scenarios that do not install a view
+// continue to treat the step as a no-op, preserving pre-P18a behaviour
+// and avoiding a registration conflict under godog Strict mode.
+//
+// Expected:
+//   - expected is the literal substring the feature file expects to see
+//     in the chat transcript.
+//
+// Returns:
+//   - nil when no view is installed (pre-P18a behaviour) or when the
+//     transcript contains every fragment of the expected string; an
+//     error when a view is installed and the fragment is missing.
+//
+// Side effects:
+//   - None.
+func (s *StepDefinitions) iShouldSeeInTheChat(expected string) error {
+	if activeStreamErrorSteps == nil {
+		return nil
+	}
+	return activeStreamErrorSteps.assertChatContains(expected)
 }
 
 // iShouldSeeWithConfiguredStatus is a step definition.

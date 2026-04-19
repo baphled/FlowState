@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1543,7 +1543,9 @@ func (i *Intent) updateViewportForInput() {
 // context.Canceled, the flag is consumed and an empty string is returned so
 // handleStreamChunk does not append an error artefact to the chat. Any other
 // error — including an upstream context.Canceled from a provider deadline — is
-// formatted normally and logged when log-worthy.
+// formatted normally and, when the classifier marks it critical, emitted via
+// slog.Error so operators inspecting structured logs see the condition even
+// after the TUI exits (P18a S3).
 //
 // Expected:
 //   - err may be nil (no error chunk), context.Canceled (user cancel or
@@ -1555,7 +1557,7 @@ func (i *Intent) updateViewportForInput() {
 //
 // Side effects:
 //   - Clears i.userCancelled when a user-initiated cancel is consumed.
-//   - Writes a log line to stderr for log-worthy errors.
+//   - Emits a slog.Error record for critical-severity errors (P18a).
 func (i *Intent) formatStreamError(err error) string {
 	if err == nil {
 		return ""
@@ -1564,8 +1566,14 @@ func (i *Intent) formatStreamError(err error) string {
 		i.userCancelled = false
 		return ""
 	}
-	if chat.IsLogWorthy(err) {
-		fmt.Fprintf(os.Stderr, "chat: streaming error: %v\n", err)
+	se := provider.ClassifyStreamError(err)
+	if se != nil && se.Severity == provider.SeverityCritical {
+		slog.Error(
+			"stream critical error",
+			"provider", se.Provider,
+			"err", se.Err,
+			"severity", se.Severity.String(),
+		)
 	}
 	return chat.FormatErrorMessage(err)
 }
