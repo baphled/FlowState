@@ -230,6 +230,10 @@ type SessionLister interface {
 	// Delete removes a session's persisted state (metadata + activity timeline).
 	// Missing files are tolerated — Delete is idempotent.
 	Delete(sessionID string) error
+	// Fork clones an existing session into a new independent session at
+	// the supplied pivot message (P18b). An empty pivot produces a full
+	// clone — the first-cut fork-at-last semantics.
+	Fork(originID, pivotMessageID string) (string, error)
 }
 
 // SwarmEventPersister is an optional interface that a SessionLister may
@@ -907,6 +911,8 @@ func (i *Intent) handleNavigationMsg(msg tea.Msg) tea.Cmd {
 		return i.handleSessionLoaded(msg)
 	case sessionbrowser.SessionDeletedMsg:
 		return i.handleSessionDeleted(msg)
+	case sessionbrowser.SessionForkedMsg:
+		return i.handleSessionForked(msg)
 	case sessiontree.SelectedMsg:
 		return i.handleSessionTreeSelection(msg)
 	case BackgroundTaskCompletedMsg:
@@ -3354,6 +3360,7 @@ func (i *Intent) openSessionBrowser() tea.Cmd {
 		browserIntent := sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
 			Sessions:        entries,
 			Deleter:         i.sessionStore,
+			Forker:          i.sessionStore,
 			ActiveSessionID: i.sessionID,
 		})
 		return tuiintents.ShowModalMsg{Modal: browserIntent}
@@ -3581,6 +3588,56 @@ func (i *Intent) handleSessionDeleted(msg sessionbrowser.SessionDeletedMsg) tea.
 		CreatedAt: time.Now(),
 	})
 	return nil
+}
+
+// handleSessionForked reacts to the browser's fork outcome (P18b).
+//
+// Success path: switch the chat to the newly-forked session by loading
+// its persisted store and surfacing a toast so the user understands the
+// shift. Failure path: surface an error toast and leave the chat on the
+// current session — the browser has already dismissed itself before we
+// reach this handler, so the user remains in the chat view.
+//
+// Expected:
+//   - msg is a sessionbrowser.SessionForkedMsg produced by the browser
+//     after the user pressed 'f'. On success NewSessionID is non-empty.
+//
+// Returns:
+//   - A tea.Cmd that loads the forked session asynchronously on success.
+//   - nil on failure (the toast is pushed synchronously).
+//
+// Side effects:
+//   - Adds a Notification via notificationManager when configured.
+//   - On success: updates i.sessionID, resets the view, and kicks off a
+//     tea.Batch(tickSpinner, loadSessionAsync) so the loading modal is
+//     animated while the fork hydrates.
+func (i *Intent) handleSessionForked(msg sessionbrowser.SessionForkedMsg) tea.Cmd {
+	if msg.Err != nil {
+		if i.notificationManager != nil {
+			i.notificationManager.Add(notification.Notification{
+				ID:        "session-fork-error-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+				Title:     "Fork failed",
+				Message:   msg.Err.Error(),
+				Level:     notification.LevelError,
+				Duration:  8 * time.Second,
+				CreatedAt: time.Now(),
+			})
+		}
+		return nil
+	}
+
+	if i.notificationManager != nil {
+		i.notificationManager.Add(notification.Notification{
+			ID:        "session-fork-ok-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+			Title:     "Forked session",
+			Message:   msg.NewSessionID,
+			Level:     notification.LevelSuccess,
+			Duration:  4 * time.Second,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	return i.switchToSession(msg.NewSessionID)
 }
 
 // toolCallSummary extracts the primary argument from a tool call and formats it as "toolName: arg".

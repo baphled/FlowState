@@ -56,7 +56,6 @@ Feature: Session Management
     And I search for "recipe"
     Then I should only see sessions mentioning "recipe"
 
-  @wip
   Scenario: Fork a session
     Given I am in a session with history
     When I fork the session at message 3

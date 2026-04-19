@@ -28,6 +28,21 @@ type SessionDeleter interface {
 	Delete(sessionID string) error
 }
 
+// SessionForker clones a session into a new independent session. The
+// narrow interface is satisfied by FileSessionStore so the browser intent
+// can trigger forks without importing the full session store surface.
+//
+// P18b contract:
+//   - When pivotMessageID is empty, the implementation performs a full
+//     clone (fork-at-last semantics used by the current TUI affordance).
+//   - When pivotMessageID is non-empty the fork is truncated at that
+//     message (forwards-compatible with a future picker UI).
+type SessionForker interface {
+	// Fork clones originID into a new session, truncating history at
+	// pivotMessageID when non-empty. Returns the new session ID.
+	Fork(originID, pivotMessageID string) (string, error)
+}
+
 // IntentConfig holds configuration for the session browser intent.
 type IntentConfig struct {
 	// Sessions is the list of saved sessions to display.
@@ -35,6 +50,9 @@ type IntentConfig struct {
 	// Deleter, when non-nil, enables the 'd' keybinding to delete a session.
 	// Leaving it nil disables the delete affordance entirely.
 	Deleter SessionDeleter
+	// Forker, when non-nil, enables the 'f' keybinding to fork a session.
+	// Leaving it nil disables the fork affordance entirely.
+	Forker SessionForker
 	// ActiveSessionID, when non-empty, marks a session as the currently-open
 	// one; pressing 'd' on it will surface a "cannot delete" message
 	// instead of opening the confirmation modal.
@@ -47,6 +65,7 @@ type Intent struct {
 	selectedSession  int
 	result           *intents.IntentResult
 	deleter          SessionDeleter
+	forker           SessionForker
 	activeSessionID  string
 	confirmingDelete bool
 	pendingDeleteIdx int
@@ -69,6 +88,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		selectedSession: 0,
 		result:          nil,
 		deleter:         cfg.Deleter,
+		forker:          cfg.Forker,
 		activeSessionID: cfg.ActiveSessionID,
 	}
 }
@@ -116,9 +136,15 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	if i.confirmingDelete {
 		return i.handleConfirmDeleteKey(msg)
 	}
-	// Typed rune handling — 'd' opens the delete confirmation.
-	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'd' {
-		return i.requestDelete()
+	// Typed rune handling — 'd' opens the delete confirmation; 'f'
+	// forks the selected session at its latest message (P18b).
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 'd':
+			return i.requestDelete()
+		case 'f':
+			return i.requestFork()
+		}
 	}
 	switch msg.Type {
 	case tea.KeyUp:
@@ -171,6 +197,59 @@ func (i *Intent) requestDelete() tea.Cmd {
 	i.pendingDeleteIdx = sessionIdx
 	i.activeBlockMsg = ""
 	return nil
+}
+
+// requestFork performs a fork at the currently-selected session using the
+// first-cut fork-at-last-message semantics (empty pivot → full clone).
+// The browser dismisses itself and emits a SessionForkedMsg so the
+// parent intent (chat) can navigate to the new session. Errors surface
+// as a SessionForkedMsg with a non-nil Err and no modal dismiss — the
+// user can retry without losing their place in the browser.
+//
+// Returns:
+//   - A tea.Cmd that emits dismiss + SessionForkedMsg on success, or
+//     just SessionForkedMsg(err) on failure.
+//   - nil when the fork affordance is disabled (no forker configured),
+//     the New Session row is selected, or the selection is out of range.
+//
+// Side effects:
+//   - Invokes the configured SessionForker, which performs disk I/O.
+//   - Sets the intent result on success for symmetry with select/cancel
+//     flows.
+func (i *Intent) requestFork() tea.Cmd {
+	if i.forker == nil {
+		return nil
+	}
+	if i.selectedSession == 0 {
+		return nil
+	}
+	sessionIdx := i.selectedSession - 1
+	if sessionIdx < 0 || sessionIdx >= len(i.sessions) {
+		return nil
+	}
+	originID := i.sessions[sessionIdx].ID
+
+	// First-cut: pivot is empty → full clone at the latest message.
+	// A future P18c could open a message-picker and pass a specific
+	// StoredMessage.ID here without needing to change the message shape.
+	newID, err := i.forker.Fork(originID, "")
+	if err != nil {
+		return func() tea.Msg {
+			return SessionForkedMsg{
+				OriginID:       originID,
+				NewSessionID:   "",
+				PivotMessageID: "",
+				Err:            err,
+			}
+		}
+	}
+
+	forked := SessionForkedMsg{
+		OriginID:       originID,
+		NewSessionID:   newID,
+		PivotMessageID: "",
+	}
+	return i.dismissWithMsg(forked)
 }
 
 // handleConfirmDeleteKey routes keypresses while the confirm-delete prompt is

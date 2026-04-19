@@ -60,6 +60,12 @@ func (p *persistingSessionLister) Save(sessionID string, _ *recall.FileContextSt
 
 func (p *persistingSessionLister) Delete(_ string) error { return nil }
 
+func (p *persistingSessionLister) Fork(_ string, _ string) (string, error) {
+	// Stub: isolation tests do not exercise the P18b fork path; the
+	// method exists solely so the SessionLister interface is satisfied.
+	return "", nil
+}
+
 func (p *persistingSessionLister) SaveEvents(sessionID string, evs []streaming.SwarmEvent) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
