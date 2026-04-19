@@ -37,16 +37,18 @@ func TestChatIntent_ReassertsVisibleTypes_OnRender(t *testing.T) {
 
 	view := intent.View()
 
-	if !strings.Contains(view, "delegation") {
+	// Activity rows render human labels, never the wire identifiers.
+	// See swarm_activity_human_labels_test.go for the canonical contract.
+	if !strings.Contains(view, "Delegation") {
 		t.Errorf("delegation events must render by default (intent asserts visibility), got:\n%s", view)
 	}
-	if !strings.Contains(view, "tool_call") {
+	if !strings.Contains(view, "Tool Call") {
 		t.Errorf("tool_call events must render by default, got:\n%s", view)
 	}
-	if !strings.Contains(view, "plan") {
+	if !strings.Contains(view, "Plan") {
 		t.Errorf("plan events must render by default, got:\n%s", view)
 	}
-	if !strings.Contains(view, "review") {
+	if !strings.Contains(view, "Review") {
 		t.Errorf("review events must render by default, got:\n%s", view)
 	}
 }

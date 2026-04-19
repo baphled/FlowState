@@ -187,8 +187,8 @@ var _ = Describe("SwarmActivityPane", func() {
 				},
 			}
 			output := pane.WithEvents(events).Render(80, 10)
-			Expect(output).To(ContainSubstring("tool_call"),
-				"the coalesced line must identify itself as a tool_call")
+			Expect(output).To(ContainSubstring("Tool Call"),
+				"the coalesced line must identify itself as a Tool Call (human label)")
 			Expect(output).To(ContainSubstring("completed"),
 				"the coalesced line's status must reflect the paired tool_result")
 			// Count body bullet lines: coalesce yields exactly one.
@@ -262,9 +262,9 @@ var _ = Describe("SwarmActivityPane", func() {
 
 			It("excludes the hidden type from the rendered body", func() {
 				output := pane.Render(80, 10)
-				Expect(output).To(ContainSubstring("delegation"))
-				Expect(output).To(ContainSubstring("plan"))
-				Expect(output).NotTo(ContainSubstring("tool_call"))
+				Expect(output).To(ContainSubstring("Delegation"))
+				Expect(output).To(ContainSubstring("Plan"))
+				Expect(output).NotTo(ContainSubstring("Tool Call"))
 			})
 
 			It("renders the filter indicator line", func() {
@@ -297,10 +297,10 @@ var _ = Describe("SwarmActivityPane", func() {
 				})
 
 				output := pane.Render(80, 10)
-				Expect(output).To(ContainSubstring("plan"))
-				Expect(output).NotTo(ContainSubstring("delegation"))
-				Expect(output).NotTo(ContainSubstring("tool_call"))
-				Expect(output).NotTo(ContainSubstring("review"))
+				Expect(output).To(ContainSubstring("Plan"))
+				Expect(output).NotTo(ContainSubstring("Delegation"))
+				Expect(output).NotTo(ContainSubstring("Tool Call"))
+				Expect(output).NotTo(ContainSubstring("Review"))
 				Expect(output).To(ContainSubstring("showing 1 of 4"))
 			})
 		})
@@ -434,10 +434,10 @@ var _ = Describe("SwarmActivityPane", func() {
 			output := pane.WithEvents(events).Render(80, 10)
 
 			Expect(output).To(ContainSubstring("Activity Timeline"))
-			Expect(output).To(ContainSubstring("delegation"))
+			Expect(output).To(ContainSubstring("Delegation"))
 			Expect(output).To(ContainSubstring("qa-agent"))
 			Expect(output).To(ContainSubstring("started"))
-			Expect(output).To(ContainSubstring("tool_call"))
+			Expect(output).To(ContainSubstring("Tool Call"))
 			Expect(output).To(ContainSubstring("senior-engineer"))
 			Expect(output).To(ContainSubstring("completed"))
 
@@ -478,7 +478,7 @@ var _ = Describe("SwarmActivityPane", func() {
 			}
 
 			output := pane.WithEvents(events).Render(80, 10)
-			Expect(output).To(ContainSubstring("tool_call"))
+			Expect(output).To(ContainSubstring("Tool Call"))
 			// formatEvent substitutes "-" for empty AgentID/Status so the
 			// line is always structurally complete.
 			Expect(output).To(ContainSubstring("· - · -"))

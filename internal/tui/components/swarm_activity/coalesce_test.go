@@ -38,8 +38,8 @@ func TestCoalesceToolCalls_PairsStartedAndCompleted(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line (call + result collapsed), got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "tool_call") {
-		t.Errorf("expected line to start with tool_call, got %q", lines[0])
+	if !strings.Contains(lines[0], "Tool Call") {
+		t.Errorf("expected line to start with Tool Call (human label), got %q", lines[0])
 	}
 	if !strings.Contains(lines[0], "completed") {
 		t.Errorf("expected status derived from tool_result (completed), got %q", lines[0])
@@ -144,14 +144,14 @@ func TestCoalesceToolCalls_PreservesNonToolEvents(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines for 3 non-tool events, got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "delegation") {
-		t.Errorf("expected first line to be delegation, got %q", lines[0])
+	if !strings.Contains(lines[0], "Delegation") {
+		t.Errorf("expected first line to be Delegation (human label), got %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "plan") {
-		t.Errorf("expected second line to be plan, got %q", lines[1])
+	if !strings.Contains(lines[1], "Plan") {
+		t.Errorf("expected second line to be Plan (human label), got %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "review") {
-		t.Errorf("expected third line to be review, got %q", lines[2])
+	if !strings.Contains(lines[2], "Review") {
+		t.Errorf("expected third line to be Review (human label), got %q", lines[2])
 	}
 }
 
@@ -199,8 +199,8 @@ func TestCoalesceToolCalls_RespectsVisibilityFilter(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected only the visible tool_call line, got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "tool_call") {
-		t.Errorf("expected remaining line to be tool_call, got %q", lines[0])
+	if !strings.Contains(lines[0], "Tool Call") {
+		t.Errorf("expected remaining line to be Tool Call (human label), got %q", lines[0])
 	}
 }
 
@@ -234,15 +234,15 @@ func TestCoalesceToolCalls_EvictionWithFilter_ShowsRecentVisibleEvents(t *testin
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 surviving, visible lines (d1, d2), got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "delegation") || !strings.Contains(lines[0], "started") {
-		t.Errorf("expected first line to be d1 delegation/started, got %q", lines[0])
+	if !strings.Contains(lines[0], "Delegation") || !strings.Contains(lines[0], "started") {
+		t.Errorf("expected first line to be d1 Delegation/started, got %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "delegation") || !strings.Contains(lines[1], "completed") {
-		t.Errorf("expected second line to be d2 delegation/completed, got %q", lines[1])
+	if !strings.Contains(lines[1], "Delegation") || !strings.Contains(lines[1], "completed") {
+		t.Errorf("expected second line to be d2 Delegation/completed, got %q", lines[1])
 	}
 	// Plan event must be dropped.
 	for _, line := range lines {
-		if strings.Contains(line, "plan") {
+		if strings.Contains(line, "Plan") {
 			t.Errorf("expected plan lines to be hidden, got %q", line)
 		}
 	}
@@ -279,8 +279,8 @@ func TestCoalesceToolCalls_EvictedCall_OrphanResultStillSuppressed(t *testing.T)
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line (orphan result dropped, delegation kept), got %d: %v", len(lines), lines)
 	}
-	if !strings.Contains(lines[0], "delegation") {
-		t.Errorf("expected surviving line to be the delegation, got %q", lines[0])
+	if !strings.Contains(lines[0], "Delegation") {
+		t.Errorf("expected surviving line to be the Delegation, got %q", lines[0])
 	}
 }
 
