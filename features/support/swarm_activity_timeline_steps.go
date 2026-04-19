@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cucumber/godog"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	swarmactivity "github.com/baphled/flowstate/internal/tui/components/swarm_activity"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
@@ -66,6 +67,7 @@ func RegisterSwarmActivityTimelineSteps(sc *godog.ScenarioContext) {
 	registerEventDetailsSteps(sc, s)
 	registerFilterSteps(sc, s)
 	registerPersistenceSteps(sc, s)
+	registerADRLabelSteps(sc, s)
 }
 
 // registerSwarmEventModelSteps wires up the SwarmEvent model lifecycle steps.
@@ -136,6 +138,24 @@ func registerFilterSteps(sc *godog.ScenarioContext, s *swarmActivityTimelineStep
 	sc.Step(`^a SwarmActivityPane with events of types "([^"]*)", "([^"]*)", "([^"]*)"$`, s.aSwarmActivityPaneWithEventTypes)
 	sc.Step(`^the visibility filter hides "([^"]*)"$`, s.theVisibilityFilterHides)
 	sc.Step(`^the rendered pane should contain a count summary$`, s.theRenderedPaneShouldContainCountSummary)
+}
+
+// registerADRLabelSteps wires up the ADR-label regression steps that
+// assert the rendered timeline uses the ADR human-readable type labels
+// ("Delegation", "Tool Call", "Plan", "Review") and never leaks the
+// streaming-layer wire identifiers ("tool_call", "tool_result").
+//
+// Expected:
+//   - sc is a valid godog ScenarioContext; s is non-nil.
+//
+// Side effects:
+//   - Registers ADR-label step definitions on the scenario context.
+func registerADRLabelSteps(sc *godog.ScenarioContext, s *swarmActivityTimelineSteps) {
+	sc.Step(`^a SwarmActivityPane with events of types "([^"]*)", "([^"]*)", "([^"]*)", "([^"]*)"$`, s.aSwarmActivityPaneWithFourEventTypes)
+	sc.Step(`^a chat intent seeded with one swarm event of each ADR type$`, s.aChatIntentSeededWithOneEventOfEachADRType)
+	sc.Step(`^the chat intent view is rendered$`, s.theChatIntentViewIsRendered)
+	sc.Step(`^the chat intent view should contain "([^"]*)"$`, s.theChatIntentViewShouldContain)
+	sc.Step(`^the chat intent view should not contain "([^"]*)"$`, s.theChatIntentViewShouldNotContain)
 }
 
 // registerPersistenceSteps wires up the JSONL persistence round-trip steps.
@@ -719,4 +739,170 @@ func (s *swarmActivityTimelineSteps) reset() {
 	s.originalEvents = nil
 	s.readEvents = nil
 	s.jsonlBuffer.Reset()
+}
+
+// --- ADR-label regression steps (Swarm Activity Event Model ADR +
+// Multi-Agent Chat UX Plan T5/T21). These back the scenarios that assert
+// the timeline uses the ADR human-readable type labels and never leaks the
+// wire identifiers "tool_call" / "tool_result" into rendered output.
+
+// aSwarmActivityPaneWithFourEventTypes creates a SwarmActivityPane backed
+// by one event of each of the four types specified by the ADR label map:
+// delegation, tool_call, plan, review. Mirrors the 3-type variant used by
+// the existing filter scenarios so assertions can cover the full ADR matrix
+// in one render.
+//
+// Expected:
+//   - type1..type4 are valid SwarmEventType strings.
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Populates s.pane.
+func (s *swarmActivityTimelineSteps) aSwarmActivityPaneWithFourEventTypes(type1, type2, type3, type4 string) error {
+	events := []streaming.SwarmEvent{
+		{ID: "ev-adr-1", Type: streaming.SwarmEventType(type1), Status: "started", Timestamp: time.Now(), AgentID: "agent-a"},
+		{ID: "ev-adr-2", Type: streaming.SwarmEventType(type2), Status: "completed", Timestamp: time.Now(), AgentID: "agent-b"},
+		{ID: "ev-adr-3", Type: streaming.SwarmEventType(type3), Status: "created", Timestamp: time.Now(), AgentID: "agent-c"},
+		{ID: "ev-adr-4", Type: streaming.SwarmEventType(type4), Status: "completed", Timestamp: time.Now(), AgentID: "agent-d"},
+	}
+	s.pane = swarmactivity.NewSwarmActivityPane().WithEvents(events)
+	return nil
+}
+
+// aChatIntentSeededWithOneEventOfEachADRType constructs a chat.Intent sized
+// for the dual-pane path and feeds a StreamChunkMsg for each of the four
+// ADR-specified SwarmEventTypes (delegation, tool_call, plan, review)
+// through the public Update API so the Intent's swarm store holds one
+// event of every type the ADR label map covers.
+//
+// Returns:
+//   - nil on success; error if a chunk construction fails.
+//
+// Side effects:
+//   - Populates s.chatIntent and mutates its state via Update.
+func (s *swarmActivityTimelineSteps) aChatIntentSeededWithOneEventOfEachADRType() error {
+	s.chatIntent = chat.NewIntent(chat.IntentConfig{
+		AgentID:      "test-agent",
+		SessionID:    "test-session",
+		ProviderName: "openai",
+		ModelName:    "gpt-4o",
+		TokenBudget:  4096,
+	})
+	s.chatIntent.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	for _, t := range []string{"delegation", "tool_call", "plan", "review"} {
+		chunk, err := chunkForSwarmType(t)
+		if err != nil {
+			return err
+		}
+		s.chatIntent.Update(chunk)
+	}
+	return nil
+}
+
+// chunkForSwarmType returns the StreamChunkMsg shape that the chat Intent's
+// swarmEventFromChunk converter maps onto the requested SwarmEventType.
+//
+// Expected:
+//   - swarmType is one of "tool_call", "plan", "review", "delegation".
+//
+// Returns:
+//   - A populated StreamChunkMsg; error if swarmType is unrecognised.
+//
+// Side effects:
+//   - None.
+func chunkForSwarmType(swarmType string) (chat.StreamChunkMsg, error) {
+	switch swarmType {
+	case "tool_call":
+		return chat.StreamChunkMsg{
+			ToolCallName:       "BDDProbeTool",
+			ToolStatus:         "completed",
+			ToolCallID:         "bdd-adr-" + swarmType,
+			InternalToolCallID: "bdd-adr-internal-" + swarmType,
+			Done:               true,
+		}, nil
+	case "plan":
+		return chat.StreamChunkMsg{EventType: streaming.EventTypePlanArtifact, Done: true}, nil
+	case "review":
+		return chat.StreamChunkMsg{EventType: streaming.EventTypeReviewVerdict, Done: true}, nil
+	case "delegation":
+		return chat.StreamChunkMsg{
+			DelegationInfo: &provider.DelegationInfo{
+				SourceAgent: "bdd-source",
+				TargetAgent: "bdd-target",
+				ChainID:     "bdd-chain-adr",
+				Status:      "started",
+			},
+			Done: true,
+		}, nil
+	default:
+		return chat.StreamChunkMsg{}, fmt.Errorf("unsupported swarm type %q for chunk fixture", swarmType)
+	}
+}
+
+// theChatIntentViewIsRendered drives s.chatIntent.View and stashes the
+// render on s.paneRender so the downstream ADR-label contain / not-contain
+// assertions can reuse the existing container-style helpers.
+//
+// Returns:
+//   - nil on success; error if the chat intent has not been initialised
+//     or the view is empty.
+//
+// Side effects:
+//   - Sets s.paneRender to the rendered view output.
+func (s *swarmActivityTimelineSteps) theChatIntentViewIsRendered() error {
+	if s.chatIntent == nil {
+		return errors.New("chat intent has not been initialised")
+	}
+	view := s.chatIntent.View()
+	if view == "" {
+		return errors.New("chat.Intent.View returned an empty string")
+	}
+	s.paneRender = view
+	return nil
+}
+
+// theChatIntentViewShouldContain asserts the last captured chat intent
+// view contains the supplied substring.
+//
+// Expected:
+//   - expected is a non-empty substring.
+//
+// Returns:
+//   - nil if the substring is present; error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *swarmActivityTimelineSteps) theChatIntentViewShouldContain(expected string) error {
+	if s.paneRender == "" {
+		return errors.New("no chat intent view captured; render it first")
+	}
+	if !strings.Contains(s.paneRender, expected) {
+		return fmt.Errorf("expected chat intent view to contain %q, got:\n%s", expected, s.paneRender)
+	}
+	return nil
+}
+
+// theChatIntentViewShouldNotContain asserts the last captured chat intent
+// view does NOT contain the supplied substring. Used to guard against the
+// wire identifiers "tool_call" and "tool_result" leaking into user-facing
+// copy.
+//
+// Expected:
+//   - unexpected is a non-empty substring.
+//
+// Returns:
+//   - nil if the substring is absent; error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *swarmActivityTimelineSteps) theChatIntentViewShouldNotContain(unexpected string) error {
+	if s.paneRender == "" {
+		return errors.New("no chat intent view captured; render it first")
+	}
+	if strings.Contains(s.paneRender, unexpected) {
+		return fmt.Errorf("expected chat intent view NOT to contain %q, got:\n%s", unexpected, s.paneRender)
+	}
+	return nil
 }
