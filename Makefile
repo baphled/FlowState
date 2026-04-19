@@ -1,4 +1,4 @@
-.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
+.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
 
 # Binary name
 BINARY_NAME=flowstate
@@ -127,7 +127,11 @@ check-note-comments: ## Fail if NOTE: appears outside a docblock
 	@echo "Checking NOTE: comment placement..."
 	@bash scripts/check-note-comments.sh
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments ## Run all checks
+check-keyword-adr: ## Fail if high-risk policy keywords lack a paired ADR (Guard 1)
+	@echo "Checking high-risk keyword + ADR pairing..."
+	@bash scripts/check-keyword-adr.sh
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr ## Run all checks
 
 #
 # Dependencies
