@@ -1835,6 +1835,32 @@ func (i *Intent) resetTurnState() {
 	i.prematureWarningFired = false
 }
 
+// beginTurn initialises all per-turn state for a fresh stream. Called by
+// sendMessage before starting a new stream so every turn begins from a
+// deterministic clean slate, regardless of how the previous turn ended.
+//
+// Expected:
+//   - userMessage is the text the user just submitted; captured for the
+//     P7/C2 premature-delegation-misfire detector.
+//
+// Side effects:
+//   - Sets turnUserMessage to userMessage, clears turnHasText and
+//     prematureWarningFired.
+//   - Clears userCancelled. This closes the D1 stall-regression gap where
+//     a cancelled turn whose Done chunk never reached handleStreamChunkMsg
+//     (because cancelActiveStream nilled streamCtx, forcing readNextChunk
+//     onto its non-ctx fallback that parks on a silent channel) left the
+//     latch set, so every chunk on the NEXT user turn was silently dropped
+//     by the post-cancel gate at handleStreamChunkMsg. A fresh user
+//     message is an unambiguous turn boundary; the latch has no legitimate
+//     role beyond it.
+func (i *Intent) beginTurn(userMessage string) {
+	i.turnUserMessage = userMessage
+	i.turnHasText = false
+	i.prematureWarningFired = false
+	i.userCancelled = false
+}
+
 // maybeNotifySuggestDelegate inspects a chunk for a suggest_delegate
 // tool_result payload (Phase 12). When the payload carries the
 // "switch_agent" suggestion marker, surface a one-line actionable
@@ -2657,12 +2683,11 @@ func (i *Intent) sendMessage() tea.Cmd {
 		}
 	}
 
-	// P7/C2: capture this turn's user message and reset the per-turn
-	// flags so the premature-delegation-misfire detector sees a clean
-	// slate for the first chunk that comes back from the stream.
-	i.turnUserMessage = userMessage
-	i.turnHasText = false
-	i.prematureWarningFired = false
+	// P7/C2 + D1: reset all per-turn state via the shared beginTurn helper
+	// so the new stream starts with a clean slate — including a cleared
+	// userCancelled latch so a prior double-Esc does not trap this turn's
+	// chunks at the gate in handleStreamChunkMsg.
+	i.beginTurn(userMessage)
 
 	i.view.AddMessage(chat.Message{Role: "user", Content: userMessage})
 	i.view.StartStreaming()

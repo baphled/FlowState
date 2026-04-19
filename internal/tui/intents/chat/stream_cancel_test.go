@@ -3,12 +3,29 @@ package chat_test
 import (
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
+
+// drainBatch walks a tea.Cmd and its nested tea.BatchMsg structure,
+// invoking every sub-Cmd so closure side effects (like msg.Next capturing
+// a bool flag) run. Mirrors cmdEventuallyProducesAppendedMsg's recursion
+// pattern but is scoped to execution rather than message-type checking.
+func drainBatch(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			drainBatch(sub)
+		}
+	}
+}
 
 // These specs cover P1/D1 — readNextChunk must honour a cancelled stream
 // context and return a Done StreamChunkMsg rather than parking forever on
@@ -242,6 +259,146 @@ var _ = Describe("post-cancel chunk suppression (double-Esc)", func() {
 				Expect(m.Content).NotTo(ContainSubstring("LATE-TAIL"),
 					"no committed message may contain post-cancel tail content")
 			}
+		})
+	})
+})
+
+// Stall regression: after a double-Esc cancel, if the provider never emits a
+// terminal Done chunk that reaches the userCancelled gate (because the reader
+// is parked on a naked channel receive with a nilled streamCtx — see
+// cancelActiveStream clearing both streamCancel AND streamCtx), the
+// userCancelled flag stays latched. The *next* user turn sees every chunk
+// dropped by the gate at handleStreamChunkMsg, including the Done chunk that
+// would ordinarily terminate the spinner. The UI shows a stalled streaming
+// state with no chunks landing — the user reports "the assistant stops
+// mid-turn and no further chunks arrive, but the UI does not error out".
+//
+// This is a chat.Intent-layer assertion: userCancelled MUST NOT survive across
+// the start of a fresh turn. The contract is that sendMessage (or any path
+// that starts a new stream) begins with a clean cancel latch, because the
+// previous turn's cancel has already completed as far as the user is
+// concerned. Continuing to drop chunks on the new turn's behalf is the bug.
+var _ = Describe("userCancelled latch across turns (stall regression)", func() {
+	var intent *chat.Intent
+
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		intent = chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "test-session",
+			ProviderName: "openai",
+			ModelName:    "gpt-4o",
+			TokenBudget:  4096,
+		})
+		intent.SetStreamingForTest(true)
+	})
+
+	AfterEach(func() {
+		chat.SetRunningInTestsForTest(false)
+	})
+
+	Describe("when the user double-Escs and the provider never emits a Done chunk", func() {
+		It("delivers chunks on the next turn even when no Done chunk closed the previous one", func() {
+			// Arrange: an in-flight stream. User cancels mid-turn — no Done
+			// chunk flows through the gate because the reader is parked on
+			// the post-cancel channel (streamCtx nilled by
+			// cancelActiveStream). The provider goroutine was cancelled at
+			// the engine boundary and emits nothing further, so the dispatch
+			// loop never reaches the `if msg.Done { userCancelled = false }`
+			// clearing path at intent.go:1744-1745.
+			ch := make(chan provider.StreamChunk, 4)
+			intent.SetStreamChanForTest(ch)
+			_ = intent.InstallStreamCancelForTest()
+
+			intent.SetLastEscTimeForTest(time.Now())
+			_ = intent.HandleEscapeKeyForTest()
+
+			// Act: a *new* user turn starts. The production flow is
+			// sendMessage → per-turn state reset → view.StartStreaming →
+			// readNextChunkFrom. BeginTurnForTest mirrors the state-reset
+			// half without plumbing an engine; it is the production site
+			// where the D1 stall fix belongs (sendMessage clears
+			// userCancelled at the turn boundary).
+			intent.BeginTurnForTest("fresh user message")
+			intent.SetStreamingForTest(true)
+			newChunk := chat.StreamChunkMsg{Content: "NEW-TURN-CHUNK", Done: false}
+			_ = intent.HandleStreamChunkMsgForTest(newChunk)
+
+			// Assert: the new turn's content reaches the view. If
+			// userCancelled is still latched from the previous turn, the
+			// gate at intent.go:1743 short-circuits and Response() stays
+			// empty — the stall.
+			Expect(intent.Response()).To(ContainSubstring("NEW-TURN-CHUNK"),
+				"chunks on a fresh turn must land in the view; "+
+					"a latched userCancelled from the previous cancel is the stall bug")
+		})
+
+		It("schedules msg.Next on the next turn's non-Done chunk so the reader keeps pumping", func() {
+			// The user-facing stall has two ingredients: (1) content is
+			// dropped, and (2) msg.Next is not chained — so even if a Done
+			// chunk eventually arrived it would never be read. The gate at
+			// intent.go:1748 returns nil for every non-Done chunk while
+			// userCancelled latches, so the reader goroutine halts.
+			//
+			// This spec pins the pump contract: for a fresh turn after the
+			// cancel, handleStreamChunkMsg must return a non-nil Cmd when
+			// the chunk carries a Next continuation. The symptom of the
+			// latch is a nil return, leaving the Tea loop with no scheduled
+			// continuation and the spinner spinning on a dead channel.
+			ch := make(chan provider.StreamChunk, 4)
+			intent.SetStreamChanForTest(ch)
+			_ = intent.InstallStreamCancelForTest()
+
+			intent.SetLastEscTimeForTest(time.Now())
+			_ = intent.HandleEscapeKeyForTest()
+
+			intent.BeginTurnForTest("fresh user message")
+			intent.SetStreamingForTest(true)
+			nextCalled := false
+			freshChunk := chat.StreamChunkMsg{
+				Content: "x",
+				Done:    false,
+				Next: func() tea.Msg {
+					nextCalled = true
+					return chat.StreamChunkMsg{Done: true}
+				},
+			}
+			cmd := intent.HandleStreamChunkMsgForTest(freshChunk)
+
+			Expect(cmd).NotTo(BeNil(),
+				"non-Done chunk on a fresh turn must return a follow-up Cmd "+
+					"so the reader keeps pumping — a nil return is the stall")
+			// Drain the Cmd. handleStreamChunkMsg wraps the reader pump inside
+			// a tea.Batch, so we must walk the BatchMsg and invoke each
+			// sub-Cmd to actually exercise msg.Next.
+			drainBatch(cmd)
+			Expect(nextCalled).To(BeTrue(),
+				"the returned Cmd must include msg.Next so the reader advances")
+		})
+
+		It("does not leak userCancelled across the turn boundary", func() {
+			// Complements the two behavioural specs above with an
+			// intent-state assertion: by the time the fresh turn begins its
+			// work (via BeginTurnForTest, matching the sendMessage reset
+			// site), the latch that would otherwise trap the new turn's
+			// chunks has already been cleared.
+			ch := make(chan provider.StreamChunk, 4)
+			intent.SetStreamChanForTest(ch)
+			_ = intent.InstallStreamCancelForTest()
+
+			intent.SetLastEscTimeForTest(time.Now())
+			_ = intent.HandleEscapeKeyForTest()
+
+			// Precondition: the latch is set after cancel — this is the
+			// production contract the post-cancel suppression specs rely on.
+			Expect(intent.UserCancelledForTest()).To(BeTrue(),
+				"sanity: double-Esc must latch userCancelled for the cancelled turn")
+
+			intent.BeginTurnForTest("fresh user message")
+
+			Expect(intent.UserCancelledForTest()).To(BeFalse(),
+				"a fresh turn must start with a cleared latch, otherwise "+
+					"handleStreamChunkMsg drops every chunk (STALL)")
 		})
 	})
 })
