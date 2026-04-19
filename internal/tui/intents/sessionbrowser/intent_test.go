@@ -2,6 +2,7 @@ package sessionbrowser_test
 
 import (
 	"errors"
+	"reflect"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +23,31 @@ type recordingDeleter struct {
 func (d *recordingDeleter) Delete(sessionID string) error {
 	d.calls = append(d.calls, sessionID)
 	return d.err
+}
+
+// recordingForker captures Fork calls for assertions. The configured
+// newID is returned on success; err overrides the return value when set.
+type recordingForker struct {
+	calls    []forkCall
+	newID    string
+	err      error
+	originID string
+	pivotID  string
+}
+
+type forkCall struct {
+	OriginID string
+	PivotID  string
+}
+
+func (f *recordingForker) Fork(originID, pivotMessageID string) (string, error) {
+	f.calls = append(f.calls, forkCall{OriginID: originID, PivotID: pivotMessageID})
+	f.originID = originID
+	f.pivotID = pivotMessageID
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.newID, nil
 }
 
 var _ = Describe("SessionBrowserIntent", func() {
@@ -484,4 +510,134 @@ var _ = Describe("SessionBrowserIntent", func() {
 			})
 		})
 	})
+
+	Describe("fork affordance (P18b)", func() {
+		var forker *recordingForker
+
+		BeforeEach(func() {
+			forker = &recordingForker{newID: "forked-session-xyz"}
+			intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+				Sessions: sessions,
+				Forker:   forker,
+			})
+		})
+
+		Describe("f key initiates a fork", func() {
+			It("does not fork when New Session is selected", func() {
+				// Cursor at index 0 → New Session row; 'f' is a no-op.
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+				Expect(cmd).To(BeNil())
+				Expect(forker.calls).To(BeEmpty())
+			})
+
+			It("calls Fork with the selected session ID and empty pivot (fork-at-last)", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+				Expect(forker.calls).To(HaveLen(1))
+				Expect(forker.calls[0].OriginID).To(Equal("session-1"))
+				// First-cut: fork at last message → pivot is empty → full clone.
+				Expect(forker.calls[0].PivotID).To(Equal(""))
+			})
+		})
+
+		Describe("successful fork emits SessionForkedMsg", func() {
+			It("emits a SessionForkedMsg carrying the new session ID", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+				Expect(cmd).NotTo(BeNil())
+
+				// The dismiss/forked pair is sequenced the same way as
+				// session-select — resolve the command and walk both
+				// messages it emits.
+				msgs := drainSequence(cmd)
+				Expect(msgs).To(HaveLen(2))
+				_, dismissOK := msgs[0].(intents.DismissModalMsg)
+				Expect(dismissOK).To(BeTrue())
+
+				forked, ok := msgs[1].(sessionbrowser.SessionForkedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(forked.OriginID).To(Equal("session-1"))
+				Expect(forked.NewSessionID).To(Equal("forked-session-xyz"))
+				Expect(forked.PivotMessageID).To(Equal(""))
+				Expect(forked.Err).ToNot(HaveOccurred())
+			})
+		})
+
+		Describe("failed fork surfaces the error without dismissing", func() {
+			BeforeEach(func() {
+				forker.err = errors.New("disk full")
+			})
+
+			It("emits a SessionForkedMsg with a non-nil Err", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+				Expect(cmd).NotTo(BeNil())
+
+				msg := cmd()
+				forked, ok := msg.(sessionbrowser.SessionForkedMsg)
+				Expect(ok).To(BeTrue())
+				Expect(forked.OriginID).To(Equal("session-1"))
+				Expect(forked.Err).To(HaveOccurred())
+				Expect(forked.Err.Error()).To(ContainSubstring("disk full"))
+			})
+		})
+
+		Describe("no forker configured", func() {
+			BeforeEach(func() {
+				intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+					Sessions: sessions,
+				})
+			})
+
+			It("ignores the f key entirely", func() {
+				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+				cmd := intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+				Expect(cmd).To(BeNil())
+			})
+		})
+	})
 })
+
+// drainSequence expands a tea.Cmd into the slice of messages it produces.
+// Tea.Sequence wraps its commands in an unexported sequenceMsg that is
+// structurally a `[]tea.Cmd`; tea.Batch uses the exported tea.BatchMsg.
+// This helper handles both via reflection so the test isn't coupled to
+// Bubble Tea's internal naming. Single-message commands are returned as
+// a one-element slice.
+func drainSequence(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		return resolveCmds(batch)
+	}
+	// Tea.Sequence produces an unexported sequenceMsg which is a
+	// []tea.Cmd under the hood. Use reflection to iterate generically.
+	v := reflect.ValueOf(msg)
+	if v.Kind() == reflect.Slice && v.Len() > 0 {
+		cmds := make([]tea.Cmd, v.Len())
+		for i := range v.Len() {
+			c, ok := v.Index(i).Interface().(tea.Cmd)
+			if !ok {
+				return []tea.Msg{msg}
+			}
+			cmds[i] = c
+		}
+		return resolveCmds(cmds)
+	}
+	return []tea.Msg{msg}
+}
+
+// resolveCmds runs each command and collects its resulting message. Nil
+// commands are skipped so callers do not need to pre-filter.
+func resolveCmds(cmds []tea.Cmd) []tea.Msg {
+	out := make([]tea.Msg, 0, len(cmds))
+	for _, c := range cmds {
+		if c == nil {
+			continue
+		}
+		out = append(out, c())
+	}
+	return out
+}

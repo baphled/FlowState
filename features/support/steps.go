@@ -438,10 +438,10 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I have sessions about various topics$`, s.iHaveSessionsAboutVariousTopics)
 	ctx.Step(`^I search for "([^"]*)"$`, s.iSearchFor)
 	ctx.Step(`^I should only see sessions mentioning "([^"]*)"$`, s.iShouldOnlySeeSessionsMentioning)
-	ctx.Step(`^I am in a session with history$`, s.iAmInASessionWithHistory)
-	ctx.Step(`^I fork the session at message (\d+)$`, s.iForkTheSessionAtMessage)
-	ctx.Step(`^it should contain messages (\d+) through (\d+)$`, s.itShouldContainMessagesThrough)
-	ctx.Step(`^the original session should be unchanged$`, s.theOriginalSessionShouldBeUnchanged)
+	// Fork-a-session steps live in session_fork_steps.go (P18b); they
+	// drive the real FileSessionStore.Fork API rather than an in-memory
+	// placeholder, same as the P16 session-delete steps below.
+	//
 	// Delete-a-session steps live in session_delete_steps.go (P16); they
 	// drive the real sessionbrowser.Intent + FileSessionStore rather than
 	// an in-memory map.
@@ -2899,115 +2899,14 @@ func (s *StepDefinitions) iShouldOnlySeeSessionsMentioning(text string) error {
 	return nil
 }
 
-// iAmInASessionWithHistory implements a BDD step definition.
-//
-// Expected: The step is executed successfully.
-// Returns: nil on success, or an error if the step fails.
-// Side effects: May modify the test state.
-func (s *StepDefinitions) iAmInASessionWithHistory() error {
-	s.sessions = make(map[string]*TestSession)
-	s.sessions["history"] = &TestSession{
-		id: "history",
-		messages: []Message{
-			{Role: "user", Content: "Message 1"},
-			{Role: "assistant", Content: "Response 1"},
-			{Role: "user", Content: "Message 2"},
-			{Role: "assistant", Content: "Response 2"},
-			{Role: "user", Content: "Message 3"},
-		},
-		lastUpdated: time.Now(),
-	}
-	s.currentSessionID = "history"
-	s.session = s.sessions["history"]
-	return nil
-}
-
-// iForkTheSessionAtMessage implements a BDD step definition.
-//
-// Expected: The step is executed successfully.
-// Returns: nil on success, or an error if the step fails.
-// Side effects: May modify the test state.
-func (s *StepDefinitions) iForkTheSessionAtMessage(messageNum int) error {
-	if s.session == nil {
-		return errors.New("no session to fork")
-	}
-	if messageNum < 1 {
-		return fmt.Errorf("message number must be positive, got %d", messageNum)
-	}
-	if messageNum > len(s.session.messages) {
-		return fmt.Errorf("cannot fork at message %d, session only has %d messages", messageNum, len(s.session.messages))
-	}
-	forkedID := fmt.Sprintf("forked-%d", time.Now().UnixNano())
-	forkedMessages := append([]Message(nil), s.session.messages[:messageNum]...)
-	s.forkedSession = &TestSession{
-		id:          forkedID,
-		messages:    forkedMessages,
-		embeddings:  make(map[string][]float64),
-		lastUpdated: time.Now(),
-	}
-	s.sessions[forkedID] = s.forkedSession
-	s.currentSessionID = forkedID
-	s.session = s.forkedSession
-	return nil
-}
-
-// itShouldContainMessagesThrough implements a BDD step definition.
-//
-// Expected: The step is executed successfully.
-// Returns: nil on success, or an error if the step fails.
-// Side effects: May modify the test state.
-func (s *StepDefinitions) itShouldContainMessagesThrough(start, end int) error {
-	if s.forkedSession == nil {
-		return errors.New("no forked session available")
-	}
-	if start < 1 || end < start {
-		return fmt.Errorf("invalid message range %d through %d", start, end)
-	}
-	original, exists := s.sessions["history"]
-	if !exists {
-		return errors.New("original history session not available")
-	}
-	if end > len(original.messages) {
-		return fmt.Errorf("original session has only %d messages", len(original.messages))
-	}
-	if len(s.forkedSession.messages) != end {
-		return fmt.Errorf("expected forked session to contain %d messages, got %d", end, len(s.forkedSession.messages))
-	}
-	for i := start - 1; i < end; i++ {
-		if s.forkedSession.messages[i] != original.messages[i] {
-			return fmt.Errorf("forked message %d did not match original session", i+1)
-		}
-	}
-	return nil
-}
-
-// theOriginalSessionShouldBeUnchanged implements a BDD step definition.
-//
-// Expected: The step is executed successfully.
-// Returns: nil on success, or an error if the step fails.
-// Side effects: May modify the test state.
-func (s *StepDefinitions) theOriginalSessionShouldBeUnchanged() error {
-	original, exists := s.sessions["history"]
-	if !exists {
-		return errors.New("original history session not available")
-	}
-	expected := []Message{
-		{Role: "user", Content: "Message 1"},
-		{Role: "assistant", Content: "Response 1"},
-		{Role: "user", Content: "Message 2"},
-		{Role: "assistant", Content: "Response 2"},
-		{Role: "user", Content: "Message 3"},
-	}
-	if len(original.messages) != len(expected) {
-		return fmt.Errorf("expected original session to keep %d messages, got %d", len(expected), len(original.messages))
-	}
-	for i, message := range expected {
-		if original.messages[i] != message {
-			return fmt.Errorf("original session message %d changed", i+1)
-		}
-	}
-	return nil
-}
+// Fork-a-session step bodies (iAmInASessionWithHistory,
+// iForkTheSessionAtMessage, itShouldContainMessagesThrough,
+// theOriginalSessionShouldBeUnchanged) used to live here as in-memory
+// placeholders while the scenario was tagged @wip. They were removed in
+// P18b in favour of the real-product-code glue in session_fork_steps.go,
+// mirroring the P16 handover pattern for session delete. The step
+// patterns themselves are registered in that file so godog does not pick
+// up two implementations for the same step regex.
 
 // sessionMentions checks whether the session contains a message mentioning the query string.
 //

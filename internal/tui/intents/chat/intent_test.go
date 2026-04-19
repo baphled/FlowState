@@ -1842,6 +1842,14 @@ func (s *stubSessionLister) Delete(sessionID string) error {
 	return s.deleteErr
 }
 
+func (s *stubSessionLister) Fork(_ string, _ string) (string, error) {
+	// Stub: P18b tests in this package do not exercise the fork path.
+	// A test-only implementation keeps the SessionLister contract
+	// satisfied without expanding scope into flows that belong in the
+	// sessionbrowser package's tests.
+	return "", nil
+}
+
 var _ = Describe("skill_load tool call handling", func() {
 	Describe("readNextChunk with skill_load", func() {
 		It("extracts skill name from skill_load tool call arguments", func() {
