@@ -1,7 +1,9 @@
 package hook_test
 
 import (
+	"bytes"
 	"context"
+	"log"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -188,6 +190,77 @@ var _ = Describe("Hook", func() {
 
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("test response"))
+		})
+
+		// Diagnostic bug evidence (session-1776611908809856897): when the planner
+		// emitted tool-call-shaped JSON as plain text content, operators could not
+		// tell from the log whether req.Tools was empty at stream time. The log
+		// must surface the tool count so "no tools attached" bugs surface on the
+		// very first line without reading a JSON payload or a core dump.
+		It("logs the tool count alongside the message count on request start", func() {
+			var logBuf bytes.Buffer
+			origOutput := log.Writer()
+			log.SetOutput(&logBuf)
+			DeferCleanup(func() { log.SetOutput(origOutput) })
+
+			req := &provider.ChatRequest{
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+				Tools: []provider.Tool{
+					{Name: "delegate"},
+					{Name: "coordination_store"},
+					{Name: "skill_load"},
+					{Name: "todowrite"},
+				},
+			}
+
+			handler := func(_ context.Context, _ *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Done: true}
+				close(ch)
+				return ch, nil
+			}
+
+			chain := hook.NewChain(hook.LoggingHook())
+			wrappedHandler := chain.Execute(handler)
+
+			resultChan, err := wrappedHandler(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			for v := range resultChan {
+				_ = v
+			}
+
+			Expect(logBuf.String()).To(ContainSubstring("tools=4"),
+				"LoggingHook must emit tools=<count> so operators can see at a "+
+					"glance whether tool schemas reached the provider request.")
+		})
+
+		It("logs tools=0 when the request carries no tools", func() {
+			var logBuf bytes.Buffer
+			origOutput := log.Writer()
+			log.SetOutput(&logBuf)
+			DeferCleanup(func() { log.SetOutput(origOutput) })
+
+			req := &provider.ChatRequest{
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+
+			handler := func(_ context.Context, _ *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Done: true}
+				close(ch)
+				return ch, nil
+			}
+
+			chain := hook.NewChain(hook.LoggingHook())
+			wrappedHandler := chain.Execute(handler)
+
+			resultChan, err := wrappedHandler(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			for v := range resultChan {
+				_ = v
+			}
+
+			Expect(logBuf.String()).To(ContainSubstring("tools=0"))
 		})
 	})
 
