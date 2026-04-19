@@ -77,7 +77,10 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(events[0].Status).To(Equal("started"))
 
 			view := intent.View()
-			Expect(view).To(ContainSubstring("delegation"))
+			// The activity row renders the human label "Delegation"
+			// (not the wire identifier "delegation"). See the
+			// swarm_activity_human_labels_test.go contract.
+			Expect(view).To(ContainSubstring("Delegation"))
 			Expect(view).To(ContainSubstring("qa-agent"))
 		})
 
@@ -95,7 +98,10 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(events[0].Status).To(Equal("started"))
 
 			view := intent.View()
-			Expect(view).To(ContainSubstring("tool_call"))
+			// The activity row renders the human label "Tool Call"
+			// (not the wire identifier "tool_call"). See the
+			// swarm_activity_human_labels_test.go contract.
+			Expect(view).To(ContainSubstring("Tool Call"))
 		})
 
 		It("appends a plan event when EventType is plan_artifact", func() {

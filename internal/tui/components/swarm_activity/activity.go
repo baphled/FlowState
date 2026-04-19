@@ -369,13 +369,51 @@ func (p *SwarmActivityPane) activeBodySource() []string {
 	return coalesceToolCalls(p.events, p.visibleTypes)
 }
 
+// humanLabel maps a wire-level SwarmEventType (e.g. "tool_call") to the
+// human-readable label rendered on the activity pane (e.g. "Tool Call").
+//
+// The activity pane MUST NOT leak the wire identifiers into the rendered
+// output — see ADR "Swarm Activity Event Model" and the human-labels spec
+// at internal/tui/intents/chat/swarm_activity_human_labels_test.go. Any
+// new SwarmEventType added later requires a matching label entry here so
+// the rendered row stays user-readable.
+//
+// Expected:
+//   - t is any SwarmEventType value, including the zero value.
+//
+// Returns:
+//   - The human label for known types, or the wire string itself for
+//     unknown types so the row still renders something useful while the
+//     test suite catches the omission.
+//
+// Side effects:
+//   - None.
+func humanLabel(t streaming.SwarmEventType) string {
+	switch t {
+	case streaming.EventDelegation:
+		return "Delegation"
+	case streaming.EventToolCall:
+		return "Tool Call"
+	case streaming.EventToolResult:
+		return "Tool Result"
+	case streaming.EventPlan:
+		return "Plan"
+	case streaming.EventReview:
+		return "Review"
+	default:
+		return string(t)
+	}
+}
+
 // formatEvent renders a single SwarmEvent as a concise activity line.
 //
 // Expected:
 //   - ev is a populated SwarmEvent.
 //
 // Returns:
-//   - A single-line string of the form "▸ {Type} · {AgentID} · {Status}".
+//   - A single-line string of the form "▸ {Label} · {AgentID} · {Status}",
+//     where Label is the human-readable label from humanLabel — never the
+//     wire identifier.
 //
 // Side effects:
 //   - None.
@@ -388,7 +426,7 @@ func formatEvent(ev streaming.SwarmEvent) string {
 	if status == "" {
 		status = "-"
 	}
-	return "▸ " + string(ev.Type) + " · " + agent + " · " + status
+	return "▸ " + humanLabel(ev.Type) + " · " + agent + " · " + status
 }
 
 // truncate shortens s so that its visual width does not exceed max cells,
