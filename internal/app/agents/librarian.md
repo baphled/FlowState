@@ -26,7 +26,8 @@ capabilities:
     - discipline
     - research
     - critical-thinking
-  mcp_servers: []
+  mcp_servers:
+    - vault-rag
   capability_description: "Searches official documentation, library best practices, and external references for accurate technical information"
 delegation:
   can_delegate: false

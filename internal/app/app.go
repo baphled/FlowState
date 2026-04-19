@@ -98,6 +98,19 @@ type App struct {
 	// recorder, and L2/L3 stores without re-reading cfg or
 	// re-constructing the summariser adapter.
 	compression compressionComponents
+	// mcpServerTools maps each configured MCP server name to the tool
+	// names it exposes. Retained on App so createDelegateEngine can pass
+	// the same map into every delegate engine; otherwise a delegate whose
+	// manifest opts into an MCP server would silently receive zero tools
+	// from it because buildAllowedToolSet would have nothing to merge.
+	// See ADR - MCP Tool Gating by Agent Manifest for the full contract.
+	mcpServerTools map[string][]string
+	// mcpTools holds the proxy tool implementations backing each
+	// connected MCP server. Retained on App so
+	// buildToolsForManifestWithStore can append them to a delegate
+	// engine's tool slice; the engine then gates them through
+	// buildAllowedToolSet by the delegate manifest's MCPServers list.
+	mcpTools []tool.Tool
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -323,6 +336,8 @@ func buildApp(params appBuildParams) *App {
 		defaultProvider:  runtime.defaultProvider,
 		sessionManager:   runtime.sessionManager,
 		compression:      runtime.compression,
+		mcpServerTools:   runtime.mcpServerTools,
+		mcpTools:         runtime.mcpTools,
 	}
 
 	planDir := filepath.Join(cfg.DataDir, "plans")
@@ -507,6 +522,8 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		sessionRecorder: sessRecorder,
 		setEnsureTools:  setEnsureTools,
 		sessionManager:  sessionMgr,
+		mcpServerTools:  tp.mcpServerTools,
+		mcpTools:        tp.mcpTools,
 	}, nil
 }
 
@@ -671,6 +688,12 @@ type toolPipelineResult struct {
 	toolRegistry      *tool.Registry
 	permissionHandler tool.PermissionHandler
 	mcpServerTools    map[string][]string
+	// mcpTools holds the proxy tools backing each connected MCP server,
+	// kept separately so delegate engines can append them to their own
+	// per-manifest tool slice. Without this, an agent whose manifest
+	// declares mcp_servers: [vault-rag] would have the gate authorise
+	// vault-rag tools but find none registered to call.
+	mcpTools []tool.Tool
 }
 
 // buildToolPipeline creates the MCP manager, todo store, and tool registry
@@ -689,8 +712,8 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	todoStore := todotool.NewMemoryStore()
 	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore)
 	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
-	tools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
-	appTools = append(appTools, tools...)
+	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
+	appTools = append(appTools, mcpTools...)
 
 	// Log MCP connection summary
 	connected := 0
@@ -714,6 +737,7 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 		toolRegistry:      toolRegistry,
 		permissionHandler: permHandler,
 		mcpServerTools:    serverToolNames,
+		mcpTools:          mcpTools,
 	}
 }
 
@@ -764,6 +788,18 @@ type runtimeComponents struct {
 	sessionRecorder *sessionrecorder.Recorder
 	setEnsureTools  func(func(agent.Manifest))
 	sessionManager  *session.Manager
+	// mcpServerTools is the MCP server → tool-name index built at engine
+	// setup. Forwarded onto the App so createDelegateEngine can pass the
+	// same map into every delegate engine; a delegate whose manifest opts
+	// into an MCP server must see those tools, not silently receive zero
+	// because the parent's index never reached the child engine.
+	mcpServerTools map[string][]string
+	// mcpTools holds the proxy tool implementations for each connected
+	// MCP server. Forwarded so buildToolsForManifestWithStore can append
+	// them to the delegate engine's tool slice; the engine's
+	// buildAllowedToolSet then gates exposure by the delegate manifest's
+	// MCPServers list.
+	mcpTools []tool.Tool
 }
 
 // createEngine initialises the engine with live manifest getter for hook chain.
@@ -1076,6 +1112,7 @@ func (a *App) createDelegateEngine(
 		ChainStore:                chainStore,
 		EventBus:                  bus,
 		FailoverManager:           childFailoverMgr,
+		MCPServerTools:            a.mcpServerTools,
 		AutoCompactor:             delegateCompression.autoCompactor,
 		CompressionConfig:         delegateCompression.config,
 		CompressionMetrics:        delegateCompression.metrics,
@@ -1172,6 +1209,15 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 			)
 			tools = append(tools, factory.ToolsWithChainStore(a.Engine.ChainStore())...)
 		}
+	}
+
+	// Append the MCP proxy tools so the delegate engine has something to
+	// invoke when its manifest's MCPServers gate authorises a name.
+	// buildAllowedToolSet (in the engine) is the single point of truth
+	// that filters by the manifest's MCPServers allowlist; appending the
+	// full set here is safe.
+	if len(a.mcpTools) > 0 {
+		tools = append(tools, a.mcpTools...)
 	}
 
 	return tools

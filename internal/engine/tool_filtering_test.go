@@ -47,6 +47,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			&mockTool{name: "coordination_store", description: "Coordination store"},
 			&mockTool{name: "create_entities", description: "Create entities in memory"},
 			&mockTool{name: "search_nodes", description: "Search nodes in memory"},
+			&mockTool{name: "query_vault", description: "Query the vault-rag index"},
 		}
 	})
 
@@ -269,18 +270,18 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 	})
 
-	Describe("buildToolSchemas respects MCPServers capability", func() {
-		Context("when MCPServerTools is configured, MCP tools always bypass manifest filter", func() {
-			It("includes MCP tools even when MCPServers is empty in the manifest", func() {
+	Describe("buildToolSchemas gates MCP tools by manifest MCPServers allowlist", func() {
+		Context("when manifest declares mcp_servers, only the declared servers' tools are exposed", func() {
+			It("exposes manifest tools plus the tools of the declared MCP servers", func() {
 				manifest := agent.Manifest{
-					ID:   "mcp-bypass-agent",
-					Name: "MCP Bypass Agent",
+					ID:   "mcp-allowlist-agent",
+					Name: "MCP Allowlist Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are an MCP bypass agent.",
+						SystemPrompt: "You are an MCP allowlist agent.",
 					},
 					Capabilities: agent.Capabilities{
 						Tools:      []string{"bash"},
-						MCPServers: []string{},
+						MCPServers: []string{"memory"},
 					},
 				}
 
@@ -301,20 +302,59 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ContainElements("bash", "create_entities", "search_nodes"))
+				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes"))
 				Expect(names).NotTo(ContainElement("web"))
 				Expect(names).NotTo(ContainElement("read"))
 				Expect(names).NotTo(ContainElement("write"))
 			})
 		})
 
-		Context("when tools list is empty, all tools including MCP are allowed", func() {
-			It("exposes all tools for backward compatibility", func() {
+		Context("when manifest declares an empty mcp_servers list, no MCP tools are exposed", func() {
+			It("excludes MCP tools even though MCPServerTools is configured on the engine", func() {
 				manifest := agent.Manifest{
-					ID:   "mcp-all-tools-agent",
-					Name: "MCP All Tools Agent",
+					ID:   "mcp-empty-allowlist-agent",
+					Name: "MCP Empty Allowlist Agent",
 					Instructions: agent.Instructions{
-						SystemPrompt: "You are an MCP all tools agent.",
+						SystemPrompt: "You are an agent that opts out of MCP tools.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash"},
+						MCPServers: []string{},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory":    {"create_entities", "search_nodes"},
+						"vault-rag": {"query_vault"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("bash"))
+				Expect(names).NotTo(ContainElement("create_entities"))
+				Expect(names).NotTo(ContainElement("search_nodes"))
+				Expect(names).NotTo(ContainElement("query_vault"))
+			})
+		})
+
+		Context("when the manifest tools list is empty, the legacy permissive branch exposes every registered tool", func() {
+			It("exposes all built-in tools for backward compatibility regardless of mcp_servers", func() {
+				manifest := agent.Manifest{
+					ID:   "legacy-permissive-agent",
+					Name: "Legacy Permissive Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a legacy permissive agent.",
 					},
 					Capabilities: agent.Capabilities{
 						Tools:      []string{},
@@ -342,7 +382,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("when MCPServerTools is nil, only manifest tools are exposed", func() {
+		Context("when MCPServerTools is nil and manifest restricts tools", func() {
 			It("exposes only the tools declared in the manifest", func() {
 				manifest := agent.Manifest{
 					ID:   "no-mcp-agent",
@@ -351,7 +391,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 						SystemPrompt: "You are an agent with no MCP tools.",
 					},
 					Capabilities: agent.Capabilities{
-						Tools: []string{"bash"},
+						Tools:      []string{"bash"},
+						MCPServers: []string{"memory"},
 					},
 				}
 
@@ -374,8 +415,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("MCP tools from multiple servers are all included", func() {
-			It("includes tools from every configured MCP server", func() {
+		Context("when manifest opts into multiple MCP servers", func() {
+			It("includes tools from each declared server but excludes undeclared ones", func() {
 				manifest := agent.Manifest{
 					ID:   "multi-mcp-agent",
 					Name: "Multi MCP Agent",
@@ -384,7 +425,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 					},
 					Capabilities: agent.Capabilities{
 						Tools:      []string{"bash"},
-						MCPServers: []string{},
+						MCPServers: []string{"memory", "vault-rag"},
 					},
 				}
 
@@ -393,8 +434,9 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 					Manifest:     manifest,
 					Tools:        allTools,
 					MCPServerTools: map[string][]string{
-						"memory": {"create_entities"},
-						"vault":  {"search_nodes"},
+						"memory":    {"create_entities"},
+						"vault-rag": {"search_nodes"},
+						"undeclared": {"web"},
 					},
 				})
 
@@ -406,7 +448,105 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ContainElements("bash", "create_entities", "search_nodes"))
+				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes"))
+			})
+		})
+
+		Context("when a declared server is not present in the engine's MCPServerTools", func() {
+			It("silently ignores the unknown server and exposes only the manifest's built-in tools", func() {
+				manifest := agent.Manifest{
+					ID:   "unknown-mcp-agent",
+					Name: "Unknown MCP Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are an agent referencing an unavailable MCP server.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash"},
+						MCPServers: []string{"nonexistent"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory": {"create_entities", "search_nodes"},
+					},
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("bash"))
+			})
+		})
+
+		Context("delegation handoff: child agent's manifest gates its own MCP exposure", func() {
+			It("re-evaluates the MCPServers gate against the new manifest after SetManifest", func() {
+				delegatorManifest := agent.Manifest{
+					ID:   "delegator",
+					Name: "Delegator",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the delegator.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"bash"},
+						MCPServers: []string{"memory"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     delegatorManifest,
+					Tools:        allTools,
+					MCPServerTools: map[string][]string{
+						"memory":    {"create_entities", "search_nodes"},
+						"vault-rag": {"query_vault"},
+					},
+				})
+
+				// Delegator turn: should see memory tools only, NOT vault-rag.
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				delegatorNames := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(delegatorNames).To(ConsistOf("bash", "create_entities", "search_nodes"))
+				Expect(delegatorNames).NotTo(ContainElement("query_vault"))
+
+				// Hand off to a child whose manifest opts into vault-rag only.
+				childManifest := agent.Manifest{
+					ID:   "child-librarian",
+					Name: "Child Librarian",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are the child librarian.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:      []string{"web"},
+						MCPServers: []string{"vault-rag"},
+					},
+				}
+				eng.SetManifest(childManifest)
+
+				chunks, err = eng.Stream(context.Background(), "", "lookup")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				childNames := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(childNames).To(ConsistOf("web", "query_vault"))
+				Expect(childNames).NotTo(ContainElement("bash"))
+				Expect(childNames).NotTo(ContainElement("create_entities"))
+				Expect(childNames).NotTo(ContainElement("search_nodes"))
 			})
 		})
 	})
