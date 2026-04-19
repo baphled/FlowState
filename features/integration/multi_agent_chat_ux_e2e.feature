@@ -33,7 +33,7 @@ Feature: Multi-Agent Chat UX end-to-end
     # Wave 3: Event rendering in activity pane
     Given a swarm activity pane with a delegation event for "engineer"
     When the activity pane is rendered for the e2e scenario
-    Then the timeline shows "delegation"
+    Then the timeline shows "Delegation"
 
     # Wave 3: Event filtering
     When delegation events are hidden via filter

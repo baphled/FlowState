@@ -109,6 +109,16 @@ func registerDualPaneToggleSteps(sc *godog.ScenarioContext, s *DualPaneLayoutSte
 	sc.Step(`^the operator presses Ctrl\+T$`, s.theOperatorPressesCtrlT)
 	sc.Step(`^the operator presses Ctrl\+T three times$`, s.theOperatorPressesCtrlTThreeTimes)
 	sc.Step(`^the activity pane should be visible$`, s.theActivityPaneShouldBeVisible)
+	sc.Step(`^a chat Intent sized to (\d+)x(\d+) with the activity pane visible$`, s.aChatIntentSizedWithActivityPaneVisible)
+	sc.Step(`^the chat input is set to "([^"]*)"$`, s.theChatInputIsSetTo)
+	sc.Step(`^the chat Intent view is rendered$`, s.theChatIntentViewIsRendered)
+	sc.Step(`^every primary-column line should be at most the 70% primary width$`, s.everyPrimaryColumnLineShouldFitPrimaryWidth)
+	sc.Step(`^the primary input row should render as a single row$`, s.thePrimaryInputRowShouldRenderAsSingleRow)
+	sc.Step(`^the rendered chat Intent view should not contain the dual-pane separator$`, s.theRenderedViewShouldNotContainDualPaneSeparator)
+	sc.Step(
+		`^the rendered chat Intent view should not contain the Activity Timeline header$`,
+		s.theRenderedViewShouldNotContainActivityTimelineHeader,
+	)
 }
 
 // aScreenLayoutIsInitialisedWithATerminalSizeOf constructs a ScreenLayout
@@ -510,6 +520,190 @@ func (s *DualPaneLayoutSteps) reset() {
 	s.intent = nil
 }
 
+// aChatIntentSizedWithActivityPaneVisible constructs a chat.Intent at the
+// given dimensions with the swarm activity pane visible. Used by the
+// primary-width regression scenarios so the Intent render path is exercised
+// (not just the bare ScreenLayout).
+//
+// Expected:
+//   - width and height are positive integers; width >= 80 so the dual-pane
+//     branch fires.
+//
+// Returns:
+//   - nil on success; error if dimensions are non-positive.
+//
+// Side effects:
+//   - Populates s.intent with a configured chat.Intent and seeds a single
+//     swarm event so the activity pane renders non-empty.
+func (s *DualPaneLayoutSteps) aChatIntentSizedWithActivityPaneVisible(width, height int) error {
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("terminal dimensions must be positive, got %dx%d", width, height)
+	}
+	s.terminalWidth = width
+	s.terminalHeight = height
+	s.intent = chat.NewIntent(chat.IntentConfig{
+		AgentID:      "test-agent",
+		SessionID:    "test-session",
+		ProviderName: "openai",
+		ModelName:    "gpt-4o",
+		TokenBudget:  4096,
+	})
+	s.intent.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	return nil
+}
+
+// theChatInputIsSetTo types the supplied characters into the chat intent
+// via public rune key messages so the input buffer is populated through
+// the normal key-handling path rather than a test-only setter.
+//
+// Expected:
+//   - text is any string; s.intent has been created.
+//
+// Returns:
+//   - nil on success; error if the intent is missing.
+//
+// Side effects:
+//   - Feeds each rune as a tea.KeyMsg to s.intent.Update.
+func (s *DualPaneLayoutSteps) theChatInputIsSetTo(text string) error {
+	if s.intent == nil {
+		return errors.New("chat intent has not been initialised")
+	}
+	for _, r := range text {
+		s.intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return nil
+}
+
+// theChatIntentViewIsRendered drives s.intent.View() and stashes the output
+// for downstream width assertions.
+//
+// Returns:
+//   - nil on success; error if the intent is missing or the view is empty.
+//
+// Side effects:
+//   - Sets s.lastRender to the rendered view.
+func (s *DualPaneLayoutSteps) theChatIntentViewIsRendered() error {
+	if s.intent == nil {
+		return errors.New("chat intent has not been initialised")
+	}
+	view := s.intent.View()
+	if view == "" {
+		return errors.New("chat.Intent.View returned an empty string")
+	}
+	s.lastRender = view
+	return nil
+}
+
+// everyPrimaryColumnLineShouldFitPrimaryWidth asserts that no line in the
+// primary pane column exceeds the 70% split budget computed by
+// layout.SplitPaneWidths. A primary line is defined as the substring before
+// the first dual-pane separator rune on each render row; we only inspect
+// rows that actually contain the separator (so header / footer bands, which
+// span the full width, are excluded).
+//
+// Returns:
+//   - nil if every primary column slice fits within primaryWidth; error
+//     describing the first violation otherwise.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) everyPrimaryColumnLineShouldFitPrimaryWidth() error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	if s.terminalWidth <= 0 {
+		return errors.New("terminal width not recorded; scenario must use the sized-Intent Given step")
+	}
+	primaryWidth, _ := layout.SplitPaneWidths(s.terminalWidth)
+	for rowIdx, line := range strings.Split(s.lastRender, "\n") {
+		sepIdx := strings.Index(line, dualPaneSeparator)
+		if sepIdx < 0 {
+			continue
+		}
+		primarySlice := line[:sepIdx]
+		// Lipgloss pads with spaces to reach primaryWidth; trim trailing
+		// padding so we catch content that genuinely overflows.
+		visible := strings.TrimRight(primarySlice, " ")
+		if runeWidth([]rune(visible)) > primaryWidth {
+			return fmt.Errorf(
+				"primary column line %d overflows: width=%d, budget=%d, content=%q",
+				rowIdx, runeWidth([]rune(visible)), primaryWidth, visible,
+			)
+		}
+	}
+	return nil
+}
+
+// thePrimaryInputRowShouldRenderAsSingleRow asserts that the rendered view
+// contains exactly one row carrying the input prompt glyph ("> "). If the
+// primary pane is being rendered at the full terminal width and then
+// hard-wrapped by lipgloss, short inputs double up onto a continuation row,
+// which is the symptom we regress on.
+//
+// Returns:
+//   - nil on success; error if zero or multiple input rows are rendered.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) thePrimaryInputRowShouldRenderAsSingleRow() error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	count := 0
+	for _, line := range strings.Split(s.lastRender, "\n") {
+		// Strip the right-hand pane column so input-line detection only
+		// runs on the primary slice.
+		primarySlice := line
+		if idx := strings.Index(line, dualPaneSeparator); idx >= 0 {
+			primarySlice = line[:idx]
+		}
+		if strings.Contains(primarySlice, "> hello") {
+			count++
+		}
+	}
+	if count == 0 {
+		return errors.New("expected input row containing '> hello' in primary column, none found")
+	}
+	if count > 1 {
+		return fmt.Errorf("expected exactly one input row, found %d (indicates hard-wrap)", count)
+	}
+	return nil
+}
+
+// runeWidth returns a conservative visible width for the given rune slice by
+// counting non-ANSI runes. The BDD suite has no access to lipgloss.Width
+// without an import cycle risk; this linear scan is sufficient for the
+// primary-column assertion because lipgloss pads with plain spaces and the
+// test content is ASCII.
+//
+// Expected:
+//   - runes is a rendered string split into runes.
+//
+// Returns:
+//   - The count of runes that are not part of an ANSI escape sequence.
+//
+// Side effects:
+//   - None.
+func runeWidth(runes []rune) int {
+	width := 0
+	inEscape := false
+	for _, r := range runes {
+		if r == 0x1b {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			// ANSI CSI sequences end on a letter in the 0x40-0x7e range.
+			if r >= 0x40 && r <= 0x7e {
+				inEscape = false
+			}
+			continue
+		}
+		width++
+	}
+	return width
+}
+
 // assertSeparatorWithin70PercentBand scans the rendered output for at
 // least one line whose dual-pane separator column falls inside the 65%-75%
 // band of the terminal width. The narrow band rejects accidental
@@ -544,4 +738,50 @@ func assertSeparatorWithin70PercentBand(output string, width int) error {
 		}
 	}
 	return fmt.Errorf("expected dual-pane separator within columns %d-%d at width %d, none found", lowerBound, upperBound, width)
+}
+
+// theRenderedViewShouldNotContainDualPaneSeparator asserts that the last
+// captured chat.Intent.View output does not contain the dual-pane separator
+// glyph. Used by the W=79 single-pane fallback scenario to confirm the
+// Intent honours the dualPaneMinWidth threshold end-to-end.
+//
+// Returns:
+//   - nil if the separator is absent; error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) theRenderedViewShouldNotContainDualPaneSeparator() error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	if strings.Contains(s.lastRender, dualPaneSeparator) {
+		return fmt.Errorf(
+			"expected single-pane fallback (no %q separator) at width %d, got render:\n%s",
+			dualPaneSeparator, s.terminalWidth, s.lastRender,
+		)
+	}
+	return nil
+}
+
+// theRenderedViewShouldNotContainActivityTimelineHeader asserts that the
+// last captured chat.Intent.View output does not carry the "Activity
+// Timeline" secondary-pane heading. The W=79 fallback must suppress the
+// secondary pane entirely.
+//
+// Returns:
+//   - nil if the header is absent; error otherwise.
+//
+// Side effects:
+//   - None.
+func (s *DualPaneLayoutSteps) theRenderedViewShouldNotContainActivityTimelineHeader() error {
+	if err := s.ensureRender(); err != nil {
+		return err
+	}
+	if strings.Contains(s.lastRender, activityTimelineHeader) {
+		return fmt.Errorf(
+			"expected single-pane fallback (no %q header) at width %d, got render:\n%s",
+			activityTimelineHeader, s.terminalWidth, s.lastRender,
+		)
+	}
+	return nil
 }

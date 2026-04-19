@@ -1,47 +1,9 @@
-// Package gatingdrift provides a static analyser that flags struct
-// fields whose godoc names a gating identifier (e.g. "declared in
-// Capabilities.MCPServers") when the enclosing package no longer reads
-// that identifier — Guard 3 of the review-pattern guards.
-//
-// Why: commit b960869 ("wire MCP tools to bypass manifest whitelist")
-// stripped the manifest gate from buildAllowedToolSet but left the
-// docstring on Config.MCPServerTools claiming the gate still applied.
-// The reviewer (the same author) had no oracle to disagree with the
-// behaviour change, and the test was rewritten to pin it. This analyser
-// would have refused the commit by reporting that the docstring's
-// gating identifier was no longer present anywhere in the engine
-// package.
-//
-// Scope: deliberately narrow per the user's "200 LOC ceiling, ship
-// narrow" directive. The analyser:
-//
-//  1. Walks every struct type declaration.
-//  2. For each field with a doc comment, extracts gating identifiers of
-//     the form "<Phrase> <Capitalised>.<Capitalised>" where <Phrase> is
-//     one of: "declared in", "gated by", "controlled by", "filtered by".
-//     The phrase requirement keeps false positives down — incidental
-//     mentions of dotted identifiers (e.g. "see foo.Bar for context")
-//     are not flagged.
-//  3. For each gating identifier, checks whether any *ast.SelectorExpr
-//     in the same package has matching X / Sel names.
-//  4. Reports a diagnostic on the struct type when the identifier is
-//     named but not read.
-//
-// Out of scope (explicit known gaps, see commit body for rationale):
-//
-//   - Cross-package gates (the gating identifier might live in another
-//     package). The b960869 case is intra-package, so this is a useful
-//     start.
-//   - Type-aware resolution. We compare names only; a field named
-//     "MCPServers" on an unrelated type still counts as a read.
-//   - Graceful handling of dot-imported packages.
 package gatingdrift
 
 import (
 	"go/ast"
 	"go/token"
 	"regexp"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
@@ -72,11 +34,11 @@ var gatingPhrasePattern = regexp.MustCompile(
 
 // gatingRef captures one gating identifier discovered in a docstring.
 type gatingRef struct {
-	X        string  // left-hand identifier (e.g. "Capabilities")
-	Sel      string  // right-hand selector (e.g. "MCPServers")
+	X        string    // left-hand identifier (e.g. "Capabilities")
+	Sel      string    // right-hand selector (e.g. "MCPServers")
 	StructAt token.Pos // position to report against (the struct decl)
-	Field    string  // field name carrying the docstring
-	Owner    string  // owning struct name
+	Field    string    // field name carrying the docstring
+	Owner    string    // owning struct name
 }
 
 // run is the analyser entry point. See package godoc for the
@@ -127,36 +89,70 @@ func collectGatingRefs(pass *analysis.Pass) []gatingRef {
 	var refs []gatingRef
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				st, ok := ts.Type.(*ast.StructType)
-				if !ok || st.Fields == nil {
-					continue
-				}
-				for _, field := range st.Fields.List {
-					if field.Doc == nil || len(field.Names) == 0 {
-						continue
-					}
-					doc := field.Doc.Text()
-					matches := gatingPhrasePattern.FindAllStringSubmatch(doc, -1)
-					for _, m := range matches {
-						refs = append(refs, gatingRef{
-							X:        m[2],
-							Sel:      m[3],
-							StructAt: ts.Pos(),
-							Field:    field.Names[0].Name,
-							Owner:    ts.Name.Name,
-						})
-					}
-				}
-			}
+			refs = append(refs, refsFromDecl(decl)...)
+		}
+	}
+	return refs
+}
+
+// refsFromDecl returns every gatingRef derived from the field-doc gating
+// phrases inside a single top-level declaration. Non-struct type blocks
+// yield the empty slice.
+//
+// Expected:
+//   - decl is a top-level declaration from a file in the pass.
+//
+// Returns:
+//   - The gatingRef slice for each (struct, field) pair whose doc comment
+//     mentions a gating identifier. Empty for non-type / non-struct decls.
+//
+// Side effects:
+//   - None.
+func refsFromDecl(decl ast.Decl) []gatingRef {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok || gen.Tok != token.TYPE {
+		return nil
+	}
+	var refs []gatingRef
+	for _, spec := range gen.Specs {
+		ts, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+		st, ok := ts.Type.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			continue
+		}
+		refs = append(refs, refsFromStruct(ts, st)...)
+	}
+	return refs
+}
+
+// refsFromStruct collects gatingRefs for each field whose doc comment
+// names a gating identifier.
+//
+// Expected:
+//   - ts names the enclosing struct type; st holds its field list.
+//
+// Returns:
+//   - One gatingRef per (field, gating-phrase match).
+//
+// Side effects:
+//   - None.
+func refsFromStruct(ts *ast.TypeSpec, st *ast.StructType) []gatingRef {
+	var refs []gatingRef
+	for _, field := range st.Fields.List {
+		if field.Doc == nil || len(field.Names) == 0 {
+			continue
+		}
+		for _, m := range gatingPhrasePattern.FindAllStringSubmatch(field.Doc.Text(), -1) {
+			refs = append(refs, gatingRef{
+				X:        m[2],
+				Sel:      m[3],
+				StructAt: ts.Pos(),
+				Field:    field.Names[0].Name,
+				Owner:    ts.Name.Name,
+			})
 		}
 	}
 	return refs
@@ -212,5 +208,5 @@ func collectSelectorReads(pass *analysis.Pass) map[string]bool {
 // Side effects:
 //   - None.
 func selectorKey(x, sel string) string {
-	return strings.Join([]string{x, sel}, ".")
+	return x + "." + sel
 }
