@@ -344,6 +344,13 @@ func NewSummarizeContextTool(
 }
 
 // SetEventBus configures the event bus for recall event emission.
+//
+// Expected:
+//   - bus may be nil to disable emission.
+//
+// Side effects:
+//   - Replaces the tool's bus reference; subsequent summarisation
+//     observations will fan out through this bus.
 func (t *SummarizeContextTool) SetEventBus(bus *eventbus.EventBus) {
 	t.bus = bus
 }

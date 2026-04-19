@@ -678,10 +678,11 @@ var _ = Describe("ChatIntent", func() {
 		})
 
 		Context("with a generic error string", func() {
-			It("returns a truncated fallback message", func() {
+			It("returns a bracketed fallback message (P18a)", func() {
 				err := fmt.Errorf("connection refused")
 				result := chat.FormatErrorMessageForTest(err)
-				Expect(result).To(HavePrefix("⚠ Error:"))
+				Expect(result).To(HavePrefix("[ERROR: "))
+				Expect(result).To(HaveSuffix("]"))
 				Expect(result).To(ContainSubstring("connection refused"))
 			})
 		})
@@ -690,7 +691,7 @@ var _ = Describe("ChatIntent", func() {
 			It("handles gracefully", func() {
 				err := fmt.Errorf("")
 				result := chat.FormatErrorMessageForTest(err)
-				Expect(result).To(HavePrefix("⚠ Error:"))
+				Expect(result).To(HavePrefix("[ERROR: "))
 			})
 		})
 
@@ -879,6 +880,10 @@ var _ = Describe("ChatIntent", func() {
 	})
 
 	Describe("Error handling in streaming", func() {
+		// P18a switched the fallback error marker from "⚠ Error: …" to
+		// "[ERROR: …]" so the bracketed form reads uniformly in both the
+		// TUI transcript and any copy/paste log. These assertions track
+		// the new marker via its shared "[ERROR:" prefix.
 		Context("when a stream error occurs", func() {
 			It("displays formatted error message in the chat", func() {
 				intent.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -891,7 +896,7 @@ var _ = Describe("ChatIntent", func() {
 				})
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 				Expect(messages[0].Content).To(ContainSubstring("connection refused"))
 			})
 
@@ -908,7 +913,7 @@ var _ = Describe("ChatIntent", func() {
 				})
 				messages := intent.Messages()
 				Expect(messages[0].Content).To(ContainSubstring("Hello"))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 				Expect(messages[0].Content).To(ContainSubstring("timeout"))
 			})
 
@@ -923,7 +928,7 @@ var _ = Describe("ChatIntent", func() {
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Role).To(Equal("assistant"))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 				Expect(messages[0].Content).To(ContainSubstring("API key invalid"))
 			})
 
@@ -942,7 +947,7 @@ var _ = Describe("ChatIntent", func() {
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Content).To(ContainSubstring("Part 1"))
 				Expect(messages[0].Content).To(ContainSubstring("Part 2"))
-				Expect(messages[0].Content).To(ContainSubstring("Error"))
+				Expect(messages[0].Content).To(ContainSubstring("[ERROR:"))
 			})
 		})
 
@@ -955,7 +960,7 @@ var _ = Describe("ChatIntent", func() {
 				messages := intent.Messages()
 				Expect(messages).To(HaveLen(1))
 				Expect(messages[0].Content).To(Equal("Hello World"))
-				Expect(messages[0].Content).NotTo(ContainSubstring("Error:"))
+				Expect(messages[0].Content).NotTo(ContainSubstring("[ERROR:"))
 			})
 		})
 	})
@@ -2634,9 +2639,10 @@ var _ = Describe("session viewer full-screen rendering", func() {
 	Describe("user-cancel does not surface as an error", func() {
 		// Defect: a user-initiated double-Esc cancel propagates context.Canceled
 		// back through the stream and handleStreamChunk previously formatted it
-		// as an error ("⚠ Error: context canceled"). A user-initiated cancel is
-		// a legitimate action, not an error — no error message, toast, or
-		// artefact should appear in the chat.
+		// as an error ("[ERROR: context canceled]", formerly "⚠ Error: context
+		// canceled"). A user-initiated cancel is a legitimate action, not an
+		// error — no error message, toast, or artefact should appear in the
+		// chat.
 		Context("when the user has just cancelled via double-Esc", func() {
 			BeforeEach(func() {
 				intent.SetStreamingForTest(true)
@@ -2659,7 +2665,7 @@ var _ = Describe("session viewer full-screen rendering", func() {
 
 				messages := intent.AllViewMessagesForTest()
 				for _, msg := range messages[before:] {
-					Expect(msg.Content).NotTo(ContainSubstring("⚠ Error"),
+					Expect(msg.Content).NotTo(ContainSubstring("[ERROR:"),
 						"user-cancel must not produce an error message: %q", msg.Content)
 					Expect(msg.Content).NotTo(ContainSubstring("context canceled"),
 						"user-cancel must not leak raw context.Canceled: %q", msg.Content)
@@ -2694,7 +2700,7 @@ var _ = Describe("session viewer full-screen rendering", func() {
 				// message so users can diagnose network/timeouts.
 				found := false
 				for _, msg := range messages[before:] {
-					if strings.Contains(msg.Content, "⚠ Error") || strings.Contains(msg.Content, "context canceled") {
+					if strings.Contains(msg.Content, "[ERROR:") || strings.Contains(msg.Content, "context canceled") {
 						found = true
 						break
 					}

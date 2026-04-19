@@ -88,4 +88,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSwarmActivityTimelineSteps(ctx)
 	RegisterMultiAgentChatUXE2ESteps(ctx)
 	RegisterRecallLearningSteps(ctx)
+	RegisterStreamingErrorSteps(ctx)
 }
