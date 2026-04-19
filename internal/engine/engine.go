@@ -1689,6 +1689,17 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
+		// Persist the assistant tool_use intent before any branch that can
+		// exit early (permission denied, ErrToolNotFound, execute failure).
+		// The openaicompat accumulator already surfaced a structured
+		// tool_call event; the transcript must retain the model's intent
+		// even when we never reach executeToolCall. Without this the
+		// persisted session is indistinguishable from the model having
+		// replied with no tool use at all — the exact shape observed in
+		// session-1776623141279480382, where the planner's tool_use
+		// disappeared and the raw function-call JSON leaked into Content.
+		e.storeAssistantToolUse(result.toolCall, result.responseContent)
+
 		if denied := e.checkToolPermission(result.toolCall, outChan); denied {
 			return
 		}
@@ -1699,7 +1710,6 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
-		e.storeAssistantToolUse(result.toolCall, result.responseContent)
 		e.storeToolResult(result.toolCall.ID, toolResult)
 
 		resultContent := toolResult.Output
