@@ -84,6 +84,18 @@ var _ = Describe("Discoverer", func() {
 			})
 		})
 
+		Context("when the directory does not exist", func() {
+			It("creates the directory and returns an empty slice", func() {
+				nonExistent := filepath.Join(GinkgoT().TempDir(), "does-not-exist")
+				manifests, err := discoverer.Discover(nonExistent)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(manifests).To(BeEmpty())
+				// Verify directory was created
+				_, statErr := os.Stat(nonExistent)
+				Expect(statErr).NotTo(HaveOccurred())
+			})
+		})
+
 		Context("with an empty directory", func() {
 			It("returns an empty slice without error", func() {
 				manifests, err := discoverer.Discover(pluginDir)

@@ -51,6 +51,7 @@ import (
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	"github.com/baphled/flowstate/internal/tool/read"
+	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/web"
@@ -537,6 +538,7 @@ type engineAssemblyParams struct {
 // Side effects:
 //   - None.
 func buildEngineParams(in engineAssemblyParams) engineParams {
+	appTools := appendChainTools(in.tools.tools, in.chainStore)
 	return engineParams{
 		defaultProvider:      in.traced.provider,
 		ollamaProvider:       in.setup.ollamaProvider,
@@ -547,7 +549,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		contextStore:         in.contextStore,
 		chainStore:           in.chainStore,
 		learningStore:        in.setup.learningStore,
-		appTools:             in.tools.tools,
+		appTools:             appTools,
 		toolRegistry:         in.tools.toolRegistry,
 		permissionHandler:    in.tools.permissionHandler,
 		mcpServerTools:       in.tools.mcpServerTools,
@@ -561,6 +563,53 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		recallBroker:         in.broker,
 		compression:          in.compression,
 	}
+}
+
+// appendChainTools appends chain context tools when a chain store is available.
+// This gives the root engine cross-agent context queries without delegation.
+//
+// Expected:
+//   - base is the existing tool slice (not nil).
+//   - cs may be nil; when nil the original slice is returned unchanged.
+//
+// Returns:
+//   - The tool slice with chain_search_context and chain_get_messages appended,
+//     or the original slice when cs is nil.
+//
+// Side effects:
+//   - None.
+func appendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
+	if cs == nil {
+		return base
+	}
+	return append(base,
+		toolrecall.NewChainSearchTool(cs),
+		toolrecall.NewChainGetMessagesTool(cs),
+	)
+}
+
+// createCoordinationStore returns a file-backed coordination store when
+// DataDir is configured, falling back to an in-memory store otherwise.
+//
+// Expected:
+//   - cfg may be nil.
+//
+// Returns:
+//   - A coordination.Store (file-backed when DataDir is set, in-memory otherwise).
+//
+// Side effects:
+//   - Creates the coordination JSON file directory if it does not exist.
+func createCoordinationStore(cfg *config.AppConfig) coordination.Store {
+	if cfg != nil && cfg.DataDir != "" {
+		coordPath := filepath.Join(cfg.DataDir, "coordination.json")
+		fs, err := coordination.NewFileStore(coordPath)
+		if err != nil {
+			slog.Warn("failed to create file-backed coordination store, falling back to memory", "error", err)
+			return coordination.NewMemoryStore()
+		}
+		return fs
+	}
+	return coordination.NewMemoryStore()
 }
 
 // bindCompressionManifest rebinds the summariser adapter to the default
@@ -905,7 +954,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		a.backgroundManager.WithSessionManager(a.sessionManager)
 	}
 	bgManager := a.backgroundManager
-	coordinationStore := coordination.NewMemoryStore()
+	coordinationStore := createCoordinationStore(a.Config)
 
 	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
 
@@ -2989,17 +3038,12 @@ type recallBrokerParams struct {
 // Returns:
 //   - A non-nil recall.Broker with MCP memory always attached.
 //   - When cfg.Qdrant.URL is non-empty the Qdrant learning source is also included.
-//   - The vault source is not attached (use buildRecallBrokerWithVault).
+//   - The vault source is attached when cfg.VaultPath is non-empty.
 //
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
 func buildRecallBroker(params recallBrokerParams) recall.Broker {
-	// P7/C1: the vault path is empty in today's config schema, so do not
-	// attach the vault source. When the AppConfig grows a vault field
-	// (tracked as follow-up work in §6.3 Decision 3 Option 2), callers
-	// should switch to buildRecallBrokerWithVault with the configured
-	// string.
-	return buildRecallBrokerWithVault(params, "")
+	return buildRecallBrokerWithVault(params, params.cfg.VaultPath)
 }
 
 // buildRecallBrokerWithVault constructs a recall.Broker with an explicit

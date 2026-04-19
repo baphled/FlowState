@@ -431,7 +431,8 @@ func classifyStatusError(statusErr ollamaAPI.StatusError) *provider.Error {
 		pErr.ErrorType = provider.ErrorTypeAuthFailure
 		pErr.IsRetriable = false
 	case http.StatusServiceUnavailable:
-		if strings.Contains(strings.ToLower(statusErr.ErrorMessage), "loading") {
+		msg := strings.ToLower(statusErr.ErrorMessage)
+		if strings.Contains(msg, "loading") || strings.Contains(msg, "busy") || strings.Contains(msg, "overloaded") {
 			pErr.ErrorType = provider.ErrorTypeOverload
 		} else {
 			pErr.ErrorType = provider.ErrorTypeServerError

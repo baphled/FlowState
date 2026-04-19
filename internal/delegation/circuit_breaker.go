@@ -224,6 +224,41 @@ func (cb *CircuitBreaker) RecordFailure() {
 	}
 }
 
+// RecordTypedFailure records a failure with error type awareness.
+// Non-retriable errors (billing, auth) open the circuit immediately
+// rather than requiring maxFailures consecutive failures.
+//
+// Expected:
+//   - isRetriable indicates whether the error is transient.
+//
+// Side effects:
+//   - May immediately open the circuit for non-retriable errors.
+func (cb *CircuitBreaker) RecordTypedFailure(isRetriable bool) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	cb.failures++
+	cb.lastFailure = time.Now()
+
+	if !isRetriable {
+		// Non-retriable errors open the circuit immediately
+		cb.state = CircuitOpen
+		cb.lastStateChange = time.Now()
+		return
+	}
+
+	switch cb.state {
+	case CircuitClosed:
+		if cb.failures >= cb.maxFailures {
+			cb.state = CircuitOpen
+			cb.lastStateChange = time.Now()
+		}
+	case CircuitHalfOpen:
+		cb.state = CircuitOpen
+		cb.lastStateChange = time.Now()
+	}
+}
+
 // State returns the current circuit state.
 //
 // The state indicates whether requests are allowed (Closed), blocked (Open),

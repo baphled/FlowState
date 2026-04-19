@@ -33,17 +33,21 @@ func NewDiscoverer(cfg config.PluginsConfig) *Discoverer {
 // loads and validates each manifest, and applies enabled/disabled filters.
 //
 // Expected:
-//   - dir is a valid path to an existing directory.
+//   - dir is a path where plugins may reside; created automatically if absent.
 //
 // Returns:
 //   - A slice of valid, filtered manifests.
-//   - An error if the directory cannot be read.
+//   - An error if the directory cannot be created or read.
 //
 // Side effects:
+//   - Creates the directory tree if it does not exist.
 //   - Reads from the filesystem.
 //   - Logs warnings for invalid manifests.
 func (d *Discoverer) Discover(dir string) ([]*manifest.Manifest, error) {
 	cleanDir := filepath.Clean(dir)
+	if err := os.MkdirAll(cleanDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create plugin directory %q: %w", cleanDir, err)
+	}
 	entries, err := os.ReadDir(cleanDir)
 	if err != nil {
 		return nil, fmt.Errorf("read plugin directory %q: %w", cleanDir, err)

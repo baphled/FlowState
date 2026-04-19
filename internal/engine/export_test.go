@@ -5,6 +5,7 @@ import (
 	"time"
 
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/delegation"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
 )
@@ -73,4 +74,32 @@ func (e *Engine) IsIdleSweeperRunningForTest() bool {
 	e.splitterMu.Lock()
 	defer e.splitterMu.Unlock()
 	return e.sweeperStop != nil
+}
+
+// SanitiseDelegationMessageForTest exposes sanitiseDelegationMessage for white-box testing.
+func SanitiseDelegationMessageForTest(msg string) string {
+	return sanitiseDelegationMessage(msg)
+}
+
+// ResolveTargetWithOptionsForTest exposes resolveTargetWithOptions for white-box testing of delegation guards.
+func (d *DelegateTool) ResolveTargetWithOptionsForTest(ctx context.Context, params DelegationParamsForTest) (string, error) {
+	p := delegationParams{
+		category:     params.Category,
+		subagentType: params.SubagentType,
+		message:      params.Message,
+		handoff:      params.Handoff,
+	}
+	target, err := d.resolveTargetWithOptions(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	return target.agentID, nil
+}
+
+// DelegationParamsForTest exposes delegationParams fields for external test packages.
+type DelegationParamsForTest struct {
+	Category     string
+	SubagentType string
+	Message      string
+	Handoff      *delegation.Handoff
 }

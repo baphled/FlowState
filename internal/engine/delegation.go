@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
@@ -668,6 +669,8 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		chainID = newDelegationChainID()
 	}
 
+	injectVisitedAgents(&target, d.sourceAgentID)
+
 	modelName := target.engine.LastModel()
 	providerName := target.engine.LastProvider()
 	if target.resolvedModel != "" {
@@ -766,7 +769,7 @@ func populateDelegationMetadata(params *delegationParams, arguments map[string]i
 	if !ok {
 		return errMessageMustBeString
 	}
-	params.message = message
+	params.message = sanitiseDelegationMessage(message)
 
 	if value, ok := arguments["run_in_background"].(bool); ok {
 		params.runAsync = value
@@ -797,6 +800,108 @@ func populateDelegationMetadata(params *delegationParams, arguments map[string]i
 	}
 
 	return nil
+}
+
+// sanitiseDelegationMessage cleans a delegation message to prevent
+// prompt injection and context flooding.
+//
+// Expected:
+//   - msg is the raw message string from the LLM's tool call.
+//
+// Returns:
+//   - The sanitised message string.
+//
+// Side effects:
+//   - None.
+func sanitiseDelegationMessage(msg string) string {
+	const maxMessageLen = 10000
+	if len(msg) > maxMessageLen {
+		msg = msg[:maxMessageLen]
+	}
+	// Strip control characters except newline (\n), tab (\t), carriage return (\r)
+	var b strings.Builder
+	b.Grow(len(msg))
+	for _, r := range msg {
+		if r == '\n' || r == '\t' || r == '\r' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// applySkillsAndSessionMode injects requested skills into the target engine's
+// system prompt and configures agent-file loading based on session presence.
+//
+// Expected:
+//   - targetEngine is a non-nil Engine.
+//   - params contains the delegation parameters.
+//
+// Side effects:
+//   - Mutates targetEngine's manifest and agent-file loading flag.
+func (d *DelegateTool) applySkillsAndSessionMode(targetEngine *Engine, params delegationParams) {
+	if len(params.loadSkills) > 0 {
+		manifest := targetEngine.Manifest()
+		basePrompt := manifest.Instructions.SystemPrompt
+		injectedPrompt := d.InjectSkillsIfProvided(params.loadSkills, basePrompt)
+		manifest.Instructions.SystemPrompt = injectedPrompt
+		targetEngine.SetManifest(manifest)
+	}
+	targetEngine.SetSkipAgentFiles(params.sessionID == "")
+}
+
+// checkDelegationCycle returns an error when the target agent has already
+// been visited in this delegation chain or when the source and target are
+// the same agent.
+//
+// Expected:
+//   - sourceAgentID is the current agent's ID.
+//   - targetAgentID is the intended delegation target.
+//   - handoff may be nil.
+//
+// Returns:
+//   - An error if a cycle or self-delegation is detected, nil otherwise.
+//
+// Side effects:
+//   - None.
+func checkDelegationCycle(sourceAgentID, targetAgentID string, handoff *delegation.Handoff) error {
+	if targetAgentID == sourceAgentID {
+		return fmt.Errorf("self-delegation not allowed: agent %q cannot delegate to itself", targetAgentID)
+	}
+	if handoff != nil && handoff.Metadata != nil {
+		if visited, ok := handoff.Metadata["visited_agents"]; ok {
+			for _, id := range strings.Split(visited, ",") {
+				if strings.TrimSpace(id) == targetAgentID {
+					return fmt.Errorf("delegation cycle detected: agent %q already visited in chain [%s]", targetAgentID, visited)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// injectVisitedAgents records the source agent in the handoff metadata so
+// downstream delegations can detect cycles via the visited_agents key.
+//
+// Expected:
+//   - target is a non-nil delegationTarget pointer.
+//   - sourceAgentID is the current agent's ID.
+//
+// Side effects:
+//   - Mutates target.handoff.Metadata["visited_agents"].
+func injectVisitedAgents(target *delegationTarget, sourceAgentID string) {
+	if target.handoff == nil {
+		target.handoff = &delegation.Handoff{Metadata: make(map[string]string)}
+	}
+	if target.handoff.Metadata == nil {
+		target.handoff.Metadata = make(map[string]string)
+	}
+	visited := target.handoff.Metadata["visited_agents"]
+	if visited == "" {
+		visited = sourceAgentID
+	} else {
+		visited = visited + "," + sourceAgentID
+	}
+	target.handoff.Metadata["visited_agents"] = visited
 }
 
 // parseLoadSkills converts a raw load_skills argument into a slice of skill names.
@@ -1284,6 +1389,10 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 			errAgentNotInAllowlist, targetAgentID, d.delegation.DelegationAllowlist)
 	}
 
+	if err := checkDelegationCycle(d.sourceAgentID, targetAgentID, params.handoff); err != nil {
+		return delegationTarget{}, err
+	}
+
 	var chainID string
 	if params.handoff != nil {
 		chainID = params.handoff.ChainID
@@ -1304,19 +1413,7 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		}
 	}
 
-	if len(params.loadSkills) > 0 {
-		manifest := targetEngine.Manifest()
-		basePrompt := manifest.Instructions.SystemPrompt
-		injectedPrompt := d.InjectSkillsIfProvided(params.loadSkills, basePrompt)
-		manifest.Instructions.SystemPrompt = injectedPrompt
-		targetEngine.SetManifest(manifest)
-	}
-
-	if params.sessionID == "" {
-		targetEngine.SetSkipAgentFiles(true)
-	} else {
-		targetEngine.SetSkipAgentFiles(false)
-	}
+	d.applySkillsAndSessionMode(targetEngine, params)
 
 	return delegationTarget{
 		agentID:          targetAgentID,

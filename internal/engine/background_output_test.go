@@ -214,6 +214,38 @@ var _ = Describe("BackgroundOutputTool", func() {
 			})
 		})
 
+		Context("when context is cancelled during blocking poll", func() {
+			It("returns promptly instead of waiting for timeout", func() {
+				task := manager.Launch(ctx, "poll-cancel-test", "agent-cancel", "cancel test", func(ctx context.Context) (string, error) {
+					time.Sleep(10 * time.Second) // never completes
+					return "done", nil
+				})
+
+				cancelCtx, cancel := context.WithCancel(context.Background())
+				// Cancel after 100ms
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					cancel()
+				}()
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": float64(30000), // 30s timeout - should NOT wait this long
+					},
+				}
+				start := time.Now()
+				_, err := botTool.Execute(cancelCtx, input)
+				elapsed := time.Since(start)
+
+				// Should return within ~500ms, NOT wait 30 seconds
+				Expect(err).To(HaveOccurred()) // timeout error since task never completes
+				Expect(elapsed).To(BeNumerically("<", 2*time.Second))
+			})
+		})
+
 		Context("regression: multiple sequential background_output calls", func() {
 			It("successfully retrieves multiple different tasks without eviction conflicts", func() {
 				// Launch two background tasks

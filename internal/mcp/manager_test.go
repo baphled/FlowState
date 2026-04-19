@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	. "github.com/onsi/ginkgo/v2"
@@ -396,6 +397,76 @@ var _ = Describe("Manager", func() {
 					_, err := manager.CallTool(ctx, "test-server", "nonexistent", nil)
 					Expect(err).To(HaveOccurred())
 				})
+			})
+		})
+
+		Context("when tool call exceeds timeout", func() {
+			var (
+				slowServer      *mcpsdk.Server
+				serverErr       chan error
+				clientTransport mcpsdk.Transport
+				serverTransport mcpsdk.Transport
+			)
+
+			BeforeEach(func() {
+				clientTransport, serverTransport = mcpsdk.NewInMemoryTransports()
+
+				slowServer = mcpsdk.NewServer(&mcpsdk.Implementation{
+					Name:    "slow-server",
+					Version: "1.0.0",
+				}, nil)
+
+				type SlowInput struct {
+					Message string `json:"message"`
+				}
+				type SlowOutput struct {
+					Result string `json:"result"`
+				}
+
+				mcpsdk.AddTool(slowServer, &mcpsdk.Tool{
+					Name:        "slow-tool",
+					Description: "A tool that takes too long",
+				}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args SlowInput) (*mcpsdk.CallToolResult, SlowOutput, error) {
+					select {
+					case <-ctx.Done():
+						return nil, SlowOutput{}, ctx.Err()
+					case <-time.After(10 * time.Second):
+						return &mcpsdk.CallToolResult{
+							Content: []mcpsdk.Content{
+								&mcpsdk.TextContent{Text: "done"},
+							},
+						}, SlowOutput{Result: "done"}, nil
+					}
+				})
+
+				serverErr = make(chan error, 1)
+				go func() {
+					serverErr <- slowServer.Run(ctx, serverTransport)
+				}()
+
+				factory := func(_ context.Context, _ mcp.ServerConfig) (mcpsdk.Transport, error) {
+					return clientTransport, nil
+				}
+				manager = mcp.NewManager(
+					mcp.WithTransportFactory(factory),
+					mcp.WithCallTimeout(100*time.Millisecond),
+				)
+
+				err := manager.Connect(ctx, mcp.ServerConfig{Name: "slow-server", Command: "unused"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			AfterEach(func() {
+				manager.DisconnectAll()
+				Eventually(serverErr).Should(Receive())
+			})
+
+			It("returns a deadline exceeded error", func() {
+				_, err := manager.CallTool(ctx, "slow-server", "slow-tool", map[string]any{
+					"message": "hello",
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("deadline exceeded"))
 			})
 		})
 	})

@@ -94,6 +94,32 @@ var _ = Describe("VaultSource", func() {
 		Expect(results).To(BeEmpty())
 	})
 
+	// B8: Defence-in-depth — MCP server returns help text instead of JSON
+	// when parameters are invalid. The source must treat this as empty.
+	It("returns empty slice without error when MCP returns help text starting with 'Usage:'", func() {
+		stubMC.result = &mcp.ToolResult{Content: "Usage: query_vault --question <q> --vault <v>", IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
+	It("returns empty slice without error when MCP returns help text starting with lowercase 'usage:'", func() {
+		stubMC.result = &mcp.ToolResult{Content: "usage: query_vault [OPTIONS]", IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
+	It("returns empty slice without error when MCP returns help text with leading whitespace", func() {
+		stubMC.result = &mcp.ToolResult{Content: "  \n  Usage: query_vault --help", IsError: false}
+		source := vaultrecall.NewVaultSource(stubMC, "vault-rag", "baphled")
+		results, err := source.Query(ctx, "test", 5)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(results).To(BeEmpty())
+	})
+
 	// Reproduces the post-restart 2026-04-13 20:43:35 recall broker log:
 	//   "warning: recall source query failed: invalid character 'u'
 	//    looking for beginning of value"
