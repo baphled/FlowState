@@ -46,6 +46,7 @@ type AppConfig struct {
 	// `session_recording` remains a non-breaking literal.
 	SessionRecordingDir string       `json:"session_recording_dir" yaml:"session_recording_dir"`
 	Qdrant              QdrantConfig `json:"qdrant" yaml:"qdrant"`
+	VaultPath           string       `json:"vault_path" yaml:"vault_path"`
 	// Compression controls the three-layer context compression system
 	// (micro-compaction, auto-compaction, session-memory). All layers
 	// default to disabled; see internal/context.DefaultCompressionConfig.

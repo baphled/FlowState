@@ -339,3 +339,72 @@ var _ = Describe("CircuitBreaker time-windowed failures", func() {
 		})
 	})
 })
+
+var _ = Describe("CircuitBreaker RecordTypedFailure", func() {
+	var cb *CircuitBreaker
+
+	BeforeEach(func() {
+		cb = NewCircuitBreaker(5)
+	})
+
+	Describe("non-retriable errors", func() {
+		It("opens circuit immediately on first non-retriable failure", func() {
+			Expect(cb.State()).To(Equal(CircuitClosed))
+			Expect(cb.Failures()).To(BeZero())
+
+			cb.RecordTypedFailure(false)
+
+			Expect(cb.State()).To(Equal(CircuitOpen))
+			Expect(cb.Failures()).To(Equal(1))
+		})
+
+		It("opens circuit immediately regardless of maxFailures threshold", func() {
+			cb = NewCircuitBreaker(100)
+			cb.RecordTypedFailure(false)
+
+			Expect(cb.State()).To(Equal(CircuitOpen))
+		})
+
+		It("opens circuit from HalfOpen on non-retriable failure", func() {
+			for range 5 {
+				cb.RecordFailure()
+			}
+			cb.Reset()
+			Expect(cb.State()).To(Equal(CircuitHalfOpen))
+
+			cb.RecordTypedFailure(false)
+			Expect(cb.State()).To(Equal(CircuitOpen))
+		})
+	})
+
+	Describe("retriable errors", func() {
+		It("does not open circuit before reaching maxFailures", func() {
+			cb.RecordTypedFailure(true)
+			Expect(cb.State()).To(Equal(CircuitClosed))
+			Expect(cb.Failures()).To(Equal(1))
+
+			cb.RecordTypedFailure(true)
+			Expect(cb.State()).To(Equal(CircuitClosed))
+			Expect(cb.Failures()).To(Equal(2))
+		})
+
+		It("opens circuit after reaching maxFailures", func() {
+			for range 5 {
+				cb.RecordTypedFailure(true)
+			}
+			Expect(cb.State()).To(Equal(CircuitOpen))
+			Expect(cb.Failures()).To(Equal(5))
+		})
+
+		It("opens circuit from HalfOpen on retriable failure", func() {
+			for range 5 {
+				cb.RecordFailure()
+			}
+			cb.Reset()
+			cb.Allow()
+
+			cb.RecordTypedFailure(true)
+			Expect(cb.State()).To(Equal(CircuitOpen))
+		})
+	})
+})

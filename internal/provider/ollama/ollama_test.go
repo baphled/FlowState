@@ -1195,6 +1195,90 @@ var _ = Describe("Ollama Provider", func() {
 				})
 			})
 
+			Context("when server returns 503 with busy message", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = w.Write([]byte(`{"error": "server is busy, try again later"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns Overload provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeOverload))
+					Expect(provErr.HTTPStatus).To(Equal(503))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
+			Context("when server returns 503 with overloaded message", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = w.Write([]byte(`{"error": "system overloaded"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns Overload provider error", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeOverload))
+					Expect(provErr.HTTPStatus).To(Equal(503))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
+			Context("when server returns 503 with connection refused message", func() {
+				BeforeEach(func() {
+					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = w.Write([]byte(`{"error": "connection refused"}`))
+					}))
+
+					var err error
+					prov, err = ollama.NewWithClient(server.URL, server.Client())
+					Expect(err).NotTo(HaveOccurred())
+				})
+
+				It("returns ServerError provider error (not overload)", func() {
+					_, err := prov.Chat(context.Background(), providerPkg.ChatRequest{
+						Model:    "llama3.2",
+						Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+					})
+					Expect(err).To(HaveOccurred())
+
+					var provErr *providerPkg.Error
+					Expect(errors.As(err, &provErr)).To(BeTrue())
+					Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeServerError))
+					Expect(provErr.HTTPStatus).To(Equal(503))
+					Expect(provErr.Provider).To(Equal("ollama"))
+					Expect(provErr.IsRetriable).To(BeTrue())
+				})
+			})
+
 			Context("when server returns 401", func() {
 				BeforeEach(func() {
 					server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

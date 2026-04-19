@@ -13,7 +13,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const connectTimeout = 30 * time.Second
+const (
+	connectTimeout     = 30 * time.Second
+	defaultCallTimeout = 60 * time.Second
+)
 
 // ToolInfo describes a tool available on an MCP server.
 type ToolInfo struct {
@@ -44,6 +47,7 @@ type Manager struct {
 	mu               sync.RWMutex
 	sessions         map[string]*sessionInfo
 	transportFactory TransportFactory
+	callTimeout      time.Duration
 }
 
 // ManagerOption configures a Manager.
@@ -62,6 +66,23 @@ type ManagerOption func(*Manager)
 func WithTransportFactory(factory TransportFactory) ManagerOption {
 	return func(m *Manager) {
 		m.transportFactory = factory
+	}
+}
+
+// WithCallTimeout sets the maximum duration for a single tool call RPC.
+// Zero falls back to the default of 60 seconds.
+//
+// Expected:
+//   - d is a positive duration.
+//
+// Returns:
+//   - A ManagerOption that configures the call timeout.
+//
+// Side effects:
+//   - None (configuration only).
+func WithCallTimeout(d time.Duration) ManagerOption {
+	return func(m *Manager) {
+		m.callTimeout = d
 	}
 }
 
@@ -232,7 +253,14 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 		return nil, errors.New("server not found")
 	}
 
-	result, err := info.session.CallTool(ctx, &mcp.CallToolParams{
+	timeout := m.callTimeout
+	if timeout == 0 {
+		timeout = defaultCallTimeout
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := info.session.CallTool(callCtx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: args,
 	})

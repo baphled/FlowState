@@ -157,7 +157,7 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 //
 // Side effects:
 //   - Blocks the caller and sleeps between polls.
-func (b *BackgroundOutputTool) pollUntilComplete(_ context.Context, taskID string, timeoutMs int) string {
+func (b *BackgroundOutputTool) pollUntilComplete(ctx context.Context, taskID string, timeoutMs int) string {
 	const defaultTimeoutMs = 30000
 	const pollIntervalMs = 50
 
@@ -180,6 +180,12 @@ func (b *BackgroundOutputTool) pollUntilComplete(_ context.Context, taskID strin
 
 		if time.Now().After(deadline) {
 			return ""
+		}
+
+		select {
+		case <-ctx.Done():
+			return ""
+		default:
 		}
 
 		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)

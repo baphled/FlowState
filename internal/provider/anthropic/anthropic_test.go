@@ -232,8 +232,17 @@ var _ = Describe("parseAnthropicError", func() {
 			Expect(result.IsRetriable).To(BeFalse())
 		})
 
-		It("maps 5xx to ServerError", func() {
-			for _, code := range []int{500, 502, 503, 504} {
+		It("maps 503 to Overload (Anthropic uses 503 for overload)", func() {
+			apiErr := newTestAPIError(503)
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(503))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeOverload))
+			Expect(result.IsRetriable).To(BeTrue())
+		})
+
+		It("maps other 5xx to ServerError", func() {
+			for _, code := range []int{500, 502, 504} {
 				result := parseAnthropicError(newTestAPIError(code))
 				Expect(result).To(HaveOccurred())
 				Expect(result.HTTPStatus).To(Equal(code))

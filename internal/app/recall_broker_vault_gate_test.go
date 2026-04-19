@@ -97,3 +97,30 @@ func TestBuildRecallBroker_AttachesVaultSource_WhenVaultStringNonEmpty(t *testin
 		t.Errorf("vault-rag CallTool invocations = 0; want >=1 when vault string is provided")
 	}
 }
+
+// TestBuildRecallBroker_AttachesVaultSource_WhenConfigVaultPathSet verifies
+// that buildRecallBroker (not buildRecallBrokerWithVault) attaches the vault
+// source when cfg.VaultPath is populated — the B3 bug fix.
+func TestBuildRecallBroker_AttachesVaultSource_WhenConfigVaultPathSet(t *testing.T) {
+	client := &recordingMCPClient{}
+	cfg := &config.AppConfig{
+		VaultPath: "baphled",
+	}
+
+	broker := buildRecallBroker(recallBrokerParams{
+		cfg:       cfg,
+		mcpClient: client,
+	})
+	if broker == nil {
+		t.Fatal("buildRecallBroker returned nil")
+	}
+
+	ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
+	if _, err := broker.Query(ctx, "hello", 5); err != nil {
+		t.Fatalf("broker.Query: %v", err)
+	}
+
+	if got := client.vaultCallCount.Load(); got == 0 {
+		t.Errorf("vault-rag CallTool invocations = 0; want >=1 when cfg.VaultPath is set")
+	}
+}

@@ -568,7 +568,9 @@ func mapAnthropicStatusCode(apiErr *anthropicAPI.Error) *provider.Error {
 		return buildProviderError(apiErr, provider.ErrorTypeAuthFailure, false)
 	case 400:
 		return mapBadRequestError(apiErr)
-	case 500, 502, 503, 504:
+	case 503:
+		return buildProviderError(apiErr, provider.ErrorTypeOverload, true)
+	case 500, 502, 504:
 		return buildProviderError(apiErr, provider.ErrorTypeServerError, true)
 	default:
 		return buildProviderError(apiErr, provider.ErrorTypeUnknown, false)

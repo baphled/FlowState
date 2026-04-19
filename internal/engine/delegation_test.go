@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -2203,6 +2204,153 @@ var _ = Describe("Delegate session isolation", func() {
 			Expect(delegateSessionID).NotTo(BeEmpty())
 			Expect(delegateSessionID).NotTo(Equal(parentSessionID))
 			Expect(delegateSessionID).To(HavePrefix("delegate-target-agent-"))
+		})
+	})
+
+	Describe("sanitiseDelegationMessage", func() {
+		It("truncates messages exceeding the maximum length", func() {
+			longMsg := strings.Repeat("a", 10001)
+			result := engine.SanitiseDelegationMessageForTest(longMsg)
+			Expect(result).To(HaveLen(10000))
+		})
+
+		It("strips control characters but preserves newlines and tabs", func() {
+			msg := "hello\tworld\nfoo\x00bar\x07baz"
+			result := engine.SanitiseDelegationMessageForTest(msg)
+			Expect(result).To(Equal("hello\tworld\nfoobarbaz"))
+		})
+
+		It("preserves normal markdown and punctuation", func() {
+			msg := "## Task\n\n- Item **bold** `code` [link](url)\n> quote\n\n1. Numbered"
+			result := engine.SanitiseDelegationMessageForTest(msg)
+			Expect(result).To(Equal(msg))
+		})
+	})
+
+	Describe("cycle detection", func() {
+		var (
+			delegateTool *engine.DelegateTool
+			targetEngine *engine.Engine
+		)
+
+		BeforeEach(func() {
+			targetProvider := &mockProvider{
+				name: "target-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+			}
+			targetManifest := agent.Manifest{
+				ID:                "target-agent",
+				Name:              "Target Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a target."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			targetEngine = engine.New(engine.Config{
+				ChatProvider: targetProvider,
+				Manifest:     targetManifest,
+			})
+
+			engines := map[string]*engine.Engine{
+				"target-agent": targetEngine,
+			}
+
+			delegationCfg := agent.Delegation{
+				CanDelegate: true,
+			}
+
+			delegateTool = engine.NewDelegateTool(engines, delegationCfg, "source-agent")
+		})
+
+		It("rejects delegation when target is already in visited_agents", func() {
+			ctx := context.Background()
+			handoff := &delegationpkg.Handoff{
+				Metadata: map[string]string{
+					"visited_agents": "agent-a,target-agent,agent-b",
+				},
+			}
+			params := engine.DelegationParamsForTest{
+				SubagentType: "target-agent",
+				Message:      "do work",
+				Handoff:      handoff,
+			}
+
+			_, err := delegateTool.ResolveTargetWithOptionsForTest(ctx, params)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("delegation cycle detected"))
+			Expect(err.Error()).To(ContainSubstring("target-agent"))
+		})
+
+		It("allows delegation when visited_agents does not contain the target", func() {
+			ctx := context.Background()
+			handoff := &delegationpkg.Handoff{
+				Metadata: map[string]string{
+					"visited_agents": "agent-a,agent-b",
+				},
+			}
+			params := engine.DelegationParamsForTest{
+				SubagentType: "target-agent",
+				Message:      "do work",
+				Handoff:      handoff,
+			}
+
+			agentID, err := delegateTool.ResolveTargetWithOptionsForTest(ctx, params)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentID).To(Equal("target-agent"))
+		})
+
+		It("allows delegation when no handoff metadata is present", func() {
+			ctx := context.Background()
+			params := engine.DelegationParamsForTest{
+				SubagentType: "target-agent",
+				Message:      "do work",
+			}
+
+			agentID, err := delegateTool.ResolveTargetWithOptionsForTest(ctx, params)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(agentID).To(Equal("target-agent"))
+		})
+	})
+
+	Describe("self-delegation", func() {
+		It("rejects delegation when source and target are the same agent", func() {
+			selfProvider := &mockProvider{
+				name: "self-provider",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+			}
+			selfManifest := agent.Manifest{
+				ID:                "same-agent",
+				Name:              "Same Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are the same."},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			selfEngine := engine.New(engine.Config{
+				ChatProvider: selfProvider,
+				Manifest:     selfManifest,
+			})
+
+			engines := map[string]*engine.Engine{
+				"same-agent": selfEngine,
+			}
+
+			delegationCfg := agent.Delegation{
+				CanDelegate: true,
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, delegationCfg, "same-agent")
+
+			ctx := context.Background()
+			params := engine.DelegationParamsForTest{
+				SubagentType: "same-agent",
+				Message:      "delegate to myself",
+			}
+
+			_, err := delegateTool.ResolveTargetWithOptionsForTest(ctx, params)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("self-delegation not allowed"))
+			Expect(err.Error()).To(ContainSubstring("same-agent"))
 		})
 	})
 

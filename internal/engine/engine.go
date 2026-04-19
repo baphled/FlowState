@@ -32,6 +32,7 @@ import (
 const (
 	streamBufferSize     = 16
 	defaultStreamTimeout = 5 * time.Minute
+	defaultToolTimeout   = 2 * time.Minute
 )
 
 // Engine orchestrates AI agent interactions with providers, tools, and context management.
@@ -61,6 +62,7 @@ type Engine struct {
 	preferredModel       string
 	bus                  *eventbus.EventBus
 	mcpServerTools       map[string][]string
+	toolTimeout          time.Duration
 
 	// toolCallCorrelator assigns a stable FlowState-internal identifier to
 	// every tool call observed on the stream path and reuses it whenever
@@ -276,6 +278,11 @@ type Config struct {
 	// when the registry must outlive a single Engine (e.g. an App that
 	// recycles engines across chats within the same session).
 	ToolCallCorrelator *streaming.ToolCallCorrelator
+
+	// ToolTimeout is the maximum duration a single tool execution may
+	// run before the engine cancels it. Zero falls back to the default
+	// of 2 minutes.
+	ToolTimeout time.Duration
 }
 
 // New creates a new Engine from the given configuration.
@@ -358,6 +365,24 @@ func resolveHookChain(cfg Config, bus *eventbus.EventBus) *hook.Chain {
 	})
 }
 
+// resolveToolTimeout returns the tool-execution timeout from cfg,
+// falling back to the package-level default when zero.
+//
+// Expected:
+//   - cfg is a valid Config struct.
+//
+// Returns:
+//   - The configured ToolTimeout, or defaultToolTimeout when zero.
+//
+// Side effects:
+//   - None.
+func resolveToolTimeout(cfg Config) time.Duration {
+	if cfg.ToolTimeout > 0 {
+		return cfg.ToolTimeout
+	}
+	return defaultToolTimeout
+}
+
 // assembleEngine builds the Engine struct literal from the resolved
 // components. Separated from New so the constructor's branching is
 // isolated from the field wiring and both stay under the funlen gate.
@@ -398,6 +423,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		bus:                       deps.bus,
 		systemPromptDirty:         true,
 		mcpServerTools:            cfg.MCPServerTools,
+		toolTimeout:               resolveToolTimeout(cfg),
 		autoCompactor:             cfg.AutoCompactor,
 		compressionConfig:         cfg.CompressionConfig,
 		compressionMetrics:        cfg.CompressionMetrics,
@@ -1870,7 +1896,23 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			Name:      toolCall.Name,
 			Arguments: toolCall.Arguments,
 		}
-		result, err := t.Execute(ctx, input)
+
+		sanitised, valErr := ValidateToolArgs(t.Schema(), input.Arguments)
+		if valErr != nil {
+			slog.Warn("tool argument validation failed", "tool", toolCall.Name, "error", valErr)
+			result := tool.Result{Output: valErr.Error(), Error: valErr}
+			e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, valErr)
+			return result, nil
+		}
+		input.Arguments = sanitised
+
+		toolCtx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		result, err := t.Execute(toolCtx, input)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			// Tool-level timeout, not parent cancellation.
+			slog.Warn("tool execution error", "tool", toolCall.Name, "error", err)
+		}
 		result.Error = err
 		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err)
 		return result, nil

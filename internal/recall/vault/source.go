@@ -93,6 +93,13 @@ func (v *Source) Query(ctx context.Context, query string, limit int) ([]recall.O
 		return []recall.Observation{}, nil
 	}
 
+	// B8: Defence-in-depth against MCP servers that return help text
+	// instead of structured JSON when parameters are invalid.
+	trimmed := strings.TrimSpace(result.Content)
+	if strings.HasPrefix(trimmed, "Usage:") || strings.HasPrefix(trimmed, "usage:") {
+		return []recall.Observation{}, nil
+	}
+
 	var resp vaultResponse
 	empty, err := mcp.DecodeContent(result.Content, &resp,
 		"tool", "query_vault", "server", v.serverName)
