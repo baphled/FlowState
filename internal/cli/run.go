@@ -116,6 +116,7 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	agentName := resolveAgentName(opts.Agent)
 	sessionID := resolveSessionID(opts.Session)
 	loadExistingSession(application, opts.Session)
+	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
 
 	wrappedStreamer := streaming.NewSessionContextStreamer(
 		application.Streamer,
