@@ -1010,3 +1010,245 @@ var _ = Describe("Engine tool result emission", func() {
 		Expect(toolResultChunk.ToolResult.IsError).To(BeFalse())
 	})
 })
+
+// These specs pin the canonical assistant-turn artefact ordering documented
+// across the FlowState vault (Chat TUI Message Rendering Order Fix, Session
+// Rendering Consistency, ADR - Swarm Activity Event Model):
+//
+//	thinking (buffered, flushed at structural boundaries) -> assistant text
+//	(streamed) -> tool_use -> tool_result -> next text / done
+//
+// The invariant at the engine's public Stream seam: the consumer MUST observe
+// at least one content or thinking artefact for a turn before the first
+// tool_use chunk of that turn is surfaced. Expressed at the consumer's
+// channel, the index of the first chunk carrying a non-empty Content or
+// Thinking field must be strictly less than the index of the first chunk
+// carrying a non-nil ToolCall. A turn that starts with a bare tool_use
+// (content="" and thinking="" up to that point) violates the invariant.
+//
+// This is consumer-agnostic: TUI, CLI, SSE, and WS all share this seam, so
+// the guarantee is pinned here rather than inside any one consumer.
+var _ = Describe("Engine assistant turn artefact ordering", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{
+			name:      "ordering-provider",
+			sequences: [][]provider.StreamChunk{},
+		}
+
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "tool output"},
+		}
+	})
+
+	Context("when the provider's very first chunk is a tool_call with no preceding content or thinking", func() {
+		BeforeEach(func() {
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						// No prior Content or Thinking chunk has been emitted
+						// for this turn. This mirrors the openaicompat
+						// accumulator behaviour and the reported bug: the
+						// model's first observable artefact is a tool_use.
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_bare_first",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("must not surface the tool_call as the first consumer-observed chunk of the turn", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Use the tool straight away")
+			Expect(err).NotTo(HaveOccurred())
+
+			var received []provider.StreamChunk
+			for chunk := range chunks {
+				received = append(received, chunk)
+			}
+			Expect(received).NotTo(BeEmpty())
+
+			firstToolUseIdx := -1
+			firstTextOrThinkingIdx := -1
+			for i, chunk := range received {
+				if firstToolUseIdx == -1 && chunk.ToolCall != nil {
+					firstToolUseIdx = i
+				}
+				if firstTextOrThinkingIdx == -1 && (chunk.Content != "" || chunk.Thinking != "") {
+					firstTextOrThinkingIdx = i
+				}
+			}
+
+			Expect(firstToolUseIdx).NotTo(Equal(-1),
+				"expected the turn to eventually carry a tool_use chunk once the "+
+					"ordering gate has released it")
+			Expect(firstTextOrThinkingIdx).NotTo(Equal(-1),
+				"the consumer must observe at least one text or thinking artefact "+
+					"for the turn before the first tool_use; a turn whose only "+
+					"pre-tool_use content is empty violates the canonical "+
+					"thinking/text -> tool_use ordering documented in the vault")
+			Expect(firstTextOrThinkingIdx).To(BeNumerically("<", firstToolUseIdx),
+				"tool_use must not be the first consumer-observed artefact of a turn; "+
+					"saw tool_use at index %d with no preceding content or thinking "+
+					"(received=%+v)", firstToolUseIdx, received)
+		})
+	})
+
+	Context("when thinking and text precede the tool_call (canonical anthropic-shape turn)", func() {
+		BeforeEach(func() {
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{Thinking: "I should call the tool to answer this."},
+					{Content: "Looking that up for you."},
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_after_text",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			}
+		})
+
+		It("forwards thinking then text before the tool_use and preserves that ordering", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Please answer")
+			Expect(err).NotTo(HaveOccurred())
+
+			var received []provider.StreamChunk
+			for chunk := range chunks {
+				received = append(received, chunk)
+			}
+
+			firstToolUseIdx := -1
+			firstThinkingIdx := -1
+			firstContentIdx := -1
+			for i, chunk := range received {
+				if firstToolUseIdx == -1 && chunk.ToolCall != nil {
+					firstToolUseIdx = i
+				}
+				if firstThinkingIdx == -1 && chunk.Thinking != "" {
+					firstThinkingIdx = i
+				}
+				if firstContentIdx == -1 && chunk.Content != "" {
+					firstContentIdx = i
+				}
+			}
+
+			Expect(firstThinkingIdx).NotTo(Equal(-1), "thinking chunk must be forwarded to the consumer")
+			Expect(firstContentIdx).NotTo(Equal(-1), "content chunk must be forwarded to the consumer")
+			Expect(firstToolUseIdx).NotTo(Equal(-1), "tool_use chunk must be forwarded to the consumer")
+			Expect(firstThinkingIdx).To(BeNumerically("<", firstContentIdx),
+				"thinking must precede assistant text in the consumer-observed order")
+			Expect(firstContentIdx).To(BeNumerically("<", firstToolUseIdx),
+				"assistant text must precede tool_use in the consumer-observed order")
+		})
+	})
+
+	Context("when a user turn is consumed from input through to the first observed event", func() {
+		BeforeEach(func() {
+			// Provider opens the turn with a bare tool_use. The engine must
+			// not let the consumer's very first observation of this turn be
+			// a tool_use.
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_first_event",
+							Name:      "test_tool",
+							Arguments: map[string]interface{}{"arg": "value"},
+						},
+					},
+				},
+				{
+					{Content: "Tool completed.", Done: true},
+				},
+			}
+		})
+
+		It("the first consumer-observed event of the turn is text or thinking, never a bare tool_use", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{testTool},
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "Start the turn")
+			Expect(err).NotTo(HaveOccurred())
+
+			var firstObserved provider.StreamChunk
+			var gotFirst bool
+			var rest []provider.StreamChunk
+			for chunk := range chunks {
+				if !gotFirst {
+					// Skip any purely metadata chunks with no observable
+					// artefact (no content, no thinking, no tool_use, no
+					// tool_result, no terminal error). If the first
+					// artefact-bearing chunk is a tool_use, the invariant
+					// is violated.
+					hasArtefact := chunk.Content != "" || chunk.Thinking != "" ||
+						chunk.ToolCall != nil || chunk.ToolResult != nil || chunk.Error != nil
+					if !hasArtefact {
+						continue
+					}
+					firstObserved = chunk
+					gotFirst = true
+					continue
+				}
+				rest = append(rest, chunk)
+			}
+			Expect(gotFirst).To(BeTrue(),
+				"expected the turn to produce at least one consumer-observable chunk")
+
+			Expect(firstObserved.ToolCall).To(BeNil(),
+				"the first consumer-observed artefact of a turn must be text or thinking, "+
+					"never a bare tool_use; firstObserved=%+v, rest=%+v",
+				firstObserved, rest)
+			Expect(firstObserved.Content != "" || firstObserved.Thinking != "").To(BeTrue(),
+				"the first consumer-observed artefact of a turn must carry Content or Thinking; "+
+					"firstObserved=%+v", firstObserved)
+		})
+	})
+})
