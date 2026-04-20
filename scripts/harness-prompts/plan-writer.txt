@@ -1,0 +1,6 @@
+Write a plan for adding a /health endpoint to a Go chi-router service.
+Evidence: one handler file, one test, return 200 + JSON {"status":"ok"}.
+Requirements: no new deps; follow existing handler patterns in internal/http/.
+Produce a structured task-based markdown plan with YAML frontmatter.
+Use the coordination_store tool to write the plan under chain "validate-harness".
+Do not ask clarifying questions — proceed with the evidence as given.
