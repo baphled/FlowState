@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/cli"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -105,7 +106,15 @@ var _ = Describe("run command", func() {
 		Expect(payload.Response).To(Equal("hello"))
 		Expect(payload.Agent).To(Equal("builder"))
 		Expect(payload.Prompt).To(Equal("say hello"))
-		Expect(payload.Session).To(HavePrefix("session-"))
+		// Per the ADR - Multi-Agent Recall Context Sharing house rule and
+		// Session Management architecture, an auto-generated session ID
+		// MUST be a UUID v4 so filenames, ChildSessions equality checks,
+		// and ctxstore IDKey lookups all agree across CLI and
+		// session.Manager. The legacy "session-<UnixNano>" shape was the
+		// CLI-only outlier and is superseded.
+		parsed, parseErr := uuid.Parse(payload.Session)
+		Expect(parseErr).NotTo(HaveOccurred(), "auto-generated session ID must parse as a UUID, got %q", payload.Session)
+		Expect(parsed.Version()).To(Equal(uuid.Version(4)), "auto-generated session ID must be UUID v4, got version %d", parsed.Version())
 	})
 	It("defaults the agent to worker", func() {
 		testApp := createRunTestApp([]provider.StreamChunk{
@@ -162,7 +171,7 @@ var _ = Describe("run command", func() {
 		Expect(payload.Response).To(Equal("response"))
 	})
 
-	It("generates a session ID when none provided", func() {
+	It("generates a UUID v4 session ID when none provided", func() {
 		testApp := createRunTestApp([]provider.StreamChunk{
 			{Content: "ok", Done: true},
 		}, nil)
@@ -172,7 +181,14 @@ var _ = Describe("run command", func() {
 			Session string `json:"session"`
 		}
 		Expect(json.Unmarshal(out.Bytes(), &payload)).To(Succeed())
-		Expect(payload.Session).To(HavePrefix("session-"))
+		// Pin the canonical format: UUID v4. The old "session-<UnixNano>"
+		// shape is the outlier and breaks ChildSessions equality and
+		// filename consistency across the recorder, events store, and
+		// session.Manager which already issue uuid.New().String().
+		parsed, parseErr := uuid.Parse(payload.Session)
+		Expect(parseErr).NotTo(HaveOccurred(), "auto-generated session ID must parse as a UUID, got %q", payload.Session)
+		Expect(parsed.Version()).To(Equal(uuid.Version(4)), "auto-generated session ID must be UUID v4, got version %d", parsed.Version())
+		Expect(payload.Session).NotTo(HavePrefix("session-"), "legacy UnixNano prefix must be gone")
 	})
 
 	It("rejects path-traversal session IDs at the CLI gate", func() {

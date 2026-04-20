@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -351,16 +351,25 @@ func saveSessionIfAvailable(cmd *cobra.Command, application *app.App, sessionID 
 	}
 }
 
-// generateSessionID creates a unique session ID based on the current timestamp.
+// generateSessionID creates a unique session ID as a UUID v4.
+//
+// The canonical session-ID format is a UUID v4 per the Session Management
+// architecture doc and the ADR - Multi-Agent Recall Context Sharing house
+// rule. The session.Manager CreateSession and CreateWithParent methods
+// already use uuid.New().String(); the CLI now matches so filenames
+// (<id>.json/.meta.json/.events.jsonl/.jsonl), ChildSessions raw-string
+// equality, and ctxstore IDKey lookups agree across the whole process.
+// The prior "session-<UnixNano>" shape was a CLI-only outlier and is
+// superseded.
 //
 // Expected:
 //   - None.
 //
 // Returns:
-//   - A unique session ID string.
+//   - A canonical UUID v4 session ID string.
 //
 // Side effects:
 //   - None.
 func generateSessionID() string {
-	return fmt.Sprintf("session-%d", time.Now().UnixNano())
+	return uuid.NewString()
 }
