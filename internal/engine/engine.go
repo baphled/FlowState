@@ -1812,6 +1812,18 @@ type streamChunkResult struct {
 	done            bool
 }
 
+// turnOpenMarker is the thinking payload surfaced on the synthetic flush
+// emitted when a provider opens an assistant turn with a bare tool_use.
+// The invariant pinned at the engine Stream seam (documented across the
+// vault: Chat TUI Message Rendering Order Fix, Session Rendering
+// Consistency, ADR - Streaming Architecture) requires the consumer to
+// observe a content or thinking artefact before the first tool_use of a
+// turn. A single space is the minimum non-empty payload that trips the
+// consumer's FlushPartialResponse path without polluting the transcript:
+// the session accumulator's thinkingBuf swallows it at the next boundary,
+// and chat renderers treat whitespace-only thinking as a no-op.
+const turnOpenMarker = " "
+
 // processStreamChunks reads chunks from the provider stream until a tool call or completion.
 //
 // Expected:
@@ -1827,11 +1839,21 @@ type streamChunkResult struct {
 // Side effects:
 //   - Forwards chunks to outChan.
 //   - Sends error chunks if context is cancelled.
+//   - Forwards a synthetic thinking chunk ahead of the first tool_use of a
+//     turn when no content or thinking has yet been surfaced. This pins the
+//     canonical thinking/text -> tool_use ordering at the Stream seam so
+//     every consumer (TUI, CLI, SSE, WS) observes a flushable artefact
+//     before the tool artefact.
 func (e *Engine) processStreamChunks(
 	ctx context.Context, sessionID string, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
 ) streamChunkResult {
 	var responseContent strings.Builder
 	var thinkingContent strings.Builder
+	// sawTextOrThinking tracks whether any Content or Thinking chunk has
+	// been forwarded to outChan for the current turn. The assistant-turn
+	// artefact-ordering invariant requires at least one such artefact to
+	// precede the first tool_use surfaced to the consumer.
+	var sawTextOrThinking bool
 
 	for {
 		select {
@@ -1852,21 +1874,8 @@ func (e *Engine) processStreamChunks(
 			// path; anthropic and ollama continue to stamp EventType so this check
 			// is strictly more permissive for them without behavioural change.
 			if chunk.ToolCall != nil {
-				if e.bus != nil && responseContent.Len() > 0 {
-					e.bus.Publish(events.EventToolReasoning, events.NewToolReasoningEvent(events.ToolReasoningEventData{
-						SessionID:        sessionID,
-						AgentID:          e.manifest.ID,
-						ToolName:         chunk.ToolCall.Name,
-						ReasoningContent: responseContent.String(),
-					}))
-				}
-				// P14: stamp the FlowState-internal id so downstream
-				// consumers can pair this call with its eventual result
-				// even if a failover rewrites the provider-scoped id.
-				chunk.InternalToolCallID = e.toolCallCorrelator.InternalID(
-					sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
-				)
-				outChan <- chunk
+				e.publishToolReasoningEvent(sessionID, chunk.ToolCall.Name, responseContent.String())
+				e.forwardToolCallChunk(sessionID, chunk, &thinkingContent, sawTextOrThinking, outChan)
 				return streamChunkResult{
 					toolCall:        chunk.ToolCall,
 					responseContent: responseContent.String(),
@@ -1876,6 +1885,9 @@ func (e *Engine) processStreamChunks(
 
 			thinkingContent.WriteString(chunk.Thinking)
 			responseContent.WriteString(chunk.Content)
+			if chunk.Content != "" || chunk.Thinking != "" {
+				sawTextOrThinking = true
+			}
 			outChan <- chunk
 
 			if chunk.Done {
@@ -1883,6 +1895,76 @@ func (e *Engine) processStreamChunks(
 			}
 		}
 	}
+}
+
+// publishToolReasoningEvent announces the reasoning text a provider
+// accumulated before calling a tool, so observability plugins can pair
+// the tool_call with the model's preceding rationale. No-op when the
+// event bus is unset or no reasoning text has accumulated.
+//
+// Expected:
+//   - sessionID identifies the session the reasoning belongs to.
+//   - toolName is the name of the tool the model is about to call.
+//   - reasoning is the response content accumulated prior to the tool_use.
+//
+// Side effects:
+//   - Publishes EventToolReasoning on e.bus when reasoning is non-empty.
+func (e *Engine) publishToolReasoningEvent(sessionID, toolName, reasoning string) {
+	if e.bus == nil || reasoning == "" {
+		return
+	}
+	e.bus.Publish(events.EventToolReasoning, events.NewToolReasoningEvent(events.ToolReasoningEventData{
+		SessionID:        sessionID,
+		AgentID:          e.manifest.ID,
+		ToolName:         toolName,
+		ReasoningContent: reasoning,
+	}))
+}
+
+// forwardToolCallChunk emits the ordering-gate flush (when required),
+// stamps the FlowState-internal id, and forwards the provider's tool_call
+// chunk to the consumer. Extracted from processStreamChunks to keep the
+// main loop's cognitive complexity within the project's gocognit budget.
+//
+// Expected:
+//   - chunk.ToolCall is non-nil (caller must have already dispatched by
+//     chunk shape).
+//   - sawTextOrThinking reports whether any Content or Thinking chunk has
+//     been forwarded to outChan for the current turn.
+//
+// Side effects:
+//   - Forwards a synthetic thinking chunk carrying turnOpenMarker ahead of
+//     the tool_use when sawTextOrThinking is false, and appends the same
+//     marker to thinkingContent so the completeResponse path sees the
+//     flushed payload.
+//   - Forwards chunk (with InternalToolCallID stamped) to outChan.
+func (e *Engine) forwardToolCallChunk(
+	sessionID string, chunk provider.StreamChunk, thinkingContent *strings.Builder,
+	sawTextOrThinking bool, outChan chan<- provider.StreamChunk,
+) {
+	// Flush a synthetic turn-open marker when no content or thinking has
+	// yet been surfaced to the consumer for this turn. Providers that open
+	// a turn with a bare function call (openaicompat with tool-first
+	// agents, or any anthropic-shape stream where the model omits
+	// preamble) would otherwise violate the canonical thinking/text ->
+	// tool_use ordering documented in the vault. Emitting the marker here
+	// -- before the tool_use reaches outChan -- gives every downstream
+	// consumer a flushable artefact to anchor their partial-response
+	// commit against.
+	if !sawTextOrThinking {
+		outChan <- provider.StreamChunk{
+			Thinking: turnOpenMarker,
+			ModelID:  e.LastModel(),
+		}
+		thinkingContent.WriteString(turnOpenMarker)
+	}
+	// P14: stamp the FlowState-internal id so downstream consumers can
+	// pair this call with its eventual result even if a failover rewrites
+	// the provider-scoped id.
+	chunk.InternalToolCallID = e.toolCallCorrelator.InternalID(
+		sessionID, chunk.ToolCallID, chunk.ToolCall.Name, chunk.ToolCall.Arguments,
+	)
+	outChan <- chunk
 }
 
 // executeToolCall finds and executes the specified tool with the given arguments.
