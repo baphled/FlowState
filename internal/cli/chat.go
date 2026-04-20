@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -113,6 +114,7 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
+	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
 
 	wrappedStreamer := streaming.NewSessionContextStreamer(
 		application.Streamer,
@@ -348,6 +350,46 @@ func saveSessionIfAvailable(cmd *cobra.Command, application *app.App, sessionID 
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
 			}
 		}
+	}
+}
+
+// persistRootSessionMetadata writes a <sessionID>.meta.json sidecar so
+// the App.restorePersistedSessions path (internal/app/app.go:1398) can
+// rebuild the session hierarchy graph after a restart. Without the
+// sidecar, root sessions started from the CLI or TUI entry points
+// survive as a ctxstore message file but vanish from the in-memory
+// manager, and Manager.ChildSessions returns nothing for them.
+//
+// Matches the engine-side convention from
+// DelegateTool.persistSessionMetadata (internal/engine/delegation.go):
+// empty sessionsDir disables persistence silently, and write failures
+// are swallowed so persistence never blocks the user-facing command.
+//
+// Expected:
+//   - sessionsDir may be empty (disables persistence silently).
+//   - sessionID is the root session identifier; empty is a no-op.
+//   - agentID is the agent that owns the session (persisted verbatim).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Writes <sessionsDir>/<sessionID>.meta.json when both inputs are
+//     non-empty and the write succeeds.
+func persistRootSessionMetadata(sessionsDir, sessionID, agentID string) {
+	if sessionsDir == "" || sessionID == "" {
+		return
+	}
+	sess := &session.Session{
+		ID:        sessionID,
+		AgentID:   agentID,
+		Status:    string(session.StatusActive),
+		CreatedAt: time.Now(),
+	}
+	// Swallow the error: persistence must never block the user-facing
+	// command. Matches DelegateTool.persistSessionMetadata.
+	if err := session.PersistSession(sessionsDir, sess); err != nil {
+		return
 	}
 }
 

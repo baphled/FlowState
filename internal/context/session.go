@@ -218,6 +218,17 @@ func (s *FileSessionStore) List() []SessionInfo {
 
 	var sessions []SessionInfo
 	for _, match := range matches {
+		// Skip <sessionID>.meta.json sidecars (written by
+		// session.PersistSession for hierarchy-graph recovery).
+		// filepath.Glob("*.json") matches both <id>.json and
+		// <id>.meta.json because the wildcard crosses dots; without
+		// this guard the permissive json.Unmarshal below would
+		// happily decode a sidecar into a half-populated sessionFile
+		// and leak into the session listing.
+		if strings.HasSuffix(match, ".meta.json") {
+			continue
+		}
+
 		data, err := os.ReadFile(match)
 		if err != nil {
 			continue

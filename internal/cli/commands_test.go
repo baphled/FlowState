@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -607,6 +608,53 @@ var _ = Describe("CLI Commands", func() {
 			Expect(out.String()).To(ContainSubstring("saved response"))
 		})
 
+		// Deferral 2 of commit 32ba71d: root sessions created by the CLI
+		// run entry point must drop a <sessionID>.meta.json sidecar so
+		// App.restorePersistedSessions can rebuild the hierarchy graph
+		// after a restart. Without the sidecar, Manager.ChildSessions
+		// returns nothing for the root and child sessions created before
+		// the restart appear orphaned in the session browser.
+		Context("when app SessionsDir is configured", func() {
+			It("writes a .meta.json sidecar for the root session", func() {
+				dataDir := GinkgoT().TempDir()
+				testApp, err := app.NewForTest(app.TestConfig{DataDir: dataDir})
+				Expect(err).NotTo(HaveOccurred())
+				chatProvider := &runTestProvider{
+					name: "run-test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "sidecar run", Done: true},
+					},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest: agent.Manifest{
+						ID:                "worker",
+						Name:              "Worker",
+						Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				testApp.Engine = eng
+				testApp.Streamer = eng
+
+				err = cmd(testApp, "run", "--prompt", "hello", "--session", "root-run-sidecar")
+				Expect(err).NotTo(HaveOccurred())
+
+				metaPath := filepath.Join(testApp.SessionsDir(), "root-run-sidecar.meta.json")
+				Expect(metaPath).To(BeAnExistingFile())
+
+				data, readErr := os.ReadFile(metaPath)
+				Expect(readErr).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"id":"root-run-sidecar"`))
+				Expect(string(data)).To(ContainSubstring(`"agent_id":"worker"`))
+				Expect(string(data)).To(ContainSubstring(`"status":"active"`))
+				// Root sessions have no parent. Pin the empty ParentID so
+				// a later change that accidentally plumbs a non-empty
+				// parent into the root path fails this spec.
+				Expect(string(data)).To(ContainSubstring(`"parent_id":""`))
+			})
+		})
+
 		It("loads existing session when session ID is provided", func() {
 			testApp := createRunTestApp([]provider.StreamChunk{
 				{Content: "resumed", Done: true},
@@ -649,6 +697,48 @@ var _ = Describe("CLI Commands", func() {
 			err = cmd(testApp, "chat", "--message", "test save", "--session", "chat-save")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("chat saved"))
+		})
+
+		// Deferral 2 of commit 32ba71d: root sessions created by the CLI
+		// single-message chat entry point must drop a sidecar so the
+		// hierarchy survives app restarts. See the sibling Context under
+		// "run with session persistence" for the full motivation.
+		Context("when app SessionsDir is configured", func() {
+			It("writes a .meta.json sidecar for the root chat session", func() {
+				dataDir := GinkgoT().TempDir()
+				testApp, err := app.NewForTest(app.TestConfig{DataDir: dataDir})
+				Expect(err).NotTo(HaveOccurred())
+				chatProvider := &runTestProvider{
+					name: "run-test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "sidecar chat", Done: true},
+					},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest: agent.Manifest{
+						ID:                "worker",
+						Name:              "Worker",
+						Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				testApp.Engine = eng
+				testApp.Streamer = eng
+
+				err = cmd(testApp, "chat", "--message", "hello", "--agent", "tester", "--session", "root-chat-sidecar")
+				Expect(err).NotTo(HaveOccurred())
+
+				metaPath := filepath.Join(testApp.SessionsDir(), "root-chat-sidecar.meta.json")
+				Expect(metaPath).To(BeAnExistingFile())
+
+				data, readErr := os.ReadFile(metaPath)
+				Expect(readErr).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"id":"root-chat-sidecar"`))
+				Expect(string(data)).To(ContainSubstring(`"agent_id":"tester"`))
+				Expect(string(data)).To(ContainSubstring(`"status":"active"`))
+				Expect(string(data)).To(ContainSubstring(`"parent_id":""`))
+			})
 		})
 
 		It("loads existing session when session ID is provided", func() {

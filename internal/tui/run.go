@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -61,6 +63,8 @@ func Run(application *flowapp.App, agentID string, sessionID string) error {
 		mgr.RegisterSession(sessionID, agentID)
 	}
 
+	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentID)
+
 	startIntent := BuildStartIntent(agentID, application.Registry)
 	if startIntent != nil {
 		return runWithAgentPicker(application, startIntent, sessionID)
@@ -99,6 +103,10 @@ func runWithAgentPicker(application *flowapp.App, pickerIntent intents.Intent, s
 		if mgr := application.SessionMgr(); mgr != nil {
 			mgr.RegisterSession(sessionID, selectedID)
 		}
+		// Refresh the sidecar so the persisted agent_id matches the
+		// picked agent. Run's pre-launch write carried the empty agent
+		// that sent us down the picker branch in the first place.
+		persistRootSessionMetadata(application.SessionsDir(), sessionID, selectedID)
 		chatIntent := newChatIntent(application, selectedID, sessionID)
 		if appShell != nil {
 			appShell.SetIntent(chatIntent)
@@ -176,6 +184,48 @@ func newChatIntent(application *flowapp.App, agentID string, sessionID string) *
 		ModelResolver:      application.Engine.FailoverManager(),
 		ChildSessionLister: application.SessionMgr(),
 	})
+}
+
+// persistRootSessionMetadata writes a <sessionID>.meta.json sidecar so
+// the App.restorePersistedSessions path can rebuild the session
+// hierarchy graph after a restart. Without the sidecar, root TUI
+// sessions survive as message files but vanish from the in-memory
+// Manager, and Manager.ChildSessions returns nothing for them — which
+// is why the Session Browser shows orphaned children after a restart.
+//
+// Matches the engine-side convention from
+// DelegateTool.persistSessionMetadata: empty sessionsDir disables
+// persistence silently, and write failures are swallowed so
+// persistence never blocks TUI launch.
+//
+// Expected:
+//   - sessionsDir may be empty (disables persistence silently).
+//   - sessionID is the root session identifier; empty is a no-op.
+//   - agentID is the agent that owns the session (persisted verbatim).
+//     The agent-picker path calls this helper a second time once the
+//     user selects an agent so the sidecar reflects the final choice.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Writes <sessionsDir>/<sessionID>.meta.json when both inputs are
+//     non-empty and the write succeeds.
+func persistRootSessionMetadata(sessionsDir, sessionID, agentID string) {
+	if sessionsDir == "" || sessionID == "" {
+		return
+	}
+	sess := &session.Session{
+		ID:        sessionID,
+		AgentID:   agentID,
+		Status:    string(session.StatusActive),
+		CreatedAt: time.Now(),
+	}
+	// Swallow the error: persistence must never block TUI launch.
+	// Matches DelegateTool.persistSessionMetadata.
+	if err := session.PersistSession(sessionsDir, sess); err != nil {
+		return
+	}
 }
 
 // BuildStartIntent returns an agent picker intent when agentID is empty, so the

@@ -141,6 +141,36 @@ var _ = Describe("SessionPersistence", func() {
 			Expect(sessions).To(HaveLen(1))
 			Expect(sessions[0].MessageCount).To(Equal(3))
 		})
+
+		// Deferral 2 of commit 32ba71d introduced root-session
+		// <sessionID>.meta.json sidecars that sit alongside the full
+		// <sessionID>.json message files. filepath.Glob("*.json")
+		// matches both suffixes (the wildcard crosses dots). Without
+		// explicit filtering, sidecars would leak into the session
+		// list as half-populated entries with empty message counts.
+		// Pin the contract: List skips .meta.json siblings.
+		It("skips .meta.json sidecars written by root-session persistence", func() {
+			ctxStore, err := recall.NewFileContextStore(
+				filepath.Join(contextDir, "ctx.json"),
+				"text-embedding-ada-002",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			ctxStore.Append(provider.Message{Role: "user", Content: "Hello"})
+
+			err = sessionStore.Save("real-session", ctxStore, context.SessionMetadata{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Drop a sidecar that would otherwise decode successfully
+			// into sessionFile because Go's json.Unmarshal is
+			// permissive about unknown keys.
+			sidecarPath := filepath.Join(sessionsDir, "ghost-session.meta.json")
+			sidecarJSON := `{"id":"ghost-session","agent_id":"x","status":"active","parent_id":"","created_at":"2026-04-20T00:00:00Z"}`
+			Expect(os.WriteFile(sidecarPath, []byte(sidecarJSON), 0o600)).To(Succeed())
+
+			sessions := sessionStore.List()
+			Expect(sessions).To(HaveLen(1))
+			Expect(sessions[0].ID).To(Equal("real-session"))
+		})
 	})
 
 	Describe("Save", func() {
