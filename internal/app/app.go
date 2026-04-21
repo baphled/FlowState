@@ -870,11 +870,6 @@ func buildCreateEngineHookChain(
 	ensureToolsFn *func(agent.Manifest),
 	appEventBus *eventbus.EventBus,
 ) *hook.Chain {
-	bakedNames := make([]string, 0, len(params.alwaysActiveSkills))
-	for i := range params.alwaysActiveSkills {
-		bakedNames = append(bakedNames, params.alwaysActiveSkills[i].Name)
-	}
-
 	return buildHookChain(hookChainConfig{
 		learningStore: params.learningStore,
 		manifestGetter: func() agent.Manifest {
@@ -883,7 +878,7 @@ func buildCreateEngineHookChain(
 			}
 			return params.defaultManifest
 		},
-		bakedSkillNames: bakedNames,
+		bakedSkillNames: bakedSkillNamesFrom(params.alwaysActiveSkills),
 		failoverHk:      params.failoverHook,
 		failoverMgr:     params.failoverManager,
 		dispatcher:      params.dispatcher,
@@ -1120,16 +1115,14 @@ func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest age
 func (a *App) createDelegateEngine(
 	manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus,
 ) (*engine.Engine, streaming.Streamer) {
-	var delegateSkillDir string
-	if a.Config != nil {
-		delegateSkillDir = a.Config.SkillDir
-	}
+	delegateSkillDir, delegateLoadedSkills := a.resolveDelegateSkills(manifest)
 	hookChain := buildHookChain(hookChainConfig{
-		learningStore:  a.Learning,
-		manifestGetter: func() agent.Manifest { return manifest },
-		eventBus:       bus,
-		agentID:        manifest.ID,
-		skillDir:       delegateSkillDir,
+		learningStore:   a.Learning,
+		manifestGetter:  func() agent.Manifest { return manifest },
+		bakedSkillNames: bakedSkillNamesFrom(delegateLoadedSkills),
+		eventBus:        bus,
+		agentID:         manifest.ID,
+		skillDir:        delegateSkillDir,
 	})
 
 	var chainStore recall.ChainContextStore
@@ -1152,6 +1145,7 @@ func (a *App) createDelegateEngine(
 		Registry:                  a.providerRegistry,
 		AgentRegistry:             a.Registry,
 		Manifest:                  manifest,
+		Skills:                    delegateLoadedSkills,
 		Tools:                     a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:                 hookChain,
 		ChainStore:                chainStore,
@@ -1170,6 +1164,42 @@ func (a *App) createDelegateEngine(
 		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider)
 	}
 	return eng, str
+}
+
+// resolveDelegateSkills returns the skill directory and the resolved
+// default-active skill slice a delegate engine should receive. Mirrors
+// createEngine's root-engine wiring (see app.go:828): without this,
+// delegate engines silently drop manifest-declared default-active skills
+// — the session's loaded_skills omits them and the harness validator
+// flags the regression. See the Obsidian note
+// "Delegate Engine Skills Silent Drop (April 2026)" for the predecessor
+// root-engine fix this extends.
+//
+// Expected:
+//   - manifest is the delegate agent's manifest; its
+//     Capabilities.AlwaysActiveSkills is merged with the app-level list.
+//   - a.Config may be nil (some test harnesses wire delegates without a
+//     full Config); the returned slice is then empty and the skill dir
+//     is the empty string.
+//
+// Returns:
+//   - The skill directory used to locate skill files.
+//   - The slice of resolved skill.Skill values, or nil when none match.
+//
+// Side effects:
+//   - Reads skill files from disk via engine.LoadAlwaysActiveSkills.
+func (a *App) resolveDelegateSkills(manifest agent.Manifest) (string, []skill.Skill) {
+	var (
+		skillDir  string
+		appSkills []string
+	)
+	if a.Config != nil {
+		skillDir = a.Config.SkillDir
+		appSkills = a.Config.AlwaysActiveSkills
+	}
+	return skillDir, engine.LoadAlwaysActiveSkills(
+		skillDir, appSkills, manifest.Capabilities.AlwaysActiveSkills,
+	)
 }
 
 // buildDelegateCompression assembles compression components for a delegate
@@ -1714,6 +1744,27 @@ func loadSkills(cfg *config.AppConfig, manifest agent.Manifest) ([]skill.Skill, 
 	}
 	alwaysActiveSkills := engine.LoadAlwaysActiveSkills(cfg.SkillDir, cfg.AlwaysActiveSkills, manifest.Capabilities.AlwaysActiveSkills)
 	return skills, alwaysActiveSkills
+}
+
+// bakedSkillNamesFrom extracts the Name field from each skill in the
+// slice. Used by buildCreateEngineHookChain and createDelegateEngine to
+// forward the baked skill list into the SkillAutoLoader hook so it does
+// not re-inject skills that are already in the system prompt.
+//
+// Expected:
+//   - skills may be nil or empty; the returned slice is the same length.
+//
+// Returns:
+//   - A slice of skill names in the same order as the input.
+//
+// Side effects:
+//   - None.
+func bakedSkillNamesFrom(skills []skill.Skill) []string {
+	names := make([]string, 0, len(skills))
+	for i := range skills {
+		names = append(names, skills[i].Name)
+	}
+	return names
 }
 
 // toolWiringCallbacks groups the callbacks required to lazily wire delegation
