@@ -1,5 +1,3 @@
-Review this draft plan for a /health endpoint (Go chi router, one handler + one test, JSON {"status":"ok"}).
-Evaluate feasibility, completeness, and risk. Emit APPROVE or REJECT with a short rationale.
-Write your verdict and rationale to coordination_store under chain "validate-harness" key "review".
-If information is missing, state what is missing — do not invent context.
-Return your final verdict in the response.
+The coordination store at chain "validate-harness-001" already holds the requirements and a draft plan ready for review.
+
+Begin your review now by following the Coordination Store protocol: your first action is to read the requirements using coordination_store(operation="get", key="validate-harness-001/requirements"). Issue that tool call immediately as your first response.

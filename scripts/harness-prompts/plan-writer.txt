@@ -1,6 +1,3 @@
-Write a plan for adding a /health endpoint to a Go chi-router service.
-Evidence: one handler file, one test, return 200 + JSON {"status":"ok"}.
-Requirements: no new deps; follow existing handler patterns in internal/http/.
-Produce a structured task-based markdown plan with YAML frontmatter.
-Use the coordination_store tool to write the plan under chain "validate-harness".
-Do not ask clarifying questions — proceed with the evidence as given.
+The coordination store at chain "validate-harness-001" already holds validated requirements and a complete analysis. Clearance Checklist is satisfied. Do NOT enter Interview Mode.
+
+Begin the Coordination Store Protocol now. Your first action is to read requirements with coordination_store(operation="get", key="validate-harness-001/requirements"). Issue the tool call immediately as your first response.

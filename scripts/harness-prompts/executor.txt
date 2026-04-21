@@ -1,6 +1,5 @@
-Discover available plans in the current project and list them.
-Use the bash tool to run: ls ~/.flowstate/plans/ 2>/dev/null || ls ./.flowstate/plans/ 2>/dev/null || echo "no plans dir"
-Then use the file tool to read any plan file you find.
-Report back with: number of plans found, their IDs, and the first line of each.
-Do not execute any plan — this is a discovery dry run.
-Proceed immediately with the tool calls; do not ask for confirmation.
+Run this exact bash command and report its output verbatim:
+
+  ls -1 ~/.local/share/flowstate/plans/ 2>/dev/null || echo HARNESS_NO_PLANS_DIR
+
+Issue the bash tool call immediately as your first response. Do not ask for confirmation, do not announce skill loading, do not run a preflight step first. A single bash tool call is the entire task.
