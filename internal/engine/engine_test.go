@@ -1094,6 +1094,87 @@ var _ = Describe("Engine", func() {
 			Expect(ok).To(BeTrue())
 			Expect(dt.Delegation().CanDelegate).To(BeTrue())
 		})
+
+		Context("when the new manifest declares always_active_skills", func() {
+			// Pins the root-engine manifest-swap path. The CLI's
+			// `flowstate run --agent <id>` flow reuses a single root
+			// engine across agent invocations and swaps manifests
+			// in-place via Engine.Stream → SetManifest
+			// (engine.go:1438). Without a SkillsResolver plumbed
+			// through SetManifest the engine keeps the skills
+			// resolved at construction time; skills declared in the
+			// swapped-in manifest's always_active_skills never
+			// reach LoadedSkills and the session sidecar reports
+			// the regression (validate-harness.sh emits
+			// "WARNING: manifest always_active_skills not loaded
+			// in session: …").
+			//
+			// Mirrors the predecessor fix for the delegate-engine
+			// path (commit edfad25, Obsidian note "Delegate Engine
+			// Skills Silent Drop (April 2026)"). The engine-side
+			// equivalent is a construction-time callback so the
+			// engine can re-resolve its skills on every manifest
+			// swap without reaching back into App state.
+			//
+			// Pending (PIt) for the RED commit to keep `make check`
+			// green; the GREEN commit flips to It alongside the
+			// engine.SetManifest resolver wiring.
+			PIt("re-resolves LoadedSkills against the new manifest", func() {
+				plannerSkill := skill.Skill{
+					Name:    "planner-only",
+					Content: "plan first",
+				}
+				executorSkill := skill.Skill{
+					Name:    "executor-only",
+					Content: "do it",
+				}
+				resolver := func(m agent.Manifest) []skill.Skill {
+					switch m.ID {
+					case "planner":
+						return []skill.Skill{plannerSkill}
+					case "executor":
+						return []skill.Skill{executorSkill}
+					default:
+						return nil
+					}
+				}
+
+				plannerManifest := agent.Manifest{
+					ID: "planner",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: []string{"planner-only"},
+					},
+				}
+				executorManifest := agent.Manifest{
+					ID: "executor",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: []string{"executor-only"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					Manifest:       plannerManifest,
+					Skills:         []skill.Skill{plannerSkill},
+					SkillsResolver: resolver,
+				})
+
+				loadedBefore := eng.LoadedSkills()
+				namesBefore := make([]string, 0, len(loadedBefore))
+				for i := range loadedBefore {
+					namesBefore = append(namesBefore, loadedBefore[i].Name)
+				}
+				Expect(namesBefore).To(ConsistOf("planner-only"))
+
+				eng.SetManifest(executorManifest)
+
+				loadedAfter := eng.LoadedSkills()
+				namesAfter := make([]string, 0, len(loadedAfter))
+				for i := range loadedAfter {
+					namesAfter = append(namesAfter, loadedAfter[i].Name)
+				}
+				Expect(namesAfter).To(ConsistOf("executor-only"))
+			})
+		})
 	})
 
 	Describe("LoadedSkills", func() {

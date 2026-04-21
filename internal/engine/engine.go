@@ -193,14 +193,28 @@ type Engine struct {
 
 // Config holds the configuration for creating a new Engine.
 type Config struct {
-	ChatProvider         provider.Provider
-	EmbeddingProvider    provider.Provider
-	Registry             *provider.Registry
-	AgentRegistry        *agent.Registry
-	FailoverManager      *failover.Manager
-	Manifest             agent.Manifest
-	Tools                []tool.Tool
-	Skills               []skill.Skill
+	ChatProvider      provider.Provider
+	EmbeddingProvider provider.Provider
+	Registry          *provider.Registry
+	AgentRegistry     *agent.Registry
+	FailoverManager   *failover.Manager
+	Manifest          agent.Manifest
+	Tools             []tool.Tool
+	Skills            []skill.Skill
+	// SkillsResolver re-resolves the default-active skill set for a
+	// given manifest when the engine swaps manifests in-place via
+	// SetManifest. The CLI's `flowstate run --agent <id>` flow and
+	// the TUI's slash-command agent switch both reuse a single root
+	// engine across manifests; without this callback the engine's
+	// skills slice stays pinned to the construction-time resolution
+	// and the newly swapped-in manifest's declared default-active
+	// skills silently drop out of LoadedSkills (and out of the
+	// session sidecar).
+	//
+	// Nil disables re-resolution — SetManifest keeps the existing
+	// skills slice, preserving historical behaviour for callers that
+	// do not provide a resolver (tests, ephemeral engines).
+	SkillsResolver       func(agent.Manifest) []skill.Skill
 	Store                *recall.FileContextStore
 	ChainStore           recall.ChainContextStore
 	TokenCounter         ctxstore.TokenCounter
