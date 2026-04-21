@@ -457,10 +457,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			// Mirrors the predecessor fix for root-engine
 			// (see Obsidian: "Engine Skills Field Silent Drop").
 			//
-			// Pending (PIt) for the RED commit to keep make check
-			// green; the GREEN commit flips to It alongside the
-			// app.go createDelegateEngine Skills-wiring fix.
-			PIt("loads them into the delegate engine's LoadedSkills", func() {
+			It("loads them into the delegate engine's LoadedSkills", func() {
 				// Arrange: a skill directory with a single
 				// known skill that the manifest references.
 				skillDir, err := os.MkdirTemp("", "delegate-skills-*")
