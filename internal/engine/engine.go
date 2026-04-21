@@ -43,6 +43,7 @@ type Engine struct {
 	manifest             agent.Manifest
 	tools                []tool.Tool
 	skills               []skill.Skill
+	skillsResolver       func(agent.Manifest) []skill.Skill
 	store                *recall.FileContextStore
 	chainStore           recall.ChainContextStore
 	windowBuilder        *ctxstore.WindowBuilder
@@ -420,6 +421,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		manifest:                  cfg.Manifest,
 		tools:                     cfg.Tools,
 		skills:                    cfg.Skills,
+		skillsResolver:            cfg.SkillsResolver,
 		store:                     cfg.Store,
 		chainStore:                cfg.ChainStore,
 		windowBuilder:             deps.windowBuilder,
@@ -1126,6 +1128,16 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 // Side effects:
 //   - Replaces the engine's active manifest for subsequent chat operations.
 //   - Invalidates the cached system prompt.
+//   - When Config.SkillsResolver was provided at construction time, the
+//     engine's skills slice is re-resolved against the new manifest so
+//     LoadedSkills() reflects the swapped-in manifest's declared
+//     default-active skills. The CLI's `flowstate run --agent <id>`
+//     flow and the TUI's slash-command agent switch both depend on
+//     this: both reuse a single root engine across manifests, and
+//     without the re-resolution the skills resolved at construction
+//     time stick and the session sidecar records stale loaded_skills.
+//     When SkillsResolver is nil the skills slice is left untouched,
+//     matching historical behaviour.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
 	oldID := e.manifest.ID
@@ -1133,6 +1145,10 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.systemPromptDirty = true
 	e.cachedToolSchemas = nil
 	sessionID := e.currentSessionID
+
+	if e.skillsResolver != nil {
+		e.skills = e.skillsResolver(manifest)
+	}
 
 	if dt, ok := e.getDelegateToolLocked(); ok {
 		dt.SetDelegation(manifest.Delegation)
