@@ -1116,10 +1116,7 @@ var _ = Describe("Engine", func() {
 			// engine can re-resolve its skills on every manifest
 			// swap without reaching back into App state.
 			//
-			// Pending (PIt) for the RED commit to keep `make check`
-			// green; the GREEN commit flips to It alongside the
-			// engine.SetManifest resolver wiring.
-			PIt("re-resolves LoadedSkills against the new manifest", func() {
+			It("re-resolves LoadedSkills against the new manifest", func() {
 				plannerSkill := skill.Skill{
 					Name:    "planner-only",
 					Content: "plan first",

@@ -401,12 +401,23 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 
 // engineParams holds parameters for engine creation.
 type engineParams struct {
-	defaultProvider      provider.Provider
-	ollamaProvider       *ollama.Provider
-	providerRegistry     *provider.Registry
-	agentRegistry        *agent.Registry
-	defaultManifest      agent.Manifest
-	alwaysActiveSkills   []skill.Skill
+	defaultProvider    provider.Provider
+	ollamaProvider     *ollama.Provider
+	providerRegistry   *provider.Registry
+	agentRegistry      *agent.Registry
+	defaultManifest    agent.Manifest
+	alwaysActiveSkills []skill.Skill
+	// appLevelSkillNames is the app-level default-active skill list
+	// (cfg.AlwaysActiveSkills). Forwarded alongside skillDir so
+	// createEngine can build a SkillsResolver closure that re-runs
+	// engine.LoadAlwaysActiveSkills on every SetManifest swap —
+	// otherwise a root engine reused by `flowstate run --agent <id>`
+	// keeps the skills resolved for the startup manifest forever and
+	// the swapped-in manifest's declared default-active skills
+	// silently drop from LoadedSkills. Mirrors
+	// App.resolveDelegateSkills on the delegate-engine construction
+	// path.
+	appLevelSkillNames   []string
 	contextStore         *recall.FileContextStore
 	chainStore           recall.ChainContextStore
 	learningStore        learning.Store
@@ -563,6 +574,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		agentRegistry:        in.setup.agentRegistry,
 		defaultManifest:      in.setup.defaultManifest,
 		alwaysActiveSkills:   in.setup.alwaysActiveSkills,
+		appLevelSkillNames:   in.setup.cfg.AlwaysActiveSkills,
 		contextStore:         in.contextStore,
 		chainStore:           in.chainStore,
 		learningStore:        in.setup.learningStore,
@@ -818,6 +830,13 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 	var ensureToolsFn func(agent.Manifest)
 	appEventBus := eventbus.NewEventBus()
 	hookChain := buildCreateEngineHookChain(params, &eng, &ensureToolsFn, appEventBus)
+	skillDir := params.skillDir
+	appLevelSkillNames := params.appLevelSkillNames
+	skillsResolver := func(m agent.Manifest) []skill.Skill {
+		return engine.LoadAlwaysActiveSkills(
+			skillDir, appLevelSkillNames, m.Capabilities.AlwaysActiveSkills,
+		)
+	}
 	eng = engine.New(engine.Config{
 		ChatProvider:              params.defaultProvider,
 		EmbeddingProvider:         toEmbeddingProvider(params.ollamaProvider),
@@ -826,6 +845,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		FailoverManager:           params.failoverManager,
 		Manifest:                  params.defaultManifest,
 		Skills:                    params.alwaysActiveSkills,
+		SkillsResolver:            skillsResolver,
 		Store:                     params.contextStore,
 		ChainStore:                params.chainStore,
 		HookChain:                 hookChain,
