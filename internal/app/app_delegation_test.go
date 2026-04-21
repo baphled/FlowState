@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -441,6 +444,72 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 			delegateEngine, _ := busApp.createDelegateEngine(explorerManifest, coordinationStore, parentBus)
 			Expect(delegateEngine.EventBus()).To(BeIdenticalTo(parentBus))
+		})
+
+		Context("when the delegate manifest declares always_active_skills", func() {
+			// Pins the symmetry with root-engine creation (see
+			// app.go:821 where createEngine wires Skills from
+			// loadSkills). Without this, manifest-declared
+			// always_active_skills silently drop on delegation —
+			// session loaded_skills omits them and the
+			// harness-validator reports "manifest
+			// always_active_skills not loaded in session".
+			// Mirrors the predecessor fix for root-engine
+			// (see Obsidian: "Engine Skills Field Silent Drop").
+			//
+			// Pending (PIt) for the RED commit to keep make check
+			// green; the GREEN commit flips to It alongside the
+			// app.go createDelegateEngine Skills-wiring fix.
+			PIt("loads them into the delegate engine's LoadedSkills", func() {
+				// Arrange: a skill directory with a single
+				// known skill that the manifest references.
+				skillDir, err := os.MkdirTemp("", "delegate-skills-*")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() { os.RemoveAll(skillDir) })
+
+				memoryKeeperDir := filepath.Join(skillDir, "memory-keeper")
+				Expect(os.MkdirAll(memoryKeeperDir, 0o755)).To(Succeed())
+				skillBody := "---\nname: memory-keeper\n---\nRemember things."
+				Expect(os.WriteFile(filepath.Join(memoryKeeperDir, "SKILL.md"), []byte(skillBody), 0o600)).To(Succeed())
+
+				skillsApp := &App{
+					Registry:        agent.NewRegistry(),
+					defaultProvider: &mockProvider{name: "anthropic"},
+					Config: &config.AppConfig{
+						SkillDir: skillDir,
+					},
+				}
+				skillsProviderReg := provider.NewRegistry()
+				skillsProviderReg.Register(&mockProvider{name: "anthropic"})
+				skillsApp.providerRegistry = skillsProviderReg
+
+				delegateManifest := agent.Manifest{
+					ID:   "plan-writer",
+					Name: "Plan Writer",
+					Capabilities: agent.Capabilities{
+						AlwaysActiveSkills: []string{"memory-keeper"},
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				skillsApp.Registry.Register(&delegateManifest)
+
+				coordinationStore := coordination.NewMemoryStore()
+
+				// Act.
+				delegateEngine, _ := skillsApp.createDelegateEngine(delegateManifest, coordinationStore, nil)
+
+				// Assert: the manifest's always_active_skills
+				// must reach the delegate engine. LoadedSkills
+				// is what the CLI/TUI persist into the session
+				// sidecar's loaded_skills field — if this is
+				// empty, the session reports the bug.
+				loaded := delegateEngine.LoadedSkills()
+				names := make([]string, 0, len(loaded))
+				for i := range loaded {
+					names = append(names, loaded[i].Name)
+				}
+				Expect(names).To(ContainElement("memory-keeper"))
+			})
 		})
 	})
 
