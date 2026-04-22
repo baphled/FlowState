@@ -13,9 +13,9 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." &>/dev/null && pwd)"
 PROMPT_DIR="$SCRIPT_DIR/harness-prompts"
 AGENTS_DIR="$REPO_ROOT/internal/app/agents"
 
-FLOWSTATE_BIN="${FLOWSTATE_BIN:-$REPO_ROOT/flowstate}"
+FLOWSTATE_BIN="${FLOWSTATE_BIN:-$REPO_ROOT/build/flowstate}"
 if [[ ! -x "$FLOWSTATE_BIN" ]]; then
-  if [[ -x "$REPO_ROOT/build/flowstate" ]]; then FLOWSTATE_BIN="$REPO_ROOT/build/flowstate"
+  if [[ -x "$REPO_ROOT/flowstate" ]]; then FLOWSTATE_BIN="$REPO_ROOT/flowstate"
   elif command -v flowstate &>/dev/null; then FLOWSTATE_BIN="$(command -v flowstate)"; fi
 fi
 FLOWSTATE_SESSIONS_DIR="${FLOWSTATE_SESSIONS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/flowstate/sessions}"
