@@ -92,7 +92,7 @@ var _ = Describe("ApplyPatch tool", func() {
 	})
 
 	It("registers in the default toolset", func() {
-		registry := toolset.NewDefaultRegistry("test-key")
+		registry := toolset.NewDefaultRegistry("test-key", "")
 		toolRegistered, err := registry.Get("apply_patch")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(toolRegistered.Name()).To(Equal("apply_patch"))
