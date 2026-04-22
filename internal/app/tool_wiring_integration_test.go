@@ -344,6 +344,150 @@ var _ = Describe("Tool wiring integration", func() {
 		})
 	})
 
+	// Delegation tool accumulation on manifest swap. Scenario:
+	// the app boots with default_agent=executor (can_delegate=false), which
+	// adds suggest_delegate. The CLI then selects --agent planner
+	// (can_delegate=true), triggering SetManifest and the ensureTools
+	// callback. wireDelegateToolIfEnabled adds delegate, but
+	// wireSuggestDelegateToolIfDisabled early-returns without ever removing
+	// the stale suggest_delegate. The engine now advertises BOTH tools to
+	// the provider; Anthropic rejects the request with:
+	//   400 Bad Request: tools: Tool names must be unique
+	// (two tools sharing the overlapping "delegate"-prefixed schema
+	// identifiers), which in turn triggers unintended failover away from
+	// the caller-pinned provider.
+	//
+	// Contract: a given engine advertises either delegate (can_delegate=true)
+	// or suggest_delegate (can_delegate=false), never both — across the
+	// entire lifetime of the engine, including after arbitrarily many
+	// SetManifest swaps in either direction. Background delegation tools
+	// (background_output, background_cancel, coordination_store) share the
+	// delegate fate: they are only meaningful alongside delegate, so they
+	// must be removed when swapping to a non-delegating manifest.
+	Context("when the manifest swaps between delegating and non-delegating", func() {
+		var plannerManifest agent.Manifest
+
+		BeforeEach(func() {
+			plannerManifest = agent.Manifest{
+				ID:   "planner",
+				Name: "Planner",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate", "coordination_store"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&plannerManifest)
+		})
+
+		It("removes suggest_delegate when swapping executor -> planner", func() {
+			// Boot path: default manifest is executor. Both wiring
+			// functions run at startup against executor.
+			buildTestEngine(executorManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+			Expect(eng.HasTool("suggest_delegate")).To(BeTrue(),
+				"precondition: boot-time wiring leaves suggest_delegate on the executor engine")
+
+			// CLI then selects --agent planner, triggering the ensureTools
+			// callback path. Both wiring functions run against planner.
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, plannerManifest)
+
+			Expect(eng.HasTool("delegate")).To(BeTrue(),
+				"delegate must be registered on a delegating manifest")
+			Expect(eng.HasTool("suggest_delegate")).To(BeFalse(),
+				"suggest_delegate must be removed when swapping to a delegating manifest; "+
+					"leaving it in place makes Anthropic reject with 'tool names must be unique'")
+		})
+
+		It("removes delegate tools when swapping planner -> executor", func() {
+			// Boot with planner first. buildTestEngine always wires against
+			// executorManifest (its hardcoded startup manifest), so an extra
+			// pass wires the delegating-planner profile onto the same engine.
+			buildTestEngine(plannerManifest)
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, plannerManifest)
+
+			Expect(eng.HasTool("delegate")).To(BeTrue(),
+				"precondition: delegate is wired on the planner engine")
+			Expect(eng.HasTool("background_output")).To(BeTrue(),
+				"precondition: background_output is wired on the planner engine")
+			Expect(eng.HasTool("background_cancel")).To(BeTrue(),
+				"precondition: background_cancel is wired on the planner engine")
+			Expect(eng.HasTool("coordination_store")).To(BeTrue(),
+				"precondition: coordination_store is wired on the planner engine "+
+					"(capabilities.tools includes coordination_store)")
+
+			// Swap to executor (can_delegate=false).
+			application.wireDelegateToolIfEnabled(eng, executorManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+
+			Expect(eng.HasTool("suggest_delegate")).To(BeTrue(),
+				"suggest_delegate must be registered on a non-delegating manifest")
+			Expect(eng.HasTool("delegate")).To(BeFalse(),
+				"delegate must be removed when swapping to a non-delegating manifest")
+			Expect(eng.HasTool("background_output")).To(BeFalse(),
+				"background_output is only meaningful alongside delegate; "+
+					"it must be removed when swapping to a non-delegating manifest")
+			Expect(eng.HasTool("background_cancel")).To(BeFalse(),
+				"background_cancel is only meaningful alongside delegate; "+
+					"it must be removed when swapping to a non-delegating manifest")
+			Expect(eng.HasTool("coordination_store")).To(BeFalse(),
+				"coordination_store is only meaningful alongside delegate; "+
+					"it must be removed when swapping to a non-delegating manifest")
+		})
+
+		It("reaches the provider with exactly one of delegate/suggest_delegate after swap", func() {
+			// End-to-end assertion: what the provider sees. Executor ->
+			// planner swap must not produce duplicate-named tools in the
+			// ChatRequest. Anthropic's 400 is about tools reaching the
+			// wire, not just the in-memory registry.
+			buildTestEngine(executorManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, plannerManifest)
+
+			_, err := eng.Stream(context.Background(), "planner", "hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			counts := map[string]int{}
+			for _, t := range spy.capturedRequest.Tools {
+				counts[t.Name]++
+			}
+			Expect(counts["delegate"]).To(Equal(1),
+				"delegate must appear exactly once in the provider request")
+			Expect(counts["suggest_delegate"]).To(Equal(0),
+				"suggest_delegate must not reach the provider when the active manifest "+
+					"can delegate; duplicate-purpose tools cause Anthropic to 400")
+		})
+
+		It("is idempotent when wireSuggestDelegateToolIfDisabled runs twice", func() {
+			// Mirror of the existing delegate-idempotency context above.
+			// wireSuggestDelegateToolIfDisabled currently appends without
+			// a HasTool guard, so calling it twice on a non-delegating
+			// manifest produces duplicate suggest_delegate entries —
+			// latent surface of the same accumulation bug.
+			buildTestEngine(executorManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+			application.wireSuggestDelegateToolIfDisabled(eng, executorManifest)
+
+			_, err := eng.Stream(context.Background(), "executor", "hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			counts := map[string]int{}
+			for _, t := range spy.capturedRequest.Tools {
+				counts[t.Name]++
+			}
+			Expect(counts["suggest_delegate"]).To(Equal(1),
+				"suggest_delegate must appear exactly once even after "+
+					"wireSuggestDelegateToolIfDisabled is called twice")
+		})
+	})
+
 	// P12: when the manifest restricts capabilities.tools to a fixed list
 	// (e.g. real executor.md lists [bash, file, web]), the engine's
 	// buildAllowedToolSet must still surface suggest_delegate to the
