@@ -143,8 +143,14 @@ log_level: debug
 
 		Context("when no config file exists", func() {
 			It("returns default config", func() {
-				os.Unsetenv("XDG_CONFIG_HOME")
-				DeferCleanup(func() {})
+				// Point both XDG_CONFIG_HOME and HOME at an empty tmpdir so
+				// LoadConfig cannot resolve to the developer's real
+				// ~/.config/flowstate/config.yaml on disk. GinkgoT().Setenv
+				// captures the prior value and restores it at spec teardown.
+				isolated := filepath.Join(tempDir, "isolated-home")
+				Expect(os.MkdirAll(isolated, 0o755)).To(Succeed())
+				GinkgoT().Setenv("XDG_CONFIG_HOME", isolated)
+				GinkgoT().Setenv("HOME", isolated)
 
 				cfg, err := config.LoadConfig()
 
