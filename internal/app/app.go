@@ -2836,6 +2836,8 @@ func buildConfigProviderPreferences(cfg *config.AppConfig) []provider.ModelPrefe
 		{"anthropic", cfg.Providers.Anthropic.Model},
 		{"openai", cfg.Providers.OpenAI.Model},
 		{"github", cfg.Providers.GitHub.Model},
+		{"zai", cfg.Providers.ZAI.Model},
+		{"openzen", cfg.Providers.OpenZen.Model},
 	}
 
 	defaultName := cfg.Providers.Default
