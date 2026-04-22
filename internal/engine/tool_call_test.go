@@ -862,6 +862,106 @@ var _ = Describe("Engine tool call context store", func() {
 		Expect(assistantMsg.ToolCalls[0].ID).To(Equal("call_store_test"))
 		Expect(assistantMsg.ToolCalls[0].Name).To(Equal("test_tool"))
 	})
+
+	// This spec pins the persistence contract for the tool-result message
+	// (Role: "tool"). The persisted ToolCall on a tool-result message MUST
+	// carry both the upstream tool_use ID AND the tool name — the Name field
+	// is load-bearing for downstream consumers (validator, session rehydration,
+	// cross-provider failover correlation, audit trails). The live repro is
+	// ~/.local/share/flowstate/sessions/validate-plan-writer-1776726758.json
+	// where an Anthropic-origin tool_use message has Name="list_allowed_directories"
+	// but the paired tool-result message persists {ID: "toolu_01...", Name: ""}.
+	// The validator surfaces this as "WARNING: N tool_call(s) with empty Name —
+	// provider may have emitted unnamed tool_use blocks", though the bug is
+	// not upstream: the engine's storeToolResult call site drops the name on
+	// the way into the context store.
+	// RED: pinned as PIt to keep `make check` green on the RED commit, per
+	// repo convention (see 8da30d4 and b1af6bc). The GREEN commit flips
+	// PIt → It alongside the fix in engine.storeToolResult.
+	PIt("persists the tool name on the tool-result message ToolCall, not just the ID", func() {
+		tmpDir, err := os.MkdirTemp("", "engine-toolresult-name-store")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tmpDir) })
+
+		storePath := filepath.Join(tmpDir, "context.json")
+		store, err := recall.NewFileContextStore(storePath, "")
+		Expect(err).NotTo(HaveOccurred())
+
+		testTool := &executableMockTool{
+			name:        "list_allowed_directories",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "/tmp\n/home"},
+		}
+
+		registry := tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("list_allowed_directories", tool.Allow)
+
+		chatProvider := &streamSequenceProvider{
+			name: "anthropic-shape-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "toolu_01Vu38ZEB6SQLEb59vtUXnTH",
+							Name:      "list_allowed_directories",
+							Arguments: map[string]interface{}{},
+						},
+					},
+				},
+				{
+					{Content: "Done.", Done: true},
+				},
+			},
+		}
+
+		manifest := agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+			ToolRegistry: registry,
+		})
+		eng.SetContextStore(store, "test-session-toolresult-name")
+
+		chunks, streamErr := eng.Stream(context.Background(), "test-agent", "List the allowed dirs")
+		Expect(streamErr).NotTo(HaveOccurred())
+		for chunk := range chunks {
+			_ = chunk
+		}
+
+		var toolResultMsg *provider.Message
+		for i := range store.AllMessages() {
+			m := store.AllMessages()[i]
+			if m.Role == "tool" && len(m.ToolCalls) > 0 &&
+				m.ToolCalls[0].ID == "toolu_01Vu38ZEB6SQLEb59vtUXnTH" {
+				msgs := store.AllMessages()
+				toolResultMsg = &msgs[i]
+				break
+			}
+		}
+
+		Expect(toolResultMsg).NotTo(BeNil(),
+			"expected a tool-role message paired with the upstream tool_use ID; "+
+				"store contents: %+v", store.AllMessages())
+		Expect(toolResultMsg.ToolCalls[0].ID).To(Equal("toolu_01Vu38ZEB6SQLEb59vtUXnTH"),
+			"tool-result message must preserve the upstream tool_use ID for correlation")
+		Expect(toolResultMsg.ToolCalls[0].Name).To(Equal("list_allowed_directories"),
+			"tool-result message must persist the tool name alongside the ID; "+
+				"dropping Name on Role=\"tool\" messages is the bug surfaced by "+
+				"scripts/validate-harness.sh as \"WARNING: N tool_call(s) with empty Name\". "+
+				"The paired assistant tool_use message carries Name, so the persistence "+
+				"layer, not the upstream provider, is the fault line.")
+	})
 })
 
 var _ = Describe("Engine tool call dispatch by chunk shape", func() {
