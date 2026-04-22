@@ -23,7 +23,6 @@ FLOWSTATE_SESSIONS_DIR="${FLOWSTATE_SESSIONS_DIR:-${XDG_DATA_HOME:-$HOME/.local/
 die() { echo "error: $*" >&2; exit 1; }
 
 [[ -x "$FLOWSTATE_BIN" ]] || die "flowstate binary not found: $FLOWSTATE_BIN (run 'make build' or set FLOWSTATE_BIN)"
-[[ -n "${ZAI_API_KEY:-}" ]] || die "ZAI_API_KEY is unset — export it before running (this harness pins to z.ai)"
 command -v jq &>/dev/null || die "jq is required but not installed"
 
 validate_one() {
