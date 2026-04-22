@@ -3411,6 +3411,37 @@ func (e *Engine) AddTool(t tool.Tool) {
 	e.cachedToolSchemas = nil
 }
 
+// RemoveTool removes the tool with the given name from the engine's tool set.
+// Idempotent: returns false without side effects when no tool with that name
+// is registered. Callers rely on this to enforce mutual exclusion between
+// delegate and suggest_delegate on manifest swap (see
+// app.wireDelegateToolIfEnabled and app.wireSuggestDelegateToolIfDisabled).
+// Leaving a stale tool in place after a SetManifest swap causes Anthropic to
+// reject the request with "400 Bad Request: tools: Tool names must be
+// unique" when the stale and newly-added tools share overlapping schemas.
+//
+// Expected:
+//   - name is the tool name to unregister.
+//
+// Returns:
+//   - true if a tool was removed, false if no tool with that name was present.
+//
+// Side effects:
+//   - Mutates the engine's internal tools slice when a match is found.
+//   - Invalidates the cached tool schemas when a match is found.
+func (e *Engine) RemoveTool(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, t := range e.tools {
+		if t.Name() == name {
+			e.tools = append(e.tools[:i], e.tools[i+1:]...)
+			e.cachedToolSchemas = nil
+			return true
+		}
+	}
+	return false
+}
+
 // GetDelegateTool returns the DelegateTool from the engine's tool set, if present.
 //
 // Returns:

@@ -1002,13 +1002,36 @@ func (a *App) buildDelegateMaps(
 //   - manifest is the agent manifest to inspect for delegation configuration.
 //
 // Side effects:
-//   - Appends DelegateTool / BackgroundOutputTool / BackgroundCancelTool and
-//     optionally CoordinationTool when they are not already present.
-//   - Rebinds an existing DelegateTool to the new manifest's delegation and
-//     source agent when it is already registered.
-//   - Creates isolated engine instances for each delegation target.
+//   - When manifest.Delegation.CanDelegate is true: appends DelegateTool /
+//     BackgroundOutputTool / BackgroundCancelTool and optionally
+//     CoordinationTool when they are not already present; rebinds an existing
+//     DelegateTool to the new manifest's delegation and source agent when it
+//     is already registered; creates isolated engine instances for each
+//     delegation target.
+//   - When manifest.Delegation.CanDelegate is false: idempotently removes
+//     DelegateTool, BackgroundOutputTool, BackgroundCancelTool and
+//     CoordinationTool if they were registered by a prior delegating
+//     manifest. This enforces the delegate / suggest_delegate mutual
+//     exclusion on manifest swap — Anthropic rejects a request that
+//     advertises both with "400 Bad Request: tools: Tool names must be
+//     unique".
 func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
 	if !manifest.Delegation.CanDelegate {
+		// Mirror of the non-delegating branch in
+		// wireSuggestDelegateToolIfDisabled: when swapping from a
+		// delegating manifest to a non-delegating one, the delegate
+		// tool and its siblings (background_output, background_cancel,
+		// coordination_store) are no longer meaningful and must be
+		// unregistered. Leaving them in place produces a tool schema
+		// the active manifest is not permitted to use and, when paired
+		// with a freshly-added suggest_delegate, drives Anthropic to
+		// reject the request with "tool names must be unique".
+		// RemoveTool is idempotent — the no-op case on the
+		// non-delegate→non-delegate path is safe.
+		eng.RemoveTool("delegate")
+		eng.RemoveTool("background_output")
+		eng.RemoveTool("background_cancel")
+		eng.RemoveTool("coordination_store")
 		return
 	}
 
@@ -1108,10 +1131,34 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 //   - manifest is the agent manifest to inspect for delegation configuration.
 //
 // Side effects:
-//   - Appends a SuggestDelegateTool to the engine's tool set when
-//     can_delegate is false. Does nothing when can_delegate is true.
+//   - When manifest.Delegation.CanDelegate is false: appends a
+//     SuggestDelegateTool to the engine's tool set when one is not already
+//     registered (idempotent across repeated invocations for the same
+//     non-delegating manifest).
+//   - When manifest.Delegation.CanDelegate is true: idempotently removes
+//     any SuggestDelegateTool left over from a prior non-delegating
+//     manifest. This enforces the delegate / suggest_delegate mutual
+//     exclusion on manifest swap.
 func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest agent.Manifest) {
 	if manifest.Delegation.CanDelegate {
+		// Mirror of the delegating branch in
+		// wireDelegateToolIfEnabled: when swapping from a
+		// non-delegating manifest to a delegating one, any
+		// previously-wired suggest_delegate must be unregistered.
+		// Leaving it in place alongside delegate advertises two
+		// delegation-shaped tools to the provider and Anthropic
+		// rejects the request with "400 Bad Request: tools: Tool
+		// names must be unique". RemoveTool is idempotent — the
+		// no-op case on the delegate→delegate path is safe.
+		eng.RemoveTool("suggest_delegate")
+		return
+	}
+	if eng.HasTool("suggest_delegate") {
+		// Idempotent: avoid accumulating duplicate suggest_delegate
+		// entries when setup and buildApp both wire the default
+		// manifest, or when ensureTools fires repeatedly for the same
+		// non-delegating manifest. Duplicates corrupt the provider
+		// tool schema the same way a stale suggest_delegate would.
 		return
 	}
 	eng.AddTool(engine.NewSuggestDelegateTool(a.Registry, manifest.ID))
