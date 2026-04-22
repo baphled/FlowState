@@ -1740,7 +1740,7 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
-		e.storeToolResult(result.toolCall.ID, toolResult)
+		e.storeToolResult(result.toolCall, toolResult)
 
 		resultContent := toolResult.Output
 		isError := toolResult.Error != nil
@@ -2141,13 +2141,23 @@ func (e *Engine) storeAssistantToolUse(toolCall *provider.ToolCall, content stri
 // storeToolResult appends a tool result message to the context store.
 //
 // Expected:
-//   - toolCallID is the identifier of the tool call.
+//   - toolCall carries the upstream tool-use identifier and tool name from
+//     the provider stream; both fields are load-bearing for validator output,
+//     session rehydration, and cross-provider correlation. The paired
+//     assistant tool_use message on the same turn carries ID+Name, so the
+//     tool-result message must too. Passing only the ID — as earlier code
+//     did — persisted a tool-role message with Name="" which the harness
+//     validator surfaces as "WARNING: N tool_call(s) with empty Name".
 //   - result contains the tool's output or error.
 //
 // Side effects:
-//   - Appends a message to the context store if configured.
-func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
+//   - Appends a message to the context store if configured, carrying both
+//     the tool_use ID and the tool name on the persisted ToolCall.
+func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result) {
 	if e.store == nil {
+		return
+	}
+	if toolCall == nil {
 		return
 	}
 
@@ -2160,7 +2170,7 @@ func (e *Engine) storeToolResult(toolCallID string, result tool.Result) {
 		Role:    "tool",
 		Content: content,
 		ToolCalls: []provider.ToolCall{
-			{ID: toolCallID},
+			{ID: toolCall.ID, Name: toolCall.Name},
 		},
 	})
 }
