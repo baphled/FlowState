@@ -875,10 +875,7 @@ var _ = Describe("Engine tool call context store", func() {
 	// provider may have emitted unnamed tool_use blocks", though the bug is
 	// not upstream: the engine's storeToolResult call site drops the name on
 	// the way into the context store.
-	// RED: pinned as PIt to keep `make check` green on the RED commit, per
-	// repo convention (see 8da30d4 and b1af6bc). The GREEN commit flips
-	// PIt → It alongside the fix in engine.storeToolResult.
-	PIt("persists the tool name on the tool-result message ToolCall, not just the ID", func() {
+	It("persists the tool name on the tool-result message ToolCall, not just the ID", func() {
 		tmpDir, err := os.MkdirTemp("", "engine-toolresult-name-store")
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { os.RemoveAll(tmpDir) })
