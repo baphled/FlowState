@@ -22,14 +22,19 @@ import (
 // NewDefaultRegistry creates a new tool registry with the default tools registered.
 //
 // Returns:
-//   - A Registry populated with the standard FlowState tools.
+//   - A Registry populated with the standard FlowState tools, including the
+//     plan_list and plan_read tools bound to the process-wide plans
+//     directory.
 //
 // Expected:
 //   - websearchAPIKey contains the API key used by the websearch tool.
+//   - plansDir is the directory where FlowState plan markdown files live
+//     (typically ${DataDir}/plans). An empty string is permitted for tests
+//     that do not exercise the plan tools.
 //
 // Side effects:
 //   - Registers all default tools in a new registry.
-func NewDefaultRegistry(websearchAPIKey string) *tool.Registry {
+func NewDefaultRegistry(websearchAPIKey, plansDir string) *tool.Registry {
 	r := tool.NewRegistry()
 	r.Register(bash.New())
 	r.Register(batch.New(r))
@@ -40,6 +45,8 @@ func NewDefaultRegistry(websearchAPIKey string) *tool.Registry {
 	r.Register(question.New())
 	r.Register(plan.NewEnter())
 	r.Register(plan.NewExit())
+	r.Register(plan.NewList(plansDir))
+	r.Register(plan.NewRead(plansDir))
 	r.Register(invalid.New())
 	r.Register(applypatch.New())
 	r.Register(web.New())

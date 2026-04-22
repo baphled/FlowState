@@ -50,6 +50,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
@@ -722,7 +723,7 @@ type toolPipelineResult struct {
 func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	mcpMgr := mcpclient.NewManager()
 	todoStore := todotool.NewMemoryStore()
-	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore)
+	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, filepath.Join(cfg.DataDir, "plans"))
 	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
@@ -1646,13 +1647,19 @@ func (a *App) DisconnectAll() error {
 // Expected:
 //   - skillLoader is a non-nil skill.FileSkillLoader.
 //   - todoStore is the app-level Store for persisting todo state.
+//   - plansDir is the directory containing FlowState plan markdown files
+//     (typically ${DataDir}/plans). Passed to the plan_list and plan_read
+//     tools so harness agents can enumerate and read plans in-process
+//     without delegating filesystem searches that may look in the wrong
+//     directory.
 //
 // Returns:
-//   - A slice containing bash, file, web, skill_load, and todowrite tools.
+//   - A slice containing bash, file, web, skill_load, todowrite, plan_list,
+//     and plan_read tools.
 //
 // Side effects:
 //   - Initialises new tool instances.
-func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store) []tool.Tool {
+func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string) []tool.Tool {
 	return []tool.Tool{
 		bash.New(),
 		read.New(),
@@ -1660,6 +1667,8 @@ func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store) []
 		web.New(),
 		skilltool.New(skillLoader),
 		todotool.New(todoStore),
+		plantool.NewList(plansDir),
+		plantool.NewRead(plansDir),
 	}
 }
 

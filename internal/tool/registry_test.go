@@ -14,15 +14,15 @@ var _ = Describe("NewDefaultRegistry", func() {
 	var registry *tool.Registry
 
 	BeforeEach(func() {
-		registry = toolset.NewDefaultRegistry("test-key")
+		registry = toolset.NewDefaultRegistry("test-key", "")
 	})
 
 	It("returns a non-nil registry", func() {
 		Expect(registry).NotTo(BeNil())
 	})
 
-	It("returns exactly 15 tools", func() {
-		Expect(registry.List()).To(HaveLen(15))
+	It("returns exactly 17 tools", func() {
+		Expect(registry.List()).To(HaveLen(17))
 	})
 
 	It("can retrieve bash tool", func() {
