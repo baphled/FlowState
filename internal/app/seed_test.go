@@ -138,6 +138,171 @@ var _ = Describe("SeedAgentsDir", func() {
 	})
 })
 
+var _ = Describe("RefreshAgentManifests", func() {
+	var (
+		destDir string
+		srcFS   fs.FS
+	)
+
+	BeforeEach(func() {
+		var err error
+		destDir, err = os.MkdirTemp("", "refresh-test")
+		Expect(err).NotTo(HaveOccurred())
+
+		srcFS = fstest.MapFS{
+			"agents/general.md":    &fstest.MapFile{Data: []byte("---\nid: general\nname: General v2\n---\n")},
+			"agents/coder.md":      &fstest.MapFile{Data: []byte("---\nid: coder\nname: Coder v2\n---\n")},
+			"agents/researcher.md": &fstest.MapFile{Data: []byte("---\nid: researcher\nname: Researcher v2\n---\n")},
+		}
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(destDir)
+	})
+
+	Context("when an existing manifest differs from the embedded version", func() {
+		It("overwrites the stale file and reports it as updated", func() {
+			staleContent := "---\nid: general\nname: General v1 (stale)\n---\n"
+			Expect(os.WriteFile(filepath.Join(destDir, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
+
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			content, err := os.ReadFile(filepath.Join(destDir, "general.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("General v2"))
+			Expect(string(content)).NotTo(ContainSubstring("stale"))
+
+			entry := findEntry(report, "general.md")
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.Status).To(Equal(app.RefreshStatusUpdated))
+		})
+	})
+
+	Context("when an existing manifest matches the embedded version byte-for-byte", func() {
+		It("leaves the file untouched and reports it as unchanged", func() {
+			identical := "---\nid: general\nname: General v2\n---\n"
+			destPath := filepath.Join(destDir, "general.md")
+			Expect(os.WriteFile(destPath, []byte(identical), 0o600)).To(Succeed())
+
+			priorStat, err := os.Stat(destPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			postStat, err := os.Stat(destPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(postStat.ModTime()).To(Equal(priorStat.ModTime()))
+
+			entry := findEntry(report, "general.md")
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.Status).To(Equal(app.RefreshStatusUnchanged))
+		})
+	})
+
+	Context("when the destination file does not exist", func() {
+		It("creates the file and reports it as created", func() {
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			content, err := os.ReadFile(filepath.Join(destDir, "general.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("General v2"))
+
+			entry := findEntry(report, "general.md")
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.Status).To(Equal(app.RefreshStatusCreated))
+		})
+	})
+
+	Context("when dry-run is enabled", func() {
+		It("writes nothing but still reports what would change", func() {
+			staleContent := "---\nid: general\nname: General v1 (stale)\n---\n"
+			Expect(os.WriteFile(filepath.Join(destDir, "general.md"), []byte(staleContent), 0o600)).To(Succeed())
+
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{DryRun: true})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			content, err := os.ReadFile(filepath.Join(destDir, "general.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("stale"), "dry-run must not modify the file")
+
+			entry := findEntry(report, "general.md")
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.Status).To(Equal(app.RefreshStatusUpdated))
+		})
+
+		It("does not create missing files", func() {
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{DryRun: true})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			_, statErr := os.Stat(filepath.Join(destDir, "general.md"))
+			Expect(os.IsNotExist(statErr)).To(BeTrue(), "dry-run must not create the file")
+
+			entry := findEntry(report, "general.md")
+			Expect(entry).NotTo(BeNil())
+			Expect(entry.Status).To(Equal(app.RefreshStatusCreated))
+		})
+	})
+
+	Context("when an OnlyAgent filter is set", func() {
+		It("only touches the matching manifest", func() {
+			staleOne := "---\nid: general\nname: stale one\n---\n"
+			staleTwo := "---\nid: coder\nname: stale two\n---\n"
+			Expect(os.WriteFile(filepath.Join(destDir, "general.md"), []byte(staleOne), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(destDir, "coder.md"), []byte(staleTwo), 0o600)).To(Succeed())
+
+			report, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{OnlyAgent: "general"})
+
+			Expect(err).NotTo(HaveOccurred())
+
+			generalContent, err := os.ReadFile(filepath.Join(destDir, "general.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(generalContent)).To(ContainSubstring("General v2"))
+
+			coderContent, err := os.ReadFile(filepath.Join(destDir, "coder.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(coderContent)).To(ContainSubstring("stale two"))
+
+			Expect(report).To(HaveLen(1))
+			Expect(report[0].Name).To(Equal("general.md"))
+		})
+
+		It("returns an error when no manifest matches", func() {
+			_, err := app.RefreshAgentManifests(srcFS, destDir, app.RefreshOptions{OnlyAgent: "nonexistent"})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("nonexistent"))
+		})
+	})
+})
+
+// findEntry returns the RefreshEntry matching name, or nil if absent.
+//
+// Expected:
+//   - report is the slice returned by RefreshAgentManifests.
+//   - name is a manifest filename such as "general.md".
+//
+// Returns:
+//   - A pointer to the first matching entry, or nil.
+//
+// Side effects:
+//   - None.
+func findEntry(report app.RefreshReport, name string) *app.RefreshEntry { //nolint:unparam // helper is generic; current specs all query "general.md" but the parameter documents intent for future tests
+	for i := range report {
+		if report[i].Name == name {
+			return &report[i]
+		}
+	}
+	return nil
+}
+
 var _ = Describe("EmbeddedAgentsFS", func() {
 	Context("when calling EmbeddedAgentsFS", func() {
 		It("returns a valid fs.FS", func() {
