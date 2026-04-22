@@ -485,6 +485,159 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// Caller-pin respect — Bug: Failover Stream Hook Ignores Caller
+		// Provider Pin (April 2026).
+		//
+		// retryStreamForToolResult and other in-turn retries pin the
+		// same-session provider on the ChatRequest to keep multi-turn
+		// agent sessions consistent. Before the fix, StreamHook.Execute
+		// iterated its own Candidates() list and unconditionally
+		// overwrote req.Provider/req.Model, so the second turn of a
+		// tool-use round-trip silently switched providers whenever the
+		// candidate ordering disagreed with the pin. The effect was a
+		// mid-conversation flip from e.g. anthropic/claude-sonnet-4 to
+		// ollama/llama3.2, producing off-role garbage for the rest of
+		// the session.
+		//
+		// Contract: when req.Provider is set and matches a healthy
+		// candidate, that candidate is the first one attempted, even
+		// if it is not first in the effective preferences. Failover
+		// to the remaining candidates still applies if the pinned one
+		// genuinely fails — the pin is a priority hint, not a hard
+		// single-shot.
+		Context("when the caller pins req.Provider mid-session", func() {
+			Context("and the pinned candidate is not first in the preference list", func() {
+				var attempted []string
+				var attemptedMu sync.Mutex
+
+				BeforeEach(func() {
+					attempted = nil
+					registry.Register(&mockStreamProvider{
+						name: "ollama",
+						streamFn: successStreamFn(
+							provider.StreamChunk{Content: "ollama-reply", Done: true},
+						),
+					})
+					registry.Register(&mockStreamProvider{
+						name: "anthropic",
+						streamFn: successStreamFn(
+							provider.StreamChunk{Content: "anthropic-reply", Done: true},
+						),
+					})
+					// Preference order puts ollama first; a naive
+					// loop would pick ollama even when the caller
+					// has explicitly pinned anthropic for
+					// continuity.
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "ollama", Model: "llama3.2"},
+						{Provider: "anthropic", Model: "claude-sonnet-4"},
+					})
+				})
+
+				It("attempts the pinned provider first and does not silently fall through", func() {
+					recordingHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						attemptedMu.Lock()
+						attempted = append(attempted, req.Provider)
+						attemptedMu.Unlock()
+						p, err := registry.Get(req.Provider)
+						if err != nil {
+							return nil, err
+						}
+						return p.Stream(ctx, *req)
+					}
+
+					handler := sh.Execute(recordingHandler)
+					pinnedReq := &provider.ChatRequest{
+						Provider: "anthropic",
+						Model:    "claude-sonnet-4",
+					}
+					ch, err := handler(context.Background(), pinnedReq)
+					Expect(err).NotTo(HaveOccurred())
+
+					var contents []string
+					for chunk := range ch {
+						contents = append(contents, chunk.Content)
+					}
+
+					attemptedMu.Lock()
+					defer attemptedMu.Unlock()
+					Expect(attempted).NotTo(BeEmpty())
+					Expect(attempted[0]).To(Equal("anthropic"),
+						"caller-pinned provider must be the first attempt")
+					Expect(contents).To(Equal([]string{"anthropic-reply"}),
+						"pinned provider's stream must be the one served; no silent flip")
+					Expect(manager.LastProvider()).To(Equal("anthropic"))
+					Expect(manager.LastModel()).To(Equal("claude-sonnet-4"))
+				})
+			})
+
+			Context("and the pinned candidate genuinely fails", func() {
+				var attempted []string
+				var attemptedMu sync.Mutex
+
+				BeforeEach(func() {
+					attempted = nil
+					// Pinned provider fails synchronously; the
+					// non-pinned fallback succeeds. Failover must
+					// still kick in — the pin is not a single-shot.
+					registry.Register(&mockStreamProvider{
+						name:     "anthropic",
+						streamFn: syncErrorStreamFn(errors.New("pinned provider down")),
+					})
+					registry.Register(&mockStreamProvider{
+						name: "ollama",
+						streamFn: successStreamFn(
+							provider.StreamChunk{Content: "ollama-fallback", Done: true},
+						),
+					})
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "ollama", Model: "llama3.2"},
+						{Provider: "anthropic", Model: "claude-sonnet-4"},
+					})
+				})
+
+				It("falls through to the remaining candidates without deadlocking on the dead pin", func() {
+					recordingHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						attemptedMu.Lock()
+						attempted = append(attempted, req.Provider)
+						attemptedMu.Unlock()
+						p, err := registry.Get(req.Provider)
+						if err != nil {
+							return nil, err
+						}
+						return p.Stream(ctx, *req)
+					}
+
+					handler := sh.Execute(recordingHandler)
+					pinnedReq := &provider.ChatRequest{
+						Provider: "anthropic",
+						Model:    "claude-sonnet-4",
+					}
+					ch, err := handler(context.Background(), pinnedReq)
+					Expect(err).NotTo(HaveOccurred())
+
+					var contents []string
+					for chunk := range ch {
+						contents = append(contents, chunk.Content)
+					}
+
+					attemptedMu.Lock()
+					defer attemptedMu.Unlock()
+					// Pinned provider must be attempted first,
+					// then ollama as fallback — two attempts,
+					// anthropic before ollama.
+					Expect(len(attempted)).To(BeNumerically(">=", 2),
+						"must attempt both pinned and fallback")
+					Expect(attempted[0]).To(Equal("anthropic"),
+						"pinned provider is attempted first")
+					Expect(attempted[1]).To(Equal("ollama"),
+						"fallback kicks in when pinned provider fails")
+					Expect(contents).To(Equal([]string{"ollama-fallback"}))
+					Expect(manager.LastProvider()).To(Equal("ollama"))
+				})
+			})
+		})
+
 		Context("when event bus is configured and a candidate fails synchronously", func() {
 			var (
 				bus      *eventbus.EventBus

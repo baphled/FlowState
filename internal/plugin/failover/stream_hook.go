@@ -62,6 +62,18 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			return nil, errors.New("no healthy providers available")
 		}
 
+		// Honour a caller-pinned provider: if the request already has
+		// Provider set (e.g. Engine.retryStreamForToolResult pinning
+		// LastProvider to keep a multi-turn session on the same
+		// provider), promote the matching candidate to the head of the
+		// list so it is attempted first. Fallback semantics are
+		// preserved — the remaining candidates still act as a failover
+		// pool if the pinned provider genuinely fails. This is a
+		// priority hint, not a single-shot. See bug-fix note:
+		// "Failover Stream Hook Ignores Caller Provider Pin
+		// (April 2026)".
+		candidates = promotePinned(candidates, req.Provider, req.Model)
+
 		// Honour a parent ctx that is already cancelled or past its
 		// deadline at loop entry — this is how an upstream caller signals
 		// "don't even try" (explicit user cancel, expired deadline).
@@ -89,6 +101,51 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		}
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
+}
+
+// promotePinned returns candidates with the caller-pinned provider/model
+// moved to the head of the list. If pinnedProvider is empty or no candidate
+// matches, the input slice is returned unchanged. When pinnedModel is
+// empty, matching is by provider name only; otherwise both provider and
+// model must match. The matched entry is kept in its ModelPreference form
+// so downstream logic (health-marking, last-set) sees the exact pairing.
+//
+// Expected:
+//   - candidates is a non-empty slice (callers ensure this).
+//   - pinnedProvider may be empty (no-op).
+//
+// Returns:
+//   - A slice with the matched candidate first, followed by the remaining
+//     candidates in their original relative order; or the input slice
+//     unchanged if no match.
+//
+// Side effects:
+//   - None (returns a new slice when promotion happens; returns the input
+//     slice directly when no promotion is needed, so callers must not
+//     mutate it in place regardless).
+func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinnedModel string) []provider.ModelPreference {
+	if pinnedProvider == "" {
+		return candidates
+	}
+	idx := -1
+	for i, c := range candidates {
+		if c.Provider != pinnedProvider {
+			continue
+		}
+		if pinnedModel != "" && c.Model != pinnedModel {
+			continue
+		}
+		idx = i
+		break
+	}
+	if idx <= 0 {
+		return candidates
+	}
+	reordered := make([]provider.ModelPreference, 0, len(candidates))
+	reordered = append(reordered, candidates[idx])
+	reordered = append(reordered, candidates[:idx]...)
+	reordered = append(reordered, candidates[idx+1:]...)
+	return reordered
 }
 
 // attemptCandidate tries a single provider candidate with per-attempt timeout and
