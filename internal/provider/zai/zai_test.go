@@ -502,6 +502,62 @@ var _ = Describe("ZAI Provider", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
+
+		Context("endpoint selection based on auth source", func() {
+			// The Z.AI `zai-coding-plan` subscription routes to a separate
+			// coding-plan endpoint. Using the general pay-per-token endpoint
+			// with a coding-plan key returns HTTP 429 / code 1113 (billing).
+			// The general-endpoint constant must stay the pay-per-token URL;
+			// coding-plan auth must route to the coding-plan URL.
+			It("exposes the general pay-per-token URL for the canonical zai source", func() {
+				Expect(zai.BaseURLForAuthSource("zai")).To(
+					Equal("https://api.z.ai/api/paas/v4"),
+				)
+			})
+
+			It("exposes the coding-plan URL for the zai-coding-plan source", func() {
+				Expect(zai.BaseURLForAuthSource("zai-coding-plan")).To(
+					Equal("https://api.z.ai/api/coding/paas/v4"),
+				)
+			})
+
+			It("defaults to the general URL for an unknown source", func() {
+				Expect(zai.BaseURLForAuthSource("")).To(
+					Equal("https://api.z.ai/api/paas/v4"),
+				)
+			})
+
+			It("reports zai-coding-plan as source when auth.json has only the coding-plan key", func() {
+				path := filepath.Join(dir, "auth.json")
+				Expect(os.WriteFile(path, []byte(
+					`{"zai-coding-plan":{"type":"api","key":"coding-key"}}`,
+				), 0o600)).To(Succeed())
+
+				token, source, err := zai.ResolveOpenCodeAuthForTest(path, "")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("coding-key"))
+				Expect(source).To(Equal("zai-coding-plan"))
+			})
+
+			It("reports zai as source when auth.json has the canonical zai key", func() {
+				path := filepath.Join(dir, "auth.json")
+				Expect(os.WriteFile(path, []byte(
+					`{"zai":{"type":"oauth","access":"canonical"}}`,
+				), 0o600)).To(Succeed())
+
+				token, source, err := zai.ResolveOpenCodeAuthForTest(path, "")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("canonical"))
+				Expect(source).To(Equal("zai"))
+			})
+
+			It("reports zai as source when only a fallback env/config key is available", func() {
+				token, source, err := zai.ResolveOpenCodeAuthForTest("", "env-fallback")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(token).To(Equal("env-fallback"))
+				Expect(source).To(Equal("zai"))
+			})
+		})
 	})
 
 	Describe("Z.AI error code classification", func() {
