@@ -434,8 +434,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 					Manifest:     manifest,
 					Tools:        allTools,
 					MCPServerTools: map[string][]string{
-						"memory":    {"create_entities"},
-						"vault-rag": {"search_nodes"},
+						"memory":     {"create_entities"},
+						"vault-rag":  {"search_nodes"},
 						"undeclared": {"web"},
 					},
 				})
