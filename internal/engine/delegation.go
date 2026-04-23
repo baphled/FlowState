@@ -817,6 +817,25 @@ func (d *DelegateTool) Description() string {
 	return "Delegate a task to another agent based on task type"
 }
 
+// Timeout signals that DelegateTool implements tool.TimeoutOverrider
+// and returns 0 to opt out of the engine's default per-tool execution
+// budget, inheriting the parent context unchanged.
+//
+// Delegation runs a full multi-turn sub-agent conversation: the child
+// engine runs its own streaming LLM loop and dispatches its own tool
+// calls, so the shell-tool latency profile the default ~2-minute cap
+// assumes does not apply. Parent cancellation still cascades via the
+// ctx DelegateTool.Execute forwards to the child engine.
+//
+// Returns:
+//   - 0 — inherit parent context, no engine-injected deadline.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) Timeout() time.Duration {
+	return 0
+}
+
 // Schema returns the JSON schema for the delegation tool input.
 //
 // Returns:

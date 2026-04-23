@@ -2308,6 +2308,45 @@ func (e *Engine) forwardToolCallChunk(
 	outChan <- chunk
 }
 
+// deriveToolCtx returns the context a single tool invocation runs under,
+// along with the cancel func the caller MUST invoke after Execute returns.
+//
+// The engine's default behaviour wraps every tool call in a short
+// per-tool deadline (e.toolTimeout, typically 2 minutes) — that budget
+// fits bash/read/web-style tools whose latency is shell-bounded. Tools
+// whose execution is structurally longer — notably DelegateTool, which
+// runs a full multi-turn sub-agent conversation — implement
+// tool.TimeoutOverrider to opt out of the default budget:
+//
+//   - Timeout() > 0: the engine applies that duration as the per-tool
+//     deadline instead of the default. Parent ctx deadlines still
+//     apply; whichever expires first wins.
+//   - Timeout() == 0: the engine installs no deadline of its own. The
+//     tool inherits the parent context unchanged — parent cancellation
+//     still cascades, but no engine-injected wall clock caps execution.
+//
+// Expected:
+//   - parent is the caller's context; never nil.
+//   - t is the resolved Tool about to be executed.
+//
+// Returns:
+//   - A context to hand to Tool.Execute.
+//   - The cancel func to invoke after Execute returns (safe to call in every path).
+//
+// Side effects:
+//   - None; pure context derivation.
+func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Context, context.CancelFunc) {
+	if override, ok := t.(tool.TimeoutOverrider); ok {
+		if budget := override.Timeout(); budget > 0 {
+			return context.WithTimeout(parent, budget)
+		}
+		// Inherit parent context unchanged, but still return a cancel
+		// func the caller can invoke in every path for symmetry.
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, e.toolTimeout)
+}
+
 // executeToolCall finds and executes the specified tool with the given arguments.
 //
 // Expected:
@@ -2341,7 +2380,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		}
 		input.Arguments = validated
 
-		toolCtx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		toolCtx, cancel := e.deriveToolCtx(ctx, t)
 		result, err := t.Execute(toolCtx, input)
 		cancel()
 		if err != nil && ctx.Err() == nil {

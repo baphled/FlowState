@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1346,6 +1347,202 @@ var _ = Describe("Engine assistant turn artefact ordering", func() {
 			Expect(firstObserved.Content != "" || firstObserved.Thinking != "").To(BeTrue(),
 				"the first consumer-observed artefact of a turn must carry Content or Thinking; "+
 					"firstObserved=%+v", firstObserved)
+		})
+	})
+})
+
+// sleepingTool is a tool double whose Execute blocks for sleepFor or until
+// ctx is cancelled — whichever fires first. It records the observed ctx
+// error so specs can distinguish "ran to completion" from "cancelled by
+// engine-injected deadline" from "cancelled by parent".
+type sleepingTool struct {
+	name     string
+	sleepFor time.Duration
+	// observed captures ctx.Err() seen after the sleep / cancellation.
+	observed error
+}
+
+func (t *sleepingTool) Name() string        { return t.name }
+func (t *sleepingTool) Description() string { return "sleeps" }
+func (t *sleepingTool) Schema() tool.Schema { return tool.Schema{} }
+func (t *sleepingTool) Execute(ctx context.Context, _ tool.Input) (tool.Result, error) {
+	select {
+	case <-time.After(t.sleepFor):
+		t.observed = ctx.Err()
+		return tool.Result{Output: "slept"}, nil
+	case <-ctx.Done():
+		t.observed = ctx.Err()
+		return tool.Result{}, ctx.Err()
+	}
+}
+
+// sleepingToolWithOverride implements tool.TimeoutOverrider: a positive
+// override grants a per-tool budget, a zero override signals "inherit
+// parent ctx — no engine-injected deadline at all" (the delegate case).
+type sleepingToolWithOverride struct {
+	sleepingTool
+	override time.Duration
+}
+
+func (t *sleepingToolWithOverride) Timeout() time.Duration { return t.override }
+
+var _ = Describe("Engine per-tool execution timeout", Label("tool-timeout"), func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+	)
+
+	BeforeEach(func() {
+		chatProvider = &streamSequenceProvider{name: "test-chat-provider"}
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+	})
+
+	toolCallSequenceFor := func(toolName string) [][]provider.StreamChunk {
+		return [][]provider.StreamChunk{
+			{
+				{
+					EventType: "tool_call",
+					ToolCall: &provider.ToolCall{
+						ID:        "call_" + toolName,
+						Name:      toolName,
+						Arguments: map[string]interface{}{},
+					},
+				},
+			},
+			{
+				{Content: "done", Done: true},
+			},
+		}
+	}
+
+	Context("when a tool without a TimeoutOverrider sleeps past the engine default", func() {
+		It("cancels the tool with DeadlineExceeded and does not apply the override path", func() {
+			slow := &sleepingTool{name: "slow_shell", sleepFor: 300 * time.Millisecond}
+			chatProvider.sequences = toolCallSequenceFor("slow_shell")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{slow},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "use slow shell")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(slow.observed).To(Equal(context.DeadlineExceeded),
+				"shell tools without TimeoutOverrider must still be killed by the engine default timeout")
+		})
+	})
+
+	Context("when a tool declares TimeoutOverrider returning 0 (inherit parent)", func() {
+		It("does not inject an engine-level deadline, so long-running execution completes", func() {
+			// sleepFor far exceeds the default ToolTimeout (50ms) — if the
+			// engine injected its default, this would be DeadlineExceeded.
+			// The override of 0 means "inherit parent ctx" so the tool
+			// runs to completion under the parent's budget.
+			inherit := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "delegate_like", sleepFor: 200 * time.Millisecond},
+				// override left at zero value — signals "inherit"
+			}
+			chatProvider.sequences = toolCallSequenceFor("delegate_like")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{inherit},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "delegate something")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(inherit.observed).NotTo(HaveOccurred(),
+				"a tool declaring Timeout()==0 must inherit the parent context and run to completion "+
+					"even when its duration exceeds the engine's default tool timeout; observed=%v",
+				inherit.observed)
+		})
+	})
+
+	Context("when a tool declares TimeoutOverrider returning a larger budget than the engine default", func() {
+		It("uses the tool's budget, allowing execution longer than the engine default", func() {
+			extended := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "long_tool", sleepFor: 200 * time.Millisecond},
+				override:     2 * time.Second,
+			}
+			chatProvider.sequences = toolCallSequenceFor("long_tool")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{extended},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "run long")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(extended.observed).NotTo(HaveOccurred(),
+				"a tool declaring Timeout() > engine default must run to completion under its own budget")
+		})
+	})
+
+	Context("when the parent context is cancelled during a long inherit-budget tool", func() {
+		It("propagates cancellation into the tool's ctx", func() {
+			inherit := &sleepingToolWithOverride{
+				sleepingTool: sleepingTool{name: "cancellable_delegate", sleepFor: 2 * time.Second},
+				// override == 0 → inherit parent
+			}
+			chatProvider.sequences = toolCallSequenceFor("cancellable_delegate")
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  chatProvider,
+				Manifest:      manifest,
+				Tools:         []tool.Tool{inherit},
+				ToolTimeout:   50 * time.Millisecond,
+				StreamTimeout: 5 * time.Second,
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			chunks, err := eng.Stream(ctx, "test-agent", "delegate and cancel")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Cancel shortly after the tool starts sleeping.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				cancel()
+			}()
+
+			for v := range chunks {
+				_ = v
+			}
+			cancel()
+
+			Expect(inherit.observed).To(Equal(context.Canceled),
+				"parent cancellation must cascade into the inherit-budget tool; observed=%v",
+				inherit.observed)
 		})
 	})
 })

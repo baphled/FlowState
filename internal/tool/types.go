@@ -3,6 +3,7 @@ package tool
 
 import (
 	"context"
+	"time"
 )
 
 // Permission represents the permission level for a tool.
@@ -66,4 +67,29 @@ type Tool interface {
 	Execute(ctx context.Context, input Input) (Result, error)
 	// Schema returns the input schema for the tool.
 	Schema() Schema
+}
+
+// TimeoutOverrider is an optional interface tools may implement to override
+// the engine's default per-tool execution timeout.
+//
+// Engines apply the following rule to a tool whose concrete type implements
+// this interface:
+//
+//   - Timeout() > 0: the engine applies this duration as the per-tool
+//     execution deadline instead of its configured default. The parent
+//     context's own deadline still applies — whichever expires first wins.
+//   - Timeout() == 0: the engine installs no deadline of its own and the
+//     tool inherits the parent context unchanged. Parent cancellation
+//     (Ctrl-C, chain teardown, etc.) still propagates.
+//
+// Intended for tools whose execution semantics do not fit a shell-style
+// cap — e.g. the delegate tool runs a full multi-turn sub-agent
+// conversation whose latency is provider/model-bounded, not shell-bounded.
+// Short-running tools (bash, read, web, etc.) should not implement this
+// and will keep using the engine default.
+type TimeoutOverrider interface {
+	// Timeout returns the per-tool execution budget the engine should
+	// apply. See TimeoutOverrider doc for the semantics of the returned
+	// value: >0 grants a dedicated budget, 0 inherits parent context.
+	Timeout() time.Duration
 }
