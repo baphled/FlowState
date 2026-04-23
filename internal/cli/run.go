@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
@@ -106,6 +109,46 @@ func newRunCmd(getApp func() *app.App) *cobra.Command {
 // Side effects:
 //   - Streams response to stdout, saves session if available.
 func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error {
+	// Install a signal-linked context so SIGTERM / SIGINT (outer
+	// `timeout` expiry, Ctrl-C, kill -TERM) cancels the stream rather
+	// than terminating the process with an unflushed parent session.
+	// Without this, the planner's accumulated turns evaporate at
+	// process exit because saveSession only ran on the graceful return
+	// path: see "Parent Session Lost on Non-Graceful Exit (April 2026)"
+	// for the forensic reconstruction. Matches the pattern already in
+	// runServe.
+	//
+	// signal.NotifyContext delivers a cancellation on the first signal
+	// and installs the default handler for subsequent signals, so a
+	// second Ctrl-C still kills the process — the operator retains the
+	// usual escape hatch.
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runPromptCtx(ctx, cmd, application, opts)
+}
+
+// runPromptCtx is the context-aware core of the run command. Extracted
+// from runPrompt so the signal-driven persist-on-cancel behaviour can
+// be exercised in-process by spec code that cancels ctx directly,
+// without needing to send real signals to the test runner. The outer
+// runPrompt is a thin shim that provides a signal-linked context.
+//
+// Expected:
+//   - ctx is non-nil; when cancelled, streaming unwinds and the
+//     function returns the ctx.Err wrapped in the usual "stream error"
+//     prefix.
+//   - cmd, application, and opts match runPrompt's expectations.
+//
+// Returns:
+//   - nil on success, or the streaming / validation / save error.
+//
+// Side effects:
+//   - Streams response to cmd.OutOrStdout.
+//   - Attempts session persistence on every return path via defer, so
+//     a signal-driven cancel still flushes the parent session JSON
+//     with whatever messages accumulated up to that point. This is
+//     the fix's load-bearing line.
+func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App, opts *RunOptions) error {
 	if err := validateRunOptions(opts); err != nil {
 		return err
 	}
@@ -127,13 +170,21 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	loadExistingSession(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
 
+	// Persist-on-return: fires for every exit path, including a
+	// context cancellation propagated from SIGTERM / SIGINT. The
+	// previous saveSession call lived on the graceful path only; that
+	// was the root cause of the 136-byte `.meta.json` only footprint
+	// observed for long-running planner sessions that got killed by
+	// outer timeouts.
+	defer saveSession(cmd, application, sessionID)
+
 	wrappedStreamer := streaming.NewSessionContextStreamer(
 		application.Streamer,
 		func() string { return sessionID },
 		session.IDKey{},
 	)
 
-	response, err := streamResponse(cmd, wrappedStreamer, agentName, opts)
+	response, err := streamResponse(ctx, cmd, wrappedStreamer, agentName, opts)
 	if err != nil {
 		return err
 	}
@@ -142,7 +193,6 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 		return flushErr
 	}
 
-	saveSession(cmd, application, sessionID)
 	// Wait for the L3 knowledge-extraction goroutine dispatched by the
 	// stream to finish before the process exits. Without this, each
 	// short-lived run orphans its extraction at os.Exit and the
@@ -483,6 +533,9 @@ func loadExistingSession(application *app.App, sessionParam string) {
 // streamResponse streams a response from the streamer and returns the complete message.
 //
 // Expected:
+//   - ctx is non-nil; cancellation propagates to the streaming runner
+//     so a SIGTERM / SIGINT received by runPrompt unwinds the stream
+//     instead of leaving the goroutine orphaned at process exit.
 //   - cmd is a non-nil cobra.Command.
 //   - streamer is a non-nil streaming.Streamer for response generation.
 //   - agentName is a non-empty string.
@@ -493,9 +546,15 @@ func loadExistingSession(application *app.App, sessionParam string) {
 //
 // Side effects:
 //   - Streams response chunks to stdout if JSON output is not requested.
-func streamResponse(cmd *cobra.Command, streamer streaming.Streamer, agentName string, opts *RunOptions) (string, error) {
+func streamResponse(
+	ctx context.Context,
+	cmd *cobra.Command,
+	streamer streaming.Streamer,
+	agentName string,
+	opts *RunOptions,
+) (string, error) {
 	consumer := NewWriterConsumer(cmd.OutOrStdout(), opts.JSON)
-	if err := streaming.Run(context.Background(), streamer, consumer, agentName, opts.Prompt); err != nil {
+	if err := streaming.Run(ctx, streamer, consumer, agentName, opts.Prompt); err != nil {
 		return "", fmt.Errorf("streaming response: %w", err)
 	}
 	if consumer.Err() != nil {

@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
@@ -12,10 +15,12 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/spf13/cobra"
 )
 
 type recordingGateRunner struct {
@@ -139,6 +144,89 @@ func registerWorkerInTestRegistry(testApp *app.App, manifest agent.Manifest) {
 	}
 	clone := manifest
 	testApp.Registry.Register(&clone)
+}
+
+// blockingRunProvider emits a preamble chunk so the engine appends
+// the user message to the context store, signals that streaming
+// started via started, then emits a chunk carrying ctx.Err on
+// ctx.Done. Models the long-running planner case where the process
+// sits inside a provider Stream call for minutes and a SIGTERM-driven
+// signal.NotifyContext cancel propagates down to the provider — the
+// provider surfaces the cancellation as a stream-level error, which
+// in turn surfaces as a non-nil return from streamResponse. That is
+// the exit path the fix must cover: previously, a non-graceful return
+// skipped saveSession entirely.
+type blockingRunProvider struct {
+	name    string
+	started chan struct{}
+	// preamble is emitted before the provider blocks, so the consumer
+	// has visible output and the engine has appended at least one
+	// assistant chunk to its context store before the test cancels ctx.
+	preamble provider.StreamChunk
+}
+
+func (p *blockingRunProvider) Name() string { return p.name }
+
+func (p *blockingRunProvider) Stream(ctx context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	chunks := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(chunks)
+		select {
+		case chunks <- p.preamble:
+		case <-ctx.Done():
+			return
+		}
+		// Signal the spec that streaming is live so it can cancel
+		// safely knowing the context store has been touched.
+		close(p.started)
+		<-ctx.Done()
+		// Surface the cancellation as a stream-level error so the
+		// streaming.Run loop returns a non-nil error. This mirrors
+		// the realistic provider behaviour on SIGTERM-driven ctx
+		// cancel — the HTTP client round-trip fails with ctx.Err and
+		// the provider pipes that back as a chunk-level error. A
+		// runPromptCtx control flow that only persists on the nil-err
+		// return (the pre-fix shape) must skip saveSession here.
+		chunks <- provider.StreamChunk{Error: ctx.Err(), Done: true}
+	}()
+	return chunks, nil
+}
+
+func (p *blockingRunProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *blockingRunProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func (p *blockingRunProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// createBlockingRunApp returns an app wired with a FileSessionStore at
+// the given SessionsDir and an engine whose context store has already
+// been installed. Mirrors the production wiring where App.New plumbs
+// params.contextStore into engine.Config.Store; for a fresh session the
+// store is empty until the first user message is appended during
+// streaming.
+func createBlockingRunApp(sessionsDir string, provBlocking *blockingRunProvider) *app.App {
+	testApp, err := app.NewForTest(app.TestConfig{
+		DataDir:     filepath.Dir(sessionsDir),
+		SessionsDir: sessionsDir,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	eng := engine.New(engine.Config{
+		ChatProvider: provBlocking,
+		Manifest: agent.Manifest{
+			ID:                "worker",
+			Name:              "Worker",
+			Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+		Store: recall.NewEmptyContextStore(""),
+	})
+	testApp.Engine = eng
+	testApp.Streamer = eng
+	return testApp
 }
 
 var _ = Describe("run command", func() {
@@ -417,6 +505,93 @@ var _ = Describe("run command", func() {
 			Expect(errors.As(err, &gateErr)).To(BeTrue())
 			Expect(gateErr.Reason).To(ContainSubstring("aggregate validation failed"))
 		})
+	})
+
+	// Regression guard for "Parent Session Lost on Non-Graceful Exit
+	// (April 2026)". The live reproduction showed a 41-minute planner
+	// run hit the outer `timeout 900` SIGTERM and left only a 136-byte
+	// `.meta.json` on disk — the full accumulated conversation
+	// (20+ turns, multiple completed delegations) evaporated because
+	// the previous runPrompt control flow called saveSession only on
+	// the graceful-return path. A SIGTERM that cancelled streaming
+	// before streamResponse returned skipped persistence entirely.
+	//
+	// The fix installs signal.NotifyContext at the CLI entry point and
+	// moves saveSession into a defer so every exit path — including a
+	// ctx-cancel triggered by SIGTERM / SIGINT — flushes the parent
+	// session to disk with whatever messages accumulated up to the
+	// cancel point. Spec drives that path in-process by cancelling a
+	// plain context.WithCancel while the provider is blocked mid-stream,
+	// avoiding the need to send real signals to the Ginkgo runner.
+	It("persists the parent session on context cancellation mid-stream", func() {
+		sessionsDir := filepath.Join(GinkgoT().TempDir(), "sessions")
+		Expect(os.MkdirAll(sessionsDir, 0o750)).To(Succeed())
+
+		prov := &blockingRunProvider{
+			name:     "blocking-run-provider",
+			started:  make(chan struct{}),
+			preamble: provider.StreamChunk{Content: "thinking"},
+		}
+		testApp := createBlockingRunApp(sessionsDir, prov)
+
+		sessionID := "sigterm-regression-parent"
+		opts := &cli.RunOptions{
+			Prompt:  "draft a plan and wait",
+			Agent:   "worker",
+			Session: sessionID,
+		}
+
+		cmd := &cobra.Command{}
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		done := make(chan error, 1)
+		go func() {
+			done <- cli.RunPromptCtxForTest(ctx, cmd, testApp, opts)
+		}()
+
+		// Wait for the provider to be mid-stream — the user message is
+		// now in the engine store, mirroring the production scenario
+		// where planner turns have accumulated before SIGTERM arrives.
+		select {
+		case <-prov.started:
+		case <-time.After(5 * time.Second):
+			Fail("streaming did not reach the blocking point within 5s")
+		}
+
+		cancel()
+
+		select {
+		case err := <-done:
+			// streamResponse surfaces the ctx-cancel as a stream error;
+			// the defer-save must still have fired before that error
+			// propagated. The assertion here is on disk state, not the
+			// error shape, because the error path is the realistic one
+			// after a signal and not the subject of the regression.
+			_ = err
+		case <-time.After(5 * time.Second):
+			Fail("runPromptCtx did not return within 5s of cancel")
+		}
+
+		// The load-bearing assertion: the parent session's full JSON
+		// file exists on disk. Before the fix, only the 136-byte
+		// .meta.json sidecar was present after a non-graceful exit.
+		sessionPath := filepath.Join(sessionsDir, sessionID+".json")
+		info, statErr := os.Stat(sessionPath)
+		Expect(statErr).NotTo(HaveOccurred(),
+			"parent session .json must be written when the run is cancelled mid-stream; got stat error %v. "+
+				"This is the exact regression captured in 'Parent Session Lost on Non-Graceful Exit'.",
+			statErr)
+		Expect(info.Size()).To(BeNumerically(">", int64(200)),
+			"persisted session must contain the user prompt and metadata, not a bare shell")
+
+		data, readErr := os.ReadFile(sessionPath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring("draft a plan and wait"),
+			"persisted session must carry the user prompt that was in flight at the moment of cancellation")
 	})
 })
 

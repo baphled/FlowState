@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"time"
 
@@ -87,4 +88,15 @@ func SetOllamaProbeForTest(probe func(string) error) func() {
 	original := ollamaProbe
 	ollamaProbe = probe
 	return func() { ollamaProbe = original }
+}
+
+// RunPromptCtxForTest exposes the context-aware run entry point so the
+// signal-driven persist-on-cancel regression test can drive a
+// cancellation in-process without sending real signals to the test
+// runner. Outside tests runPrompt always provides a signal.NotifyContext
+// linked to cmd.Context(); tests pass a plain context.WithCancel so
+// they can cancel mid-stream and assert the defer-save flushed the
+// session.
+func RunPromptCtxForTest(ctx context.Context, cmd *cobra.Command, application *app.App, opts *RunOptions) error {
+	return runPromptCtx(ctx, cmd, application, opts)
 }
