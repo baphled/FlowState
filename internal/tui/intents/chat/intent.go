@@ -50,11 +50,17 @@ import (
 // to handle special events such as "harness_retry" without modifying the
 // standard chunk processing pipeline.
 type StreamChunkMsg struct {
-	Content        string
-	Error          error
-	Done           bool
-	EventType      string
-	ToolCallName   string
+	Content      string
+	Error        error
+	Done         bool
+	EventType    string
+	ToolCallName string
+	// ToolCallArgs carries the raw provider.ToolCall.Arguments map
+	// (as received from the model) on chunks that carry a tool_call.
+	// Downstream renderers (the inline tool widget) use this map to
+	// build rich, opencode-style displays without re-parsing the
+	// flattened "name: primary-arg" string in ToolCallName.
+	ToolCallArgs   map[string]any
 	ToolStatus     string
 	ToolResult     string
 	ToolIsError    bool
@@ -2788,6 +2794,7 @@ func buildStreamChunkMsg(i *Intent, chunk provider.StreamChunk) StreamChunkMsg {
 		Done:               chunk.Done,
 		EventType:          chunk.EventType,
 		ToolCallName:       toolCallName,
+		ToolCallArgs:       toolCallArgs(chunk.ToolCall),
 		ToolStatus:         toolStatus,
 		DelegationInfo:     chunk.DelegationInfo,
 		Thinking:           chunk.Thinking,
@@ -2850,6 +2857,7 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 		Done:               chunk.Done,
 		EventType:          chunk.EventType,
 		ToolCallName:       toolCallName,
+		ToolCallArgs:       toolCallArgs(chunk.ToolCall),
 		ToolStatus:         toolStatus,
 		DelegationInfo:     chunk.DelegationInfo,
 		Thinking:           chunk.Thinking,
@@ -2870,6 +2878,26 @@ func readStreamChunk(stream <-chan provider.StreamChunk) StreamChunkMsg {
 	}
 
 	return msg
+}
+
+// toolCallArgs returns the raw arguments map carried by a provider.ToolCall,
+// or nil when the tool call is nil. Centralised so buildStreamChunkMsg and
+// readStreamChunk apply the same nil-safety contract when forwarding args
+// onto StreamChunkMsg.ToolCallArgs.
+//
+// Expected:
+//   - tc may be nil.
+//
+// Returns:
+//   - tc.Arguments verbatim, or nil when tc is nil.
+//
+// Side effects:
+//   - None.
+func toolCallArgs(tc *provider.ToolCall) map[string]any {
+	if tc == nil {
+		return nil
+	}
+	return tc.Arguments
 }
 
 // View renders the chat interface as a string.
