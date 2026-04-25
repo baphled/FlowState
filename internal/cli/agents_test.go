@@ -37,7 +37,14 @@ var _ = Describe("agents refresh command", func() {
 			root := cli.NewRootCmd(testApp)
 			root.SetOut(out)
 			root.SetErr(out)
-			root.SetArgs(append([]string{"--agents-dir", agentsDir}, args...))
+			// Deliberately no --agents-dir (or any persistent flag): it
+			// would trigger initApp's app.New() reinit, which loads
+			// $HOME config and authenticates the default provider. That
+			// path depends on host credentials (Anthropic OAuth etc.)
+			// unrelated to the file-copy contract these specs pin, and
+			// fails on machines without authentic provider creds.
+			// testApp already carries the temp AgentsDir via NewForTest.
+			root.SetArgs(args)
 			return root.Execute()
 		}
 	})
