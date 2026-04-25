@@ -27,6 +27,7 @@ var (
 	errCategoryMustBeString     = errors.New("category must be a string")
 	errSubagentTypeMustBeString = errors.New("subagent_type must be a string")
 	errSessionIDMustBeString    = errors.New("session_id must be a string")
+	errChainIDMustBeString      = errors.New("chainID must be a string")
 	errLoadSkillsMustBeArray    = errors.New("load_skills must be an array of strings")
 	errHandoffMustBeObject      = errors.New("handoff must be an object")
 	errBackgroundModeDisabled   = errors.New("background mode disabled: no background manager configured")
@@ -110,6 +111,7 @@ type delegationTarget struct {
 	message          string
 	handoff          *delegation.Handoff
 	chainID          string
+	chainIDFromCaller bool // chainIDFromCaller distinguishes a planner-supplied chainID from the auto-generated fallback; only the former drives preamble injection.
 	resolvedModel    string
 	resolvedProvider string
 	requestedSession string // requestedSession carries the caller-supplied session_id for resumption.
@@ -124,6 +126,7 @@ type delegationParams struct {
 	message      string
 	loadSkills   []string
 	sessionID    string
+	chainID      string // chainID is the caller-supplied top-level chainID; empty when omitted.
 	handoff      *delegation.Handoff
 	runAsync     bool
 }
@@ -599,6 +602,16 @@ func (d *DelegateTool) Schema() tool.Schema {
 				Type:        "object",
 				Description: "Optional handoff metadata including ChainID for coordination",
 			},
+			"chainID": {
+				Type: "string",
+				Description: "Optional coordination chainID. When set, the delegate tool " +
+					"auto-injects a structured preamble into the specialist's user message " +
+					"stating `chainID=<value>` plus, for specialists with a well-known " +
+					"coordination_store key convention (explorer, librarian, analyst, " +
+					"plan-writer, plan-reviewer), the canonical target key " +
+					"`<chainID>/<role-convention>`. The caller no longer needs to write the " +
+					"chainID into the free-form `message` itself.",
+			},
 		},
 		Required: []string{"subagent_type", "message"},
 	}
@@ -667,6 +680,21 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	chainID := target.chainID
 	if chainID == "" {
 		chainID = newDelegationChainID()
+	}
+
+	// Auto-inject the chainID preamble (and role-specific coord_store
+	// key) only when the caller actually supplied a chainID — the
+	// auto-generated fallback stays internal so backwards-compatible
+	// call sites see no preamble. Propagate the authoritative chainID
+	// onto the handoff so downstream DelegationInfo events and the
+	// RejectionTracker observe the planner-allocated namespace, not
+	// the fallback.
+	if target.chainIDFromCaller {
+		target.message = autoInjectChainIDPreamble(target.message, target.agentID, chainID)
+		if target.handoff == nil {
+			target.handoff = &delegation.Handoff{}
+		}
+		target.handoff.ChainID = chainID
 	}
 
 	injectVisitedAgents(&target, d.sourceAgentID)
@@ -797,6 +825,14 @@ func populateDelegationMetadata(params *delegationParams, arguments map[string]i
 			return errSessionIDMustBeString
 		}
 		params.sessionID = sessionID
+	}
+
+	if raw, ok := arguments["chainID"]; ok && raw != nil {
+		chainID, ok := raw.(string)
+		if !ok {
+			return errChainIDMustBeString
+		}
+		params.chainID = chainID
 	}
 
 	return nil
@@ -1393,10 +1429,20 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, err
 	}
 
+	// Precedence: top-level chainID > handoff.chain_id > fresh fallback.
+	// chainIDFromCaller distinguishes a planner-supplied value (which
+	// drives preamble injection) from the auto-generated fallback (which
+	// stays internal for backwards compatibility).
 	var chainID string
-	if params.handoff != nil {
+	chainIDFromCaller := false
+	switch {
+	case params.chainID != "":
+		chainID = params.chainID
+		chainIDFromCaller = true
+	case params.handoff != nil && params.handoff.ChainID != "":
 		chainID = params.handoff.ChainID
-	} else {
+		chainIDFromCaller = true
+	default:
 		chainID = newDelegationChainID()
 	}
 
@@ -1416,16 +1462,17 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 	d.applySkillsAndSessionMode(targetEngine, params)
 
 	return delegationTarget{
-		agentID:          targetAgentID,
-		engine:           targetEngine,
-		message:          params.message,
-		handoff:          params.handoff,
-		chainID:          chainID,
-		resolvedModel:    resolvedModel,
-		resolvedProvider: resolvedProvider,
-		requestedSession: params.sessionID,
-		denyDelegate:     !d.agentHasToolPermission(targetAgentID, "delegate"),
-		denyTodoWrite:    !d.agentHasToolPermission(targetAgentID, "todowrite"),
+		agentID:           targetAgentID,
+		engine:            targetEngine,
+		message:           params.message,
+		handoff:           params.handoff,
+		chainID:           chainID,
+		chainIDFromCaller: chainIDFromCaller,
+		resolvedModel:     resolvedModel,
+		resolvedProvider:  resolvedProvider,
+		requestedSession:  params.sessionID,
+		denyDelegate:      !d.agentHasToolPermission(targetAgentID, "delegate"),
+		denyTodoWrite:     !d.agentHasToolPermission(targetAgentID, "todowrite"),
 	}, nil
 }
 
@@ -1609,6 +1656,81 @@ func (d *DelegateTool) checkRejectionLimit(ctx context.Context, chainID string) 
 //   - Reads the current clock to ensure uniqueness.
 func newDelegationChainID() string {
 	return fmt.Sprintf("chain-%d", time.Now().UTC().UnixNano())
+}
+
+// coordStoreKeyConvention returns the canonical coord-store key suffix
+// for the given specialist agent ID, or the empty string when the
+// agent is outside the known set. The map encodes the contract that
+// each role-specific prompt repeats in English; the engine owns this
+// suffix-per-role mapping as data so the auto-injection helper can
+// construct the canonical key without re-parsing prompts.
+//
+// Expected:
+//   - agentID is the specialist's manifest ID.
+//
+// Returns:
+//   - The coord-store suffix when the agent is in the known set.
+//   - "" when the agent is custom or ad-hoc.
+//
+// Side effects:
+//   - None.
+func coordStoreKeyConvention(agentID string) string {
+	switch agentID {
+	case "explorer":
+		return "codebase-findings"
+	case "librarian":
+		return "external-refs"
+	case "analyst":
+		return "analysis"
+	case "plan-writer":
+		return "plan"
+	case "plan-reviewer":
+		return "review"
+	default:
+		return ""
+	}
+}
+
+// autoInjectChainIDPreamble prepends a structured chainID preamble to
+// the message when chainID is non-empty AND the message does not
+// already contain `chainID=<value>`. For specialists in the
+// coordStoreKeyConvention map, the preamble also names the canonical
+// `coordination_store key=<chainID>/<role-suffix>` line. Agents outside
+// the map receive the chainID line only.
+//
+// Idempotency is the contract that lets the planner prompt continue
+// to embed the chainID in free-form text (the post-e899dcc
+// behaviour) without ever producing duplicates: the injector detects
+// the existing substring and returns the message unchanged.
+//
+// Expected:
+//   - message is the caller's free-form delegation message.
+//   - agentID is the target specialist's manifest ID.
+//   - chainID is the authoritative chain identifier; when empty the
+//     message is returned unchanged.
+//
+// Returns:
+//   - The composed user message with preamble (or the original message
+//     when no injection is required).
+//
+// Side effects:
+//   - None.
+func autoInjectChainIDPreamble(message, agentID, chainID string) string {
+	if chainID == "" {
+		return message
+	}
+	marker := "chainID=" + chainID
+	if strings.Contains(message, marker) {
+		return message
+	}
+	preamble := marker + "."
+	if suffix := coordStoreKeyConvention(agentID); suffix != "" {
+		preamble += " Write your findings to coordination_store key=" + chainID + "/" + suffix + "."
+	}
+	if message == "" {
+		return preamble
+	}
+	return preamble + "\n\n" + message
 }
 
 // emitDelegationEvent sends a DelegationInfo chunk to the output channel when available.
