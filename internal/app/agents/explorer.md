@@ -17,6 +17,7 @@ capabilities:
     - bash
     - file
     - coordination_store
+    - skill_load
   skills:
     - research
     - code-reading

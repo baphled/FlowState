@@ -15,6 +15,7 @@ capabilities:
   tools:
     - file
     - coordination_store
+    - skill_load
   skills:
     - critical-thinking
     - epistemic-rigor
