@@ -16,6 +16,9 @@ capabilities:
     - bash
     - file
     - web
+    - skill_load
+    - plan_list
+    - plan_read
   skills:
     - task-tracker
     - parallel-execution

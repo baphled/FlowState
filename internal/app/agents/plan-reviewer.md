@@ -16,6 +16,7 @@ capabilities:
     - bash
     - file
     - coordination_store
+    - skill_load
   skills:
     - critical-thinking
     - epistemic-rigor
