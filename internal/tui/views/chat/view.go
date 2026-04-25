@@ -61,6 +61,18 @@ type View struct {
 	// final assistant message of the turn. Set by SetTurnDuration
 	// just before HandleChunk's Done path runs.
 	turnDuration time.Duration
+
+	// cachedPartial* throttle the streaming-time markdown re-parse.
+	// Token-stream providers can deliver 14+ chunks/sec; without a
+	// throttle each chunk fires a fresh Glamour re-parse on the
+	// growing v.response. By the end of a long turn the response is
+	// thousands of chars and each re-parse takes ~5-50ms — that
+	// burns CPU during streaming. We cap the re-parse rate at ~10 fps
+	// (every 100ms): the user perceives no difference at that
+	// cadence, and the cost stops scaling with chunk rate.
+	cachedPartialRender   string
+	cachedPartialResponse string
+	cachedPartialAt       time.Time
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -153,6 +165,7 @@ func (v *View) FlushPartialResponse() {
 	// caller that sets ModelID on the appended message.
 	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response, AgentColor: v.agentColor})
 	v.response = ""
+	v.invalidatePartialCache()
 }
 
 // Messages returns a copy of the view's messages slice.
@@ -177,6 +190,75 @@ func (v *View) StartStreaming() {
 	v.toolCallStatus = ""
 	v.toolCallArgs = nil
 	v.toolCallResult = ""
+	v.invalidatePartialCache()
+}
+
+// invalidatePartialCache clears the throttled partial-render cache.
+// Called at every stream-state boundary so a fresh stream starts
+// without inheriting the previous turn's cached output.
+//
+// Side effects:
+//   - Resets cachedPartialRender, cachedPartialResponse, cachedPartialAt.
+func (v *View) invalidatePartialCache() {
+	v.cachedPartialRender = ""
+	v.cachedPartialResponse = ""
+	v.cachedPartialAt = time.Time{}
+}
+
+// renderPartialResponseThrottled renders v.response through markdown
+// at most ~10 fps regardless of how fast chunks arrive. Token-stream
+// providers can deliver 14+ chunks/sec; without a throttle each
+// chunk fires a fresh Glamour re-parse on the growing string and
+// CPU spikes (~14% of wall-time on a typical 5k-char response). The
+// throttle:
+//
+//   - Returns the cached render verbatim when v.response hasn't
+//     changed since last call (tick chunks, no-op refreshes).
+//   - Returns the cached render when v.response HAS changed but
+//     less than 100ms have passed (chunk burst).
+//   - Re-renders and updates the cache otherwise.
+//
+// On the final chunk (Done) finaliseChunk commits v.response to
+// renderedMessages and clears the partial cache, so the user sees
+// the fully-rendered final message at end-of-turn regardless of
+// throttle state.
+//
+// Expected:
+//   - v.response is non-empty.
+//   - th is the active theme.
+//   - width is the render width in columns.
+//
+// Returns:
+//   - The (possibly cached) markdown-rendered partial response.
+//
+// Side effects:
+//   - May update cachedPartialRender / cachedPartialResponse /
+//     cachedPartialAt when a fresh render runs.
+func (v *View) renderPartialResponseThrottled(th theme.Theme, width int) string {
+	const minInterval = 100 * time.Millisecond
+
+	if v.cachedPartialResponse == v.response && v.cachedPartialRender != "" {
+		return v.cachedPartialRender
+	}
+	if v.cachedPartialRender != "" && !v.cachedPartialAt.IsZero() &&
+		time.Since(v.cachedPartialAt) < minInterval {
+		return v.cachedPartialRender
+	}
+
+	mw := widgets.NewMessageWidget("assistant", v.response, th)
+	mw.SetAgentColor(v.agentColor)
+	// ModelID intentionally omitted — see appendStreamingContent.
+	if v.renderFunc != nil {
+		mw.SetMarkdownRenderer(v.renderFunc)
+	} else {
+		mw.SetMarkdownRenderer(v.renderMarkdown)
+	}
+	rendered := mw.Render(width)
+
+	v.cachedPartialRender = rendered
+	v.cachedPartialResponse = v.response
+	v.cachedPartialAt = time.Now()
+	return rendered
 }
 
 // HandleChunk processes a streaming response chunk.
@@ -236,6 +318,7 @@ func (v *View) finaliseChunk(content string, errMsg string) {
 	v.response = ""
 	v.turnStartedAt = time.Time{}
 	v.turnDuration = 0
+	v.invalidatePartialCache()
 }
 
 // SetTurnStartedAt records the instant the current streaming turn
@@ -599,19 +682,7 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 	}
 
 	if v.response != "" {
-		mw := widgets.NewMessageWidget("assistant", v.response, th)
-		mw.SetAgentColor(v.agentColor)
-		// ModelID intentionally omitted — this is the streaming
-		// partial. The model + duration footer renders on the final
-		// committed assistant message via finaliseChunk; setting it
-		// here would render the footer above any subsequent inline
-		// tool widget (the "Reading… below the footer" bug).
-		if v.renderFunc != nil {
-			mw.SetMarkdownRenderer(v.renderFunc)
-		} else {
-			mw.SetMarkdownRenderer(v.renderMarkdown)
-		}
-		sb.WriteString(mw.Render(width))
+		sb.WriteString(v.renderPartialResponseThrottled(th, width))
 		sb.WriteString("\n")
 	}
 	if v.toolCallName != "" && v.toolCallStatus != "" {
