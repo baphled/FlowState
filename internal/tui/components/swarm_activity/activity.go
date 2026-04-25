@@ -73,6 +73,37 @@ type SwarmActivityPane struct {
 	// startup (before any session has been loaded) while preventing the
 	// confusing permanent-placeholder case for brand-new, empty sessions.
 	hasSeenRealEvents bool
+
+	// cachedRenderKey + cachedRender memoise Render output across frames.
+	// The chat intent re-renders the activity pane on every keystroke and
+	// every stream chunk, but events are append-only and most frames have
+	// no relevant change — the swarmStore.All() slice grows when an event
+	// arrives and is otherwise identical. The cache key is a comparable
+	// fingerprint over inputs that affect the output; cache hits skip the
+	// O(n) coalesceToolCalls scan + per-event lipgloss styling entirely.
+	cachedRenderKey renderCacheKey
+	cachedRender    string
+	cacheValid      bool
+}
+
+// renderCacheKey is the fingerprint of all inputs that influence
+// SwarmActivityPane.Render output. All fields are comparable so the
+// struct itself supports == for cache-hit detection.
+//
+// firstEventID + lastEventID are paired with eventCount because the
+// underlying MemorySwarmStore is append-only with eviction-at-capacity:
+// new events change the last ID; eviction at capacity changes the
+// first ID. With all three fields, any mutation to the visible event
+// window is detected without hashing every event each frame.
+type renderCacheKey struct {
+	width             int
+	height            int
+	eventCount        int
+	firstEventID      string
+	lastEventID       string
+	profileName       string
+	hasSeenRealEvents bool
+	typeMask          uint8 // 5 bits, one per known type (delegation/toolcall/toolresult/plan/review)
 }
 
 // NewSwarmActivityPane constructs a pane with placeholder timeline items.
@@ -118,6 +149,11 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 		return ""
 	}
 
+	key := p.computeRenderCacheKey(width, height)
+	if p.cacheValid && key == p.cachedRenderKey {
+		return p.cachedRender
+	}
+
 	lines := make([]string, 0, height)
 
 	// Header with optional count summary.
@@ -150,7 +186,50 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 	}
 	lines = append(lines, body...)
 
-	return strings.Join(lines, "\n")
+	rendered := strings.Join(lines, "\n")
+	p.cachedRenderKey = key
+	p.cachedRender = rendered
+	p.cacheValid = true
+	return rendered
+}
+
+// computeRenderCacheKey builds the fingerprint of all inputs that
+// influence Render output. The events slice is keyed solely by length:
+// the swarm store is append-only, so a constant length implies constant
+// contents. visibleTypes is collapsed into a 5-bit mask using a fixed
+// type ordering so the key stays comparable.
+func (p *SwarmActivityPane) computeRenderCacheKey(width, height int) renderCacheKey {
+	var mask uint8
+	if p.visibleTypes[streaming.EventDelegation] {
+		mask |= 1 << 0
+	}
+	if p.visibleTypes[streaming.EventToolCall] {
+		mask |= 1 << 1
+	}
+	if p.visibleTypes[streaming.EventToolResult] {
+		mask |= 1 << 2
+	}
+	if p.visibleTypes[streaming.EventPlan] {
+		mask |= 1 << 3
+	}
+	if p.visibleTypes[streaming.EventReview] {
+		mask |= 1 << 4
+	}
+	var firstID, lastID string
+	if n := len(p.events); n > 0 {
+		firstID = p.events[0].ID
+		lastID = p.events[n-1].ID
+	}
+	return renderCacheKey{
+		width:             width,
+		height:            height,
+		eventCount:        len(p.events),
+		firstEventID:      firstID,
+		lastEventID:       lastID,
+		profileName:       p.profileName,
+		hasSeenRealEvents: p.hasSeenRealEvents,
+		typeMask:          mask,
+	}
 }
 
 // WithEvents swaps the pane's body source from placeholder items to the
