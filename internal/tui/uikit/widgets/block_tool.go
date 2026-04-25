@@ -139,7 +139,10 @@ func (b *BlockTool) Render() string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return b.borderStyle.Render(b.titleStyle.Render("# "+b.name+" "+b.input) + "\n" + content)
+	// Title carries the tool-specific icon so the expanded form retains
+	// the visual identity the collapsed form already had.
+	title := ToolIcon(b.name) + " " + b.name + " " + b.input
+	return b.borderStyle.Render(b.titleStyle.Render(title) + "\n" + content)
 }
 
 // truncateText returns the input truncated to the requested length.

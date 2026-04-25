@@ -204,19 +204,23 @@ var _ = Describe("ChatView", func() {
 				Expect(msgs[1].Role).To(Equal("tool_call"))
 			})
 
-			It("renders committed response text before tool_call in output", func() {
+			It("renders committed response text before tool_call data in output (tool_call itself is suppressed; ordering pinned via tool_result)", func() {
 				view.SetStreaming(true, "text before tool call")
 				view.FlushPartialResponse()
 				view.AddMessage(chat.Message{Role: "tool_call", Content: "bash"})
+				// Add a paired tool_result so we have something visible
+				// after the response text — tool_call rendering is
+				// suppressed because tool_result carries the rich block.
+				view.AddMessage(chat.Message{Role: "tool_result", Content: "ls output", ToolName: "bash", ToolInput: "ls"})
 
 				content := view.RenderContent(80)
 
 				textPos := strings.Index(content, "text before tool call")
-				toolCallPos := strings.Index(content, "bash")
+				toolResultPos := strings.Index(content, "ls output")
 
 				Expect(textPos).To(BeNumerically(">=", 0), "response text should appear")
-				Expect(toolCallPos).To(BeNumerically(">=", 0), "tool call should appear")
-				Expect(textPos).To(BeNumerically("<", toolCallPos), "response text before tool call")
+				Expect(toolResultPos).To(BeNumerically(">=", 0), "tool_result should appear in place of tool_call")
+				Expect(textPos).To(BeNumerically("<", toolResultPos), "response text before tool block")
 			})
 		})
 

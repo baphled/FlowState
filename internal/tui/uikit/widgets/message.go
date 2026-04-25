@@ -208,11 +208,22 @@ func (w *MessageWidget) Render(width int) string {
 func (w *MessageWidget) renderToolMessage() string {
 	switch w.role {
 	case "tool_call":
-		icon := ToolIcon(strings.SplitN(w.content, ": ", 2)[0])
-		return w.toolStyle.Render(icon + " " + w.content)
+		// Suppressed: every committed tool_call is paired with a
+		// tool_result message that renders the full rich BlockTool
+		// (name + input + output). The previous "<icon> <name>" line
+		// above the BlockTool was pure redundancy. Suppressing it
+		// gives one rich block per tool invocation, matching the
+		// streaming ToolCallWidget's combined block.
+		return ""
 	case "tool_result":
 		if w.toolName != "" {
-			return NewBlockTool(w.toolName, w.toolInput, w.content).Render()
+			// Default to expanded so the result content is visible
+			// alongside name + input. The streaming ToolCallWidget
+			// shows args + result preview as a single combined block;
+			// the static history matches that richness here.
+			block := NewBlockTool(w.toolName, w.toolInput, w.content)
+			block.SetExpanded(true)
+			return block.Render()
 		}
 		return w.resultStyle.Render("📤 " + w.content)
 	case "tool_error":

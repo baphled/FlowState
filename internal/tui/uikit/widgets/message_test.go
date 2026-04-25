@@ -66,23 +66,23 @@ var _ = Describe("MessageWidget", func() {
 		})
 
 		Context("tool_call messages", func() {
-			It("includes the tool-specific icon prefix", func() {
+			// Static tool_call rendering is suppressed — every committed
+			// tool_call is paired with a tool_result message that renders
+			// the full rich BlockTool (name + input + output). The sparse
+			// "<icon> <name>" line above the BlockTool was pure
+			// redundancy. Suppressing it gives one rich block per tool
+			// invocation, matching the streaming ToolCallWidget's
+			// combined block.
+			It("renders empty so tool_result owns the rich block", func() {
 				w := widgets.NewMessageWidget("tool_call", "bash", th)
 				output := w.Render(80)
-				Expect(output).To(ContainSubstring("$"))
+				Expect(output).To(BeEmpty())
 			})
 
-			It("includes the tool name as content", func() {
+			It("renders empty regardless of tool name (read_file)", func() {
 				w := widgets.NewMessageWidget("tool_call", "read_file", th)
 				output := w.Render(80)
-				Expect(output).To(ContainSubstring("read_file"))
-			})
-
-			It("does not include You or Assistant labels", func() {
-				w := widgets.NewMessageWidget("tool_call", "bash", th)
-				output := w.Render(80)
-				Expect(output).NotTo(ContainSubstring("You"))
-				Expect(output).NotTo(ContainSubstring("Assistant"))
+				Expect(output).To(BeEmpty())
 			})
 		})
 
@@ -233,26 +233,15 @@ var _ = Describe("MessageWidget", func() {
 		})
 
 		Context("tool_call with tool-specific icon", func() {
-			It("renders tool_call with tool-specific icon not wrench emoji", func() {
-				w := widgets.NewMessageWidget("tool_call", "bash: ls -la", th)
-				result := w.Render(80)
-				Expect(result).To(ContainSubstring("$"))
-				Expect(result).NotTo(ContainSubstring("🔧"))
-				Expect(result).To(ContainSubstring("bash: ls -la"))
-			})
-
-			It("renders tool_call with read icon for read tool", func() {
-				w := widgets.NewMessageWidget("tool_call", "read: /path/to/file", th)
-				result := w.Render(80)
-				Expect(result).To(ContainSubstring("→"))
-				Expect(result).NotTo(ContainSubstring("🔧"))
-			})
-
-			It("renders tool_call with default icon for unknown tool", func() {
-				w := widgets.NewMessageWidget("tool_call", "unknown_tool", th)
-				result := w.Render(80)
-				Expect(result).NotTo(ContainSubstring("🔧"))
-				Expect(result).To(ContainSubstring("unknown_tool"))
+			// Tool icon work moved to the live ToolCallWidget which is
+			// where users actually see the running tool. Static tool_call
+			// rendering is suppressed (see "tool_call messages" Context
+			// above) so per-tool icons are not asserted here anymore.
+			It("renders empty for any tool_call content (icons live on ToolCallWidget)", func() {
+				for _, content := range []string{"bash: ls -la", "read: /path/to/file", "unknown_tool"} {
+					w := widgets.NewMessageWidget("tool_call", content, th)
+					Expect(w.Render(80)).To(BeEmpty(), "content=%q", content)
+				}
 			})
 		})
 
