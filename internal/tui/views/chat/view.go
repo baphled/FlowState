@@ -36,6 +36,8 @@ type View struct {
 	renderFunc            func(string, int) string
 	toolCallName          string
 	toolCallStatus        string
+	toolCallArgs          map[string]any
+	toolCallResult        string
 	delegationInfo        *provider.DelegationInfo
 	activeDelegationBlock *CollapsibleDelegationBlock
 	tickFrame             int
@@ -150,6 +152,8 @@ func (v *View) StartStreaming() {
 	v.response = ""
 	v.toolCallName = ""
 	v.toolCallStatus = ""
+	v.toolCallArgs = nil
+	v.toolCallResult = ""
 }
 
 // HandleChunk processes a streaming response chunk.
@@ -254,6 +258,32 @@ func (v *View) SetStreaming(streaming bool, response string) {
 func (v *View) SetToolCall(name, status string) {
 	v.toolCallName = name
 	v.toolCallStatus = status
+}
+
+// SetToolCallArgs records the raw provider tool-call arguments map for
+// rendering by the inline ToolCallWidget. Callers should pair this with
+// SetToolCall (or HandleChunk) so the widget has both the status and
+// the args available when it renders.
+//
+// Expected:
+//   - args is the provider.ToolCall.Arguments map; nil clears prior args.
+//
+// Side effects:
+//   - Updates the toolCallArgs field.
+func (v *View) SetToolCallArgs(args map[string]any) {
+	v.toolCallArgs = args
+}
+
+// SetToolCallResult records the tool-result body (or error text) for
+// rendering an inline preview under the completed/errored tool widget.
+//
+// Expected:
+//   - result is the tool output as received from the engine; empty clears.
+//
+// Side effects:
+//   - Updates the toolCallResult field.
+func (v *View) SetToolCallResult(result string) {
+	v.toolCallResult = result
 }
 
 // SetMarkdownRenderer sets a custom function for rendering markdown content.
@@ -505,7 +535,9 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 		sb.WriteString("\n")
 	}
 	if v.toolCallName != "" && v.toolCallStatus != "" {
-		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus)
+		tcw := widgets.NewToolCallWidget(v.toolCallName, v.toolCallStatus).
+			SetArgs(v.toolCallArgs).
+			SetResult(v.toolCallResult)
 		sb.WriteString(tcw.Render())
 		sb.WriteString("\n")
 	}

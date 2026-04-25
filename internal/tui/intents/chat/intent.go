@@ -1620,6 +1620,16 @@ func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	}
 
 	i.view.HandleChunk(msg.Content, msg.Done, errMsg, msg.ToolCallName, msg.ToolStatus)
+	// Forward the rich tool-call payload (raw args map + result preview)
+	// alongside the legacy name/status fields so the inline ToolCallWidget
+	// can render an opencode-style "name: arg" header plus a 1-5 line
+	// result snippet without re-parsing the flattened summary string.
+	if msg.ToolCallArgs != nil {
+		i.view.SetToolCallArgs(msg.ToolCallArgs)
+	}
+	if msg.ToolResult != "" {
+		i.view.SetToolCallResult(msg.ToolResult)
+	}
 
 	i.accumulateResponseTokens(msg.Content)
 	i.flushThinking(msg.Done)
