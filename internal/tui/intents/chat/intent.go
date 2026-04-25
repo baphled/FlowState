@@ -1590,6 +1590,45 @@ func (i *Intent) formatStreamError(err error) string {
 	return chat.FormatErrorMessage(err)
 }
 
+// shouldRefreshViewport reports whether the streamed chunk causes a
+// visible change in the message viewport. Empty heartbeat-style chunks
+// (no content, no tool change, no done flag, no pending tool-call
+// commit) skip the refresh — a no-op refresh re-renders the entire
+// message slice through markdown + lipgloss styling, which is
+// expensive and shows up in profiles during streaming. Status-bar
+// updates flow through Bubble Tea's View() path, not refreshViewport,
+// so syncStatusBar work is unaffected by the skip.
+//
+// Expected:
+//   - msg is the incoming StreamChunkMsg.
+//   - i.activeToolCall reflects state set by an earlier chunk (a
+//     pending tool_call commit that THIS chunk will trigger via
+//     handleStreamChunk's commitToolCall).
+//
+// Returns:
+//   - true when the chunk affects the message viewport's contents.
+//
+// Side effects:
+//   - None (pure inspection).
+func (i *Intent) shouldRefreshViewport(msg StreamChunkMsg) bool {
+	if msg.Done || msg.Error != nil || msg.DelegationInfo != nil {
+		return true
+	}
+	if msg.Content != "" || msg.Thinking != "" {
+		return true
+	}
+	if msg.ToolCallName != "" || msg.ToolStatus != "" || msg.ToolResult != "" {
+		return true
+	}
+	// A previously-stored activeToolCall commits via commitToolCall on
+	// the next non-tool-name chunk. Refresh so the committed message
+	// becomes visible.
+	if i.activeToolCall != "" {
+		return true
+	}
+	return false
+}
+
 // handleStreamChunk processes a streaming response chunk.
 //
 // Expected:
@@ -1791,8 +1830,15 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		return batchCmds(i.handleStreamingEvent(msg), appendedCmd)
 	}
 	appendedCmd := i.recordSwarmEvent(msg)
+	// Capture the pre-handler "is a commit pending" signal — once
+	// handleStreamChunk runs, i.activeToolCall is cleared by
+	// commitToolCall, so the post-handler check would miss the case
+	// where a chunk with empty fields triggers a tool_call commit.
+	needsRefresh := i.shouldRefreshViewport(msg)
 	i.handleStreamChunk(msg)
-	i.refreshViewport()
+	if needsRefresh {
+		i.refreshViewport()
+	}
 	if msg.Done {
 		i.resetTurnState()
 	}
