@@ -217,13 +217,17 @@ func (w *MessageWidget) renderToolMessage() string {
 		return ""
 	case "tool_result":
 		if w.toolName != "" {
-			// Default to expanded so the result content is visible
-			// alongside name + input. The streaming ToolCallWidget
-			// shows args + result preview as a single combined block;
-			// the static history matches that richness here.
-			block := NewBlockTool(w.toolName, w.toolInput, w.content)
-			block.SetExpanded(true)
-			return block.Render()
+			// Default-collapsed: render the title line only. Long
+			// tool outputs (file reads, command output) would dump
+			// up to 10 lines of content into chat history with the
+			// expanded form, which the user reported as "the
+			// reading output is rendered straight to the chat".
+			// Claude Code's pattern: compact one-line summary in
+			// history, with the live streaming widget having
+			// already shown a result preview during execution. The
+			// expanded form remains available for a future
+			// interactive toggle.
+			return NewBlockTool(w.toolName, w.toolInput, w.content).Render()
 		}
 		return w.resultStyle.Render("📤 " + w.content)
 	case "tool_error":

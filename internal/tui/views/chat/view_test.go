@@ -211,16 +211,21 @@ var _ = Describe("ChatView", func() {
 				// Add a paired tool_result so we have something visible
 				// after the response text — tool_call rendering is
 				// suppressed because tool_result carries the rich block.
+				// The collapsed BlockTool renders the title line
+				// "<icon> <name>: <input>"; the result content is NOT
+				// part of the collapsed form (default), so we anchor
+				// the post-text marker on "bash" (visible as part of
+				// the title) rather than the content "ls output".
 				view.AddMessage(chat.Message{Role: "tool_result", Content: "ls output", ToolName: "bash", ToolInput: "ls"})
 
 				content := view.RenderContent(80)
 
 				textPos := strings.Index(content, "text before tool call")
-				toolResultPos := strings.Index(content, "ls output")
+				toolBlockPos := strings.Index(content, "bash")
 
 				Expect(textPos).To(BeNumerically(">=", 0), "response text should appear")
-				Expect(toolResultPos).To(BeNumerically(">=", 0), "tool_result should appear in place of tool_call")
-				Expect(textPos).To(BeNumerically("<", toolResultPos), "response text before tool block")
+				Expect(toolBlockPos).To(BeNumerically(">=", 0), "tool_result title should appear in place of tool_call")
+				Expect(textPos).To(BeNumerically("<", toolBlockPos), "response text before tool block")
 			})
 		})
 
