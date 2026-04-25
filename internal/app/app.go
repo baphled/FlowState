@@ -1021,18 +1021,25 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		// Mirror of the non-delegating branch in
 		// wireSuggestDelegateToolIfDisabled: when swapping from a
 		// delegating manifest to a non-delegating one, the delegate
-		// tool and its siblings (background_output, background_cancel,
-		// coordination_store) are no longer meaningful and must be
-		// unregistered. Leaving them in place produces a tool schema
-		// the active manifest is not permitted to use and, when paired
-		// with a freshly-added suggest_delegate, drives Anthropic to
-		// reject the request with "tool names must be unique".
-		// RemoveTool is idempotent — the no-op case on the
-		// non-delegate→non-delegate path is safe.
+		// tool and its siblings (background_output, background_cancel)
+		// are no longer meaningful and must be unregistered. Leaving
+		// them in place produces a tool schema the active manifest is
+		// not permitted to use and, when paired with a freshly-added
+		// suggest_delegate, drives Anthropic to reject the request
+		// with "tool names must be unique". RemoveTool is idempotent —
+		// the no-op case on the non-delegate→non-delegate path is
+		// safe.
+		//
+		// coordination_store is intentionally NOT in this remove list:
+		// its lifecycle is governed solely by
+		// manifest.Capabilities.Tools (per ADR §Decision 9), not by
+		// CanDelegate. Non-delegating agents that opted in via the
+		// manifest must keep the tool. wireCoordinationToolIfDeclared
+		// handles the both-directions case from the canonical guard.
 		eng.RemoveTool("delegate")
 		eng.RemoveTool("background_output")
 		eng.RemoveTool("background_cancel")
-		eng.RemoveTool("coordination_store")
+		a.wireCoordinationToolIfDeclared(eng, manifest, nil)
 		return
 	}
 
@@ -1070,9 +1077,44 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		eng.AddTool(engine.NewBackgroundCancelTool(bgManager))
 	}
 
-	if a.hasCoordinationTool(manifest.Capabilities.Tools) && !eng.HasTool("coordination_store") {
-		eng.AddTool(coordinationtool.New(coordinationStore))
+	a.wireCoordinationToolIfDeclared(eng, manifest, coordinationStore)
+}
+
+// wireCoordinationToolIfDeclared honours the manifest's coordination_store
+// opt-in independently of CanDelegate. The tool is added when the manifest
+// declares it and removed when it does not — both directions, so a
+// manifest swap that drops the declaration cleans up.
+//
+// Expected:
+//   - eng is non-nil.
+//   - existingStore may be nil. The delegating branch passes its shared
+//     store so coordinator and delegates see the same keys during a
+//     chain. The non-delegating branch passes nil; a fresh store is
+//     constructed via createCoordinationStore — file-backed paths are
+//     deterministic so the two store instances refer to the same on-disk
+//     file, and non-delegating agents do not participate in cross-agent
+//     chains.
+//
+// Side effects:
+//   - Adds or removes the coordination_store tool on eng based on the
+//     manifest's capabilities.tools declaration.
+func (a *App) wireCoordinationToolIfDeclared(
+	eng *engine.Engine,
+	manifest agent.Manifest,
+	existingStore coordination.Store,
+) {
+	if !a.hasCoordinationTool(manifest.Capabilities.Tools) {
+		eng.RemoveTool("coordination_store")
+		return
 	}
+	if eng.HasTool("coordination_store") {
+		return
+	}
+	store := existingStore
+	if store == nil {
+		store = createCoordinationStore(a.Config)
+	}
+	eng.AddTool(coordinationtool.New(store))
 }
 
 // configureDelegateTool applies the App-level dependencies (registry,
