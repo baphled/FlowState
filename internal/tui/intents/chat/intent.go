@@ -4128,7 +4128,26 @@ func (i *Intent) refreshSessionTrail() {
 //   - May call i.view.AddMessage.
 func (i *Intent) replayStoredMessage(sm recall.StoredMessage, lastToolCallName string) string {
 	switch {
-	case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0 && sm.Message.Content == "":
+	case sm.Message.Role == "assistant" && len(sm.Message.ToolCalls) > 0:
+		// Assistant messages can carry BOTH free-form content AND
+		// tool_calls in the same turn (e.g. "I'll read that file
+		// for you." followed by a read tool_call). The previous
+		// branch only fired when Content was empty and dropped the
+		// tool_calls when both were present, which made replay lose
+		// every tool block whose assistant turn had any preamble
+		// text — and broke lastToolCallName tracking so the
+		// subsequent tool_result was misrouted too. Handle both:
+		// commit the content as a mid-turn assistant partial
+		// (without ModelID — mirrors FlushPartialResponse, so the
+		// model + duration footer renders only on the FINAL
+		// assistant message of the turn), then commit each tool_call.
+		if sm.Message.Content != "" {
+			i.view.AddMessage(chat.Message{
+				Role:       "assistant",
+				Content:    sm.Message.Content,
+				AgentColor: i.resolveCurrentAgentColor(),
+			})
+		}
 		for _, tc := range sm.Message.ToolCalls {
 			lastToolCallName = tc.Name
 			role := "tool_call"
