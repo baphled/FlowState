@@ -315,6 +315,15 @@ type Intent struct {
 	modelName          string
 	tokenBudget        int
 	tickFrame          int
+	// spinnerActive tracks whether the SpinnerTickMsg chain is in flight.
+	// Stream-chunk handlers ran tickSpinner() unconditionally on every
+	// chunk, which scheduled a fresh 100ms timer goroutine each time.
+	// Under fast streams (chunks arriving every 5-50ms) parallel tick
+	// chains accumulated, each firing Update+View at 10Hz; after a
+	// minute the host process held hundreds of timers and the CPU
+	// pegged. ensureSpinnerActive returns tickSpinner() only when the
+	// chain is dead, so at most one chain is ever active.
+	spinnerActive bool
 	streamChan         <-chan provider.StreamChunk
 	pendingPermission  *ToolPermissionMsg
 	// sessionApprovedTools is the P17.S3 session-scoped approval cache.
@@ -979,9 +988,41 @@ func (i *Intent) handleSpinnerTick() tea.Cmd {
 		i.loadingModal.AdvanceSpinner()
 	}
 	if i.view.IsStreaming() || i.loadingModal != nil {
+		// Chain stays alive — spinnerActive must be true so concurrent
+		// callers (chunk handlers, modal openers) don't kick off a
+		// second chain via ensureSpinnerActive.
+		i.spinnerActive = true
 		return tickSpinner()
 	}
+	// Nothing left to animate; the chain dies. Mark the slot free so the
+	// next stream-start (or modal-open) reschedules a single fresh tick.
+	i.spinnerActive = false
 	return nil
+}
+
+// ensureSpinnerActive returns a tickSpinner Cmd only when no spinner
+// chain is currently in flight. Stream-chunk handlers and loading-
+// modal entry points call this in place of tickSpinner() directly so
+// at most one 100ms timer chain runs at any given moment, regardless
+// of how many chunks arrive.
+//
+// Expected:
+//   - Caller intends to drive the spinner (streaming, loading, etc.).
+//
+// Returns:
+//   - tickSpinner() when no chain is active (and marks spinnerActive
+//     true).
+//   - nil when a chain is already running; caller batches the nil
+//     into its tea.Cmd return without effect.
+//
+// Side effects:
+//   - Mutates i.spinnerActive.
+func (i *Intent) ensureSpinnerActive() tea.Cmd {
+	if i.spinnerActive {
+		return nil
+	}
+	i.spinnerActive = true
+	return tickSpinner()
 }
 
 // handleSessionViewerTick refreshes the live session viewer with the latest
@@ -1843,12 +1884,12 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		i.resetTurnState()
 	}
 	if !msg.Done && msg.Next != nil {
-		return batchCmds(tea.Batch(msg.Next, tickSpinner()), appendedCmd)
+		return batchCmds(tea.Batch(msg.Next, i.ensureSpinnerActive()), appendedCmd)
 	}
 	if msg.Done {
 		return batchCmds(i.saveSession(), appendedCmd)
 	}
-	return batchCmds(tickSpinner(), appendedCmd)
+	return batchCmds(i.ensureSpinnerActive(), appendedCmd)
 }
 
 // maybeWarnPrematureDelegationMisfire adds a notification when the current
@@ -2035,9 +2076,9 @@ func (i *Intent) handleHarnessRetry(msg StreamChunkMsg) tea.Cmd {
 	i.view.StartStreaming()
 	i.refreshViewport()
 	if msg.Next != nil {
-		return tea.Batch(msg.Next, tickSpinner())
+		return tea.Batch(msg.Next, i.ensureSpinnerActive())
 	}
-	return tickSpinner()
+	return i.ensureSpinnerActive()
 }
 
 // handleHarnessEvent silently consumes harness observability events.
@@ -2085,9 +2126,9 @@ func (i *Intent) handleStreamingEvent(msg StreamChunkMsg) tea.Cmd {
 	i.view.AddMessage(chat.Message{Role: "system", Content: title + ": " + msg.Content})
 	i.refreshViewport()
 	if msg.Next != nil {
-		return tea.Batch(msg.Next, tickSpinner())
+		return tea.Batch(msg.Next, i.ensureSpinnerActive())
 	}
-	return tickSpinner()
+	return i.ensureSpinnerActive()
 }
 
 // recordSwarmEvent projects a StreamChunkMsg onto the swarm activity store
@@ -3654,7 +3695,7 @@ func (i *Intent) switchToSession(sessionID string) tea.Cmd {
 	i.sessionID = sessionID
 	i.loadingModal = feedback.NewLoadingModal("Loading session\u2026", false)
 	i.syncStatusBar()
-	return tea.Batch(tickSpinner(), i.loadSessionAsync(sessionID))
+	return tea.Batch(i.ensureSpinnerActive(), i.loadSessionAsync(sessionID))
 }
 
 // loadSessionAsync returns a command that loads a session from disk.
