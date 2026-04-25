@@ -407,9 +407,13 @@ func (v *View) RenderContent(width int) string {
 		v.renderedMessages = append(v.renderedMessages, v.renderMessage(v.messages[idx], th, width))
 	}
 
-	if v.streaming && msgCount > 0 && len(v.renderedMessages) == msgCount {
-		v.renderedMessages[msgCount-1] = v.renderMessage(v.messages[msgCount-1], th, width)
-	}
+	// The previous unconditional last-message re-render during streaming
+	// was redundant: the in-flight partial response and the active tool
+	// call are emitted by appendStreamingContent below, not by mutating
+	// the committed message cache. Re-rendering renderedMessages[-1] each
+	// frame doubled the markdown-render work for every Bubble Tea tick
+	// (10-50 Hz), which manifested as visible TUI lag. Keep the per-frame
+	// work bounded to the streaming partials.
 
 	estimatedSize := msgCount * 256
 	var sb strings.Builder
