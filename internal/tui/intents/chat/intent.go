@@ -1812,6 +1812,13 @@ func (i *Intent) appendThinking(thinking string) {
 		return
 	}
 	i.activeThinking += thinking
+	// Mirror to the view so the live "💭 thinking..." block at the
+	// top of the streaming pane updates as the agent reasons. The
+	// final committed Role: "thinking" Message still fires from
+	// flushThinking on Done so the reasoning persists in chat
+	// history; this just makes the in-flight reasoning visible
+	// while it's happening, matching Claude Code's pattern.
+	i.view.SetActiveThinking(i.activeThinking)
 }
 
 // flushThinking commits accumulated thinking content when streaming ends.
@@ -1827,6 +1834,10 @@ func (i *Intent) flushThinking(done bool) {
 	}
 	i.view.AddMessage(chat.Message{Role: "thinking", Content: i.activeThinking})
 	i.activeThinking = ""
+	// Clear the live thinking block on the view: the reasoning is
+	// now committed in chat history, so the in-flight render at the
+	// top of the streaming pane should disappear.
+	i.view.SetActiveThinking("")
 }
 
 // handleStreamChunkMsg processes a StreamChunkMsg and returns the appropriate tea.Cmd.

@@ -158,7 +158,15 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 // Side effects:
 //   - Blocks the caller and sleeps between polls.
 func (b *BackgroundOutputTool) pollUntilComplete(ctx context.Context, taskID string, timeoutMs int) string {
-	const defaultTimeoutMs = 30000
+	// 30s was too aggressive for real delegated tasks (file reads on
+	// large files, multi-step planner delegations, sub-agent
+	// inference cycles) and surfaced as "task polling timeout
+	// exceeded" errors mid-conversation when the model used
+	// background_output(block=true). 120s covers the common cases
+	// (the longest planner runs in flowstate.log were 1m48s); the
+	// model can still pass an explicit smaller `timeout` for
+	// time-sensitive paths.
+	const defaultTimeoutMs = 120000
 	const pollIntervalMs = 50
 
 	if timeoutMs == 0 {
