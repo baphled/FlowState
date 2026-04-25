@@ -315,6 +315,14 @@ type Intent struct {
 	modelName          string
 	tokenBudget        int
 	tickFrame          int
+	// turnStartedAt is the wall-clock instant the current streaming
+	// turn began (set by beginTurn). On the Done chunk the intent
+	// computes time.Since(turnStartedAt) and stamps it onto the view
+	// so finaliseChunk seals the duration into the final assistant
+	// message. Mirrors view.turnStartedAt; we track it on the intent
+	// as well so the duration computation does not depend on the
+	// view's state at Done time.
+	turnStartedAt time.Time
 	// spinnerActive tracks whether the SpinnerTickMsg chain is in flight.
 	// Stream-chunk handlers ran tickSpinner() unconditionally on every
 	// chunk, which scheduled a fresh 100ms timer goroutine each time.
@@ -1681,6 +1689,16 @@ func (i *Intent) shouldRefreshViewport(msg StreamChunkMsg) bool {
 func (i *Intent) handleStreamChunk(msg StreamChunkMsg) {
 	errMsg := i.formatStreamError(msg.Error)
 
+	// Stamp the turn duration onto the view BEFORE the Done path
+	// runs HandleChunk → finaliseChunk; finaliseChunk reads it from
+	// view.turnDuration when constructing the final assistant
+	// Message so the footer shows model + actual elapsed time
+	// instead of "0ms".
+	if msg.Done && !i.turnStartedAt.IsZero() {
+		i.view.SetTurnDuration(time.Since(i.turnStartedAt))
+		i.turnStartedAt = time.Time{}
+	}
+
 	i.appendThinking(msg.Thinking)
 
 	lastToolCall, committedSkill := i.commitToolCall(msg)
@@ -1962,6 +1980,12 @@ func (i *Intent) beginTurn(userMessage string) {
 	i.turnHasText = false
 	i.prematureWarningFired = false
 	i.userCancelled = false
+	// Capture the wall-clock turn-start so the streaming-time elapsed
+	// indicator (rendered at the bottom of the streaming block) and
+	// the final-message duration footer both have a reliable origin.
+	now := time.Now()
+	i.turnStartedAt = now
+	i.view.SetTurnStartedAt(now)
 }
 
 // maybeNotifySuggestDelegate inspects a chunk for a suggest_delegate

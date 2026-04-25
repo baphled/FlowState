@@ -2,7 +2,9 @@
 package chat
 
 import (
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +24,7 @@ type Message struct {
 	ToolInput  string         // set for tool_result messages (primary argument)
 	AgentColor lipgloss.Color // set for assistant messages (zero = use theme default)
 	ModelID    string         // set for assistant messages (empty = no footer)
+	Duration   time.Duration  // set on the final assistant message of a turn (zero = no duration shown)
 }
 
 // View represents the chat view component with messages and streaming state.
@@ -46,6 +49,18 @@ type View struct {
 	cachedRenderer        *glamour.TermRenderer
 	cachedRenderWidth     int
 	renderedMessages      []string
+
+	// turnStartedAt marks when the current streaming turn began. Set
+	// by SetTurnStartedAt at the user's send time and used by the
+	// streaming-time elapsed indicator (rendered at the end of
+	// appendStreamingContent so the user sees how long the turn has
+	// been running). Cleared by ClearTurnTiming once the duration is
+	// stamped onto the final assistant message.
+	turnStartedAt time.Time
+	// turnDuration is the duration finaliseChunk stamps onto the
+	// final assistant message of the turn. Set by SetTurnDuration
+	// just before HandleChunk's Done path runs.
+	turnDuration time.Duration
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -128,7 +143,15 @@ func (v *View) FlushPartialResponse() {
 	if v.response == "" {
 		return
 	}
-	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response, AgentColor: v.agentColor, ModelID: v.modelID})
+	// ModelID intentionally omitted — this message is mid-turn (a
+	// committed partial response before a tool call). The model +
+	// duration footer must appear ONLY on the final assistant message
+	// of a turn, after every tool call and continuation has rendered.
+	// Setting ModelID here would make the footer appear between the
+	// streamed text and the inline tool widget — the "Reading… below
+	// the footer" symptom. finaliseChunk (Done path) is the only
+	// caller that sets ModelID on the appended message.
+	v.messages = append(v.messages, Message{Role: "assistant", Content: v.response, AgentColor: v.agentColor})
 	v.response = ""
 }
 
@@ -206,10 +229,58 @@ func (v *View) finaliseChunk(content string, errMsg string) {
 			Content:    fullContent,
 			AgentColor: v.agentColor,
 			ModelID:    v.modelID,
+			Duration:   v.turnDuration,
 		})
 	}
 	v.streaming = false
 	v.response = ""
+	v.turnStartedAt = time.Time{}
+	v.turnDuration = 0
+}
+
+// SetTurnStartedAt records the instant the current streaming turn
+// began. Drives the live elapsed indicator at the bottom of the
+// streaming block and provides the basis for the duration stamped
+// onto the final assistant message.
+//
+// Expected:
+//   - t is the wall-clock instant when the user submitted the
+//     message that started this turn.
+//
+// Side effects:
+//   - Updates v.turnStartedAt.
+func (v *View) SetTurnStartedAt(t time.Time) {
+	v.turnStartedAt = t
+}
+
+// SetTurnDuration records the elapsed time of the current turn so
+// finaliseChunk stamps it onto the appended assistant Message.
+// Callers compute this on the Done chunk and call SetTurnDuration
+// before view.HandleChunk(..., done=true) runs.
+//
+// Expected:
+//   - d is a non-negative duration. Zero leaves the field cleared.
+//
+// Side effects:
+//   - Updates v.turnDuration.
+func (v *View) SetTurnDuration(d time.Duration) {
+	v.turnDuration = d
+}
+
+// TurnElapsed returns the time since the current turn began, or
+// zero when no turn is in flight. Used by appendStreamingContent
+// to render the live elapsed indicator.
+//
+// Returns:
+//   - Time elapsed since the turn started, or 0 if not streaming.
+//
+// Side effects:
+//   - None.
+func (v *View) TurnElapsed() time.Duration {
+	if v.turnStartedAt.IsZero() {
+		return 0
+	}
+	return time.Since(v.turnStartedAt)
 }
 
 // IsStreaming returns whether the view is currently streaming a response.
@@ -447,6 +518,7 @@ func (v *View) renderMessage(msg Message, th theme.Theme, width int) string {
 	mw.SetToolInput(msg.ToolInput)
 	mw.SetAgentColor(msg.AgentColor)
 	mw.SetModelID(msg.ModelID)
+	mw.SetDuration(msg.Duration)
 	if v.renderFunc != nil {
 		mw.SetMarkdownRenderer(v.renderFunc)
 	} else {
@@ -529,7 +601,11 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 	if v.response != "" {
 		mw := widgets.NewMessageWidget("assistant", v.response, th)
 		mw.SetAgentColor(v.agentColor)
-		mw.SetModelID(v.modelID)
+		// ModelID intentionally omitted — this is the streaming
+		// partial. The model + duration footer renders on the final
+		// committed assistant message via finaliseChunk; setting it
+		// here would render the footer above any subsequent inline
+		// tool widget (the "Reading… below the footer" bug).
 		if v.renderFunc != nil {
 			mw.SetMarkdownRenderer(v.renderFunc)
 		} else {
@@ -545,6 +621,44 @@ func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width
 		sb.WriteString(tcw.Render())
 		sb.WriteString("\n")
 	}
+	// Live elapsed indicator at the bottom of the streaming block:
+	// renders only while a turn is in flight. The spinner tick chain
+	// re-renders the View every 100ms so the displayed seconds value
+	// stays current. Sits BELOW any active tool widget so the user
+	// reads "Reading… │ 5s elapsed" as a coherent in-progress block.
+	if elapsed := v.TurnElapsed(); elapsed > 0 {
+		muted := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Faint(true)
+		sb.WriteString(muted.Render("⏱  " + formatStreamingElapsed(elapsed)))
+		sb.WriteString("\n")
+	}
+}
+
+// formatStreamingElapsed formats the live elapsed duration shown
+// during streaming. Renders whole-second precision (the indicator
+// updates ~10x per second via the spinner tick, but per-100ms
+// jitter would be visual noise) for elapsed under a minute,
+// minutes+seconds beyond.
+//
+// Expected:
+//   - d is a non-negative duration.
+//
+// Returns:
+//   - "<N>s" for elapsed under a minute.
+//   - "<M>m <S>s" for elapsed of a minute or more.
+//
+// Side effects:
+//   - None.
+func formatStreamingElapsed(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+	if d < time.Minute {
+		s := int(d.Seconds())
+		return strconv.Itoa(s) + "s"
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	return strconv.Itoa(m) + "m " + strconv.Itoa(s) + "s"
 }
 
 // ToggleActiveDelegationBlock toggles the collapsed state of the active delegation block.

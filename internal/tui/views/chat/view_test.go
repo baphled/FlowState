@@ -257,7 +257,15 @@ var _ = Describe("ChatView agent and model metadata", func() {
 			msgs := view.Messages()
 			Expect(msgs).To(HaveLen(1))
 			Expect(msgs[0].AgentColor).To(Equal(lipgloss.Color("205")))
-			Expect(msgs[0].ModelID).To(Equal("claude-sonnet-4-20250514"))
+			// FlushPartialResponse intentionally OMITS ModelID: it
+			// commits a mid-turn partial (before a tool call). The
+			// model + duration footer must render ONLY on the final
+			// assistant message of a turn — finaliseChunk (Done path)
+			// is the sole site that stamps ModelID on the appended
+			// message. Setting it here would render the footer
+			// between the streamed text and the inline tool widget
+			// (the "Reading… below the footer" symptom).
+			Expect(msgs[0].ModelID).To(BeEmpty())
 		})
 
 		It("renders model footer in content when ModelID is set", func() {

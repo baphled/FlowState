@@ -106,8 +106,15 @@ var _ = Describe("ChatView CollapsibleDelegationBlock integration", Label("integ
 	})
 
 	Describe("view integrates message footer with delegation block", func() {
-		Context("when an assistant message with ModelID precedes a delegation", func() {
-			It("assistant message footer renders model ID before delegation block", func() {
+		Context("when an assistant partial precedes a delegation mid-turn", func() {
+			It("does NOT render the model footer above the delegation block (mid-turn footer suppressed)", func() {
+				// Mid-turn footer suppression: FlushPartialResponse
+				// commits the partial without ModelID so the footer
+				// only appears on the FINAL assistant message of a
+				// turn (via finaliseChunk on Done). This keeps inline
+				// tool / delegation widgets from rendering below a
+				// stale footer — the "Reading… below the footer"
+				// symptom the user reported.
 				view.SetModelID("claude-sonnet-4-20250514")
 				view.SetStreaming(true, "thinking about delegation plan")
 				view.FlushPartialResponse()
@@ -121,22 +128,10 @@ var _ = Describe("ChatView CollapsibleDelegationBlock integration", Label("integ
 
 				content := view.RenderContent(80)
 
-				footerPos := 0
-				delegatePos := 0
-
-				for i, ch := range content {
-					if i+3 < len(content) && string(ch)+"claude-sonnet" == "claude-sonnet" {
-						footerPos = i
-					}
-					if i+2 < len(content) && string(ch)+"qa-ag" == "qa-ag" {
-						delegatePos = i
-					}
-				}
-				_ = footerPos
-				_ = delegatePos
-
-				Expect(content).To(ContainSubstring("claude-sonnet-4-20250514"))
-				Expect(content).To(ContainSubstring("qa-agent"))
+				Expect(content).NotTo(ContainSubstring("claude-sonnet-4-20250514"),
+					"mid-turn footer must be suppressed; ModelID renders only on the final message of a turn")
+				Expect(content).To(ContainSubstring("qa-agent"),
+					"the delegation block still renders without a footer interrupting it")
 			})
 		})
 
