@@ -1,68 +1,72 @@
-// Package app provides the P13 inventory guard: every bundled agent manifest
-// under internal/app/agents/*.md must declare uses_recall explicitly. The
-// guard prevents silent defaults — P13 flips the recall default to off, so
-// any new agent that should opt in must set the flag deliberately.
-package app
+// agents_uses_recall_inventory_test.go provides the P13 inventory
+// guard: every bundled agent manifest under internal/app/agents/*.md
+// must declare uses_recall explicitly. The guard prevents silent
+// defaults — P13 flips the recall default to off, so any new agent
+// that should opt in must set the flag deliberately.
+package app_test
 
 import (
 	"io/fs"
 	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/baphled/flowstate/internal/app"
 )
 
-// TestAgentManifests_DeclareUsesRecallExplicitly walks the embedded agent
-// filesystem and asserts each manifest sets uses_recall either true or
-// false. Missing entries fail the test so the author has to make a
-// conscious choice rather than inheriting the (opt-out) default.
+// AgentManifests_DeclareUsesRecallExplicitly walks the embedded agent
+// filesystem and asserts each manifest sets uses_recall either true
+// or false. Missing entries fail the test so the author has to make
+// a conscious choice rather than inheriting the (opt-out) default.
 //
-// It also records, for the benefit of the P13 rollout, which agents opt
-// in — the list is logged so reviewers see the recall perimeter at a
-// glance when this test runs under -v.
-func TestAgentManifests_DeclareUsesRecallExplicitly(t *testing.T) {
-	entries, err := fs.ReadDir(agentsFS, "agents")
-	if err != nil {
-		t.Fatalf("read agents dir: %v", err)
-	}
+// The agents that opt in are recorded as a Ginkgo report entry so
+// reviewers see the recall perimeter at a glance when the suite
+// runs under -v.
+var _ = Describe("AgentManifests_DeclareUsesRecallExplicitly", func() {
+	It("requires every bundled manifest to set uses_recall true|false (P13)", func() {
+		manifests := app.EmbeddedAgentsFS()
+		entries, err := fs.ReadDir(manifests, "agents")
+		Expect(err).NotTo(HaveOccurred(), "read agents dir")
 
-	optedIn := make([]string, 0)
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		path := "agents/" + e.Name()
-		data, err := fs.ReadFile(agentsFS, path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		frontmatter, err := extractAgentFrontmatter(string(data))
-		if err != nil {
-			t.Fatalf("extract frontmatter from %s: %v", path, err)
-		}
-		var probe struct {
-			ID         string `yaml:"id"`
-			UsesRecall *bool  `yaml:"uses_recall"`
-		}
-		if err := yaml.Unmarshal([]byte(frontmatter), &probe); err != nil {
-			t.Fatalf("parse frontmatter %s: %v", path, err)
-		}
-		if probe.UsesRecall == nil {
-			t.Errorf("%s: uses_recall is not set — add uses_recall: true|false to the frontmatter (P13)", path)
-			continue
-		}
-		if *probe.UsesRecall {
-			optedIn = append(optedIn, probe.ID)
-		}
-	}
+		optedIn := make([]string, 0)
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			path := "agents/" + e.Name()
+			data, err := fs.ReadFile(manifests, path)
+			Expect(err).NotTo(HaveOccurred(), "read %s", path)
 
-	t.Logf("P13: %d agents opted in to RecallBroker: %v", len(optedIn), optedIn)
-}
+			frontmatter, err := extractAgentFrontmatter(string(data))
+			Expect(err).NotTo(HaveOccurred(), "extract frontmatter from %s", path)
 
-// extractAgentFrontmatter returns the YAML block between leading "---\n"
-// delimiters. The helper is colocated with the inventory test so it
-// stays independent of internal/agent/loader.go which applies defaults
-// and validation we do not want interfering with the audit.
+			var probe struct {
+				ID         string `yaml:"id"`
+				UsesRecall *bool  `yaml:"uses_recall"`
+			}
+			Expect(yaml.Unmarshal([]byte(frontmatter), &probe)).To(Succeed(), "parse frontmatter %s", path)
+
+			Expect(probe.UsesRecall).NotTo(BeNil(),
+				"%s: uses_recall is not set — add uses_recall: true|false to the frontmatter (P13)", path)
+
+			if *probe.UsesRecall {
+				optedIn = append(optedIn, probe.ID)
+			}
+		}
+
+		AddReportEntry("P13_recall_perimeter", optedIn)
+	})
+})
+
+// extractAgentFrontmatter returns the YAML block between leading
+// "---\n" delimiters. The helper is colocated with this inventory
+// test so it stays independent of internal/agent/loader.go which
+// applies defaults and validation we do not want interfering with
+// the audit. Shared with agents_tool_declarations_contract_test.go
+// (same package).
 func extractAgentFrontmatter(content string) (string, error) {
 	if !strings.HasPrefix(content, "---") {
 		return "", nil
