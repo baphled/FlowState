@@ -797,10 +797,17 @@ var _ = Describe("ChatIntent", func() {
 				Expect(intent.View()).To(ContainSubstring("Some reasoning."))
 			})
 
-			It("does not render thinking content before completion", func() {
-				intent.Update(chat.StreamChunkMsg{Thinking: "Hidden thought.", Done: false})
+			It("renders thinking content live during streaming (not only on Done)", func() {
+				// Inverted from the prior contract: thinking is now
+				// surfaced inline at the top of the streaming pane as
+				// the agent reasons (mirrors Claude Code's pattern).
+				// The Done path still commits a Role: "thinking"
+				// Message to chat history; the live render is purely
+				// transient and disappears once flushThinking commits.
+				intent.Update(chat.StreamChunkMsg{Thinking: "Live thought.", Done: false})
 
-				Expect(intent.View()).NotTo(ContainSubstring("Hidden thought."))
+				Expect(intent.View()).To(ContainSubstring("Live thought."),
+					"in-flight thinking must render during streaming, not be hidden until Done")
 			})
 		})
 

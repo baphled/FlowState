@@ -73,6 +73,14 @@ type View struct {
 	cachedPartialRender   string
 	cachedPartialResponse string
 	cachedPartialAt       time.Time
+
+	// activeThinking carries the in-flight reasoning content the
+	// agent is producing during streaming. Rendered as a faint
+	// "💭 <content>" block at the top of the streaming pane so the
+	// user sees what the agent is thinking AS it thinks, not only
+	// once the turn finalises into a committed thinking message.
+	// Cleared at stream-state boundaries.
+	activeThinking string
 }
 
 // NewView creates a new chat view with default dimensions and markdown rendering.
@@ -190,6 +198,27 @@ func (v *View) StartStreaming() {
 	v.toolCallStatus = ""
 	v.toolCallArgs = nil
 	v.toolCallResult = ""
+	v.activeThinking = ""
+	v.invalidatePartialCache()
+}
+
+// SetActiveThinking updates the live thinking buffer rendered at
+// the top of the streaming pane during a turn. Mirrors the
+// intent's i.activeThinking so the view can render reasoning as
+// it streams without the intent reaching into view internals.
+//
+// Expected:
+//   - thinking is the current accumulated reasoning text (may be
+//     empty to clear the live block).
+//
+// Side effects:
+//   - Updates v.activeThinking and invalidates the partial-render
+//     cache so the next render reflects the new thinking text.
+func (v *View) SetActiveThinking(thinking string) {
+	if v.activeThinking == thinking {
+		return
+	}
+	v.activeThinking = thinking
 	v.invalidatePartialCache()
 }
 
@@ -318,6 +347,7 @@ func (v *View) finaliseChunk(content string, errMsg string) {
 	v.response = ""
 	v.turnStartedAt = time.Time{}
 	v.turnDuration = 0
+	v.activeThinking = ""
 	v.invalidatePartialCache()
 }
 
@@ -670,6 +700,18 @@ func (v *View) HandleDelegation(info *provider.DelegationInfo) {
 func (v *View) appendStreamingContent(sb *strings.Builder, th theme.Theme, width int) {
 	if !v.streaming && v.delegationInfo == nil {
 		return
+	}
+
+	// Live thinking block at the very top of the streaming pane:
+	// the agent's reasoning content as it streams. Faint + italic
+	// so it visually recedes behind the actual response and tool
+	// blocks below. Cleared once the turn finalises (flushThinking
+	// commits a Role: "thinking" Message which then renders in the
+	// committed history below the response).
+	if v.activeThinking != "" {
+		thinkingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Faint(true).Italic(true)
+		sb.WriteString(thinkingStyle.Render("💭 " + v.activeThinking))
+		sb.WriteString("\n")
 	}
 
 	if v.delegationInfo != nil {
