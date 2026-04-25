@@ -209,6 +209,96 @@ var _ = Describe("ToolWiringHook", func() {
 		})
 	})
 
+	Context("when a non-delegating agent declares coordination_store in capabilities.tools", func() {
+		BeforeEach(func() {
+			manifest = agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "coordination_store"},
+				},
+			}
+			hasToolResult = false
+			schemas = []provider.Tool{
+				{Name: "bash"},
+				{Name: "file"},
+				{Name: "coordination_store"},
+			}
+		})
+
+		It("triggers ensureTools so coordination_store reaches the registry", func() {
+			wrapped := buildHook()(passthrough)
+
+			_, err := wrapped(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ensureToolsCalled).To(BeTrue())
+			Expect(ensuredManifest.ID).To(Equal("plan-writer"))
+		})
+
+		It("refreshes req.Tools from the schema rebuilder", func() {
+			wrapped := buildHook()(passthrough)
+
+			_, err := wrapped(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(capturedReq.Tools).To(Equal(schemas))
+		})
+	})
+
+	Context("when a non-delegating agent omits coordination_store from capabilities.tools", func() {
+		BeforeEach(func() {
+			manifest = agent.Manifest{
+				ID:   "worker",
+				Name: "Worker",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file"},
+				},
+			}
+		})
+
+		It("preserves the early-return guard: no ensureTools, no req.Tools mutation", func() {
+			originalTools := make([]provider.Tool, len(req.Tools))
+			copy(originalTools, req.Tools)
+
+			wrapped := buildHook()(passthrough)
+
+			_, err := wrapped(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ensureToolsCalled).To(BeFalse())
+			Expect(capturedReq.Tools).To(Equal(originalTools))
+		})
+	})
+
+	Context("when coordination_store is declared and already wired", func() {
+		BeforeEach(func() {
+			manifest = agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "coordination_store"},
+				},
+			}
+			hasToolResult = true
+		})
+
+		It("skips ensureTools but still refreshes req.Tools from the schema rebuilder", func() {
+			wrapped := buildHook()(passthrough)
+
+			_, err := wrapped(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ensureToolsCalled).To(BeFalse())
+			Expect(capturedReq.Tools).To(Equal(schemas))
+		})
+	})
+
 	Context("when the schema rebuilder returns different schemas", func() {
 		BeforeEach(func() {
 			manifest = agent.Manifest{

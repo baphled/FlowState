@@ -529,4 +529,110 @@ var _ = Describe("Tool wiring integration", func() {
 				"suggest_delegate must bypass the manifest tool filter so non-delegating agents always have the escape hatch")
 		})
 	})
+
+	// Coordination store decoupling: coordination_store's lifecycle is
+	// governed solely by manifest.Capabilities.Tools, regardless of
+	// CanDelegate. Non-delegating agents that opt in (plan-writer,
+	// plan-reviewer, explorer, analyst, librarian) must receive the tool;
+	// non-delegating agents that opt out must not.
+	Context("when a non-delegating manifest declares coordination_store in capabilities.tools", func() {
+		var coordManifest agent.Manifest
+
+		BeforeEach(func() {
+			coordManifest = agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "web", "coordination_store"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+			agentReg.Register(&coordManifest)
+		})
+
+		It("registers coordination_store in the engine", func() {
+			buildTestEngine(coordManifest)
+			application.wireDelegateToolIfEnabled(eng, coordManifest)
+
+			Expect(eng.HasTool("coordination_store")).To(BeTrue(),
+				"non-delegating manifest opted in via capabilities.tools; "+
+					"coordination_store must be wired regardless of CanDelegate")
+		})
+
+		It("surfaces coordination_store in the provider request", func() {
+			buildTestEngine(coordManifest)
+			application.wireDelegateToolIfEnabled(eng, coordManifest)
+
+			_, err := eng.Stream(context.Background(), "plan-writer", "hello")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(spy.capturedRequest).NotTo(BeNil())
+
+			toolNames := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, t := range spy.capturedRequest.Tools {
+				toolNames = append(toolNames, t.Name)
+			}
+			Expect(toolNames).To(ContainElement("coordination_store"))
+		})
+	})
+
+	Context("when a non-delegating manifest omits coordination_store from capabilities.tools", func() {
+		It("preserves the guard: coordination_store is not wired", func() {
+			noCoordManifest := agent.Manifest{
+				ID:   "executor",
+				Name: "Executor",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "web"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+			agentReg.Register(&noCoordManifest)
+			buildTestEngine(noCoordManifest)
+			application.wireDelegateToolIfEnabled(eng, noCoordManifest)
+
+			Expect(eng.HasTool("coordination_store")).To(BeFalse(),
+				"manifest does not declare coordination_store; the canonical "+
+					"hasCoordinationTool guard must still drop it")
+		})
+	})
+
+	Context("when swapping from a delegating manifest to a non-delegating manifest that declares coordination_store", func() {
+		It("keeps coordination_store wired across the swap", func() {
+			plannerManifest := agent.Manifest{
+				ID:   "planner",
+				Name: "Planner",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate", "coordination_store"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			planWriterManifest := agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "coordination_store"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: false,
+				},
+			}
+			agentReg.Register(&plannerManifest)
+			agentReg.Register(&planWriterManifest)
+
+			buildTestEngine(plannerManifest)
+			application.wireDelegateToolIfEnabled(eng, plannerManifest)
+			Expect(eng.HasTool("coordination_store")).To(BeTrue(),
+				"sanity: planner declares coordination_store and is wired pre-swap")
+
+			application.wireDelegateToolIfEnabled(eng, planWriterManifest)
+			Expect(eng.HasTool("coordination_store")).To(BeTrue(),
+				"plan-writer declares coordination_store; the swap must NOT "+
+					"strip it just because CanDelegate flipped to false")
+		})
+	})
 })
