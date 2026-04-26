@@ -2916,8 +2916,10 @@ func setupProvidersWithFailures(
 	recordProvider(providerRegistry, failures, "copilot", copilotProvider, copilotErr)
 
 	zaiKey := resolveProviderKey("ZAI_API_KEY", cfg.Providers.ZAI.APIKey)
-	zaiProvider, zaiErr := zai.NewFromConfig(zaiKey, zaiPlanFromConfig(cfg))
+	zaiPlan := zaiPlanFromConfig(cfg)
+	zaiProvider, zaiErr := zai.NewFromConfig(zaiKey, zaiPlan)
 	recordProvider(providerRegistry, failures, "zai", zaiProvider, zaiErr)
+	logZAIPlanResolution(zaiPlan, zaiErr)
 
 	openzenKey := resolveProviderKey("OPENZEN_API_KEY", cfg.Providers.OpenZen.APIKey)
 	openzenProvider, openzenErr := openzen.NewFromConfig(openzenKey)
@@ -2983,6 +2985,37 @@ func warnIfOpenCodeAuthPresent(failures map[string]error) {
 			"or set provider keys directly in ~/.config/flowstate/config.yaml.",
 		"opencode_auth_path", opencodePath,
 	)
+}
+
+// logZAIPlanResolution emits a single INFO line at startup describing the
+// Z.AI plan + endpoint the provider resolved to. Operators hitting HTTP 429
+// "code 1113 (billing)" against Z.AI almost always have a coding-plan key
+// pointed at the general endpoint (or vice versa); the log line is the
+// fastest way to confirm the routing without adding a CLI status command.
+//
+// Skips when the provider failed to initialise (no point announcing a
+// non-existent route).
+//
+// Expected:
+//   - plan is the empty string ("general") or zai.PlanCoding.
+//   - initErr is the error returned by zai.NewFromConfig (nil = success).
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Writes one INFO line to slog.Default().
+func logZAIPlanResolution(plan string, initErr error) {
+	if initErr != nil {
+		return
+	}
+	planLabel := "general (pay-per-token)"
+	endpoint := "https://api.z.ai/api/paas/v4"
+	if plan == zai.PlanCoding {
+		planLabel = "coding-plan subscription"
+		endpoint = "https://api.z.ai/api/coding/paas/v4"
+	}
+	slog.Info("z.ai provider routed", "plan", planLabel, "endpoint", endpoint)
 }
 
 // zaiPlanFromConfig returns the Z.AI plan tag for the configured provider.
