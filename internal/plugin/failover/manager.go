@@ -10,6 +10,12 @@ import (
 
 var errNoModelsAvailable = errors.New("no models available from any provider")
 
+// defaultManagerFallback mirrors context.DefaultModelContextFallback
+// without importing the context package (failover sits below context in
+// the dependency graph). Keep the literal in sync; the unit test in
+// manager_test.go pins both packages to the same value.
+const defaultManagerFallback = 16384
+
 // Manager is the central component for provider selection, preference management,
 // and state tracking during failover. It replaces the provider.FailbackChain for
 // determining which provider/model pairs to attempt, preserving base preferences
@@ -25,36 +31,80 @@ type Manager struct {
 	timeout         time.Duration
 	lastProvider    string
 	lastModel       string
+	// contextFallback is the token cap returned when the registered
+	// provider/model lookup fails. Defaults to defaultManagerFallback
+	// (16K). App.New overrides this from cfg.SystemPromptBudget so
+	// operators with hardware that warrants a different cap can pin
+	// the fallback per-deployment.
+	contextFallback int
 }
 
-// ResolveContextLength returns the context length for a given provider/model, or 4096 if unknown.
+// SetContextFallback overrides the token cap ResolveContextLength
+// returns when the provider/model lookup fails. Zero or negative inputs
+// are ignored so callers may pass an unset config field without
+// guarding the call site.
+//
+// Expected:
+//   - limit is the new fallback token cap; values <= 0 leave the
+//     existing fallback untouched.
+//
+// Side effects:
+//   - Mutates the receiver under its write lock.
+func (m *Manager) SetContextFallback(limit int) {
+	if limit <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.contextFallback = limit
+}
+
+// ResolveContextLength returns the context length for a given provider/model.
 //
 // Expected:
 //   - providerName is the name of the provider to query.
 //   - model is the model identifier to look up.
 //
 // Returns:
-//   - The context length for the given model, or 4096 if the provider or model is unknown.
+//   - The context length for the given model when the provider knows it.
+//   - The configured fallback (defaultManagerFallback by default;
+//     override via SetContextFallback) when the provider is missing,
+//     errors, or does not advertise a positive ContextLength for the
+//     model.
 //
 // Side effects:
 //   - None.
 func (m *Manager) ResolveContextLength(providerName, model string) int {
+	fallback := m.resolvedFallback()
 	p, err := m.registry.Get(providerName)
 	if err != nil {
-		return 4096
+		return fallback
 	}
 	models, err := p.Models()
 	if err != nil {
-		return 4096
+		return fallback
 	}
-	for _, m := range models {
-		if m.ID == model {
-			if m.ContextLength > 0 {
-				return m.ContextLength
-			}
+	for _, candidate := range models {
+		if candidate.ID == model && candidate.ContextLength > 0 {
+			return candidate.ContextLength
 		}
 	}
-	return 4096
+	return fallback
+}
+
+// resolvedFallback returns the operator-configured fallback when set,
+// or defaultManagerFallback otherwise. Lock-aware so callers stay
+// thread-safe alongside SetContextFallback.
+//
+// Side effects:
+//   - None.
+func (m *Manager) resolvedFallback() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.contextFallback > 0 {
+		return m.contextFallback
+	}
+	return defaultManagerFallback
 }
 
 // NewManager creates a new Manager with the given registry, health manager, and stream timeout.
@@ -71,9 +121,10 @@ func (m *Manager) ResolveContextLength(providerName, model string) int {
 //   - None.
 func NewManager(registry *provider.Registry, health *HealthManager, timeout time.Duration) *Manager {
 	return &Manager{
-		registry: registry,
-		health:   health,
-		timeout:  timeout,
+		registry:        registry,
+		health:          health,
+		timeout:         timeout,
+		contextFallback: defaultManagerFallback,
 	}
 }
 

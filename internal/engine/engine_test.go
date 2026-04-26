@@ -1324,13 +1324,23 @@ var _ = Describe("Engine", func() {
 		})
 
 		Context("when TokenCounter is nil", func() {
-			It("returns the default 4096", func() {
+			It("returns the 16K default model-context fallback instead of the legacy 4096", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest:     manifest,
 				})
 
-				Expect(eng.ModelContextLimit()).To(Equal(4096))
+				Expect(eng.ModelContextLimit()).To(Equal(ctxstore.DefaultModelContextFallback))
+			})
+
+			It("honours cfg.SystemPromptBudget as the fallback override", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider:       chatProvider,
+					Manifest:           manifest,
+					SystemPromptBudget: 32768,
+				})
+
+				Expect(eng.ModelContextLimit()).To(Equal(32768))
 			})
 		})
 

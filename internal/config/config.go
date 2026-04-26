@@ -147,6 +147,22 @@ type AppConfig struct {
 	// prompts/templates: `llama3.2*`, `qwen2.5-coder*`, `glm-4.7`, and
 	// `mistral:7b`.
 	ToolIncapableModels []string `json:"tool_incapable_models,omitempty" yaml:"tool_incapable_models,omitempty"`
+
+	// SystemPromptBudget overrides the model-context fallback used when
+	// the failover manager and token counter cannot supply a concrete
+	// context length for the active provider/model. Zero (default) lets
+	// the engine inherit ctxstore.DefaultModelContextFallback (16K).
+	// Operators with hardware that warrants a different cap pin the
+	// fallback per-deployment via this knob; the env var
+	// FLOWSTATE_SYSTEM_PROMPT_BUDGET takes precedence at load time.
+	//
+	// Why this exists: prior to this knob the fallback was a hardcoded
+	// 4096 that quietly truncated ~70% of an 11-skill FlowState system
+	// prompt to fit. The new default plus this override path lets every
+	// provider in the support matrix (Anthropic 200K, OpenAI/Copilot/
+	// Gemini 128K, ZAI/OpenZen 128K+, Ollama qwen3/llama3.1/devstral
+	// 32K-128K) carry the full prompt without losing skill content.
+	SystemPromptBudget int `json:"system_prompt_budget,omitempty" yaml:"system_prompt_budget,omitempty"`
 }
 
 // ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
@@ -177,6 +193,74 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
+}
+
+// SystemPromptBudgetEnv is the environment variable operators set to
+// override AppConfig.SystemPromptBudget without editing config.yaml.
+// The env wins over the YAML field (matching the existing OPENAI_API_KEY
+// / ANTHROPIC_API_KEY precedence in resolveProviderKey).
+const SystemPromptBudgetEnv = "FLOWSTATE_SYSTEM_PROMPT_BUDGET"
+
+// ResolvedSystemPromptBudget returns the effective system-prompt budget
+// in tokens, applying the documented precedence: the env var overrides
+// the YAML field, and zero from both means "inherit the engine default"
+// (ctxstore.DefaultModelContextFallback). Invalid env values are
+// logged once at WARN and treated as unset so a typo cannot silently
+// reintroduce the legacy 4096 truncation.
+//
+// Returns:
+//   - The override token cap when one is set; zero when neither the
+//     env var nor the YAML field carries a positive value.
+//
+// Side effects:
+//   - Reads the FLOWSTATE_SYSTEM_PROMPT_BUDGET environment variable.
+//   - Logs a single WARN slog line when the env value fails to parse.
+func (c *AppConfig) ResolvedSystemPromptBudget() int {
+	if v := os.Getenv(SystemPromptBudgetEnv); v != "" {
+		if parsed, err := parsePositiveInt(v); err == nil {
+			return parsed
+		} else {
+			slog.Warn("config: invalid env value; falling back to config / engine default",
+				"key", SystemPromptBudgetEnv, "value", v, "error", err)
+		}
+	}
+	if c == nil {
+		return 0
+	}
+	if c.SystemPromptBudget > 0 {
+		return c.SystemPromptBudget
+	}
+	return 0
+}
+
+// parsePositiveInt parses a token-budget string. Returns an error for
+// non-numeric input or non-positive values so callers can surface the
+// problem without falling silently back to defaults.
+//
+// Expected:
+//   - s is a candidate integer string.
+//
+// Returns:
+//   - The parsed positive integer on success.
+//   - An error when s is empty, non-numeric, or <= 0.
+//
+// Side effects:
+//   - None.
+func parsePositiveInt(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("non-numeric character %q", ch)
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("value must be positive")
+	}
+	return n, nil
 }
 
 // ResolvedPlanLocation returns the directory FlowState should use for plan

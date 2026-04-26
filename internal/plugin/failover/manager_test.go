@@ -310,6 +310,50 @@ var _ = Describe("Manager", func() {
 			wg.Wait()
 		})
 	})
+
+	Describe("ResolveContextLength", func() {
+		const (
+			defaultFallback = 16384
+			operatorPin     = 32768
+		)
+
+		It("returns the model-supplied ContextLength when the provider knows it", func() {
+			registry.Register(&mockListProvider{
+				name: "anthropic",
+				models: []provider.Model{
+					{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000},
+				},
+			})
+
+			Expect(mgr.ResolveContextLength("anthropic", "claude-sonnet-4-6")).To(Equal(200000))
+		})
+
+		It("returns the default 16K fallback for unknown providers", func() {
+			Expect(mgr.ResolveContextLength("missing", "any-model")).To(Equal(defaultFallback))
+		})
+
+		It("returns the default 16K fallback for unknown models on a known provider", func() {
+			registry.Register(&mockListProvider{
+				name:   "anthropic",
+				models: []provider.Model{{ID: "claude-sonnet-4-6", Provider: "anthropic", ContextLength: 200000}},
+			})
+
+			Expect(mgr.ResolveContextLength("anthropic", "claude-opus-99")).To(Equal(defaultFallback))
+		})
+
+		It("returns the operator-pinned fallback after SetContextFallback", func() {
+			mgr.SetContextFallback(operatorPin)
+
+			Expect(mgr.ResolveContextLength("missing", "any-model")).To(Equal(operatorPin))
+		})
+
+		It("ignores a non-positive fallback override", func() {
+			mgr.SetContextFallback(0)
+			mgr.SetContextFallback(-5)
+
+			Expect(mgr.ResolveContextLength("missing", "any-model")).To(Equal(defaultFallback))
+		})
+	})
 })
 
 type mockListProvider struct {
