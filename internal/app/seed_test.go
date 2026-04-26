@@ -303,6 +303,131 @@ func findEntry(report app.RefreshReport, name string) *app.RefreshEntry { //noli
 	return nil
 }
 
+var _ = Describe("MigrateAgentsToConfigDir", func() {
+	var (
+		root   string
+		oldDir string
+		newDir string
+	)
+
+	BeforeEach(func() {
+		var err error
+		root, err = os.MkdirTemp("", "agents-migrate-test")
+		Expect(err).NotTo(HaveOccurred())
+		oldDir = filepath.Join(root, "xdg-data", "flowstate", "agents")
+		newDir = filepath.Join(root, "xdg-config", "flowstate", "agents")
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(root)
+	})
+
+	Context("when only the legacy XDG_DATA dir has manifests", func() {
+		It("copies them into the new XDG_CONFIG dir and reports migrated", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			plannerBody := "---\nid: planner\nname: User Planner\n---\n"
+			Expect(os.WriteFile(filepath.Join(oldDir, "planner.md"), []byte(plannerBody), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "executor.md"), []byte("executor body"), 0o600)).To(Succeed())
+
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultMigrated))
+
+			content, err := os.ReadFile(filepath.Join(newDir, "planner.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(Equal(plannerBody))
+
+			Expect(filepath.Join(newDir, "executor.md")).To(BeAnExistingFile())
+		})
+
+		It("leaves the legacy directory intact so the user can review and remove it", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "planner.md"), []byte("body"), 0o600)).To(Succeed())
+
+			_, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(filepath.Join(oldDir, "planner.md")).To(BeAnExistingFile(),
+				"migration must COPY, not MOVE — the legacy file must remain")
+		})
+
+		It("ignores non-.md entries and subdirectories in the legacy directory", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "planner.md"), []byte("body"), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "README.txt"), []byte("notes"), 0o600)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(oldDir, "subdir"), 0o755)).To(Succeed())
+
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultMigrated))
+
+			Expect(filepath.Join(newDir, "planner.md")).To(BeAnExistingFile())
+			_, statErr := os.Stat(filepath.Join(newDir, "README.txt"))
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+
+	Context("when both XDG_DATA and XDG_CONFIG agent dirs already exist", func() {
+		It("prefers XDG_CONFIG and skips the migration without overwriting", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			Expect(os.MkdirAll(newDir, 0o755)).To(Succeed())
+			canonical := "---\nid: planner\nname: Canonical\n---\n"
+			Expect(os.WriteFile(filepath.Join(newDir, "planner.md"), []byte(canonical), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "planner.md"), []byte("legacy"), 0o600)).To(Succeed())
+
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultSkippedNewExists))
+
+			content, err := os.ReadFile(filepath.Join(newDir, "planner.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(Equal(canonical), "XDG_CONFIG copy must remain untouched")
+		})
+	})
+
+	Context("when only XDG_CONFIG exists and XDG_DATA is missing", func() {
+		It("is a no-op and reports skipped-new-exists", func() {
+			Expect(os.MkdirAll(newDir, 0o755)).To(Succeed())
+			canonical := "---\nid: planner\nname: Canonical\n---\n"
+			Expect(os.WriteFile(filepath.Join(newDir, "planner.md"), []byte(canonical), 0o600)).To(Succeed())
+
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultSkippedNewExists))
+		})
+	})
+
+	Context("when neither directory exists", func() {
+		It("reports skipped-no-legacy without creating anything", func() {
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultSkippedNoLegacy))
+
+			_, statErr := os.Stat(newDir)
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+
+	Context("when the legacy directory exists but contains no .md files", func() {
+		It("reports skipped-no-legacy and does not create the new directory", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "README.txt"), []byte("notes"), 0o600)).To(Succeed())
+
+			result, err := app.MigrateAgentsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateAgentsResultSkippedNoLegacy))
+
+			_, statErr := os.Stat(newDir)
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+})
+
 var _ = Describe("EmbeddedAgentsFS", func() {
 	Context("when calling EmbeddedAgentsFS", func() {
 		It("returns a valid fs.FS", func() {

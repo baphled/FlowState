@@ -422,6 +422,13 @@ func DataDir() string {
 
 // DefaultConfig returns sensible default configuration values.
 //
+// AgentDir lives under XDG_CONFIG (Dir()) rather than XDG_DATA because agent
+// manifests are user-edited configuration — adding `harness.critic_enabled`
+// to `plan-writer.md`, swapping a model name, etc. — and XDG_CONFIG is the
+// canonical home for that class of file. Swarms (also user-edited) follow the
+// same rule. Cache-style outputs (skills, sessions, plans) stay under
+// DataDir because they are derived state, not user input.
+//
 // Returns:
 //   - An AppConfig populated with default provider and directory settings.
 //
@@ -444,7 +451,7 @@ func DefaultConfig() *AppConfig {
 				Model: "claude-sonnet-4-20250514",
 			},
 		},
-		AgentDir:        filepath.Join(dataDir, "agents"),
+		AgentDir:        filepath.Join(Dir(), "agents"),
 		SkillDir:        filepath.Join(dataDir, "skills"),
 		DataDir:         dataDir,
 		LogLevel:        "info",

@@ -148,6 +148,19 @@ func New(cfg *config.AppConfig) (*App, error) {
 	// the configured value rather than the historical default.
 	agent.SetDefaultEmbeddingModel(cfg.ResolvedEmbeddingModel())
 
+	// One-time XDG_DATA -> XDG_CONFIG migration: agent manifests used to
+	// live in `~/.local/share/flowstate/agents/` but they are user-edited
+	// config and now belong in `~/.config/flowstate/agents/`. The helper
+	// is a no-op when the new dir already exists or the legacy dir is
+	// empty/missing, so it is safe to call unconditionally on startup.
+	legacyAgentsDir := filepath.Join(config.DataDir(), "agents")
+	if cfg.AgentDir != "" && cfg.AgentDir != legacyAgentsDir {
+		if _, err := MigrateAgentsToConfigDir(legacyAgentsDir, cfg.AgentDir); err != nil {
+			log.Printf("warning: migrating agent manifests from %q to %q: %v",
+				legacyAgentsDir, cfg.AgentDir, err)
+		}
+	}
+
 	if err := SeedAgentsDir(EmbeddedAgentsFS(), cfg.AgentDir); err != nil {
 		log.Printf("warning: seeding agents to %q: %v", cfg.AgentDir, err)
 	} else {

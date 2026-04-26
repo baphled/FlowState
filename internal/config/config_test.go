@@ -109,8 +109,20 @@ var _ = Describe("Config", func() {
 			expectedDataDir := config.DataDir()
 
 			Expect(cfg.DataDir).To(Equal(expectedDataDir))
-			Expect(cfg.AgentDir).To(Equal(filepath.Join(expectedDataDir, "agents")))
 			Expect(cfg.SkillDir).To(Equal(filepath.Join(expectedDataDir, "skills")))
+		})
+
+		It("locates AgentDir under XDG_CONFIG rather than XDG_DATA", func() {
+			// Agent manifests are user-edited config (tweaking
+			// `harness.critic_enabled`, swapping models). XDG_CONFIG is
+			// the canonical home for that class of file; swarms already
+			// live there. Pin AgentDir to Dir() so a future refactor
+			// that re-derives it from DataDir is caught at RED.
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.AgentDir).To(Equal(filepath.Join(config.Dir(), "agents")))
+			Expect(cfg.AgentDir).NotTo(Equal(filepath.Join(config.DataDir(), "agents")),
+				"AgentDir must NOT be re-derived from DataDir — XDG_CONFIG is correct")
 		})
 	})
 

@@ -6,9 +6,170 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
+
+// MigrateAgentsResult classifies the outcome of a single
+// MigrateAgentsToConfigDir call so callers (and tests) can reason about
+// which branch fired without re-stating the on-disk state.
+type MigrateAgentsResult string
+
+const (
+	// MigrateAgentsResultMigrated means at least one .md manifest was
+	// copied from the legacy XDG_DATA location into the new XDG_CONFIG
+	// location. The legacy directory is left intact for the user to
+	// review and remove.
+	MigrateAgentsResultMigrated MigrateAgentsResult = "migrated"
+	// MigrateAgentsResultSkippedNewExists means the new XDG_CONFIG
+	// agent directory already exists, so the migration is a no-op —
+	// XDG_CONFIG always wins when both locations exist.
+	MigrateAgentsResultSkippedNewExists MigrateAgentsResult = "skipped-new-exists"
+	// MigrateAgentsResultSkippedNoLegacy means there was nothing to
+	// migrate: the legacy XDG_DATA directory is missing or empty.
+	MigrateAgentsResultSkippedNoLegacy MigrateAgentsResult = "skipped-no-legacy"
+)
+
+// MigrateAgentsToConfigDir copies agent manifests from the legacy XDG_DATA
+// location (oldDir) into the canonical XDG_CONFIG location (newDir) the
+// first time FlowState starts after the AgentDir default flipped from
+// `~/.local/share/flowstate/agents/` to `~/.config/flowstate/agents/`.
+//
+// The migration is intentionally a *copy*, not a *move*: the legacy
+// directory is left in place so a user with multiple FlowState versions
+// or external tooling pointed at the old path is not surprised by a
+// silent disappearance. A single WARN is emitted instructing the user to
+// delete the legacy directory at their convenience.
+//
+// Resolution rules:
+//   - If newDir already exists (any content), the migration is a no-op
+//     and returns MigrateAgentsResultSkippedNewExists. XDG_CONFIG wins
+//     when both locations are populated — this matches the "config
+//     overrides cache" precedent that runs through the rest of the
+//     codebase (see DefaultConfig()'s AgentDir godoc).
+//   - If newDir does not exist and oldDir is missing or contains no
+//     .md files, return MigrateAgentsResultSkippedNoLegacy.
+//   - Otherwise create newDir, copy every .md from oldDir into it, and
+//     return MigrateAgentsResultMigrated.
+//
+// Expected:
+//   - oldDir is the legacy XDG_DATA agents directory path (may not exist).
+//   - newDir is the new XDG_CONFIG agents directory path (may not exist).
+//
+// Returns:
+//   - The classified outcome (see MigrateAgentsResult).
+//   - An error if a real I/O failure prevented an otherwise-valid
+//     migration. A missing oldDir or an empty legacy directory is NOT
+//     an error — they collapse to MigrateAgentsResultSkippedNoLegacy.
+//
+// Side effects:
+//   - Creates newDir and copies manifests when a migration is required.
+//   - Emits a single slog.Warn message on a successful migration so the
+//     user knows the legacy directory can be removed.
+//   - Reads oldDir and stat()s newDir.
+func MigrateAgentsToConfigDir(oldDir, newDir string) (MigrateAgentsResult, error) {
+	if _, err := os.Stat(newDir); err == nil {
+		return MigrateAgentsResultSkippedNewExists, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat new agents dir %q: %w", newDir, err)
+	}
+
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return MigrateAgentsResultSkippedNoLegacy, nil
+		}
+		return "", fmt.Errorf("reading legacy agents dir %q: %w", oldDir, err)
+	}
+
+	manifests := filterManifestEntries(entries)
+	if len(manifests) == 0 {
+		return MigrateAgentsResultSkippedNoLegacy, nil
+	}
+
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating new agents dir %q: %w", newDir, err)
+	}
+
+	for _, name := range manifests {
+		src := filepath.Join(oldDir, name)
+		dst := filepath.Join(newDir, name)
+		if err := copyManifestFromDisk(src, dst); err != nil {
+			return "", err
+		}
+	}
+
+	slog.Warn(
+		"migrated agent manifests from XDG_DATA to XDG_CONFIG; "+
+			"you can safely delete the old directory",
+		"old_dir", oldDir,
+		"new_dir", newDir,
+		"count", len(manifests),
+	)
+	return MigrateAgentsResultMigrated, nil
+}
+
+// filterManifestEntries returns the .md filenames inside entries, skipping
+// directories and non-manifest files. The order matches the input order
+// so callers see a stable copy sequence.
+//
+// Expected:
+//   - entries is the result of os.ReadDir on a manifests directory.
+//
+// Returns:
+//   - A slice of filenames ending in .md.
+//
+// Side effects:
+//   - None.
+func filterManifestEntries(entries []os.DirEntry) []string {
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	return out
+}
+
+// copyManifestFromDisk copies a single manifest file from srcPath to
+// destPath, creating destPath with manifest-appropriate permissions
+// (0644). Unlike copySingleFile (which reads from an fs.FS and refuses to
+// overwrite), this helper reads from the real filesystem and overwrites
+// destPath if it exists — the caller (MigrateAgentsToConfigDir) has
+// already verified the destination directory is empty before invoking it.
+//
+// Expected:
+//   - srcPath points at a readable manifest file on disk.
+//   - destPath's parent directory exists.
+//
+// Returns:
+//   - An error wrapping the failing I/O step.
+//
+// Side effects:
+//   - Creates or truncates destPath.
+func copyManifestFromDisk(srcPath, destPath string) error {
+	srcFile, err := os.Open(srcPath) //nolint:gosec // srcPath comes from os.ReadDir of a configured agents dir
+	if err != nil {
+		return fmt.Errorf("opening legacy manifest %q: %w", srcPath, err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("creating new manifest %q: %w", destPath, err)
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return fmt.Errorf("copying manifest %q -> %q: %w", srcPath, destPath, err)
+	}
+	return nil
+}
 
 // RefreshStatus classifies a single manifest outcome during a refresh.
 type RefreshStatus string
