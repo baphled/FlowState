@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -208,7 +209,8 @@ type TokenManager struct {
 //   - refreshToken is a non-empty refresh token.
 //   - expiresAt is Unix milliseconds when the access token expires.
 //   - refresher is a valid TokenRefresher implementation.
-//   - authFilePath is the path to auth.json for persistence.
+//   - tokenFilePath is a FlowState-owned JSON file for persisting refreshed
+//     credentials. Empty means in-memory only (no persistence).
 //
 // Returns:
 //   - A configured TokenManager.
@@ -220,14 +222,14 @@ func NewTokenManager(
 	refreshToken string,
 	expiresAt int64,
 	refresher TokenRefresher,
-	authFilePath string,
+	tokenFilePath string,
 ) *TokenManager {
 	return &TokenManager{
 		accessToken:  accessToken,
 		refreshToken: refreshToken,
 		expiresAt:    expiresAt,
 		refresher:    refresher,
-		authFilePath: authFilePath,
+		authFilePath: tokenFilePath,
 	}
 }
 
@@ -342,39 +344,35 @@ func (tm *TokenManager) SetExpiresAt(ms int64) {
 	tm.expiresAt = ms
 }
 
-// persistTokens writes updated OAuth tokens back to auth.json on disk.
+// persistTokens writes updated OAuth tokens to the configured token file.
+//
+// The file format is a flat JSON object:
+//
+//	{"type":"oauth","access":"...","refresh":"...","expires":1234567890}
+//
+// This is FlowState's own credential format; the file is written under the
+// FlowState data dir (typically <dataDir>/tokens/anthropic.json) and is not
+// shared with any other tool.
 //
 // Side effects:
-//   - Reads and writes the auth.json file at authFilePath.
+//   - Writes the token file at authFilePath when set.
 //   - Silently ignores errors to avoid disrupting the main flow.
 func (tm *TokenManager) persistTokens() {
 	if tm.authFilePath == "" {
 		return
 	}
-	data, err := os.ReadFile(tm.authFilePath)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(tm.authFilePath), 0o700); err != nil {
 		return
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return
-	}
-	updated := map[string]interface{}{
+	payload := map[string]interface{}{
 		"type":    "oauth",
 		"access":  tm.accessToken,
 		"refresh": tm.refreshToken,
 		"expires": tm.expiresAt,
 	}
-	encoded, err := json.Marshal(updated)
+	out, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return
 	}
-	raw["anthropic"] = encoded
-	out, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(tm.authFilePath, out, authFilePermissions); err != nil {
-		return
-	}
+	_ = os.WriteFile(tm.authFilePath, out, authFilePermissions)
 }

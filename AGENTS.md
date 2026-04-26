@@ -460,13 +460,11 @@ The planner and executor agents require a provider with reliable tool calling su
 
 ### Authentication
 
-FlowState reads Anthropic credentials from `~/.local/share/opencode/auth.json` (the same file OpenCode uses). No separate configuration is needed if OpenCode is already installed and authenticated. The provider supports both direct API keys and OAuth tokens with automatic refresh.
+FlowState reads provider credentials from `~/.config/flowstate/config.yaml` and from environment variables (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `ZAI_API_KEY`, `OPENZEN_API_KEY`, `OPENAI_API_KEY`). The Anthropic provider also supports OAuth tokens with automatic refresh; refresh tokens live in `~/.local/share/flowstate/anthropic/oauth.json` (managed by `flowstate auth anthropic`).
 
-To verify authentication is available:
-```bash
-cat ~/.local/share/opencode/auth.json | python3 -c "import json,sys; d=json.load(sys.stdin); print([k for k in d.keys()])"
-# Should show: ['anthropic', 'github-copilot'] or similar
-```
+> **Note:** Earlier builds read credentials from `~/.local/share/opencode/auth.json`. That bridge has been removed (April 2026). If FlowState detects an OpenCode auth.json on disk while no FlowState provider is authenticated, it logs a one-time WARN at startup pointing the operator at `flowstate auth <provider>` or `~/.config/flowstate/config.yaml`.
+
+To verify authentication, run `flowstate auth status` or inspect your `~/.config/flowstate/config.yaml`.
 
 ### Skill Directory Configuration
 

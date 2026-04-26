@@ -60,18 +60,6 @@ Feature: Provider and MCP Setup
     When I press Shift+Tab
     Then I should move to previous step
 
-  @opencode-credentials
-  Scenario: Configure provider using OpenCode credentials
-    Given provider setup screen is shown
-    When I select "Anthropic" provider
-    Then I should see credential input options:
-      | Use OpenCode credentials |
-      | Enter manually           |
-    When I choose "Use OpenCode credentials"
-    Then OpenCode auth.json should be checked
-    And Anthropic provider should be marked as configured
-    And credential source should be marked as "OpenCode"
-
   @manual-credentials
   Scenario: Configure provider with manual credential entry
     Given provider setup screen is shown

@@ -1140,13 +1140,13 @@ When to use: Testing purposes
 		})
 	})
 
-	Describe("OpenCode credential integration", func() {
+	Describe("OpenCode credential migration", func() {
 		var tempDir string
 		var originalHome string
 
 		BeforeEach(func() {
 			var err error
-			tempDir, err = os.MkdirTemp("", "opencode-integration-test-*")
+			tempDir, err = os.MkdirTemp("", "opencode-migration-test-*")
 			Expect(err).NotTo(HaveOccurred())
 
 			originalHome = os.Getenv("HOME")
@@ -1159,7 +1159,7 @@ When to use: Testing purposes
 		})
 
 		Context("when OpenCode has Anthropic credentials but config and env do not", func() {
-			It("registers Anthropic provider using OpenCode credentials", func() {
+			It("does not register Anthropic from OpenCode auth.json", func() {
 				os.Unsetenv("ANTHROPIC_API_KEY")
 				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
 
@@ -1180,14 +1180,13 @@ When to use: Testing purposes
 				registry, _ := app.RegisterProvidersForTest(cfg)
 
 				Expect(registry).NotTo(BeNil())
-				provider, err := registry.Get("anthropic")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(provider).NotTo(BeNil())
+				_, err := registry.Get("anthropic")
+				Expect(err).To(HaveOccurred())
 			})
 		})
 
 		Context("when OpenCode has GitHub Copilot credentials but config and env do not", func() {
-			It("registers GitHub Copilot provider using OpenCode credentials", func() {
+			It("does not register GitHub Copilot from OpenCode auth.json", func() {
 				os.Unsetenv("GITHUB_TOKEN")
 				DeferCleanup(func() { os.Unsetenv("GITHUB_TOKEN") })
 
@@ -1210,20 +1209,15 @@ When to use: Testing purposes
 				registry, _ := app.RegisterProvidersForTest(cfg)
 
 				Expect(registry).NotTo(BeNil())
-				provider, err := registry.Get("github-copilot")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(provider).NotTo(BeNil())
+				_, err := registry.Get("github-copilot")
+				Expect(err).To(HaveOccurred())
 			})
 		})
 
-		Context("when OpenCode has both Anthropic and GitHub Copilot credentials", func() {
-			It("registers both providers using OpenCode credentials", func() {
+		Context("when config supplies an Anthropic key alongside an OpenCode auth.json", func() {
+			It("registers the provider from config and ignores OpenCode auth.json", func() {
 				os.Unsetenv("ANTHROPIC_API_KEY")
-				os.Unsetenv("GITHUB_TOKEN")
-				DeferCleanup(func() {
-					os.Unsetenv("ANTHROPIC_API_KEY")
-					os.Unsetenv("GITHUB_TOKEN")
-				})
+				DeferCleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") })
 
 				opencodePath := filepath.Join(tempDir, ".local", "share", "opencode")
 				Expect(os.MkdirAll(opencodePath, 0o755)).To(Succeed())
@@ -1231,32 +1225,20 @@ When to use: Testing purposes
 				jsonContent := `{
   "anthropic": {
     "type": "oauth",
-    "access": "sk-ant-oat01-test-token"
-  },
-  "github-copilot": {
-    "type": "oauth",
-    "access": "gho_test_access_token",
-    "refresh": "gho_test_refresh_token",
-    "expires": 0
+    "access": "sk-ant-oat01-should-be-ignored"
   }
 }`
 				Expect(os.WriteFile(authPath, []byte(jsonContent), 0o600)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Anthropic.APIKey = ""
-				cfg.Providers.GitHub.APIKey = ""
+				cfg.Providers.Anthropic.APIKey = "config-anthropic-key"
 
 				registry, _ := app.RegisterProvidersForTest(cfg)
 
 				Expect(registry).NotTo(BeNil())
-
-				anthropicProvider, err := registry.Get("anthropic")
+				provider, err := registry.Get("anthropic")
 				Expect(err).NotTo(HaveOccurred())
-				Expect(anthropicProvider).NotTo(BeNil())
-
-				githubProvider, err := registry.Get("github-copilot")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(githubProvider).NotTo(BeNil())
+				Expect(provider).NotTo(BeNil())
 			})
 		})
 	})

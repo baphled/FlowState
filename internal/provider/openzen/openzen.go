@@ -2,13 +2,9 @@ package openzen
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"reflect"
 
-	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
 	openaiAPI "github.com/openai/openai-go"
@@ -66,43 +62,22 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 	return &Provider{client: client}, nil
 }
 
-// NewFromOpenCodeOrConfig creates a new OpenZen provider from OpenCode auth or a fallback key.
+// NewFromConfig creates a new OpenZen provider from a configured API key.
 //
 // Expected:
-//   - opencodePath is a path to OpenCode auth data or empty.
-//   - fallbackKey is a valid OpenZen API key when OpenCode auth is unavailable.
+//   - apiKey is the OpenZen API key from config.yaml or environment.
 //
 // Returns:
 //   - A configured OpenZen provider.
-//   - An error if credential resolution fails or no API key is available.
+//   - errAPIKeyRequired when apiKey is empty.
 //
 // Side effects:
-//   - Reads OpenCode auth data from disk when opencodePath is provided.
-//
-//nolint:nestif // credential resolution checks multiple sources
-func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
-	if opencodePath != "" {
-		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-		if err != nil {
-			if !errors.Is(err, auth.ErrAuthFileNotFound) && !errors.Is(err, auth.ErrNoCredentials) {
-				return nil, err
-			}
-		} else if token, ok := openzenAccessToken(authData); ok {
-			return New(token)
-		}
-
-		if token, err := openzenAccessTokenFromFile(opencodePath); err != nil {
-			return nil, err
-		} else if token != "" {
-			return New(token)
-		}
-	}
-
-	if fallbackKey == "" {
+//   - None.
+func NewFromConfig(apiKey string) (*Provider, error) {
+	if apiKey == "" {
 		return nil, errAPIKeyRequired
 	}
-
-	return New(fallbackKey)
+	return New(apiKey)
 }
 
 // Name returns the provider name.
@@ -245,65 +220,3 @@ func fallbackModels() []provider.Model {
 	}
 }
 
-// openzenAccessToken extracts the OpenZen access token from OpenCode auth data.
-//
-// Expected:
-//   - authData is a pointer to OpenCodeAuth (may be nil).
-//
-// Returns:
-//   - The access token string and true if found.
-//   - Empty string and false if not found.
-//
-// Side effects:
-//   - None.
-func openzenAccessToken(authData *auth.OpenCodeAuth) (string, bool) {
-	if authData == nil {
-		return "", false
-	}
-
-	value := reflect.ValueOf(authData).Elem()
-	field := value.FieldByName("OpenZen")
-	if !field.IsValid() || field.IsNil() {
-		return "", false
-	}
-
-	providerAuth, ok := field.Interface().(*auth.ProviderAuth)
-	if !ok || providerAuth == nil || providerAuth.Access == "" {
-		return "", false
-	}
-
-	return providerAuth.Access, true
-}
-
-// openzenAccessTokenFromFile reads the OpenZen access token directly from an auth.json file.
-//
-// Expected:
-//   - path is a file path to OpenCode's auth.json.
-//
-// Returns:
-//   - The access token string if found.
-//   - An error if the file cannot be read or parsed.
-//
-// Side effects:
-//   - Reads from the file at path.
-func openzenAccessTokenFromFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
-		return "", fmt.Errorf("reading opencode auth: %w", err)
-	}
-
-	var raw struct {
-		OpenZen *auth.ProviderAuth `json:"openzen,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", fmt.Errorf("parsing opencode auth: %w", err)
-	}
-	if raw.OpenZen == nil || raw.OpenZen.Access == "" {
-		return "", nil
-	}
-
-	return raw.OpenZen.Access, nil
-}

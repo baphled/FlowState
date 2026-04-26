@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -149,75 +147,28 @@ var _ = Describe("Token Exchange and Manager", func() {
 	})
 })
 
-var _ = Describe("NewFromOpenCodeOrFallback", func() {
-	var tmpDir string
-
-	BeforeEach(func() {
-		var err error
-		tmpDir, err = os.MkdirTemp("", "copilot-test-*")
-		Expect(err).NotTo(HaveOccurred())
-	})
-
-	AfterEach(func() {
-		Expect(os.RemoveAll(tmpDir)).To(Succeed())
-	})
-
-	Context("when opencode auth.json does not exist", func() {
-		It("falls through to fallback token", func() {
-			nonExistent := filepath.Join(tmpDir, "nonexistent", "auth.json")
-			p, err := copilot.NewFromOpenCodeOrFallback(nonExistent, nil, "ghp_fallback")
+var _ = Describe("NewFromConfig", func() {
+	Context("when an OAuth token is supplied", func() {
+		It("uses the OAuth token", func() {
+			oauthToken := &oauth.TokenResponse{AccessToken: "gho_oauth_token"}
+			p, err := copilot.NewFromConfig(oauthToken, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 			Expect(p.Name()).To(Equal("github-copilot"))
 		})
 	})
 
-	Context("when opencode auth.json has no copilot credentials", func() {
-		It("falls through to fallback token", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"anthropic": {"type": "oauth", "access": "sk-ant-test"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := copilot.NewFromOpenCodeOrFallback(authPath, nil, "ghp_fallback")
+	Context("when only a fallback token is supplied", func() {
+		It("uses the fallback token", func() {
+			p, err := copilot.NewFromConfig(nil, "ghp_fallback")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
 	})
 
-	Context("when opencode auth.json has valid copilot credentials", func() {
-		It("returns a provider using the opencode token", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"github-copilot": {"type": "oauth", "access": "gho_valid_token"}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := copilot.NewFromOpenCodeOrFallback(authPath, nil, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode auth.json contains invalid JSON", func() {
-		It("returns an error", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			Expect(os.WriteFile(authPath, []byte("not json"), 0o600)).To(Succeed())
-			p, err := copilot.NewFromOpenCodeOrFallback(authPath, nil, "ghp_fallback")
-			Expect(err).To(HaveOccurred())
-			Expect(p).To(BeNil())
-		})
-	})
-
-	Context("when opencodePath is empty", func() {
-		It("falls through to OAuth token", func() {
-			oauthToken := &oauth.TokenResponse{AccessToken: "gho_oauth_token"}
-			p, err := copilot.NewFromOpenCodeOrFallback("", oauthToken, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-	})
-
-	Context("when opencode unavailable and OAuth token provided", func() {
-		It("uses the OAuth token", func() {
-			nonExistent := filepath.Join(tmpDir, "nonexistent", "auth.json")
-			oauthToken := &oauth.TokenResponse{AccessToken: "gho_oauth_token"}
-			p, err := copilot.NewFromOpenCodeOrFallback(nonExistent, oauthToken, "")
+	Context("when the OAuth token has an empty access token", func() {
+		It("falls through to the fallback token", func() {
+			p, err := copilot.NewFromConfig(&oauth.TokenResponse{AccessToken: ""}, "ghp_fb")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
@@ -225,21 +176,9 @@ var _ = Describe("NewFromOpenCodeOrFallback", func() {
 
 	Context("when no credential source provides a token", func() {
 		It("returns an error", func() {
-			nonExistent := filepath.Join(tmpDir, "nonexistent", "auth.json")
-			p, err := copilot.NewFromOpenCodeOrFallback(nonExistent, nil, "")
+			p, err := copilot.NewFromConfig(nil, "")
 			Expect(err).To(HaveOccurred())
 			Expect(p).To(BeNil())
-		})
-	})
-
-	Context("when opencode has empty access token", func() {
-		It("falls through to fallback token", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			content := `{"github-copilot": {"type": "oauth", "access": ""}}`
-			Expect(os.WriteFile(authPath, []byte(content), 0o600)).To(Succeed())
-			p, err := copilot.NewFromOpenCodeOrFallback(authPath, nil, "ghp_fb")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
 		})
 	})
 })

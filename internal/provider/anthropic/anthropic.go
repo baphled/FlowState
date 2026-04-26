@@ -5,12 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 )
@@ -20,9 +18,6 @@ var ErrNotSupported = errors.New("anthropic does not support embeddings")
 
 var errAPIKeyRequired = errors.New("anthropic API key is required")
 var errOAuthTokenRequired = errors.New("anthropic OAuth token is required")
-var errNoOpenCodeCredentials = errors.New(
-	"no anthropic credentials in opencode auth",
-)
 
 const (
 	providerName          = "anthropic"
@@ -118,7 +113,7 @@ func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf(
 			"anthropic OAuth token refresh failed "+
-				"(re-authenticate via `opencode auth login anthropic`): %w",
+				"(re-authenticate via `flowstate auth anthropic`): %w",
 			err,
 		)
 	}
@@ -149,113 +144,28 @@ func newOAuthClient(token string) anthropicAPI.Client {
 	)
 }
 
-// tryOpenCodeAuth attempts to load Anthropic credentials from OpenCode auth.json.
+// NewFromConfig creates an Anthropic provider from a configured API key or
+// OAuth token. The credential is treated as an OAuth token when it has the
+// "sk-ant-oat01-" prefix, otherwise as an API key.
 //
 // Expected:
-//   - opencodePath is a file path to OpenCode's auth.json.
+//   - credential is an Anthropic API key or OAuth access token; empty when
+//     no credential is configured.
 //
 // Returns:
-//   - (*Provider, nil) if valid credentials found.
-//   - (nil, error) if auth file exists but cannot be parsed.
-//   - (nil, errNoOpenCodeCredentials) if no credentials found.
-//
-// Side effects:
-//   - Reads from opencodePath.
-func tryOpenCodeAuth(opencodePath string) (*Provider, error) {
-	authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-	if err != nil {
-		return nil, fmt.Errorf("loading opencode auth: %w", err)
-	}
-	if authData == nil || authData.Anthropic == nil {
-		return nil, errNoOpenCodeCredentials
-	}
-	if authData.Anthropic.Access == "" {
-		return nil, errNoOpenCodeCredentials
-	}
-	token := authData.Anthropic.Access
-	if !IsOAuthToken(token) {
-		return New(token)
-	}
-	return buildOAuthProvider(authData.Anthropic, opencodePath)
-}
-
-// buildOAuthProvider creates an OAuth provider with optional token refresh from auth credentials.
-//
-// Expected:
-//   - pa contains valid Anthropic OAuth credentials.
-//   - authPath is the file path to auth.json for token persistence.
-//
-// Returns:
-//   - (*Provider, nil) on success.
-//   - (nil, error) if provider creation fails.
-//
-// Side effects:
-//   - May perform an HTTP token refresh via NewOAuthWithRefresh.
-func buildOAuthProvider(
-	pa *auth.ProviderAuth, authPath string,
-) (*Provider, error) {
-	if pa.Refresh == "" {
-		return NewOAuth(pa.Access)
-	}
-	refresher := &HTTPTokenRefresher{
-		Client: &http.Client{},
-	}
-	tm := NewTokenManager(
-		pa.Access, pa.Refresh, pa.Expires,
-		refresher, authPath,
-	)
-	return NewOAuthWithRefresh(tm)
-}
-
-// NewFromOpenCodeOrConfig attempts to load Anthropic credentials from OpenCode
-// auth.json, falling back to the provided API key from config.
-//
-// Expected:
-//   - opencodePath is a file path to auth.json (or empty to skip).
-//   - fallbackKey is the API key from config.yaml (may be empty).
-//
-// Returns:
-//   - A configured Provider using OpenCode credential if found.
-//   - A configured Provider using fallbackKey if OpenCode not available.
-//   - An error if neither source provides a valid credential.
-//
-// Side effects:
-//   - Reads from opencodePath if provided.
-func NewFromOpenCodeOrConfig(
-	opencodePath string, fallbackKey string,
-) (*Provider, error) {
-	if opencodePath != "" {
-		p, err := tryOpenCodeAuth(opencodePath)
-		if err != nil && !isExpectedAuthError(err) {
-			return nil, err
-		}
-		if p != nil {
-			return p, nil
-		}
-	}
-
-	if fallbackKey != "" {
-		return New(fallbackKey)
-	}
-
-	return nil, errAPIKeyRequired
-}
-
-// isExpectedAuthError reports whether the error is a benign auth-file-not-found condition.
-//
-// Expected:
-//   - err is a non-nil error to classify.
-//
-// Returns:
-//   - true if the error indicates missing credentials or auth file.
-//   - false for unexpected errors that should be propagated.
+//   - A configured Provider on success.
+//   - errAPIKeyRequired when credential is empty.
 //
 // Side effects:
 //   - None.
-func isExpectedAuthError(err error) bool {
-	return errors.Is(err, errNoOpenCodeCredentials) ||
-		errors.Is(err, auth.ErrAuthFileNotFound) ||
-		errors.Is(err, auth.ErrNoCredentials)
+func NewFromConfig(credential string) (*Provider, error) {
+	if credential == "" {
+		return nil, errAPIKeyRequired
+	}
+	if IsOAuthToken(credential) {
+		return NewOAuth(credential)
+	}
+	return New(credential)
 }
 
 // NewWithOptions creates a new Anthropic provider with the given API key and options.

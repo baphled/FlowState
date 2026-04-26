@@ -2779,12 +2779,6 @@ func setupProvidersWithFailures(
 	providerRegistry := provider.NewRegistry()
 	failures := make(map[string]error)
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = ""
-	}
-	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
-
 	ollamaProvider, ollamaErr := ollama.New(cfg.Providers.Ollama.Host)
 	recordProvider(providerRegistry, failures, "ollama", ollamaProvider, ollamaErr)
 
@@ -2792,22 +2786,105 @@ func setupProvidersWithFailures(
 	recordProvider(providerRegistry, failures, "openai", openaiProvider, openaiErr)
 
 	anthropicKey := resolveProviderKey("ANTHROPIC_API_KEY", cfg.Providers.Anthropic.APIKey)
-	anthropicProvider, anthropicErr := anthropic.NewFromOpenCodeOrConfig(opencodePath, anthropicKey)
+	anthropicProvider, anthropicErr := anthropic.NewFromConfig(anthropicKey)
 	recordProvider(providerRegistry, failures, "anthropic", anthropicProvider, anthropicErr)
 
 	githubToken := resolveProviderKey("GITHUB_TOKEN", cfg.Providers.GitHub.APIKey)
-	copilotProvider, copilotErr := copilot.NewFromOpenCodeOrFallback(opencodePath, nil, githubToken)
+	copilotProvider, copilotErr := copilot.NewFromConfig(nil, githubToken)
 	recordProvider(providerRegistry, failures, "copilot", copilotProvider, copilotErr)
 
 	zaiKey := resolveProviderKey("ZAI_API_KEY", cfg.Providers.ZAI.APIKey)
-	zaiProvider, zaiErr := zai.NewFromOpenCodeOrConfig(opencodePath, zaiKey)
+	zaiProvider, zaiErr := zai.NewFromConfig(zaiKey, zaiPlanFromConfig(cfg))
 	recordProvider(providerRegistry, failures, "zai", zaiProvider, zaiErr)
 
 	openzenKey := resolveProviderKey("OPENZEN_API_KEY", cfg.Providers.OpenZen.APIKey)
-	openzenProvider, openzenErr := openzen.NewFromOpenCodeOrConfig(opencodePath, openzenKey)
+	openzenProvider, openzenErr := openzen.NewFromConfig(openzenKey)
 	recordProvider(providerRegistry, failures, "openzen", openzenProvider, openzenErr)
 
+	warnIfOpenCodeAuthPresent(failures)
+
 	return providerRegistry, ollamaProvider, failures
+}
+
+// zaiAllProvidersFailed reports whether every authenticated provider in the
+// failures map is failing — i.e. nothing was successfully registered for any
+// authenticated provider.
+//
+// We use this to decide whether to emit the OpenCode-migration WARN.
+//
+// Expected:
+//   - failures is the per-provider error map from setupProvidersWithFailures.
+//
+// Returns:
+//   - true when every authenticated provider failed.
+//   - false when at least one authenticated provider succeeded.
+//
+// Side effects:
+//   - None.
+func zaiAllProvidersFailed(failures map[string]error) bool {
+	authProviders := []string{"anthropic", "copilot", "zai", "openzen"}
+	for _, name := range authProviders {
+		if _, failed := failures[name]; !failed {
+			return false
+		}
+	}
+	return true
+}
+
+// warnIfOpenCodeAuthPresent emits a one-time WARN when the user appears to
+// have an OpenCode auth.json on disk and no FlowState provider authenticated
+// successfully. The OpenCode credential bridge has been removed, so the user
+// must paste keys into config.yaml or run `flowstate auth <provider>`.
+//
+// Expected:
+//   - failures is the per-provider error map from setupProvidersWithFailures.
+//
+// Side effects:
+//   - Reads ~/.local/share/opencode/auth.json metadata.
+//   - Logs a single WARN message when the migration hint applies.
+func warnIfOpenCodeAuthPresent(failures map[string]error) {
+	if !zaiAllProvidersFailed(failures) {
+		return
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return
+	}
+	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
+	if _, err := os.Stat(opencodePath); err != nil {
+		return
+	}
+	slog.Warn(
+		"detected OpenCode auth.json but no FlowState provider authenticated; "+
+			"FlowState no longer reads OpenCode credentials. "+
+			"Run `flowstate auth anthropic` / `flowstate auth github-copilot` "+
+			"or set provider keys directly in ~/.config/flowstate/config.yaml.",
+		"opencode_auth_path", opencodePath,
+	)
+}
+
+// zaiPlanFromConfig returns the Z.AI plan tag for the configured provider.
+// "coding" selects the coding-plan subscription endpoint; anything else
+// (including empty) selects the general pay-per-token endpoint.
+//
+// The plan is encoded in providers.zai.host: when host equals the
+// coding-plan URL we treat it as the coding plan. This avoids adding a new
+// config field while still routing keys to the correct base URL.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig.
+//
+// Returns:
+//   - "coding" when the configured host matches the coding-plan endpoint.
+//   - "" otherwise.
+//
+// Side effects:
+//   - None.
+func zaiPlanFromConfig(cfg *config.AppConfig) string {
+	if cfg.Providers.ZAI.Host == "https://api.z.ai/api/coding/paas/v4" {
+		return zai.PlanCoding
+	}
+	return ""
 }
 
 // resolveProviderKey returns the value of envVar if set, otherwise the

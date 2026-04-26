@@ -103,11 +103,10 @@ var _ = Describe("ProviderSetupIntent", func() {
 				Expect(providers[intent.SelectedProvider()].Name).To(Equal("openai"))
 			})
 
-			It("entering unconfigured provider shows input mode selector", func() {
+			It("entering unconfigured provider opens manual API-key entry", func() {
 				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-				view := intent.View()
-				Expect(view).To(ContainSubstring("Use OpenCode credentials"))
+				Expect(intent.IsEditingAPIKey()).To(BeTrue())
 			})
 
 			It("entering configured provider toggles enabled state", func() {
@@ -120,8 +119,6 @@ var _ = Describe("ProviderSetupIntent", func() {
 
 	Describe("API key input", func() {
 		BeforeEach(func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		})
@@ -164,38 +161,8 @@ var _ = Describe("ProviderSetupIntent", func() {
 		})
 	})
 
-	Describe("input mode selection", func() {
-		Context("on unconfigured provider", func() {
-			BeforeEach(func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			})
-
-			It("shows input mode selector instead of direct API key input", func() {
-				view := intent.View()
-				Expect(view).To(ContainSubstring("Use OpenCode credentials"))
-				Expect(view).To(ContainSubstring("Enter manually"))
-			})
-
-			It("selects Manual mode (second option) and shows API key input", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-				intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-				Expect(intent.IsEditingAPIKey()).To(BeTrue())
-			})
-
-			It("exits mode selector with Escape without saving", func() {
-				intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
-				providers := intent.Providers()
-				Expect(providers[1].Enabled).To(BeFalse())
-				Expect(providers[1].APIKey).To(BeEmpty())
-			})
-		})
-	})
-
 	Describe("credential validation", func() {
 		It("accepts valid Anthropic API key format", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -212,8 +179,6 @@ var _ = Describe("ProviderSetupIntent", func() {
 		It("accepts valid Anthropic OAuth token format", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 			credential := "sk-ant-oat01-oauth123"
 			for _, r := range credential {
@@ -226,8 +191,6 @@ var _ = Describe("ProviderSetupIntent", func() {
 		})
 
 		It("rejects invalid credential format", func() {
-			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -244,8 +207,6 @@ var _ = Describe("ProviderSetupIntent", func() {
 		It("accepts valid GitHub key format", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
-			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			intent.Update(tea.KeyMsg{Type: tea.KeyDown})
 			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 

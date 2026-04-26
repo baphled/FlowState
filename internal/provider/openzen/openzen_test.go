@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -413,69 +411,16 @@ var _ = Describe("OpenZen Provider", func() {
 		})
 	})
 
-	Describe("NewFromOpenCodeOrConfig", func() {
-		var dir string
-
-		BeforeEach(func() {
-			var err error
-			dir, err = os.MkdirTemp("", "openzen-auth-*")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			_ = os.RemoveAll(dir)
-		})
-
-		It("uses valid OpenCode OpenZen credentials", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"openzen":{"type":"oauth","access":"openzen-token"}}`), 0o600)).To(Succeed())
-
-			p, err := openzen.NewFromOpenCodeOrConfig(path, "fallback-token")
+	Describe("NewFromConfig", func() {
+		It("returns a provider when a config API key is provided", func() {
+			p, err := openzen.NewFromConfig("config-api-key")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
 
-		It("falls back when the auth file is missing", func() {
-			p, err := openzen.NewFromOpenCodeOrConfig(filepath.Join(dir, "missing.json"), "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("falls back when auth exists without OpenZen credentials", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"anthropic":{"type":"oauth","access":"anthropic-token"}}`), 0o600)).To(Succeed())
-
-			p, err := openzen.NewFromOpenCodeOrConfig(path, "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("returns an error when neither source provides a token", func() {
-			_, err := openzen.NewFromOpenCodeOrConfig(filepath.Join(dir, "missing.json"), "")
+		It("returns an error when no API key is provided", func() {
+			_, err := openzen.NewFromConfig("")
 			Expect(err).To(HaveOccurred())
-		})
-
-		It("wraps malformed JSON errors", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"openzen":`), 0o600)).To(Succeed())
-
-			_, err := openzen.NewFromOpenCodeOrConfig(path, "fallback-token")
-			Expect(err).To(HaveOccurred())
-		})
-
-		It("uses the fallback key when the OpenCode path is empty", func() {
-			p, err := openzen.NewFromOpenCodeOrConfig("", "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("falls back when the OpenZen access token is empty", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"openzen":{"type":"oauth","access":""}}`), 0o600)).To(Succeed())
-
-			p, err := openzen.NewFromOpenCodeOrConfig(path, "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
 		})
 	})
 })
