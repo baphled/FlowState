@@ -942,6 +942,7 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolCapableModels).To(ContainElement("o3*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("gemini-3*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("grok-code-*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("glm-*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("qwen3:*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("devstral:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.1:latest"))
