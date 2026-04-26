@@ -238,6 +238,44 @@ func (i *Intent) AtBottomForTest() bool {
 	return i.atBottom
 }
 
+// SetAtBottomForTest seeds i.atBottom so the end-of-stream scroll
+// heuristic spec can simulate a user-scrolled state without driving a
+// real key/mouse event through the viewport.
+func (i *Intent) SetAtBottomForTest(v bool) {
+	i.atBottom = v
+}
+
+// SetLastUserScrollAtForTest seeds i.lastUserScrollAt so the
+// end-of-stream scroll heuristic spec can stage "user actively
+// scrolled N seconds ago" or "user has not scrolled" cases without
+// timing dependencies.
+func (i *Intent) SetLastUserScrollAtForTest(t time.Time) {
+	i.lastUserScrollAt = t
+}
+
+// LastUserScrollAtForTest returns i.lastUserScrollAt so a spec can
+// assert the field is updated by key/mouse handlers.
+func (i *Intent) LastUserScrollAtForTest() time.Time {
+	return i.lastUserScrollAt
+}
+
+// SetNotificationManagerForTest swaps the notification manager so the
+// heuristic spec can capture surfaced notifications.
+func (i *Intent) SetNotificationManagerForTest(mgr notification.Manager) {
+	i.notificationManager = mgr
+}
+
+// MsgViewportDebugForTest returns YOffset, Height, and the underlying
+// content for inspection. Used by the long-stream viewport reproducer
+// to pinpoint whether truncation lives in RenderContent, in viewport
+// height computation, or in the GotoBottom call site.
+func (i *Intent) MsgViewportDebugForTest() (yOffset, height int, content string) {
+	if i.msgViewport == nil {
+		return 0, 0, ""
+	}
+	return i.msgViewport.YOffset, i.msgViewport.Height, i.msgViewport.View()
+}
+
 // NotificationsViewForTest returns the rendered notification view for test assertions.
 func (i *Intent) NotificationsViewForTest() string {
 	return i.notifications.View()
