@@ -1,0 +1,50 @@
+schema_version: "1.0.0"
+id: planning-loop
+description: >
+  Reproduces today's deterministic planning loop: planner orchestrates
+  explorer + librarian + analyst + plan-writer + plan-reviewer through
+  the coordination_store. Lead is `planner`. Swarm-level gate fires the
+  result-schema validator after plan-reviewer to enforce the canonical
+  review-verdict shape before continuation.
+
+# `planner` is a registered agent today (internal/app/agents/planner.md).
+# It already orchestrates the five members listed below via its
+# delegation.allowlist. The swarm runner inherits that wiring without
+# changing the planner's prompt.
+lead: planner
+
+# Explicit roster — agent ids only at this stage. Sub-swarm composition
+# (a member that resolves to another swarm) is supported per §4 of the
+# spec; introduce later when a sub-swarm artifact actually exists.
+members:
+  - explorer
+  - librarian
+  - analyst
+  - plan-writer
+  - plan-reviewer
+
+harness:
+  # Sequential by default — the planner's loop is dependency-driven
+  # (interview → research → analysis → write → review) and parallelism
+  # at this layer would race the coordination_store. §T37 will offer
+  # `parallel: true` for swarms whose member set is genuinely
+  # independent.
+  parallel: false
+
+  gates:
+    # Swarm-level gate scoped to plan-reviewer's stream-close. Validates
+    # the verdict payload against the canonical review-verdict-v1
+    # schema before the next member runs (or the swarm completes).
+    # `kind: builtin:result-schema` resolves in-process; no Extension
+    # API v1 backend required.
+    - name: post-member-plan-reviewer-result-schema
+      kind: builtin:result-schema
+      schema_ref: review-verdict-v1
+      when: post-member
+      target: plan-reviewer
+
+context:
+  # Coordination_store namespace for this swarm's runs. Defaults to the
+  # swarm id when omitted; pinning explicitly so the documented chain
+  # keys (e.g. `planning/<chain-id>/requirements`) are stable.
+  chain_prefix: planning
