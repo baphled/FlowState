@@ -3,9 +3,11 @@ id: planning-loop
 description: >
   Reproduces today's deterministic planning loop: planner orchestrates
   explorer + librarian + analyst + plan-writer + plan-reviewer through
-  the coordination_store. Lead is `planner`. Swarm-level gate fires the
-  result-schema validator after plan-reviewer to enforce the canonical
-  review-verdict shape before continuation.
+  the coordination_store. Lead is `planner`. Each member that writes
+  structured output to the coord-store has a post-member gate
+  validating that output against a registered JSON schema before the
+  next member runs — malformed payloads halt the swarm with a
+  GateError instead of cascading into downstream confusion.
 
 # `planner` is a registered agent today (internal/app/agents/planner.md).
 # It already orchestrates the five members listed below via its
@@ -31,12 +33,33 @@ harness:
   # independent.
   parallel: false
 
+  # Swarm-level post-member gates, one per member that writes
+  # structured output to the coord-store. Each gate names the
+  # corresponding JSON schema registered in
+  # internal/swarm/schemas.go::SeedDefaultSchemas. `kind:
+  # builtin:result-schema` resolves in-process; no Extension API v1
+  # backend required.
   gates:
-    # Swarm-level gate scoped to plan-reviewer's stream-close. Validates
-    # the verdict payload against the canonical review-verdict-v1
-    # schema before the next member runs (or the swarm completes).
-    # `kind: builtin:result-schema` resolves in-process; no Extension
-    # API v1 backend required.
+    - name: post-member-explorer-evidence-bundle
+      kind: builtin:result-schema
+      schema_ref: evidence-bundle-v1
+      when: post-member
+      target: explorer
+    - name: post-member-librarian-external-refs
+      kind: builtin:result-schema
+      schema_ref: external-refs-v1
+      when: post-member
+      target: librarian
+    - name: post-member-analyst-analysis-bundle
+      kind: builtin:result-schema
+      schema_ref: analysis-bundle-v1
+      when: post-member
+      target: analyst
+    - name: post-member-plan-writer-plan-document
+      kind: builtin:result-schema
+      schema_ref: plan-document-v1
+      when: post-member
+      target: plan-writer
     - name: post-member-plan-reviewer-result-schema
       kind: builtin:result-schema
       schema_ref: review-verdict-v1

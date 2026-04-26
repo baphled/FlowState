@@ -184,8 +184,10 @@ Once generated, you MUST persist the plan in **two** places:
 
 2. **Coordination Store (chain-local handoff):** also write to the
    coordination store so the in-flight planner→reviewer chain can pass
-   the plan body without re-reading disk:
-   `coordination_store write {chainID}/plan <markdown_content>`
+   the plan body without re-reading disk. The hand-off is validated
+   against `plan-document-v1`, so wrap the markdown in a small JSON
+   object rather than writing the bare markdown string:
+   `coordination_store write {chainID}/plan {"markdown": "<markdown_content>", "id": "<plan-id>", "title": "<plan-title>"}`
 
 The disk write is the durable artefact; the coord-store write is
 ephemeral (cleared when the chain ends). If `plan_write` fails — most

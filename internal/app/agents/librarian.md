@@ -100,6 +100,8 @@ When your research is complete, you must write your findings to the coordination
 
 Ensure the data is formatted as a structured JSON object containing an array of the references found.
 
+Your output is validated against `external-refs-v1` — wrap the references in an object with a `references` array (each entry must include at least `url`).
+
 ## Constraints
 
 - Do not attempt to modify the local codebase.

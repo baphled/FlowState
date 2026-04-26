@@ -96,12 +96,13 @@ Flag technical debt, security vulnerabilities, or implementation risks that coul
 Provide concrete, actionable suggestions for the Strategic Planner based on the synthesised evidence.
 
 ## Output Protocol
-Write your final analysis to `{chainID}/analysis` as a structured JSON object:
+Write your final analysis to `{chainID}/analysis` as a structured JSON object. Your output is validated against `analysis-bundle-v1` — the object MUST include `key_findings` and `recommendations` arrays alongside the rich shape below:
 
 ```json
 {
   "chainID": "string",
   "summary": "string",
+  "key_findings": ["string"],
   "patterns": ["string"],
   "best_practices": ["string"],
   "gaps": ["string"],

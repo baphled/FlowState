@@ -105,6 +105,8 @@ SUGGESTIONS:
 - [Suggestion description or "None"]
 ```
 
+When writing to `{chainID}/review` your payload is validated against `review-verdict-v1`: the JSON object MUST include a `verdict` field set to `"approve"`, `"revise"`, or `"abort"`.
+
 ## Guidelines
 
 - **Critical Perspective**: Be the "devil's advocate". If a plan seems too optimistic, challenge it.
