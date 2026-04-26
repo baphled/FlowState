@@ -346,6 +346,14 @@ type Intent struct {
 	msgViewport          *viewport.Model
 	vpReady              bool
 	atBottom             bool
+	// lastUserScrollAt is set whenever a key or mouse event moves the
+	// viewport. Used by the Done-path snap-to-bottom heuristic so the
+	// final assistant content is brought into view when the user passively
+	// drifted away from the bottom (e.g. content auto-grew past their
+	// reading window) but is left alone when they actively scrolled within
+	// the recent past. Zero value means "never scrolled by user", which
+	// makes the heuristic safe on a fresh session.
+	lastUserScrollAt time.Time
 	agentRegistry        *agent.Registry
 	sessionStore         SessionLister
 	childSessionLister   SessionChildLister
@@ -1277,6 +1285,7 @@ func (i *Intent) handleScrollKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		vp, cmd := i.msgViewport.Update(msg)
 		i.msgViewport = &vp
 		i.atBottom = vp.AtBottom()
+		i.lastUserScrollAt = time.Now()
 		return cmd, true
 	}
 	return nil, false
@@ -1309,6 +1318,7 @@ func (i *Intent) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 	vp, cmd := i.msgViewport.Update(msg)
 	i.msgViewport = &vp
 	i.atBottom = vp.AtBottom()
+	i.lastUserScrollAt = time.Now()
 	return cmd
 }
 
@@ -1906,6 +1916,9 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	// where a chunk with empty fields triggers a tool_call commit.
 	needsRefresh := i.shouldRefreshViewport(msg)
 	i.handleStreamChunk(msg)
+	if msg.Done {
+		i.applyEndOfStreamScrollHeuristic()
+	}
 	if needsRefresh {
 		i.refreshViewport()
 	}
@@ -2554,6 +2567,62 @@ func (i *Intent) refreshViewport() {
 	if i.atBottom {
 		i.msgViewport.GotoBottom()
 	}
+}
+
+// userScrollGracePeriod is the window after a key/mouse scroll during
+// which the end-of-stream snap-to-bottom is suppressed. The user is
+// presumed to be actively reading at their current scroll position
+// during this window; outside it, the assumption flips — they passively
+// drifted off the bottom (e.g. content auto-grew past their reading
+// window) and the new committed content should snap into view.
+const userScrollGracePeriod = 5 * time.Second
+
+// applyEndOfStreamScrollHeuristic decides what to do with the viewport
+// scroll position when a stream's Done chunk lands. The previous
+// behaviour respected i.atBottom strictly: if the user (or content
+// growth) had pushed the viewport off the bottom at any point during
+// the stream, the final committed assistant message landed below the
+// visible window and the user perceived the response as truncated.
+//
+// The heuristic distinguishes two cases:
+//
+//   - Passive drift: the user did not scroll within userScrollGracePeriod
+//     before Done. The off-bottom position is most likely the result of
+//     content auto-growing past the viewport during streaming (the
+//     viewport's YOffset stayed put while the content's max grew).
+//     Snap to bottom so the final content is visible.
+//
+//   - Active scroll: the user scrolled within the grace window. They
+//     are reading at a specific position; do not yank them away. Surface
+//     a non-blocking notification so they know the stream finished and
+//     can press End / scroll down to reach the new content. The hint
+//     auto-dismisses after a few seconds.
+//
+// Side effects:
+//   - May set i.atBottom = true (so the subsequent refreshViewport call
+//     issues GotoBottom).
+//   - May add a "Response complete" notification.
+func (i *Intent) applyEndOfStreamScrollHeuristic() {
+	if i.atBottom {
+		return
+	}
+	scrolledRecently := !i.lastUserScrollAt.IsZero() &&
+		time.Since(i.lastUserScrollAt) < userScrollGracePeriod
+	if !scrolledRecently {
+		i.atBottom = true
+		return
+	}
+	if i.notificationManager == nil {
+		return
+	}
+	i.notificationManager.Add(notification.Notification{
+		ID:        "stream-complete-scroll-hint-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Response complete",
+		Message:   "Press End or scroll down to view the latest content.",
+		Level:     notification.LevelInfo,
+		Duration:  4 * time.Second,
+		CreatedAt: time.Now(),
+	})
 }
 
 // atMentionPattern matches @-mentions for agent names in a user message.
