@@ -321,24 +321,8 @@ var _ = Describe("TokenManager", func() {
 			os.RemoveAll(tmpDir)
 		})
 
-		It("updates auth.json with refreshed tokens", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			initial := map[string]interface{}{
-				"anthropic": map[string]interface{}{
-					"type":    "oauth",
-					"access":  "old-access",
-					"refresh": "old-refresh",
-					"expires": float64(1000),
-				},
-				"github-copilot": map[string]interface{}{
-					"type":   "oauth",
-					"access": "gho_keep",
-				},
-			}
-			data, _ := json.MarshalIndent(initial, "", "  ")
-			Expect(os.WriteFile(
-				authPath, data, authFilePermissions,
-			)).To(Succeed())
+		It("writes refreshed tokens to the FlowState token file", func() {
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
 
 			spy := &spyRefresher{
 				result: RefreshResult{
@@ -349,41 +333,23 @@ var _ = Describe("TokenManager", func() {
 			}
 			tm := NewTokenManager(
 				"old-access", "old-refresh", 0,
-				spy, authPath,
+				spy, tokenPath,
 			)
 			_, err := tm.EnsureToken(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			saved, err := os.ReadFile(authPath)
+			saved, err := os.ReadFile(tokenPath)
 			Expect(err).NotTo(HaveOccurred())
 
-			var parsed map[string]json.RawMessage
-			Expect(json.Unmarshal(saved, &parsed)).To(Succeed())
-
-			var anthro map[string]interface{}
-			Expect(json.Unmarshal(
-				parsed["anthropic"], &anthro,
-			)).To(Succeed())
-			Expect(anthro["access"]).To(
-				Equal("persisted-access"),
-			)
-			Expect(anthro["refresh"]).To(
-				Equal("persisted-refresh"),
-			)
-
-			var copilot map[string]interface{}
-			Expect(json.Unmarshal(
-				parsed["github-copilot"], &copilot,
-			)).To(Succeed())
-			Expect(copilot["access"]).To(Equal("gho_keep"))
+			var payload map[string]interface{}
+			Expect(json.Unmarshal(saved, &payload)).To(Succeed())
+			Expect(payload["access"]).To(Equal("persisted-access"))
+			Expect(payload["refresh"]).To(Equal("persisted-refresh"))
+			Expect(payload["type"]).To(Equal("oauth"))
 		})
 
-		It("preserves file permissions", func() {
-			authPath := filepath.Join(tmpDir, "auth.json")
-			initial := `{"anthropic":{"type":"oauth","access":"x","refresh":"y","expires":1}}`
-			Expect(os.WriteFile(
-				authPath, []byte(initial), authFilePermissions,
-			)).To(Succeed())
+		It("creates the parent directory when missing", func() {
+			tokenPath := filepath.Join(tmpDir, "tokens", "anthropic.json")
 
 			spy := &spyRefresher{
 				result: RefreshResult{
@@ -393,19 +359,19 @@ var _ = Describe("TokenManager", func() {
 				},
 			}
 			tm := NewTokenManager(
-				"x", "y", 0, spy, authPath,
+				"x", "y", 0, spy, tokenPath,
 			)
 			_, err := tm.EnsureToken(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
-			info, err := os.Stat(authPath)
+			info, err := os.Stat(tokenPath)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.Mode().Perm()).To(
 				Equal(os.FileMode(authFilePermissions)),
 			)
 		})
 
-		It("skips persistence when authFilePath is empty", func() {
+		It("skips persistence when the token file path is empty", func() {
 			spy := &spyRefresher{
 				result: RefreshResult{
 					AccessToken:  "no-persist",

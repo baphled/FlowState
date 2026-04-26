@@ -2064,7 +2064,12 @@ func (s *StepDefinitions) iRun(command string) error {
 //
 // Expected: The CLI binary is executed successfully.
 // Returns: The output string and exit code from the CLI execution.
-// Side effects: Executes the CLI binary and captures its output.
+// Side effects: Executes the CLI binary and captures its output. Runs the
+// child process under a sandboxed HOME / XDG_CONFIG_HOME so it never reads
+// the developer's real config.yaml — important now that providers no
+// longer fall back to OpenCode auth.json. The sandboxed config selects
+// the always-available ollama provider as the default, so app.New can
+// boot without any API keys present in the host environment.
 func runTestCLI(args []string) (output string, exitCode int) {
 	const testBinaryPath = "/tmp/flowstate-test"
 	cmdArgs := append([]string{testBinaryPath}, args...)
@@ -2072,19 +2077,81 @@ func runTestCLI(args []string) (output string, exitCode int) {
 		Path: testBinaryPath,
 		Args: cmdArgs,
 	}
+	sandboxHome, cleanup, err := sandboxedCLIHome()
+	if err != nil {
+		return fmt.Sprintf("failed to set up sandboxed HOME: %v", err), 1
+	}
+	defer cleanup()
+	cmd.Env = sandboxedEnv(sandboxHome)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	runErr := cmd.Run()
 	output = stdout.String() + stderr.String()
-	if err != nil {
+	if runErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			return output, exitErr.ExitCode()
 		}
 		return output, 1
 	}
 	return output, 0
+}
+
+// sandboxedCLIHome creates a temporary HOME directory containing a minimal
+// FlowState config that selects the ollama provider (no credentials needed)
+// as the default. Returns the directory path, a cleanup function, and any
+// error encountered during setup. The cleanup function removes the temp dir.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The path to the temporary HOME directory.
+//   - A cleanup function that removes the directory.
+//   - A non-nil error when the directory or config file could not be created.
+//
+// Side effects:
+//   - Creates a temporary directory and a config.yaml file inside it.
+func sandboxedCLIHome() (homeDir string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "flowstate-cli-home-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	cfgDir := filepath.Join(dir, ".config", "flowstate")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	cfgYAML := "providers:\n  default: ollama\n  ollama:\n    host: \"http://localhost:11434\"\n"
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(cfgYAML), 0o600); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return dir, cleanup, nil
+}
+
+// sandboxedEnv returns a minimal environment for the CLI test process,
+// inheriting only PATH from the parent and pinning HOME / XDG_CONFIG_HOME
+// to the sandboxed directory. All provider-credential env vars are
+// deliberately omitted so tests cannot accidentally rely on the
+// developer's host credentials.
+//
+// Expected:
+//   - homeDir is a non-empty path returned by sandboxedCLIHome.
+//
+// Returns:
+//   - An environment slice suitable for exec.Cmd.Env.
+//
+// Side effects:
+//   - None.
+func sandboxedEnv(homeDir string) []string {
+	return []string{
+		"HOME=" + homeDir,
+		"XDG_CONFIG_HOME=" + filepath.Join(homeDir, ".config"),
+		"PATH=" + os.Getenv("PATH"),
+	}
 }
 
 // iShouldSeeUsageFor implements a BDD step definition.

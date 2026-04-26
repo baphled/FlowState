@@ -164,21 +164,10 @@ func (r *replayProvider) Models() ([]provider.Model, error) {
 
 func createRealAnthropicProvider() provider.Provider {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey != "" {
-		p, err := anthropic.New(apiKey)
-		if err != nil {
-			return nil
-		}
-		return p
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	if apiKey == "" {
 		return nil
 	}
-
-	opencodePath := filepath.Join(homeDir, ".local", "share", "opencode", "auth.json")
-	p, err := anthropic.NewFromOpenCodeOrConfig(opencodePath, "")
+	p, err := anthropic.New(apiKey)
 	if err != nil {
 		return nil
 	}

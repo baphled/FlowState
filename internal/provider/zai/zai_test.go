@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -418,144 +416,51 @@ var _ = Describe("ZAI Provider", func() {
 		})
 	})
 
-	Describe("NewFromOpenCodeOrConfig", func() {
-		var dir string
-
-		BeforeEach(func() {
-			var err error
-			dir, err = os.MkdirTemp("", "zai-auth-*")
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		AfterEach(func() {
-			_ = os.RemoveAll(dir)
-		})
-
-		It("uses valid OpenCode Z.AI credentials", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"zai":{"type":"oauth","access":"zai-token"}}`), 0o600)).To(Succeed())
-
-			p, err := zai.NewFromOpenCodeOrConfig(path, "fallback-token")
+	Describe("NewFromConfig", func() {
+		It("returns a provider for the general plan", func() {
+			p, err := zai.NewFromConfig("api-key", zai.PlanGeneral)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
 
-		It("falls back when the auth file is missing", func() {
-			p, err := zai.NewFromOpenCodeOrConfig(filepath.Join(dir, "missing.json"), "fallback-token")
+		It("returns a provider for the coding plan", func() {
+			p, err := zai.NewFromConfig("api-key", zai.PlanCoding)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
 
-		It("falls back when auth exists without Z.AI credentials", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"anthropic":{"type":"oauth","access":"anthropic-token"}}`), 0o600)).To(Succeed())
-
-			p, err := zai.NewFromOpenCodeOrConfig(path, "fallback-token")
+		It("treats an empty plan as the general plan", func() {
+			p, err := zai.NewFromConfig("api-key", "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p).NotTo(BeNil())
 		})
 
-		It("returns an error when neither source provides a token", func() {
-			_, err := zai.NewFromOpenCodeOrConfig(filepath.Join(dir, "missing.json"), "")
+		It("returns an error when the API key is empty", func() {
+			_, err := zai.NewFromConfig("", zai.PlanGeneral)
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("wraps malformed JSON errors", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"zai":`), 0o600)).To(Succeed())
-
-			_, err := zai.NewFromOpenCodeOrConfig(path, "fallback-token")
-			Expect(err).To(HaveOccurred())
-		})
-
-		It("uses the fallback key when the OpenCode path is empty", func() {
-			p, err := zai.NewFromOpenCodeOrConfig("", "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("falls back when the Z.AI access token is empty", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"zai":{"type":"oauth","access":""}}`), 0o600)).To(Succeed())
-
-			p, err := zai.NewFromOpenCodeOrConfig(path, "fallback-token")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("reads zai-coding-plan top-level key with 'key' field (OpenCode alias)", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(`{"zai-coding-plan":{"type":"api","key":"zai-coding-key"}}`), 0o600)).To(Succeed())
-
-			p, err := zai.NewFromOpenCodeOrConfig(path, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		It("prefers zai/access when both keys are present", func() {
-			path := filepath.Join(dir, "auth.json")
-			Expect(os.WriteFile(path, []byte(
-				`{"zai":{"type":"oauth","access":"primary"},"zai-coding-plan":{"type":"api","key":"secondary"}}`,
-			), 0o600)).To(Succeed())
-
-			p, err := zai.NewFromOpenCodeOrConfig(path, "")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(p).NotTo(BeNil())
-		})
-
-		Context("endpoint selection based on auth source", func() {
-			// The Z.AI `zai-coding-plan` subscription routes to a separate
-			// coding-plan endpoint. Using the general pay-per-token endpoint
-			// with a coding-plan key returns HTTP 429 / code 1113 (billing).
-			// The general-endpoint constant must stay the pay-per-token URL;
-			// coding-plan auth must route to the coding-plan URL.
-			It("exposes the general pay-per-token URL for the canonical zai source", func() {
-				Expect(zai.BaseURLForAuthSource("zai")).To(
+		Context("endpoint selection by plan", func() {
+			// The Z.AI `coding-plan` subscription routes to a separate
+			// endpoint. Using the general pay-per-token endpoint with a
+			// coding-plan key returns HTTP 429 / code 1113 (billing).
+			// Coding-plan auth must route to the coding-plan URL.
+			It("exposes the general pay-per-token URL for the general plan", func() {
+				Expect(zai.BaseURLForPlan(zai.PlanGeneral)).To(
 					Equal("https://api.z.ai/api/paas/v4"),
 				)
 			})
 
-			It("exposes the coding-plan URL for the zai-coding-plan source", func() {
-				Expect(zai.BaseURLForAuthSource("zai-coding-plan")).To(
+			It("exposes the coding-plan URL for the coding plan", func() {
+				Expect(zai.BaseURLForPlan(zai.PlanCoding)).To(
 					Equal("https://api.z.ai/api/coding/paas/v4"),
 				)
 			})
 
-			It("defaults to the general URL for an unknown source", func() {
-				Expect(zai.BaseURLForAuthSource("")).To(
+			It("defaults to the general URL for an unknown plan", func() {
+				Expect(zai.BaseURLForPlan("")).To(
 					Equal("https://api.z.ai/api/paas/v4"),
 				)
-			})
-
-			It("reports zai-coding-plan as source when auth.json has only the coding-plan key", func() {
-				path := filepath.Join(dir, "auth.json")
-				Expect(os.WriteFile(path, []byte(
-					`{"zai-coding-plan":{"type":"api","key":"coding-key"}}`,
-				), 0o600)).To(Succeed())
-
-				token, source, err := zai.ResolveOpenCodeAuthForTest(path, "")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(token).To(Equal("coding-key"))
-				Expect(source).To(Equal("zai-coding-plan"))
-			})
-
-			It("reports zai as source when auth.json has the canonical zai key", func() {
-				path := filepath.Join(dir, "auth.json")
-				Expect(os.WriteFile(path, []byte(
-					`{"zai":{"type":"oauth","access":"canonical"}}`,
-				), 0o600)).To(Succeed())
-
-				token, source, err := zai.ResolveOpenCodeAuthForTest(path, "")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(token).To(Equal("canonical"))
-				Expect(source).To(Equal("zai"))
-			})
-
-			It("reports zai as source when only a fallback env/config key is available", func() {
-				token, source, err := zai.ResolveOpenCodeAuthForTest("", "env-fallback")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(token).To(Equal("env-fallback"))
-				Expect(source).To(Equal("zai"))
 			})
 		})
 	})

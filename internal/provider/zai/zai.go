@@ -3,13 +3,9 @@ package zai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"reflect"
 
-	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
 	"github.com/baphled/flowstate/internal/provider/shared"
@@ -19,60 +15,41 @@ import (
 
 const (
 	providerName = "zai"
-	// General pay-per-token Z.AI endpoint; used for `ZAI_API_KEY` env var,
-	// config.Providers.ZAI.APIKey, and OpenCode's canonical `zai` auth entry.
+	// General pay-per-token Z.AI endpoint; used for `ZAI_API_KEY` env var
+	// and config.Providers.ZAI.APIKey when no plan is set.
 	defaultBaseURL = "https://api.z.ai/api/paas/v4"
-	// Z.AI `zai-coding-plan` subscription endpoint. The coding-plan product
+	// Z.AI `coding-plan` subscription endpoint. The coding-plan product
 	// routes to a different base path than the general pay-per-token plan;
 	// using the general endpoint with a coding-plan key returns HTTP 429 /
-	// code 1113 (billing) on every call.
+	// code 1113 (billing) on every call. Set `providers.zai.host` to this
+	// URL (or set the plan to "coding") to route correctly.
 	codingPlanBaseURL = "https://api.z.ai/api/coding/paas/v4"
 
-	// Auth-source tag for the canonical OpenCode `zai` entry (and the
-	// env/config fallback). Maps to defaultBaseURL.
-	authSourceZAI = "zai"
-	// Auth-source tag for the OpenCode `zai-coding-plan` entry. Maps to
+	// PlanGeneral is the canonical pay-per-token Z.AI plan tag; maps to
+	// defaultBaseURL.
+	PlanGeneral = "general"
+	// PlanCoding is the Z.AI coding-plan subscription tag; maps to
 	// codingPlanBaseURL.
-	authSourceZAICodingPlan = "zai-coding-plan"
+	PlanCoding = "coding"
 
 	defaultContextLength = 128000
 	defaultEmbedModel    = "embedding-3"
 )
 
-// ResolveOpenCodeAuthForTest exposes the internal auth-source resolution for
-// package-external tests. Production code must not call this directly; use
-// NewFromOpenCodeOrConfig instead.
+// BaseURLForPlan returns the Z.AI base URL for the named plan.
 //
 // Expected:
-//   - opencodePath is a path to OpenCode auth.json or empty.
-//   - fallbackKey is the key used when no OpenCode credential is available.
+//   - plan is "general", "coding", or empty. Any other value (including
+//     empty) falls back to the general pay-per-token endpoint.
 //
 // Returns:
-//   - The same (token, source, error) triple that drives
-//     NewFromOpenCodeOrConfig.
-//
-// Side effects:
-//   - Reads OpenCode auth data from disk when opencodePath is provided.
-func ResolveOpenCodeAuthForTest(opencodePath, fallbackKey string) (string, string, error) {
-	return resolveOpenCodeAuth(opencodePath, fallbackKey)
-}
-
-// BaseURLForAuthSource returns the Z.AI base URL matching the auth source
-// that produced the credential.
-//
-// Expected:
-//   - source is one of "zai" (general pay-per-token / env var / config) or
-//     "zai-coding-plan" (OpenCode subscription alias). Any other value
-//     (including empty) falls back to the general endpoint.
-//
-// Returns:
-//   - The coding-plan URL when source is "zai-coding-plan".
+//   - The coding-plan URL when plan is "coding".
 //   - The general pay-per-token URL otherwise.
 //
 // Side effects:
 //   - None.
-func BaseURLForAuthSource(source string) string {
-	if source == authSourceZAICodingPlan {
+func BaseURLForPlan(plan string) string {
+	if plan == PlanCoding {
 		return codingPlanBaseURL
 	}
 	return defaultBaseURL
@@ -122,77 +99,26 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 	return &Provider{client: client}, nil
 }
 
-// NewFromOpenCodeOrConfig creates a new Z.AI provider from OpenCode auth or a fallback key.
-//
-// The constructor selects the API base URL based on the auth source: the
-// OpenCode `zai-coding-plan` entry routes to the coding-plan endpoint while
-// the canonical `zai` entry and fallback env/config keys route to the
-// general pay-per-token endpoint.
+// NewFromConfig creates a new Z.AI provider from a configured API key and
+// optional plan tag.
 //
 // Expected:
-//   - opencodePath is a path to OpenCode auth data or empty.
-//   - fallbackKey is a valid Z.AI API key when OpenCode auth is unavailable.
+//   - apiKey is the Z.AI API key from config.yaml or environment.
+//   - plan is "coding" for the coding-plan subscription endpoint, or
+//     anything else (typically "general" or empty) for the pay-per-token
+//     endpoint.
 //
 // Returns:
 //   - A configured Z.AI provider.
-//   - An error if credential resolution fails or no API key is available.
+//   - errAPIKeyRequired when apiKey is empty.
 //
 // Side effects:
-//   - Reads OpenCode auth data from disk when opencodePath is provided.
-func NewFromOpenCodeOrConfig(opencodePath string, fallbackKey string) (*Provider, error) {
-	token, source, err := resolveOpenCodeAuth(opencodePath, fallbackKey)
-	if err != nil {
-		return nil, err
+//   - None.
+func NewFromConfig(apiKey, plan string) (*Provider, error) {
+	if apiKey == "" {
+		return nil, errAPIKeyRequired
 	}
-	return NewWithOptions(token, option.WithBaseURL(BaseURLForAuthSource(source)))
-}
-
-// resolveOpenCodeAuth resolves a Z.AI token from OpenCode auth then fallback
-// key, returning the source that produced it so the caller can pick the
-// correct base URL.
-//
-// Expected:
-//   - opencodePath is a path to OpenCode auth.json or empty.
-//   - fallbackKey is a Z.AI API key to use when no OpenCode credential is
-//     available.
-//
-// Returns:
-//   - (token, "zai-coding-plan", nil) when the credential came from the
-//     OpenCode `zai-coding-plan` entry.
-//   - (token, "zai", nil) when the credential came from the canonical
-//     OpenCode `zai` entry or the fallback key.
-//   - ("", "", errAPIKeyRequired) when no credential is available.
-//   - ("", "", err) when OpenCode auth cannot be read/parsed.
-//
-// Side effects:
-//   - Reads OpenCode auth data from disk when opencodePath is provided.
-//
-//nolint:nestif // credential resolution checks multiple sources
-func resolveOpenCodeAuth(opencodePath, fallbackKey string) (string, string, error) {
-	if opencodePath != "" {
-		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-		if err != nil {
-			if !errors.Is(err, auth.ErrAuthFileNotFound) && !errors.Is(err, auth.ErrNoCredentials) {
-				return "", "", err
-			}
-		} else if token, source, ok := zaiAccessToken(authData); ok {
-			return token, source, nil
-		}
-
-		token, source, err := zaiAccessTokenFromFile(opencodePath)
-		if err != nil {
-			return "", "", err
-		}
-		if token != "" {
-			return token, source, nil
-		}
-	}
-
-	if fallbackKey == "" {
-		return "", "", errAPIKeyRequired
-	}
-
-	return fallbackKey, authSourceZAI, nil
+	return NewWithOptions(apiKey, option.WithBaseURL(BaseURLForPlan(plan)))
 }
 
 // Name returns the provider name.
@@ -409,110 +335,3 @@ func classifyStreamErrors(ctx context.Context, rawCh <-chan provider.StreamChunk
 	return ch
 }
 
-// zaiAccessToken extracts the Z.AI access token from OpenCode auth data and
-// reports which auth source supplied it.
-//
-// LoadOpenCodeAuthFrom aliases `zai-coding-plan` into the canonical `ZAI`
-// field (pointer copy) when no distinct `zai` entry exists. This function
-// detects that aliasing so the caller can pick the correct base URL.
-//
-// Expected:
-//   - authData is a pointer to OpenCodeAuth (may be nil).
-//
-// Returns:
-//   - (token, "zai-coding-plan", true) when the token came from the
-//     `zai-coding-plan` entry (either via aliasing or when only that entry
-//     has a token).
-//   - (token, "zai", true) when the token came from a distinct canonical
-//     `zai` entry.
-//   - ("", "", false) when no usable token is present.
-//
-// Side effects:
-//   - None.
-func zaiAccessToken(authData *auth.OpenCodeAuth) (string, string, bool) {
-	if authData == nil {
-		return "", "", false
-	}
-
-	value := reflect.ValueOf(authData).Elem()
-	field := value.FieldByName("ZAI")
-	if !field.IsValid() || field.IsNil() {
-		return "", "", false
-	}
-
-	providerAuth, ok := field.Interface().(*auth.ProviderAuth)
-	if !ok || providerAuth == nil || providerAuth.Access == "" {
-		return "", "", false
-	}
-
-	// When LoadOpenCodeAuthFrom aliased ZAICodingPlan into ZAI (because no
-	// distinct canonical `zai` entry was present), the ZAI and ZAICodingPlan
-	// fields point at the same struct. Treat that as the coding-plan source.
-	if authData.ZAICodingPlan != nil && authData.ZAICodingPlan == providerAuth {
-		return providerAuth.Access, authSourceZAICodingPlan, true
-	}
-
-	return providerAuth.Access, authSourceZAI, true
-}
-
-// zaiAccessTokenFromFile reads the Z.AI access token directly from an
-// auth.json file and reports which auth source supplied it.
-//
-// Expected:
-//   - path is a file path to OpenCode's auth.json.
-//
-// Returns:
-//   - (token, "zai", nil) when the canonical `zai` entry provided the token.
-//   - (token, "zai-coding-plan", nil) when the `zai-coding-plan` entry
-//     provided the token.
-//   - ("", "", nil) when the file is missing or has no usable Z.AI
-//     credentials.
-//   - ("", "", err) when the file cannot be read or parsed.
-//
-// Side effects:
-//   - Reads from the file at path.
-func zaiAccessTokenFromFile(path string) (string, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", "", nil
-		}
-		return "", "", fmt.Errorf("reading opencode auth: %w", err)
-	}
-
-	var raw struct {
-		ZAI           *auth.ProviderAuth `json:"zai,omitempty"`
-		ZAICodingPlan *auth.ProviderAuth `json:"zai-coding-plan,omitempty"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return "", "", fmt.Errorf("parsing opencode auth: %w", err)
-	}
-	if tok := providerAuthToken(raw.ZAI); tok != "" {
-		return tok, authSourceZAI, nil
-	}
-	if tok := providerAuthToken(raw.ZAICodingPlan); tok != "" {
-		return tok, authSourceZAICodingPlan, nil
-	}
-	return "", "", nil
-}
-
-// providerAuthToken returns the canonical access token from a ProviderAuth,
-// falling back to the alias `key` field when `access` is empty.
-//
-// Expected:
-//   - pa may be nil.
-//
-// Returns:
-//   - The access token if present, otherwise an empty string.
-//
-// Side effects:
-//   - None.
-func providerAuthToken(pa *auth.ProviderAuth) string {
-	if pa == nil {
-		return ""
-	}
-	if pa.Access != "" {
-		return pa.Access
-	}
-	return pa.Key
-}

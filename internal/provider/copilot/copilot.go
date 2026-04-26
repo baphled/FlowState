@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -87,34 +86,21 @@ func NewWithOAuth(tokenResp *oauth.TokenResponse) (*Provider, error) {
 	return p, nil
 }
 
-// NewFromOpenCodeOrFallback attempts to load GitHub Copilot credentials from OpenCode auth.json,
-// falling back to OAuth storage or API key if OpenCode not available.
+// NewFromConfig builds a GitHub Copilot provider, preferring a stored OAuth
+// token over a configured API key.
 //
 // Expected:
-//   - opencodePath is a file path to OpenCode's auth.json (or empty string to skip OpenCode).
-//   - oauthToken is a stored OAuth token (may be nil or empty).
-//   - fallbackToken is a direct API key from config (may be empty).
+//   - oauthToken may be nil or empty when no OAuth credential is stored.
+//   - fallbackToken is a direct API key/PAT from config (may be empty).
 //
 // Returns:
-//   - A configured Provider using OpenCode token if found.
-//   - A configured Provider using oauthToken if OpenCode not available.
-//   - A configured Provider using fallbackToken if neither OpenCode nor OAuth available.
-//   - An error if OpenCode exists but cannot be parsed.
-//   - An error if none of the credential sources provide a token.
+//   - A configured Provider using oauthToken when present.
+//   - A configured Provider using fallbackToken otherwise.
+//   - errTokenRequired when neither source provides a token.
 //
 // Side effects:
-//   - Reads from opencodePath if provided.
-func NewFromOpenCodeOrFallback(opencodePath string, oauthToken *oauth.TokenResponse, fallbackToken string) (*Provider, error) {
-	if opencodePath != "" {
-		authData, err := auth.LoadOpenCodeAuthFrom(opencodePath)
-		if err != nil && !errors.Is(err, auth.ErrAuthFileNotFound) && !errors.Is(err, auth.ErrNoCredentials) {
-			return nil, fmt.Errorf("loading opencode auth: %w", err)
-		}
-		if authData != nil && authData.GitHubCopilot != nil && authData.GitHubCopilot.Access != "" {
-			return New(authData.GitHubCopilot.Access)
-		}
-	}
-
+//   - None.
+func NewFromConfig(oauthToken *oauth.TokenResponse, fallbackToken string) (*Provider, error) {
 	if oauthToken != nil && oauthToken.AccessToken != "" {
 		return NewWithOAuth(oauthToken)
 	}
