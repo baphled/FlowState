@@ -206,6 +206,19 @@ make bdd-smoke   # Run smoke tests
 make check       # Full check (fmt, lint, test)
 ```
 
+The codebase uses Ginkgo v2 + Gomega for almost all tests, with one
+`Describe` block per file. **Two exceptions** — these stay in
+plain `*testing.T` form on purpose:
+
+- `tools/analyzers/docblocks/analyzer_test.go`
+- `tools/analyzers/gatingdrift/analyzer_test.go`
+
+Both drive `analysistest.Run` from `golang.org/x/tools/go/analysis`,
+the upstream-recommended way to test `go/analysis` analyzers. The
+harness is `*testing.T`-shaped by design and emits per-fact diagnostic
+positions that get lost when wrapped in `It(...)`. Do not convert
+these to Ginkgo. See `DEFERRED.md` for the full rationale.
+
 See [AGENTS.md](AGENTS.md) for AI development instructions.
 
 ## Documentation
