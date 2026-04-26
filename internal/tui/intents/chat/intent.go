@@ -4250,7 +4250,11 @@ func (i *Intent) refreshSessionTrail() {
 //
 // Expected:
 //   - sm is a stored message from the context store.
-//   - lastToolCallName is the name of the most recently replayed tool call, if any.
+//   - lastToolCallName is the most recently replayed tool call, formatted as
+//     "name: input" (or just "name" when the tool has no primary argument)
+//     to mirror the contract live streaming establishes via extractToolInfo.
+//     Downstream toolResultMessage relies on this format to populate the
+//     BlockTool widget's ToolName/ToolInput pair correctly.
 //
 // Returns:
 //   - The updated lastToolCallName after processing sm.
@@ -4280,13 +4284,34 @@ func (i *Intent) replayStoredMessage(sm recall.StoredMessage, lastToolCallName s
 			})
 		}
 		for _, tc := range sm.Message.ToolCalls {
-			lastToolCallName = tc.Name
+			// Replay parity (Gap 2/3): track the formatted summary
+			// ("name: input") rather than the bare name so the
+			// downstream tool_result is built with the correct
+			// ToolName + ToolInput pair. Live streaming's
+			// extractToolInfo + commitToolCall pipeline carries
+			// the same summary in i.activeToolCall, and
+			// toolResultMessage's splitToolSummary unpacks it
+			// into the BlockTool widget. Storing the bare name
+			// here previously left ToolInput empty so the
+			// BlockTool rendered without its argument header.
+			summary := toolCallSummary(tc.Name, tc.Arguments)
+			lastToolCallName = summary
 			role := "tool_call"
-			content := toolCallSummary(tc.Name, tc.Arguments)
 			if tc.Name == "skill_load" {
 				role = "skill_load"
 			}
-			i.view.AddMessage(chat.Message{Role: role, Content: content})
+			i.view.AddMessage(chat.Message{Role: role, Content: summary})
+		}
+		// Replay parity (Gap 1): live streaming's flushThinking runs
+		// on the Done chunk AFTER view.HandleChunk has committed the
+		// assistant + tool_call messages, so the Role: "thinking"
+		// Message lands at the end of the turn. Mirror that ordering
+		// here so the rendered slice matches live exactly.
+		if sm.Message.Thinking != "" {
+			i.view.AddMessage(chat.Message{
+				Role:    "thinking",
+				Content: sm.Message.Thinking,
+			})
 		}
 	case sm.Message.Role == "tool":
 		isError := strings.HasPrefix(strings.ToLower(sm.Message.Content), "error:")
@@ -4295,6 +4320,18 @@ func (i *Intent) replayStoredMessage(sm recall.StoredMessage, lastToolCallName s
 		}
 	default:
 		i.view.AddMessage(i.buildAssistantViewMessage(sm))
+		// Replay parity (Gap 1, no-tool-call branch): assistant
+		// messages without tool_calls may still carry persisted
+		// reasoning. Live streaming's flushThinking on Done commits
+		// the Role: "thinking" Message AFTER view.HandleChunk has
+		// added the assistant Message, so replay appends the
+		// thinking entry at the same point in the slice.
+		if sm.Message.Role == "assistant" && sm.Message.Thinking != "" {
+			i.view.AddMessage(chat.Message{
+				Role:    "thinking",
+				Content: sm.Message.Thinking,
+			})
+		}
 	}
 	return lastToolCallName
 }
