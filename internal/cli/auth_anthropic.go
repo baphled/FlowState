@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
@@ -49,14 +46,19 @@ func newAuthAnthropicCmd(getApp func() *app.App) *cobra.Command {
 //   - Updates config with API key and saves to config.yaml.
 //   - Outputs success/error message to stdout/stderr.
 func runAuthAnthropic(cmd *cobra.Command, application *app.App) error {
-	fmt.Fprint(cmd.OutOrStdout(), "Enter your Anthropic API key: ")
+	cfg := application.Config
 
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return errors.New("reading api key from stdin")
+	if cfg.Providers.Anthropic.APIKey != "" {
+		if !confirmOverwrite(cmd, "anthropic") {
+			fmt.Fprintln(cmd.OutOrStdout(), "Aborted; existing Anthropic API key kept.")
+			return nil
+		}
 	}
 
-	apiKey := strings.TrimSpace(scanner.Text())
+	apiKey := promptLine(cmd, "Enter your Anthropic API key: ")
+	if apiKey == "" {
+		return errors.New("reading api key from stdin")
+	}
 
 	if !isValidAnthropicKey(apiKey) {
 		fmt.Fprintln(cmd.OutOrStderr(), "✗ Invalid API key format")
@@ -64,7 +66,6 @@ func runAuthAnthropic(cmd *cobra.Command, application *app.App) error {
 		return errors.New("invalid anthropic api key format")
 	}
 
-	cfg := application.Config
 	cfg.Providers.Anthropic.APIKey = apiKey
 
 	if err := writeConfig(cfg); err != nil {
