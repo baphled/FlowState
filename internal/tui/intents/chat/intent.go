@@ -26,6 +26,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	swarmactivity "github.com/baphled/flowstate/internal/tui/components/swarm_activity"
@@ -290,6 +291,11 @@ type IntentConfig struct {
 	ModelName          string
 	TokenBudget        int
 	AgentRegistry      *agent.Registry
+	// SwarmRegistry is the optional swarm-manifest registry consulted by
+	// the @-mention resolver after the agent registry misses (T-swarm-2,
+	// spec §2). Nil disables the swarm fallthrough — the resolver behaves
+	// as before (agent registry only).
+	SwarmRegistry      *swarm.Registry
 	SessionStore       SessionLister
 	ModelResolver      contextpkg.ModelResolver // Optional: enables dynamic model context limits
 	ChildSessionLister SessionChildLister
@@ -355,6 +361,11 @@ type Intent struct {
 	// makes the heuristic safe on a fresh session.
 	lastUserScrollAt time.Time
 	agentRegistry        *agent.Registry
+	// swarmRegistry is consulted by resolveAtMention after the agent
+	// registry misses; nil disables the swarm fallthrough so the
+	// premature-delegation-misfire detector (P7/C2) and any future
+	// routing surface degrade to the historical agent-only behaviour.
+	swarmRegistry        *swarm.Registry
 	sessionStore         SessionLister
 	childSessionLister   SessionChildLister
 	view                 *chat.View
@@ -655,6 +666,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		result:               nil,
 		atBottom:             true,
 		agentRegistry:        cfg.AgentRegistry,
+		swarmRegistry:        cfg.SwarmRegistry,
 		sessionStore:         cfg.SessionStore,
 		childSessionLister:   cfg.ChildSessionLister,
 		view:                 chat.NewView(),
@@ -1958,7 +1970,7 @@ func (i *Intent) maybeWarnPrematureDelegationMisfire(msg StreamChunkMsg) {
 		return
 	}
 	warning := detectPrematureDelegationMisfire(
-		i.agentID, i.agentRegistry, i.turnUserMessage, msg, i.turnHasText,
+		i.agentID, i.agentRegistry, i.swarmRegistry, i.turnUserMessage, msg, i.turnHasText,
 	)
 	if warning == "" {
 		return
@@ -2641,6 +2653,48 @@ func (i *Intent) applyEndOfStreamScrollHeuristic() {
 // "email@example.com" does not match.
 var atMentionPattern = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_-])@([a-zA-Z0-9_][a-zA-Z0-9_-]*)`)
 
+// resolveAtMention is the T-swarm-2 entry point that turns a bare id
+// (the token after `@`, with the leading `@` already stripped) into
+// a routing decision. Per spec §2 the agent registry is consulted
+// first, then the swarm registry; misses on both surface a
+// *swarm.NotFoundError so callers can render the canonical "no agent
+// or swarm named '<id>'" error. Spec §1 guarantees global uniqueness
+// across the two registries — the precedence order is defensive
+// only.
+//
+// Expected:
+//   - id is the bare token (no leading `@`); empty yields KindNone +
+//     a NotFoundError so callers get a single error path.
+//   - agentReg may be nil; the resolver treats it as empty.
+//   - swarmReg may be nil; the resolver treats it as empty.
+//
+// Returns:
+//   - kind classifies the resolved registry (KindAgent / KindSwarm /
+//     KindNone).
+//   - manifest is the swarm Manifest when kind == KindSwarm; nil
+//     otherwise.
+//   - err is *swarm.NotFoundError on KindNone, nil on a hit.
+//
+// Side effects:
+//   - None.
+func resolveAtMention(id string, agentReg *agent.Registry, swarmReg *swarm.Registry) (swarm.Kind, *swarm.Manifest, error) {
+	hasAgent := func(name string) bool {
+		if agentReg == nil {
+			return false
+		}
+		if _, ok := agentReg.Get(name); ok {
+			return true
+		}
+		_, ok := agentReg.GetByNameOrAlias(name)
+		return ok
+	}
+	kind, manifest := swarm.Resolve(id, hasAgent, swarmReg)
+	if kind == swarm.KindNone {
+		return kind, nil, &swarm.NotFoundError{ID: id}
+	}
+	return kind, manifest, nil
+}
+
 // extractAtMentions returns the set of @-mentioned names found in the
 // given message, preserving their original casing. The names are filtered
 // downstream via the agent registry's GetByNameOrAlias helper.
@@ -2693,6 +2747,7 @@ func extractAtMentions(message string) []string {
 func detectPrematureDelegationMisfire(
 	agentID string,
 	reg *agent.Registry,
+	swarmReg *swarm.Registry,
 	userMsg string,
 	msg StreamChunkMsg,
 	hasText bool,
@@ -2709,14 +2764,19 @@ func detectPrematureDelegationMisfire(
 	if !ok || manifest == nil || manifest.Delegation.CanDelegate {
 		return ""
 	}
-	// Signal 3: user message must reference a known agent via @-mention.
+	// Signal 3: user message must reference a known agent OR swarm via @-mention.
+	// T-swarm-2 (spec §2): the resolver consults the agent registry first, then
+	// the swarm registry. Either kind of hit means the user wanted to route the
+	// turn elsewhere — the warning fires identically because the user-visible
+	// fix is the same: switch to a delegating agent so the mentioned target is
+	// reachable.
 	mentions := extractAtMentions(userMsg)
 	if len(mentions) == 0 {
 		return ""
 	}
 	var target string
 	for _, name := range mentions {
-		if _, found := reg.GetByNameOrAlias(name); found {
+		if kind, _, err := resolveAtMention(name, reg, swarmReg); err == nil && kind != swarm.KindNone {
 			target = name
 			break
 		}

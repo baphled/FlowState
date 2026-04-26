@@ -78,8 +78,8 @@ type App struct {
 	Registry               *agent.Registry
 	// SwarmRegistry holds the loaded swarm manifests from
 	// `~/.config/flowstate/swarms/`. Populated by setupSwarmRegistry
-	// during New(); consumers in T-swarm-2 (the @Lead resolver) will
-	// query this alongside the agent Registry to dispatch swarm runs.
+	// during New(); the T-swarm-2 @-mention resolver queries this
+	// alongside the agent Registry to route `@<id>` invocations.
 	SwarmRegistry          *swarm.Registry
 	Skills                 []skill.Skill
 	Engine                 *engine.Engine

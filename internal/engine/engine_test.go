@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -1171,6 +1172,57 @@ var _ = Describe("Engine", func() {
 				}
 				Expect(namesAfter).To(ConsistOf("executor-only"))
 			})
+		})
+	})
+
+	// T-swarm-2 (spec §2): the lead engine receives the SwarmContext
+	// so the delegate tool's allowlist shadow, gate dispatch, and
+	// chain-prefix namespacing can read it from a single source of
+	// truth. Pinned here as a unit on the engine because §5 calls
+	// out the lead-engine wiring as the T-swarm-2 deliverable.
+	Describe("SwarmContext (T-swarm-2)", func() {
+		It("returns nil when no swarm context is configured", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{ID: "test-agent"},
+			})
+
+			Expect(eng.SwarmContext()).To(BeNil())
+		})
+
+		It("surfaces the context provided via Config.SwarmContext at construction time", func() {
+			swarmCtx := &swarm.Context{
+				SwarmID:     "tech-team",
+				LeadAgent:   "tech-lead",
+				Members:     []string{"explorer", "analyst"},
+				ChainPrefix: "tech",
+			}
+
+			eng := engine.New(engine.Config{
+				Manifest:     agent.Manifest{ID: "tech-lead"},
+				SwarmContext: swarmCtx,
+			})
+
+			got := eng.SwarmContext()
+			Expect(got).NotTo(BeNil(),
+				"the lead engine must surface the SwarmContext supplied via Config")
+			Expect(got.SwarmID).To(Equal("tech-team"))
+			Expect(got.LeadAgent).To(Equal("tech-lead"))
+			Expect(got.Members).To(Equal([]string{"explorer", "analyst"}))
+		})
+
+		It("updates the carried context on SetSwarmContext", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{ID: "tech-lead"},
+			})
+
+			swarmCtx := &swarm.Context{SwarmID: "tech-team", LeadAgent: "tech-lead"}
+			eng.SetSwarmContext(swarmCtx)
+			Expect(eng.SwarmContext().SwarmID).To(Equal("tech-team"))
+
+			// Clearing reverts to single-agent shape — the runner
+			// invokes this when the swarm run completes.
+			eng.SetSwarmContext(nil)
+			Expect(eng.SwarmContext()).To(BeNil())
 		})
 	})
 
