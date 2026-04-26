@@ -46,16 +46,10 @@ func buildVerificationURL(verificationURI, userCode string) string {
 	return parsed.String()
 }
 
-// defaultGitHubClientID is borrowed from neovim/copilot.lua, a public OSS
-// project whose client ID is registered with GitHub for the Copilot device
-// flow. The original FlowState-registered client ID returned 404 from
-// `/login/device/code` (the OAuth app no longer exists). Using copilot.lua's
-// is a stop-gap so `flowstate auth github-copilot` works out of the box;
-// users wanting their own can override via `providers.github.oauth.client_id`
-// in config.yaml. See KB: Tech Debt / Copilot Client ID Borrowed From
-// copilot.lua.md for the rationale and the path to register a FlowState-owned
-// OAuth app.
-const defaultGitHubClientID = "Iv1.b507a08c87ecfe98"
+// defaultGitHubClientID is FlowState's own GitHub OAuth App client ID with
+// Device Flow enabled. Operators wanting to point at a different app can
+// override via `providers.github.oauth.client_id` in config.yaml.
+const defaultGitHubClientID = "Ov23liMqOc4kCf2Y419j"
 
 // resolveGitHubClientID returns the OAuth client ID from config, falling back
 // to the default when the config value is empty.
