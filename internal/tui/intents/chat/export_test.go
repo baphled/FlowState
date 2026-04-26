@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/uikit/navigation"
@@ -59,6 +60,13 @@ func (i *Intent) SetAgentRegistryForTest(reg *agent.Registry) {
 	i.agentRegistry = reg
 }
 
+// SetSwarmRegistryForTest seeds the T-swarm-2 swarm registry on the
+// intent so the @-mention resolver consults it after the agent
+// registry misses.
+func (i *Intent) SetSwarmRegistryForTest(reg *swarm.Registry) {
+	i.swarmRegistry = reg
+}
+
 // ViewportHeight returns the current message viewport height for test assertions.
 func (i *Intent) ViewportHeight() int {
 	if i.msgViewport == nil {
@@ -98,6 +106,21 @@ func (i *Intent) ViewportContentLineCountForTest() int {
 // DetectAgentFromInputForTest exposes detectAgentFromInput for test assertions.
 func DetectAgentFromInputForTest(message string) string {
 	return detectAgentFromInput(message)
+}
+
+// ResolveAtMentionForTest exposes resolveAtMention so the T-swarm-2
+// specs in intent_test.go can pin the agent → swarm → not-found
+// precedence without reaching through the full intent lifecycle.
+// The kind is returned as the swarm.Kind value (KindAgent=1,
+// KindSwarm=2, KindNone=0) so callers can match without a separate
+// re-export of the constants.
+func ResolveAtMentionForTest(
+	id string,
+	reg *agent.Registry,
+	swarmReg *swarm.Registry,
+) (swarm.Kind, error) {
+	k, _, err := resolveAtMention(id, reg, swarmReg)
+	return k, err
 }
 
 // SimulateModalModelSelectionForTest calls openModelSelector, executes the Cmd

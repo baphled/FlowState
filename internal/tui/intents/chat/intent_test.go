@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
@@ -3485,3 +3486,56 @@ func indexOf(pairs []roleContent, role string) int {
 	}
 	return -1
 }
+
+// newResolverSwarmRegistry returns a real *swarm.Registry seeded with
+// the tech-team manifest used by the T-swarm-2 resolver specs.
+func newResolverSwarmRegistry() *swarm.Registry {
+	reg := swarm.NewRegistry()
+	reg.Register(&swarm.Manifest{
+		ID:      "tech-team",
+		Lead:    "tech-lead",
+		Members: []string{"explorer", "analyst"},
+		Context: swarm.ContextConfig{ChainPrefix: "tech"},
+	})
+	return reg
+}
+
+var _ = Describe("@-mention resolver (T-swarm-2)", func() {
+	var (
+		agentReg *agent.Registry
+		swarmReg *swarm.Registry
+	)
+
+	BeforeEach(func() {
+		agentReg = agent.NewRegistry()
+		agentReg.Register(&agent.Manifest{
+			ID:           "explorer",
+			Name:         "Explorer",
+			Instructions: agent.Instructions{SystemPrompt: "explore"},
+		})
+
+		swarmReg = newResolverSwarmRegistry()
+	})
+
+	It("routes @<known-agent> to the agent registry", func() {
+		kind, err := chat.ResolveAtMentionForTest("explorer", agentReg, swarmReg)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(kind).To(Equal(swarm.KindAgent))
+	})
+
+	It("routes @<known-swarm> to the swarm registry on agent miss", func() {
+		kind, err := chat.ResolveAtMentionForTest("tech-team", agentReg, swarmReg)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(kind).To(Equal(swarm.KindSwarm))
+	})
+
+	It("errors with the canonical \"no agent or swarm named\" message on a both-miss", func() {
+		kind, err := chat.ResolveAtMentionForTest("ghost", agentReg, swarmReg)
+
+		Expect(kind).To(Equal(swarm.KindNone))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(Equal(`no agent or swarm named "ghost"`))
+	})
+})

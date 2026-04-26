@@ -112,6 +112,14 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		return errors.New("engine not configured")
 	}
 
+	resolvedAgent, swarmCtx, resolveErr := resolveAgentOrSwarm(application, agentName)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	agentName = resolvedAgent
+	if application.Engine != nil {
+		application.Engine.SetSwarmContext(swarmCtx)
+	}
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)

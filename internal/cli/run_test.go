@@ -11,10 +11,21 @@ import (
 	"github.com/baphled/flowstate/internal/cli"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func newRunSwarmRegistry() *swarm.Registry {
+	reg := swarm.NewRegistry()
+	reg.Register(&swarm.Manifest{
+		ID:      "tech-team",
+		Lead:    "tech-lead",
+		Members: []string{"explorer"},
+	})
+	return reg
+}
 
 type runTestProvider struct {
 	name         string
@@ -241,5 +252,54 @@ var _ = Describe("run command", func() {
 		Expect(help).To(ContainSubstring("Generated automatically"))
 		Expect(help).To(ContainSubstring("path separators"))
 		Expect(help).To(ContainSubstring("leading dot"))
+	})
+
+	// T-swarm-2 (spec §2): the `--agent` flag shares one resolver
+	// path with the chat-input parser. Agent registry first, swarm
+	// registry second, error on a both-miss naming the id.
+	Describe("--agent T-swarm-2 resolution", func() {
+		buildApp := func() *app.App {
+			testApp := createRunTestApp([]provider.StreamChunk{{Content: "ok", Done: true}}, nil)
+			testApp.Registry = agent.NewRegistry()
+			testApp.Registry.Register(&agent.Manifest{
+				ID:           "explorer",
+				Name:         "Explorer",
+				Instructions: agent.Instructions{SystemPrompt: "explore"},
+			})
+			testApp.SwarmRegistry = newRunSwarmRegistry()
+			return testApp
+		}
+
+		It("routes --agent <known-agent> to the agent and leaves swarm context unset", func() {
+			testApp := buildApp()
+
+			err := runCmd(testApp, "run", "--prompt", "hello", "--agent", "explorer")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testApp.Engine.SwarmContext()).To(BeNil(),
+				"agent-kind resolution must not install a swarm context")
+		})
+
+		It("routes --agent <known-swarm> to the swarm's lead and installs the swarm context", func() {
+			testApp := buildApp()
+
+			err := runCmd(testApp, "run", "--prompt", "hello", "--agent", "tech-team", "--json")
+
+			Expect(err).NotTo(HaveOccurred())
+			ctx := testApp.Engine.SwarmContext()
+			Expect(ctx).NotTo(BeNil(), "swarm-kind resolution must install the SwarmContext")
+			Expect(ctx.SwarmID).To(Equal("tech-team"))
+			Expect(ctx.LeadAgent).To(Equal("tech-lead"))
+			Expect(ctx.Members).To(Equal([]string{"explorer"}))
+		})
+
+		It("errors with the canonical \"no agent or swarm named\" message on a both-miss", func() {
+			testApp := buildApp()
+
+			err := runCmd(testApp, "run", "--prompt", "hello", "--agent", "ghost")
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`no agent or swarm named "ghost"`))
+		})
 	})
 })

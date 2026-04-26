@@ -25,6 +25,7 @@ import (
 	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tracer"
 )
@@ -189,6 +190,17 @@ type Engine struct {
 	// per-call option.
 	buildStateMu sync.Mutex
 
+	// swarmContext is the T-swarm-2 envelope set when the runner
+	// resolves an `@<swarm-id>` invocation. The lead engine reads it
+	// (via SwarmContext()) so member-allowlist shadowing, gate
+	// dispatch, and chain-prefix namespacing all see the same source
+	// of truth. Nil when no swarm is in flight — the engine behaves
+	// as a normal delegating agent. Held under mu because the runner
+	// may install the context after construction (CLI run path) or
+	// at construction time (Config.SwarmContext); both writers must
+	// race-cleanly with reads from the streaming hot path.
+	swarmContext *swarm.Context
+
 	mu sync.RWMutex
 }
 
@@ -298,6 +310,16 @@ type Config struct {
 	// run before the engine cancels it. Zero falls back to the default
 	// of 2 minutes.
 	ToolTimeout time.Duration
+
+	// SwarmContext is the T-swarm-2 lead-engine wiring point. When
+	// non-nil, the engine treats this run as a swarm invocation: the
+	// member roster shadows the lead agent's delegation.allowlist
+	// (spec §2), the chain prefix namespaces the coordination_store,
+	// and gates (T-swarm-3) consult the carried list. Nil leaves the
+	// engine in its historical single-agent shape. Mutable post-
+	// construction via SetSwarmContext when the CLI run path resolves
+	// `--agent <swarm-id>` after the engine is already up.
+	SwarmContext *swarm.Context
 }
 
 // New creates a new Engine from the given configuration.
@@ -451,6 +473,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
+		swarmContext:              cfg.SwarmContext,
 	}
 }
 
@@ -1176,6 +1199,40 @@ func (e *Engine) Manifest() agent.Manifest {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.manifest
+}
+
+// SetSwarmContext installs the T-swarm-2 envelope on the engine. The
+// runner calls this immediately before driving streaming.Run when an
+// `@<swarm-id>` invocation lands, so the lead engine's delegate-tool
+// allowlist, gate dispatch, and chain-prefix namespacing all see a
+// consistent source of truth. Passing nil clears the swarm context
+// (the engine reverts to single-agent behaviour).
+//
+// Expected:
+//   - swarmCtx may be nil to clear.
+//
+// Side effects:
+//   - Replaces the engine's swarmContext under the write lock.
+func (e *Engine) SetSwarmContext(swarmCtx *swarm.Context) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.swarmContext = swarmCtx
+}
+
+// SwarmContext returns the T-swarm-2 envelope installed on this
+// engine, or nil when no swarm is in flight. The pointer is the
+// engine's live reference — callers must treat the returned value
+// as read-only or copy fields they intend to mutate.
+//
+// Returns:
+//   - The current swarm.Context pointer; nil when no swarm is set.
+//
+// Side effects:
+//   - None.
+func (e *Engine) SwarmContext() *swarm.Context {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.swarmContext
 }
 
 // ListAvailableModels returns all available models from configured providers.

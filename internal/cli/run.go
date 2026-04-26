@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/spf13/cobra"
 )
 
@@ -114,6 +115,14 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 	}
 
 	agentName := resolveAgentName(opts.Agent)
+	resolvedAgent, swarmCtx, err := resolveAgentOrSwarm(application, agentName)
+	if err != nil {
+		return err
+	}
+	agentName = resolvedAgent
+	if application.Engine != nil {
+		application.Engine.SetSwarmContext(swarmCtx)
+	}
 	sessionID := resolveSessionID(opts.Session)
 	loadExistingSession(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
@@ -294,6 +303,82 @@ func validateRunOptions(opts *RunOptions) error {
 		}
 	}
 	return nil
+}
+
+// resolveAgentOrSwarm is the T-swarm-2 CLI-side resolver shared by
+// both `flowstate run --agent <id>` and `flowstate chat --agent <id>`.
+// It applies the spec §2 precedence — agent registry first, swarm
+// registry second — and returns:
+//
+//   - resolved is the agent id the streamer should drive. For agent
+//     hits and historical pass-through this is the input verbatim;
+//     for swarm hits it is the swarm's lead, so the engine's
+//     existing per-engine setup engages the lead's manifest.
+//   - swarmCtx is the swarm.Context the runner should install on the
+//     engine when the id resolved to a swarm; nil otherwise (the
+//     engine reverts to single-agent shape).
+//   - err is *swarm.NotFoundError when both registries are non-nil
+//     and neither knows the id. When neither registry is configured
+//     the resolver passes through silently — that preserves the
+//     historical CLI test contract where a bare engine accepts any
+//     `--agent` value because the runtime engine does not validate
+//     against a registry.
+//
+// Expected:
+//   - application is non-nil. Tests with no engine still flow through
+//     here because the swarm-context install is gated on Engine != nil.
+//   - id is the user-provided `--agent` value, post-trim.
+//
+// Side effects:
+//   - None. The caller is responsible for installing swarmCtx on the
+//     engine — keeping this helper pure makes it trivial to unit-test.
+func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Context, error) {
+	if application == nil {
+		return id, nil, nil
+	}
+	swarmReg := application.SwarmRegistry
+	if swarmReg == nil {
+		// T-swarm-2 is gated on the swarm registry being present.
+		// When it is nil the swarm subsystem is disabled (or
+		// T-swarm-1 has not yet wired up the loader on this build),
+		// so the resolver is a no-op and the historical CLI
+		// contract is preserved verbatim. The agent registry alone
+		// is not enough to enforce precedence — the historical
+		// suite drives a bare engine through `--agent <unknown>`
+		// and depends on the engine, not the resolver, for the
+		// runtime fallback.
+		return id, nil, nil
+	}
+	agentReg := application.Registry
+	hasAgent := func(name string) bool {
+		if agentReg == nil {
+			return false
+		}
+		if _, ok := agentReg.Get(name); ok {
+			return true
+		}
+		_, ok := agentReg.GetByNameOrAlias(name)
+		return ok
+	}
+	kind, manifest := swarm.Resolve(id, hasAgent, swarmReg)
+	switch kind {
+	case swarm.KindAgent:
+		return id, nil, nil
+	case swarm.KindSwarm:
+		swarmCtx := swarm.NewContext(id, manifest)
+		if swarmCtx.LeadAgent == "" {
+			// Spec §1 validation guards this case at manifest load
+			// time; a defensive guard here keeps the CLI from
+			// silently passing the swarm id through as an agent id
+			// when an upstream loader bug lets a lead-less manifest
+			// slip through.
+			return "", nil, fmt.Errorf("swarm %q has no lead agent", id)
+		}
+		return swarmCtx.LeadAgent, &swarmCtx, nil
+	default:
+		// Spec §2: error with the canonical message naming the id.
+		return "", nil, &swarm.NotFoundError{ID: id}
+	}
 }
 
 // resolveAgentName returns the agent name, defaulting to "worker" if empty.
