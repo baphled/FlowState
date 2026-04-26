@@ -12,21 +12,24 @@ import (
 
 // BackgroundOutputTool enables retrieval of background task results by task ID.
 type BackgroundOutputTool struct {
-	manager *BackgroundTaskManager
+	manager          *BackgroundTaskManager
+	defaultTimeoutMs int
 }
 
-// NewBackgroundOutputTool creates a new background output tool.
-//
-// Expected:
-//   - manager is a non-nil BackgroundTaskManager instance.
-//
-// Returns:
-//   - A ready-to-use BackgroundOutputTool instance.
-//
-// Side effects:
-//   - None.
+// NewBackgroundOutputTool creates a new background output tool with the
+// compiled-in default poll timeout (120s). Use WithDefaultTimeout to override.
 func NewBackgroundOutputTool(manager *BackgroundTaskManager) *BackgroundOutputTool {
 	return &BackgroundOutputTool{manager: manager}
+}
+
+// WithDefaultTimeout overrides the default poll-until-complete timeout used
+// when the caller does not pass an explicit `timeout` argument. Values <= 0
+// are ignored so the compiled-in 120s default keeps applying.
+func (b *BackgroundOutputTool) WithDefaultTimeout(d time.Duration) *BackgroundOutputTool {
+	if d > 0 {
+		b.defaultTimeoutMs = int(d / time.Millisecond)
+	}
+	return b
 }
 
 // Name returns the tool name.
@@ -166,11 +169,15 @@ func (b *BackgroundOutputTool) pollUntilComplete(ctx context.Context, taskID str
 	// (the longest planner runs in flowstate.log were 1m48s); the
 	// model can still pass an explicit smaller `timeout` for
 	// time-sensitive paths.
-	const defaultTimeoutMs = 120000
+	const compiledDefaultTimeoutMs = 120000
 	const pollIntervalMs = 50
 
 	if timeoutMs == 0 {
-		timeoutMs = defaultTimeoutMs
+		if b.defaultTimeoutMs > 0 {
+			timeoutMs = b.defaultTimeoutMs
+		} else {
+			timeoutMs = compiledDefaultTimeoutMs
+		}
 	}
 
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)

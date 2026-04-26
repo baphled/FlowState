@@ -3,8 +3,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
@@ -51,6 +53,65 @@ type AppConfig struct {
 	// (micro-compaction, auto-compaction, session-memory). All layers
 	// default to disabled; see internal/context.DefaultCompressionConfig.
 	Compression contextpkg.CompressionConfig `json:"compression" yaml:"compression"`
+
+	// StreamTimeout overrides the per-LLM-stream wall-clock budget. Empty
+	// means inherit the engine's compiled-in default (5m). Long delegations
+	// on slow providers (e.g. zai/glm-4.7) are the typical reason to raise
+	// this. Format: a Go duration string ("15m", "300s").
+	StreamTimeout string `json:"stream_timeout,omitempty" yaml:"stream_timeout,omitempty"`
+	// ToolTimeout overrides the per-tool-call wall-clock budget. Empty
+	// means inherit the engine's compiled-in default (2m). The delegate
+	// tool already opts out of this via TimeoutOverrider, so raising it
+	// affects shell-style tools (bash, read, web) only.
+	ToolTimeout string `json:"tool_timeout,omitempty" yaml:"tool_timeout,omitempty"`
+	// BackgroundOutputTimeout overrides the default poll-until-complete
+	// budget on the background_output tool when the model does not pass
+	// an explicit `timeout` argument. Empty means inherit the compiled-in
+	// default (120s).
+	BackgroundOutputTimeout string `json:"background_output_timeout,omitempty" yaml:"background_output_timeout,omitempty"`
+}
+
+// ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
+// unset/invalid (callers treat 0 as "use engine default"). Invalid input is
+// logged once at WARN and treated as zero so a typo never crashes startup.
+// A nil receiver returns 0 — App test fixtures construct App with Config=nil.
+func (c *AppConfig) ParsedStreamTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.StreamTimeout, "stream_timeout")
+}
+
+// ParsedToolTimeout returns the parsed value of ToolTimeout (see
+// ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+func (c *AppConfig) ParsedToolTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.ToolTimeout, "tool_timeout")
+}
+
+// ParsedBackgroundOutputTimeout returns the parsed value of
+// BackgroundOutputTimeout (see ParsedStreamTimeout for semantics, including
+// nil-receiver behaviour).
+func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
+}
+
+func parseDurationField(s, key string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		slog.Warn("config: invalid duration string; falling back to default",
+			"key", key, "value", s, "error", err)
+		return 0
+	}
+	return d
 }
 
 // QdrantConfig provides configuration for Qdrant-based recall storage.
