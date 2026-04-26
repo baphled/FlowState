@@ -58,4 +58,22 @@ var _ = Describe("IsToolCapableModel", func() {
 		Expect(engine.IsToolCapableModel("anthropic", "claude-3-5-haiku", []string{"", "claude-*"}, nil)).To(BeTrue())
 		Expect(engine.IsToolCapableModel("anthropic", "claude-3-5-haiku", []string{""}, nil)).To(BeFalse())
 	})
+
+	It("matches middle-glob deny patterns like gpt-*-mini", func() {
+		denyMid := []string{"gpt-*-mini"}
+		allowAny := []string{"*"}
+		Expect(engine.IsToolCapableModel("github-copilot", "gpt-5-mini", allowAny, denyMid)).To(BeFalse())
+		Expect(engine.IsToolCapableModel("github-copilot", "gpt-5.4-mini", allowAny, denyMid)).To(BeFalse())
+		Expect(engine.IsToolCapableModel("github-copilot", "gpt-4o-mini", allowAny, denyMid)).To(BeFalse())
+		Expect(engine.IsToolCapableModel("github-copilot", "gpt-5", allowAny, denyMid)).To(BeTrue())
+		Expect(engine.IsToolCapableModel("github-copilot", "gpt-5.5", allowAny, denyMid)).To(BeTrue())
+	})
+
+	It("matches prefix-glob deny patterns like claude-haiku*", func() {
+		denyHaiku := []string{"claude-haiku*"}
+		Expect(engine.IsToolCapableModel("github-copilot", "claude-haiku-4.5", []string{"claude-*"}, denyHaiku)).To(BeFalse())
+		Expect(engine.IsToolCapableModel("github-copilot", "claude-haiku-3-5", []string{"claude-*"}, denyHaiku)).To(BeFalse())
+		Expect(engine.IsToolCapableModel("github-copilot", "claude-sonnet-4.6", []string{"claude-*"}, denyHaiku)).To(BeTrue())
+		Expect(engine.IsToolCapableModel("github-copilot", "claude-opus-4.7", []string{"claude-*"}, denyHaiku)).To(BeTrue())
+	})
 })
