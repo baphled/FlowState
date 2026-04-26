@@ -4,214 +4,132 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/plan"
 )
 
-func TestPlanToolsMetadata(t *testing.T) {
-	t.Parallel()
-
-	if got := plan.NewEnter().Name(); got != "plan_enter" {
-		t.Fatalf("Enter Name() = %q, want %q", got, "plan_enter")
-	}
-	if got := plan.NewExit().Name(); got != "plan_exit" {
-		t.Fatalf("Exit Name() = %q, want %q", got, "plan_exit")
-	}
-}
-
-func TestPlanEnterExecute(t *testing.T) {
-	t.Parallel()
-
-	result, err := plan.NewEnter().Execute(context.Background(), tool.Input{Name: "plan_enter"})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-	if result.Metadata["action"] != "enter" {
-		t.Fatalf("Execute() metadata action = %v, want enter", result.Metadata["action"])
-	}
-}
-
-// writePlanFile is a test helper that writes a minimal plan markdown file
-// with YAML frontmatter to the given directory.
-//
-// Expected:
-//   - dir exists and is writable.
-//   - id is filename-safe.
-//
-// Returns:
-//   - Nothing.
-//
-// Side effects:
-//   - Creates {dir}/{id}.md on disk and fails the test on write error.
-func writePlanFile(t *testing.T, dir, id, title, body string) {
-	t.Helper()
+// writePlanFile writes a minimal plan markdown file with YAML frontmatter
+// to dir. It uses Gomega expectations so failures abort the spec cleanly.
+func writePlanFile(dir, id, title, body string) {
 	content := "---\n" +
 		"id: " + id + "\n" +
 		"title: " + title + "\n" +
 		"status: draft\n" +
 		"---\n\n" +
 		body
-	if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(content), 0o600); err != nil {
-		t.Fatalf("writing plan file: %v", err)
-	}
+	Expect(os.WriteFile(filepath.Join(dir, id+".md"), []byte(content), 0o600)).To(Succeed())
 }
 
-func TestPlanListMetadata(t *testing.T) {
-	t.Parallel()
+// Plan tool tests cover the four plan-related sub-tools (enter, exit, list,
+// read) that operate on a directory of plan markdown files. They verify
+// metadata reporting, the empty-directory output, listing behaviour, the
+// happy path of reading a known plan, and error reporting for missing or
+// non-existent ids.
+var _ = Describe("Plan tools", func() {
+	Describe("Enter / Exit metadata and execution", func() {
+		It("reports the correct names", func() {
+			Expect(plan.NewEnter().Name()).To(Equal("plan_enter"))
+			Expect(plan.NewExit().Name()).To(Equal("plan_exit"))
+		})
 
-	lister := plan.NewList(t.TempDir())
-	if got := lister.Name(); got != "plan_list" {
-		t.Fatalf("List Name() = %q, want %q", got, "plan_list")
-	}
-	if got := lister.Description(); got == "" {
-		t.Fatal("List Description() = empty, want non-empty")
-	}
-	schema := lister.Schema()
-	if schema.Type != "object" {
-		t.Fatalf("List Schema().Type = %q, want object", schema.Type)
-	}
-	if len(schema.Required) != 0 {
-		t.Fatalf("List Schema().Required = %v, want empty", schema.Required)
-	}
-}
-
-func TestPlanListExecuteEmptyDir(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	result, err := plan.NewList(dir).Execute(context.Background(), tool.Input{Name: "plan_list"})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-	if !strings.Contains(result.Output, "No plans") {
-		t.Fatalf("Execute() output = %q, want to contain 'No plans'", result.Output)
-	}
-}
-
-func TestPlanListExecuteReturnsPlans(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	writePlanFile(t, dir, "alpha", "Alpha Plan", "# Alpha\n")
-	writePlanFile(t, dir, "beta", "Beta Plan", "# Beta\n")
-
-	result, err := plan.NewList(dir).Execute(context.Background(), tool.Input{Name: "plan_list"})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-	if !strings.Contains(result.Output, "alpha") {
-		t.Fatalf("Execute() output = %q, want to contain 'alpha'", result.Output)
-	}
-	if !strings.Contains(result.Output, "Alpha Plan") {
-		t.Fatalf("Execute() output = %q, want to contain 'Alpha Plan'", result.Output)
-	}
-	if !strings.Contains(result.Output, "beta") {
-		t.Fatalf("Execute() output = %q, want to contain 'beta'", result.Output)
-	}
-}
-
-func TestPlanReadMetadata(t *testing.T) {
-	t.Parallel()
-
-	reader := plan.NewRead(t.TempDir())
-	if got := reader.Name(); got != "plan_read" {
-		t.Fatalf("Read Name() = %q, want %q", got, "plan_read")
-	}
-	if got := reader.Description(); got == "" {
-		t.Fatal("Read Description() = empty, want non-empty")
-	}
-	schema := reader.Schema()
-	if schema.Type != "object" {
-		t.Fatalf("Read Schema().Type = %q, want object", schema.Type)
-	}
-	if _, ok := schema.Properties["id"]; !ok {
-		t.Fatalf("Read Schema().Properties missing 'id': %v", schema.Properties)
-	}
-	found := false
-	for _, req := range schema.Required {
-		if req == "id" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("Read Schema().Required = %v, want to include 'id'", schema.Required)
-	}
-}
-
-func TestPlanReadExecuteReturnsContents(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	body := "# Alpha Plan\n\nSome prose.\n"
-	writePlanFile(t, dir, "alpha", "Alpha Plan", body)
-
-	result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
-		Name:      "plan_read",
-		Arguments: map[string]interface{}{"id": "alpha"},
+		It("Enter Execute records action=enter in metadata", func() {
+			result, err := plan.NewEnter().Execute(context.Background(), tool.Input{Name: "plan_enter"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Metadata).To(HaveKeyWithValue("action", "enter"))
+		})
 	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-	if !strings.Contains(result.Output, "Alpha Plan") {
-		t.Fatalf("Execute() output = %q, want to contain 'Alpha Plan'", result.Output)
-	}
-	if !strings.Contains(result.Output, "Some prose.") {
-		t.Fatalf("Execute() output = %q, want to contain 'Some prose.'", result.Output)
-	}
-}
 
-func TestPlanReadExecuteMissingIDArgument(t *testing.T) {
-	t.Parallel()
+	Describe("List metadata and execution", func() {
+		It("reports name, description and an object schema with no required fields", func() {
+			lister := plan.NewList(GinkgoT().TempDir())
+			Expect(lister.Name()).To(Equal("plan_list"))
+			Expect(lister.Description()).NotTo(BeEmpty())
+			schema := lister.Schema()
+			Expect(schema.Type).To(Equal("object"))
+			Expect(schema.Required).To(BeEmpty())
+		})
 
-	dir := t.TempDir()
-	result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
-		Name:      "plan_read",
-		Arguments: map[string]interface{}{},
+		It("reports 'No plans' for an empty directory", func() {
+			dir := GinkgoT().TempDir()
+			result, err := plan.NewList(dir).Execute(context.Background(), tool.Input{Name: "plan_list"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("No plans"))
+		})
+
+		It("returns each plan id and title found in the directory", func() {
+			dir := GinkgoT().TempDir()
+			writePlanFile(dir, "alpha", "Alpha Plan", "# Alpha\n")
+			writePlanFile(dir, "beta", "Beta Plan", "# Beta\n")
+
+			result, err := plan.NewList(dir).Execute(context.Background(), tool.Input{Name: "plan_list"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("alpha"))
+			Expect(result.Output).To(ContainSubstring("Alpha Plan"))
+			Expect(result.Output).To(ContainSubstring("beta"))
+		})
 	})
-	if err == nil && result.Error == nil {
-		t.Fatal("Execute() expected error for missing id, got none")
-	}
-}
 
-func TestPlanReadExecuteNotFound(t *testing.T) {
-	t.Parallel()
+	Describe("Read metadata and execution", func() {
+		It("reports name, description and a schema requiring 'id'", func() {
+			reader := plan.NewRead(GinkgoT().TempDir())
+			Expect(reader.Name()).To(Equal("plan_read"))
+			Expect(reader.Description()).NotTo(BeEmpty())
+			schema := reader.Schema()
+			Expect(schema.Type).To(Equal("object"))
+			Expect(schema.Properties).To(HaveKey("id"))
+			Expect(schema.Required).To(ContainElement("id"))
+		})
 
-	dir := t.TempDir()
-	result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
-		Name:      "plan_read",
-		Arguments: map[string]interface{}{"id": "nonexistent"},
+		It("returns the plan contents on a successful read", func() {
+			dir := GinkgoT().TempDir()
+			writePlanFile(dir, "alpha", "Alpha Plan", "# Alpha Plan\n\nSome prose.\n")
+
+			result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
+				Name:      "plan_read",
+				Arguments: map[string]interface{}{"id": "alpha"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("Alpha Plan"))
+			Expect(result.Output).To(ContainSubstring("Some prose."))
+		})
+
+		It("errors when the id argument is missing", func() {
+			dir := GinkgoT().TempDir()
+			result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
+				Name:      "plan_read",
+				Arguments: map[string]interface{}{},
+			})
+			// Either the call returns an error or the result.Error is set —
+			// callers should detect either. At least one must be non-nil.
+			Expect(err != nil || result.Error != nil).To(BeTrue(),
+				"expected error for missing 'id' argument, got nil err and nil result.Error")
+		})
+
+		It("includes the requested id and plans dir in the not-found error", func() {
+			dir := GinkgoT().TempDir()
+			result, err := plan.NewRead(dir).Execute(context.Background(), tool.Input{
+				Name:      "plan_read",
+				Arguments: map[string]interface{}{"id": "nonexistent"},
+			})
+			var msg string
+			switch {
+			case err != nil:
+				msg = err.Error()
+			case result.Error != nil:
+				msg = result.Error.Error()
+			default:
+				Fail("expected error for missing plan, got nil err and nil result.Error")
+			}
+			Expect(msg).To(ContainSubstring("nonexistent"))
+			Expect(msg).To(ContainSubstring(dir))
+		})
 	})
-	if err == nil && result.Error == nil {
-		t.Fatal("Execute() expected error for missing plan, got none")
-	}
-	// The error should mention the requested id and the plans dir path.
-	var msg string
-	switch {
-	case err != nil:
-		msg = err.Error()
-	case result.Error != nil:
-		msg = result.Error.Error()
-	}
-	if !strings.Contains(msg, "nonexistent") {
-		t.Fatalf("error = %q, want to contain requested id 'nonexistent'", msg)
-	}
-	if !strings.Contains(msg, dir) {
-		t.Fatalf("error = %q, want to contain plans dir %q", msg, dir)
-	}
-}
+})

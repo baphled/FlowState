@@ -5,13 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/batch"
 )
 
+// fakeTool is a controllable tool double used to verify the batch tool's
+// concurrency and error-aggregation behaviour. It optionally signals when
+// Execute starts (via started) and blocks on a release channel so the test
+// can observe in-flight calls before letting them complete.
 type fakeTool struct {
 	name    string
 	output  string
@@ -20,12 +26,9 @@ type fakeTool struct {
 	release <-chan struct{}
 }
 
-func (f fakeTool) Name() string { return f.name }
-
-func (f fakeTool) Description() string { return "fake" }
-
-func (f fakeTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
-
+func (f fakeTool) Name() string         { return f.name }
+func (f fakeTool) Description() string  { return "fake" }
+func (f fakeTool) Schema() tool.Schema  { return tool.Schema{Type: "object"} }
 func (f fakeTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
 	if f.started != nil {
 		f.started <- f.name
@@ -39,120 +42,100 @@ func (f fakeTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) 
 	return tool.Result{Output: f.output}, nil
 }
 
-func TestToolMetadata(t *testing.T) {
-	t.Parallel()
+// Batch tool tests cover three behaviours:
+//   - basic metadata reporting and a no-op execution with empty tools list,
+//   - concurrent execution: two registered tools must both observe Execute
+//     start before either is allowed to complete (proves they don't run
+//     sequentially),
+//   - partial-failure preservation: when one tool errors and another
+//     succeeds, the aggregate result must surface both the per-tool error
+//     and the successful output.
+var _ = Describe("Batch tool", func() {
+	Describe("metadata and empty execution", func() {
+		It("reports name, description, schema and runs with empty tools list", func() {
+			toolUnderTest := batch.New(tool.NewRegistry())
+			Expect(toolUnderTest.Name()).To(Equal("batch"))
+			Expect(toolUnderTest.Description()).NotTo(BeEmpty())
+			Expect(toolUnderTest.Schema().Type).To(Equal("object"))
 
-	toolUnderTest := batch.New(tool.NewRegistry())
-
-	if got := toolUnderTest.Name(); got != "batch" {
-		t.Fatalf("Name() = %q, want %q", got, "batch")
-	}
-
-	if got := toolUnderTest.Description(); got == "" {
-		t.Fatal("Description() = empty, want a non-empty description")
-	}
-
-	if got := toolUnderTest.Schema(); got.Type != "object" {
-		t.Fatalf("Schema().Type = %q, want %q", got.Type, "object")
-	}
-
-	result, err := toolUnderTest.Execute(context.Background(), tool.Input{Name: "batch", Arguments: map[string]any{"tools": []any{}}})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-}
-
-func TestToolExecuteRunsCallsConcurrently(t *testing.T) {
-	t.Parallel()
-
-	started := make(chan string, 2)
-	release := make(chan struct{})
-	registry := tool.NewRegistry()
-	registry.Register(fakeTool{name: "first", output: "one", started: started, release: release})
-	registry.Register(fakeTool{name: "second", output: "two", started: started, release: release})
-
-	toolUnderTest := batch.New(registry)
-	done := make(chan struct {
-		result tool.Result
-		err    error
-	}, 1)
-
-	go func() {
-		result, err := toolUnderTest.Execute(context.Background(), tool.Input{
-			Name: "batch",
-			Arguments: map[string]any{
-				"tools": []any{
-					map[string]any{"name": "first"},
-					map[string]any{"name": "second"},
-				},
-			},
+			result, err := toolUnderTest.Execute(context.Background(), tool.Input{
+				Name:      "batch",
+				Arguments: map[string]any{"tools": []any{}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
 		})
-		done <- struct {
-			result tool.Result
-			err    error
-		}{result: result, err: err}
-	}()
-
-	for range 2 {
-		select {
-		case <-started:
-		case <-time.After(500 * time.Millisecond):
-			t.Fatal("expected both tools to start concurrently")
-		}
-	}
-
-	close(release)
-
-	select {
-	case outcome := <-done:
-		if outcome.err != nil {
-			t.Fatalf("Execute() error = %v, want nil", outcome.err)
-		}
-		if outcome.result.Error != nil {
-			t.Fatalf("Execute() result error = %v, want nil", outcome.result.Error)
-		}
-		var payload []map[string]any
-		if err := json.Unmarshal([]byte(outcome.result.Output), &payload); err != nil {
-			t.Fatalf("Execute() output is not valid JSON: %v", err)
-		}
-		if len(payload) != 2 {
-			t.Fatalf("Execute() output length = %d, want 2", len(payload))
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("batch execution timed out")
-	}
-}
-
-func TestToolExecutePreservesPartialFailures(t *testing.T) {
-	t.Parallel()
-
-	registry := tool.NewRegistry()
-	registry.Register(fakeTool{name: "ok", output: "done"})
-	registry.Register(fakeTool{name: "fail", err: errors.New("boom")})
-
-	toolUnderTest := batch.New(registry)
-	result, err := toolUnderTest.Execute(context.Background(), tool.Input{
-		Name: "batch",
-		Arguments: map[string]any{
-			"tools": []any{
-				map[string]any{"name": "ok"},
-				map[string]any{"name": "fail"},
-			},
-		},
 	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error == nil {
-		t.Fatal("Execute() result error = nil, want non-nil")
-	}
-	if got := result.Output; got == "" {
-		t.Fatal("Execute() output = empty, want aggregated results")
-	}
-	if got := fmt.Sprint(result.Error); got == "" {
-		t.Fatal("Execute() result error string = empty, want detail")
-	}
-}
+
+	Describe("Execute with multiple tools", func() {
+		It("runs registered calls concurrently", func() {
+			started := make(chan string, 2)
+			release := make(chan struct{})
+			registry := tool.NewRegistry()
+			registry.Register(fakeTool{name: "first", output: "one", started: started, release: release})
+			registry.Register(fakeTool{name: "second", output: "two", started: started, release: release})
+
+			toolUnderTest := batch.New(registry)
+			done := make(chan struct {
+				result tool.Result
+				err    error
+			}, 1)
+
+			go func() {
+				result, err := toolUnderTest.Execute(context.Background(), tool.Input{
+					Name: "batch",
+					Arguments: map[string]any{
+						"tools": []any{
+							map[string]any{"name": "first"},
+							map[string]any{"name": "second"},
+						},
+					},
+				})
+				done <- struct {
+					result tool.Result
+					err    error
+				}{result: result, err: err}
+			}()
+
+			for range 2 {
+				Eventually(started, 500*time.Millisecond).Should(Receive(),
+					"expected both tools to start concurrently before either completes")
+			}
+
+			close(release)
+
+			var outcome struct {
+				result tool.Result
+				err    error
+			}
+			Eventually(done, 500*time.Millisecond).Should(Receive(&outcome))
+			Expect(outcome.err).NotTo(HaveOccurred())
+			Expect(outcome.result.Error).NotTo(HaveOccurred())
+
+			var payload []map[string]any
+			Expect(json.Unmarshal([]byte(outcome.result.Output), &payload)).To(Succeed())
+			Expect(payload).To(HaveLen(2))
+		})
+
+		It("preserves partial failures alongside successful outputs", func() {
+			registry := tool.NewRegistry()
+			registry.Register(fakeTool{name: "ok", output: "done"})
+			registry.Register(fakeTool{name: "fail", err: errors.New("boom")})
+
+			toolUnderTest := batch.New(registry)
+			result, err := toolUnderTest.Execute(context.Background(), tool.Input{
+				Name: "batch",
+				Arguments: map[string]any{
+					"tools": []any{
+						map[string]any{"name": "ok"},
+						map[string]any{"name": "fail"},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred())
+			Expect(result.Output).NotTo(BeEmpty())
+			Expect(fmt.Sprint(result.Error)).NotTo(BeEmpty())
+		})
+	})
+})
