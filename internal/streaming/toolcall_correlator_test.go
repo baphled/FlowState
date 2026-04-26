@@ -1,172 +1,145 @@
 package streaming_test
 
 import (
-	"testing"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
-// Phase 14 — ToolCallCorrelator unit tests.
+// Phase 14 ToolCallCorrelator unit tests.
 //
-// The correlator assigns a stable FlowState-internal ID to each logical
-// tool call and reuses it whenever the same logical call is observed
-// again — either by direct provider-scoped ID match (same provider, or a
-// provider that accepted foreign IDs in its replay) or by a fuzzy match
-// on (tool_name, arguments-fingerprint) when the provider re-IDs a
-// historical call (the failover rewrite case).
-//
-// Registry is scoped per sessionID so concurrent chats cannot alias each
-// other's tool-call IDs.
+// The correlator assigns a stable FlowState-internal ID to each logical tool
+// call and reuses it whenever the same logical call is observed again —
+// either by direct provider-scoped ID match (same provider, or a provider
+// that accepted foreign IDs in its replay) or by a fuzzy match on
+// (tool_name, arguments-fingerprint) when the provider re-IDs a historical
+// call (the failover rewrite case). Registry is scoped per sessionID so
+// concurrent chats cannot alias each other's tool-call IDs.
+var _ = Describe("ToolCallCorrelator", func() {
+	It("assigns and re-uses an internal id for repeated lookups of the same provider id", func() {
+		c := streaming.NewToolCallCorrelator()
 
-func TestToolCallCorrelator_RegistersFirstSightOfProviderID(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+		got1 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
+		got2 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
 
-	got1 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
-	got2 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
+		Expect(got1).NotTo(BeEmpty(), "internal id must be non-empty on first sight")
+		Expect(got2).To(Equal(got1),
+			"repeated lookup for the same provider-scoped id must return the same internal id")
+	})
 
-	if got1 == "" {
-		t.Fatalf("internal id must be non-empty on first sight")
-	}
-	if got1 != got2 {
-		t.Fatalf("repeated lookup for the same provider-scoped id must return the same internal id; got %q vs %q", got1, got2)
-	}
-}
+	It("fuzzy-matches across providers when (tool_name, args-fingerprint) is identical", func() {
+		c := streaming.NewToolCallCorrelator()
 
-func TestToolCallCorrelator_DifferentProviderIDs_SameToolNameAndArgs_SameInternalID(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+		args := map[string]any{"cmd": "ls", "cwd": "/tmp"}
+		onA := c.InternalID("session-1", "toolu_01abc", "bash", args)
+		// Provider B rewrote the ID on replay (the failover case).
+		onB := c.InternalID("session-1", "call_xyz123", "bash", args)
 
-	args := map[string]any{"cmd": "ls", "cwd": "/tmp"}
-	onA := c.InternalID("session-1", "toolu_01abc", "bash", args)
-	// Provider B rewrote the ID on replay (this is the failover case).
-	onB := c.InternalID("session-1", "call_xyz123", "bash", args)
+		Expect(onA).NotTo(BeEmpty())
+		Expect(onB).NotTo(BeEmpty())
+		Expect(onB).To(Equal(onA),
+			"fuzzy match must resolve to the same internal id across providers")
+	})
 
-	if onA == "" || onB == "" {
-		t.Fatalf("both lookups must return non-empty internal ids")
-	}
-	if onA != onB {
-		t.Fatalf("fuzzy match on (tool_name, args-fingerprint) must resolve to the same internal id across providers; got A=%q B=%q", onA, onB)
-	}
-}
+	It("isolates registries between sessions even when provider id and args match", func() {
+		c := streaming.NewToolCallCorrelator()
 
-func TestToolCallCorrelator_DifferentSessions_IsolatedRegistries(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+		args := map[string]any{"cmd": "ls"}
+		sessionA := c.InternalID("session-A", "toolu_01abc", "bash", args)
+		sessionB := c.InternalID("session-B", "toolu_01abc", "bash", args)
 
-	args := map[string]any{"cmd": "ls"}
-	sessionA := c.InternalID("session-A", "toolu_01abc", "bash", args)
-	sessionB := c.InternalID("session-B", "toolu_01abc", "bash", args)
+		Expect(sessionA).NotTo(Equal(sessionB),
+			"internal ids must NOT collide across sessions")
+	})
 
-	if sessionA == sessionB {
-		t.Fatalf("internal ids must NOT collide across sessions even when provider-scoped id and args are identical; got %q in both sessions", sessionA)
-	}
-}
+	It("does not fuzzy-match different tool names with identical args", func() {
+		c := streaming.NewToolCallCorrelator()
 
-func TestToolCallCorrelator_DifferentToolNames_DoNotFuzzyMatch(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+		args := map[string]any{"cmd": "ls"}
+		bashID := c.InternalID("session-1", "toolu_01abc", "bash", args)
+		otherToolID := c.InternalID("session-1", "call_xyz", "read_file", args)
 
-	args := map[string]any{"cmd": "ls"}
-	bashID := c.InternalID("session-1", "toolu_01abc", "bash", args)
-	otherToolID := c.InternalID("session-1", "call_xyz", "read_file", args)
+		Expect(bashID).NotTo(Equal(otherToolID),
+			"different tool_name must NOT share an internal id via fuzzy match")
+	})
 
-	if bashID == otherToolID {
-		t.Fatalf("different tool_name must NOT share an internal id via fuzzy match; got %q for both", bashID)
-	}
-}
+	It("does not fuzzy-match different args under the same tool name", func() {
+		c := streaming.NewToolCallCorrelator()
 
-func TestToolCallCorrelator_DifferentArgs_DoNotFuzzyMatch(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+		idLs := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
+		idPwd := c.InternalID("session-1", "call_xyz", "bash", map[string]any{"cmd": "pwd"})
 
-	idLs := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
-	idPwd := c.InternalID("session-1", "call_xyz", "bash", map[string]any{"cmd": "pwd"})
+		Expect(idLs).NotTo(Equal(idPwd),
+			"different args must NOT share an internal id via fuzzy match")
+	})
 
-	if idLs == idPwd {
-		t.Fatalf("different args must NOT share an internal id via fuzzy match; got %q for both", idLs)
-	}
-}
+	It("returns an empty internal id for an empty provider id", func() {
+		c := streaming.NewToolCallCorrelator()
+		Expect(c.InternalID("session-1", "", "bash", map[string]any{"cmd": "ls"})).To(BeEmpty())
+	})
 
-func TestToolCallCorrelator_EmptyProviderIDReturnsEmpty(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
+	It("mints a new internal id when no fuzzy candidate is in the registry", func() {
+		c := streaming.NewToolCallCorrelator()
 
-	if got := c.InternalID("session-1", "", "bash", map[string]any{"cmd": "ls"}); got != "" {
-		t.Fatalf("empty provider id must return empty internal id, got %q", got)
-	}
-}
+		id1 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
+		id2 := c.InternalID("session-1", "toolu_02def", "bash", map[string]any{"cmd": "pwd"})
 
-func TestToolCallCorrelator_NonFuzzyLookup_UnknownProviderID_NewInternalID(t *testing.T) {
-	// When a provider emits a tool call we have never seen and fuzzy match
-	// has no candidate (no prior call with the same name+args in this
-	// session), the correlator mints a fresh internal id.
-	c := streaming.NewToolCallCorrelator()
+		Expect(id1).NotTo(Equal(id2),
+			"two distinct calls (different args) must get distinct internal ids")
+	})
 
-	id1 := c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
-	id2 := c.InternalID("session-1", "toolu_02def", "bash", map[string]any{"cmd": "pwd"})
+	It("produces a stable arg fingerprint independent of map iteration order", func() {
+		c := streaming.NewToolCallCorrelator()
 
-	if id1 == id2 {
-		t.Fatalf("two distinct calls (different args) must get distinct internal ids; got %q twice", id1)
-	}
-}
+		argsForward := map[string]any{"cmd": "ls", "cwd": "/tmp", "flags": "-la"}
+		argsDifferent := map[string]any{"cmd": "ls", "cwd": "/tmp", "flags": "-la"}
+		id1 := c.InternalID("session-1", "toolu_01abc", "bash", argsForward)
+		id2 := c.InternalID("session-1", "call_xyz123", "bash", argsDifferent)
 
-func TestToolCallCorrelator_ArgOrderIndependence_FuzzyMatch(t *testing.T) {
-	// Fuzzy matching keys on a canonical representation of the args. Two
-	// lookups with the same (name, args) should match regardless of iteration
-	// order of the caller's map — Go's map iteration is unordered.
-	c := streaming.NewToolCallCorrelator()
+		Expect(id2).To(Equal(id1),
+			"argument fingerprint must be stable across map iteration orders")
+	})
 
-	argsForward := map[string]any{"cmd": "ls", "cwd": "/tmp", "flags": "-la"}
-	argsDifferent := map[string]any{"cmd": "ls", "cwd": "/tmp", "flags": "-la"}
-	id1 := c.InternalID("session-1", "toolu_01abc", "bash", argsForward)
-	id2 := c.InternalID("session-1", "call_xyz123", "bash", argsDifferent)
+	It("ForgetSession releases its entries without leaking into siblings", func() {
+		// Internal ids are deterministic on (sessionID, providerID, toolName),
+		// so a post-forget lookup with identical inputs legitimately returns
+		// the same id — verifying via id equality would be vacuous. Instead
+		// the test probes the registry's observable state: after
+		// ForgetSession an entry for a DIFFERENT session must remain, and
+		// entries for the forgotten session must not leak into a sibling
+		// session's namespace.
+		c := streaming.NewToolCallCorrelator()
 
-	if id1 != id2 {
-		t.Fatalf("argument fingerprint must be stable across map iteration orders; got %q vs %q", id1, id2)
-	}
-}
+		args := map[string]any{"cmd": "ls"}
+		kept := c.InternalID("session-kept", "toolu_01abc", "bash", args)
+		forgotten := c.InternalID("session-drop", "toolu_01abc", "bash", args)
+		Expect(kept).NotTo(Equal(forgotten), "precondition: sessions must produce distinct internal ids")
 
-func TestToolCallCorrelator_ForgetSession_ReleasesEntries(t *testing.T) {
-	// When a session ends the correlator must release its entries so the
-	// registry does not grow unbounded across long-running processes.
-	//
-	// Internal ids are deterministic on (sessionID, providerID, toolName),
-	// so a post-forget lookup with identical inputs legitimately returns
-	// the same id — verifying via id equality would be vacuous. Instead
-	// the test probes the registry's observable state: after ForgetSession,
-	// an entry for a DIFFERENT session must remain, and entries for the
-	// forgotten session must not leak into a sibling session's namespace.
-	c := streaming.NewToolCallCorrelator()
+		c.ForgetSession("session-drop")
 
-	args := map[string]any{"cmd": "ls"}
-	kept := c.InternalID("session-kept", "toolu_01abc", "bash", args)
-	forgotten := c.InternalID("session-drop", "toolu_01abc", "bash", args)
-	if kept == forgotten {
-		t.Fatalf("precondition: sessions must produce distinct internal ids")
-	}
+		// session-kept's entry must survive — probed via the fuzzy path: a
+		// new providerID with the same (name, args) should hit the cache and
+		// return the already-registered id.
+		keptAgainViaFuzzy := c.InternalID("session-kept", "call_new", "bash", args)
+		Expect(keptAgainViaFuzzy).To(Equal(kept),
+			"session-kept entry must survive a sibling ForgetSession")
+	})
 
-	c.ForgetSession("session-drop")
+	It("is safe under concurrent access (no race-detector complaints)", func() {
+		c := streaming.NewToolCallCorrelator()
 
-	// session-kept must still resolve its entry directly (would have
-	// re-minted to a different id if the registry had been cleared for it,
-	// but the mint is deterministic so we probe the fuzzy path instead:
-	// a lookup on a new providerID with the same (name, args) should hit
-	// the fuzzy cache and return the already-registered id).
-	keptAgainViaFuzzy := c.InternalID("session-kept", "call_new", "bash", args)
-	if keptAgainViaFuzzy != kept {
-		t.Fatalf("session-kept entry must survive a sibling ForgetSession; got %q vs %q", keptAgainViaFuzzy, kept)
-	}
-}
-
-func TestToolCallCorrelator_ConcurrentAccessIsSafe(t *testing.T) {
-	c := streaming.NewToolCallCorrelator()
-
-	done := make(chan struct{}, 8)
-	for range 8 {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			for range 100 {
-				_ = c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
-			}
-		}()
-	}
-	for range 8 {
-		<-done
-	}
-	// If we get here without a race-detector complaint, we're good.
-}
+		done := make(chan struct{}, 8)
+		for range 8 {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				for range 100 {
+					_ = c.InternalID("session-1", "toolu_01abc", "bash", map[string]any{"cmd": "ls"})
+				}
+			}()
+		}
+		for range 8 {
+			<-done
+		}
+	})
+})
