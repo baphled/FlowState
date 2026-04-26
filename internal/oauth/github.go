@@ -128,16 +128,16 @@ func (g *GitHub) PollToken(ctx context.Context, deviceCode string, interval int)
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
-	timeout := time.After(5 * time.Minute)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return &FlowResult{State: StateError, ErrorMessage: ctx.Err().Error()}, ctx.Err()
-		case <-timeout:
-			return &FlowResult{State: StateExpired, ErrorMessage: "authorization request expired"}, nil
 		case <-ticker.C:
 			result := g.checkTokenStatus(ctx, deviceCode)
+			if result.State == StatePending && result.RetryAfter > interval {
+				ticker.Reset(time.Duration(result.RetryAfter) * time.Second)
+				continue
+			}
 			if result.State != StatePending {
 				return result, nil
 			}
