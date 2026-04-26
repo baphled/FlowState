@@ -33,7 +33,17 @@ import (
 // newMicroCompactionTestEngine builds an Engine with L1 enabled, a
 // real FileContextStore, and a temp spillover directory, ready to
 // cache splitters via BuildContextWindowForTesting.
-func newMicroCompactionTestEngine(t *testing.T) (*engine.Engine, *eventbus.EventBus) {
+// engineTestT is the minimal subset of testing.TB the helper uses.
+// Accepting an interface lets Ginkgo's GinkgoT() drive the same helper
+// as plain *testing.T callers without depending on the full TB surface
+// (which gained methods like ArtifactDir in Go 1.24).
+type engineTestT interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	TempDir() string
+}
+
+func newMicroCompactionTestEngine(t engineTestT) (*engine.Engine, *eventbus.EventBus) {
 	t.Helper()
 
 	bus := eventbus.NewEventBus()
