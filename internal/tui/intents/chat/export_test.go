@@ -177,6 +177,24 @@ func (i *Intent) AllViewMessagesForTest() []chatview.Message {
 	return i.view.Messages()
 }
 
+// RenderedViewportContentForTest returns the rendered chat view content as
+// it would be pushed into the message viewport via SetContent. Used by the
+// long-stream regression spec to assert the full committed assistant
+// response survives the throttled-render path end-to-end (intent →
+// view.RenderContent), independent of Bubble Tea's viewport internals.
+func (i *Intent) RenderedViewportContentForTest(width int) string {
+	return i.view.RenderContent(width)
+}
+
+// SetMarkdownRendererForTest swaps the view's markdown renderer with the
+// supplied function. Used by the long-stream regression spec to inject an
+// identity renderer so the substring assertions are not foiled by
+// glamour's per-character ANSI colour codes interleaving with the chunk
+// markers.
+func (i *Intent) SetMarkdownRendererForTest(fn func(string, int) string) {
+	i.view.SetMarkdownRenderer(fn)
+}
+
 // HandleStreamChunkForTest exposes handleStreamChunk for test assertions.
 func (i *Intent) HandleStreamChunkForTest(msg StreamChunkMsg) {
 	i.handleStreamChunk(msg)
