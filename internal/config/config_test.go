@@ -917,3 +917,94 @@ var _ = Describe("AppConfig.ResolvedPlanLocation", func() {
 		})
 	})
 })
+
+var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
+	var tempDir string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "tool-capability-test")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(tempDir)
+	})
+
+	Describe("DefaultConfig", func() {
+		It("seeds ToolCapableModels with the curated tool-capable shortlist", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.ToolCapableModels).To(ContainElement("claude-*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("gpt-4*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("gpt-5*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("o1*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("o3*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("qwen3:*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("gpt-oss:20b"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("devstral:latest"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.1:latest"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.3:latest"))
+		})
+
+		It("does NOT include known-broken context-clamped clones in the allow list", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.ToolCapableModels).NotTo(ContainElement("gpt-oss-20b-4k"))
+			Expect(cfg.ToolCapableModels).NotTo(ContainElement("gpt-oss-20b-8k"))
+		})
+
+		It("does NOT include broken bare llama3.2 in the allow list", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.ToolCapableModels).NotTo(ContainElement("llama3.2"))
+			Expect(cfg.ToolCapableModels).NotTo(ContainElement("llama3.2:latest"))
+		})
+
+		It("seeds ToolIncapableModels with the KB-documented broken models", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.ToolIncapableModels).To(ContainElement("llama3.2*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("qwen2.5-coder*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("glm-4.7"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("mistral:7b"))
+		})
+	})
+
+	Describe("YAML round-trip", func() {
+		It("loads tool_capable_models and tool_incapable_models from YAML", func() {
+			configContent := `
+tool_capable_models:
+  - my-custom-model:7b
+  - claude-*
+tool_incapable_models:
+  - broken-model:7b
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err := os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.ToolCapableModels).To(ContainElement("my-custom-model:7b"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("claude-*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("broken-model:7b"))
+		})
+
+		It("falls back to default tool_capable_models when YAML omits the key", func() {
+			configContent := `
+log_level: info
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			err := os.WriteFile(configPath, []byte(configContent), 0o600)
+			Expect(err).NotTo(HaveOccurred())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.ToolCapableModels).To(ContainElement("claude-*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("glm-4.7"))
+		})
+	})
+})
