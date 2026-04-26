@@ -179,6 +179,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	providerRegistry, ollamaProvider, providerFailures := setupProvidersWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
+	setupSwarmSchemas(cfg)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
 	if err := resolveDefaultProvider(providerRegistry, providerFailures, cfg.Providers.Default); err != nil {
@@ -3430,6 +3431,56 @@ func (a swarmAgentRegistryAdapter) Get(id string) (any, bool) {
 	}
 	_, ok := a.inner.Get(id)
 	return nil, ok
+}
+
+// setupSwarmSchemas seeds the swarm gate runner's JSON Schema registry
+// from two sources, in this order:
+//
+//  1. SeedDefaultSchemas — registers the bundled `review-verdict-v1`
+//     schema programmatically so the planning-loop reference swarm has
+//     a valid post-member gate even on a fresh install with no
+//     drop-in directory.
+//  2. swarm.LoadSchemasFromDir(cfg.SchemaDir) — walks the operator's
+//     `${ConfigDir}/schemas/` and registers each `*.json` file under
+//     its basename. File-based registrations OVERRIDE the seeded
+//     schemas (file wins) so operators can drop in
+//     `review-verdict-v1.json` to override the bundled shape without
+//     recompiling. The override choice is documented on
+//     swarm.SchemaDirLoader's doc comment; the tl;dr is that the
+//     filesystem path is itself the audit trail for the override.
+//
+// Failures in either pass log a WARN and the app continues; gates
+// referencing a missing schema fail closed at firing time with a
+// structured *swarm.GateError, which is the more actionable surface
+// than aborting startup.
+//
+// Expected:
+//   - cfg is the resolved AppConfig (cfg.SchemaDir already expanded
+//     via expandPaths).
+//
+// Side effects:
+//   - Calls swarm.RegisterSchema repeatedly under the package
+//     registry's write lock.
+//   - Logs INFO / WARN entries for the seed and load outcomes.
+func setupSwarmSchemas(cfg *config.AppConfig) {
+	if err := swarm.SeedDefaultSchemas(); err != nil {
+		log.Printf("warning: seeding default swarm schemas: %v", err)
+	}
+	dir := cfg.SchemaDir
+	if dir == "" {
+		dir = swarm.ResolveSchemaDir(config.Dir(), "")
+	}
+	summary, err := swarm.LoadSchemasFromDir(dir)
+	if err != nil {
+		log.Printf("warning: loading swarm schemas from %q: %v", dir, err)
+		return
+	}
+	if summary.Registered == 0 && summary.Failed == 0 {
+		log.Printf("info: no swarm schema files in %q", dir)
+		return
+	}
+	log.Printf("info: registered %d swarm schema(s) from %q (%d failed)",
+		summary.Registered, dir, summary.Failed)
 }
 
 // setupSwarmRegistry loads swarm manifests from dir and validates them

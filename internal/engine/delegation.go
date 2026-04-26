@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -113,13 +114,28 @@ type DelegateTool struct {
 	// toolIncapableModels is the deny-list. Match here always wins, even
 	// when the model also matches toolCapableModels.
 	toolIncapableModels []string
-	// gateRunner is the swarm.GateRunner consulted after a member's
-	// stream completes (T-swarm-3 Phase 1, post-member only). When
-	// nil, the post-member dispatch hook is a no-op so callers that
+	// gateRunner is the swarm.GateRunner consulted at every lifecycle
+	// boundary (pre-swarm, pre-member, post-member, post-swarm). When
+	// nil, the swarm-gate dispatch hooks are no-ops so callers that
 	// have not opted into swarm gates keep the historical delegation
 	// behaviour. Production wiring (cmd/flowstate / app.New) installs
 	// a swarm.MultiRunner pre-registered with builtin:result-schema.
 	gateRunner swarm.GateRunner
+
+	// swarmLifecycleMu guards prefiredSwarmIDs against concurrent
+	// dispatches when the lead engine fan-outs to multiple members
+	// in parallel (Phase 3 territory but the mutex costs nothing
+	// today and keeps the once-fire contract honest under any
+	// future concurrency).
+	swarmLifecycleMu sync.Mutex
+
+	// prefiredSwarmIDs records the swarm ids whose pre-swarm gates
+	// have already fired in this DelegateTool's lifetime so the
+	// pre-swarm dispatch fires exactly once per swarm run. Keyed by
+	// SwarmID rather than the *Context pointer so a SetSwarmContext
+	// re-install of the same swarm id (e.g. after a chat-session
+	// reset) still suppresses the duplicate.
+	prefiredSwarmIDs map[string]bool
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -1300,6 +1316,15 @@ func (d *DelegateTool) executeSync(
 ) (tool.Result, error) {
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 
+	if gateErr := d.dispatchPreSwarmGatesOnce(ctx); gateErr != nil {
+		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		return tool.Result{}, gateErr
+	}
+	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID); gateErr != nil {
+		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		return tool.Result{}, gateErr
+	}
+
 	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession)
 	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
 	defer closeStore()
@@ -1358,11 +1383,9 @@ func (d *DelegateTool) executeSync(
 }
 
 // dispatchPostMemberGates fires every post-member gate on the active
-// swarm context whose Target matches memberID. The first failing
-// gate halts dispatch and surfaces the typed *swarm.GateError; the
-// caller (executeSync) propagates it up the tool stack so the swarm
-// runner halts the swarm without retry. T-swarm-3 Phase 1 only
-// dispatches post-member gates; pre / post / pre-member are deferred.
+// swarm context whose Target matches memberID. Thin wrapper over
+// dispatchMemberGates kept for call-site readability — executeSync
+// still reads "post-member dispatch happens here" at a glance.
 //
 // Expected:
 //   - ctx is the delegation context.
@@ -1377,6 +1400,50 @@ func (d *DelegateTool) executeSync(
 //   - Calls each matching gate's runner, which may read from the
 //     coordination store.
 func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID string) error {
+	return d.dispatchMemberGates(ctx, swarm.LifecyclePostMember, memberID)
+}
+
+// dispatchPreMemberGates fires every pre-member gate on the active
+// swarm context whose Target matches memberID. Called by executeSync
+// just before the targeted member's Stream is invoked so the gate
+// runner can validate prerequisite coord-store keys exist. Phase 2
+// of T-swarm-3.
+//
+// Expected:
+//   - ctx is the delegation context.
+//   - memberID is the agent id whose stream is about to start.
+//
+// Returns:
+//   - nil under the same conditions as dispatchPostMemberGates.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - See dispatchMemberGates.
+func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID string) error {
+	return d.dispatchMemberGates(ctx, swarm.LifecyclePreMember, memberID)
+}
+
+// dispatchMemberGates fires every gate on the active swarm context
+// whose When matches when ("pre-member" or "post-member") and whose
+// Target matches memberID. Single helper underlying both
+// dispatchPreMemberGates and dispatchPostMemberGates so the lifecycle
+// fan-out logic (gate-runner / swarm-context / coord-store
+// resolution) lives in exactly one place.
+//
+// Expected:
+//   - ctx is the delegation context.
+//   - when is a member-level lifecycle point.
+//   - memberID is the agent id the runner is wrapping.
+//
+// Returns:
+//   - nil when no gate runner is wired, no swarm context is in flight,
+//     no gates match the (when, memberID) pair, or every matching gate
+//     passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each matching gate's runner.
+func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID string) error {
 	if d.gateRunner == nil {
 		return nil
 	}
@@ -1384,7 +1451,7 @@ func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID str
 	if !ok {
 		return nil
 	}
-	matches := swarm.PostMemberGatesFor(swarmCtx.Gates, memberID)
+	matches := swarm.MemberGatesFor(swarmCtx.Gates, when, memberID)
 	if len(matches) == 0 {
 		return nil
 	}
@@ -1400,6 +1467,163 @@ func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID str
 		}
 	}
 	return nil
+}
+
+// dispatchPreSwarmGatesOnce fires every pre-swarm gate on the active
+// swarm context exactly once per swarm id. The "once" guarantee is
+// the key contract for pre-swarm: even though the dispatcher is
+// called from executeSync (which fires per delegation), the swarm
+// runner spec promises pre-swarm fires ONCE at swarm start.
+// prefiredSwarmIDs records firings; subsequent calls are no-ops for
+// the same swarm.
+//
+// Expected:
+//   - ctx is the delegation context (the lead's tool-call context).
+//
+// Returns:
+//   - nil when no swarm is in flight, no pre-swarm gates exist on
+//     the manifest, the gates have already fired this swarm run, or
+//     every gate passes.
+//   - The first *swarm.GateError otherwise. On failure, the swarm
+//     id is NOT marked as fired so a retry from a fresh delegation
+//     would attempt the gates again (Phase 2 still halts fail-fast,
+//     so the retry only matters when an upstream caller catches the
+//     error and re-invokes; future Phase 3 retry/rollback work will
+//     rely on this invariant).
+//
+// Side effects:
+//   - Calls each matching gate's runner under the swarm lifecycle
+//     mutex.
+func (d *DelegateTool) dispatchPreSwarmGatesOnce(ctx context.Context) error {
+	if d.gateRunner == nil {
+		return nil
+	}
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok {
+		return nil
+	}
+	if !d.markPreSwarmFiring(swarmCtx.SwarmID) {
+		return nil
+	}
+	if err := d.runSwarmGates(ctx, swarmCtx, swarm.LifecyclePreSwarm); err != nil {
+		d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
+		return err
+	}
+	return nil
+}
+
+// FlushSwarmLifecycle fires the post-swarm gates on the active swarm
+// context (if any) and forgets the pre-swarm "fired" flag for that
+// swarm id. The swarm-runner caller (cli.runPrompt / chat intent
+// after the lead's stream returns) invokes this so a swarm-level
+// `when: post` gate can validate the final aggregated state.
+//
+// Phase 2 still uses a single DelegateTool per app instance, so a
+// long-lived process running multiple back-to-back swarm sessions
+// MUST call FlushSwarmLifecycle between them. Skipping the flush
+// would leak pre-swarm fired-state from the previous run and
+// suppress the next session's pre-swarm dispatch.
+//
+// Expected:
+//   - ctx is the swarm-runner's outer context (the same one driving
+//     the lead's Stream).
+//
+// Returns:
+//   - nil when no gate runner is wired, no swarm is in flight, or
+//     every post-swarm gate passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each post-swarm gate's runner.
+//   - Clears the pre-swarm fired marker for the swarm id.
+func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
+	if d.gateRunner == nil {
+		return nil
+	}
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok {
+		return nil
+	}
+	defer d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
+	return d.runSwarmGates(ctx, swarmCtx, swarm.LifecyclePostSwarm)
+}
+
+// runSwarmGates dispatches every swarm-level gate on swarmCtx whose
+// When matches when. Used by both dispatchPreSwarmGatesOnce and
+// FlushSwarmLifecycle; centralising the args / loop here keeps the
+// callers focused on their own lifecycle invariants.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - when is "pre" or "post".
+//
+// Returns:
+//   - nil when no gates match or every gate passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each matching gate's runner. MemberID is empty on the
+//     args because swarm-level gates have no per-member fan-out.
+func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Context, when string) error {
+	matches := swarm.SwarmGatesFor(swarmCtx.Gates, when)
+	if len(matches) == 0 {
+		return nil
+	}
+	args := swarm.GateArgs{
+		SwarmID:     swarmCtx.SwarmID,
+		ChainPrefix: swarmCtx.ChainPrefix,
+		CoordStore:  d.coordinationStore,
+	}
+	for _, gate := range matches {
+		if err := d.gateRunner.Run(ctx, gate, args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// markPreSwarmFiring records that pre-swarm gates are firing for
+// swarmID. The returned bool reports whether the caller should
+// proceed with the dispatch (true) or skip because another caller has
+// already fired (false). The map is lazily initialised so the zero-
+// value DelegateTool stays usable.
+//
+// Expected:
+//   - swarmID is the active swarm's id.
+//
+// Returns:
+//   - true when the caller should proceed with the dispatch.
+//   - false when pre-swarm has already fired for this swarm id.
+//
+// Side effects:
+//   - Mutates prefiredSwarmIDs under swarmLifecycleMu.
+func (d *DelegateTool) markPreSwarmFiring(swarmID string) bool {
+	d.swarmLifecycleMu.Lock()
+	defer d.swarmLifecycleMu.Unlock()
+	if d.prefiredSwarmIDs == nil {
+		d.prefiredSwarmIDs = make(map[string]bool)
+	}
+	if d.prefiredSwarmIDs[swarmID] {
+		return false
+	}
+	d.prefiredSwarmIDs[swarmID] = true
+	return true
+}
+
+// unmarkPreSwarmFiring clears the pre-swarm fired marker for
+// swarmID. Called from FlushSwarmLifecycle on swarm end and from the
+// pre-swarm dispatcher's failure path so a subsequent retry attempts
+// the gates again.
+//
+// Expected:
+//   - swarmID is the active swarm's id.
+//
+// Side effects:
+//   - Mutates prefiredSwarmIDs under swarmLifecycleMu.
+func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
+	d.swarmLifecycleMu.Lock()
+	defer d.swarmLifecycleMu.Unlock()
+	delete(d.prefiredSwarmIDs, swarmID)
 }
 
 // activeSwarmContext returns the swarm.Context installed on the lead

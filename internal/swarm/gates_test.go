@@ -242,17 +242,32 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 	})
 
 	Describe("GateError", func() {
-		It("renders a stable error string", func() {
+		It("renders a stable error string with the lifecycle point baked in", func() {
 			err := &swarm.GateError{
 				GateName: "post-member-plan-reviewer-result-schema",
 				GateKind: "builtin:result-schema",
+				When:     swarm.LifecyclePostMember,
 				SwarmID:  "planning-loop",
 				MemberID: "plan-reviewer",
 				Reason:   "schema validation failed: missing 'verdict'",
 			}
 
 			Expect(err.Error()).To(Equal(
-				`gate "post-member-plan-reviewer-result-schema" (builtin:result-schema) failed for member "plan-reviewer" in swarm "planning-loop": schema validation failed: missing 'verdict'`,
+				`gate "post-member-plan-reviewer-result-schema" (builtin:result-schema post-member plan-reviewer) failed for member "plan-reviewer" in swarm "planning-loop": schema validation failed: missing 'verdict'`,
+			))
+		})
+
+		It("renders a stable error string for swarm-level gates without a member", func() {
+			err := &swarm.GateError{
+				GateName: "pre-swarm-context-envelope",
+				GateKind: "builtin:result-schema",
+				When:     swarm.LifecyclePreSwarm,
+				SwarmID:  "planning-loop",
+				Reason:   "missing required key",
+			}
+
+			Expect(err.Error()).To(Equal(
+				`gate "pre-swarm-context-envelope" (builtin:result-schema pre) failed for swarm "planning-loop": missing required key`,
 			))
 		})
 
@@ -261,6 +276,131 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			err := &swarm.GateError{Cause: cause}
 
 			Expect(errors.Is(err, cause)).To(BeTrue())
+		})
+	})
+
+	Describe("MemberGatesFor / SwarmGatesFor", func() {
+		mixedGates := func() []swarm.GateSpec {
+			return []swarm.GateSpec{
+				{Name: "pre-swarm", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+				{Name: "post-swarm", Kind: "builtin:result-schema", When: swarm.LifecyclePostSwarm},
+				{Name: "pre-member-explorer", Kind: "builtin:result-schema", When: swarm.LifecyclePreMember, Target: "explorer"},
+				{Name: "post-member-explorer", Kind: "builtin:result-schema", When: swarm.LifecyclePostMember, Target: "explorer"},
+				{Name: "post-member-reviewer", Kind: "builtin:result-schema", When: swarm.LifecyclePostMember, Target: "plan-reviewer"},
+			}
+		}
+
+		It("returns only pre-swarm gates from SwarmGatesFor with when=pre", func() {
+			matched := swarm.SwarmGatesFor(mixedGates(), swarm.LifecyclePreSwarm)
+
+			Expect(matched).To(HaveLen(1))
+			Expect(matched[0].Name).To(Equal("pre-swarm"))
+		})
+
+		It("returns only post-swarm gates from SwarmGatesFor with when=post", func() {
+			matched := swarm.SwarmGatesFor(mixedGates(), swarm.LifecyclePostSwarm)
+
+			Expect(matched).To(HaveLen(1))
+			Expect(matched[0].Name).To(Equal("post-swarm"))
+		})
+
+		It("returns the pre-member match for the targeted member from MemberGatesFor", func() {
+			matched := swarm.MemberGatesFor(mixedGates(), swarm.LifecyclePreMember, "explorer")
+
+			Expect(matched).To(HaveLen(1))
+			Expect(matched[0].Name).To(Equal("pre-member-explorer"))
+		})
+
+		It("returns post-member matches scoped to the targeted member from MemberGatesFor", func() {
+			matched := swarm.MemberGatesFor(mixedGates(), swarm.LifecyclePostMember, "plan-reviewer")
+
+			Expect(matched).To(HaveLen(1))
+			Expect(matched[0].Name).To(Equal("post-member-reviewer"))
+		})
+
+		It("returns an empty slice when SwarmGatesFor is called with a member-level when value", func() {
+			matched := swarm.SwarmGatesFor(mixedGates(), swarm.LifecyclePostMember)
+
+			Expect(matched).NotTo(BeNil())
+			Expect(matched).To(BeEmpty())
+		})
+
+		It("returns an empty slice when MemberGatesFor is called with a swarm-level when value", func() {
+			matched := swarm.MemberGatesFor(mixedGates(), swarm.LifecyclePreSwarm, "explorer")
+
+			Expect(matched).NotTo(BeNil())
+			Expect(matched).To(BeEmpty())
+		})
+	})
+
+	Describe("Manifest gate validation rejects malformed lifecycle pairings", func() {
+		baseManifest := func() *swarm.Manifest {
+			return &swarm.Manifest{
+				SchemaVersion: swarm.SchemaVersionV1,
+				ID:            "planning-loop",
+				Lead:          "planner",
+				Members:       []string{"plan-reviewer"},
+			}
+		}
+
+		It("rejects pre-swarm gates that carry a non-empty target", func() {
+			m := baseManifest()
+			m.Harness.Gates = []swarm.GateSpec{
+				{Name: "pre-with-target", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm, Target: "explorer"},
+			}
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			var ve *swarm.ValidationError
+			Expect(errors.As(err, &ve)).To(BeTrue())
+			Expect(ve.Field).To(Equal("harness.gates[0].target"))
+			Expect(ve.Message).To(ContainSubstring("must not specify a target"))
+		})
+
+		It("rejects post-swarm gates that carry a non-empty target", func() {
+			m := baseManifest()
+			m.Harness.Gates = []swarm.GateSpec{
+				{Name: "post-with-target", Kind: "builtin:result-schema", When: swarm.LifecyclePostSwarm, Target: "explorer"},
+			}
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must not specify a target"))
+		})
+
+		It("rejects pre-member gates that omit the target", func() {
+			m := baseManifest()
+			m.Harness.Gates = []swarm.GateSpec{
+				{Name: "pre-member-empty-target", Kind: "builtin:result-schema", When: swarm.LifecyclePreMember},
+			}
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("requires a target"))
+		})
+
+		It("rejects gates with an unknown when value", func() {
+			m := baseManifest()
+			m.Harness.Gates = []swarm.GateSpec{
+				{Name: "weird-when", Kind: "builtin:result-schema", When: "midstream"},
+			}
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unknown lifecycle point"))
+		})
+
+		It("accepts pre-swarm gates with no target", func() {
+			m := baseManifest()
+			m.Harness.Gates = []swarm.GateSpec{
+				{Name: "pre", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+			}
+
+			Expect(m.Validate(nil)).To(Succeed())
 		})
 	})
 

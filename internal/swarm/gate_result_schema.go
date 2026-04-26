@@ -238,6 +238,7 @@ func newGateFailure(gate GateSpec, args GateArgs, reason string, cause error) *G
 	return &GateError{
 		GateName: gate.Name,
 		GateKind: gate.Kind,
+		When:     gate.When,
 		SwarmID:  args.SwarmID,
 		MemberID: args.MemberID,
 		Reason:   reason,
