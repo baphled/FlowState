@@ -104,12 +104,11 @@ var _ = Describe("Config", func() {
 			Expect(cfg.Providers.Anthropic.Model).To(Equal("claude-sonnet-4-20250514"))
 		})
 
-		It("sets data directories using DataDir()", func() {
+		It("sets DataDir using DataDir()", func() {
 			cfg := config.DefaultConfig()
 			expectedDataDir := config.DataDir()
 
 			Expect(cfg.DataDir).To(Equal(expectedDataDir))
-			Expect(cfg.SkillDir).To(Equal(filepath.Join(expectedDataDir, "skills")))
 		})
 
 		It("locates AgentDir under XDG_CONFIG rather than XDG_DATA", func() {
@@ -123,6 +122,14 @@ var _ = Describe("Config", func() {
 			Expect(cfg.AgentDir).To(Equal(filepath.Join(config.Dir(), "agents")))
 			Expect(cfg.AgentDir).NotTo(Equal(filepath.Join(config.DataDir(), "agents")),
 				"AgentDir must NOT be re-derived from DataDir — XDG_CONFIG is correct")
+		})
+
+		It("locates SkillDir under XDG_CONFIG rather than XDG_DATA", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.SkillDir).To(Equal(filepath.Join(config.Dir(), "skills")))
+			Expect(cfg.SkillDir).NotTo(Equal(filepath.Join(config.DataDir(), "skills")),
+				"SkillDir must NOT be re-derived from DataDir — XDG_CONFIG is correct")
 		})
 	})
 
