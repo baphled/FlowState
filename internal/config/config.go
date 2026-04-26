@@ -27,6 +27,15 @@ type AppConfig struct {
 	AgentDirs          []string                         `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDir           string                           `json:"skill_dir" yaml:"skill_dir"`
 	DataDir            string                           `json:"data_dir" yaml:"data_dir"`
+	// SchemaDir overrides the directory the swarm gate runner walks at
+	// startup to discover JSON Schema documents referenced by
+	// `builtin:result-schema` gates. Each file is registered under its
+	// basename (e.g. `review-verdict-v1.json` registers as
+	// `review-verdict-v1`). Empty (the default) resolves to
+	// `${ConfigDir}/schemas` via swarm.ResolveSchemaDir. File-based
+	// drop-ins override programmatic seeds (see swarm.SchemaDirLoader
+	// for the precedence rationale).
+	SchemaDir string `json:"schema_dir,omitempty" yaml:"schema_dir,omitempty"`
 	LogLevel           string                           `json:"log_level" yaml:"log_level"`
 	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
 	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
@@ -587,6 +596,7 @@ func DefaultConfig() *AppConfig {
 		},
 		AgentDir:        filepath.Join(Dir(), "agents"),
 		SkillDir:        filepath.Join(Dir(), "skills"),
+		SchemaDir:       filepath.Join(Dir(), "schemas"),
 		DataDir:         dataDir,
 		LogLevel:        "info",
 		DefaultAgent:    "executor",
@@ -869,6 +879,9 @@ func applyDefaults(cfg *AppConfig) {
 	if cfg.SkillDir == "" {
 		cfg.SkillDir = defaults.SkillDir
 	}
+	if cfg.SchemaDir == "" {
+		cfg.SchemaDir = defaults.SchemaDir
+	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = defaults.DataDir
 	}
@@ -1037,6 +1050,7 @@ func expandTilde(path string) string {
 func expandPaths(cfg *AppConfig) {
 	cfg.AgentDir = expandTilde(cfg.AgentDir)
 	cfg.SkillDir = expandTilde(cfg.SkillDir)
+	cfg.SchemaDir = expandTilde(cfg.SchemaDir)
 	cfg.DataDir = expandTilde(cfg.DataDir)
 	cfg.PlanLocation = expandTilde(cfg.PlanLocation)
 	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)

@@ -1,4 +1,4 @@
-// Package swarm — gate dispatch surface (T-swarm-3, Phase 1).
+// Package swarm — gate dispatch surface (T-swarm-3).
 //
 // The swarm spec §3 defines two gate scopes that fire around member
 // execution within a swarm run:
@@ -9,30 +9,33 @@
 //     post-member). Fire around each invocation of a specific target
 //     agent within the swarm.
 //
-// Phase 1 implements only one slice of that surface so the planning-loop
-// reference swarm has a working post-member gate without dragging in
-// the Extension API v1 dispatcher or the dynamic schema-discovery path.
+// Phase 2 (this revision) covers all four lifecycle points and adds the
+// directory-based JSON-Schema discovery path on top of the Phase 1
+// foundation.
 //
-// Phase 1 scope (this commit):
+// Current scope:
 //
 //   - One gate kind: "builtin:result-schema". Validates the most-recent
 //     value the target member wrote to the coordination_store against a
 //     JSON Schema named by GateSpec.SchemaRef. Schemas resolve through
-//     a small in-process registry (see RegisterSchema) — no on-disk
-//     discovery yet.
-//   - One lifecycle point: when=="post-member". Fires after the named
-//     target member's stream completes; gate.Target identifies the
-//     agent.
+//     an in-process registry (see RegisterSchema) seeded both
+//     programmatically (SeedDefaultSchemas) and from
+//     `${ConfigDir}/schemas/*.json` at app startup; the file-based pass
+//     wins on collision so operators can override built-in seeds with
+//     an explicit drop-in.
+//   - Four lifecycle points: when="pre" / when="post" (swarm-level,
+//     fired once around the member-iteration loop) and
+//     when="pre-member" / when="post-member" (member-level, fired
+//     around the targeted member's stream).
 //   - Pass/fail semantics. On fail, the gate runner returns a typed
-//     *GateError carrying the gate name, member id, and reason. The
-//     swarm runner halts; there is no retry or rollback.
+//     *GateError carrying the gate name, lifecycle point, and member
+//     id. The swarm runner halts fail-fast; there is no retry or
+//     rollback in Phase 2.
 //
-// Phase 2+ deferred (TODOs):
+// Phase 3+ deferred (TODOs):
 //
-//   - when: "pre" / "post" (swarm-level boundary gates).
-//   - when: "pre-member" (member-entry gate).
 //   - kind: "ext:*" — dispatch through the Extension API v1 backend.
-//   - Dynamic schema discovery from a `schemas/` directory.
+//     Needs the v1 spec to land first.
 //   - Retry / rollback semantics on gate failure (currently fail-fast).
 package swarm
 
@@ -48,11 +51,78 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 )
 
-// LifecyclePostMember is the only "when" value Phase 1 fires on. Future
-// phases will add LifecyclePre, LifecyclePost, and LifecyclePreMember
-// alongside this constant; keeping the names stable in the spec means
-// code that branches on the lifecycle stays obvious to read.
-const LifecyclePostMember = "post-member"
+// Lifecycle point constants. Each value matches the §3 spec string the
+// manifest uses for GateSpec.When; keeping them as named constants
+// keeps callers that branch on the lifecycle obvious to read and lets
+// the manifest validator pin the exact set of legal values.
+const (
+	// LifecyclePreSwarm fires ONCE at swarm start, before the first
+	// member runs. Typical use: validate the swarm context envelope
+	// (e.g. chain_prefix is non-empty, required coordination_store
+	// keys are seeded by the user before delegation).
+	LifecyclePreSwarm = "pre"
+
+	// LifecyclePostSwarm fires ONCE at swarm end, after the last
+	// member returns. Typical use: validate the final aggregated
+	// state across members.
+	LifecyclePostSwarm = "post"
+
+	// LifecyclePreMember fires before a specific member runs. Has a
+	// Target. Typical use: validate that prerequisite outputs from
+	// upstream members exist in coord-store.
+	LifecyclePreMember = "pre-member"
+
+	// LifecyclePostMember fires after a specific member's stream
+	// completes. Has a Target. Typical use: validate the member's
+	// terminal output against a JSON Schema (Phase 1's seed case).
+	LifecyclePostMember = "post-member"
+)
+
+// legalLifecyclePoints is the canonical set of "when" values the
+// manifest validator and the runner accept. Lookup-by-map keeps the
+// validate path O(1) without re-listing the constants.
+var legalLifecyclePoints = map[string]struct{}{
+	LifecyclePreSwarm:   {},
+	LifecyclePostSwarm:  {},
+	LifecyclePreMember:  {},
+	LifecyclePostMember: {},
+}
+
+// IsSwarmLifecyclePoint reports whether when names a swarm-level
+// (boundary) lifecycle point. Swarm-level gates fire once per swarm
+// run and MUST NOT carry a Target; the manifest validator uses this
+// helper to enforce that rule, and the runner uses it to know whether
+// to fan out by member id.
+//
+// Expected:
+//   - when is the GateSpec.When string from the manifest.
+//
+// Returns:
+//   - true when when is "pre" or "post".
+//   - false otherwise (including the empty string and unknown values).
+//
+// Side effects:
+//   - None.
+func IsSwarmLifecyclePoint(when string) bool {
+	return when == LifecyclePreSwarm || when == LifecyclePostSwarm
+}
+
+// IsMemberLifecyclePoint reports whether when names a member-level
+// (per-target) lifecycle point. Member-level gates require a non-empty
+// Target so the runner knows which member's stream to wrap.
+//
+// Expected:
+//   - when is the GateSpec.When string from the manifest.
+//
+// Returns:
+//   - true when when is "pre-member" or "post-member".
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func IsMemberLifecyclePoint(when string) bool {
+	return when == LifecyclePreMember || when == LifecyclePostMember
+}
 
 // DefaultMemberOutputKey is the coord-store sub-key the result-schema
 // runner reads when the manifest does not pin one explicitly. The
@@ -123,11 +193,17 @@ type GateError struct {
 	// log filters can group failures by family.
 	GateKind string
 
+	// When is the lifecycle point at which the gate fired ("pre",
+	// "post", "pre-member", "post-member"). Surfaced on the error so
+	// log readers can tell a swarm-boundary failure from a per-member
+	// failure without inspecting the manifest.
+	When string
+
 	// SwarmID identifies the swarm run that produced the failure.
 	SwarmID string
 
 	// MemberID is the agent whose output failed validation. Empty for
-	// swarm-level (pre/post) gates once those land in Phase 2.
+	// swarm-level ("pre" / "post") gates because those have no target.
 	MemberID string
 
 	// Reason is a short human-readable explanation of the failure
@@ -142,9 +218,11 @@ type GateError struct {
 	Cause error
 }
 
-// Error renders the structured fields in a stable "gate <name> (<kind>)
-// failed for member <id> in swarm <id>: <reason>" shape so test
-// matchers can pin the full message format.
+// Error renders the structured fields in a stable "gate <name> (<when>
+// [<target>]) failed for <scope>: <reason>" shape so test matchers can
+// pin the full message format. The lifecycle point is included on the
+// front so "post-member explorer" and "pre-swarm" failures are
+// distinguishable at a glance in logs and the CLI failure surface.
 //
 // Returns:
 //   - The formatted error string.
@@ -155,11 +233,17 @@ func (e *GateError) Error() string {
 	if e == nil {
 		return "<nil GateError>"
 	}
+	descriptor := e.GateKind
+	if e.When != "" && e.MemberID != "" {
+		descriptor = fmt.Sprintf("%s %s %s", e.GateKind, e.When, e.MemberID)
+	} else if e.When != "" {
+		descriptor = fmt.Sprintf("%s %s", e.GateKind, e.When)
+	}
 	scope := fmt.Sprintf("swarm %q", e.SwarmID)
 	if e.MemberID != "" {
 		scope = fmt.Sprintf("member %q in swarm %q", e.MemberID, e.SwarmID)
 	}
-	return fmt.Sprintf("gate %q (%s) failed for %s: %s", e.GateName, e.GateKind, scope, e.Reason)
+	return fmt.Sprintf("gate %q (%s) failed for %s: %s", e.GateName, descriptor, scope, e.Reason)
 }
 
 // Unwrap exposes the underlying cause so errors.Is / errors.As work
@@ -255,6 +339,7 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 		return &GateError{
 			GateName: gate.Name,
 			GateKind: gate.Kind,
+			When:     gate.When,
 			SwarmID:  args.SwarmID,
 			MemberID: args.MemberID,
 			Reason:   fmt.Sprintf("no runner registered for kind %q", gate.Kind),
@@ -351,11 +436,9 @@ func ClearSchemasForTest() {
 }
 
 // PostMemberGatesFor returns the gates from spec slice whose When is
-// "post-member" and whose Target matches memberID. Helpful both to
-// the swarm runner (which dispatches the matched set after a member
-// stream completes) and to tests that pin the filter behaviour
-// without going through the full runner. The returned slice is a new
-// allocation so callers can iterate it without aliasing the manifest.
+// "post-member" and whose Target matches memberID. Thin wrapper over
+// MemberGatesFor preserved for backwards compatibility with callers
+// that pre-date the multi-lifecycle expansion.
 //
 // Expected:
 //   - gates may be nil or empty; an empty slice is returned in that
@@ -368,9 +451,63 @@ func ClearSchemasForTest() {
 // Side effects:
 //   - None.
 func PostMemberGatesFor(gates []GateSpec, memberID string) []GateSpec {
+	return MemberGatesFor(gates, LifecyclePostMember, memberID)
+}
+
+// MemberGatesFor returns the gates whose When matches when (a member-
+// level lifecycle point) and whose Target matches memberID. Used by
+// the swarm runner to filter the manifest's gate slice down to the
+// set firing around a specific member's stream.
+//
+// Expected:
+//   - gates may be nil or empty; an empty slice is returned in that
+//     case.
+//   - when is "pre-member" or "post-member"; passing any other value
+//     yields an empty slice (no member-level dispatch happens for the
+//     swarm-level points).
+//   - memberID is the agent id the runner is wrapping.
+//
+// Returns:
+//   - A new slice of matched gates; never nil.
+//
+// Side effects:
+//   - None.
+func MemberGatesFor(gates []GateSpec, when, memberID string) []GateSpec {
 	out := make([]GateSpec, 0)
+	if !IsMemberLifecyclePoint(when) {
+		return out
+	}
 	for _, g := range gates {
-		if g.When == LifecyclePostMember && g.Target == memberID {
+		if g.When == when && g.Target == memberID {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// SwarmGatesFor returns the gates whose When matches when (a swarm-
+// level lifecycle point). Swarm-level gates do not carry a Target —
+// the manifest validator rejects manifests that violate that rule —
+// so a single filter on When suffices.
+//
+// Expected:
+//   - gates may be nil or empty; an empty slice is returned in that
+//     case.
+//   - when is "pre" or "post"; passing any other value yields an
+//     empty slice.
+//
+// Returns:
+//   - A new slice of matched gates; never nil.
+//
+// Side effects:
+//   - None.
+func SwarmGatesFor(gates []GateSpec, when string) []GateSpec {
+	out := make([]GateSpec, 0)
+	if !IsSwarmLifecyclePoint(when) {
+		return out
+	}
+	for _, g := range gates {
+		if g.When == when {
 			out = append(out, g)
 		}
 	}

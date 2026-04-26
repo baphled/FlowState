@@ -389,34 +389,117 @@ func (m *Manifest) validateMembers(v Validator) error {
 	return nil
 }
 
-// validateGates enforces the kind-prefix rule on every gate. The
-// loader is intentionally lenient about the rest of the gate body
-// (when/target/schema_ref) — those are the dispatch surface's
-// responsibility (T-swarm-3 for builtins, Extension API v1 for ext).
+// validateGates enforces the kind-prefix and lifecycle rules on every
+// gate. The kind family selects the dispatcher (T-swarm-3 for
+// builtins, Extension API v1 for ext); the lifecycle rules pin the
+// pairing between GateSpec.When and GateSpec.Target so the runner can
+// dispatch unambiguously without re-validating manifest shape at
+// firing time.
+//
+// Lifecycle rules (T-swarm-3 Phase 2):
+//   - When may be empty (legacy, treated as "pre" by the runner) or
+//     one of the four §3 values: "pre" / "post" / "pre-member" /
+//     "post-member". Unknown values are rejected at load time so the
+//     activity-pane error surface stays terse.
+//   - Swarm-level points ("pre" / "post") MUST NOT carry a Target —
+//     they fire once at swarm boundaries and have no per-member fan-
+//     out. A non-empty Target paired with a swarm-level When is a
+//     manifest authoring mistake; rejecting it at load time prevents
+//     the runner from silently fanning out a swarm gate per member.
+//   - Member-level points ("pre-member" / "post-member") MUST carry a
+//     Target so the runner knows which member's stream to wrap.
 //
 // Expected:
 //   - m is a non-nil Manifest pointer.
 //
 // Returns:
-//   - nil when every gate has a non-empty name and a kind starting
-//     with "builtin:" or "ext:".
+//   - nil when every gate has a non-empty name, a kind starting with
+//     "builtin:" or "ext:", and a When/Target pairing that matches
+//     the lifecycle rules above.
 //   - A *ValidationError naming the first failing gate field otherwise.
 //
 // Side effects:
 //   - None.
 func (m *Manifest) validateGates() error {
 	for i, gate := range m.Harness.Gates {
-		if strings.TrimSpace(gate.Name) == "" {
-			return &ValidationError{
-				Field:   fmt.Sprintf("harness.gates[%d].name", i),
-				Message: "required",
-			}
+		if err := validateGateScalars(i, gate); err != nil {
+			return err
 		}
-		if !strings.HasPrefix(gate.Kind, gateKindBuiltinPrefix) && !strings.HasPrefix(gate.Kind, gateKindExtPrefix) {
-			return &ValidationError{
-				Field:   fmt.Sprintf("harness.gates[%d].kind", i),
-				Message: fmt.Sprintf("must start with %q or %q (got %q)", gateKindBuiltinPrefix, gateKindExtPrefix, gate.Kind),
-			}
+		if err := validateGateLifecycle(i, gate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateGateScalars enforces the non-lifecycle invariants on a
+// single gate (non-empty name, valid kind prefix). Pulled into a
+// helper so validateGates' loop body stays focused on the per-gate
+// pipeline.
+//
+// Expected:
+//   - i is the gate's index in harness.gates (used only for error
+//     field annotation).
+//   - gate is the GateSpec being validated.
+//
+// Returns:
+//   - nil when name and kind pass their checks.
+//   - A *ValidationError naming the first failing field otherwise.
+//
+// Side effects:
+//   - None.
+func validateGateScalars(i int, gate GateSpec) error {
+	if strings.TrimSpace(gate.Name) == "" {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].name", i),
+			Message: "required",
+		}
+	}
+	if !strings.HasPrefix(gate.Kind, gateKindBuiltinPrefix) && !strings.HasPrefix(gate.Kind, gateKindExtPrefix) {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].kind", i),
+			Message: fmt.Sprintf("must start with %q or %q (got %q)", gateKindBuiltinPrefix, gateKindExtPrefix, gate.Kind),
+		}
+	}
+	return nil
+}
+
+// validateGateLifecycle enforces the When/Target pairing rules per
+// the package-level lifecycle constants. An empty When is permitted
+// (the runner defaults to "pre" by precedent — see GateSpec.When
+// godoc); any other unknown value is rejected so the runner does not
+// have to fall back at firing time.
+//
+// Expected:
+//   - i is the gate's index in harness.gates.
+//   - gate is the GateSpec being validated.
+//
+// Returns:
+//   - nil when the lifecycle / target pairing is legal.
+//   - A *ValidationError naming the offending field otherwise.
+//
+// Side effects:
+//   - None.
+func validateGateLifecycle(i int, gate GateSpec) error {
+	if gate.When == "" {
+		return nil
+	}
+	if _, ok := legalLifecyclePoints[gate.When]; !ok {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].when", i),
+			Message: fmt.Sprintf("unknown lifecycle point %q (expected one of \"pre\" / \"post\" / \"pre-member\" / \"post-member\")", gate.When),
+		}
+	}
+	if IsSwarmLifecyclePoint(gate.When) && strings.TrimSpace(gate.Target) != "" {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].target", i),
+			Message: fmt.Sprintf("swarm-level gate (when=%q) must not specify a target (got %q)", gate.When, gate.Target),
+		}
+	}
+	if IsMemberLifecyclePoint(gate.When) && strings.TrimSpace(gate.Target) == "" {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].target", i),
+			Message: fmt.Sprintf("member-level gate (when=%q) requires a target", gate.When),
 		}
 	}
 	return nil
