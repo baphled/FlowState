@@ -533,12 +533,17 @@ func DefaultConfig() *AppConfig {
 
 // defaultToolCapableModels returns the curated shortlist of model-name
 // patterns FlowState ships with. These are the models we have direct
-// production evidence of emitting structured tool calls reliably under
-// the current FlowState system prompt + provider templates. Operators
-// can extend the list via cfg.ToolCapableModels in config.yaml.
+// production evidence (citation-backed in the KB's "Local Model Matrix"
+// note) of emitting structured tool calls reliably under the current
+// FlowState system prompt + provider templates. Operators can extend
+// the list via cfg.ToolCapableModels in config.yaml.
 //
-// The shortlist deliberately omits models with mixed/unknown evidence
-// (e.g. `gpt-oss:20b-4k`, `llama3.2`) — adding a new model is opt-in.
+// Evidence summary for the local-model entries:
+//   - qwen3:*       — BFCL-v3 72.4 + RULER 99.2 @32K (Qwen3-30B-A3B-Thinking
+//                     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER).
+//   - devstral:latest — SWE-Bench Verified 53.6 (Mistral / Devstral release).
+//   - llama3.1:latest — BFCL 0.761 + RULER 87.4 @32K (llm-stats, NVIDIA).
+//   - llama3.3:latest — v2 BFCL ~77 (Galileo); reasoning > FC.
 func defaultToolCapableModels() []string {
 	return []string{
 		"claude-*",
@@ -547,7 +552,6 @@ func defaultToolCapableModels() []string {
 		"o1*",
 		"o3*",
 		"qwen3:*",
-		"gpt-oss:20b",
 		"devstral:latest",
 		"llama3.1:latest",
 		"llama3.3:latest",
@@ -555,18 +559,40 @@ func defaultToolCapableModels() []string {
 }
 
 // defaultToolIncapableModels returns the curated deny list of models
-// known (per the KB investigations cited on AppConfig.ToolCapableModels)
-// to silently emit zero tool calls under FlowState's current prompts and
-// provider templates. Deny-list match takes precedence over allow-list
-// match, so a future operator who allows `qwen2.5-coder:14b` via
-// ToolCapableModels still trips this guard until they explicitly remove
-// the deny entry.
+// known (per the KB investigations cited on AppConfig.ToolCapableModels
+// and the "Local Model Matrix" note) to either silently emit zero tool
+// calls or to trip Ollama-template bugs that intersect FlowState's
+// 4–12-tool-calls-per-turn pattern. Deny-list match takes precedence
+// over allow-list match, so a future operator who allows
+// `qwen2.5-coder:14b` via ToolCapableModels still trips this guard
+// until they explicitly remove the deny entry.
+//
+// Evidence summary:
+//   - llama3.2*        — KB: planner produced zero tool calls when failover
+//                        landed here (Bug Fixes / Planner Harness Rescue).
+//   - qwen2.5-coder*   — KB: broken on clean input under current Ollama
+//                        template (Investigations / Non-Anthropic Provider
+//                        Stream Termination).
+//   - glm-4.7          — KB: returns prose instead of structured tool calls
+//                        (Investigations / GLM Delegation Failure).
+//   - mistral:7b       — RULER 75.4 @32K → 13.8 @128K (effective ctx ≪32K);
+//                        pre-tool-format generation, FC is a prompt hack.
+//   - gpt-oss:20b*     — Five open Ollama bugs: no parallel tool calls
+//                        (#12159), thinking leaks into tool calls (#12203),
+//                        malformed tool names (#11704), 500 on call (#11800),
+//                        RAM blowup (#13401). Intersects FlowState's
+//                        multi-tool-per-turn pattern hard.
+//   - deepseek-r1:*    — Ollama template-broken for tools per #10935 / #8517.
+//                        The community fork lucasmg/...-tool-true exists but
+//                        has no published bench — local-bench before adopting.
 func defaultToolIncapableModels() []string {
 	return []string{
 		"llama3.2*",
 		"qwen2.5-coder*",
 		"glm-4.7",
 		"mistral:7b",
+		"gpt-oss:20b*",
+		"deepseek-r1:*",
 	}
 }
 
