@@ -228,18 +228,64 @@ type RefreshReport []RefreshEntry
 //   - Creates destDir if it does not exist.
 //   - Copies each .md file from srcFS to destDir only when the destination file does not already exist.
 func SeedAgentsDir(srcFS fs.FS, destDir string) error {
-	agentsDir, err := fs.Sub(srcFS, "agents")
+	return seedSubdir(srcFS, "agents", ".md", destDir)
+}
+
+// SeedSwarmsDir copies all *.yml files from the source filesystem's
+// "swarms" subdirectory into destDir. Files that already exist in
+// destDir are skipped so user-edited swarm manifests survive a
+// FlowState upgrade — exactly the contract SeedAgentsDir provides for
+// agent manifests. The two seeders share their plumbing through
+// seedSubdir below.
+//
+// Expected:
+//   - srcFS is a valid fs.FS containing a "swarms" subdirectory with .yml files.
+//   - destDir is a writable destination directory path (created if missing).
+//
+// Returns:
+//   - An error if the source has no swarms directory or if file operations fail.
+//   - nil on success.
+//
+// Side effects:
+//   - Creates destDir if it does not exist.
+//   - Copies each .yml file from srcFS to destDir only when the
+//     destination file does not already exist.
+func SeedSwarmsDir(srcFS fs.FS, destDir string) error {
+	return seedSubdir(srcFS, "swarms", ".yml", destDir)
+}
+
+// seedSubdir is the shared implementation behind SeedAgentsDir and
+// SeedSwarmsDir. Pulled out so the two callers stay byte-equivalent
+// in their semantics: skip-on-existing, log-friendly error wrapping,
+// and matching directory-creation behaviour.
+//
+// Expected:
+//   - srcFS is a valid fs.FS containing the named subdirectory.
+//   - subdir is the literal directory name inside srcFS (e.g. "agents").
+//   - ext is the file extension to copy, with the leading dot (e.g. ".md").
+//   - destDir is a writable destination directory path.
+//
+// Returns:
+//   - A wrapped error naming subdir on missing-source / IO failure.
+//   - nil on success.
+//
+// Side effects:
+//   - Creates destDir if it does not exist.
+//   - Copies each matching file from srcFS to destDir only when the
+//     destination file does not already exist.
+func seedSubdir(srcFS fs.FS, subdir, ext, destDir string) error {
+	sourceDir, err := fs.Sub(srcFS, subdir)
 	if err != nil {
-		return fmt.Errorf("agents directory not found in source: %w", err)
+		return fmt.Errorf("%s directory not found in source: %w", subdir, err)
 	}
 
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	entries, err := fs.ReadDir(agentsDir, ".")
+	entries, err := fs.ReadDir(sourceDir, ".")
 	if err != nil {
-		return fmt.Errorf("reading source agents directory: %w", err)
+		return fmt.Errorf("reading source %s directory: %w", subdir, err)
 	}
 
 	for _, entry := range entries {
@@ -248,14 +294,13 @@ func SeedAgentsDir(srcFS fs.FS, destDir string) error {
 		}
 
 		filename := entry.Name()
-		ext := filepath.Ext(filename)
-		if ext != ".md" {
+		if filepath.Ext(filename) != ext {
 			continue
 		}
 
 		destPath := filepath.Join(destDir, filename)
 
-		if err := copySingleFile(agentsDir, filename, destPath); err != nil {
+		if err := copySingleFile(sourceDir, filename, destPath); err != nil {
 			return err
 		}
 	}
