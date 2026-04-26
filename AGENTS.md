@@ -343,6 +343,39 @@ Group related constants with a single leading comment for the block. Individual 
 
 ## Testing
 
+### Test File Organisation (MANDATORY)
+
+**One test file per source file in a package.** A source file `foo.go`
+maps to AT MOST two test files in the same directory:
+
+- `foo_test.go` — external tests (`package foo_test`). The default home
+  for everything that exercises only the public API.
+- `foo_internal_test.go` — internal tests (`package foo`). Use ONLY when
+  the test must reach into unexported helpers and adding an export shim
+  would force a wider surface than the test needs.
+
+Per-aspect splits (`foo_wiring_test.go`, `foo_thresholds_test.go`,
+`foo_smoke_test.go`) are **not allowed** as a way to grow tests.
+Group every spec for `foo.go` into the canonical pair above using
+multiple `Describe(...)` blocks at file scope. Each `Describe` block
+covers one logical surface; sibling `Describe`s within the same file
+cover related surfaces of the same source file.
+
+**Exceptions** that justify a *third* file:
+
+- **Package-level integration tests** that span >1 source file in the
+  package: name them `<topic>_integration_test.go` and label them
+  `Label("integration")` so `make bdd` filters them.
+- **Cross-package smoke tests** that exercise wiring through the
+  binary: live under `tools/smoke/<topic>/` as runnable `main`
+  packages, not `_test.go` files.
+- **BDD acceptance scenarios**: live under `features/` as Gherkin +
+  step files, not in the package's `_test.go`.
+
+If you find yourself reaching for a fifth filename for the same source
+file, that's a smell — the source file is doing too much. Split the
+production code first; the per-source convention falls out for free.
+
 ### BDD Tags
 
 ```gherkin

@@ -1514,19 +1514,64 @@ func (a *App) PersistApprovedPlan(chainID string, coordinationStore coordination
 		return fmt.Errorf("getting plan: %w", err)
 	}
 
-	planFile := plan.File{
-		ID:        chainID,
-		Title:     "Plan " + chainID,
-		Status:    "approved",
-		CreatedAt: time.Now(),
-		TLDR:      string(planData),
-	}
+	planFile := buildPersistedPlanFile(chainID, string(planData))
 
 	if err := a.Store.Create(planFile); err != nil {
 		return fmt.Errorf("persisting plan: %w", err)
 	}
 
 	return nil
+}
+
+// buildPersistedPlanFile constructs the plan.File the auto-persist path
+// writes to disk. Mirrors the agent-driven plan_write tool's parser path
+// (plan.ParseFile + plan.TasksFromPlanText) so the on-disk file looks the
+// same regardless of which entry point produced it. Without re-parsing,
+// the older code dumped the raw markdown into TLDR — the persisted file
+// then had nested frontmatter (outer from this builder, inner from the
+// original payload) and the structured task list was lost.
+//
+// Falls back gracefully when the markdown is missing frontmatter: the
+// plan still lands on disk with chainID-derived defaults so the auto-
+// persist path never silently drops an approved plan, just renders it
+// less richly. Tasks are extracted independently of the frontmatter
+// parse via TasksFromPlanText, which scans the markdown body — so even
+// malformed frontmatter still yields a non-empty Tasks slice when the
+// "## Tasks" / "### Task N:" sections are well-formed.
+func buildPersistedPlanFile(chainID, planMarkdown string) plan.File {
+	now := time.Now().UTC()
+	defaults := plan.File{
+		ID:        chainID,
+		Title:     "Plan " + chainID,
+		Status:    "approved",
+		CreatedAt: now,
+	}
+
+	parsed, err := plan.ParseFile(planMarkdown)
+	if err != nil || parsed == nil {
+		// Frontmatter-less or malformed payload: fall back to defaults
+		// but keep TLDR pointing at the raw markdown so the operator
+		// can still read the original plan body. Tasks parser still
+		// runs against the raw markdown — see below.
+		defaults.TLDR = planMarkdown
+		defaults.Tasks = plan.TasksFromPlanText(planMarkdown)
+		return defaults
+	}
+
+	// Promote the parsed frontmatter onto the persisted File. Use the
+	// chainID-derived defaults only when the source omitted the field.
+	if strings.TrimSpace(parsed.ID) == "" {
+		parsed.ID = defaults.ID
+	}
+	if strings.TrimSpace(parsed.Title) == "" {
+		parsed.Title = defaults.Title
+	}
+	parsed.Status = "approved"
+	if parsed.CreatedAt.IsZero() {
+		parsed.CreatedAt = now
+	}
+	parsed.Tasks = plan.TasksFromPlanText(planMarkdown)
+	return *parsed
 }
 
 // buildAgentsFileLoader loads AGENTS.md from the global configuration directory and the current working directory.
