@@ -655,6 +655,43 @@ func createCoordinationStore(cfg *config.AppConfig) coordination.Store {
 	return coordination.NewMemoryStore()
 }
 
+// wrapCoordinationStoreWithApproval decorates a coordination.Store so that
+// every write to `<chainID>/review` carrying an APPROVE verdict triggers
+// an asynchronous flush of `<chainID>/plan` to the App's plan store on
+// disk. Acts as a belt-and-braces backup behind the agent-facing
+// plan_write tool: a plan-writer agent that forgets to call plan_write
+// still ends up with a persisted plan on disk because the post-review
+// approval write here drives it.
+//
+// Expected:
+//   - inner is a non-nil coordination.Store.
+//   - a is the App whose Store is the destination plan.Store. May be nil
+//     in test fixtures; in that case the wrapper short-circuits to a
+//     no-op callback so wiring stays uniform.
+//
+// Returns:
+//   - A coordination.Store wrapping inner with the approval observer
+//     installed.
+//
+// Side effects:
+//   - None at construction; the inner Set hot path is unchanged for
+//     non-review writes.
+func wrapCoordinationStoreWithApproval(inner coordination.Store, a *App) coordination.Store {
+	if inner == nil {
+		return nil
+	}
+	if a == nil {
+		return inner
+	}
+	cb := func(chainID string, store coordination.Store) {
+		if err := a.PersistApprovedPlan(chainID, store); err != nil {
+			slog.Debug("post-approval plan persistence skipped",
+				"chain_id", chainID, "reason", err)
+		}
+	}
+	return coordination.NewPersistingStore(inner, cb)
+}
+
 // bindCompressionManifest rebinds the summariser adapter to the default
 // manifest after createEngine returns. Without this step the L2 category
 // router defaults every call to "quick" even when the agent's manifest
@@ -1063,7 +1100,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		a.backgroundManager.WithSessionManager(a.sessionManager)
 	}
 	bgManager := a.backgroundManager
-	coordinationStore := createCoordinationStore(a.Config)
+	coordinationStore := wrapCoordinationStoreWithApproval(createCoordinationStore(a.Config), a)
 
 	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
 
@@ -1128,7 +1165,7 @@ func (a *App) wireCoordinationToolIfDeclared(
 	}
 	store := existingStore
 	if store == nil {
-		store = createCoordinationStore(a.Config)
+		store = wrapCoordinationStoreWithApproval(createCoordinationStore(a.Config), a)
 	}
 	eng.AddTool(coordinationtool.New(store))
 }
