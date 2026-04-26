@@ -2,259 +2,158 @@ package context_test
 
 import (
 	"encoding/json"
-	"strings"
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
 )
 
-// TestCompactionSummary_RoundTrip_PreservesEveryField marshals a fully
-// populated CompactionSummary to JSON, unmarshals it back, and asserts
-// every field survives the trip byte-for-byte (modulo time precision,
-// which we normalise to UTC RFC3339Nano via time.Equal).
-func TestCompactionSummary_RoundTrip_PreservesEveryField(t *testing.T) {
-	t.Parallel()
-
-	original := contextpkg.CompactionSummary{
-		Intent:             "implement auto-compaction L2 pipeline",
-		KeyDecisions:       []string{"use LLM summariser", "unit-aligned boundaries"},
-		Errors:             []string{"initial prompt leaked tool names", "token budget exceeded once"},
-		NextSteps:          []string{"wire SummariserResolver", "persist summaries to disk"},
-		FilesToRestore:     []string{"/abs/path/a.go", "/abs/path/b.go"},
-		CompactedAt:        time.Date(2026, 4, 14, 10, 30, 45, 123456789, time.UTC),
-		OriginalTokenCount: 12000,
-		SummaryTokenCount:  850,
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var decoded contextpkg.CompactionSummary
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if decoded.Intent != original.Intent {
-		t.Errorf("Intent: got %q want %q", decoded.Intent, original.Intent)
-	}
-	if !equalStrings(decoded.KeyDecisions, original.KeyDecisions) {
-		t.Errorf("KeyDecisions: got %v want %v", decoded.KeyDecisions, original.KeyDecisions)
-	}
-	if !equalStrings(decoded.Errors, original.Errors) {
-		t.Errorf("Errors: got %v want %v", decoded.Errors, original.Errors)
-	}
-	if !equalStrings(decoded.NextSteps, original.NextSteps) {
-		t.Errorf("NextSteps: got %v want %v", decoded.NextSteps, original.NextSteps)
-	}
-	if !equalStrings(decoded.FilesToRestore, original.FilesToRestore) {
-		t.Errorf("FilesToRestore: got %v want %v", decoded.FilesToRestore, original.FilesToRestore)
-	}
-	// CompactedAt is intentionally server-only (json:"-") — see C3. It
-	// must NOT survive the JSON round-trip; the decoded value is the
-	// zero time. Callers (AutoCompactor.Compact) server-stamp it after
-	// unmarshal.
-	if !decoded.CompactedAt.IsZero() {
-		t.Errorf("CompactedAt: got %v; expected zero (server-only field)", decoded.CompactedAt)
-	}
-	if decoded.OriginalTokenCount != original.OriginalTokenCount {
-		t.Errorf("OriginalTokenCount: got %d want %d", decoded.OriginalTokenCount, original.OriginalTokenCount)
-	}
-	if decoded.SummaryTokenCount != original.SummaryTokenCount {
-		t.Errorf("SummaryTokenCount: got %d want %d", decoded.SummaryTokenCount, original.SummaryTokenCount)
-	}
-}
-
-// TestCompactionSummary_RoundTrip_ZeroValue documents the zero-value
-// behaviour explicitly. Go's encoding/json emits nil slices as JSON null,
-// and decoding JSON null into a []string yields nil (not an empty slice).
-// We pin that behaviour here so a later refactor to `omitempty` or to
-// empty-slice initialisation is a visible, reviewed change.
-func TestCompactionSummary_RoundTrip_ZeroValue(t *testing.T) {
-	t.Parallel()
-
-	var original contextpkg.CompactionSummary
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	// CompactedAt is server-only (json:"-") and never appears in the
-	// wire encoding. Nil slices render as null.
-	want := `{"intent":"","key_decisions":null,"errors":null,"next_steps":null,` +
-		`"files_to_restore":null,` +
-		`"original_token_count":0,"summary_token_count":0}`
-	if string(data) != want {
-		t.Errorf("zero-value JSON mismatch\n got: %s\nwant: %s", string(data), want)
-	}
-
-	var decoded contextpkg.CompactionSummary
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	if decoded.Intent != "" {
-		t.Errorf("Intent: got %q want empty", decoded.Intent)
-	}
-	if decoded.KeyDecisions != nil {
-		t.Errorf("KeyDecisions: got %v want nil", decoded.KeyDecisions)
-	}
-	if decoded.Errors != nil {
-		t.Errorf("Errors: got %v want nil", decoded.Errors)
-	}
-	if decoded.NextSteps != nil {
-		t.Errorf("NextSteps: got %v want nil", decoded.NextSteps)
-	}
-	if decoded.FilesToRestore != nil {
-		t.Errorf("FilesToRestore: got %v want nil", decoded.FilesToRestore)
-	}
-	if !decoded.CompactedAt.IsZero() {
-		t.Errorf("CompactedAt: got %v want zero", decoded.CompactedAt)
-	}
-	if decoded.OriginalTokenCount != 0 {
-		t.Errorf("OriginalTokenCount: got %d want 0", decoded.OriginalTokenCount)
-	}
-	if decoded.SummaryTokenCount != 0 {
-		t.Errorf("SummaryTokenCount: got %d want 0", decoded.SummaryTokenCount)
-	}
-}
-
-// TestCompactionSummary_RoundTrip_EmptySlicesDistinctFromNil proves that
-// explicitly-initialised empty slices round-trip as JSON arrays (not null)
-// — this is the shape the summariser will actually produce when a range
-// has, e.g., no errors. Pinning it prevents accidental regressions from
-// future `omitempty` additions.
-func TestCompactionSummary_RoundTrip_EmptySlicesDistinctFromNil(t *testing.T) {
-	t.Parallel()
-
-	original := contextpkg.CompactionSummary{
-		Intent:         "nothing to decide",
-		KeyDecisions:   []string{},
-		Errors:         []string{},
-		NextSteps:      []string{},
-		FilesToRestore: []string{},
-		CompactedAt:    time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	// Empty slices must appear as [] not null.
-	for _, key := range []string{
-		`"key_decisions":[]`,
-		`"errors":[]`,
-		`"next_steps":[]`,
-		`"files_to_restore":[]`,
-	} {
-		if !strings.Contains(string(data), key) {
-			t.Errorf("expected %s in JSON, got %s", key, string(data))
+// CompactionSummary specs lock in the JSON wire-shape contract so an
+// upstream LLM, an on-disk replay log, and downstream subscribers all
+// agree on the schema.
+//
+// Highlights:
+//   - Round-trip preserves every field except CompactedAt, which is
+//     server-only (json:"-") per C3 — the engine stamps it after
+//     unmarshal. Any LLM-emitted compacted_at value is silently ignored
+//     (regression covered in auto_compaction_compactedat_test).
+//   - Empty slices encode as [] (not null); nil slices encode as null.
+//     Pinning both shapes prevents accidental omitempty/init regressions.
+//   - Forward-compat: unknown JSON keys are silently ignored. Switching
+//     to DisallowUnknownFields would be a visible breaking change.
+//   - Malformed JSON returns an error rather than panicking.
+var _ = Describe("CompactionSummary JSON wire contract", func() {
+	It("round-trips every field except the server-only CompactedAt", func() {
+		original := contextpkg.CompactionSummary{
+			Intent:             "implement auto-compaction L2 pipeline",
+			KeyDecisions:       []string{"use LLM summariser", "unit-aligned boundaries"},
+			Errors:             []string{"initial prompt leaked tool names", "token budget exceeded once"},
+			NextSteps:          []string{"wire SummariserResolver", "persist summaries to disk"},
+			FilesToRestore:     []string{"/abs/path/a.go", "/abs/path/b.go"},
+			CompactedAt:        time.Date(2026, 4, 14, 10, 30, 45, 123456789, time.UTC),
+			OriginalTokenCount: 12000,
+			SummaryTokenCount:  850,
 		}
-	}
 
-	var decoded contextpkg.CompactionSummary
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+		data, err := json.Marshal(original)
+		Expect(err).NotTo(HaveOccurred())
 
-	// Decoded empty slices must be non-nil, length 0.
-	for name, got := range map[string][]string{
-		"KeyDecisions":   decoded.KeyDecisions,
-		"Errors":         decoded.Errors,
-		"NextSteps":      decoded.NextSteps,
-		"FilesToRestore": decoded.FilesToRestore,
-	} {
-		if got == nil {
-			t.Errorf("%s: decoded as nil, expected empty non-nil slice", name)
+		var decoded contextpkg.CompactionSummary
+		Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+
+		Expect(decoded.Intent).To(Equal(original.Intent))
+		Expect(decoded.KeyDecisions).To(Equal(original.KeyDecisions))
+		Expect(decoded.Errors).To(Equal(original.Errors))
+		Expect(decoded.NextSteps).To(Equal(original.NextSteps))
+		Expect(decoded.FilesToRestore).To(Equal(original.FilesToRestore))
+		// CompactedAt is server-only per C3 — must NOT survive the
+		// JSON round-trip.
+		Expect(decoded.CompactedAt.IsZero()).To(BeTrue(),
+			"CompactedAt = %v; expected zero (server-only field)", decoded.CompactedAt)
+		Expect(decoded.OriginalTokenCount).To(Equal(original.OriginalTokenCount))
+		Expect(decoded.SummaryTokenCount).To(Equal(original.SummaryTokenCount))
+	})
+
+	It("zero-value round-trip emits null for nil slices and decodes back to nil", func() {
+		var original contextpkg.CompactionSummary
+
+		data, err := json.Marshal(original)
+		Expect(err).NotTo(HaveOccurred())
+
+		want := `{"intent":"","key_decisions":null,"errors":null,"next_steps":null,` +
+			`"files_to_restore":null,` +
+			`"original_token_count":0,"summary_token_count":0}`
+		Expect(string(data)).To(Equal(want))
+
+		var decoded contextpkg.CompactionSummary
+		Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+
+		Expect(decoded.Intent).To(BeEmpty())
+		Expect(decoded.KeyDecisions).To(BeNil())
+		Expect(decoded.Errors).To(BeNil())
+		Expect(decoded.NextSteps).To(BeNil())
+		Expect(decoded.FilesToRestore).To(BeNil())
+		Expect(decoded.CompactedAt.IsZero()).To(BeTrue())
+		Expect(decoded.OriginalTokenCount).To(Equal(0))
+		Expect(decoded.SummaryTokenCount).To(Equal(0))
+	})
+
+	It("empty (non-nil) slices encode as [] and decode back as empty non-nil slices", func() {
+		original := contextpkg.CompactionSummary{
+			Intent:         "nothing to decide",
+			KeyDecisions:   []string{},
+			Errors:         []string{},
+			NextSteps:      []string{},
+			FilesToRestore: []string{},
+			CompactedAt:    time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 		}
-		if len(got) != 0 {
-			t.Errorf("%s: len=%d, expected 0", name, len(got))
+
+		data, err := json.Marshal(original)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Empty slices must appear as [] not null.
+		for _, key := range []string{
+			`"key_decisions":[]`,
+			`"errors":[]`,
+			`"next_steps":[]`,
+			`"files_to_restore":[]`,
+		} {
+			Expect(string(data)).To(ContainSubstring(key))
 		}
-	}
-}
 
-// TestCompactionSummary_Unmarshal_ToleratesUnknownFields ensures that
-// extra keys injected by an upstream (e.g. a newer summariser producing a
-// forward-compatible extension) are silently ignored rather than rejected.
-// Default encoding/json behaviour permits this; this test pins it so a
-// future switch to Decoder.DisallowUnknownFields() is a visible change.
-func TestCompactionSummary_Unmarshal_ToleratesUnknownFields(t *testing.T) {
-	t.Parallel()
+		var decoded contextpkg.CompactionSummary
+		Expect(json.Unmarshal(data, &decoded)).To(Succeed())
 
-	input := `{
-		"intent": "handle extra keys",
-		"key_decisions": ["keep forward-compat"],
-		"errors": [],
-		"next_steps": [],
-		"files_to_restore": [],
-		"compacted_at": "2026-04-14T10:30:45Z",
-		"original_token_count": 100,
-		"summary_token_count": 25,
-		"future_field_we_do_not_know": "ignored",
-		"nested_unknown": {"anything": [1,2,3]}
-	}`
+		// Decoded empty slices must be non-nil, length 0.
+		for name, got := range map[string][]string{
+			"KeyDecisions":   decoded.KeyDecisions,
+			"Errors":         decoded.Errors,
+			"NextSteps":      decoded.NextSteps,
+			"FilesToRestore": decoded.FilesToRestore,
+		} {
+			Expect(got).NotTo(BeNil(), "%s decoded as nil; expected empty non-nil slice", name)
+			Expect(got).To(BeEmpty(), "%s len mismatch", name)
+		}
+	})
 
-	var decoded contextpkg.CompactionSummary
-	if err := json.Unmarshal([]byte(input), &decoded); err != nil {
-		t.Fatalf("unmarshal with unknown fields: %v", err)
-	}
+	It("Unmarshal silently ignores unknown JSON keys (forward-compat)", func() {
+		input := `{
+			"intent": "handle extra keys",
+			"key_decisions": ["keep forward-compat"],
+			"errors": [],
+			"next_steps": [],
+			"files_to_restore": [],
+			"compacted_at": "2026-04-14T10:30:45Z",
+			"original_token_count": 100,
+			"summary_token_count": 25,
+			"future_field_we_do_not_know": "ignored",
+			"nested_unknown": {"anything": [1,2,3]}
+		}`
 
-	if decoded.Intent != "handle extra keys" {
-		t.Errorf("Intent: got %q want %q", decoded.Intent, "handle extra keys")
-	}
-	if len(decoded.KeyDecisions) != 1 || decoded.KeyDecisions[0] != "keep forward-compat" {
-		t.Errorf("KeyDecisions: got %v", decoded.KeyDecisions)
-	}
-	if decoded.OriginalTokenCount != 100 {
-		t.Errorf("OriginalTokenCount: got %d want 100", decoded.OriginalTokenCount)
-	}
-	if decoded.SummaryTokenCount != 25 {
-		t.Errorf("SummaryTokenCount: got %d want 25", decoded.SummaryTokenCount)
-	}
-}
+		var decoded contextpkg.CompactionSummary
+		Expect(json.Unmarshal([]byte(input), &decoded)).To(Succeed())
 
-// TestCompactionSummary_Unmarshal_MalformedReturnsError asserts that
-// malformed JSON yields an error rather than a panic or silent success.
-func TestCompactionSummary_Unmarshal_MalformedReturnsError(t *testing.T) {
-	t.Parallel()
+		Expect(decoded.Intent).To(Equal("handle extra keys"))
+		Expect(decoded.KeyDecisions).To(Equal([]string{"keep forward-compat"}))
+		Expect(decoded.OriginalTokenCount).To(Equal(100))
+		Expect(decoded.SummaryTokenCount).To(Equal(25))
+	})
 
-	cases := map[string]string{
-		"truncated":        `{"intent": "oops"`,
-		"not json":         `this is not json at all`,
-		"wrong type int":   `{"original_token_count": "not-an-int"}`,
-		"wrong type slice": `{"key_decisions": "should-be-array"}`,
-		// `compacted_at` wrong-type case removed: per C3 the field is
+	DescribeTable("Unmarshal returns an error on malformed JSON",
+		func(input string) {
+			var decoded contextpkg.CompactionSummary
+			Expect(json.Unmarshal([]byte(input), &decoded)).To(HaveOccurred())
+		},
+		Entry("truncated", `{"intent": "oops"`),
+		Entry("not json", `this is not json at all`),
+		Entry("wrong type int", `{"original_token_count": "not-an-int"}`),
+		Entry("wrong type slice", `{"key_decisions": "should-be-array"}`),
+		// compacted_at wrong-type case removed: per C3 the field is
 		// server-only (json:"-"), so any emitted value — well-formed or
 		// not — is silently ignored at unmarshal time. Regression
 		// coverage for that ignore-semantic lives in
 		// TestAutoCompactor_Compact_LLMEmittedValidRFC3339_IsIgnored.
-	}
-
-	for name, input := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			var decoded contextpkg.CompactionSummary
-			if err := json.Unmarshal([]byte(input), &decoded); err == nil {
-				t.Errorf("expected error for %s, got nil", name)
-			}
-		})
-	}
-}
-
-// equalStrings returns true when two string slices have identical length
-// and contents in order.
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
+	)
+})

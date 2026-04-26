@@ -1,25 +1,13 @@
-// Package engine — C1 regression coverage for session-close
-// eviction of per-session HotColdSplitters.
-//
-// The sessionSplitters cache is unbounded: every unique sessionID that
-// hits buildContextWindow with MicroCompaction enabled lands one
-// entry. A long-running `flowstate serve` will leak splitters +
-// persist-worker goroutines + their buffered channels forever unless
-// entries are evicted on session close.
-//
-// Before C1 there was no eviction path at all. After C1 the engine
-// subscribes to session.ended at construction time and tears down
-// the matching cache entry: Stop() drains the worker; delete() frees
-// the map slot. Subsequent buildContextWindow for the same sessionID
-// reconstructs a fresh splitter.
 package engine_test
 
 import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -30,10 +18,20 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 )
 
-// newMicroCompactionTestEngine builds an Engine with L1 enabled, a
-// real FileContextStore, and a temp spillover directory, ready to
-// cache splitters via BuildContextWindowForTesting.
-func newMicroCompactionTestEngine(t *testing.T) (*engine.Engine, *eventbus.EventBus) {
+// engineTestT is the minimal subset of testing.TB the helper uses.
+// Accepting an interface lets Ginkgo's GinkgoT() drive the same helper
+// without depending on the full TB surface (which gained methods like
+// ArtifactDir in Go 1.24).
+type engineTestT interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	TempDir() string
+}
+
+// newMicroCompactionTestEngine builds an Engine with L1 enabled, a real
+// FileContextStore, and a temp spillover directory, ready to cache
+// splitters via BuildContextWindowForTesting.
+func newMicroCompactionTestEngine(t engineTestT) (*engine.Engine, *eventbus.EventBus) {
 	t.Helper()
 
 	bus := eventbus.NewEventBus()
@@ -70,15 +68,15 @@ func newMicroCompactionTestEngine(t *testing.T) (*engine.Engine, *eventbus.Event
 	return eng, bus
 }
 
-// evictionTokenCounter is a minimal TokenCounter: every message is
-// one token. Enough for Engine.New to build a WindowBuilder.
+// evictionTokenCounter is a minimal TokenCounter: every message is one
+// token. Enough for Engine.New to build a WindowBuilder.
 type evictionTokenCounter struct{}
 
 func (evictionTokenCounter) Count(text string) int   { return len(text) }
 func (evictionTokenCounter) ModelLimit(_ string) int { return 10000 }
 
-// noopChatProvider is enough to satisfy Engine.New — we never call
-// Stream in these tests.
+// noopChatProvider is enough to satisfy Engine.New — Stream is never
+// called in these tests.
 type noopChatProvider struct{}
 
 func (noopChatProvider) Name() string { return "noop" }
@@ -95,126 +93,104 @@ func (noopChatProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]flo
 }
 func (noopChatProvider) Models() ([]provider.Model, error) { return nil, nil }
 
-// waitForEviction polls SessionSplitterForTest until the cache slot
-// is empty, with a small bounded budget. Event delivery through the
-// bus is synchronous in the current implementation, but a poll guards
-// against any future asynchrony and is cheap.
-func waitForEviction(t *testing.T, eng *engine.Engine, sessionID string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eng.SessionSplitterForTest(sessionID) == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("session splitter for %q was not evicted within deadline", sessionID)
+// expectSplitterEvicted polls SessionSplitterForTest until the cache slot
+// is empty, with a small bounded budget. Event delivery through the bus
+// is synchronous in the current implementation, but a poll guards against
+// any future asynchrony and is cheap.
+func expectSplitterEvicted(eng *engine.Engine, sessionID string) {
+	Eventually(func() any {
+		return eng.SessionSplitterForTest(sessionID)
+	}, 2*time.Second, 5*time.Millisecond).Should(BeNil(),
+		"session splitter for %q was not evicted within deadline", sessionID)
 }
 
-// TestSessionEnded_EvictsCachedSplitter is the core C1 regression:
-// after building a window for sessionID S, publishing session.ended
-// for S must remove the cache entry and Stop the splitter cleanly.
-func TestSessionEnded_EvictsCachedSplitter(t *testing.T) {
-	t.Parallel()
+// C1 regression coverage for session-close eviction of per-session
+// HotColdSplitters.
+//
+// The sessionSplitters cache is unbounded: every unique sessionID that
+// hits buildContextWindow with MicroCompaction enabled lands one entry. A
+// long-running `flowstate serve` will leak splitters + persist-worker
+// goroutines + their buffered channels forever unless entries are evicted
+// on session close.
+//
+// Before C1 there was no eviction path at all. After C1 the engine
+// subscribes to session.ended at construction time and tears down the
+// matching cache entry: Stop() drains the worker; delete() frees the map
+// slot. Subsequent buildContextWindow for the same sessionID reconstructs
+// a fresh splitter.
+var _ = Describe("Engine session.ended eviction of HotColdSplitter cache", func() {
+	It("evicts the cached splitter on session.ended", func() {
+		eng, bus := newMicroCompactionTestEngine(GinkgoT())
+		ctx := context.Background()
+		sessionID := "session-c1-evict"
 
-	eng, bus := newMicroCompactionTestEngine(t)
-	ctx := context.Background()
-	sessionID := "session-c1-evict"
+		eng.BuildContextWindowForTesting(ctx, sessionID, "hello")
 
-	// Build a window so a splitter lands in the cache.
-	eng.BuildContextWindowForTesting(ctx, sessionID, "hello")
+		Expect(eng.SessionSplitterForTest(sessionID)).NotTo(BeNil(),
+			"expected cached splitter for %q after Build", sessionID)
 
-	if eng.SessionSplitterForTest(sessionID) == nil {
-		t.Fatalf("expected cached splitter for %q after Build, got nil", sessionID)
-	}
+		bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
+			SessionID: sessionID,
+			Action:    "ended",
+		}))
 
-	// Publish session.ended. The subscription registered in New must
-	// see this, look up the splitter, and evict it.
-	bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
-		SessionID: sessionID,
-		Action:    "ended",
-	}))
+		expectSplitterEvicted(eng, sessionID)
+	})
 
-	waitForEviction(t, eng, sessionID)
-}
+	It("does not evict a sibling session's splitter on session.ended", func() {
+		eng, bus := newMicroCompactionTestEngine(GinkgoT())
+		ctx := context.Background()
 
-// TestSessionEnded_OtherSessionsUnaffected pins the specificity of
-// the eviction: a session.ended for session A must not remove the
-// splitter for session B.
-func TestSessionEnded_OtherSessionsUnaffected(t *testing.T) {
-	t.Parallel()
+		sessionA := "session-c1-a"
+		sessionB := "session-c1-b"
 
-	eng, bus := newMicroCompactionTestEngine(t)
-	ctx := context.Background()
+		eng.BuildContextWindowForTesting(ctx, sessionA, "hello A")
+		eng.BuildContextWindowForTesting(ctx, sessionB, "hello B")
 
-	sessionA := "session-c1-a"
-	sessionB := "session-c1-b"
+		Expect(eng.SessionSplitterForTest(sessionA)).NotTo(BeNil())
+		Expect(eng.SessionSplitterForTest(sessionB)).NotTo(BeNil())
 
-	eng.BuildContextWindowForTesting(ctx, sessionA, "hello A")
-	eng.BuildContextWindowForTesting(ctx, sessionB, "hello B")
+		bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
+			SessionID: sessionA,
+			Action:    "ended",
+		}))
 
-	if eng.SessionSplitterForTest(sessionA) == nil || eng.SessionSplitterForTest(sessionB) == nil {
-		t.Fatalf("expected both sessions to have cached splitters")
-	}
+		expectSplitterEvicted(eng, sessionA)
+		Expect(eng.SessionSplitterForTest(sessionB)).NotTo(BeNil(),
+			"session.ended for %q wrongly evicted %q", sessionA, sessionB)
+	})
 
-	bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
-		SessionID: sessionA,
-		Action:    "ended",
-	}))
+	It("constructs a fresh splitter on rebuild after eviction", func() {
+		eng, bus := newMicroCompactionTestEngine(GinkgoT())
+		ctx := context.Background()
+		sessionID := "session-c1-rebuild"
 
-	waitForEviction(t, eng, sessionA)
+		eng.BuildContextWindowForTesting(ctx, sessionID, "hello")
+		first := eng.SessionSplitterForTest(sessionID)
+		Expect(first).NotTo(BeNil())
 
-	// B must still be present.
-	if eng.SessionSplitterForTest(sessionB) == nil {
-		t.Fatalf("session.ended for %q wrongly evicted %q", sessionA, sessionB)
-	}
-}
+		bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
+			SessionID: sessionID,
+			Action:    "ended",
+		}))
 
-// TestSessionEnded_ReBuildConstructsFreshSplitter proves that after
-// eviction, the next buildContextWindow for the same sessionID
-// constructs a brand-new splitter — not the evicted one. This is the
-// invariant that makes the cache safe to use after an end event.
-func TestSessionEnded_ReBuildConstructsFreshSplitter(t *testing.T) {
-	t.Parallel()
+		expectSplitterEvicted(eng, sessionID)
 
-	eng, bus := newMicroCompactionTestEngine(t)
-	ctx := context.Background()
-	sessionID := "session-c1-rebuild"
+		eng.BuildContextWindowForTesting(ctx, sessionID, "hello again")
+		second := eng.SessionSplitterForTest(sessionID)
+		Expect(second).NotTo(BeNil())
+		Expect(first).NotTo(BeIdenticalTo(second),
+			"re-build returned the evicted splitter (identity %v); expected a fresh instance", fmt.Sprintf("%p", first))
+	})
 
-	eng.BuildContextWindowForTesting(ctx, sessionID, "hello")
-	first := eng.SessionSplitterForTest(sessionID)
-	if first == nil {
-		t.Fatalf("expected first splitter, got nil")
-	}
+	It("treats session.ended for a never-built session as a silent no-op (no panic)", func() {
+		_, bus := newMicroCompactionTestEngine(GinkgoT())
 
-	bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
-		SessionID: sessionID,
-		Action:    "ended",
-	}))
-
-	waitForEviction(t, eng, sessionID)
-
-	eng.BuildContextWindowForTesting(ctx, sessionID, "hello again")
-	second := eng.SessionSplitterForTest(sessionID)
-	if second == nil {
-		t.Fatalf("expected fresh splitter after re-build, got nil")
-	}
-	if first == second {
-		t.Fatalf("re-build returned the evicted splitter (identity %v); expected a fresh instance", fmt.Sprintf("%p", first))
-	}
-}
-
-// TestSessionEnded_NoSplitterCached_NoOp ensures that publishing
-// session.ended for a session that never built a window is a silent
-// no-op — no panic, no error.
-func TestSessionEnded_NoSplitterCached_NoOp(t *testing.T) {
-	t.Parallel()
-
-	_, bus := newMicroCompactionTestEngine(t)
-
-	// Must not panic.
-	bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
-		SessionID: "never-built",
-		Action:    "ended",
-	}))
-}
+		Expect(func() {
+			bus.Publish(pluginevents.EventSessionEnded, pluginevents.NewSessionEvent(pluginevents.SessionEventData{
+				SessionID: "never-built",
+				Action:    "ended",
+			}))
+		}).NotTo(Panic())
+	})
+})

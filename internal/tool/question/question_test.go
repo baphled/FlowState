@@ -2,52 +2,53 @@ package question_test
 
 import (
 	"context"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/question"
 )
 
-func TestQuestionToolMetadata(t *testing.T) {
-	t.Parallel()
+// Question tool tests cover metadata reporting (name, description, schema)
+// and the synchronous execution path that returns a structured result with
+// the question text and the allow_multiple flag mirrored into Metadata.
+var _ = Describe("Question tool", func() {
+	Describe("metadata", func() {
+		var toolUnderTest *question.Tool
 
-	toolUnderTest := question.New()
-	if got := toolUnderTest.Name(); got != "question" {
-		t.Fatalf("Name() = %q, want %q", got, "question")
-	}
-	if got := toolUnderTest.Description(); got == "" {
-		t.Fatal("Description() = empty, want a non-empty description")
-	}
-	if got := toolUnderTest.Schema(); got.Type != "object" {
-		t.Fatalf("Schema().Type = %q, want %q", got.Type, "object")
-	}
-}
+		BeforeEach(func() {
+			toolUnderTest = question.New()
+		})
 
-func TestQuestionToolExecute(t *testing.T) {
-	t.Parallel()
+		It("reports its name as 'question'", func() {
+			Expect(toolUnderTest.Name()).To(Equal("question"))
+		})
 
-	toolUnderTest := question.New()
-	result, err := toolUnderTest.Execute(context.Background(), tool.Input{
-		Name: "question",
-		Arguments: map[string]any{
-			"question":       "What should I do next?",
-			"options":        []any{"Plan", "Build"},
-			"allow_multiple": true,
-		},
+		It("provides a non-empty description", func() {
+			Expect(toolUnderTest.Description()).NotTo(BeEmpty())
+		})
+
+		It("declares an object-typed schema", func() {
+			Expect(toolUnderTest.Schema().Type).To(Equal("object"))
+		})
 	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error != nil {
-		t.Fatalf("Execute() result error = %v, want nil", result.Error)
-	}
-	if result.Title != "Question" {
-		t.Fatalf("Execute() title = %q, want %q", result.Title, "Question")
-	}
-	if result.Metadata["question"] != "What should I do next?" {
-		t.Fatalf("Execute() metadata question = %v, want question text", result.Metadata["question"])
-	}
-	if result.Metadata["allow_multiple"] != true {
-		t.Fatalf("Execute() metadata allow_multiple = %v, want true", result.Metadata["allow_multiple"])
-	}
-}
+
+	Describe("Execute", func() {
+		It("returns a result with the question metadata populated", func() {
+			result, err := question.New().Execute(context.Background(), tool.Input{
+				Name: "question",
+				Arguments: map[string]any{
+					"question":       "What should I do next?",
+					"options":        []any{"Plan", "Build"},
+					"allow_multiple": true,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred())
+			Expect(result.Title).To(Equal("Question"))
+			Expect(result.Metadata).To(HaveKeyWithValue("question", "What should I do next?"))
+			Expect(result.Metadata).To(HaveKeyWithValue("allow_multiple", true))
+		})
+	})
+})

@@ -1,112 +1,73 @@
 package themes_test
 
 import (
-	"testing"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/charmbracelet/huh"
 
 	"github.com/baphled/flowstate/internal/ui/themes"
-	"github.com/charmbracelet/huh"
 )
 
-func TestGenerateHuhTheme_NilTheme(t *testing.T) {
-	// When theme is nil, should return Catppuccin theme
-	result := themes.GenerateHuhTheme(nil)
+// GenerateHuhTheme + NewThemedForm specs cover the theme adapter for the
+// Charm Huh form library:
+//   - GenerateHuhTheme(nil) falls back to the Catppuccin defaults rather
+//     than panicking; the result is a non-nil *huh.Theme.
+//   - GenerateHuhTheme(activeTheme) produces a theme whose Focused styles
+//     are bold (title, select selector) and whose Blurred styles are not
+//     — a quick visual-hierarchy contract.
+//   - The Help short-key style is bold so keymap rows stay legible.
+//   - NewThemedForm threads the theme into a constructed huh.Form and
+//     accepts a nil theme (falls back the same way as GenerateHuhTheme).
+var _ = Describe("themes.GenerateHuhTheme + NewThemedForm", func() {
+	Describe("GenerateHuhTheme", func() {
+		It("returns a non-nil theme when given nil (falls back to Catppuccin)", func() {
+			Expect(themes.GenerateHuhTheme(nil)).NotTo(BeNil())
+		})
 
-	if result == nil {
-		t.Error("Expected non-nil theme, got nil")
-	}
-}
+		It("returns a non-nil theme when given the active theme manager output", func() {
+			tm := themes.NewThemeManager()
+			Expect(themes.GenerateHuhTheme(tm.Active())).NotTo(BeNil())
+		})
 
-func TestGenerateHuhTheme_WithDefaultTheme(t *testing.T) {
-	// Create a default theme
-	tm := themes.NewThemeManager()
-	theme := tm.Active()
+		It("makes the Focused.Title and SelectSelector bold", func() {
+			tm := themes.NewThemeManager()
+			result := themes.GenerateHuhTheme(tm.Active())
+			Expect(result.Focused.Title.GetBold()).To(BeTrue())
+			Expect(result.Focused.SelectSelector.GetBold()).To(BeTrue())
+		})
 
-	result := themes.GenerateHuhTheme(theme)
+		It("does NOT make the Blurred.Title bold", func() {
+			tm := themes.NewThemeManager()
+			result := themes.GenerateHuhTheme(tm.Active())
+			Expect(result.Blurred.Title.GetBold()).To(BeFalse())
+		})
 
-	if result == nil {
-		t.Error("Expected non-nil theme, got nil")
-	}
+		It("makes the Help.ShortKey bold", func() {
+			tm := themes.NewThemeManager()
+			result := themes.GenerateHuhTheme(tm.Active())
+			Expect(result.Help.ShortKey.GetBold()).To(BeTrue())
+		})
+	})
 
-	// Verify theme has all required fields (check that styles are not empty)
-	// We just verify the theme was created successfully
-}
+	Describe("NewThemedForm", func() {
+		It("returns a non-nil form when given the active theme", func() {
+			tm := themes.NewThemeManager()
+			group := huh.NewGroup(
+				huh.NewInput().
+					Key("test").
+					Title("Test Input"),
+			)
+			Expect(themes.NewThemedForm(tm.Active(), group)).NotTo(BeNil())
+		})
 
-func TestGenerateHuhTheme_FocusedStyles(t *testing.T) {
-	tm := themes.NewThemeManager()
-	theme := tm.Active()
-	result := themes.GenerateHuhTheme(theme)
-
-	// Check focused styles have expected properties
-	focused := result.Focused
-
-	// Title should be bold
-	if !focused.Title.GetBold() {
-		t.Error("Expected Focused.Title to be bold")
-	}
-
-	// Select selector should be bold
-	if !focused.SelectSelector.GetBold() {
-		t.Error("Expected SelectSelector to be bold")
-	}
-}
-
-func TestGenerateHuhTheme_BlurredStyles(t *testing.T) {
-	tm := themes.NewThemeManager()
-	theme := tm.Active()
-	result := themes.GenerateHuhTheme(theme)
-
-	// Check blurred styles are less prominent
-	blurred := result.Blurred
-
-	// Title should NOT be bold in blurred state
-	if blurred.Title.GetBold() {
-		t.Error("Expected Blurred.Title to NOT be bold")
-	}
-}
-
-func TestGenerateHuhTheme_HelpStyles(t *testing.T) {
-	tm := themes.NewThemeManager()
-	theme := tm.Active()
-	result := themes.GenerateHuhTheme(theme)
-
-	// Check help styles
-	helpStyles := result.Help
-
-	// Short key should be bold
-	if !helpStyles.ShortKey.GetBold() {
-		t.Error("Expected Help.ShortKey to be bold")
-	}
-}
-
-func TestNewThemedForm(t *testing.T) {
-	tm := themes.NewThemeManager()
-	theme := tm.Active()
-
-	// Create a simple form
-	group := huh.NewGroup(
-		huh.NewInput().
-			Key("test").
-			Title("Test Input"),
-	)
-
-	form := themes.NewThemedForm(theme, group)
-
-	if form == nil {
-		t.Error("Expected non-nil form, got nil")
-	}
-}
-
-func TestNewThemedForm_NilTheme(t *testing.T) {
-	// Should work with nil theme (falls back to Catppuccin)
-	group := huh.NewGroup(
-		huh.NewInput().
-			Key("test").
-			Title("Test Input"),
-	)
-
-	form := themes.NewThemedForm(nil, group)
-
-	if form == nil {
-		t.Error("Expected non-nil form, got nil")
-	}
-}
+		It("returns a non-nil form when given nil theme (falls back to Catppuccin)", func() {
+			group := huh.NewGroup(
+				huh.NewInput().
+					Key("test").
+					Title("Test Input"),
+			)
+			Expect(themes.NewThemedForm(nil, group)).NotTo(BeNil())
+		})
+	})
+})

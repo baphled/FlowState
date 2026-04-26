@@ -1,31 +1,20 @@
 package cli_test
 
-// Item 6 — CLI-level regression guard on serve shutdown.
-//
-// H3 introduced engine.Shutdown to drain session-splitter persist
-// workers and L3 extraction goroutines before the serve process exits.
-// Without this, those goroutines get killed at os.Exit and orphan
-// `.tmp` files on disk with no log signal.
-//
-// The engine-level tests already cover Shutdown's drain semantics.
-// This file is the CLI-level guard: a future refactor of serve.go
-// that drops the engine.Shutdown call (for example, someone replacing
-// the inline block with a plain `server.Shutdown` one-liner and
-// forgetting the engine drain) must fail these tests.
-
 import (
 	"bytes"
 	"context"
 	"errors"
 	"sync"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/cli"
 )
 
 // shutdownRecorder captures the order in which Shutdown was invoked
-// across both the fake HTTP server and the fake engine. Shared mutex
-// so the order slice is safe to assert against after both calls have
+// across both the fake HTTP server and the fake engine. Shared mutex so
+// the order slice is safe to assert against after both calls have
 // completed sequentially (the production code is sequential; the mutex
 // is defence against a future refactor that might parallelise).
 type shutdownRecorder struct {
@@ -75,100 +64,71 @@ func (f *fakeEngineShutdowner) Shutdown(ctx context.Context) error {
 	return f.err
 }
 
-// TestPerformServeShutdown_InvokesEngineShutdown is the core Item 6
-// guard: if a future refactor drops the engine drain from runServe,
-// this test must fail. An orphaned engine means the splitter persist
-// workers die at os.Exit with unflushed writes.
-func TestPerformServeShutdown_InvokesEngineShutdown(t *testing.T) {
-	rec := &shutdownRecorder{}
-	srv := &fakeHTTPShutdowner{recorder: rec}
-	eng := &fakeEngineShutdowner{recorder: rec}
+// Item 6 — CLI-level regression guard on serve shutdown.
+//
+// H3 introduced engine.Shutdown to drain session-splitter persist workers
+// and L3 extraction goroutines before the serve process exits. Without
+// this, those goroutines get killed at os.Exit and orphan `.tmp` files
+// on disk with no log signal.
+//
+// The engine-level tests already cover Shutdown's drain semantics. This
+// file is the CLI-level guard: a future refactor of serve.go that drops
+// the engine.Shutdown call (for example, someone replacing the inline
+// block with a plain `server.Shutdown` one-liner and forgetting the
+// engine drain) must fail these specs.
+var _ = Describe("performServeShutdown", func() {
+	It("invokes engine.Shutdown after the HTTP server (regression: drain skipped)", func() {
+		rec := &shutdownRecorder{}
+		srv := &fakeHTTPShutdowner{recorder: rec}
+		eng := &fakeEngineShutdowner{recorder: rec}
 
-	var out, errOut bytes.Buffer
-	if err := cli.PerformServeShutdownForTest(srv, eng, &out, &errOut); err != nil {
-		t.Fatalf("performServeShutdown returned error: %v", err)
-	}
+		var out, errOut bytes.Buffer
+		Expect(cli.PerformServeShutdownForTest(srv, eng, &out, &errOut)).To(Succeed())
+		Expect(eng.calls).To(Equal(1))
+	})
 
-	if eng.calls != 1 {
-		t.Fatalf("engine.Shutdown calls = %d; want 1 (regression: engine drain skipped)", eng.calls)
-	}
-}
+	It("supplies a context with a deadline to engine.Shutdown so the drain cannot hang forever", func() {
+		rec := &shutdownRecorder{}
+		srv := &fakeHTTPShutdowner{recorder: rec}
+		eng := &fakeEngineShutdowner{recorder: rec}
 
-// TestPerformServeShutdown_EngineDrainCarriesDeadline pins the behaviour
-// that the engine drain runs under a bounded deadline. Without this the
-// serve process would block forever on a wedged extractor goroutine
-// instead of emitting the documented warning.
-func TestPerformServeShutdown_EngineDrainCarriesDeadline(t *testing.T) {
-	rec := &shutdownRecorder{}
-	srv := &fakeHTTPShutdowner{recorder: rec}
-	eng := &fakeEngineShutdowner{recorder: rec}
+		var out, errOut bytes.Buffer
+		Expect(cli.PerformServeShutdownForTest(srv, eng, &out, &errOut)).To(Succeed())
+		Expect(eng.ctxDeadline).To(BeTrue(),
+			"engine.Shutdown was not given a context with a deadline")
+	})
 
-	var out, errOut bytes.Buffer
-	if err := cli.PerformServeShutdownForTest(srv, eng, &out, &errOut); err != nil {
-		t.Fatalf("performServeShutdown returned error: %v", err)
-	}
+	It("orders HTTP shutdown before engine drain", func() {
+		rec := &shutdownRecorder{}
+		srv := &fakeHTTPShutdowner{recorder: rec}
+		eng := &fakeEngineShutdowner{recorder: rec}
 
-	if !eng.ctxDeadline {
-		t.Fatal("engine.Shutdown was not given a context with a deadline; the drain will hang forever on a wedged goroutine")
-	}
-}
+		var out, errOut bytes.Buffer
+		Expect(cli.PerformServeShutdownForTest(srv, eng, &out, &errOut)).To(Succeed())
 
-// TestPerformServeShutdown_OrdersHTTPBeforeEngine proves the sequence:
-// HTTP server stops accepting, then engine drains. Reversing the order
-// would let new handlers spawn splitter work after the drain
-// supposedly finished.
-func TestPerformServeShutdown_OrdersHTTPBeforeEngine(t *testing.T) {
-	rec := &shutdownRecorder{}
-	srv := &fakeHTTPShutdowner{recorder: rec}
-	eng := &fakeEngineShutdowner{recorder: rec}
+		Expect(rec.snapshot()).To(Equal([]string{"http", "engine"}))
+	})
 
-	var out, errOut bytes.Buffer
-	if err := cli.PerformServeShutdownForTest(srv, eng, &out, &errOut); err != nil {
-		t.Fatalf("performServeShutdown returned error: %v", err)
-	}
+	It("tolerates a nil engine (embedded-test or early-crash path)", func() {
+		rec := &shutdownRecorder{}
+		srv := &fakeHTTPShutdowner{recorder: rec}
 
-	order := rec.snapshot()
-	if len(order) != 2 {
-		t.Fatalf("shutdown order = %v; want [http engine]", order)
-	}
-	if order[0] != "http" || order[1] != "engine" {
-		t.Fatalf("shutdown order = %v; want [http engine]", order)
-	}
-}
+		var out, errOut bytes.Buffer
+		err := cli.PerformServeShutdownForTest(srv, cli.EngineShutdownerForTest(nil), &out, &errOut)
+		Expect(err).NotTo(HaveOccurred(),
+			"nil engine must not surface an error")
+		Expect(srv.calls).To(Equal(1),
+			"http.Shutdown must run even when engine is nil")
+	})
 
-// TestPerformServeShutdown_NilEngineIsTolerated covers the embedded-
-// test path (or early-crash path) where the App has no engine. The
-// helper must not panic; skipping the engine drain is acceptable
-// because there is nothing to drain.
-func TestPerformServeShutdown_NilEngineIsTolerated(t *testing.T) {
-	rec := &shutdownRecorder{}
-	srv := &fakeHTTPShutdowner{recorder: rec}
+	It("emits a warning to stderr (and returns nil) when the engine drain errors", func() {
+		rec := &shutdownRecorder{}
+		srv := &fakeHTTPShutdowner{recorder: rec}
+		eng := &fakeEngineShutdowner{recorder: rec, err: errors.New("drain timed out")}
 
-	var out, errOut bytes.Buffer
-	err := cli.PerformServeShutdownForTest(srv, cli.EngineShutdownerForTest(nil), &out, &errOut)
-	if err != nil {
-		t.Fatalf("nil engine must not surface an error: %v", err)
-	}
-	if srv.calls != 1 {
-		t.Fatalf("http.Shutdown calls = %d; want 1 even when engine is nil", srv.calls)
-	}
-}
-
-// TestPerformServeShutdown_EngineDrainErrorDoesNotFailShutdown pins the
-// documented behaviour that an engine-drain failure emits a warning
-// and returns nil rather than surfacing an error. The HTTP server has
-// already shut down at that point; returning an error would mask that
-// and confuse the caller's exit-code handling.
-func TestPerformServeShutdown_EngineDrainErrorDoesNotFailShutdown(t *testing.T) {
-	rec := &shutdownRecorder{}
-	srv := &fakeHTTPShutdowner{recorder: rec}
-	eng := &fakeEngineShutdowner{recorder: rec, err: errors.New("drain timed out")}
-
-	var out, errOut bytes.Buffer
-	if err := cli.PerformServeShutdownForTest(srv, eng, &out, &errOut); err != nil {
-		t.Fatalf("engine-drain error should not fail shutdown; got: %v", err)
-	}
-	if got := errOut.String(); got == "" {
-		t.Fatalf("engine-drain error must surface a warning on stderr; stderr was empty")
-	}
-}
+		var out, errOut bytes.Buffer
+		Expect(cli.PerformServeShutdownForTest(srv, eng, &out, &errOut)).To(Succeed())
+		Expect(errOut.String()).NotTo(BeEmpty(),
+			"engine-drain error must surface a warning on stderr")
+	})
+})

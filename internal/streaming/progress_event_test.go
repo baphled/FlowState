@@ -1,14 +1,18 @@
 package streaming_test
 
 import (
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
-func TestProgressEvent(t *testing.T) {
-	t.Run("round-trips progress events", func(t *testing.T) {
+var _ = Describe("ProgressEvent + CompletionNotificationEvent", func() {
+	// round-trips progress events: MarshalEvent + UnmarshalEvent
+	// preserve every ProgressEvent field byte-identically.
+	It("round-trips ProgressEvent through Marshal/Unmarshal", func() {
 		original := streaming.ProgressEvent{
 			TaskID:            "task-1",
 			ToolCallCount:     7,
@@ -19,21 +23,16 @@ func TestProgressEvent(t *testing.T) {
 		}
 
 		data, err := streaming.MarshalEvent(original)
-		if err != nil {
-			t.Fatalf("MarshalEvent() error = %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred(), "MarshalEvent")
 
 		restored, err := streaming.UnmarshalEvent(data)
-		if err != nil {
-			t.Fatalf("UnmarshalEvent() error = %v", err)
-		}
-
-		if restored != original {
-			t.Fatalf("round-trip mismatch: got %#v want %#v", restored, original)
-		}
+		Expect(err).NotTo(HaveOccurred(), "UnmarshalEvent")
+		Expect(restored).To(Equal(original), "round-trip mismatch")
 	})
 
-	t.Run("round-trips completion notifications", func(t *testing.T) {
+	// round-trips completion notifications: same contract for the
+	// completion variant.
+	It("round-trips CompletionNotificationEvent through Marshal/Unmarshal", func() {
 		original := streaming.CompletionNotificationEvent{
 			TaskID:      "task-1",
 			Description: "delegation complete",
@@ -45,17 +44,10 @@ func TestProgressEvent(t *testing.T) {
 		}
 
 		data, err := streaming.MarshalEvent(original)
-		if err != nil {
-			t.Fatalf("MarshalEvent() error = %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred(), "MarshalEvent")
 
 		restored, err := streaming.UnmarshalEvent(data)
-		if err != nil {
-			t.Fatalf("UnmarshalEvent() error = %v", err)
-		}
-
-		if restored != original {
-			t.Fatalf("round-trip mismatch: got %#v want %#v", restored, original)
-		}
+		Expect(err).NotTo(HaveOccurred(), "UnmarshalEvent")
+		Expect(restored).To(Equal(original), "round-trip mismatch")
 	})
-}
+})

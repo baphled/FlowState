@@ -2,73 +2,55 @@ package sessionid_test
 
 import (
 	"errors"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/sessionid"
 )
 
-// TestValidate_AcceptsSafeIDs pins the positive contract: IDs composed
-// of alphanumerics, dashes, and underscores (the shape UUIDs, slugs,
-// and operator-chosen tokens all satisfy) are accepted so legitimate
-// workflows are not broken by the path-traversal fix.
-func TestValidate_AcceptsSafeIDs(t *testing.T) {
-	t.Parallel()
+var _ = Describe("Validate", func() {
+	// Positive contract: IDs composed of alphanumerics, dashes, and
+	// underscores (the shape UUIDs, slugs, and operator-chosen tokens
+	// all satisfy) are accepted so legitimate workflows are not broken
+	// by the path-traversal fix.
+	DescribeTable("accepts safe session IDs",
+		func(id string) {
+			Expect(sessionid.Validate(id)).To(Succeed())
+		},
+		Entry("simple lowercase", "abc"),
+		Entry("hyphenated", "session-123"),
+		Entry("underscored", "session_123"),
+		Entry("UUID v4", "0d4e6b4e-1b4b-4e1b-9e1b-4b1b4e1b4b1b"),
+		Entry("dot in middle (away from prefix)", "SessionWith.dot.in.middle"),
+		Entry("single character", "a"),
+		Entry("mixed case + digits + separators", "UPPER_and_lower-123"),
+	)
 
-	cases := []string{
-		"abc",
-		"session-123",
-		"session_123",
-		"0d4e6b4e-1b4b-4e1b-9e1b-4b1b4e1b4b1b", // UUID v4
-		"SessionWith.dot.in.middle",            // dot is fine away from the prefix
-		"a",
-		"UPPER_and_lower-123",
-	}
-
-	for _, id := range cases {
-		t.Run(id, func(t *testing.T) {
-			t.Parallel()
-			if err := sessionid.Validate(id); err != nil {
-				t.Fatalf("Validate(%q) = %v; want nil", id, err)
-			}
-		})
-	}
-}
-
-// TestValidate_RejectsUnsafeIDs pins the rejection contract. Every
-// rule from the H4 audit (empty, slashes, leading dot that hides
-// path-escape inside ".." and ".hidden", absolute paths, and ".."
-// anywhere as a path component) returns ErrInvalidSessionID so the
-// caller can errors.Is on it uniformly.
-func TestValidate_RejectsUnsafeIDs(t *testing.T) {
-	t.Parallel()
-
-	cases := map[string]string{
-		"empty":               "",
-		"whitespace-only":     "   ",
-		"tab-only":            "\t",
-		"forward-slash":       "foo/bar",
-		"backslash":           "foo\\bar",
-		"leading-dot":         ".hidden",
-		"dotdot-only":         "..",
-		"dotdot-prefix":       "../evil",
-		"dotdot-suffix":       "evil/..",
-		"dotdot-middle":       "a/../b",
-		"absolute-unix":       "/tmp/evil",
-		"absolute-windows":    "C:\\evil",
-		"null-byte":           "a\x00b",
-		"path-traversal-real": "../../tmp/evil",
-	}
-
-	for name, id := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	// Rejection contract: every rule from the H4 audit (empty, slashes,
+	// leading dot that hides path-escape inside ".." and ".hidden",
+	// absolute paths, and ".." anywhere as a path component) returns
+	// ErrInvalidSessionID so the caller can errors.Is on it uniformly.
+	DescribeTable("rejects unsafe session IDs with ErrInvalidSessionID",
+		func(id string) {
 			err := sessionid.Validate(id)
-			if err == nil {
-				t.Fatalf("Validate(%q) = nil; want error", id)
-			}
-			if !errors.Is(err, sessionid.ErrInvalidSessionID) {
-				t.Fatalf("Validate(%q) err = %v; want errors.Is ErrInvalidSessionID", id, err)
-			}
-		})
-	}
-}
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, sessionid.ErrInvalidSessionID)).To(BeTrue(),
+				"Validate(%q) err = %v; want errors.Is ErrInvalidSessionID", id, err)
+		},
+		Entry("empty", ""),
+		Entry("whitespace-only", "   "),
+		Entry("tab-only", "\t"),
+		Entry("forward-slash", "foo/bar"),
+		Entry("backslash", "foo\\bar"),
+		Entry("leading-dot", ".hidden"),
+		Entry("dotdot-only", ".."),
+		Entry("dotdot-prefix", "../evil"),
+		Entry("dotdot-suffix", "evil/.."),
+		Entry("dotdot-middle", "a/../b"),
+		Entry("absolute-unix", "/tmp/evil"),
+		Entry("absolute-windows", "C:\\evil"),
+		Entry("null-byte", "a\x00b"),
+		Entry("path-traversal-real", "../../tmp/evil"),
+	)
+})
