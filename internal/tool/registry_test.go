@@ -21,8 +21,17 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Expect(registry).NotTo(BeNil())
 	})
 
-	It("returns exactly 17 tools", func() {
-		Expect(registry.List()).To(HaveLen(17))
+	It("returns exactly 18 tools", func() {
+		// 17 baseline tools + plan_write (added 2026-04-26 to close the
+		// regression where plan-writer agents only stored plans in
+		// coordination_store and never landed them on disk).
+		Expect(registry.List()).To(HaveLen(18))
+	})
+
+	It("can retrieve plan_write tool", func() {
+		t, err := registry.Get("plan_write")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(t.Name()).To(Equal("plan_write"))
 	})
 
 	It("can retrieve bash tool", func() {

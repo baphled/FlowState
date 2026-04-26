@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	planpkg "github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -19,6 +21,7 @@ const (
 	exitName  = "plan_exit"
 	listName  = "plan_list"
 	readName  = "plan_read"
+	writeName = "plan_write"
 )
 
 // EnterTool signals that planning has started.
@@ -466,6 +469,134 @@ func (t *ReadTool) Execute(_ context.Context, input tool.Input) (tool.Result, er
 			"plans_dir": t.plansDir,
 			"plan_id":   id,
 			"path":      filePath,
+		},
+	}, nil
+}
+
+// WriteTool persists a plan to the plans directory as a markdown file.
+//
+// Closes the regression where plan-writer agents were storing plans only in
+// coordination_store (an in-process key-value store keyed on chain id) and
+// never landing them on disk. With plan_write, the agent's final step is
+// `plan_write(markdown=...)` which parses the YAML frontmatter, populates a
+// plan.File, and calls plan.Store.Create — landing the plan at
+// {plansDir}/{id}.md so the existing plan_list / plan_read tools and the
+// `flowstate plan` CLI can find it later.
+type WriteTool struct {
+	plansDir string
+}
+
+// NewWrite creates a new plan_write tool bound to the given plans directory.
+//
+// Expected:
+//   - plansDir is the directory where FlowState plan markdown files live.
+//
+// Returns:
+//   - A *WriteTool that persists plans into the given directory.
+//
+// Side effects:
+//   - None at construction; the directory is opened on Execute.
+func NewWrite(plansDir string) *WriteTool { return &WriteTool{plansDir: plansDir} }
+
+// Name returns the tool identifier.
+//
+// Returns:
+//   - The string "plan_write".
+//
+// Side effects:
+//   - None.
+func (t *WriteTool) Name() string { return writeName }
+
+// Description returns a human-readable description of the tool.
+func (t *WriteTool) Description() string {
+	return "Persist a FlowState plan to the plans data directory as a " +
+		"markdown file. The input must be the full plan text including " +
+		"YAML frontmatter (--- ... ---) with at least an `id` and `title`. " +
+		"Returns the on-disk path so the plan can be referenced later via " +
+		"plan_list / plan_read or `flowstate plan list`."
+}
+
+// Schema returns the input schema for the tool.
+//
+// Returns:
+//   - An object schema with a required string property "markdown" carrying
+//     the full plan text including YAML frontmatter.
+func (t *WriteTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"markdown": {
+				Type: "string",
+				Description: "Full plan text including YAML frontmatter " +
+					"(`---\\nid: ...\\ntitle: ...\\n---\\n# ...`). " +
+					"The frontmatter's `id` becomes the filename.",
+			},
+		},
+		Required: []string{"markdown"},
+	}
+}
+
+// Execute parses the supplied markdown into a plan.File and persists it via
+// plan.Store. Returns the on-disk path on success.
+//
+// Expected:
+//   - input.Arguments contains a non-empty "markdown" string with valid
+//     YAML frontmatter at the top (--- ... ---) carrying at least `id`.
+//
+// Returns:
+//   - A tool.Result describing what was written and where.
+//   - A non-nil error when the input is missing/empty, when frontmatter
+//     cannot be parsed, when `id` is missing or unsafe, or when the
+//     filesystem write fails.
+//
+// Side effects:
+//   - Writes {plansDir}/{id}.md. Existing files with the same id are
+//     silently overwritten by plan.Store.Create.
+func (t *WriteTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	rawMD, ok := input.Arguments["markdown"]
+	if !ok {
+		return tool.Result{}, fmt.Errorf("plan_write: missing required argument %q (plans dir: %s)", "markdown", t.plansDir)
+	}
+	md, ok := rawMD.(string)
+	if !ok || strings.TrimSpace(md) == "" {
+		return tool.Result{}, fmt.Errorf("plan_write: argument %q must be a non-empty string (plans dir: %s)", "markdown", t.plansDir)
+	}
+
+	parsed, err := planpkg.ParseFile(md)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("plan_write: parsing plan markdown: %w", err)
+	}
+	if parsed == nil || strings.TrimSpace(parsed.ID) == "" {
+		return tool.Result{}, fmt.Errorf("plan_write: plan frontmatter must include a non-empty `id` field")
+	}
+	id := parsed.ID
+	if strings.ContainsAny(id, "/\\") || id == "." || id == ".." {
+		return tool.Result{}, fmt.Errorf("plan_write: invalid plan id %q (no path separators, no relative paths)", id)
+	}
+
+	parsed.Tasks = planpkg.TasksFromPlanText(md)
+	if parsed.CreatedAt.IsZero() {
+		parsed.CreatedAt = time.Now().UTC()
+	}
+
+	store, err := planpkg.NewStore(t.plansDir)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("plan_write: opening plan store at %s: %w", t.plansDir, err)
+	}
+	if err := store.Create(*parsed); err != nil {
+		return tool.Result{}, fmt.Errorf("plan_write: persisting plan %q: %w", id, err)
+	}
+
+	filePath := filepath.Join(t.plansDir, id+".md")
+	return tool.Result{
+		Title: "Plan: " + id,
+		Output: fmt.Sprintf("Plan %q saved to %s (%d task(s)).",
+			id, filePath, len(parsed.Tasks)),
+		Metadata: map[string]interface{}{
+			"plans_dir":  t.plansDir,
+			"plan_id":    id,
+			"path":       filePath,
+			"task_count": len(parsed.Tasks),
 		},
 	}, nil
 }
