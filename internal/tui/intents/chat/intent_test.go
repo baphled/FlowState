@@ -1626,6 +1626,227 @@ var _ = Describe("ChatIntent", func() {
 		})
 	})
 
+	Describe("session replay parity with live streaming", func() {
+		// User-visible bug: closing and reopening a chat session lost
+		// content that was visible before close. Three gaps caused this:
+		//   1. provider.Message.Thinking was persisted but replay never
+		//      reinstated the Role: "thinking" Message that flushThinking
+		//      adds during live streaming.
+		//   2. tool_call args dropped on replay — the BlockTool widget
+		//      that fronts each tool invocation needs ToolName + ToolInput
+		//      to render its "name: input" header.
+		//   3. The replay path stored only the bare tool name in the
+		//      lastToolCallName tracker, so the tool_result branch fed
+		//      splitToolSummary a name without an input and the BlockTool
+		//      widget rendered with an empty argument.
+		//
+		// Each spec below pins a single gap by simulating the live flow
+		// (HandleStreamChunkForTest) and the replay flow (SessionLoadedMsg
+		// over an in-memory recall store) and asserting the resulting
+		// chat.Message slices line up on the fields renderToolMessage
+		// dispatches on.
+		var (
+			eng           *engine.Engine
+			reg           *provider.Registry
+			liveIntent    *chat.Intent
+			replayIntent  *chat.Intent
+			newConfig     func() chat.IntentConfig
+			buildIntent   func() *chat.Intent
+		)
+
+		BeforeEach(func() {
+			chat.SetRunningInTestsForTest(true)
+			DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+
+			reg = provider.NewRegistry()
+			reg.Register(&streamingStubProvider{
+				providerName: "test-provider",
+				chunks:       []provider.StreamChunk{},
+			})
+			eng = engine.New(engine.Config{
+				Registry: reg,
+				Manifest: stubManifestWithProvider("test-provider", "test-model"),
+			})
+			newConfig = func() chat.IntentConfig {
+				return chat.IntentConfig{
+					Engine:       eng,
+					Streamer:     eng,
+					AgentID:      "test-agent",
+					SessionID:    "test-session",
+					ProviderName: "test-provider",
+					ModelName:    "test-model",
+					TokenBudget:  4096,
+				}
+			}
+			buildIntent = func() *chat.Intent { return chat.NewIntent(newConfig()) }
+
+			liveIntent = buildIntent()
+			replayIntent = buildIntent()
+		})
+
+		It("replays persisted Thinking as a thinking-role message before the assistant content", func() {
+			// Live: a single turn that produced reasoning then a final answer.
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				Thinking: "I should consult the file first",
+				Done:     false,
+			})
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				Content: "Here is the answer.",
+				Done:    true,
+			})
+
+			// Replay: the same turn, persisted with Thinking on the
+			// assistant Message (the shape providers store via
+			// recall.FileContextStore.Append).
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role:     "assistant",
+				Content:  "Here is the answer.",
+				Thinking: "I should consult the file first",
+			})
+
+			replayIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			liveRoles := rolesAndContent(liveIntent.AllViewMessagesForTest())
+			replayRoles := rolesAndContent(replayIntent.AllViewMessagesForTest())
+
+			// Both flows must commit the thinking block ahead of the
+			// assistant content so renderToolMessage emits the
+			// "💭 …" line above the response in chat history.
+			Expect(replayRoles).To(ContainElement(roleContent{Role: "thinking", Content: "I should consult the file first"}),
+				"replay must reinstate the persisted Thinking as a Role: thinking Message")
+			Expect(liveRoles).To(ContainElement(roleContent{Role: "thinking", Content: "I should consult the file first"}),
+				"sanity: live streaming commits a Role: thinking Message via flushThinking")
+
+			// Order parity: live streaming's flushThinking on Done
+			// runs AFTER view.HandleChunk has committed the assistant
+			// Message, so the Role: thinking entry lands at the end
+			// of the turn. Replay must produce the same ordering so
+			// the chat history rendered after close-and-reopen looks
+			// identical to what was on screen pre-close.
+			Expect(indexOf(replayRoles, "thinking")).To(BeNumerically(">", indexOf(replayRoles, "assistant")))
+			Expect(indexOf(liveRoles, "thinking")).To(BeNumerically(">", indexOf(liveRoles, "assistant")))
+		})
+
+		It("replays tool_call messages with the same name+input summary live streaming uses", func() {
+			// Live: assistant emits a bash tool call with a real argument.
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "bash: ls -la",
+			})
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "",
+				ToolStatus:   "running",
+			})
+
+			// Replay: the same call persisted via provider.ToolCall with
+			// the raw Name and Arguments map. Replay must format the
+			// summary identically to live's extractToolInfo +
+			// commitToolCall pipeline so the tool_call Message.Content
+			// carries "bash: ls -la" — not the bare "bash" the previous
+			// implementation produced, which would mis-key downstream
+			// tool_result rendering.
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role: "assistant",
+				ToolCalls: []provider.ToolCall{{
+					Name:      "bash",
+					Arguments: map[string]any{"command": "ls -la"},
+				}},
+			})
+
+			replayIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			replayMsgs := replayIntent.AllViewMessagesForTest()
+			var replayToolCall *chatview.Message
+			for idx := range replayMsgs {
+				if replayMsgs[idx].Role == "tool_call" {
+					replayToolCall = &replayMsgs[idx]
+					break
+				}
+			}
+			Expect(replayToolCall).NotTo(BeNil(), "replay must emit a tool_call Message")
+			Expect(replayToolCall.Content).To(Equal("bash: ls -la"),
+				"replay tool_call Content must match the live extractToolInfo summary so argument data is not dropped")
+
+			liveMsgs := liveIntent.AllViewMessagesForTest()
+			var liveToolCall *chatview.Message
+			for idx := range liveMsgs {
+				if liveMsgs[idx].Role == "tool_call" {
+					liveToolCall = &liveMsgs[idx]
+					break
+				}
+			}
+			Expect(liveToolCall).NotTo(BeNil())
+			Expect(replayToolCall.Content).To(Equal(liveToolCall.Content),
+				"live and replay tool_call summaries must be identical")
+		})
+
+		It("replays tool_result with ToolName and ToolInput so BlockTool renders the correct argument", func() {
+			// Live: a complete read-tool turn — read tools have their
+			// happy-path tool_result suppressed by isReadToolCall, so
+			// drive a write tool which always renders.
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolCallName: "write: /tmp/notes.md",
+			})
+			liveIntent.HandleStreamChunkForTest(chat.StreamChunkMsg{
+				ToolResult: "wrote 12 bytes",
+			})
+
+			// Replay: write tool persisted with full Arguments so
+			// replayStoredMessage can format the summary that
+			// toolResultMessage's splitToolSummary unpacks into
+			// ToolName + ToolInput.
+			store := recall.NewEmptyContextStore("")
+			store.Append(provider.Message{
+				Role: "assistant",
+				ToolCalls: []provider.ToolCall{{
+					Name:      "write",
+					Arguments: map[string]any{"filePath": "/tmp/notes.md"},
+				}},
+			})
+			store.Append(provider.Message{Role: "tool", Content: "wrote 12 bytes"})
+
+			replayIntent.Update(sessionbrowser.SessionLoadedMsg{
+				SessionID: "loaded-session",
+				Store:     store,
+			})
+
+			replayMsgs := replayIntent.AllViewMessagesForTest()
+			var replayResult *chatview.Message
+			for idx := range replayMsgs {
+				if replayMsgs[idx].Role == "tool_result" {
+					replayResult = &replayMsgs[idx]
+					break
+				}
+			}
+			Expect(replayResult).NotTo(BeNil(), "replay must emit a tool_result Message")
+			Expect(replayResult.ToolName).To(Equal("write"),
+				"BlockTool needs the raw tool name to colour and label the block")
+			Expect(replayResult.ToolInput).To(Equal("/tmp/notes.md"),
+				"BlockTool needs the primary input — the bug was that ToolInput came back empty")
+			Expect(replayResult.Content).To(Equal("wrote 12 bytes"))
+
+			liveMsgs := liveIntent.AllViewMessagesForTest()
+			var liveResult *chatview.Message
+			for idx := range liveMsgs {
+				if liveMsgs[idx].Role == "tool_result" {
+					liveResult = &liveMsgs[idx]
+					break
+				}
+			}
+			Expect(liveResult).NotTo(BeNil())
+			Expect(replayResult.ToolName).To(Equal(liveResult.ToolName))
+			Expect(replayResult.ToolInput).To(Equal(liveResult.ToolInput))
+			Expect(replayResult.Content).To(Equal(liveResult.Content))
+		})
+	})
+
 	Describe("activeToolCall streaming lifecycle", func() {
 		It("tracks active tool call name during streaming", func() {
 			intent.Update(chat.StreamChunkMsg{ToolCallName: "bash", Content: ""})
@@ -3232,3 +3453,35 @@ var _ = Describe("Delegation picker arrow-key cycling", func() {
 		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-one"))
 	})
 })
+
+// roleContent is a (Role, Content) pair used by replay-parity assertions
+// to compare live and replay view-message slices on the two fields
+// renderToolMessage actually dispatches on.
+type roleContent struct {
+	Role    string
+	Content string
+}
+
+// rolesAndContent reduces a chatview.Message slice to the Role+Content
+// pairs that drive renderToolMessage's switch — letting replay parity
+// specs ignore immaterial fields (AgentColor, ModelID, Duration) that
+// legitimately differ between live and replay flows.
+func rolesAndContent(msgs []chatview.Message) []roleContent {
+	out := make([]roleContent, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, roleContent{Role: m.Role, Content: m.Content})
+	}
+	return out
+}
+
+// indexOf returns the index of the first roleContent matching role, or
+// -1 when none matches. Used by ordering assertions in the replay
+// parity specs.
+func indexOf(pairs []roleContent, role string) int {
+	for idx, p := range pairs {
+		if p.Role == role {
+			return idx
+		}
+	}
+	return -1
+}
