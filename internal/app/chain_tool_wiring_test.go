@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tool"
@@ -16,7 +18,8 @@ func toolNames(tools []tool.Tool) []string {
 	return names
 }
 
-// stubTool is a minimal tool.Tool implementation for testing tool list composition.
+// stubTool is a minimal tool.Tool implementation for testing tool list
+// composition.
 type stubTool struct {
 	name string
 }
@@ -28,46 +31,39 @@ func (s *stubTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error)
 	return tool.Result{}, nil
 }
 
-func TestAppendChainTools_AddsChainToolsWhenStoreNonNil(t *testing.T) {
-	base := []tool.Tool{}
-	store := recall.NewInMemoryChainStore(nil)
+// appendChainTools tests cover the helper that decorates a base tool
+// slice with the chain_search_context + chain_get_messages tools when a
+// chain store is configured. Coverage:
+//   - non-nil store appends both chain tools, in order.
+//   - nil store returns the base slice unchanged.
+//   - existing tools survive the append (chain tools come last).
+var _ = Describe("appendChainTools", func() {
+	It("appends chain_search_context and chain_get_messages when the store is non-nil", func() {
+		base := []tool.Tool{}
+		store := recall.NewInMemoryChainStore(nil)
 
-	result := appendChainTools(base, store)
+		result := appendChainTools(base, store)
 
-	names := toolNames(result)
-	if len(names) != 2 {
-		t.Fatalf("expected 2 tools, got %d: %v", len(names), names)
-	}
-	if names[0] != "chain_search_context" {
-		t.Errorf("expected chain_search_context, got %s", names[0])
-	}
-	if names[1] != "chain_get_messages" {
-		t.Errorf("expected chain_get_messages, got %s", names[1])
-	}
-}
+		names := toolNames(result)
+		Expect(names).To(HaveLen(2))
+		Expect(names[0]).To(Equal("chain_search_context"))
+		Expect(names[1]).To(Equal("chain_get_messages"))
+	})
 
-func TestAppendChainTools_ReturnsOriginalSliceWhenStoreNil(t *testing.T) {
-	base := []tool.Tool{}
+	It("returns the original slice unchanged when the store is nil", func() {
+		base := []tool.Tool{}
+		Expect(appendChainTools(base, nil)).To(BeEmpty())
+	})
 
-	result := appendChainTools(base, nil)
+	It("preserves existing tools and appends chain tools after them", func() {
+		stub := &stubTool{name: "existing_tool"}
+		base := []tool.Tool{stub}
+		store := recall.NewInMemoryChainStore(nil)
 
-	if len(result) != 0 {
-		t.Fatalf("expected empty slice, got %d tools", len(result))
-	}
-}
+		result := appendChainTools(base, store)
 
-func TestAppendChainTools_PreservesExistingTools(t *testing.T) {
-	stub := &stubTool{name: "existing_tool"}
-	base := []tool.Tool{stub}
-	store := recall.NewInMemoryChainStore(nil)
-
-	result := appendChainTools(base, store)
-
-	names := toolNames(result)
-	if len(names) != 3 {
-		t.Fatalf("expected 3 tools, got %d: %v", len(names), names)
-	}
-	if names[0] != "existing_tool" {
-		t.Errorf("expected existing_tool first, got %s", names[0])
-	}
-}
+		names := toolNames(result)
+		Expect(names).To(HaveLen(3))
+		Expect(names[0]).To(Equal("existing_tool"))
+	})
+})

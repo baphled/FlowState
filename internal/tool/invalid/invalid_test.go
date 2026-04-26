@@ -2,29 +2,26 @@ package invalid_test
 
 import (
 	"context"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/invalid"
 )
 
-func TestInvalidToolMetadata(t *testing.T) {
-	t.Parallel()
+// Invalid tool tests verify the sentinel "invalid" tool reports the correct
+// metadata and always returns a non-nil result.Error so callers can detect
+// invalid tool calls without relying on Go errors.
+var _ = Describe("Invalid tool", func() {
+	It("reports its name as 'invalid'", func() {
+		toolUnderTest := invalid.New()
+		Expect(toolUnderTest.Name()).To(Equal("invalid"))
+	})
 
-	toolUnderTest := invalid.New()
-	if got := toolUnderTest.Name(); got != "invalid" {
-		t.Fatalf("Name() = %q, want %q", got, "invalid")
-	}
-}
-
-func TestInvalidToolExecute(t *testing.T) {
-	t.Parallel()
-
-	result, err := invalid.New().Execute(context.Background(), tool.Input{Name: "invalid"})
-	if err != nil {
-		t.Fatalf("Execute() error = %v, want nil", err)
-	}
-	if result.Error == nil {
-		t.Fatal("Execute() result error = nil, want non-nil")
-	}
-}
+	It("returns a non-nil result.Error when executed", func() {
+		result, err := invalid.New().Execute(context.Background(), tool.Input{Name: "invalid"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Error).To(HaveOccurred())
+	})
+})

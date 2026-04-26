@@ -1,4 +1,4 @@
-// Package engine — H3 regression coverage for graceful shutdown of
+// Package engine_test — H3 regression coverage for graceful shutdown of
 // per-session HotColdSplitters and in-flight knowledge extractions.
 //
 // runServe's previous shutdown path called only http.Server.Shutdown,
@@ -12,73 +12,53 @@ package engine_test
 
 import (
 	"context"
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-// TestEngine_Shutdown_StopsAllSessionSplitters builds splitters for
-// multiple sessions, then calls Shutdown. After the call the cache
-// must be empty and all splitters Stopped (their persist workers
-// joined). Subsequent SessionSplitterForTest lookups return nil.
-func TestEngine_Shutdown_StopsAllSessionSplitters(t *testing.T) {
-	t.Parallel()
+var _ = Describe("Engine.Shutdown (H3)", func() {
+	It("stops all session splitters and clears the cache", func() {
+		eng, _ := newMicroCompactionTestEngine(GinkgoT())
+		ctx := context.Background()
 
-	eng, _ := newMicroCompactionTestEngine(t)
-	ctx := context.Background()
-
-	sessions := []string{"h3-session-a", "h3-session-b", "h3-session-c"}
-	for _, s := range sessions {
-		eng.BuildContextWindowForTesting(ctx, s, "seed")
-	}
-	for _, s := range sessions {
-		if eng.SessionSplitterForTest(s) == nil {
-			t.Fatalf("splitter for %q missing before Shutdown", s)
+		sessions := []string{"h3-session-a", "h3-session-b", "h3-session-c"}
+		for _, s := range sessions {
+			eng.BuildContextWindowForTesting(ctx, s, "seed")
 		}
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := eng.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown returned error: %v", err)
-	}
-
-	for _, s := range sessions {
-		if got := eng.SessionSplitterForTest(s); got != nil {
-			t.Errorf("splitter for %q still present after Shutdown (%p)", s, got)
+		for _, s := range sessions {
+			Expect(eng.SessionSplitterForTest(s)).NotTo(BeNil(),
+				"splitter for %q missing before Shutdown", s)
 		}
-	}
-}
 
-// TestEngine_Shutdown_IsIdempotent proves calling Shutdown twice does
-// not panic on the second call and returns the same nil error.
-func TestEngine_Shutdown_IsIdempotent(t *testing.T) {
-	t.Parallel()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		Expect(eng.Shutdown(shutdownCtx)).To(Succeed(), "Shutdown returned error")
 
-	eng, _ := newMicroCompactionTestEngine(t)
-	ctx := context.Background()
-	eng.BuildContextWindowForTesting(ctx, "h3-idempotent", "seed")
+		for _, s := range sessions {
+			Expect(eng.SessionSplitterForTest(s)).To(BeNil(),
+				"splitter for %q still present after Shutdown", s)
+		}
+	})
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := eng.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("first Shutdown: %v", err)
-	}
-	if err := eng.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("second Shutdown: %v", err)
-	}
-}
+	It("is idempotent across two consecutive Shutdown calls", func() {
+		eng, _ := newMicroCompactionTestEngine(GinkgoT())
+		ctx := context.Background()
+		eng.BuildContextWindowForTesting(ctx, "h3-idempotent", "seed")
 
-// TestEngine_Shutdown_WithNoSplitters_NoError covers the common
-// case where micro-compaction is disabled or no session has built a
-// window: Shutdown must still succeed cleanly.
-func TestEngine_Shutdown_WithNoSplitters_NoError(t *testing.T) {
-	t.Parallel()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		Expect(eng.Shutdown(shutdownCtx)).To(Succeed(), "first Shutdown")
+		Expect(eng.Shutdown(shutdownCtx)).To(Succeed(), "second Shutdown")
+	})
 
-	eng, _ := newMicroCompactionTestEngine(t)
+	It("succeeds cleanly when no splitters were ever built", func() {
+		eng, _ := newMicroCompactionTestEngine(GinkgoT())
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	if err := eng.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown on empty engine returned %v", err)
-	}
-}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		Expect(eng.Shutdown(shutdownCtx)).To(Succeed(),
+			"Shutdown on empty engine returned an error")
+	})
+})

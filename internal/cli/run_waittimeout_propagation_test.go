@@ -10,8 +10,10 @@ package cli_test
 // internal/context/compression_config_test.go.
 
 import (
-	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
@@ -19,47 +21,42 @@ import (
 	flowctx "github.com/baphled/flowstate/internal/context"
 )
 
-// TestResolveBackgroundExtractionWait_UsesConfiguredValue proves a
-// custom YAML value reaches the CLI wait helper without ever colliding
-// with the 35s literal.
-func TestResolveBackgroundExtractionWait_UsesConfiguredValue(t *testing.T) {
-	cfg := &config.AppConfig{Compression: flowctx.DefaultCompressionConfig()}
-	cfg.Compression.SessionMemory.WaitTimeout = 90 * time.Second
-	a := &app.App{Config: cfg}
+var _ = Describe("ResolveBackgroundExtractionWait", func() {
+	// UsesConfiguredValue: a custom YAML value reaches the CLI wait
+	// helper without ever colliding with the 35s literal.
+	It("returns the configured CompressionConfig.SessionMemory.WaitTimeout when > 0", func() {
+		cfg := &config.AppConfig{Compression: flowctx.DefaultCompressionConfig()}
+		cfg.Compression.SessionMemory.WaitTimeout = 90 * time.Second
+		a := &app.App{Config: cfg}
 
-	got := cli.ResolveBackgroundExtractionWaitForTest(a)
+		got := cli.ResolveBackgroundExtractionWaitForTest(a)
 
-	if got != 90*time.Second {
-		t.Fatalf("wait timeout = %v; want 90s", got)
-	}
-}
+		Expect(got).To(Equal(90*time.Second), "wait timeout = %v; want 90s", got)
+	})
 
-// TestResolveBackgroundExtractionWait_FallsBackWhenConfigNil covers the
-// embedded-test path where the App has no loaded AppConfig. The helper
-// must not panic and must return the documented default.
-func TestResolveBackgroundExtractionWait_FallsBackWhenConfigNil(t *testing.T) {
-	a := &app.App{}
+	// FallsBackWhenConfigNil: the embedded-test path where the App
+	// has no loaded AppConfig. The helper must not panic and must
+	// return the documented default.
+	It("falls back to the default when AppConfig is nil", func() {
+		a := &app.App{}
 
-	got := cli.ResolveBackgroundExtractionWaitForTest(a)
+		got := cli.ResolveBackgroundExtractionWaitForTest(a)
 
-	if got != cli.DefaultBackgroundExtractionWaitForTest {
-		t.Fatalf("wait timeout = %v; want default %v",
-			got, cli.DefaultBackgroundExtractionWaitForTest)
-	}
-}
+		Expect(got).To(Equal(cli.DefaultBackgroundExtractionWaitForTest),
+			"wait timeout = %v; want default %v", got, cli.DefaultBackgroundExtractionWaitForTest)
+	})
 
-// TestResolveBackgroundExtractionWait_FallsBackWhenZeroInConfig guards
-// against a caller constructing a CompressionConfig by hand (skipping
-// DefaultCompressionConfig) and leaving WaitTimeout at its zero value.
-// The CLI must treat that as "unspecified" rather than "wait zero".
-func TestResolveBackgroundExtractionWait_FallsBackWhenZeroInConfig(t *testing.T) {
-	cfg := &config.AppConfig{Compression: flowctx.CompressionConfig{}}
-	a := &app.App{Config: cfg}
+	// FallsBackWhenZeroInConfig: guards against a caller constructing
+	// a CompressionConfig by hand (skipping DefaultCompressionConfig)
+	// and leaving WaitTimeout at its zero value. The CLI must treat
+	// that as "unspecified" rather than "wait zero".
+	It("falls back to the default when WaitTimeout is zero in config", func() {
+		cfg := &config.AppConfig{Compression: flowctx.CompressionConfig{}}
+		a := &app.App{Config: cfg}
 
-	got := cli.ResolveBackgroundExtractionWaitForTest(a)
+		got := cli.ResolveBackgroundExtractionWaitForTest(a)
 
-	if got != cli.DefaultBackgroundExtractionWaitForTest {
-		t.Fatalf("wait timeout = %v; want default %v",
-			got, cli.DefaultBackgroundExtractionWaitForTest)
-	}
-}
+		Expect(got).To(Equal(cli.DefaultBackgroundExtractionWaitForTest),
+			"wait timeout = %v; want default %v", got, cli.DefaultBackgroundExtractionWaitForTest)
+	})
+})

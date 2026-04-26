@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
@@ -14,7 +16,6 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
-	"github.com/onsi/gomega"
 )
 
 type baselineTokenEvidence struct {
@@ -26,91 +27,89 @@ type baselineTokenEvidence struct {
 	SkillDirPath             string `json:"skill_dir_path"`
 }
 
-func TestWriteBaselineTokenMeasurementEvidence(t *testing.T) {
-	t.Helper()
+var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
+	It("captures pre-skill-cache token measurements as JSON evidence (task-1 baseline)", func() {
+		appCfg, err := config.LoadConfig()
+		Expect(err).NotTo(HaveOccurred())
 
-	assert := gomega.NewWithT(t)
+		manifest := agent.Manifest{
+			ID:   "baseline-token-measurement",
+			Name: "Baseline Token Measurement",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			Capabilities: agent.Capabilities{
+				AlwaysActiveSkills: appCfg.AlwaysActiveSkills,
+			},
+		}
 
-	appCfg, err := config.LoadConfig()
-	assert.Expect(err).NotTo(gomega.HaveOccurred())
+		eng := engine.New(engine.Config{
+			ChatProvider: &mockProvider{name: "measurement-provider"},
+			Manifest:     manifest,
+			TokenCounter: ctxstore.NewTiktokenCounter(),
+		})
 
-	manifest := agent.Manifest{
-		ID:   "baseline-token-measurement",
-		Name: "Baseline Token Measurement",
-		Instructions: agent.Instructions{
-			SystemPrompt: "You are a helpful assistant.",
-		},
-		Capabilities: agent.Capabilities{
-			AlwaysActiveSkills: appCfg.AlwaysActiveSkills,
-		},
-	}
+		counter := ctxstore.NewTiktokenCounter()
+		systemPrompt := eng.BuildSystemPrompt()
+		systemPromptTokens := counter.Count(systemPrompt)
 
-	eng := engine.New(engine.Config{
-		ChatProvider: &mockProvider{name: "measurement-provider"},
-		Manifest:     manifest,
-		TokenCounter: ctxstore.NewTiktokenCounter(),
+		autoloadCfg := hook.DefaultSkillAutoLoaderConfig()
+		leanHeader := "Your load_skills: [" + strings.Join(autoloadCfg.BaselineSkills, ", ") + "]. Use skill_load(name) only when relevant to the current task."
+		skillHeaderTokens := counter.Count(leanHeader)
+
+		request := &provider.ChatRequest{
+			Messages: []provider.Message{
+				{Role: "system", Content: systemPrompt},
+				{Role: "user", Content: "measure baseline tokens"},
+			},
+		}
+
+		captured := request
+		passthrough := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			captured = req
+			ch := make(chan provider.StreamChunk, 1)
+			ch <- provider.StreamChunk{Done: true}
+			close(ch)
+			return ch, nil
+		}
+
+		hookFn := hook.SkillAutoLoaderHook(autoloadCfg, func() agent.Manifest { return manifest }, nil, nil)
+		wrapped := hookFn(passthrough)
+		_, err = wrapped(context.Background(), request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(captured.Messages).To(HaveLen(2))
+		Expect(captured.Messages[0].Content).To(ContainSubstring("Your load_skills: ["))
+
+		skillCount, totalSkillBytes, err := countSkillFiles(appCfg.SkillDir)
+		Expect(err).NotTo(HaveOccurred())
+
+		combinedFirstTurnTokens := systemPromptTokens + skillHeaderTokens + estimatedBaselineSkillTokens(totalSkillBytes)
+
+		Expect(systemPromptTokens).To(BeNumerically(">", 0))
+		Expect(skillHeaderTokens).To(BeNumerically(">", 0))
+		Expect(combinedFirstTurnTokens).To(BeNumerically(">", 0))
+		Expect(skillCount).To(BeNumerically(">", 0))
+		Expect(totalSkillBytes).To(BeNumerically(">", 0))
+
+		evidence := baselineTokenEvidence{
+			SystemPromptTokens:       systemPromptTokens,
+			SkillHeaderTokens:        skillHeaderTokens,
+			EstimatedFirstTurnTokens: combinedFirstTurnTokens,
+			SkillCount:               skillCount,
+			TotalSkillBytes:          totalSkillBytes,
+			SkillDirPath:             appCfg.SkillDir,
+		}
+
+		data, err := json.MarshalIndent(evidence, "", "  ")
+		Expect(err).NotTo(HaveOccurred())
+
+		evidencePath := filepath.Join("..", "..", ".sisyphus", "evidence", "task-1-baseline-tokens.json")
+		Expect(os.MkdirAll(filepath.Dir(evidencePath), 0o755)).To(Succeed())
+		Expect(os.WriteFile(evidencePath, data, 0o600)).To(Succeed())
+		_, err = os.Stat(evidencePath)
+		Expect(err).NotTo(HaveOccurred())
 	})
-
-	counter := ctxstore.NewTiktokenCounter()
-	systemPrompt := eng.BuildSystemPrompt()
-	systemPromptTokens := counter.Count(systemPrompt)
-
-	autoloadCfg := hook.DefaultSkillAutoLoaderConfig()
-	leanHeader := "Your load_skills: [" + strings.Join(autoloadCfg.BaselineSkills, ", ") + "]. Use skill_load(name) only when relevant to the current task."
-	skillHeaderTokens := counter.Count(leanHeader)
-
-	request := &provider.ChatRequest{
-		Messages: []provider.Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: "measure baseline tokens"},
-		},
-	}
-
-	captured := request
-	passthrough := func(_ context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-		captured = req
-		ch := make(chan provider.StreamChunk, 1)
-		ch <- provider.StreamChunk{Done: true}
-		close(ch)
-		return ch, nil
-	}
-
-	hookFn := hook.SkillAutoLoaderHook(autoloadCfg, func() agent.Manifest { return manifest }, nil, nil)
-	wrapped := hookFn(passthrough)
-	_, err = wrapped(context.Background(), request)
-	assert.Expect(err).NotTo(gomega.HaveOccurred())
-	assert.Expect(captured.Messages).To(gomega.HaveLen(2))
-	assert.Expect(captured.Messages[0].Content).To(gomega.ContainSubstring("Your load_skills: ["))
-
-	skillCount, totalSkillBytes, err := countSkillFiles(appCfg.SkillDir)
-	assert.Expect(err).NotTo(gomega.HaveOccurred())
-
-	combinedFirstTurnTokens := systemPromptTokens + skillHeaderTokens + estimatedBaselineSkillTokens(totalSkillBytes)
-
-	assert.Expect(systemPromptTokens).To(gomega.BeNumerically(">", 0))
-	assert.Expect(skillHeaderTokens).To(gomega.BeNumerically(">", 0))
-	assert.Expect(combinedFirstTurnTokens).To(gomega.BeNumerically(">", 0))
-	assert.Expect(skillCount).To(gomega.BeNumerically(">", 0))
-	assert.Expect(totalSkillBytes).To(gomega.BeNumerically(">", 0))
-
-	evidence := baselineTokenEvidence{
-		SystemPromptTokens:       systemPromptTokens,
-		SkillHeaderTokens:        skillHeaderTokens,
-		EstimatedFirstTurnTokens: combinedFirstTurnTokens,
-		SkillCount:               skillCount,
-		TotalSkillBytes:          totalSkillBytes,
-		SkillDirPath:             appCfg.SkillDir,
-	}
-
-	data, err := json.MarshalIndent(evidence, "", "  ")
-	assert.Expect(err).NotTo(gomega.HaveOccurred())
-
-	evidencePath := filepath.Join("..", "..", ".sisyphus", "evidence", "task-1-baseline-tokens.json")
-	assert.Expect(os.MkdirAll(filepath.Dir(evidencePath), 0o755)).To(gomega.Succeed())
-	assert.Expect(os.WriteFile(evidencePath, data, 0o600)).To(gomega.Succeed())
-	_, err = os.Stat(evidencePath)
-	assert.Expect(err).NotTo(gomega.HaveOccurred())
-}
+})
 
 func countSkillFiles(skillDir string) (int, int64, error) {
 	var count int
