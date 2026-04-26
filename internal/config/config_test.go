@@ -1013,5 +1013,36 @@ log_level: info
 			Expect(cfg.ToolCapableModels).To(ContainElement("claude-*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("glm-4.7"))
 		})
+
+		It("round-trips providers.zai.plan when set to coding", func() {
+			configContent := `
+providers:
+  zai:
+    api_key: zai-fixture-key-1234567890ab
+    plan: coding
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Providers.ZAI.Plan).To(Equal("coding"))
+		})
+
+		It("leaves providers.zai.plan empty when YAML omits it (no default writeback)", func() {
+			configContent := `
+providers:
+  zai:
+    api_key: zai-fixture-key-1234567890ab
+`
+			configPath := filepath.Join(tempDir, "config.yaml")
+			Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Providers.ZAI.Plan).To(BeEmpty())
+		})
 	})
 })

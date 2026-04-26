@@ -408,11 +408,24 @@ type ProvidersConfig struct {
 }
 
 // ProviderConfig holds configuration for a single LLM provider.
+//
+// Plan is a provider-specific endpoint discriminator. It is currently only
+// consulted for the Z.AI provider, where it picks the Z.AI subscription
+// endpoint. Valid Z.AI values:
+//   - "general" (or empty) — pay-per-token, https://api.z.ai/api/paas/v4
+//   - "coding"             — coding-plan subscription,
+//     https://api.z.ai/api/coding/paas/v4
+//
+// For back-compat, when Plan is empty and Host equals the coding-plan URL
+// verbatim, the routing infers "coding". New configs should set Plan
+// explicitly and leave Host empty so the provider uses its compiled-in
+// default endpoint. Other providers ignore the field.
 type ProviderConfig struct {
 	Host   string      `json:"host" yaml:"host"`
 	APIKey string      `json:"api_key" yaml:"api_key"`
 	Model  string      `json:"model" yaml:"model"`
 	OAuth  OAuthConfig `json:"oauth" yaml:"oauth"`
+	Plan   string      `json:"plan,omitempty" yaml:"plan,omitempty"`
 }
 
 // OAuthConfig holds OAuth-specific configuration for a provider.

@@ -3022,20 +3022,31 @@ func logZAIPlanResolution(plan string, initErr error) {
 // "coding" selects the coding-plan subscription endpoint; anything else
 // (including empty) selects the general pay-per-token endpoint.
 //
-// The plan is encoded in providers.zai.host: when host equals the
-// coding-plan URL we treat it as the coding plan. This avoids adding a new
-// config field while still routing keys to the correct base URL.
+// Resolution precedence:
+//  1. Explicit cfg.Providers.ZAI.Plan ("coding" or "general", case-insensitive
+//     trim) — wins, even when contradicted by Host.
+//  2. Empty Plan but Host equal to the coding-plan URL — back-compat inference
+//     for legacy configs that encoded the plan in Host.
+//  3. Otherwise — empty string ("general").
 //
 // Expected:
 //   - cfg is a non-nil AppConfig.
 //
 // Returns:
-//   - "coding" when the configured host matches the coding-plan endpoint.
+//   - "coding" when Plan is "coding" or (with empty Plan) Host matches the
+//     coding-plan endpoint.
 //   - "" otherwise.
 //
 // Side effects:
 //   - None.
 func zaiPlanFromConfig(cfg *config.AppConfig) string {
+	plan := strings.ToLower(strings.TrimSpace(cfg.Providers.ZAI.Plan))
+	if plan == zai.PlanCoding {
+		return zai.PlanCoding
+	}
+	if plan != "" {
+		return ""
+	}
 	if cfg.Providers.ZAI.Host == "https://api.z.ai/api/coding/paas/v4" {
 		return zai.PlanCoding
 	}
