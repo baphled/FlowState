@@ -41,23 +41,36 @@ func matchesAnyPattern(model string, patterns []string) bool {
 	return false
 }
 
-// matchesPattern is the single shared glob predicate. A pattern with a
-// trailing `*` matches any model whose name starts with the prefix
-// before the `*`. A pattern without `*` is a literal exact match.
+// matchesPattern is the single shared glob predicate. A pattern may
+// contain a single `*` wildcard. Supported shapes:
+//   - `prefix*`        — match models whose name starts with prefix.
+//   - `*suffix`        — match models whose name ends with suffix.
+//   - `prefix*suffix`  — match models matching both ends.
+//   - no `*`           — literal exact match.
 //
 // Examples:
-//   - `claude-*` matches `claude-sonnet-4-20250514`, `claude-3-5-haiku`.
+//   - `claude-*` matches `claude-sonnet-4`, `claude-3-5-haiku`.
 //   - `qwen3:*` matches `qwen3:8b`, `qwen3:14b`, `qwen3:30b-a3b`.
-//   - `glm-4.7` matches only `glm-4.7` (no glob suffix → literal).
+//   - `gpt-*-mini` matches `gpt-4o-mini`, `gpt-5-mini`, `gpt-5.4-mini`.
+//   - `claude-haiku*` matches `claude-haiku-4.5`, `claude-haiku-3-5`.
+//   - `glm-4.7` matches only `glm-4.7`.
 //
-// Empty pattern never matches; empty model never matches.
+// Multiple `*` characters are interpreted as prefix-up-to-first-star
+// plus suffix-after-last-star; middle `*` are not treated as
+// independent wildcards. Empty pattern never matches; empty model
+// never matches.
 func matchesPattern(model, pattern string) bool {
 	if model == "" || pattern == "" {
 		return false
 	}
-	if strings.HasSuffix(pattern, "*") {
-		prefix := strings.TrimSuffix(pattern, "*")
-		return strings.HasPrefix(model, prefix)
+	firstStar := strings.Index(pattern, "*")
+	if firstStar == -1 {
+		return model == pattern
 	}
-	return model == pattern
+	prefix := pattern[:firstStar]
+	suffix := pattern[strings.LastIndex(pattern, "*")+1:]
+	if len(prefix)+len(suffix) > len(model) {
+		return false
+	}
+	return strings.HasPrefix(model, prefix) && strings.HasSuffix(model, suffix)
 }

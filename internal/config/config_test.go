@@ -940,6 +940,8 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolCapableModels).To(ContainElement("gpt-5*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("o1*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("o3*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("gemini-3*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("grok-code-*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("qwen3:*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("devstral:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.1:latest"))
@@ -970,6 +972,8 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolIncapableModels).To(ContainElement("mistral:7b"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("gpt-oss:20b*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("deepseek-r1:*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("claude-haiku*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("gpt-*-mini"))
 		})
 	})
 

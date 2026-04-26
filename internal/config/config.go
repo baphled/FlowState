@@ -540,10 +540,20 @@ func DefaultConfig() *AppConfig {
 //
 // Evidence summary for the local-model entries:
 //   - qwen3:*       — BFCL-v3 72.4 + RULER 99.2 @32K (Qwen3-30B-A3B-Thinking
-//                     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER).
-//   - devstral:latest — SWE-Bench Verified 53.6 (Mistral / Devstral release).
-//   - llama3.1:latest — BFCL 0.761 + RULER 87.4 @32K (llm-stats, NVIDIA).
-//   - llama3.3:latest — v2 BFCL ~77 (Galileo); reasoning > FC.
+//                     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER);
+//                     qwen3:8b verified live in FlowState (2 tool calls on the
+//                     /tmp .md count test).
+//   - devstral:latest — SWE-Bench Verified 53.6 (Mistral / Devstral release);
+//                       verified live in FlowState (1 tool call after ~120s
+//                       first load).
+//   - llama3.1:latest — BFCL 0.761 + RULER 87.4 @32K (llm-stats, NVIDIA);
+//                       verified live in FlowState.
+//   - llama3.3:latest — v2 BFCL ~77 (Galileo); reasoning > FC. Untested live
+//                       (70B too slow for the consumer-GPU smoke runner).
+//   - gemini-3*     — gemini-3-flash-preview verified live in FlowState
+//                     (via github-copilot proxy).
+//   - grok-code-*   — grok-code-fast-1 verified live in FlowState (via
+//                     github-copilot proxy).
 func defaultToolCapableModels() []string {
 	return []string{
 		"claude-*",
@@ -551,6 +561,8 @@ func defaultToolCapableModels() []string {
 		"gpt-5*",
 		"o1*",
 		"o3*",
+		"gemini-3*",
+		"grok-code-*",
 		"qwen3:*",
 		"devstral:latest",
 		"llama3.1:latest",
@@ -585,6 +597,14 @@ func defaultToolCapableModels() []string {
 //   - deepseek-r1:*    — Ollama template-broken for tools per #10935 / #8517.
 //                        The community fork lucasmg/...-tool-true exists but
 //                        has no published bench — local-bench before adopting.
+//   - claude-haiku*    — verified live in FlowState: claude-haiku-4.5 returns
+//                        prose instead of structured tool calls on the /tmp
+//                        .md count test. The cost-optimised distillates trade
+//                        tool-call reliability for latency.
+//   - gpt-*-mini       — same pattern as claude-haiku: gpt-5-mini verified
+//                        prose-only on the same test. The deny pattern uses
+//                        the suffix glob so future *-mini releases are
+//                        captured automatically.
 func defaultToolIncapableModels() []string {
 	return []string{
 		"llama3.2*",
@@ -593,6 +613,8 @@ func defaultToolIncapableModels() []string {
 		"mistral:7b",
 		"gpt-oss:20b*",
 		"deepseek-r1:*",
+		"claude-haiku*",
+		"gpt-*-mini",
 	}
 }
 
