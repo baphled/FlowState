@@ -111,6 +111,42 @@ type AppConfig struct {
 	// Ollama-served 768-dim Cosine model that matches the existing
 	// flowstate Qdrant collection shape.
 	EmbeddingModel string `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
+
+	// ToolCapableModels lists model-name patterns whose underlying provider
+	// is known to reliably emit structured tool calls. Delegation consults
+	// this list before spawning a sub-agent: when the resolved (provider,
+	// model) does not match any entry here (and is not on
+	// ToolIncapableModels), the delegate tool fails closed with a
+	// structured error instead of streaming a sub-agent that would
+	// silently produce zero tool calls. See KB:
+	//   - Investigations/GLM Delegation Failure After Rebuild (April 2026).md
+	//   - Investigations/Non-Anthropic Provider Stream Termination Investigation (April 2026).md
+	//   - Bug Fixes/Planner Harness Rescue - April 2026.md
+	//
+	// Patterns use a prefix match with a single `*` glob suffix:
+	//   - `claude-*` matches every Anthropic Claude model.
+	//   - `qwen3:*` matches `qwen3:8b`, `qwen3:14b`, `qwen3:30b-a3b`.
+	//   - `gpt-oss:20b` is a literal match (the `-4k`/`-8k` clones are
+	//     deliberately NOT covered because they are context-clamped and
+	//     have shown different tool-call reliability in practice).
+	//
+	// Empty (and nil) means "fail closed" — no model is considered tool
+	// capable. Operators opt-in by listing patterns here. Defaults come
+	// from DefaultConfig (the known-good shortlist documented in the
+	// FlowState README).
+	ToolCapableModels []string `json:"tool_capable_models,omitempty" yaml:"tool_capable_models,omitempty"`
+
+	// ToolIncapableModels lists model-name patterns whose underlying
+	// provider is known NOT to emit reliable structured tool calls. This
+	// list takes precedence over ToolCapableModels: a model that matches
+	// any pattern here is rejected regardless of the allow list. Same
+	// glob-suffix matching as ToolCapableModels.
+	//
+	// Defaults pin the four models documented in the KB notes above as
+	// silently producing zero tool calls under FlowState's current
+	// prompts/templates: `llama3.2*`, `qwen2.5-coder*`, `glm-4.7`, and
+	// `mistral:7b`.
+	ToolIncapableModels []string `json:"tool_incapable_models,omitempty" yaml:"tool_incapable_models,omitempty"`
 }
 
 // ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
@@ -488,8 +524,49 @@ func DefaultConfig() *AppConfig {
 				},
 			},
 		},
-		AgentOverrides: make(map[string]AgentOverrideConfig),
-		Compression:    contextpkg.DefaultCompressionConfig(),
+		AgentOverrides:      make(map[string]AgentOverrideConfig),
+		Compression:         contextpkg.DefaultCompressionConfig(),
+		ToolCapableModels:   defaultToolCapableModels(),
+		ToolIncapableModels: defaultToolIncapableModels(),
+	}
+}
+
+// defaultToolCapableModels returns the curated shortlist of model-name
+// patterns FlowState ships with. These are the models we have direct
+// production evidence of emitting structured tool calls reliably under
+// the current FlowState system prompt + provider templates. Operators
+// can extend the list via cfg.ToolCapableModels in config.yaml.
+//
+// The shortlist deliberately omits models with mixed/unknown evidence
+// (e.g. `gpt-oss:20b-4k`, `llama3.2`) — adding a new model is opt-in.
+func defaultToolCapableModels() []string {
+	return []string{
+		"claude-*",
+		"gpt-4*",
+		"gpt-5*",
+		"o1*",
+		"o3*",
+		"qwen3:*",
+		"gpt-oss:20b",
+		"devstral:latest",
+		"llama3.1:latest",
+		"llama3.3:latest",
+	}
+}
+
+// defaultToolIncapableModels returns the curated deny list of models
+// known (per the KB investigations cited on AppConfig.ToolCapableModels)
+// to silently emit zero tool calls under FlowState's current prompts and
+// provider templates. Deny-list match takes precedence over allow-list
+// match, so a future operator who allows `qwen2.5-coder:14b` via
+// ToolCapableModels still trips this guard until they explicitly remove
+// the deny entry.
+func defaultToolIncapableModels() []string {
+	return []string{
+		"llama3.2*",
+		"qwen2.5-coder*",
+		"glm-4.7",
+		"mistral:7b",
 	}
 }
 
@@ -661,6 +738,13 @@ func applyDefaults(cfg *AppConfig) {
 
 	if len(cfg.Plugins.Failover.Tiers) == 0 {
 		cfg.Plugins.Failover.Tiers = defaults.Plugins.Failover.Tiers
+	}
+
+	if len(cfg.ToolCapableModels) == 0 {
+		cfg.ToolCapableModels = defaults.ToolCapableModels
+	}
+	if len(cfg.ToolIncapableModels) == 0 {
+		cfg.ToolIncapableModels = defaults.ToolIncapableModels
 	}
 
 	if !cfg.Harness.Enabled {

@@ -1290,6 +1290,7 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 	if a.Config != nil {
 		dt.WithStoreFactory(newDelegateStoreFactory(a.SessionsDir()))
 		dt.WithSessionsDir(a.SessionsDir())
+		dt.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
 	}
 }
 

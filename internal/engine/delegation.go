@@ -36,6 +36,7 @@ var (
 	errBudgetLimitExceeded      = errors.New("budget limit exceeded: maximum concurrent delegations reached")
 	errAgentNotInAllowlist      = errors.New("agent not in delegation allowlist")
 	errMaxRejectionsExhausted   = errors.New("max rejections exhausted: plan reviewer rejected too many times")
+	errModelNotToolCapable      = errors.New("delegate refused: target model not in tool-capable allowlist")
 )
 
 const maxDelegationFailures = 3
@@ -102,6 +103,15 @@ type DelegateTool struct {
 	sessionsDir        string // sessionsDir is the directory for session metadata persistence.
 	streamers          map[string]streaming.Streamer
 	rejectionTracker   *delegation.RejectionTracker
+	// toolCapableModels is the allow-list of model-name patterns the
+	// resolved sub-agent's model must match before the sub-engine is
+	// streamed. Empty / nil means "skip the gate" — preserves the
+	// historical, ungated delegation behaviour for callers that have
+	// not opted in (e.g. unit tests with no Config wired through).
+	toolCapableModels []string
+	// toolIncapableModels is the deny-list. Match here always wins, even
+	// when the model also matches toolCapableModels.
+	toolIncapableModels []string
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -194,6 +204,30 @@ func (d *DelegateTool) WithStreamers(streamers map[string]streaming.Streamer) *D
 //   - Sets the rejectionTracker field on the DelegateTool.
 func (d *DelegateTool) WithRejectionTracker(tracker *delegation.RejectionTracker) *DelegateTool {
 	d.rejectionTracker = tracker
+	return d
+}
+
+// WithToolCapability configures the model-capability allow/deny lists
+// consulted in Execute() before the sub-engine is streamed. When both
+// slices are empty/nil, the gate is skipped — the same behaviour as
+// before this feature, so callsites that pre-date the feature (or do
+// not wire Config through) keep working.
+//
+// Expected:
+//   - allow: model-name patterns that signal "tool-capable" (glob `*`
+//     suffix supported, e.g. `claude-*`, `qwen3:*`). See
+//     config.AppConfig.ToolCapableModels.
+//   - deny: patterns that signal "known to silently emit zero tool
+//     calls". Always wins over allow.
+//
+// Returns:
+//   - The DelegateTool for chaining.
+//
+// Side effects:
+//   - Replaces any previously configured allow/deny patterns.
+func (d *DelegateTool) WithToolCapability(allow, deny []string) *DelegateTool {
+	d.toolCapableModels = allow
+	d.toolIncapableModels = deny
 	return d
 }
 
@@ -670,6 +704,10 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	target, err := d.resolveTargetWithOptions(ctx, params)
 	if err != nil {
 		return tool.Result{}, err
+	}
+
+	if capErr := d.checkTargetToolCapability(target); capErr != nil {
+		return tool.Result{}, capErr
 	}
 
 	if rejErr := d.checkRejectionLimit(ctx, target.chainID); rejErr != nil {
@@ -1474,6 +1512,67 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		denyDelegate:      !d.agentHasToolPermission(targetAgentID, "delegate"),
 		denyTodoWrite:     !d.agentHasToolPermission(targetAgentID, "todowrite"),
 	}, nil
+}
+
+// checkTargetToolCapability rejects delegation when the resolved
+// (provider, model) for the sub-agent is not in the tool-capable allow
+// list (or matches the deny list). The check is skipped when no allow
+// list is configured — see WithToolCapability for rationale.
+//
+// Expected:
+//   - target carries either an explicit resolvedProvider/resolvedModel
+//     (set by category routing) or a sub-engine whose LastModel/LastProvider
+//     reports the manifest's first failover preference.
+//
+// Returns:
+//   - nil when the gate is disabled or the model is approved.
+//   - errModelNotToolCapable wrapped with the offending agent + (provider,
+//     model) so the parent agent can recover by re-delegating.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) checkTargetToolCapability(target delegationTarget) error {
+	if len(d.toolCapableModels) == 0 && len(d.toolIncapableModels) == 0 {
+		return nil
+	}
+	providerName, modelName := resolveTargetProviderModel(target)
+	if modelName == "" {
+		return nil
+	}
+	if IsToolCapableModel(providerName, modelName, d.toolCapableModels, d.toolIncapableModels) {
+		return nil
+	}
+	return fmt.Errorf("%w: target agent %q would resolve to (%s, %s); configure tool_capable_models in config.yaml or pick a different agent",
+		errModelNotToolCapable, target.agentID, providerName, modelName)
+}
+
+// resolveTargetProviderModel returns the (provider, model) pair the
+// sub-agent will run on, preferring the explicitly resolved values from
+// category routing and falling back to the engine's first failover
+// preference. Both values may be empty when neither path produced a
+// resolution; callers treat that as "no opinion, skip the check".
+//
+// Expected:
+//   - target.engine is non-nil whenever the caller intends to stream.
+//
+// Returns:
+//   - The provider name and model name to consult against the
+//     capability allow/deny lists.
+//
+// Side effects:
+//   - None.
+func resolveTargetProviderModel(target delegationTarget) (string, string) {
+	providerName := target.resolvedProvider
+	modelName := target.resolvedModel
+	if target.engine != nil {
+		if providerName == "" {
+			providerName = target.engine.LastProvider()
+		}
+		if modelName == "" {
+			modelName = target.engine.LastModel()
+		}
+	}
+	return providerName, modelName
 }
 
 // closeSessionIfManaged closes the named session via the session manager when one is configured.
