@@ -78,3 +78,13 @@ func NewTaskOutputCmdForTest(getApp func() *app.App) *cobra.Command {
 func NewTaskCancelCmdForTest(getApp func() *app.App) *cobra.Command {
 	return newTaskCancelCmd(getApp)
 }
+
+// SetOllamaProbeForTest swaps the package-level Ollama HTTP probe so external
+// tests can drive the `flowstate auth ollama` subcommand without making real
+// network calls. Returns a restore function that the test must invoke in its
+// teardown.
+func SetOllamaProbeForTest(probe func(string) error) func() {
+	original := ollamaProbe
+	ollamaProbe = probe
+	return func() { ollamaProbe = original }
+}

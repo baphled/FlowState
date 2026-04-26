@@ -107,6 +107,22 @@ var _ = Describe("Auth Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("anthropic"))
 		})
+
+		DescribeTable("lists every configured provider in help",
+			func(name string) {
+				cmd := cli.NewRootCmd(testApp)
+				cmd.SetArgs([]string{"auth", "--help"})
+				out := new(bytes.Buffer)
+				cmd.SetOut(out)
+				cmd.SetErr(out)
+				Expect(cmd.Execute()).To(Succeed())
+				Expect(out.String()).To(ContainSubstring(name))
+			},
+			Entry("openai", "openai"),
+			Entry("openzen", "openzen"),
+			Entry("zai", "zai"),
+			Entry("ollama", "ollama"),
+		)
 	})
 
 	Describe("GitHub Copilot OAuth", func() {
