@@ -1,0 +1,400 @@
+// Package swarm — gate dispatch surface (T-swarm-3, Phase 1).
+//
+// The swarm spec §3 defines two gate scopes that fire around member
+// execution within a swarm run:
+//
+//   - Swarm-level orchestration gates (when: pre / post). Fire once at
+//     swarm start and once at swarm end with no specific target.
+//   - Agent-level behavioural-contract gates (when: pre-member /
+//     post-member). Fire around each invocation of a specific target
+//     agent within the swarm.
+//
+// Phase 1 implements only one slice of that surface so the planning-loop
+// reference swarm has a working post-member gate without dragging in
+// the Extension API v1 dispatcher or the dynamic schema-discovery path.
+//
+// Phase 1 scope (this commit):
+//
+//   - One gate kind: "builtin:result-schema". Validates the most-recent
+//     value the target member wrote to the coordination_store against a
+//     JSON Schema named by GateSpec.SchemaRef. Schemas resolve through
+//     a small in-process registry (see RegisterSchema) — no on-disk
+//     discovery yet.
+//   - One lifecycle point: when=="post-member". Fires after the named
+//     target member's stream completes; gate.Target identifies the
+//     agent.
+//   - Pass/fail semantics. On fail, the gate runner returns a typed
+//     *GateError carrying the gate name, member id, and reason. The
+//     swarm runner halts; there is no retry or rollback.
+//
+// Phase 2+ deferred (TODOs):
+//
+//   - when: "pre" / "post" (swarm-level boundary gates).
+//   - when: "pre-member" (member-entry gate).
+//   - kind: "ext:*" — dispatch through the Extension API v1 backend.
+//   - Dynamic schema discovery from a `schemas/` directory.
+//   - Retry / rollback semantics on gate failure (currently fail-fast).
+package swarm
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/google/jsonschema-go/jsonschema"
+
+	"github.com/baphled/flowstate/internal/coordination"
+)
+
+// LifecyclePostMember is the only "when" value Phase 1 fires on. Future
+// phases will add LifecyclePre, LifecyclePost, and LifecyclePreMember
+// alongside this constant; keeping the names stable in the spec means
+// code that branches on the lifecycle stays obvious to read.
+const LifecyclePostMember = "post-member"
+
+// DefaultMemberOutputKey is the coord-store sub-key the result-schema
+// runner reads when the manifest does not pin one explicitly. The
+// convention follows existing review-loop wiring (see
+// coordination/persisting_store.go and the planner workflow): a member
+// writes its terminal output under "<chainPrefix>/<memberID>/<key>",
+// with "review" being the canonical key for the plan-reviewer agent.
+//
+// TODO(swarm-3-output-key): the spec intends GateSpec to grow an
+// explicit `output_key` field. Until that lands, the runner uses
+// "review" for plan-reviewer and falls back to "output" otherwise; see
+// resolveOutputKey in gate_result_schema.go.
+const DefaultMemberOutputKey = "output"
+
+// GateRunner dispatches a single gate against the runtime state and
+// reports pass/fail via a returned error. Phase 1 has exactly one
+// production implementation (builtin:result-schema) plus the
+// MultiRunner that selects between registered backends by Kind prefix.
+//
+// Implementations are expected to be cheap (no network calls in Phase
+// 1) so they can fire synchronously inside the swarm runner without
+// stalling the streaming hot path.
+type GateRunner interface {
+	// Run validates the gate against args. Returns nil on pass; a
+	// non-nil error on fail. Implementations SHOULD return a *GateError
+	// (or wrap one with errors.As-friendly semantics) so the swarm
+	// runner can surface the structured failure detail to users.
+	Run(ctx context.Context, gate GateSpec, args GateArgs) error
+}
+
+// GateArgs carries everything a runner needs to evaluate a gate
+// without leaking the engine type into the swarm package. The runner
+// reads the latest member-output value from CoordStore using
+// ChainPrefix + MemberID; the SwarmID is included for log/event
+// correlation in the GateError surface.
+type GateArgs struct {
+	// SwarmID is the resolved swarm id (the user-facing name typed
+	// after `@`). Used in GateError messages for log correlation.
+	SwarmID string
+
+	// ChainPrefix is the coordination_store namespace prefix the
+	// runner should use when reading member outputs. Comes from
+	// swarm.Context.ChainPrefix; never empty when the runner is
+	// dispatched from a real swarm run.
+	ChainPrefix string
+
+	// MemberID is the agent id whose stream just completed. For
+	// post-member gates, this MUST equal the matching gate's Target;
+	// the swarm runner is responsible for that filter.
+	MemberID string
+
+	// CoordStore is a read handle on the active coordination store.
+	// The runner only calls Get; it never writes. A nil store is
+	// treated as "no value available" and surfaces as a typed
+	// *GateError with reason "coordination store unavailable".
+	CoordStore coordination.Store
+}
+
+// GateError is the structured failure type returned from gate runners.
+// The swarm runner halts on a *GateError without retry — the fields
+// are intentionally explicit so user-facing surfaces (TUI activity
+// pane, CLI stderr) can format the failure without parsing.
+type GateError struct {
+	// GateName is the manifest-supplied name of the failing gate.
+	GateName string
+
+	// GateKind is the kind string (e.g. "builtin:result-schema") so
+	// log filters can group failures by family.
+	GateKind string
+
+	// SwarmID identifies the swarm run that produced the failure.
+	SwarmID string
+
+	// MemberID is the agent whose output failed validation. Empty for
+	// swarm-level (pre/post) gates once those land in Phase 2.
+	MemberID string
+
+	// Reason is a short human-readable explanation of the failure
+	// (e.g. "schema validation failed: required property "verdict"
+	// missing"). Callers concatenate this onto the gate context when
+	// reporting to users.
+	Reason string
+
+	// Cause is the underlying error when one exists (e.g. the
+	// jsonschema validation error). Surfaced via Unwrap so
+	// errors.Is / errors.As work transparently.
+	Cause error
+}
+
+// Error renders the structured fields in a stable "gate <name> (<kind>)
+// failed for member <id> in swarm <id>: <reason>" shape so test
+// matchers can pin the full message format.
+//
+// Returns:
+//   - The formatted error string.
+//
+// Side effects:
+//   - None.
+func (e *GateError) Error() string {
+	if e == nil {
+		return "<nil GateError>"
+	}
+	scope := fmt.Sprintf("swarm %q", e.SwarmID)
+	if e.MemberID != "" {
+		scope = fmt.Sprintf("member %q in swarm %q", e.MemberID, e.SwarmID)
+	}
+	return fmt.Sprintf("gate %q (%s) failed for %s: %s", e.GateName, e.GateKind, scope, e.Reason)
+}
+
+// Unwrap exposes the underlying cause so errors.Is / errors.As work
+// across the failure boundary. Returns nil when no cause is attached.
+//
+// Returns:
+//   - The wrapped error or nil.
+//
+// Side effects:
+//   - None.
+func (e *GateError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// MultiRunner dispatches gates by Kind to registered backend runners.
+// Phase 1 registers exactly one backend ("builtin:result-schema");
+// future phases register the Extension API v1 dispatcher under
+// "ext:*" and any additional builtins as they land.
+//
+// The dispatch is exact-match on Kind today. The validator (see
+// validateGates in manifest.go) already enforces the "builtin:" /
+// "ext:" prefix, so a Kind that reaches the runner is well-formed —
+// MultiRunner only has to look it up.
+type MultiRunner struct {
+	mu       sync.RWMutex
+	backends map[string]GateRunner
+}
+
+// NewMultiRunner returns a MultiRunner with no backends registered.
+// Callers chain Register calls before handing it to the swarm runner.
+//
+// Returns:
+//   - An empty *MultiRunner ready for Register.
+//
+// Side effects:
+//   - None.
+func NewMultiRunner() *MultiRunner {
+	return &MultiRunner{backends: make(map[string]GateRunner)}
+}
+
+// Register installs runner under kind. A second Register call with
+// the same kind overwrites the previous entry — the production wiring
+// only registers each kind once at app-startup, so overwrite
+// semantics keep tests cheap (no "already registered" plumbing).
+//
+// Expected:
+//   - kind is non-empty (e.g. "builtin:result-schema"). Empty kinds
+//     are silently ignored so a misconfigured caller cannot wedge the
+//     dispatcher.
+//   - runner is non-nil. Nil runners are silently ignored for the
+//     same reason.
+//
+// Side effects:
+//   - Stores the runner under m's internal map under the write lock.
+func (m *MultiRunner) Register(kind string, runner GateRunner) {
+	if kind == "" || runner == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.backends[kind] = runner
+}
+
+// Run dispatches gate to the registered runner whose key matches
+// gate.Kind. Returns a *GateError with reason "no runner registered
+// for kind <kind>" when no backend is registered — that surface is
+// the same one used for runtime validation failures so callers can
+// branch uniformly on *GateError.
+//
+// Expected:
+//   - gate is a populated GateSpec the swarm runner has already
+//     filtered by lifecycle / target.
+//   - args carries a non-nil CoordStore in production wiring; nil is
+//     allowed and surfaces as a typed gate failure rather than a
+//     panic.
+//
+// Returns:
+//   - nil when the dispatched runner reports pass.
+//   - A *GateError when no runner is registered for the kind, or
+//     when the dispatched runner reports fail.
+//
+// Side effects:
+//   - Calls the registered runner's Run, which may read from the
+//     coordination store inside args.
+func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) error {
+	m.mu.RLock()
+	runner, ok := m.backends[gate.Kind]
+	m.mu.RUnlock()
+	if !ok {
+		return &GateError{
+			GateName: gate.Name,
+			GateKind: gate.Kind,
+			SwarmID:  args.SwarmID,
+			MemberID: args.MemberID,
+			Reason:   fmt.Sprintf("no runner registered for kind %q", gate.Kind),
+		}
+	}
+	return runner.Run(ctx, gate, args)
+}
+
+// schemaRegistry is the Phase 1 in-process JSON-schema lookup table.
+// Keys are the SchemaRef strings appearing on GateSpec.SchemaRef in
+// manifests (e.g. "review-verdict-v1"); values are pre-resolved
+// jsonschema documents. The registry is concurrency-safe because the
+// CLI may register schemas during app construction while a long-lived
+// engine reads them from a background goroutine.
+//
+// Phase 2 will replace the global with a SchemaResolver interface so
+// the schemas/ directory loader can plug in without taking a build-
+// time dependency on this package.
+var schemaRegistry = struct {
+	mu      sync.RWMutex
+	schemas map[string]*jsonschema.Resolved
+}{
+	schemas: make(map[string]*jsonschema.Resolved),
+}
+
+// RegisterSchema installs schema under name in the Phase 1 registry.
+// A second call with the same name overwrites the prior entry — the
+// production wiring registers each schema once at app construction.
+//
+// Expected:
+//   - name is the SchemaRef string the manifest references; non-empty.
+//   - schema is a non-nil jsonschema.Schema. The caller pre-validates
+//     by calling schema.Resolve before Register; the registered value
+//     is the resolved form so runners do not pay re-resolution cost
+//     on every gate dispatch.
+//
+// Returns:
+//   - nil on success.
+//   - An error when name is empty or schema is nil. Errors here are
+//     programmer mistakes — the production wiring keeps the call
+//     site to a small, audited block.
+//
+// Side effects:
+//   - Stores the resolved schema under schemaRegistry's write lock.
+func RegisterSchema(name string, schema *jsonschema.Schema) error {
+	if name == "" {
+		return errors.New("swarm.RegisterSchema: name must be non-empty")
+	}
+	if schema == nil {
+		return errors.New("swarm.RegisterSchema: schema must be non-nil")
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		return fmt.Errorf("swarm.RegisterSchema: resolving %q: %w", name, err)
+	}
+	schemaRegistry.mu.Lock()
+	defer schemaRegistry.mu.Unlock()
+	schemaRegistry.schemas[name] = resolved
+	return nil
+}
+
+// LookupSchema returns the resolved schema registered under name and
+// a presence boolean. Used by gate_result_schema.go to validate
+// member outputs without re-resolving the schema each call.
+//
+// Expected:
+//   - name is a non-empty SchemaRef.
+//
+// Returns:
+//   - The resolved schema and true when registered.
+//   - (nil, false) when name is unknown.
+//
+// Side effects:
+//   - None (read-only access under the registry's RLock).
+func LookupSchema(name string) (*jsonschema.Resolved, bool) {
+	schemaRegistry.mu.RLock()
+	defer schemaRegistry.mu.RUnlock()
+	s, ok := schemaRegistry.schemas[name]
+	return s, ok
+}
+
+// ClearSchemasForTest empties the Phase 1 registry. Tests use this in
+// BeforeEach so a stray Register call from a sibling spec does not
+// leak across test boundaries. Not exported under a non-_test name
+// because production code never needs to clear the registry.
+//
+// Side effects:
+//   - Replaces schemaRegistry.schemas with an empty map under the
+//     write lock.
+func ClearSchemasForTest() {
+	schemaRegistry.mu.Lock()
+	defer schemaRegistry.mu.Unlock()
+	schemaRegistry.schemas = make(map[string]*jsonschema.Resolved)
+}
+
+// PostMemberGatesFor returns the gates from spec slice whose When is
+// "post-member" and whose Target matches memberID. Helpful both to
+// the swarm runner (which dispatches the matched set after a member
+// stream completes) and to tests that pin the filter behaviour
+// without going through the full runner. The returned slice is a new
+// allocation so callers can iterate it without aliasing the manifest.
+//
+// Expected:
+//   - gates may be nil or empty; an empty slice is returned in that
+//     case so callers can range over the result without a nil-guard.
+//   - memberID is the agent id whose stream just completed.
+//
+// Returns:
+//   - A new slice of matched gates; never nil.
+//
+// Side effects:
+//   - None.
+func PostMemberGatesFor(gates []GateSpec, memberID string) []GateSpec {
+	out := make([]GateSpec, 0)
+	for _, g := range gates {
+		if g.When == LifecyclePostMember && g.Target == memberID {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// decodeJSONInstance unmarshals a coord-store payload into the
+// shape jsonschema.Resolved.Validate expects (a tree of map / slice /
+// scalar values). Pulled into a helper so the result-schema runner
+// stays focused on the validation flow.
+//
+// Expected:
+//   - payload is the raw byte slice read from the coordination store.
+//
+// Returns:
+//   - The decoded value (typically map[string]any) and nil on success.
+//   - nil and a wrapped error when payload is not valid JSON.
+//
+// Side effects:
+//   - None.
+func decodeJSONInstance(payload []byte) (any, error) {
+	var instance any
+	if err := json.Unmarshal(payload, &instance); err != nil {
+		return nil, fmt.Errorf("decoding member output as JSON: %w", err)
+	}
+	return instance, nil
+}
