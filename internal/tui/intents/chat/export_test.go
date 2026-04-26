@@ -592,3 +592,26 @@ func SwarmFilterProfileDelegationsOnlyForTest() int {
 func (i *Intent) SwarmFilterProfileForTest() int {
 	return int(i.swarmFilterProfile)
 }
+
+// SetDelegationPickerForTest injects a fully-constructed DelegationPickerModal
+// onto the intent so external specs can drive the picker's key handling
+// (left/right + up/down + j/k/h/l) without standing up a session manager
+// or calling openDelegationPicker.
+func (i *Intent) SetDelegationPickerForTest(modal *chatview.DelegationPickerModal) {
+	i.delegationPickerModal = modal
+}
+
+// DelegationPickerSelectedAgentForTest returns the AgentID of the currently
+// selected session in the picker, or the empty string when no picker is
+// open or the picker has no sessions. Used by the left/right cycling
+// specs to assert cursor movement.
+func (i *Intent) DelegationPickerSelectedAgentForTest() string {
+	if i.delegationPickerModal == nil {
+		return ""
+	}
+	sel := i.delegationPickerModal.Selected()
+	if sel == nil {
+		return ""
+	}
+	return sel.AgentID
+}

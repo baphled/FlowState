@@ -286,6 +286,7 @@ func configureApplicationAfterBuild(
 			app.API.SetCompletionOrchestrator(app.completionOrchestrator)
 		}
 	}
+	wireSessionStatusSync(eng.EventBus(), app.sessionManager)
 	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider, app.ollamaProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)
 	startExternalPlugins(rt)
@@ -2613,6 +2614,37 @@ func wireSessionRecorder(cfg *config.AppConfig, sessionMgr *session.Manager, ses
 	sessionMgr.SetRecorder(recorder)
 	log.Printf("info: session recording enabled, writing to %s", dir)
 	return recorder
+}
+
+// wireSessionStatusSync subscribes the session manager to the engine's
+// event bus so any session.ended event automatically flips the matching
+// session's Status field to StatusCompleted. Closes the gap reported by
+// users as "delegated agent status doesn't match reality" — without
+// this hook, Status only ever updated when CloseSession was called
+// explicitly, so async chain ends left listed sessions stuck on
+// "active". The subscription is idempotent and respects status
+// precedence (failed > completed > active) inside Manager itself.
+//
+// Expected:
+//   - bus may be nil; when nil the wiring no-ops and the legacy
+//     CloseSession-only behaviour is preserved.
+//   - sessionMgr may be nil; same no-op semantics.
+//
+// Side effects:
+//   - Registers a single handler on the bus for "session.ended". The
+//     handler type-asserts the published event to *events.SessionEvent
+//     so the session package does not need to import plugin/events.
+func wireSessionStatusSync(bus *eventbus.EventBus, sessionMgr *session.Manager) {
+	if bus == nil || sessionMgr == nil {
+		return
+	}
+	bus.Subscribe(events.EventSessionEnded, func(payload any) {
+		ev, ok := payload.(*events.SessionEvent)
+		if !ok || ev == nil {
+			return
+		}
+		sessionMgr.MarkEndedFromEvent(ev.Data.SessionID)
+	})
 }
 
 // tracedBundle groups the tracing pieces produced by buildTracedProvider.

@@ -19,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
@@ -3148,3 +3149,86 @@ func burstPaddedIdx(n int) string {
 	}
 	return string(rune('0'+n/100)) + string(rune('0'+(n/10)%10)) + string(rune('0'+n%10))
 }
+
+// Delegation picker — left/right arrow alias of up/down. The user
+// asked for arrow-key cycling through delegated agent sessions in
+// creation order; AllSessions / ChildSessions in the session manager
+// now sort deterministically by CreatedAt, so the picker only needs
+// to bind left → MoveUp (prev) and right → MoveDown (next). Vim keys
+// h/l alias the same way for muscle-memory parity with j/k.
+var _ = Describe("Delegation picker arrow-key cycling", func() {
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+	})
+
+	build := func() (*chat.Intent, *chatview.DelegationPickerModal) {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-picker",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  4096,
+		})
+		// Session manager now returns AllSessions in CreatedAt order;
+		// the fixture mirrors that contract so the cursor moves through
+		// agents in the order the user expects.
+		t0 := time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC)
+		sessions := []*session.Session{
+			{ID: "s1", AgentID: "agent-one", CreatedAt: t0},
+			{ID: "s2", AgentID: "agent-two", CreatedAt: t0.Add(time.Second)},
+			{ID: "s3", AgentID: "agent-three", CreatedAt: t0.Add(2 * time.Second)},
+		}
+		modal := chatview.NewDelegationPickerModal(sessions, 80, 24)
+		intent.SetDelegationPickerForTest(modal)
+		return intent, modal
+	}
+
+	It("right arrow moves the cursor to the next session in creation order", func() {
+		intent, _ := build()
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-one"),
+			"sanity: cursor starts at the first session")
+
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-two"))
+
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-three"))
+	})
+
+	It("left arrow moves the cursor to the previous session", func() {
+		intent, _ := build()
+		// Advance twice with right, then walk back with left.
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-three"))
+
+		intent.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-two"))
+
+		intent.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-one"))
+	})
+
+	It("clamps at the bounds without wrapping (matches MoveUp / MoveDown)", func() {
+		intent, _ := build()
+
+		// Left at the start stays at the first session.
+		intent.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-one"))
+
+		// Right past the end stays at the last session.
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight})
+		intent.Update(tea.KeyMsg{Type: tea.KeyRight}) // one past the end
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-three"))
+	})
+
+	It("h and l aliases mirror left and right (vim parity with j/k)", func() {
+		intent, _ := build()
+		intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-two"))
+		intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+		Expect(intent.DelegationPickerSelectedAgentForTest()).To(Equal("agent-one"))
+	})
+})
