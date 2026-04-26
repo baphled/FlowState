@@ -237,6 +237,57 @@ var _ = Describe("ProviderSetupIntent", func() {
 		})
 	})
 
+	Describe("viewport scrolling", func() {
+		var (
+			scrollMCPServers []config.MCPServerConfig
+			scrollIntent     *providersetup.Intent
+		)
+
+		BeforeEach(func() {
+			scrollMCPServers = manyMCPServers(8)
+			scrollIntent = providersetup.NewIntent(providersetup.IntentConfig{
+				Shell:      mockApp,
+				Config:     cfg,
+				MCPServers: scrollMCPServers,
+			})
+			scrollIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+			scrollIntent.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+		})
+
+		It("clamps the cursor at the last item", func() {
+			pressDown(scrollIntent, len(scrollMCPServers)+5)
+			Expect(scrollIntent.SelectedProvider()).To(Equal(len(scrollMCPServers) - 1))
+		})
+
+		It("advances offset when KeyDown crosses the visible bottom", func() {
+			pressDown(scrollIntent, len(scrollMCPServers)-1)
+			Expect(scrollIntent.Offset()).To(BeNumerically(">", 0))
+			Expect(scrollIntent.SelectedProvider() - scrollIntent.Offset()).To(BeNumerically("<", visibleRowsFor(scrollIntent)))
+		})
+
+		It("decreases offset when KeyUp crosses the visible top", func() {
+			pressDown(scrollIntent, len(scrollMCPServers)-1)
+			beforeOffset := scrollIntent.Offset()
+			Expect(beforeOffset).To(BeNumerically(">", 0))
+
+			pressUp(scrollIntent, beforeOffset+1)
+			Expect(scrollIntent.Offset()).To(BeNumerically("<", beforeOffset))
+		})
+
+		It("keeps offset at zero when the list fits in the viewport", func() {
+			fitting := providersetup.NewIntent(providersetup.IntentConfig{
+				Shell:      mockApp,
+				Config:     cfg,
+				MCPServers: manyMCPServers(2),
+			})
+			fitting.Update(tea.KeyMsg{Type: tea.KeyTab})
+			fitting.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+			pressDown(fitting, 1)
+			Expect(fitting.Offset()).To(Equal(0))
+		})
+	})
+
 	Describe("Intent interface compliance", func() {
 		It("satisfies app.Intent interface", func() {
 			var _ interface {
@@ -267,3 +318,45 @@ func (m *MockAppShell) SetIntent(intent interface{}) {}
 
 func (m *MockAppShell) Width() int  { return 80 }
 func (m *MockAppShell) Height() int { return 24 }
+
+const reservedHeaderFooterRowsForTests = 7
+
+func manyMCPServers(count int) []config.MCPServerConfig {
+	servers := make([]config.MCPServerConfig, count)
+	for idx := range servers {
+		servers[idx] = config.MCPServerConfig{
+			Name:    mcpName(idx),
+			Command: "echo",
+			Enabled: false,
+		}
+	}
+	return servers
+}
+
+func mcpName(idx int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	if idx < len(letters) {
+		return "mcp-" + string(letters[idx])
+	}
+	return "mcp-" + string(letters[idx%len(letters)])
+}
+
+func pressDown(intent *providersetup.Intent, n int) {
+	for k := 0; k < n; k++ {
+		intent.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+}
+
+func pressUp(intent *providersetup.Intent, n int) {
+	for k := 0; k < n; k++ {
+		intent.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+}
+
+func visibleRowsFor(intent *providersetup.Intent) int {
+	rows := intent.Height() - reservedHeaderFooterRowsForTests
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
