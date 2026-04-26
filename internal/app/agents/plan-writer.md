@@ -67,6 +67,16 @@ orchestrator_meta:
     - domain: Plan
       trigger: Write structured, actionable implementation plans from validated requirements and evidence
 harness_enabled: true
+harness:
+  enabled: true
+  # plan-writer is the agent whose streamed output is treated as a
+  # plan document by the harness validate → critic → retry loop. Risks
+  # and recommendations caught here are cheaper to address than during
+  # execution, so the critic runs on every plan-writer evaluation
+  # regardless of the global harness.critic_enabled config flag. The
+  # planner agent (the orchestrator) does NOT emit plans directly —
+  # delegations to plan-writer go through this harness.
+  critic_enabled: true
 ---
 
 # FlowState Plan Writer
