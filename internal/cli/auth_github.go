@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,6 +16,35 @@ import (
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/spf13/cobra"
 )
+
+// buildVerificationURL appends the user_code as a query parameter so
+// github.com/login/device pre-fills the input box. Falls back to the
+// raw verificationURI when parsing fails (we'd rather open the bare
+// page than abort the flow).
+//
+// Expected:
+//   - verificationURI is the URL returned by InitiateFlow.
+//   - userCode is the code returned by InitiateFlow (formatted XXXX-XXXX).
+//
+// Returns:
+//   - The verificationURI with `?user_code=<userCode>` merged into the
+//     query string, or the unmodified verificationURI on parse failure.
+//
+// Side effects:
+//   - None.
+func buildVerificationURL(verificationURI, userCode string) string {
+	if userCode == "" {
+		return verificationURI
+	}
+	parsed, err := url.Parse(verificationURI)
+	if err != nil {
+		return verificationURI
+	}
+	q := parsed.Query()
+	q.Set("user_code", userCode)
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
+}
 
 // defaultGitHubClientID is borrowed from neovim/copilot.lua, a public OSS
 // project whose client ID is registered with GitHub for the Copilot device
@@ -87,7 +117,7 @@ func runAuthGitHub(cmd *cobra.Command, application *app.App) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "Starting GitHub OAuth authentication...")
 	fmt.Fprintln(cmd.OutOrStdout())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	clientID := resolveGitHubClientID(application.Config)
@@ -98,13 +128,23 @@ func runAuthGitHub(cmd *cobra.Command, application *app.App) error {
 		return fmt.Errorf("initiating github oauth flow: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Device code: %s\n", dcResp.DeviceCode)
-	fmt.Fprintf(cmd.OutOrStdout(), "User code: %s\n", dcResp.UserCode)
-	fmt.Fprintf(cmd.OutOrStdout(), "Verification URL: %s\n", dcResp.VerificationURI)
-	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintln(cmd.OutOrStdout(), "Waiting for authorization...")
+	out := cmd.OutOrStdout()
+	prefilledURL := buildVerificationURL(dcResp.VerificationURI, dcResp.UserCode)
+	fmt.Fprintf(out, "User code: %s\n", dcResp.UserCode)
+	fmt.Fprintf(out, "URL:       %s\n", prefilledURL)
+	fmt.Fprintln(out)
+	if err := OpenURL(prefilledURL); err != nil {
+		fmt.Fprintln(out, "(Couldn't auto-open the browser — open the URL above manually.)")
+	} else {
+		fmt.Fprintln(out, "Opening the verification page in your browser (code pre-filled).")
+	}
+	fmt.Fprintln(out, "Click the green \"Authorize\" button when prompted.")
+	fmt.Fprintln(out)
 
+	spinner := NewSpinner(out, fmt.Sprintf("Waiting for GitHub authorization (code %s)", dcResp.UserCode))
+	spinner.Start()
 	flowResult, err := ghProvider.PollToken(ctx, dcResp.DeviceCode, dcResp.Interval)
+	spinner.Stop("")
 	if err != nil {
 		return fmt.Errorf("polling github token: %w", err)
 	}
