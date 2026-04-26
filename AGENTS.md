@@ -492,7 +492,7 @@ FlowState builds a failback chain with providers in this order: **anthropic → 
 
 ### Agent Manifest Model Names
 
-Agent manifests in `~/.local/share/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names.
+Agent manifests in `~/.config/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names. (Manifests previously lived in `~/.local/share/flowstate/agents/` — the first run after the XDG_DATA → XDG_CONFIG migration copies your edits across automatically; the legacy dir is left in place for you to remove manually.)
 
 ### Anthropic Streaming Tool Call Arguments
 
