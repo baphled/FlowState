@@ -312,4 +312,67 @@ var _ = Describe("MCPMemoryClient", func() {
 			Expect(err).To(MatchError("tool error"))
 		})
 	})
+
+	Describe("entity-shape leniency (learning-hook-json regression)", func() {
+		Context("CreateEntities", func() {
+			It("accepts the documented {\"entities\": [...]} object shape", func() {
+				client.result = &mcp.ToolResult{Content: `{"entities":[{"name":"E1","entityType":"T","observations":["o"]}]}`}
+				out, err := mem.CreateEntities(context.Background(), nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out).To(HaveLen(1))
+				Expect(out[0].Name).To(Equal("E1"))
+			})
+
+			It("accepts a bare [...] array shape returned by the JS reference memory server", func() {
+				client.result = &mcp.ToolResult{Content: `[{"name":"E1","entityType":"T","observations":["o"]}]`}
+				out, err := mem.CreateEntities(context.Background(), nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out).To(HaveLen(1))
+				Expect(out[0].Name).To(Equal("E1"))
+				Expect(out[0].EntityType).To(Equal("T"))
+			})
+
+			It("treats an empty bare array as no entities, not an error", func() {
+				client.result = &mcp.ToolResult{Content: `[]`}
+				out, err := mem.CreateEntities(context.Background(), nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out).To(BeEmpty())
+			})
+
+			It("rejects malformed JSON with a wrapped error", func() {
+				client.result = &mcp.ToolResult{Content: `{"entities": [`}
+				_, err := mem.CreateEntities(context.Background(), nil)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("create_entities"))
+			})
+		})
+
+		Context("SearchNodes", func() {
+			It("accepts a bare [...] array shape", func() {
+				client.result = &mcp.ToolResult{Content: `[{"name":"Alice","entityType":"Person","observations":["likes Go"]}]`}
+				out, err := mem.SearchNodes(context.Background(), "Alice")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out).To(HaveLen(1))
+				Expect(out[0].Name).To(Equal("Alice"))
+			})
+		})
+
+		Context("CreateRelations", func() {
+			It("accepts a bare [...] array shape", func() {
+				client.result = &mcp.ToolResult{Content: `[{"from":"A","to":"B","relationType":"friend"}]`}
+				out, err := mem.CreateRelations(context.Background(), nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out).To(HaveLen(1))
+				Expect(out[0].From).To(Equal("A"))
+				Expect(out[0].RelationType).To(Equal("friend"))
+			})
+
+			It("rejects malformed JSON with a wrapped error", func() {
+				client.result = &mcp.ToolResult{Content: `[{"from":`}
+				_, err := mem.CreateRelations(context.Background(), nil)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("create_relations"))
+			})
+		})
+	})
 })

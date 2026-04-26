@@ -6,6 +6,7 @@ package learning
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/baphled/flowstate/internal/mcp"
 )
@@ -47,20 +48,7 @@ func NewMCPMemoryClient(client mcp.Client, server string) *MCPMemoryClient {
 // Side effects:
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) CreateEntities(ctx context.Context, entities []Entity) ([]Entity, error) {
-	var out struct {
-		Entities []Entity `json:"entities"`
-	}
-	empty, err := m.callAndUnmarshal(ctx, "create_entities", map[string]any{"entities": entities}, &out)
-	if err != nil {
-		return nil, err
-	}
-	if empty {
-		return []Entity{}, nil
-	}
-	if out.Entities == nil {
-		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
-	}
-	return out.Entities, nil
+	return m.callAndParseEntities(ctx, "create_entities", map[string]any{"entities": entities})
 }
 
 // CreateRelations establishes directed relations between entities by calling the MCP tool.
@@ -76,20 +64,7 @@ func (m *MCPMemoryClient) CreateEntities(ctx context.Context, entities []Entity)
 // Side effects:
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) CreateRelations(ctx context.Context, relations []Relation) ([]Relation, error) {
-	var out struct {
-		Relations []Relation `json:"relations"`
-	}
-	empty, err := m.callAndUnmarshal(ctx, "create_relations", map[string]any{"relations": relations}, &out)
-	if err != nil {
-		return nil, err
-	}
-	if empty {
-		return []Relation{}, nil
-	}
-	if out.Relations == nil {
-		return nil, &json.UnmarshalTypeError{Value: "missing 'relations' field in MCP response", Type: nil}
-	}
-	return out.Relations, nil
+	return m.callAndParseRelations(ctx, "create_relations", map[string]any{"relations": relations})
 }
 
 // SearchNodes performs a full-text search for entities by calling the MCP tool.
@@ -105,20 +80,7 @@ func (m *MCPMemoryClient) CreateRelations(ctx context.Context, relations []Relat
 // Side effects:
 //   - Calls the MCP server.
 func (m *MCPMemoryClient) SearchNodes(ctx context.Context, query string) ([]Entity, error) {
-	var out struct {
-		Entities []Entity `json:"entities"`
-	}
-	empty, err := m.callAndUnmarshal(ctx, "search_nodes", map[string]any{"query": query}, &out)
-	if err != nil {
-		return nil, err
-	}
-	if empty {
-		return []Entity{}, nil
-	}
-	if out.Entities == nil {
-		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
-	}
-	return out.Entities, nil
+	return m.callAndParseEntities(ctx, "search_nodes", map[string]any{"query": query})
 }
 
 // OpenNodes retrieves specific entities and their relations by calling the MCP tool.
@@ -316,4 +278,150 @@ func (m *MCPMemoryClient) callAndUnmarshal(ctx context.Context, toolName string,
 	}
 	return mcp.DecodeContent(result.Content, target,
 		"tool", toolName, "server", m.MCPServer)
+}
+
+// callAndParseEntities invokes an MCP tool and decodes its content into a
+// canonical []Entity slice, accepting either of the two JSON shapes that real
+// MCP memory servers emit: the documented {"entities": [...]} object form and
+// the bare [...] array form returned by the JS reference memory server.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - toolName identifies the MCP tool.
+//   - args contains serialisable tool arguments.
+//
+// Returns:
+//   - The parsed entities, normalised to a non-nil slice (empty when the MCP
+//     server returned a non-JSON empty marker such as "undefined").
+//   - An error when the MCP call fails, the tool reports an error, or the
+//     content is JSON-shaped but cannot be decoded as either accepted shape.
+//
+// Side effects:
+//   - Calls the MCP server.
+//   - Emits a debug-level log when an empty non-JSON response is observed.
+func (m *MCPMemoryClient) callAndParseEntities(ctx context.Context, toolName string, args map[string]any) ([]Entity, error) {
+	result, err := m.MCPClient.CallTool(ctx, m.MCPServer, toolName, args)
+	if err != nil {
+		return nil, err
+	}
+	if result.IsError {
+		return nil, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+	}
+	return parseEntities([]byte(result.Content), toolName, m.MCPServer)
+}
+
+// callAndParseRelations invokes an MCP tool and decodes its content into a
+// canonical []Relation slice, accepting either {"relations": [...]} or a bare
+// [...] array shape, matching the leniency applied to entity-bearing calls.
+//
+// Expected:
+//   - ctx is valid for the tool call.
+//   - toolName identifies the MCP tool.
+//   - args contains serialisable tool arguments.
+//
+// Returns:
+//   - The parsed relations, normalised to a non-nil slice (empty when the MCP
+//     server returned a non-JSON empty marker such as "undefined").
+//   - An error when the MCP call fails, the tool reports an error, or the
+//     content is JSON-shaped but cannot be decoded as either accepted shape.
+//
+// Side effects:
+//   - Calls the MCP server.
+//   - Emits a debug-level log when an empty non-JSON response is observed.
+func (m *MCPMemoryClient) callAndParseRelations(ctx context.Context, toolName string, args map[string]any) ([]Relation, error) {
+	result, err := m.MCPClient.CallTool(ctx, m.MCPServer, toolName, args)
+	if err != nil {
+		return nil, err
+	}
+	if result.IsError {
+		return nil, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+	}
+	return parseRelations([]byte(result.Content), toolName, m.MCPServer)
+}
+
+// parseEntities decodes a raw MCP content payload into the canonical
+// []Entity shape used internally by the learning package.
+//
+// LLM-driven and reference-implementation MCP memory servers are inconsistent
+// about whether they wrap their output in an entities-keyed object or return a
+// bare JSON array. Rather than depending on a single shape, the parser tries
+// the documented {"entities": [...]} form first and, on the specific
+// "cannot unmarshal array into Go value of type struct" failure, retries as a
+// bare [...] array. Both succeed against the same canonical []Entity result,
+// which is what every caller expects.
+//
+// Empty MCP content (whitespace, the literal "undefined", or a missing-but-
+// well-formed object with no entities field) is treated as an empty slice
+// rather than an error so the learning hook does not warn on every quiet
+// session.
+//
+// Expected:
+//   - content is the raw MCP ToolResult.Content payload.
+//   - toolName and serverName are forwarded to slog for empty-response
+//     diagnostics.
+//
+// Returns:
+//   - The parsed entities, never nil (empty slice on empty content).
+//   - A wrapped error when the content is JSON-shaped but matches neither
+//     accepted shape.
+//
+// Side effects:
+//   - Emits a debug-level log on the empty branch.
+func parseEntities(content []byte, toolName, serverName string) ([]Entity, error) {
+	var wrapped struct {
+		Entities []Entity `json:"entities"`
+	}
+	empty, err := mcp.DecodeContent(string(content), &wrapped,
+		"tool", toolName, "server", serverName)
+	if err == nil {
+		if empty {
+			return []Entity{}, nil
+		}
+		if wrapped.Entities != nil {
+			return wrapped.Entities, nil
+		}
+		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
+	}
+	var bare []Entity
+	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
+		return bare, nil
+	}
+	return nil, fmt.Errorf("decoding entities from MCP %s response: %w", toolName, err)
+}
+
+// parseRelations decodes a raw MCP content payload into the canonical
+// []Relation shape, mirroring parseEntities for the relation-bearing tools.
+//
+// Expected:
+//   - content is the raw MCP ToolResult.Content payload.
+//   - toolName and serverName are forwarded to slog for empty-response
+//     diagnostics.
+//
+// Returns:
+//   - The parsed relations, never nil (empty slice on empty content).
+//   - A wrapped error when the content is JSON-shaped but matches neither
+//     accepted shape.
+//
+// Side effects:
+//   - Emits a debug-level log on the empty branch.
+func parseRelations(content []byte, toolName, serverName string) ([]Relation, error) {
+	var wrapped struct {
+		Relations []Relation `json:"relations"`
+	}
+	empty, err := mcp.DecodeContent(string(content), &wrapped,
+		"tool", toolName, "server", serverName)
+	if err == nil {
+		if empty {
+			return []Relation{}, nil
+		}
+		if wrapped.Relations != nil {
+			return wrapped.Relations, nil
+		}
+		return nil, &json.UnmarshalTypeError{Value: "missing 'relations' field in MCP response", Type: nil}
+	}
+	var bare []Relation
+	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
+		return bare, nil
+	}
+	return nil, fmt.Errorf("decoding relations from MCP %s response: %w", toolName, err)
 }
