@@ -6,6 +6,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/spf13/cobra"
 )
 
 // WaitForBackgroundExtractionsForTest exposes the unexported helper so
@@ -55,4 +56,25 @@ func PerformServeShutdownForTest(server HTTPShutdownerForTest, eng EngineShutdow
 // full run.
 func WriteCompressionStatsForTest(out io.Writer, metrics ctxstore.CompressionMetrics) {
 	writeCompressionStats(out, metrics)
+}
+
+// NewTaskCmdForTest, NewTaskListCmdForTest, NewTaskOutputCmdForTest, and
+// NewTaskCancelCmdForTest expose the unexported task command
+// constructors so the external cli_test package can drive their
+// wiring without having to live inside the cli package itself
+// (which would collide with the cli_test Ginkgo suite bootstrap).
+func NewTaskCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newTaskCmd(getApp)
+}
+
+func NewTaskListCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newTaskListCmd(getApp)
+}
+
+func NewTaskOutputCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newTaskOutputCmd(getApp)
+}
+
+func NewTaskCancelCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newTaskCancelCmd(getApp)
 }
