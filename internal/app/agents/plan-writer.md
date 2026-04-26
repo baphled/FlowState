@@ -18,6 +18,7 @@ capabilities:
     - web
     - skill_load
     - coordination_store
+    - plan_write
   skills:
     - research
     - critical-thinking
@@ -169,12 +170,32 @@ For EACH task in the waves, provide:
 
 ## Plan Storage
 
-Once generated, you MUST write the completed plan to the Coordination Store:
-`coordination_store write {chainID}/plan <markdown_content>`
+Once generated, you MUST persist the plan in **two** places:
+
+1. **Disk (canonical, durable):** call `plan_write` with the full plan
+   markdown including YAML frontmatter. The frontmatter's `id` becomes
+   the filename. This lands the plan at
+   `~/.local/share/flowstate/plans/{id}.md` so `plan_list` / `plan_read`
+   and the `flowstate plan` CLI can find it later.
+
+   ```
+   plan_write(markdown="---\nid: {plan-id}\ntitle: ...\nstatus: draft\n---\n# ...")
+   ```
+
+2. **Coordination Store (chain-local handoff):** also write to the
+   coordination store so the in-flight planner→reviewer chain can pass
+   the plan body without re-reading disk:
+   `coordination_store write {chainID}/plan <markdown_content>`
+
+The disk write is the durable artefact; the coord-store write is
+ephemeral (cleared when the chain ends). If `plan_write` fails — most
+commonly because the YAML frontmatter is malformed or the `id` is
+missing — fix the markdown and retry; do NOT skip the disk write and
+rely on coord-store alone.
 
 ## Final Turn Rule
 
 Every response MUST end with ONE of:
 - A specific question to resolve a checklist gap (Interview Mode).
 - "All requirements clear. Generating expanded OMO plan..."
-- "Plan saved to: {chainID}/plan"
+- "Plan saved to disk at {plans_dir}/{id}.md and to coordination_store key {chainID}/plan."

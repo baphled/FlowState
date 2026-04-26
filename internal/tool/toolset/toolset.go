@@ -47,6 +47,7 @@ func NewDefaultRegistry(websearchAPIKey, plansDir string) *tool.Registry {
 	r.Register(plan.NewExit())
 	r.Register(plan.NewList(plansDir))
 	r.Register(plan.NewRead(plansDir))
+	r.Register(plan.NewWrite(plansDir))
 	r.Register(invalid.New())
 	r.Register(applypatch.New())
 	r.Register(web.New())

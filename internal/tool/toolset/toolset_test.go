@@ -36,6 +36,7 @@ var _ = Describe("NewDefaultRegistry", func() {
 		Entry("plan_exit", "plan_exit"),
 		Entry("plan_list", "plan_list"),
 		Entry("plan_read", "plan_read"),
+		Entry("plan_write", "plan_write"),
 		Entry("invalid", "invalid"),
 		Entry("apply_patch", "apply_patch"),
 		Entry("web", "web"),
@@ -51,7 +52,7 @@ var _ = Describe("NewDefaultRegistry", func() {
 			names = append(names, registered.Name())
 		}
 		sort.Strings(names)
-		Expect(names).To(Equal([]string{"apply_patch", "bash", "batch", "edit", "grep", "invalid", "ls", "multiedit", "plan_enter", "plan_exit", "plan_list", "plan_read", "question", "read", "web", "websearch", "write"}))
+		Expect(names).To(Equal([]string{"apply_patch", "bash", "batch", "edit", "grep", "invalid", "ls", "multiedit", "plan_enter", "plan_exit", "plan_list", "plan_read", "plan_write", "question", "read", "web", "websearch", "write"}))
 	})
 
 	It("passes the configured API key to websearch", func() {
