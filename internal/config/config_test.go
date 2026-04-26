@@ -941,15 +941,15 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolCapableModels).To(ContainElement("o1*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("o3*"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("qwen3:*"))
-			Expect(cfg.ToolCapableModels).To(ContainElement("gpt-oss:20b"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("devstral:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.1:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.3:latest"))
 		})
 
-		It("does NOT include known-broken context-clamped clones in the allow list", func() {
+		It("does NOT include gpt-oss in the allow list (Ollama parallel-tool-call bugs)", func() {
 			cfg := config.DefaultConfig()
 
+			Expect(cfg.ToolCapableModels).NotTo(ContainElement("gpt-oss:20b"))
 			Expect(cfg.ToolCapableModels).NotTo(ContainElement("gpt-oss-20b-4k"))
 			Expect(cfg.ToolCapableModels).NotTo(ContainElement("gpt-oss-20b-8k"))
 		})
@@ -961,13 +961,15 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolCapableModels).NotTo(ContainElement("llama3.2:latest"))
 		})
 
-		It("seeds ToolIncapableModels with the KB-documented broken models", func() {
+		It("seeds ToolIncapableModels with the KB-documented and citation-backed broken models", func() {
 			cfg := config.DefaultConfig()
 
 			Expect(cfg.ToolIncapableModels).To(ContainElement("llama3.2*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("qwen2.5-coder*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("glm-4.7"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("mistral:7b"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("gpt-oss:20b*"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("deepseek-r1:*"))
 		})
 	})
 
