@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -112,6 +113,13 @@ type DelegateTool struct {
 	// toolIncapableModels is the deny-list. Match here always wins, even
 	// when the model also matches toolCapableModels.
 	toolIncapableModels []string
+	// gateRunner is the swarm.GateRunner consulted after a member's
+	// stream completes (T-swarm-3 Phase 1, post-member only). When
+	// nil, the post-member dispatch hook is a no-op so callers that
+	// have not opted into swarm gates keep the historical delegation
+	// behaviour. Production wiring (cmd/flowstate / app.New) installs
+	// a swarm.MultiRunner pre-registered with builtin:result-schema.
+	gateRunner swarm.GateRunner
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -228,6 +236,26 @@ func (d *DelegateTool) WithRejectionTracker(tracker *delegation.RejectionTracker
 func (d *DelegateTool) WithToolCapability(allow, deny []string) *DelegateTool {
 	d.toolCapableModels = allow
 	d.toolIncapableModels = deny
+	return d
+}
+
+// WithGateRunner installs the swarm gate dispatcher consulted after a
+// post-member delegation completes. The runner is invoked once per
+// matching post-member gate on the active swarm context (see
+// dispatchPostMemberGates); production wiring installs a
+// swarm.MultiRunner with the builtin:result-schema runner registered.
+//
+// Expected:
+//   - runner may be nil to disable swarm-gate dispatch (the historical
+//     no-op behaviour for callers that pre-date T-swarm-3).
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously installed gate runner.
+func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
+	d.gateRunner = runner
 	return d
 }
 
@@ -1312,6 +1340,12 @@ func (d *DelegateTool) executeSync(
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
 	d.closeSessionIfManaged(delegateSessionID)
 
+	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID); gateErr != nil {
+		baseInfo.CompletedAt = &completedAt
+		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		return tool.Result{}, gateErr
+	}
+
 	return tool.Result{
 		Output: formatDelegationOutput(delegateSessionID, result.response),
 		Title:  target.message,
@@ -1321,6 +1355,82 @@ func (d *DelegateTool) executeSync(
 			"provider":  providerName,
 		},
 	}, nil
+}
+
+// dispatchPostMemberGates fires every post-member gate on the active
+// swarm context whose Target matches memberID. The first failing
+// gate halts dispatch and surfaces the typed *swarm.GateError; the
+// caller (executeSync) propagates it up the tool stack so the swarm
+// runner halts the swarm without retry. T-swarm-3 Phase 1 only
+// dispatches post-member gates; pre / post / pre-member are deferred.
+//
+// Expected:
+//   - ctx is the delegation context.
+//   - memberID is the agent id whose stream just completed.
+//
+// Returns:
+//   - nil when no gate runner is wired, no swarm context is in flight,
+//     no gates target memberID, or every matching gate passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each matching gate's runner, which may read from the
+//     coordination store.
+func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID string) error {
+	if d.gateRunner == nil {
+		return nil
+	}
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok {
+		return nil
+	}
+	matches := swarm.PostMemberGatesFor(swarmCtx.Gates, memberID)
+	if len(matches) == 0 {
+		return nil
+	}
+	args := swarm.GateArgs{
+		SwarmID:     swarmCtx.SwarmID,
+		ChainPrefix: swarmCtx.ChainPrefix,
+		MemberID:    memberID,
+		CoordStore:  d.coordinationStore,
+	}
+	for _, gate := range matches {
+		if err := d.gateRunner.Run(ctx, gate, args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// activeSwarmContext returns the swarm.Context installed on the lead
+// engine, if any. T-swarm-2 wires the context onto the lead engine
+// (the engine whose id matches the DelegateTool's sourceAgentID); the
+// dispatcher reads it from there so post-member gates see the same
+// gate slice the runner authored.
+//
+// Expected:
+//   - d.sourceAgentID names the lead engine in d.engines.
+//
+// Returns:
+//   - The lead engine's swarm context and true when set.
+//   - (nil, false) when no lead engine is registered, or when the
+//     lead engine has no swarm context (single-agent mode).
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) activeSwarmContext() (*swarm.Context, bool) {
+	if d.engines == nil {
+		return nil, false
+	}
+	leadEngine, ok := d.engines[d.sourceAgentID]
+	if !ok || leadEngine == nil {
+		return nil, false
+	}
+	swarmCtx := leadEngine.SwarmContext()
+	if swarmCtx == nil {
+		return nil, false
+	}
+	return swarmCtx, true
 }
 
 // executeAsync runs delegation asynchronously, returning immediately with a task ID.

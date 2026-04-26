@@ -25,9 +25,10 @@ import "context"
 //   - Members is the delegation allowlist for the duration of the
 //     run. It shadows the lead agent's normal delegation.allowlist
 //     (spec §2).
-//   - Gates is empty until T-swarm-3 wires the dual-scope gate
-//     runner. The slice-of-struct shape is stable; only the element
-//     fields will fill in later.
+//   - Gates is the harness-level gate slice carried verbatim from
+//     the manifest. T-swarm-3 dispatches the post-member subset (the
+//     only Phase 1 lifecycle point) after each matching member's
+//     stream completes; pre / post / pre-member dispatch is Phase 2+.
 //   - ChainPrefix is the coordination_store namespace prefix. Sub-
 //     swarm composition (spec §4) layers child prefixes under
 //     parents using `<parent>/<child>`. Defaults to the swarm id
@@ -51,7 +52,9 @@ type Context struct {
 //   - m is the manifest the registry returned for id; non-nil.
 //
 // Returns:
-//   - A populated Context. Gates is nil (T-swarm-3 will fill it).
+//   - A populated Context. Gates carries m.Harness.Gates verbatim so
+//     the swarm runner's gate dispatcher (T-swarm-3) sees the same
+//     slice the manifest authored.
 //
 // Side effects:
 //   - None.
@@ -67,6 +70,7 @@ func NewContext(id string, m *Manifest) Context {
 		SwarmID:     id,
 		LeadAgent:   m.Lead,
 		Members:     append([]string(nil), m.Members...),
+		Gates:       append([]GateSpec(nil), m.Harness.Gates...),
 		ChainPrefix: prefix,
 	}
 }
