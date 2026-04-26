@@ -124,6 +124,12 @@ type Harness struct {
 	// (legacy behaviour). Non-nil takes precedence — return false to skip
 	// the critic for a specific agent even when one is wired.
 	criticEnabledFor func(agentID string) bool
+	// waves + waveValidator configure the multi-stage fan-in barrier.
+	// When waveValidator is non-nil and waves is non-empty, the harness
+	// checks for completed wave outputs before allowing the orchestrator
+	// to yield to the user on a non-PhaseGeneration turn. See waves.go.
+	waves         []WaveStage
+	waveValidator WaveValidator
 }
 
 // NewHarness creates a Harness with validators, retry settings, and optional configuration.
@@ -283,6 +289,28 @@ func (h *Harness) runStreamEvaluation(
 		phase := hook.DetectPhase(planText)
 		slog.Info("harness phase detected", "phase", phaseString(phase), "agentID", agentID)
 		if phase != hook.PhaseGeneration {
+			// Before declaring the orchestrator done, check that every
+			// configured wave has populated its expected coordination-
+			// store keys. If any wave is incomplete and we have retry
+			// budget left, inject directive feedback and re-prompt the
+			// planner instead of yielding to the user. Closes the
+			// "planner stops three stages early" symptom — the
+			// orchestrator can't slip past the deterministic loop just
+			// by emitting a conversational synthesis turn.
+			if waveFb := h.checkWavesIncomplete(ctx, agentID); waveFb != "" {
+				if attempt < h.maxRetries {
+					slog.Warn("harness wave-incomplete; re-prompting orchestrator",
+						"attempt", attempt, "maxRetries", h.maxRetries, "feedbackLen", len(waveFb))
+					trySend(ctx, outCh, provider.StreamChunk{
+						EventType: "harness_wave_incomplete",
+						Content:   waveFb,
+					})
+					currentMessage = appendFeedback(currentMessage, waveFb)
+					continue
+				}
+				slog.Error("harness exhausted retries with wave still incomplete",
+					"maxRetries", h.maxRetries, "feedback", waveFb)
+			}
 			trySend(ctx, outCh, provider.StreamChunk{Done: true})
 			return
 		}

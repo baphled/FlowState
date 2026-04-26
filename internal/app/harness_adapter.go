@@ -4,13 +4,16 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plan/harness"
 	"github.com/baphled/flowstate/internal/plan/validation"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
@@ -111,6 +114,7 @@ func createHarnessStreamer(
 	cfg config.HarnessConfig,
 	p provider.Provider,
 	defaultProviderModel string,
+	coordStore coordination.Store,
 ) *streaming.HarnessStreamer {
 	projectRoot := cfg.ProjectRoot
 	if projectRoot == "" {
@@ -151,6 +155,24 @@ func createHarnessStreamer(
 		voterCfg := harness.VoterConfig{Enabled: true, Variants: 3, Threshold: 0.8}
 		voter := harness.NewConsistencyVoter(voterCfg, projectRoot)
 		opts = append(opts, harness.WithVoter(voter))
+	}
+
+	// Wave fan-in barrier: when any registered agent declares waves on
+	// its manifest's harness.waves field, wire a coord-store-backed
+	// validator. The harness then re-prompts the orchestrator before
+	// it can yield to the user with any wave's outputs missing.
+	if coordStore != nil {
+		if stages := collectAgentWaves(registry); len(stages) > 0 {
+			validator := &coordWaveValidator{store: coordStore}
+			opts = append(opts, harness.WithWaves(stages, validator))
+			// Bump the retry budget: stage-walking the planner through
+			// (evidence → analysis → writing → review) needs 4+
+			// re-prompt cycles in the worst case. The default of 1
+			// would exhaust on the first wave-incomplete check.
+			if cfg.MaxRetries == 0 {
+				opts = append(opts, harness.WithMaxRetries(8))
+			}
+		}
 	}
 
 	opts = append(validation.DefaultValidators(), opts...)
@@ -196,6 +218,110 @@ func newCriticEnabler(registry *agent.Registry, globalDefault bool) func(string)
 	}
 }
 
+// coordWaveValidator is the harness.WaveValidator implementation backed
+// by FlowState's coordination_store. It resolves expected keys against
+// the active chain id (extracted from ctx via session.IDKey) and falls
+// back to a suffix-glob scan of the store when no chain id is available.
+//
+// Two-tier lookup:
+//
+//  1. If ctx carries session.IDKey, treat that as the chain prefix.
+//     For each expected key in the wave, substitute "{chainID}" and
+//     check store.Get on the resolved key.
+//
+//  2. If no chain id is in ctx, strip the "{chainID}/" template prefix
+//     from each expected key and walk store.List(""), looking for
+//     ANY key that ends with /<suffix>. Reports missing as
+//     "<suffix> (any chain)" so the planner can react.
+//
+// The fallback covers the bootstrap case where the planner hasn't
+// yet allocated a chain id (or runs outside a session). It can over-
+// approve when multiple stale chains exist, but that's a tolerable
+// MVP behaviour — the planner's prompt discipline catches the
+// remaining cases.
+type coordWaveValidator struct {
+	store coordination.Store
+}
+
+// MissingForChain implements harness.WaveValidator. See
+// coordWaveValidator's doc comment for the resolution rules.
+func (v *coordWaveValidator) MissingForChain(
+	ctx context.Context, _ string, wave harness.WaveStage,
+) ([]string, error) {
+	if v == nil || v.store == nil {
+		return nil, nil
+	}
+	chainID, _ := ctx.Value(session.IDKey{}).(string)
+
+	var missing []string
+	for _, key := range wave.ExpectedKeys {
+		if strings.Contains(key, "{chainID}") {
+			if chainID != "" {
+				resolved := strings.ReplaceAll(key, "{chainID}", chainID)
+				if _, err := v.store.Get(resolved); err != nil {
+					missing = append(missing, resolved)
+				}
+				continue
+			}
+			suffix := strings.TrimPrefix(key, "{chainID}/")
+			found, err := v.suffixPresent(suffix)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				missing = append(missing, suffix+" (any chain)")
+			}
+			continue
+		}
+		if _, err := v.store.Get(key); err != nil {
+			missing = append(missing, key)
+		}
+	}
+	return missing, nil
+}
+
+func (v *coordWaveValidator) suffixPresent(suffix string) (bool, error) {
+	keys, err := v.store.List("")
+	if err != nil {
+		return false, err
+	}
+	target := "/" + suffix
+	for _, k := range keys {
+		if strings.HasSuffix(k, target) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// collectAgentWaves walks the registry and returns the union of all
+// agents' wave stages. The harness checks every wave on every turn,
+// but stages declared on the orchestrator agent (typically planner)
+// are the load-bearing ones — others are no-ops on non-planner runs
+// because the planner-allocated chain id won't have their keys.
+//
+// Returns nil when no agent declares waves; the harness adapter then
+// skips wiring the validator entirely.
+func collectAgentWaves(registry *agent.Registry) []harness.WaveStage {
+	if registry == nil {
+		return nil
+	}
+	var stages []harness.WaveStage
+	for _, m := range registry.List() {
+		if m.Harness == nil {
+			continue
+		}
+		for _, w := range m.Harness.Waves {
+			stages = append(stages, harness.WaveStage{
+				Name:         w.Name,
+				ExpectedKeys: append([]string(nil), w.ExpectedKeys...),
+				Description:  w.Description,
+			})
+		}
+	}
+	return stages
+}
+
 // CreateHarnessStreamerForTest is a test helper that exposes createHarnessStreamer for
 // testing.
 //
@@ -221,5 +347,5 @@ func CreateHarnessStreamerForTest(
 	cfg config.HarnessConfig,
 	p provider.Provider,
 ) *streaming.HarnessStreamer {
-	return createHarnessStreamer(inner, registry, cfg, p, "")
+	return createHarnessStreamer(inner, registry, cfg, p, "", nil)
 }

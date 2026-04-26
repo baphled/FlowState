@@ -537,7 +537,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
-	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel())
+	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
 	sessionMgr := session.NewManager(streamer)
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
@@ -1346,7 +1346,7 @@ func (a *App) createDelegateEngine(
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
-		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel())
+		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel(), createCoordinationStore(a.Config))
 	}
 	return eng, str
 }
