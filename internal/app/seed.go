@@ -171,6 +171,184 @@ func copyManifestFromDisk(srcPath, destPath string) error {
 	return nil
 }
 
+// MigrateSkillsResult classifies the outcome of a single
+// MigrateSkillsToConfigDir call so callers (and tests) can reason about
+// which branch fired without re-stating the on-disk state. Mirrors
+// MigrateAgentsResult.
+type MigrateSkillsResult string
+
+const (
+	// MigrateSkillsResultMigrated means at least one skill bundle was
+	// copied from the legacy XDG_DATA location into the new XDG_CONFIG
+	// location. The legacy directory is left intact for the user to
+	// review and remove.
+	MigrateSkillsResultMigrated MigrateSkillsResult = "migrated"
+	// MigrateSkillsResultSkippedNewExists means the new XDG_CONFIG skill
+	// directory already exists, so the migration is a no-op — XDG_CONFIG
+	// always wins when both locations exist.
+	MigrateSkillsResultSkippedNewExists MigrateSkillsResult = "skipped-new-exists"
+	// MigrateSkillsResultSkippedNoLegacy means there was nothing to
+	// migrate: the legacy XDG_DATA directory is missing or contains no
+	// skill bundles.
+	MigrateSkillsResultSkippedNoLegacy MigrateSkillsResult = "skipped-no-legacy"
+)
+
+// MigrateSkillsToConfigDir copies skill bundles from the legacy XDG_DATA
+// location (oldDir) into the canonical XDG_CONFIG location (newDir) the
+// first time FlowState starts after the SkillDir default flipped from
+// `~/.local/share/flowstate/skills/` to `~/.config/flowstate/skills/`.
+//
+// A "skill bundle" is a subdirectory of oldDir containing a SKILL.md
+// file, optionally accompanied by extra files (resources, references).
+// The migration walks the bundle tree and copies every regular file
+// under each qualifying bundle, preserving the relative path layout.
+//
+// Like MigrateAgentsToConfigDir, this is a *copy*, not a *move*: the
+// legacy directory is left in place so a user with multiple FlowState
+// versions or external tooling pointed at the old path is not surprised
+// by a silent disappearance. A single WARN is emitted instructing the
+// user to delete the legacy directory at their convenience.
+//
+// Resolution rules:
+//   - If newDir already exists (any content), the migration is a no-op
+//     and returns MigrateSkillsResultSkippedNewExists. XDG_CONFIG wins
+//     when both locations are populated — matching the agents rule.
+//   - If newDir does not exist and oldDir is missing or contains no
+//     bundles with a SKILL.md, return MigrateSkillsResultSkippedNoLegacy.
+//   - Otherwise create newDir, copy every qualifying bundle into it, and
+//     return MigrateSkillsResultMigrated.
+//
+// Expected:
+//   - oldDir is the legacy XDG_DATA skills directory path (may not exist).
+//   - newDir is the new XDG_CONFIG skills directory path (may not exist).
+//
+// Returns:
+//   - The classified outcome (see MigrateSkillsResult).
+//   - An error if a real I/O failure prevented an otherwise-valid
+//     migration. A missing oldDir or an empty legacy directory is NOT
+//     an error — they collapse to MigrateSkillsResultSkippedNoLegacy.
+//
+// Side effects:
+//   - Creates newDir and copies bundles when a migration is required.
+//   - Emits a single slog.Warn message on a successful migration so the
+//     user knows the legacy directory can be removed.
+//   - Reads oldDir and stat()s newDir.
+func MigrateSkillsToConfigDir(oldDir, newDir string) (MigrateSkillsResult, error) {
+	if _, err := os.Stat(newDir); err == nil {
+		return MigrateSkillsResultSkippedNewExists, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat new skills dir %q: %w", newDir, err)
+	}
+
+	bundles, err := findSkillBundles(oldDir)
+	if err != nil {
+		return "", err
+	}
+	if len(bundles) == 0 {
+		return MigrateSkillsResultSkippedNoLegacy, nil
+	}
+
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating new skills dir %q: %w", newDir, err)
+	}
+
+	for _, bundle := range bundles {
+		src := filepath.Join(oldDir, bundle)
+		dst := filepath.Join(newDir, bundle)
+		if err := copySkillBundleFromDisk(src, dst); err != nil {
+			return "", err
+		}
+	}
+
+	slog.Warn(
+		"migrated skill bundles from XDG_DATA to XDG_CONFIG; "+
+			"you can safely delete the old directory",
+		"old_dir", oldDir,
+		"new_dir", newDir,
+		"count", len(bundles),
+	)
+	return MigrateSkillsResultMigrated, nil
+}
+
+// findSkillBundles returns the names of subdirectories of oldDir that
+// look like skill bundles — i.e. they contain a SKILL.md file at the
+// top level. Non-bundle entries (loose files, directories without
+// SKILL.md) are silently ignored so a malformed legacy directory does
+// not block a migration of the well-formed bundles around it.
+//
+// Returns:
+//   - The bundle subdirectory names in os.ReadDir order.
+//   - An error if oldDir cannot be read for a reason other than not
+//     existing. A missing oldDir produces a nil slice and nil error so
+//     callers can treat it as "no legacy state to migrate".
+//
+// Side effects:
+//   - Reads oldDir and stat()s SKILL.md inside each candidate.
+func findSkillBundles(oldDir string) ([]string, error) {
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading legacy skills dir %q: %w", oldDir, err)
+	}
+
+	var out []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		manifest := filepath.Join(oldDir, entry.Name(), "SKILL.md")
+		info, err := os.Stat(manifest)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	return out, nil
+}
+
+// copySkillBundleFromDisk recursively copies every regular file under
+// srcDir into destDir, preserving the relative path layout and creating
+// intermediate directories with 0755 permissions. Unlike copySingleFile
+// (which refuses to overwrite), this helper overwrites existing files —
+// the caller (MigrateSkillsToConfigDir) has already verified destDir is
+// missing before invoking it, so the only writes happen on freshly-created
+// destination paths.
+//
+// Expected:
+//   - srcDir points at a readable skill bundle directory on disk.
+//   - destDir's parent directory exists.
+//
+// Returns:
+//   - An error wrapping the failing I/O step.
+//
+// Side effects:
+//   - Creates destDir and any nested subdirectories.
+//   - Creates or truncates files inside destDir.
+func copySkillBundleFromDisk(srcDir, destDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return fmt.Errorf("walking skill bundle %q: %w", srcDir, err)
+		}
+		rel, relErr := filepath.Rel(srcDir, path)
+		if relErr != nil {
+			return fmt.Errorf("relpath %q under %q: %w", path, srcDir, relErr)
+		}
+		target := filepath.Join(destDir, rel)
+		if info.IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("creating bundle subdir %q: %w", target, err)
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		return copyManifestFromDisk(path, target)
+	})
+}
+
 // RefreshStatus classifies a single manifest outcome during a refresh.
 type RefreshStatus string
 

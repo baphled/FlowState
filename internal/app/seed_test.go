@@ -428,6 +428,161 @@ var _ = Describe("MigrateAgentsToConfigDir", func() {
 	})
 })
 
+var _ = Describe("MigrateSkillsToConfigDir", func() {
+	var (
+		root   string
+		oldDir string
+		newDir string
+	)
+
+	BeforeEach(func() {
+		var err error
+		root, err = os.MkdirTemp("", "skills-migrate-test")
+		Expect(err).NotTo(HaveOccurred())
+		oldDir = filepath.Join(root, "xdg-data", "flowstate", "skills")
+		newDir = filepath.Join(root, "xdg-config", "flowstate", "skills")
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(root)
+	})
+
+	Context("when only the legacy XDG_DATA dir has bundles", func() {
+		It("copies them into the new XDG_CONFIG dir and reports migrated", func() {
+			writeSkillBundle(oldDir, "pre-action", "---\nname: pre-action\n---\n# Pre Action\n")
+			writeSkillBundle(oldDir, "discipline", "---\nname: discipline\n---\n# Discipline\n")
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultMigrated))
+
+			content, err := os.ReadFile(filepath.Join(newDir, "pre-action", "SKILL.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("Pre Action"))
+
+			Expect(filepath.Join(newDir, "discipline", "SKILL.md")).To(BeAnExistingFile())
+		})
+
+		It("preserves nested files inside a skill bundle", func() {
+			writeSkillBundle(oldDir, "research", "---\nname: research\n---\nbody")
+			Expect(os.WriteFile(filepath.Join(oldDir, "research", "reference.md"), []byte("ref"), 0o600)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(oldDir, "research", "examples"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "research", "examples", "one.md"), []byte("ex1"), 0o600)).To(Succeed())
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultMigrated))
+
+			Expect(filepath.Join(newDir, "research", "reference.md")).To(BeAnExistingFile())
+			Expect(filepath.Join(newDir, "research", "examples", "one.md")).To(BeAnExistingFile())
+		})
+
+		It("leaves the legacy directory intact so the user can review and remove it", func() {
+			writeSkillBundle(oldDir, "pre-action", "body")
+
+			_, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(filepath.Join(oldDir, "pre-action", "SKILL.md")).To(BeAnExistingFile(),
+				"migration must COPY, not MOVE — the legacy bundle must remain")
+		})
+
+		It("ignores subdirectories that have no SKILL.md and loose files", func() {
+			writeSkillBundle(oldDir, "pre-action", "body")
+			Expect(os.MkdirAll(filepath.Join(oldDir, "not-a-skill"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "not-a-skill", "notes.md"), []byte("notes"), 0o600)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "README.txt"), []byte("readme"), 0o600)).To(Succeed())
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultMigrated))
+
+			Expect(filepath.Join(newDir, "pre-action", "SKILL.md")).To(BeAnExistingFile())
+			_, statErr := os.Stat(filepath.Join(newDir, "not-a-skill"))
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+			_, statErr = os.Stat(filepath.Join(newDir, "README.txt"))
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+
+	Context("when both XDG_DATA and XDG_CONFIG skill dirs already exist", func() {
+		It("prefers XDG_CONFIG and skips the migration without overwriting", func() {
+			writeSkillBundle(oldDir, "pre-action", "legacy body")
+			canonical := "---\nname: pre-action\n---\ncanonical body\n"
+			writeSkillBundle(newDir, "pre-action", canonical)
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultSkippedNewExists))
+
+			content, err := os.ReadFile(filepath.Join(newDir, "pre-action", "SKILL.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(Equal(canonical), "XDG_CONFIG copy must remain untouched")
+		})
+	})
+
+	Context("when only XDG_CONFIG exists and XDG_DATA is missing", func() {
+		It("is a no-op and reports skipped-new-exists", func() {
+			canonical := "---\nname: pre-action\n---\ncanonical body\n"
+			writeSkillBundle(newDir, "pre-action", canonical)
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultSkippedNewExists))
+		})
+	})
+
+	Context("when neither directory exists", func() {
+		It("reports skipped-no-legacy without creating anything", func() {
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultSkippedNoLegacy))
+
+			_, statErr := os.Stat(newDir)
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+
+	Context("when the legacy directory exists but contains no skill bundles", func() {
+		It("reports skipped-no-legacy and does not create the new directory", func() {
+			Expect(os.MkdirAll(oldDir, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(oldDir, "README.txt"), []byte("notes"), 0o600)).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(oldDir, "empty-bundle"), 0o755)).To(Succeed())
+
+			result, err := app.MigrateSkillsToConfigDir(oldDir, newDir)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(app.MigrateSkillsResultSkippedNoLegacy))
+
+			_, statErr := os.Stat(newDir)
+			Expect(os.IsNotExist(statErr)).To(BeTrue())
+		})
+	})
+})
+
+// writeSkillBundle creates a skill bundle directory at <root>/<name> and
+// writes the provided body to its SKILL.md. Used by MigrateSkillsToConfigDir
+// specs to set up legacy and canonical fixtures with one line per bundle.
+//
+// Expected:
+//   - root is the absolute path of the skills directory.
+//   - name is the bundle directory name (no slashes).
+//   - body is the SKILL.md contents.
+//
+// Side effects:
+//   - Creates the bundle directory and writes SKILL.md.
+func writeSkillBundle(root, name, body string) {
+	dir := filepath.Join(root, name)
+	Expect(os.MkdirAll(dir, 0o755)).To(Succeed())
+	Expect(os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o600)).To(Succeed())
+}
+
 var _ = Describe("SeedSwarmsDir", func() {
 	var (
 		destDir string

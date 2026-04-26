@@ -154,18 +154,14 @@ func New(cfg *config.AppConfig) (*App, error) {
 	// the configured value rather than the historical default.
 	agent.SetDefaultEmbeddingModel(cfg.ResolvedEmbeddingModel())
 
-	// One-time XDG_DATA -> XDG_CONFIG migration: agent manifests used to
-	// live in `~/.local/share/flowstate/agents/` but they are user-edited
-	// config and now belong in `~/.config/flowstate/agents/`. The helper
-	// is a no-op when the new dir already exists or the legacy dir is
-	// empty/missing, so it is safe to call unconditionally on startup.
-	legacyAgentsDir := filepath.Join(config.DataDir(), "agents")
-	if cfg.AgentDir != "" && cfg.AgentDir != legacyAgentsDir {
-		if _, err := MigrateAgentsToConfigDir(legacyAgentsDir, cfg.AgentDir); err != nil {
-			log.Printf("warning: migrating agent manifests from %q to %q: %v",
-				legacyAgentsDir, cfg.AgentDir, err)
-		}
-	}
+	// One-time XDG_DATA -> XDG_CONFIG migration: agent manifests and
+	// skill bundles used to live in `~/.local/share/flowstate/{agents,skills}/`
+	// but they are user-edited config and now belong in
+	// `~/.config/flowstate/{agents,skills}/`. The helpers are no-ops when
+	// the new dir already exists or the legacy dir is empty/missing, so
+	// they are safe to call unconditionally on startup.
+	migrateAgentsFromLegacyDataDir(cfg)
+	migrateSkillsFromLegacyDataDir(cfg)
 
 	if err := SeedAgentsDir(EmbeddedAgentsFS(), cfg.AgentDir); err != nil {
 		log.Printf("warning: seeding agents to %q: %v", cfg.AgentDir, err)
@@ -229,6 +225,54 @@ func New(cfg *config.AppConfig) (*App, error) {
 	})
 	configureApplicationAfterBuild(app, cfg, runtime, defaultManifest, pluginRT)
 	return app, nil
+}
+
+// migrateAgentsFromLegacyDataDir runs the one-time XDG_DATA -> XDG_CONFIG
+// migration for agent manifests, logging a warning on I/O failure rather
+// than aborting startup. The migration helper itself is idempotent — once
+// the new dir exists the call is a stat-and-return no-op.
+//
+// Expected:
+//   - cfg is a non-nil application configuration with cfg.AgentDir set
+//     to the canonical XDG_CONFIG location.
+//
+// Side effects:
+//   - May copy .md manifests from `~/.local/share/flowstate/agents/`
+//     into cfg.AgentDir on the first post-flip startup.
+func migrateAgentsFromLegacyDataDir(cfg *config.AppConfig) {
+	legacyDir := filepath.Join(config.DataDir(), "agents")
+	if cfg.AgentDir == "" || cfg.AgentDir == legacyDir {
+		return
+	}
+	if _, err := MigrateAgentsToConfigDir(legacyDir, cfg.AgentDir); err != nil {
+		log.Printf("warning: migrating agent manifests from %q to %q: %v",
+			legacyDir, cfg.AgentDir, err)
+	}
+}
+
+// migrateSkillsFromLegacyDataDir runs the one-time XDG_DATA -> XDG_CONFIG
+// migration for skill bundles, mirroring migrateAgentsFromLegacyDataDir.
+// Skills are user-edited (people add bundles, tweak SKILL.md, drop in
+// new resources), so they belong under XDG_CONFIG alongside agents and
+// swarms. The migration helper is idempotent.
+//
+// Expected:
+//   - cfg is a non-nil application configuration with cfg.SkillDir set
+//     to the canonical XDG_CONFIG location.
+//
+// Side effects:
+//   - May copy skill subdirectories (each containing SKILL.md) from
+//     `~/.local/share/flowstate/skills/` into cfg.SkillDir on the first
+//     post-flip startup.
+func migrateSkillsFromLegacyDataDir(cfg *config.AppConfig) {
+	legacyDir := filepath.Join(config.DataDir(), "skills")
+	if cfg.SkillDir == "" || cfg.SkillDir == legacyDir {
+		return
+	}
+	if _, err := MigrateSkillsToConfigDir(legacyDir, cfg.SkillDir); err != nil {
+		log.Printf("warning: migrating skill bundles from %q to %q: %v",
+			legacyDir, cfg.SkillDir, err)
+	}
 }
 
 // loadBuiltinPlugins instantiates builtin plugins after the engine has been created.
