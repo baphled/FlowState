@@ -638,6 +638,10 @@ func DefaultConfig() *AppConfig {
 //                     (via github-copilot proxy).
 //   - grok-code-*   — grok-code-fast-1 verified live in FlowState (via
 //                     github-copilot proxy).
+//   - glm-*         — Z.AI's glm-4.5, glm-4.5-air, glm-4.6, glm-5,
+//                     glm-5-turbo, glm-5.1 all verified live in FlowState
+//                     (the broken `glm-4.7` is on the deny list and takes
+//                     precedence).
 func defaultToolCapableModels() []string {
 	return []string{
 		"claude-*",
@@ -647,6 +651,7 @@ func defaultToolCapableModels() []string {
 		"o3*",
 		"gemini-3*",
 		"grok-code-*",
+		"glm-*",
 		"qwen3:*",
 		"devstral:latest",
 		"llama3.1:latest",
