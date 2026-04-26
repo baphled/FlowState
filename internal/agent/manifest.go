@@ -126,11 +126,28 @@ type Delegation struct {
 // HarnessConfig defines the output validation and quality layers for an agent.
 // When nil, the legacy HarnessEnabled boolean is used as a fallback.
 type HarnessConfig struct {
-	Enabled       bool     `json:"enabled" yaml:"enabled"`
-	Validators    []string `json:"validators,omitempty" yaml:"validators,omitempty"`
-	CriticEnabled bool     `json:"critic_enabled" yaml:"critic_enabled"`
-	VotingEnabled bool     `json:"voting_enabled" yaml:"voting_enabled"`
-	MaxAttempts   int      `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+	Enabled       bool        `json:"enabled" yaml:"enabled"`
+	Validators    []string    `json:"validators,omitempty" yaml:"validators,omitempty"`
+	CriticEnabled bool        `json:"critic_enabled" yaml:"critic_enabled"`
+	VotingEnabled bool        `json:"voting_enabled" yaml:"voting_enabled"`
+	MaxAttempts   int         `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+	Waves         []WaveStage `json:"waves,omitempty" yaml:"waves,omitempty"`
+}
+
+// WaveStage configures one stage of an orchestrator's fan-in barrier.
+// The harness re-prompts the orchestrator when ANY stage's expected
+// coordination_store keys are missing at the turn the orchestrator
+// tries to yield to the user. Closes the planner-stops-three-stages-
+// early symptom: with waves declared, the deterministic loop is
+// enforced at the harness level, not just by prompt discipline.
+//
+// Mirrors internal/plan/harness.WaveStage; the harness adapter
+// converts between the two so manifest YAML doesn't need to import
+// the harness package.
+type WaveStage struct {
+	Name         string   `json:"name" yaml:"name"`
+	ExpectedKeys []string `json:"expected_keys" yaml:"expected_keys"`
+	Description  string   `json:"description,omitempty" yaml:"description,omitempty"`
 }
 
 // LoopConfig defines the delegation loop for coordinator agents.
