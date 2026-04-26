@@ -142,6 +142,12 @@ type pluginRuntime struct {
 //   - Creates session and context store directories if they do not exist.
 //   - Connects to configured MCP servers.
 func New(cfg *config.AppConfig) (*App, error) {
+	// Apply the cluster-wide embedding-model knob before any manifest
+	// is loaded — applyDefaults consumes the package-level fallback,
+	// so seeding it here ensures freshly-seeded agent manifests inherit
+	// the configured value rather than the historical default.
+	agent.SetDefaultEmbeddingModel(cfg.ResolvedEmbeddingModel())
+
 	if err := SeedAgentsDir(EmbeddedAgentsFS(), cfg.AgentDir); err != nil {
 		log.Printf("warning: seeding agents to %q: %v", cfg.AgentDir, err)
 	} else {
@@ -517,7 +523,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
-	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider)
+	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel())
 	sessionMgr := session.NewManager(streamer)
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
@@ -1326,7 +1332,7 @@ func (a *App) createDelegateEngine(
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
-		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider)
+		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel())
 	}
 	return eng, str
 }
@@ -3281,7 +3287,7 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 	var learningStore learning.Store
 	if cfg.Qdrant.URL != "" {
 		qdrantClient := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-		embedder := newRecallEmbedder(ollamaProvider)
+		embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 		adapter := &qdrantClientAdapter{client: qdrantClient}
 		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
 	}
@@ -3525,7 +3531,7 @@ func buildRecallBrokerWithVault(params recallBrokerParams, vaultPath string) rec
 		col = "flowstate-recall"
 	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := newRecallEmbedder(params.ollamaProvider)
+	embedder := newRecallEmbedder(params.ollamaProvider, cfg.ResolvedEmbeddingModel())
 	source := qdrantrecall.NewSource(client, embedder, col)
 	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, extras...)
 }
@@ -3554,7 +3560,7 @@ func buildDistiller(cfg *config.AppConfig, _ provider.Provider, ollamaProvider e
 		col = "flowstate-recall"
 	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := newRecallEmbedder(ollamaProvider)
+	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	adapter := &qdrantClientAdapter{client: client}
 	memClient := learning.NewVectorStoreMemoryClient(adapter, embedder, col)
 	return learning.NewStructuredDistiller(memClient)

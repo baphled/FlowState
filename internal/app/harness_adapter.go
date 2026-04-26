@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"os"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -12,6 +13,24 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 )
+
+// resolveCriticModel decides which chat model the LLM critic runs against.
+//
+// Precedence:
+//  1. cfg.CriticModel — explicit override from harness configuration.
+//  2. The provider's primary model resolved from cfg.Providers.<default>
+//     — passed in as fallback so the critic uses the same model as the
+//     agent under critique by default. Zero-config sane behaviour.
+//
+// Returns the empty string when neither is set; callers MUST treat that
+// as "skip critic wiring" rather than passing an empty model id through
+// to the LLM SDK.
+func resolveCriticModel(criticOverride, providerFallback string) string {
+	if criticOverride != "" {
+		return criticOverride
+	}
+	return providerFallback
+}
 
 // harnessAdapter wraps a Harness to satisfy streaming.PlanEvaluator.
 //
@@ -76,6 +95,9 @@ func (a *harnessAdapter) StreamEvaluate(
 //   - registry is a non-nil agent.Registry for manifest lookup.
 //   - cfg is a config.HarnessConfig specifying whether the critic is enabled.
 //   - p is a provider.Provider for the LLM critic (required when CriticEnabled is true).
+//   - defaultProviderModel is the chat model configured for the active default
+//     provider. Used as the critic model fallback when cfg.CriticModel is empty.
+//     May be empty when no provider model is configured.
 //
 // Returns:
 //   - A configured HarnessStreamer that routes harness-enabled agents through the evaluator.
@@ -88,6 +110,7 @@ func createHarnessStreamer(
 	registry *agent.Registry,
 	cfg config.HarnessConfig,
 	p provider.Provider,
+	defaultProviderModel string,
 ) *streaming.HarnessStreamer {
 	projectRoot := cfg.ProjectRoot
 	if projectRoot == "" {
@@ -110,11 +133,17 @@ func createHarnessStreamer(
 	// false; conversely, the legacy global flag still works for callers
 	// that want a blanket enable.
 	if p != nil && (cfg.CriticEnabled || registryHasCriticEnabledAgent(registry)) {
-		critic, err := harness.NewLLMCritic(true, "claude-sonnet-4-6")
-		if err == nil {
-			opts = append(opts, harness.WithCritic(critic, p))
-			opts = append(opts, harness.WithCriticEnabledFunc(
-				newCriticEnabler(registry, cfg.CriticEnabled)))
+		criticModel := resolveCriticModel(cfg.CriticModel, defaultProviderModel)
+		if criticModel == "" {
+			slog.Warn("harness: critic enabled but no model resolved; skipping critic wiring",
+				"hint", "set harness.critic_model in config or ensure the default provider has a model configured")
+		} else {
+			critic, err := harness.NewLLMCritic(true, criticModel)
+			if err == nil {
+				opts = append(opts, harness.WithCritic(critic, p))
+				opts = append(opts, harness.WithCriticEnabledFunc(
+					newCriticEnabler(registry, cfg.CriticEnabled)))
+			}
 		}
 	}
 
@@ -181,11 +210,16 @@ func newCriticEnabler(registry *agent.Registry, globalDefault bool) func(string)
 //
 // Side effects:
 //   - None.
+//
+// Tests pass an empty defaultProviderModel; the critic is only wired when
+// CriticEnabled is true AND a provider is supplied AND a model resolves,
+// so the test-helper signature is stable for callers that don't exercise
+// the critic path.
 func CreateHarnessStreamerForTest(
 	inner streaming.Streamer,
 	registry *agent.Registry,
 	cfg config.HarnessConfig,
 	p provider.Provider,
 ) *streaming.HarnessStreamer {
-	return createHarnessStreamer(inner, registry, cfg, p)
+	return createHarnessStreamer(inner, registry, cfg, p, "")
 }

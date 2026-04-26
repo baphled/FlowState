@@ -69,6 +69,7 @@ type AppConfig struct {
 	// an explicit `timeout` argument. Empty means inherit the compiled-in
 	// default (120s).
 	BackgroundOutputTimeout string `json:"background_output_timeout,omitempty" yaml:"background_output_timeout,omitempty"`
+
 	// PlanLocation overrides the directory FlowState reads/writes plan
 	// markdown files from. Resolution rules (see ResolvedPlanLocation):
 	//
@@ -88,6 +89,28 @@ type AppConfig struct {
 	// to the code they describe and can be checked into version control
 	// alongside it.
 	PlanLocation string `json:"plan_location,omitempty" yaml:"plan_location,omitempty"`
+
+	// EmbeddingModel names the model used for vector-search embeddings
+	// across the application (recall queries, knowledge distillation,
+	// per-agent context_management defaults). It is deliberately separated
+	// from the chat-provider model surface for three reasons:
+	//
+	//  1. It powers vector search, not user-facing inference. Swapping it
+	//     does not change reasoning quality — it changes the SHAPE of the
+	//     vectors stored in Qdrant.
+	//  2. The model MUST be consistent across an entire vector-store
+	//     deployment. Vectors produced by different embedding models are
+	//     not comparable; mixing them silently corrupts recall.
+	//  3. A multi-worker / multi-pod cluster wants every node producing
+	//     vectors that index into the same collection. Centralising the
+	//     embedding model in one config knob lets a cluster operator pin
+	//     it cluster-wide while individual agents still customise their
+	//     chat-provider choice freely.
+	//
+	// Empty means "use the historical default `nomic-embed-text`" — an
+	// Ollama-served 768-dim Cosine model that matches the existing
+	// flowstate Qdrant collection shape.
+	EmbeddingModel string `json:"embedding_model,omitempty" yaml:"embedding_model,omitempty"`
 }
 
 // ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
@@ -189,6 +212,49 @@ func parseDurationField(s, key string) time.Duration {
 	return d
 }
 
+// DefaultEmbeddingModel is the historical embedding model used when
+// AppConfig.EmbeddingModel is empty. See AppConfig.EmbeddingModel for
+// the rationale around centralising this knob.
+const DefaultEmbeddingModel = "nomic-embed-text"
+
+// ResolvedEmbeddingModel returns the embedding model to use for vector-store
+// operations: the explicit cfg.EmbeddingModel when set, otherwise the
+// historical default `nomic-embed-text`. A nil receiver returns the default
+// so test fixtures that construct App with Config=nil still produce
+// well-formed vectors.
+func (c *AppConfig) ResolvedEmbeddingModel() string {
+	if c == nil || c.EmbeddingModel == "" {
+		return DefaultEmbeddingModel
+	}
+	return c.EmbeddingModel
+}
+
+// DefaultProviderModel returns the chat model configured for the provider
+// named in cfg.Providers.Default. Returns empty when the default provider
+// has no model configured (callers treat empty as "no usable default" and
+// surface their own error).
+func (c *AppConfig) DefaultProviderModel() string {
+	if c == nil {
+		return ""
+	}
+	switch c.Providers.Default {
+	case "anthropic":
+		return c.Providers.Anthropic.Model
+	case "openai":
+		return c.Providers.OpenAI.Model
+	case "ollama":
+		return c.Providers.Ollama.Model
+	case "github", "github-copilot":
+		return c.Providers.GitHub.Model
+	case "zai":
+		return c.Providers.ZAI.Model
+	case "openzen":
+		return c.Providers.OpenZen.Model
+	default:
+		return ""
+	}
+}
+
 // QdrantConfig provides configuration for Qdrant-based recall storage.
 //
 // Fields:
@@ -268,10 +334,17 @@ type MCPServerConfig struct {
 // LearningEnabled enables the async learning loop for this harness.
 // LearningOnFailure triggers learning captures when evaluation fails.
 // LearningOnNovelty triggers learning captures when novel output is detected.
+//
+// CriticModel overrides the chat model used by the LLM critic. When empty,
+// the harness falls back to the default provider's primary model (resolved
+// from cfg.Providers.<default>.Model). Set this only when the critic should
+// run on a different model from the agent under critique — e.g. a cheaper
+// reviewer over an expensive primary, or vice versa.
 type HarnessConfig struct {
 	Enabled            bool   `json:"enabled" yaml:"enabled"`
 	ProjectRoot        string `json:"project_root" yaml:"project_root"`
 	CriticEnabled      bool   `json:"critic_enabled" yaml:"critic_enabled"`
+	CriticModel        string `json:"critic_model,omitempty" yaml:"critic_model,omitempty"`
 	VotingEnabled      bool   `json:"voting_enabled" yaml:"voting_enabled"`
 	IncrementalEnabled bool   `json:"incremental_enabled" yaml:"incremental_enabled"`
 	MaxRetries         int    `json:"harness_max_retries" yaml:"harness_max_retries"`

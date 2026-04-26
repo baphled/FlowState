@@ -155,7 +155,56 @@ type Instructions struct {
 	StructuredPromptFile string `json:"structured_prompt_file" yaml:"structured_prompt_file"`
 }
 
+// HistoricalDefaultEmbeddingModel is the embedding model used when no
+// app-level configuration overrides it. Kept as a package constant so
+// the agent package has a self-contained fallback (loader applyDefaults
+// runs on standalone manifest loads with no AppConfig in scope).
+//
+// Why this is special: vector embeddings must be CONSISTENT across an
+// entire vector-store deployment — vectors produced by different models
+// are not directly comparable, so a cluster sharing a Qdrant collection
+// must agree on one embedding model. The historical default is an
+// Ollama-served 768-dim Cosine model (nomic-embed-text) that matches
+// the existing flowstate Qdrant collection shape.
+const HistoricalDefaultEmbeddingModel = "nomic-embed-text"
+
+// defaultEmbeddingModel is the package-level fallback consumed by
+// DefaultContextManagement() and the manifest-loader's applyDefaults.
+// Initialised to the historical value; the application may swap it at
+// startup via SetDefaultEmbeddingModel so per-agent manifests inherit
+// the cluster-wide config knob (see config.AppConfig.EmbeddingModel).
+//
+// This indirection lets the agent package stay decoupled from the
+// config package while still letting an app-level config drive the
+// per-agent default.
+var defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
+
+// SetDefaultEmbeddingModel overrides the package-level embedding-model
+// fallback used by DefaultContextManagement and manifest applyDefaults.
+// An empty string resets to the historical default. This is intended
+// to be called once at application startup from the app package after
+// AppConfig has been resolved; concurrent callers (e.g. parallel test
+// runners) should treat the value as a soft global.
+func SetDefaultEmbeddingModel(model string) {
+	if model == "" {
+		defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
+		return
+	}
+	defaultEmbeddingModel = model
+}
+
+// DefaultEmbeddingModel returns the current package-level embedding-model
+// fallback. Useful for tests that want to assert the wiring took effect.
+func DefaultEmbeddingModel() string {
+	return defaultEmbeddingModel
+}
+
 // DefaultContextManagement returns sensible default context management settings.
+//
+// EmbeddingModel is sourced from the package-level fallback (see
+// SetDefaultEmbeddingModel). Use DefaultContextManagementWith to pass an
+// explicit value when you cannot rely on the global being set — typically
+// only inside the app package's startup wiring.
 //
 // Returns:
 //   - A ContextManagement struct with default values for all fields.
@@ -163,12 +212,29 @@ type Instructions struct {
 // Side effects:
 //   - None.
 func DefaultContextManagement() ContextManagement {
+	return DefaultContextManagementWith(defaultEmbeddingModel)
+}
+
+// DefaultContextManagementWith returns the default context-management
+// settings with EmbeddingModel set to the supplied value. Empty string
+// falls back to HistoricalDefaultEmbeddingModel so the manifest is
+// always populated.
+//
+// Returns:
+//   - A ContextManagement struct.
+//
+// Side effects:
+//   - None.
+func DefaultContextManagementWith(embeddingModel string) ContextManagement {
+	if embeddingModel == "" {
+		embeddingModel = HistoricalDefaultEmbeddingModel
+	}
 	return ContextManagement{
 		MaxRecursionDepth:   2,
 		SummaryTier:         "quick",
 		SlidingWindowSize:   10,
 		CompactionThreshold: 0.75,
-		EmbeddingModel:      "nomic-embed-text",
+		EmbeddingModel:      embeddingModel,
 	}
 }
 

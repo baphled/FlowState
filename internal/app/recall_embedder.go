@@ -5,26 +5,25 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/provider"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 )
 
 // Recall embedder routing constants.
 //
-// These values hard-route the recall and distiller embedder to a local Ollama
-// instance running nomic-embed-text. The model produces 768-dim Cosine vectors
-// — matching the existing flowstate Qdrant collection shape (768-dim Cosine).
+// defaultRecallEmbeddingDim pins the vector dimension of the configured
+// Qdrant collection. The historical embedding model is `nomic-embed-text`
+// (an Ollama-served 768-dim Cosine model); changing the embedding model
+// without re-creating the Qdrant collection silently corrupts recall.
 //
-// Previously the embedder was wired to whichever provider.Provider was passed
-// to buildRecallBroker / buildDistiller — typically the user's chat provider
-// (anthropic), which does not expose an embeddings endpoint. Every recall
-// query failed with "anthropic does not support embeddings".
-//
-// These constants live in one place so a future configurable-embedder refactor
-// has a single seam to replace.
+// The actual model name now flows from config (see
+// config.AppConfig.EmbeddingModel and config.DefaultEmbeddingModel). It is
+// passed in to newRecallEmbedder rather than constanted here so a cluster
+// can centralise the embedding model in one config knob — see the
+// AppConfig.EmbeddingModel godoc for the cluster rationale.
 const (
-	defaultRecallEmbeddingModel = "nomic-embed-text"
-	defaultRecallEmbeddingDim   = 768
+	defaultRecallEmbeddingDim = 768
 )
 
 // errRecallEmbedderUnavailable is returned by the no-op embedder used when
@@ -41,9 +40,10 @@ type embedRequester interface {
 
 // ollamaEmbedderAdapter bridges an Ollama-style embedRequester to qdrant.Embedder.
 //
-// It pins the embedding model to defaultRecallEmbeddingModel so callers cannot
-// accidentally produce vectors of the wrong dimension for the configured
-// Qdrant collection.
+// The embedding model is supplied at construction (see newRecallEmbedder)
+// so callers cannot accidentally diverge from the cluster-wide setting in
+// config.AppConfig.EmbeddingModel — every embedder built by this app
+// shares the same model.
 type ollamaEmbedderAdapter struct {
 	provider embedRequester
 	model    string
@@ -86,11 +86,14 @@ func (noopRecallEmbedder) Embed(_ context.Context, _ string) ([]float64, error) 
 }
 
 // newRecallEmbedder returns a qdrant.Embedder routed to the supplied Ollama
-// provider with the model pinned to defaultRecallEmbeddingModel.
+// provider with the model resolved from config (cfg.EmbeddingModel, falling
+// back to config.DefaultEmbeddingModel when empty).
 //
 // Expected:
 //   - ollamaProvider may be nil — when nil, a no-op embedder is returned so
 //     the broker still constructs and non-Qdrant recall sources keep working.
+//   - model names the embedding model. Empty falls back to the historical
+//     default (see config.DefaultEmbeddingModel).
 //
 // Returns:
 //   - A non-nil qdrant.Embedder. When ollamaProvider is nil, the embedder
@@ -99,10 +102,13 @@ func (noopRecallEmbedder) Embed(_ context.Context, _ string) ([]float64, error) 
 // Side effects:
 //   - When ollamaProvider is nil, logs a single warning so operators see
 //     the degradation explicitly instead of silently losing vector recall.
-func newRecallEmbedder(ollamaProvider embedRequester) qdrantrecall.Embedder {
+func newRecallEmbedder(ollamaProvider embedRequester, model string) qdrantrecall.Embedder {
 	if ollamaProvider == nil {
 		slog.Warn("recall embedder unavailable: Ollama provider not configured; vector recall disabled (other recall sources still active)")
 		return noopRecallEmbedder{}
 	}
-	return &ollamaEmbedderAdapter{provider: ollamaProvider, model: defaultRecallEmbeddingModel}
+	if model == "" {
+		model = config.DefaultEmbeddingModel
+	}
+	return &ollamaEmbedderAdapter{provider: ollamaProvider, model: model}
 }
