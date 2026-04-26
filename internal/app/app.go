@@ -438,6 +438,16 @@ type engineParams struct {
 	// must flow into the Engine for L1/L2/L3 to activate. Zero values on
 	// any field disable the corresponding layer. See buildCompressionComponents.
 	compression compressionComponents
+	// streamTimeout / toolTimeout carry the user-configured engine timeouts
+	// from cfg.StreamTimeout / cfg.ToolTimeout. Zero means inherit the
+	// engine's compiled-in defaults (5m / 2m). The delegate tool already
+	// opts out of toolTimeout via TimeoutOverrider.
+	streamTimeout time.Duration
+	toolTimeout   time.Duration
+	// backgroundOutputTimeout overrides the default poll-until-complete
+	// budget on the background_output tool. Zero means inherit the
+	// compiled-in default (120s).
+	backgroundOutputTimeout time.Duration
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -589,9 +599,12 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		failoverHook:         in.setup.failoverHook,
 		failoverManager:      in.setup.failoverManager,
 		dispatcher:           in.setup.dispatcher,
-		skillDir:             in.setup.cfg.SkillDir,
-		recallBroker:         in.broker,
-		compression:          in.compression,
+		skillDir:                in.setup.cfg.SkillDir,
+		recallBroker:            in.broker,
+		compression:             in.compression,
+		streamTimeout:           in.setup.cfg.ParsedStreamTimeout(),
+		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
+		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
 	}
 }
 
@@ -865,6 +878,8 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		SessionMemoryStore:        params.compression.sessionMemoryStore,
 		Recorder:                  params.compression.recorder,
 		KnowledgeExtractorFactory: params.compression.knowledgeExtractorFactory,
+		StreamTimeout:             params.streamTimeout,
+		ToolTimeout:               params.toolTimeout,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -1071,7 +1086,8 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 	}
 
 	if !eng.HasTool("background_output") {
-		eng.AddTool(engine.NewBackgroundOutputTool(bgManager))
+		eng.AddTool(engine.NewBackgroundOutputTool(bgManager).
+			WithDefaultTimeout(a.Config.ParsedBackgroundOutputTimeout()))
 	}
 	if !eng.HasTool("background_cancel") {
 		eng.AddTool(engine.NewBackgroundCancelTool(bgManager))
@@ -1268,6 +1284,8 @@ func (a *App) createDelegateEngine(
 		SessionMemoryStore:        delegateCompression.sessionMemoryStore,
 		Recorder:                  delegateCompression.recorder,
 		KnowledgeExtractorFactory: delegateCompression.knowledgeExtractorFactory,
+		StreamTimeout:             a.Config.ParsedStreamTimeout(),
+		ToolTimeout:               a.Config.ParsedToolTimeout(),
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
