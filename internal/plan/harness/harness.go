@@ -50,6 +50,16 @@ func WithCritic(critic *LLMCritic, p provider.Provider) Option {
 	}
 }
 
+// WithCriticEnabledFunc installs a per-agent predicate that decides whether
+// the configured critic should fire for a given evaluation. When the
+// predicate returns false, the critic short-circuits and the plan is
+// accepted as if no critic were wired. This lets callers attach a single
+// critic at construction time but enable it selectively per agent (e.g.
+// only the planner runs the critic by default).
+func WithCriticEnabledFunc(fn func(agentID string) bool) Option {
+	return func(h *Harness) { h.criticEnabledFor = fn }
+}
+
 // WithVoter attaches a ConsistencyVoter to the harness.
 //
 // Expected:
@@ -109,6 +119,11 @@ type Harness struct {
 	critic             *LLMCritic
 	criticProvider     provider.Provider
 	voter              *ConsistencyVoter
+	// criticEnabledFor decides per-agent whether the critic should fire on
+	// this evaluation. nil means "always run when a critic is configured"
+	// (legacy behaviour). Non-nil takes precedence — return false to skip
+	// the critic for a specific agent even when one is wired.
+	criticEnabledFor func(agentID string) bool
 }
 
 // NewHarness creates a Harness with validators, retry settings, and optional configuration.
@@ -272,7 +287,7 @@ func (h *Harness) runStreamEvaluation(
 			return
 		}
 
-		result, feedback := h.evaluateStreamAttempt(ctx, planText, attempt, outCh)
+		result, feedback := h.evaluateStreamAttempt(ctx, agentID, planText, attempt, outCh)
 		if result != nil {
 			result = h.applyVoter(ctx, streamer, agentID, currentMessage, result)
 			emitPlanArtifact(ctx, outCh, result)
@@ -467,7 +482,7 @@ func (h *Harness) Evaluate(
 			return &plan.EvaluationResult{PlanText: planText, AttemptCount: attempt}, nil
 		}
 
-		result, feedback := h.evaluateAttempt(ctx, planText, attempt)
+		result, feedback := h.evaluateAttempt(ctx, agentID, planText, attempt)
 		if result != nil {
 			result = h.applyVoter(ctx, streamer, agentID, currentMessage, result)
 			return result, nil
@@ -490,10 +505,10 @@ func (h *Harness) Evaluate(
 //
 // Side effects:
 //   - May send a chat request to the critic provider.
-func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt int) (*plan.EvaluationResult, string) {
+func (h *Harness) evaluateAttempt(ctx context.Context, agentID, planText string, attempt int) (*plan.EvaluationResult, string) {
 	validation := h.validatePlan(planText)
 	if validation.Valid {
-		return h.handleValidPlan(ctx, planText, validation, attempt)
+		return h.handleValidPlan(ctx, agentID, planText, validation, attempt)
 	}
 
 	if attempt < h.maxRetries {
@@ -521,9 +536,9 @@ func (h *Harness) evaluateAttempt(ctx context.Context, planText string, attempt 
 // Side effects:
 //   - May send a chat request to the critic provider.
 func (h *Harness) handleValidPlan(
-	ctx context.Context, planText string, validation *plan.ValidationResult, attempt int,
+	ctx context.Context, agentID, planText string, validation *plan.ValidationResult, attempt int,
 ) (*plan.EvaluationResult, string) {
-	criticFeedback := h.runCritic(ctx, planText, validation)
+	criticFeedback := h.runCritic(ctx, agentID, planText, validation)
 	if criticFeedback == "" {
 		return &plan.EvaluationResult{
 			PlanText: planText, ValidationResult: validation,
@@ -581,8 +596,25 @@ func (h *Harness) validatePlan(planText string) *plan.ValidationResult {
 //
 // Side effects:
 //   - Sends a chat request to the critic provider when critic is configured and enabled.
-func (h *Harness) runCritic(ctx context.Context, planText string, validation *plan.ValidationResult) string {
+// shouldRunCriticForAgent gates a configured critic on the per-agent
+// predicate. nil predicate preserves legacy behaviour (run whenever a
+// critic is wired). When the predicate returns false the critic is
+// silently skipped — the plan is accepted as if the critic verdict
+// were Pass. agentID may be empty (e.g. unit tests that bypass the
+// streamer); in that case the predicate is consulted with "" and is
+// expected to handle it.
+func (h *Harness) shouldRunCriticForAgent(agentID string) bool {
+	if h.criticEnabledFor == nil {
+		return true
+	}
+	return h.criticEnabledFor(agentID)
+}
+
+func (h *Harness) runCritic(ctx context.Context, agentID, planText string, validation *plan.ValidationResult) string {
 	if h.critic == nil || h.criticProvider == nil {
+		return ""
+	}
+	if !h.shouldRunCriticForAgent(agentID) {
 		return ""
 	}
 
@@ -618,7 +650,7 @@ func (h *Harness) runCritic(ctx context.Context, planText string, validation *pl
 // Side effects:
 //   - Emits harness_critic_feedback and slog validation events via outCh.
 func (h *Harness) evaluateStreamAttempt(
-	ctx context.Context, planText string, attempt int, outCh chan<- provider.StreamChunk,
+	ctx context.Context, agentID, planText string, attempt int, outCh chan<- provider.StreamChunk,
 ) (*plan.EvaluationResult, string) {
 	validation := h.validatePlan(planText)
 	slog.Info("harness validation",
@@ -628,7 +660,7 @@ func (h *Harness) evaluateStreamAttempt(
 		"warnings", len(validation.Warnings),
 	)
 	if validation.Valid {
-		return h.handleValidPlanStream(ctx, planText, validation, attempt, outCh)
+		return h.handleValidPlanStream(ctx, agentID, planText, validation, attempt, outCh)
 	}
 
 	if attempt < h.maxRetries {
@@ -657,9 +689,9 @@ func (h *Harness) evaluateStreamAttempt(
 // Side effects:
 //   - Emits harness_critic_feedback via outCh when the critic runs.
 func (h *Harness) handleValidPlanStream(
-	ctx context.Context, planText string, validation *plan.ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
+	ctx context.Context, agentID, planText string, validation *plan.ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
 ) (*plan.EvaluationResult, string) {
-	criticFeedback := h.runCriticStream(ctx, planText, validation, outCh)
+	criticFeedback := h.runCriticStream(ctx, agentID, planText, validation, outCh)
 	if criticFeedback == "" {
 		return &plan.EvaluationResult{
 			PlanText: planText, ValidationResult: validation,
@@ -691,9 +723,12 @@ func (h *Harness) handleValidPlanStream(
 //   - Sends a chat request to the critic provider when configured.
 //   - Emits harness_critic_feedback to outCh on successful critic review.
 func (h *Harness) runCriticStream(
-	ctx context.Context, planText string, validation *plan.ValidationResult, outCh chan<- provider.StreamChunk,
+	ctx context.Context, agentID, planText string, validation *plan.ValidationResult, outCh chan<- provider.StreamChunk,
 ) string {
 	if h.critic == nil || h.criticProvider == nil {
+		return ""
+	}
+	if !h.shouldRunCriticForAgent(agentID) {
 		return ""
 	}
 

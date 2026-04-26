@@ -68,6 +68,14 @@ orchestrator_meta:
     - domain: Plan
       trigger: Orchestrate the full planning loop including requirements, research, analysis, and reviewed plan generation
 harness_enabled: true
+harness:
+  enabled: true
+  # The planner orchestrates a multi-agent loop whose output is a plan
+  # that downstream specialists execute against. Risks and recommendations
+  # caught here are cheaper to address than in implementation, so the
+  # critic runs on every planner evaluation regardless of the global
+  # harness.critic_enabled config flag.
+  critic_enabled: true
 ---
 
 # FlowState Planner

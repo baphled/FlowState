@@ -103,10 +103,18 @@ func createHarnessStreamer(
 		opts = append(opts, harness.WithMaxRetries(cfg.MaxRetries))
 	}
 
-	if cfg.CriticEnabled && p != nil {
+	// Wire a critic instance whenever a provider is available — the
+	// per-agent enabler below decides whether it actually fires for any
+	// given evaluation. This means an agent whose manifest opts into
+	// the critic gets it even when the global cfg.CriticEnabled is
+	// false; conversely, the legacy global flag still works for callers
+	// that want a blanket enable.
+	if p != nil && (cfg.CriticEnabled || registryHasCriticEnabledAgent(registry)) {
 		critic, err := harness.NewLLMCritic(true, "claude-sonnet-4-6")
 		if err == nil {
 			opts = append(opts, harness.WithCritic(critic, p))
+			opts = append(opts, harness.WithCriticEnabledFunc(
+				newCriticEnabler(registry, cfg.CriticEnabled)))
 		}
 	}
 
@@ -124,6 +132,39 @@ func createHarnessStreamer(
 		hs.WithExecutionEvaluator(execEval)
 	}
 	return hs
+}
+
+// registryHasCriticEnabledAgent reports whether any registered agent has
+// opted into the LLM critic via its manifest's harness.critic_enabled
+// override. Used so a critic instance is constructed even when the global
+// config flag is off — agents with the per-manifest override get the
+// critic without forcing it on the rest of the system.
+func registryHasCriticEnabledAgent(registry *agent.Registry) bool {
+	if registry == nil {
+		return false
+	}
+	for _, m := range registry.List() {
+		if m.Harness != nil && m.Harness.CriticEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+// newCriticEnabler returns a per-agent predicate that decides whether the
+// configured critic should fire. The agent's manifest override always wins;
+// the global config flag is the fallback when the agent doesn't express an
+// opinion. An empty agentID falls back to the global setting (defensive
+// default for unit-test paths that bypass the streamer).
+func newCriticEnabler(registry *agent.Registry, globalDefault bool) func(string) bool {
+	return func(agentID string) bool {
+		if registry != nil && agentID != "" {
+			if m, ok := registry.Get(agentID); ok && m.Harness != nil {
+				return m.Harness.CriticEnabled
+			}
+		}
+		return globalDefault
+	}
 }
 
 // CreateHarnessStreamerForTest is a test helper that exposes createHarnessStreamer for
