@@ -64,20 +64,20 @@ var _ = Describe("recall embedder routing", func() {
 		chat := &recordingProvider{}
 		ollama := &fakeOllamaEmbedder{}
 
-		embedder := newRecallEmbedder(ollama)
+		embedder := newRecallEmbedder(ollama, config.DefaultEmbeddingModel)
 		_, err := embedder.Embed(ctx, "hello world")
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(chat.embedCalls).To(Equal(0),
 			"chat provider Embed must not be invoked for recall embeddings")
 		Expect(ollama.calls).To(Equal(1))
-		Expect(ollama.lastReq.Model).To(Equal(defaultRecallEmbeddingModel),
+		Expect(ollama.lastReq.Model).To(Equal(config.DefaultEmbeddingModel),
 			"ollama embed model must match Qdrant collection vector dim")
 		Expect(ollama.lastReq.Input).To(Equal("hello world"))
 	})
 
 	It("returns a no-op embedder with a sentinel error when the Ollama provider is nil", func() {
-		embedder := newRecallEmbedder(nil)
+		embedder := newRecallEmbedder(nil, config.DefaultEmbeddingModel)
 		Expect(embedder).NotTo(BeNil(),
 			"newRecallEmbedder(nil) must return a non-nil no-op embedder")
 
@@ -104,7 +104,7 @@ var _ = Describe("recall embedder routing", func() {
 
 		// Drive the embedder via the public adapter to prove it routes
 		// to Ollama.
-		embedder := newRecallEmbedder(ollama)
+		embedder := newRecallEmbedder(ollama, config.DefaultEmbeddingModel)
 		_, err := embedder.Embed(context.Background(), "regression")
 		Expect(err).NotTo(HaveOccurred())
 

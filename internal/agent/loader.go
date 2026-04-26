@@ -233,7 +233,9 @@ func validateContextManagement(m *Manifest) error {
 //
 // Side effects:
 //   - Mutates m.ContextManagement fields: sets MaxRecursionDepth to 2, SummaryTier to "quick",
-//   - SlidingWindowSize to 10, CompactionThreshold to 0.75, and EmbeddingModel to "nomic-embed-text".
+//   - SlidingWindowSize to 10, CompactionThreshold to 0.75, and EmbeddingModel to the
+//     package-level default (see SetDefaultEmbeddingModel; falls back to
+//     HistoricalDefaultEmbeddingModel when unset).
 func applyDefaults(m *Manifest) {
 	if m.ContextManagement.MaxRecursionDepth == 0 {
 		m.ContextManagement.MaxRecursionDepth = 2
@@ -248,6 +250,6 @@ func applyDefaults(m *Manifest) {
 		m.ContextManagement.CompactionThreshold = 0.75
 	}
 	if m.ContextManagement.EmbeddingModel == "" {
-		m.ContextManagement.EmbeddingModel = "nomic-embed-text"
+		m.ContextManagement.EmbeddingModel = defaultEmbeddingModel
 	}
 }

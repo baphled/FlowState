@@ -735,6 +735,45 @@ log_level: info
 			Expect(cfg.DataDir).To(Equal("/absolute/data"))
 		})
 	})
+
+	Describe("ResolvedEmbeddingModel", func() {
+		It("returns the historical default when EmbeddingModel is unset", func() {
+			cfg := &config.AppConfig{}
+			Expect(cfg.ResolvedEmbeddingModel()).To(Equal(config.DefaultEmbeddingModel))
+			Expect(config.DefaultEmbeddingModel).To(Equal("nomic-embed-text"))
+		})
+
+		It("returns the configured value when EmbeddingModel is set", func() {
+			cfg := &config.AppConfig{EmbeddingModel: "text-embedding-3-small"}
+			Expect(cfg.ResolvedEmbeddingModel()).To(Equal("text-embedding-3-small"))
+		})
+
+		It("tolerates a nil receiver and returns the historical default", func() {
+			var cfg *config.AppConfig
+			Expect(cfg.ResolvedEmbeddingModel()).To(Equal(config.DefaultEmbeddingModel))
+		})
+	})
+
+	Describe("DefaultProviderModel", func() {
+		It("returns the model for the named default provider", func() {
+			cfg := &config.AppConfig{}
+			cfg.Providers.Default = "zai"
+			cfg.Providers.ZAI.Model = "glm-4.7"
+			Expect(cfg.DefaultProviderModel()).To(Equal("glm-4.7"))
+		})
+
+		It("returns empty when the default provider has no model configured", func() {
+			cfg := &config.AppConfig{}
+			cfg.Providers.Default = "anthropic"
+			Expect(cfg.DefaultProviderModel()).To(BeEmpty())
+		})
+
+		It("returns empty when the default provider name is unknown", func() {
+			cfg := &config.AppConfig{}
+			cfg.Providers.Default = "made-up"
+			Expect(cfg.DefaultProviderModel()).To(BeEmpty())
+		})
+	})
 })
 
 // AppConfig.ResolvedPlanLocation centralises the three-tier resolution
