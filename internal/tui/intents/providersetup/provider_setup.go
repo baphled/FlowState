@@ -21,6 +21,12 @@ const (
 	maxSteps       = 2
 )
 
+// reservedViewportRows accounts for the header (breadcrumbs + title + subtitle)
+// and footer (separator + help) rows that surround the scrollable item list in
+// the provider setup screen. Subtracted from the terminal height to derive the
+// visible-row count for the viewport.
+const reservedViewportRows = 7
+
 // OAuthState represents the current state of an OAuth flow in the TUI.
 type OAuthState struct {
 	Active          bool
@@ -54,11 +60,18 @@ type Shell interface {
 }
 
 // Intent handles provider and MCP server configuration in the TUI.
+//
+// The selectedItem cursor and offset together describe a viewport window over
+// the current step's item slice. The render loop slices items by
+// [offset : offset+visibleRows] so a list taller than the viewport remains
+// fully reachable as the cursor moves; key handlers keep selectedItem within
+// [offset, offset+visibleRows) and clamp it to [0, len(items)-1].
 type Intent struct {
 	currentStep            int
 	providers              []ProviderStatus
 	mcpServers             []config.MCPServerConfig
 	selectedItem           int
+	offset                 int
 	editingAPIKey          bool
 	apiKeyInput            string
 	selectedProviderForKey string
@@ -87,6 +100,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 		providers:        providers,
 		mcpServers:       cfg.MCPServers,
 		selectedItem:     0,
+		offset:           0,
 		editingAPIKey:    false,
 		apiKeyInput:      "",
 		credentialSource: "",
@@ -179,6 +193,7 @@ func (i *Intent) Update(msg tea.Msg) tea.Cmd {
 	case tea.WindowSizeMsg:
 		i.width = msg.Width
 		i.height = msg.Height
+		i.adjustOffset()
 	}
 	return nil
 }
@@ -202,6 +217,7 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyTab:
 		i.currentStep = (i.currentStep + 1) % maxSteps
 		i.selectedItem = 0
+		i.offset = 0
 		return nil
 	case tea.KeyShiftTab:
 		i.currentStep--
@@ -209,14 +225,19 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 			i.currentStep = maxSteps - 1
 		}
 		i.selectedItem = 0
+		i.offset = 0
 		return nil
 	case tea.KeyUp:
 		if i.selectedItem > 0 {
 			i.selectedItem--
 		}
+		i.adjustOffset()
 		return nil
 	case tea.KeyDown:
-		i.selectedItem++
+		if i.selectedItem < i.currentItemCount()-1 {
+			i.selectedItem++
+		}
+		i.adjustOffset()
 		return nil
 	case tea.KeyEnter:
 		return i.handleEnter()
@@ -226,6 +247,75 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+// currentItemCount returns the number of items in the active step's list.
+//
+// Returns:
+//   - The length of providers on the providers step, or the length of MCP
+//     servers on the MCP step. Zero for any unrecognised step.
+//
+// Side effects:
+//   - None.
+func (i *Intent) currentItemCount() int {
+	switch i.currentStep {
+	case stepProviders:
+		return len(i.providers)
+	case stepMCPServers:
+		return len(i.mcpServers)
+	}
+	return 0
+}
+
+// visibleRows reports how many list rows fit in the scrollable viewport for
+// the current terminal height.
+//
+// Returns:
+//   - The visible-row count, always at least 1, derived from i.height minus
+//     the rows reserved for header and footer chrome.
+//
+// Side effects:
+//   - None.
+func (i *Intent) visibleRows() int {
+	rows := i.height - reservedViewportRows
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+// adjustOffset normalises offset so selectedItem is always inside the visible
+// window [offset, offset+visibleRows).
+//
+// Side effects:
+//   - May update i.offset when the cursor crosses the viewport edges or when
+//     the list is shorter than the viewport.
+func (i *Intent) adjustOffset() {
+	count := i.currentItemCount()
+	rows := i.visibleRows()
+
+	if count <= rows {
+		i.offset = 0
+		return
+	}
+	if i.selectedItem < i.offset {
+		i.offset = i.selectedItem
+		return
+	}
+	if i.selectedItem >= i.offset+rows {
+		i.offset = i.selectedItem - rows + 1
+	}
+}
+
+// Offset returns the current viewport offset for tests and inspection.
+//
+// Returns:
+//   - The zero-based index of the first visible row in the current step.
+//
+// Side effects:
+//   - None.
+func (i *Intent) Offset() int {
+	return i.offset
 }
 
 // handleEnter processes the Enter key action for the current step.
@@ -246,6 +336,7 @@ func (i *Intent) handleEnter() tea.Cmd {
 				i.editingAPIKey = true
 				i.apiKeyInput = ""
 				i.selectedItem = 0
+				i.offset = 0
 			} else {
 				provider.Enabled = !provider.Enabled
 			}
@@ -461,13 +552,15 @@ func (i *Intent) renderProvidersStep() (string, string) {
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("255"))
 
-	for idx, p := range i.providers {
+	start, end := visibleWindow(len(i.providers), i.offset, i.visibleRows())
+	for idx, p := range i.providers[start:end] {
+		actualIdx := start + idx
 		status := "[*] "
 		if !p.Enabled {
 			status = "[ ] "
 		}
 		var line string
-		if idx == i.selectedItem {
+		if actualIdx == i.selectedItem {
 			line = selectedStyle.Render(fmt.Sprintf("%s%s", status, p.Name))
 		} else {
 			line = style.Render(fmt.Sprintf("%s%s", status, p.Name))
@@ -514,13 +607,15 @@ func (i *Intent) renderMCPServersStep() (string, string) {
 	style := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("255"))
 
-	for idx, srv := range i.mcpServers {
+	start, end := visibleWindow(len(i.mcpServers), i.offset, i.visibleRows())
+	for idx, srv := range i.mcpServers[start:end] {
+		actualIdx := start + idx
 		status := "[ ] "
 		if srv.Enabled {
 			status = "[*] "
 		}
 		var line string
-		if idx == i.selectedItem {
+		if actualIdx == i.selectedItem {
 			line = selectedStyle.Render(fmt.Sprintf("%s%s", status, srv.Name))
 		} else {
 			line = style.Render(fmt.Sprintf("%s%s", status, srv.Name))
@@ -529,6 +624,37 @@ func (i *Intent) renderMCPServersStep() (string, string) {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, lines...), helpText
+}
+
+// visibleWindow returns the [start, end) slice bounds of the items visible in
+// the viewport.
+//
+// Expected:
+//   - count is the total number of items in the list.
+//   - offset is the zero-based index of the first visible row.
+//   - rows is the maximum number of rows the viewport can show.
+//
+// Returns:
+//   - Clamped start and end indices that always satisfy 0 <= start <= end <= count.
+//
+// Side effects:
+//   - None.
+func visibleWindow(count, offset, rows int) (int, int) {
+	if count == 0 {
+		return 0, 0
+	}
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > count {
+		start = count
+	}
+	end := start + rows
+	if end > count {
+		end = count
+	}
+	return start, end
 }
 
 // styleFor applies standard styling to text.
