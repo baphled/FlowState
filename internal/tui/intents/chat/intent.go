@@ -1177,9 +1177,17 @@ func (i *Intent) handleDelegationKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		i.delegationPickerModal = nil
-	case "up", "k":
+	case "up", "k", "left", "h":
+		// left/h alias up/k so users can step backwards through delegated
+		// sessions in creation order with the arrow they reach for first.
+		// AllSessions / ChildSessions now sort by CreatedAt (oldest first),
+		// so prev = up = left.
 		i.delegationPickerModal.MoveUp()
-	case "down", "j":
+	case "down", "j", "right", "l":
+		// right/l alias down/j — same rationale as left/up: the user wanted
+		// arrow-key cycling through delegated sessions in the order they
+		// were created. Vim and arrow conventions both terminate at the
+		// list bounds (no wrap) — matches MoveUp/MoveDown's existing clamp.
 		i.delegationPickerModal.MoveDown()
 	case "enter":
 		if sel := i.delegationPickerModal.Selected(); sel != nil {

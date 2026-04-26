@@ -819,6 +819,145 @@ var _ = Describe("Manager", func() {
 			})
 		})
 	})
+
+	// AllSessions / ChildSessions previously iterated a Go map directly,
+	// returning sessions in non-deterministic order. The delegation
+	// picker's left/right arrow navigation depends on a stable creation
+	// order — these specs lock the new sort and verify the tiebreaker
+	// for sessions that share a CreatedAt timestamp.
+	Describe("ordered session listing", func() {
+		It("returns AllSessions ordered by CreatedAt (oldest first)", func() {
+			t0 := time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC)
+			ordered := []*session.Session{
+				{ID: "third", ParentID: "root", AgentID: "c", CreatedAt: t0.Add(2 * time.Second)},
+				{ID: "first", ParentID: "root", AgentID: "a", CreatedAt: t0},
+				{ID: "second", ParentID: "root", AgentID: "b", CreatedAt: t0.Add(1 * time.Second)},
+			}
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.RestoreSessions(append(ordered, &session.Session{ID: "root", AgentID: "root", CreatedAt: t0}))
+
+			got, err := mgr.AllSessions()
+			Expect(err).NotTo(HaveOccurred())
+			ids := make([]string, len(got))
+			for i := range got {
+				ids[i] = got[i].ID
+			}
+			Expect(ids).To(Equal([]string{"first", "second", "third"}),
+				"AllSessions must order by CreatedAt — Go map iteration is "+
+					"non-deterministic and would otherwise return these in any order")
+		})
+
+		It("returns ChildSessions ordered by CreatedAt for a given parent", func() {
+			t0 := time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC)
+			restored := []*session.Session{
+				{ID: "root", AgentID: "root", CreatedAt: t0},
+				{ID: "B", ParentID: "root", AgentID: "b", CreatedAt: t0.Add(2 * time.Second)},
+				{ID: "A", ParentID: "root", AgentID: "a", CreatedAt: t0.Add(1 * time.Second)},
+				{ID: "C", ParentID: "root", AgentID: "c", CreatedAt: t0.Add(3 * time.Second)},
+			}
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.RestoreSessions(restored)
+
+			got, err := mgr.ChildSessions("root")
+			Expect(err).NotTo(HaveOccurred())
+			ids := make([]string, len(got))
+			for i := range got {
+				ids[i] = got[i].ID
+			}
+			Expect(ids).To(Equal([]string{"A", "B", "C"}),
+				"ChildSessions must mirror AllSessions's ordering contract")
+		})
+
+		It("breaks CreatedAt ties by ID so order stays stable across calls", func() {
+			t := time.Date(2026, 4, 26, 10, 0, 0, 0, time.UTC)
+			restored := []*session.Session{
+				{ID: "root", AgentID: "root", CreatedAt: t},
+				// All three children share CreatedAt — possible when a
+				// parent fans out parallel delegations in one tick.
+				{ID: "delta", ParentID: "root", AgentID: "d", CreatedAt: t.Add(time.Second)},
+				{ID: "alpha", ParentID: "root", AgentID: "a", CreatedAt: t.Add(time.Second)},
+				{ID: "charlie", ParentID: "root", AgentID: "c", CreatedAt: t.Add(time.Second)},
+			}
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.RestoreSessions(restored)
+
+			got, err := mgr.AllSessions()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got[0].ID).To(Equal("alpha"))
+			Expect(got[1].ID).To(Equal("charlie"))
+			Expect(got[2].ID).To(Equal("delta"))
+		})
+	})
+
+	// MarkEndedFromEvent is the bus-driven counterpart to CloseSession.
+	// Specs cover the four branches: known-session-active, known-session-
+	// already-completed (idempotent), known-session-failed (terminal,
+	// not downgraded), and unknown-session (silent no-op).
+	Describe("MarkEndedFromEvent", func() {
+		It("flips an active session's status to completed", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			sess, err := mgr.CreateSession("worker")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)))
+
+			mgr.MarkEndedFromEvent(sess.ID)
+
+			got, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Status).To(Equal(string(session.StatusCompleted)),
+				"a session.ended event must auto-flip Status without "+
+					"requiring an explicit CloseSession call")
+		})
+
+		It("is idempotent on an already-completed session", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			sess, err := mgr.CreateSession("worker")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+			before, _ := mgr.GetSession(sess.ID)
+			beforeAt := before.UpdatedAt
+
+			mgr.MarkEndedFromEvent(sess.ID)
+
+			got, _ := mgr.GetSession(sess.ID)
+			Expect(got.Status).To(Equal(string(session.StatusCompleted)))
+			Expect(got.UpdatedAt).To(Equal(beforeAt),
+				"a duplicate ended event must not bump UpdatedAt — the "+
+					"session is already in the terminal completed state")
+		})
+
+		It("does NOT downgrade a failed session to completed", func() {
+			// RestoreSessions only inserts new IDs (it skips existing
+			// entries) so we seed the failed session via that path
+			// directly rather than CreateSession + Restore-overwrite.
+			// failed is the terminal/most-specific status; an ended
+			// event arriving later (which fires for both clean and
+			// error stream closes) must not silently rewrite the
+			// known failure to a successful completion.
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.RestoreSessions([]*session.Session{
+				{ID: "worker-1", AgentID: "worker", Status: string(session.StatusFailed), CreatedAt: time.Now()},
+			})
+
+			mgr.MarkEndedFromEvent("worker-1")
+
+			got, err := mgr.GetSession("worker-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Status).To(Equal(string(session.StatusFailed)),
+				"failed > completed in semantic precedence; ended events "+
+					"must not rewrite a known failure to a clean completion")
+		})
+
+		It("silently ignores unknown session IDs", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			Expect(func() { mgr.MarkEndedFromEvent("ghost") }).NotTo(Panic())
+		})
+
+		It("ignores empty session IDs", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			Expect(func() { mgr.MarkEndedFromEvent("") }).NotTo(Panic())
+		})
+	})
 })
 
 type mockStreamer struct {

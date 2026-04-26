@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -93,6 +94,45 @@ func NewManager(streamer streaming.Streamer) *Manager {
 		streamer:      streamer,
 		notifications: make(map[string][]streaming.CompletionNotificationEvent),
 	}
+}
+
+// MarkEndedFromEvent flips the matching session's status to
+// StatusCompleted in response to an external "session.ended" event.
+// Idempotent and status-precedence-aware: failed > completed > active —
+// a previously-failed session is NOT downgraded to completed when an
+// end event arrives later. Unknown session IDs are silently ignored
+// (events for foreign sessions, or for sessions that pre-date the
+// manager's restart, simply have nothing to do here).
+//
+// This is the bus-driven counterpart to CloseSession. Wire-up at the
+// app level: subscribe to the event bus, type-assert the published
+// payload to *events.SessionEvent, and forward .Data.SessionID here.
+// Keeping the type assertion at the call site means this package does
+// NOT need to import plugin/events.
+//
+// Expected:
+//   - sessionID is the session whose status should flip. Empty input
+//     is a no-op.
+//
+// Side effects:
+//   - Updates the matching session's Status and UpdatedAt under write
+//     lock when a flip applies.
+func (m *Manager) MarkEndedFromEvent(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return
+	}
+	if sess.Status == string(StatusFailed) || sess.Status == string(StatusCompleted) {
+		return
+	}
+	sess.Status = string(StatusCompleted)
+	sess.UpdatedAt = time.Now()
 }
 
 // SetRecorder attaches an optional session recorder to the manager.
@@ -328,7 +368,11 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 // AllSessions returns every session that has a parent, regardless of which parent session spawned it.
 //
 // Returns:
-//   - A slice containing all sessions that carry a non-empty ParentID.
+//   - A slice containing all sessions that carry a non-empty ParentID,
+//     ordered by CreatedAt (oldest first). Stable across calls — Go map
+//     iteration is non-deterministic, so a deterministic sort is required
+//     for consumers that step through sessions sequentially (e.g. the
+//     delegation picker's left/right arrow navigation).
 //   - A nil error on success.
 //
 // Side effects:
@@ -343,6 +387,7 @@ func (m *Manager) AllSessions() ([]*Session, error) {
 			result = append(result, sess)
 		}
 	}
+	sortSessionsByCreatedAt(result)
 
 	return result, nil
 }
@@ -352,7 +397,9 @@ func (m *Manager) AllSessions() ([]*Session, error) {
 //   - parentID identifies the parent session to inspect.
 //
 // Returns:
-//   - A slice containing each direct child session.
+//   - A slice containing each direct child session, ordered by CreatedAt
+//     (oldest first). Same rationale as AllSessions: stepping through
+//     children with arrow keys requires a deterministic order.
 //   - A nil error when the lookup succeeds.
 //
 // Side effects:
@@ -367,8 +414,25 @@ func (m *Manager) ChildSessions(parentID string) ([]*Session, error) {
 			children = append(children, sess)
 		}
 	}
+	sortSessionsByCreatedAt(children)
 
 	return children, nil
+}
+
+// sortSessionsByCreatedAt orders sessions oldest-first. Ties on CreatedAt
+// (down-to-the-nanosecond identical timestamps, possible when a parent
+// fans out parallel delegations in one tick) break by session ID so the
+// order remains stable across calls. Without this tiebreaker a back-to-
+// back delegation pair could swap positions between two AllSessions
+// calls — exactly the symptom the user reported as "delegated agent
+// listing doesn't honour creation order".
+func sortSessionsByCreatedAt(sessions []*Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
+			return sessions[i].ID < sessions[j].ID
+		}
+		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+	})
 }
 
 // SessionTree returns the root session and its descendants in depth-first order.
