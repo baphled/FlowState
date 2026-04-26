@@ -7,7 +7,8 @@
 package context_test
 
 import (
-	"testing"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	contextpkg "github.com/baphled/flowstate/internal/context"
@@ -15,7 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 )
 
-// recordingRecorder captures RecordContextWindowTokens calls for test
+// recordingRecorder captures RecordContextWindowTokens calls for spec
 // assertion. It ignores every other Recorder method since
 // WindowBuilder is only expected to touch the context-window gauge.
 type recordingRecorder struct {
@@ -46,75 +47,61 @@ func (r *recordingRecorder) RecordCompressionTokensSaved(agentID string, tokensS
 }
 func (r *recordingRecorder) RecordCompressionOverheadTokens(string, int) {}
 
-// TestWindowBuilder_WithRecorder_ReturnsReceiver asserts the fluent
-// setter follows the same convention as WithMetrics / WithSplitter.
-func TestWindowBuilder_WithRecorder_ReturnsReceiver(t *testing.T) {
-	t.Parallel()
+var _ = Describe("WindowBuilder Recorder wiring", func() {
+	// WithRecorder_ReturnsReceiver asserts the fluent setter follows
+	// the same convention as WithMetrics / WithSplitter.
+	It("WithRecorder returns the receiver for fluent chaining", func() {
+		builder := contextpkg.NewWindowBuilder(stubCounter{})
+		rec := &recordingRecorder{}
+		Expect(builder.WithRecorder(rec)).To(BeIdenticalTo(builder),
+			"WithRecorder did not return the receiver")
+	})
 
-	builder := contextpkg.NewWindowBuilder(stubCounter{})
-	rec := &recordingRecorder{}
-	if got := builder.WithRecorder(rec); got != builder {
-		t.Fatalf("WithRecorder did not return the receiver")
-	}
-}
+	// Build_EmitsContextWindowGauge: Build calls
+	// RecordContextWindowTokens with the manifest's agent ID and the
+	// assembled window's token count. The stubCounter assigns one
+	// token per character so the expected value can be computed from
+	// the message contents.
+	It("Build emits the context-window gauge with manifest agent ID + assembled token count", func() {
+		rec := &recordingRecorder{}
+		builder := contextpkg.NewWindowBuilder(stubCounter{}).WithRecorder(rec)
 
-// TestWindowBuilder_Build_EmitsContextWindowGauge asserts that Build
-// calls RecordContextWindowTokens with the manifest's agent ID and the
-// assembled window's token count. The stubCounter assigns one token per
-// character so the expected value can be computed from the message
-// contents.
-func TestWindowBuilder_Build_EmitsContextWindowGauge(t *testing.T) {
-	t.Parallel()
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "test-model")
+		Expect(err).NotTo(HaveOccurred(), "store")
+		store.Append(provider.Message{Role: "user", Content: "hello"})
 
-	rec := &recordingRecorder{}
-	builder := contextpkg.NewWindowBuilder(stubCounter{}).WithRecorder(rec)
+		manifest := &agent.Manifest{
+			ID:                "metrics-agent",
+			Instructions:      agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		result := builder.Build(manifest, store, 10_000)
 
-	store, err := recall.NewFileContextStore(t.TempDir()+"/ctx.json", "test-model")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	store.Append(provider.Message{Role: "user", Content: "hello"})
+		Expect(rec.windowCalls).To(HaveLen(1), "expected 1 gauge emission")
+		call := rec.windowCalls[0]
+		Expect(call.agentID).To(Equal("metrics-agent"))
+		Expect(call.tokens).To(Equal(result.TokensUsed),
+			"gauge tokens must match BuildResult.TokensUsed")
+		Expect(call.tokens).To(BeNumerically(">", 0),
+			"gauge tokens should be positive for a non-empty window")
+	})
 
-	manifest := &agent.Manifest{
-		ID:                "metrics-agent",
-		Instructions:      agent.Instructions{SystemPrompt: "sys"},
-		ContextManagement: agent.DefaultContextManagement(),
-	}
-	result := builder.Build(manifest, store, 10_000)
+	// Build_NoRecorder_NoEmission: the builder stays silent when no
+	// recorder is attached. Deployments that never enable metrics must
+	// pay no recorder overhead. If the builder dereferences a nil
+	// recorder, this spec panics — caught by the Ginkgo deferred Fail.
+	It("Build stays silent (no panic) when no recorder is attached", func() {
+		builder := contextpkg.NewWindowBuilder(stubCounter{})
+		store, err := recall.NewFileContextStore(GinkgoT().TempDir()+"/ctx.json", "test-model")
+		Expect(err).NotTo(HaveOccurred(), "store")
+		store.Append(provider.Message{Role: "user", Content: "hi"})
 
-	if len(rec.windowCalls) != 1 {
-		t.Fatalf("expected 1 gauge emission, got %d", len(rec.windowCalls))
-	}
-	call := rec.windowCalls[0]
-	if call.agentID != "metrics-agent" {
-		t.Fatalf("gauge agent ID = %q; want %q", call.agentID, "metrics-agent")
-	}
-	if call.tokens != result.TokensUsed {
-		t.Fatalf("gauge tokens = %d; want BuildResult.TokensUsed = %d", call.tokens, result.TokensUsed)
-	}
-	if call.tokens <= 0 {
-		t.Fatalf("gauge tokens should be positive for a non-empty window, got %d", call.tokens)
-	}
-}
-
-// TestWindowBuilder_Build_NoRecorder_NoEmission asserts the builder
-// stays silent when no recorder is attached. Deployments that never
-// enable metrics must pay no recorder overhead.
-func TestWindowBuilder_Build_NoRecorder_NoEmission(t *testing.T) {
-	t.Parallel()
-
-	builder := contextpkg.NewWindowBuilder(stubCounter{})
-	store, err := recall.NewFileContextStore(t.TempDir()+"/ctx.json", "test-model")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	store.Append(provider.Message{Role: "user", Content: "hi"})
-
-	manifest := &agent.Manifest{
-		ID:                "silent-agent",
-		Instructions:      agent.Instructions{SystemPrompt: "sys"},
-		ContextManagement: agent.DefaultContextManagement(),
-	}
-	// If the builder dereferences a nil recorder, this will panic.
-	_ = builder.Build(manifest, store, 10_000)
-}
+		manifest := &agent.Manifest{
+			ID:                "silent-agent",
+			Instructions:      agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		Expect(func() { _ = builder.Build(manifest, store, 10_000) }).
+			NotTo(Panic(), "Build must not panic without a recorder")
+	})
+})
