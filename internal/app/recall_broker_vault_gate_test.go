@@ -3,19 +3,21 @@ package app
 import (
 	"context"
 	"sync/atomic"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/learning"
 	"github.com/baphled/flowstate/internal/mcp"
 )
 
-// recordingMCPClient counts CallTool invocations per (server, tool) pair so
-// the P7/C1 tests can assert the recall broker does not hit the vault-rag
-// MCP server when the vault string is unset.
+// recordingMCPClient counts CallTool invocations per (server, tool) pair
+// so the P7/C1 specs can assert the recall broker does not hit the
+// vault-rag MCP server when the vault string is unset.
 type recordingMCPClient struct {
-	// Use atomic counters — recall.Broker fans out queries to sources in
-	// goroutines, so counts must be safe to read concurrently.
+	// Use atomic counters — recall.Broker fans out queries to sources
+	// in goroutines, so counts must be safe to read concurrently.
 	vaultCallCount  atomic.Int64
 	memoryCallCount atomic.Int64
 	otherCallCount  atomic.Int64
@@ -40,87 +42,71 @@ func (r *recordingMCPClient) CallTool(_ context.Context, serverName, _ string, _
 	return &mcp.ToolResult{Content: `{}`, IsError: false}, nil
 }
 
-// TestBuildRecallBroker_DoesNotAttachVaultSource_WhenVaultStringEmpty locks
-// in bug C1 — on every user turn, buildRecallBroker attached a VaultSource
+// Recall broker vault-source gating.
+//
+// Bug C1: on every user turn, buildRecallBroker attached a VaultSource
 // constructed with an empty vault string, which then fired query_vault
 // against the vault-rag MCP server. That produced 185 non-JSON debug log
 // lines per session and forced the engine's window builder down the
-// semantic-results path with garbage data. The fix is to gate attachment of
-// the vault source on a non-empty vault string at construction time.
-func TestBuildRecallBroker_DoesNotAttachVaultSource_WhenVaultStringEmpty(t *testing.T) {
-	client := &recordingMCPClient{}
-	cfg := &config.AppConfig{}
-	// Leave cfg.Qdrant.URL empty so the broker path is the one currently
-	// exercised in production when vault is not configured.
+// semantic-results path with garbage data. The fix is to gate attachment
+// of the vault source on a non-empty vault string at construction time.
+// B3 then wired cfg.VaultPath as the canonical source.
+var _ = Describe("buildRecallBroker vault-source gating", func() {
+	It("does not attach the vault source when no vault string is supplied (C1)", func() {
+		client := &recordingMCPClient{}
+		cfg := &config.AppConfig{}
+		// Leave cfg.Qdrant.URL empty so the broker path is the one
+		// currently exercised in production when vault is not configured.
 
-	broker := buildRecallBroker(recallBrokerParams{
-		cfg:       cfg,
-		mcpClient: client,
+		broker := buildRecallBroker(recallBrokerParams{
+			cfg:       cfg,
+			mcpClient: client,
+		})
+		Expect(broker).NotTo(BeNil())
+
+		ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
+		_, err := broker.Query(ctx, "hello", 5)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(client.vaultCallCount.Load()).To(Equal(int64(0)),
+			"vault-rag CallTool must not fire when the vault string is empty")
 	})
-	if broker == nil {
-		t.Fatal("buildRecallBroker returned nil")
-	}
 
-	ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
-	if _, err := broker.Query(ctx, "hello", 5); err != nil {
-		t.Fatalf("broker.Query: %v", err)
-	}
+	It("attaches the vault source when buildRecallBrokerWithVault is given a non-empty string", func() {
+		client := &recordingMCPClient{}
+		cfg := &config.AppConfig{}
 
-	if got := client.vaultCallCount.Load(); got != 0 {
-		t.Errorf("vault-rag CallTool invocations = %d; want 0 when vault string is empty (C1)", got)
-	}
-}
+		broker := buildRecallBrokerWithVault(recallBrokerParams{
+			cfg:       cfg,
+			mcpClient: client,
+		}, "baphled")
+		Expect(broker).NotTo(BeNil())
 
-// TestBuildRecallBroker_AttachesVaultSource_WhenVaultStringNonEmpty is the
-// forward-compatibility counterpart: once callers thread a real vault string
-// into buildRecallBroker (via a future config field) the vault source must
-// reattach and query the MCP server. This test drives the presence of that
-// attach site without yet introducing the config field.
-func TestBuildRecallBroker_AttachesVaultSource_WhenVaultStringNonEmpty(t *testing.T) {
-	client := &recordingMCPClient{}
-	cfg := &config.AppConfig{}
+		ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
+		_, err := broker.Query(ctx, "hello", 5)
+		Expect(err).NotTo(HaveOccurred())
 
-	broker := buildRecallBrokerWithVault(recallBrokerParams{
-		cfg:       cfg,
-		mcpClient: client,
-	}, "baphled")
-	if broker == nil {
-		t.Fatal("buildRecallBrokerWithVault returned nil")
-	}
-
-	ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
-	if _, err := broker.Query(ctx, "hello", 5); err != nil {
-		t.Fatalf("broker.Query: %v", err)
-	}
-
-	if got := client.vaultCallCount.Load(); got == 0 {
-		t.Errorf("vault-rag CallTool invocations = 0; want >=1 when vault string is provided")
-	}
-}
-
-// TestBuildRecallBroker_AttachesVaultSource_WhenConfigVaultPathSet verifies
-// that buildRecallBroker (not buildRecallBrokerWithVault) attaches the vault
-// source when cfg.VaultPath is populated — the B3 bug fix.
-func TestBuildRecallBroker_AttachesVaultSource_WhenConfigVaultPathSet(t *testing.T) {
-	client := &recordingMCPClient{}
-	cfg := &config.AppConfig{
-		VaultPath: "baphled",
-	}
-
-	broker := buildRecallBroker(recallBrokerParams{
-		cfg:       cfg,
-		mcpClient: client,
+		Expect(client.vaultCallCount.Load()).To(BeNumerically(">=", 1),
+			"vault-rag CallTool must fire when a vault string is provided")
 	})
-	if broker == nil {
-		t.Fatal("buildRecallBroker returned nil")
-	}
 
-	ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
-	if _, err := broker.Query(ctx, "hello", 5); err != nil {
-		t.Fatalf("broker.Query: %v", err)
-	}
+	It("attaches the vault source when cfg.VaultPath is populated (B3)", func() {
+		client := &recordingMCPClient{}
+		cfg := &config.AppConfig{
+			VaultPath: "baphled",
+		}
 
-	if got := client.vaultCallCount.Load(); got == 0 {
-		t.Errorf("vault-rag CallTool invocations = 0; want >=1 when cfg.VaultPath is set")
-	}
-}
+		broker := buildRecallBroker(recallBrokerParams{
+			cfg:       cfg,
+			mcpClient: client,
+		})
+		Expect(broker).NotTo(BeNil())
+
+		ctx := context.WithValue(context.Background(), learning.AgentIDKey, "test-agent")
+		_, err := broker.Query(ctx, "hello", 5)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(client.vaultCallCount.Load()).To(BeNumerically(">=", 1),
+			"vault-rag CallTool must fire when cfg.VaultPath is set")
+	})
+})
