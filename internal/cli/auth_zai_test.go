@@ -77,4 +77,33 @@ var _ = Describe("auth zai subcommand", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(out.String()).To(ContainSubstring("Invalid API key format"))
 	})
+
+	It("writes the --plan flag value through to config", func() {
+		Expect(os.Setenv("ZAI_API_KEY", "zai-test-suite-key-1234567890ab")).To(Succeed())
+
+		cmd := cli.NewRootCmd(testApp)
+		cmd.SetArgs([]string{"auth", "zai", "--plan=coding"})
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(out)
+
+		Expect(cmd.Execute()).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("Z.AI plan set to \"coding\""))
+		Expect(testApp.Config.Providers.ZAI.Plan).To(Equal("coding"))
+	})
+
+	It("rejects an unknown --plan value", func() {
+		Expect(os.Setenv("ZAI_API_KEY", "zai-test-suite-key-1234567890ab")).To(Succeed())
+
+		cmd := cli.NewRootCmd(testApp)
+		cmd.SetArgs([]string{"auth", "zai", "--plan=enterprise"})
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(out)
+
+		err := cmd.Execute()
+		Expect(err).To(HaveOccurred())
+		Expect(out.String()).To(ContainSubstring("invalid --plan value"))
+		Expect(testApp.Config.Providers.ZAI.Plan).To(BeEmpty())
+	})
 })
