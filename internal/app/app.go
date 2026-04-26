@@ -46,6 +46,7 @@ import (
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
@@ -75,6 +76,11 @@ type MCPConnectionResult struct {
 type App struct {
 	Config                 *config.AppConfig
 	Registry               *agent.Registry
+	// SwarmRegistry holds the loaded swarm manifests from
+	// `~/.config/flowstate/swarms/`. Populated by setupSwarmRegistry
+	// during New(); consumers in T-swarm-2 (the @Lead resolver) will
+	// query this alongside the agent Registry to dispatch swarm runs.
+	SwarmRegistry          *swarm.Registry
 	Skills                 []skill.Skill
 	Engine                 *engine.Engine
 	Discovery              *discovery.AgentDiscovery
@@ -167,8 +173,16 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: agents seeded to %q", cfg.AgentDir)
 	}
 
+	swarmDir := resolveSwarmDir(cfg)
+	if err := SeedSwarmsDir(EmbeddedSwarmsFS(), swarmDir); err != nil {
+		log.Printf("warning: seeding swarms to %q: %v", swarmDir, err)
+	} else {
+		log.Printf("info: swarms seeded to %q", swarmDir)
+	}
+
 	providerRegistry, ollamaProvider, providerFailures := setupProvidersWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
+	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
 	if err := resolveDefaultProvider(providerRegistry, providerFailures, cfg.Providers.Default); err != nil {
@@ -204,6 +218,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	app := buildApp(appBuildParams{
 		cfg:              cfg,
 		agentRegistry:    agentRegistry,
+		swarmRegistry:    swarmRegistry,
 		skills:           skills,
 		runtime:          runtime,
 		sessionStore:     sessionStore,
@@ -309,6 +324,7 @@ func configureApplicationAfterBuild(
 type appBuildParams struct {
 	cfg              *config.AppConfig
 	agentRegistry    *agent.Registry
+	swarmRegistry    *swarm.Registry
 	skills           []skill.Skill
 	runtime          *runtimeComponents
 	sessionStore     *ctxstore.FileSessionStore
@@ -341,6 +357,7 @@ func buildApp(params appBuildParams) *App {
 	app := &App{
 		Config:           cfg,
 		Registry:         agentRegistry,
+		SwarmRegistry:    params.swarmRegistry,
 		Skills:           skills,
 		Engine:           runtime.engine,
 		Discovery:        runtime.discovery,
@@ -3263,6 +3280,97 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 		return *manifests[0]
 	}
 	return agent.Manifest{ID: "default", Name: "Default Agent"}
+}
+
+// resolveSwarmDir picks the on-disk directory the swarm registry seeds
+// into and loads from. Per the addendum §1, swarm manifests live under
+// XDG_CONFIG_HOME/flowstate/swarms/ (NOT under XDG_DATA_HOME/flowstate
+// alongside agent manifests) — they are user-edited config, not
+// app-managed catalog data. Resolved at startup so the seed and the
+// load both target the same path.
+//
+// Expected:
+//   - cfg may be nil; a nil cfg falls back to config.Dir() so callers
+//     in tests that pass a zero-value AppConfig still get a usable
+//     default.
+//
+// Returns:
+//   - The absolute path to the swarms directory.
+//
+// Side effects:
+//   - None.
+func resolveSwarmDir(cfg *config.AppConfig) string {
+	_ = cfg // reserved for a future cfg.SwarmDir override field.
+	return filepath.Join(config.Dir(), "swarms")
+}
+
+// swarmAgentRegistryAdapter wraps an *agent.Registry so the swarm
+// validator can consult it without the swarm package importing the
+// agent package. The swarm.AgentRegistry interface only needs Get's
+// presence-check, so the adapter discards the typed manifest payload.
+type swarmAgentRegistryAdapter struct {
+	inner *agent.Registry
+}
+
+// Get returns whether the wrapped agent registry has an agent with id.
+// The any payload is unused by the swarm validator — only the boolean
+// matters — so the adapter returns nil to keep allocation noise out of
+// the hot path.
+//
+// Expected:
+//   - id is a candidate agent identifier.
+//
+// Returns:
+//   - nil and true when the wrapped registry has an agent with id.
+//   - nil and false when the wrapped registry is nil or has no match.
+//
+// Side effects:
+//   - None (read-only access via the wrapped registry's Get).
+func (a swarmAgentRegistryAdapter) Get(id string) (any, bool) {
+	if a.inner == nil {
+		return nil, false
+	}
+	_, ok := a.inner.Get(id)
+	return nil, ok
+}
+
+// setupSwarmRegistry loads swarm manifests from dir and validates them
+// against the agent registry. Mirrors setupAgentRegistry's
+// log-and-continue posture: a missing directory or per-file validation
+// failure logs a warning and the app starts with whatever subset
+// validated successfully. T-swarm-2's @Lead resolver consumes the
+// returned registry alongside the agent registry.
+//
+// Expected:
+//   - dir is the absolute swarm-manifest directory (typically
+//     `~/.config/flowstate/swarms/`).
+//   - agentReg is the populated agent registry; nil disables agent-id
+//     resolution during validation.
+//
+// Returns:
+//   - A swarm.Registry — possibly empty when the directory is missing.
+//
+// Side effects:
+//   - Reads swarm manifest files from dir.
+//   - Logs warnings for load/validation failures.
+func setupSwarmRegistry(dir string, agentReg *agent.Registry) *swarm.Registry {
+	reg, err := swarm.NewRegistryFromDir(dir, swarmAgentRegistryAdapter{inner: agentReg})
+	if err != nil {
+		if errors.Is(err, swarm.ErrSwarmDirNotFound) {
+			log.Printf("info: swarm directory %q absent, starting with empty swarm registry", dir)
+			return swarm.NewRegistry()
+		}
+		log.Printf("warning: loading swarms from %q: %v", dir, err)
+	}
+	if reg == nil {
+		return swarm.NewRegistry()
+	}
+	if list := reg.List(); len(list) == 0 {
+		log.Printf("info: no swarm manifests in registry")
+	} else {
+		log.Printf("info: %d swarm(s) in registry", len(list))
+	}
+	return reg
 }
 
 // setupAgentRegistry creates and populates an agent registry using layered discovery.

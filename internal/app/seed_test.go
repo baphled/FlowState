@@ -428,6 +428,120 @@ var _ = Describe("MigrateAgentsToConfigDir", func() {
 	})
 })
 
+var _ = Describe("SeedSwarmsDir", func() {
+	var (
+		destDir string
+		srcFS   fs.FS
+	)
+
+	BeforeEach(func() {
+		var err error
+		destDir, err = os.MkdirTemp("", "seed-swarms-test")
+		Expect(err).NotTo(HaveOccurred())
+
+		srcFS = fstest.MapFS{
+			"swarms/planning-loop.yml": &fstest.MapFile{Data: []byte("schema_version: \"1.0.0\"\nid: planning-loop\nlead: planner\nmembers: []\n")},
+			"swarms/solo.yml":          &fstest.MapFile{Data: []byte("schema_version: \"1.0.0\"\nid: solo\nlead: executor\nmembers: []\n")},
+		}
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(destDir)
+	})
+
+	Context("when destination directory is empty", func() {
+		It("copies all swarm files from source", func() {
+			swarmsDest := filepath.Join(destDir, "swarms")
+			Expect(os.MkdirAll(swarmsDest, 0o755)).To(Succeed())
+
+			err := app.SeedSwarmsDir(srcFS, swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := os.ReadDir(swarmsDest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+
+			content, err := os.ReadFile(filepath.Join(swarmsDest, "planning-loop.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("id: planning-loop"))
+		})
+	})
+
+	Context("when destination directory does not exist", func() {
+		It("creates the directory and copies files", func() {
+			swarmsDest := filepath.Join(destDir, "nonexistent", "swarms")
+
+			err := app.SeedSwarmsDir(srcFS, swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := os.ReadDir(swarmsDest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+		})
+	})
+
+	Context("when destination directory already has files", func() {
+		It("preserves existing files and does not overwrite them", func() {
+			swarmsDest := filepath.Join(destDir, "swarms")
+			Expect(os.MkdirAll(swarmsDest, 0o755)).To(Succeed())
+
+			customContent := "schema_version: \"1.0.0\"\nid: planning-loop\nlead: my-custom-planner\nmembers: []\n"
+			Expect(os.WriteFile(filepath.Join(swarmsDest, "planning-loop.yml"), []byte(customContent), 0o600)).To(Succeed())
+
+			err := app.SeedSwarmsDir(srcFS, swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			content, err := os.ReadFile(filepath.Join(swarmsDest, "planning-loop.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("my-custom-planner"))
+		})
+
+		It("preserves a custom swarm file with no embedded counterpart", func() {
+			swarmsDest := filepath.Join(destDir, "swarms")
+			Expect(os.MkdirAll(swarmsDest, 0o755)).To(Succeed())
+
+			customContent := "schema_version: \"1.0.0\"\nid: my-team\nlead: planner\nmembers: []\n"
+			Expect(os.WriteFile(filepath.Join(swarmsDest, "my-team.yml"), []byte(customContent), 0o600)).To(Succeed())
+
+			err := app.SeedSwarmsDir(srcFS, swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			content, err := os.ReadFile(filepath.Join(swarmsDest, "my-team.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("id: my-team"))
+		})
+	})
+
+	Context("when source FS has no swarms directory", func() {
+		It("returns an error", func() {
+			emptyFS := fstest.MapFS{}
+			swarmsDest := filepath.Join(destDir, "swarms")
+
+			err := app.SeedSwarmsDir(emptyFS, swarmsDest)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("swarms"))
+		})
+	})
+
+	Context("with the embedded swarms FS", func() {
+		It("seeds planning-loop.yml and solo.yml on first run", func() {
+			swarmsDest := filepath.Join(destDir, "swarms")
+
+			err := app.SeedSwarmsDir(app.EmbeddedSwarmsFS(), swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			entries, err := os.ReadDir(swarmsDest)
+			Expect(err).NotTo(HaveOccurred())
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			Expect(names).To(ContainElements("planning-loop.yml", "solo.yml"))
+		})
+	})
+})
+
 var _ = Describe("EmbeddedAgentsFS", func() {
 	Context("when calling EmbeddedAgentsFS", func() {
 		It("returns a valid fs.FS", func() {
