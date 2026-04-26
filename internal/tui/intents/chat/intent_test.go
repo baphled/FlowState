@@ -19,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tui/components/notification"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
@@ -2726,3 +2727,424 @@ var _ = Describe("session viewer full-screen rendering", func() {
 		})
 	})
 })
+
+// applyEndOfStreamScrollHeuristic distinguishes "passive drift" (the
+// content auto-grew past the user's reading window during streaming)
+// from "active scroll" (the user explicitly moved the viewport in the
+// recent past). The first case snaps to bottom so the final assistant
+// content is visible; the second leaves the position alone but flashes
+// a non-blocking "press End" hint so the user knows the stream
+// finished.
+//
+// This spec is the regression gate for the long-stream "didn't display
+// complete" symptom: with the heuristic in place, a Done chunk
+// arriving while atBottom is false no longer leaves the final content
+// stranded below the visible window.
+var _ = Describe("End-of-stream scroll heuristic", Label("integration"), func() {
+	var (
+		intent  *chat.Intent
+		notifMg *notification.InMemoryManager
+	)
+
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+
+		intent = chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-scroll",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  100_000,
+		})
+		notifMg = notification.NewInMemoryManager()
+		intent.SetNotificationManagerForTest(notifMg)
+	})
+
+	It("snaps atBottom back to true on Done when the user has not scrolled recently", func() {
+		intent.SetAtBottomForTest(false)
+		intent.SetLastUserScrollAtForTest(time.Time{}) // never scrolled
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "final content", Done: true})
+
+		Expect(intent.AtBottomForTest()).To(BeTrue(),
+			"a Done chunk landing on a never-scrolled session must snap to bottom")
+		Expect(notifMg.Active()).To(BeEmpty(),
+			"no hint notification when the snap fires — the user does not need a prompt")
+	})
+
+	It("snaps atBottom back to true on Done when the user scrolled long ago (outside grace window)", func() {
+		intent.SetAtBottomForTest(false)
+		intent.SetLastUserScrollAtForTest(time.Now().Add(-30 * time.Second))
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "final content", Done: true})
+
+		Expect(intent.AtBottomForTest()).To(BeTrue(),
+			"30s-old user scroll is outside the 5s grace window; treat as passive drift")
+		Expect(notifMg.Active()).To(BeEmpty())
+	})
+
+	It("leaves atBottom false and surfaces a hint when the user scrolled within the grace window", func() {
+		intent.SetAtBottomForTest(false)
+		intent.SetLastUserScrollAtForTest(time.Now().Add(-1 * time.Second))
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "final content", Done: true})
+
+		Expect(intent.AtBottomForTest()).To(BeFalse(),
+			"recent active scroll must NOT be overridden by the snap — the user is reading")
+		active := notifMg.Active()
+		Expect(active).NotTo(BeEmpty(),
+			"a hint notification must surface so the user knows the stream completed")
+		Expect(active[0].Title).To(Equal("Response complete"))
+		Expect(active[0].Message).To(ContainSubstring("End"),
+			"the hint must mention the End key so the user knows how to jump to the new content")
+		Expect(active[0].Level).To(Equal(notification.LevelInfo))
+	})
+
+	It("leaves atBottom true alone when it was already true on Done (no work to do)", func() {
+		intent.SetAtBottomForTest(true)
+		intent.SetLastUserScrollAtForTest(time.Now().Add(-1 * time.Second))
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "final content", Done: true})
+
+		Expect(intent.AtBottomForTest()).To(BeTrue(),
+			"atBottom was already true; the heuristic must be a no-op")
+		Expect(notifMg.Active()).To(BeEmpty(),
+			"no hint when the user is already at the bottom — there is nothing they're missing")
+	})
+
+	It("does not surface a hint when the notification manager is unset", func() {
+		intent.SetNotificationManagerForTest(nil)
+		intent.SetAtBottomForTest(false)
+		intent.SetLastUserScrollAtForTest(time.Now().Add(-1 * time.Second))
+
+		Expect(func() {
+			intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "final content", Done: true})
+		}).NotTo(Panic(),
+			"a nil notification manager must not panic the heuristic")
+		Expect(intent.AtBottomForTest()).To(BeFalse(),
+			"recent active scroll still wins; the missing notifier just suppresses the hint silently")
+	})
+})
+
+// Regression: a long planner reviewer summary (~12KB delivered as
+// 3000+ chunks over several minutes) was persisted to session JSON in
+// full but appeared truncated in the TUI viewport. The view-level
+// burst-stream spec (internal/tui/views/chat) proves view.RenderContent
+// emits the complete content; this spec drives the *intent* through
+// the same chunk shape via HandleStreamChunkMsgForTest so we cover the
+// engine→intent→view->viewport-content path end-to-end.
+//
+// If this spec passes, the truncation symptom must be downstream of
+// what we control here (Bubble Tea viewport SetContent / terminal
+// rendering / scroll position). If it fails, the bug is in
+// handleStreamChunkMsg or its handlers and we have a reproducer.
+var _ = Describe("Intent: long burst-stream renders the full final message", Label("integration"), func() {
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+	})
+
+	It("emits the full committed assistant content on Done after a 200-chunk burst", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-burst",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  100_000,
+		})
+		// Identity renderer so glamour does not interleave per-character
+		// ANSI colour codes with the chunk markers — the assertions are
+		// substring searches and would otherwise be foiled by the styling
+		// even though the underlying content is intact.
+		intent.SetMarkdownRendererForTest(func(s string, _ int) string { return s })
+
+		const chunks = 200
+		var fullExpected strings.Builder
+		for n := 0; n < chunks; n++ {
+			body := burstChunkBody(n)
+			fullExpected.WriteString(body)
+			intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{
+				Content: body,
+				Done:    false,
+			})
+		}
+		// Done sentinel with no content — matches the real-world shape
+		// that produced the stalled-session symptom.
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Done: true})
+
+		rendered := intent.RenderedViewportContentForTest(120)
+
+		Expect(rendered).To(ContainSubstring(burstChunkBody(0)),
+			"first chunk's marker missing — start of the response was not committed")
+		Expect(rendered).To(ContainSubstring(burstChunkBody(chunks/2)),
+			"mid-burst chunk's marker missing — middle of the response was lost")
+		Expect(rendered).To(ContainSubstring(burstChunkBody(chunks-1)),
+			"last content chunk's marker missing — tail of the response was lost")
+		Expect(rendered).To(ContainSubstring(fullExpected.String()),
+			"the rendered viewport content must contain the complete concatenation of all chunks")
+	})
+
+	It("emits the full content when the Done chunk also carries the final payload", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-done-with-content",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  100_000,
+		})
+		intent.SetMarkdownRendererForTest(func(s string, _ int) string { return s })
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "alpha. ", Done: false})
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "beta. ", Done: false})
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{Content: "gamma.", Done: true})
+
+		rendered := intent.RenderedViewportContentForTest(120)
+		Expect(rendered).To(ContainSubstring("alpha."))
+		Expect(rendered).To(ContainSubstring("beta."))
+		Expect(rendered).To(ContainSubstring("gamma."),
+			"the Done-with-content payload must appear in the final viewport content")
+	})
+})
+
+// Reproducer for the stalled-session symptom where a long planner
+// reviewer summary persisted to JSON in full but appeared truncated
+// on screen. Drives the Intent through real Init → WindowSize →
+// burst of StreamChunkMsg → Done → View() calls so the test exercises
+// the actual msgViewport.SetContent + GotoBottom path, not just
+// view.RenderContent in isolation.
+//
+// Two scenarios are gated:
+//
+//  1. atBottom path: the user passively followed the stream. The
+//     viewport's View() must include the tail of the final committed
+//     assistant content after Done — which is what GotoBottom() makes
+//     visible inside the viewport's window.
+//
+//  2. user-scrolled path: the user actively scrolled away during the
+//     stream. The new end-of-stream heuristic snaps to bottom (because
+//     the seeded scroll timestamp is outside the grace window) so the
+//     tail still becomes visible. Without the heuristic this case
+//     reproduces the original "didn't display complete" symptom.
+var _ = Describe("Long-stream viewport reproducer", Label("integration"), func() {
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+	})
+
+	// burstParagraphBody mirrors the real-world planner reviewer-summary
+	// shape: a paragraph fragment followed by a markdown line break, so
+	// the viewport sees a multi-line content block (the user's actual bug
+	// is multi-line content auto-growing past the viewport during stream,
+	// not a single horizontally-clipped line).
+	burstParagraphBody := func(n int) string {
+		return burstChunkBody(n) + "\n"
+	}
+
+	driveBurst := func(intent *chat.Intent, chunks int) string {
+		var fullExpected strings.Builder
+		intent.SetMarkdownRendererForTest(func(s string, _ int) string { return s })
+
+		// Initialise the viewport with a realistic terminal size — the
+		// Update path requires a WindowSizeMsg before msgViewport is
+		// constructed (intent.go:1342).
+		intent.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+
+		for n := 0; n < chunks; n++ {
+			body := burstParagraphBody(n)
+			fullExpected.WriteString(body)
+			intent.Update(chat.StreamChunkMsg{Content: body, Done: false})
+		}
+		intent.Update(chat.StreamChunkMsg{Done: true})
+		return fullExpected.String()
+	}
+
+	It("renders the tail of the final assistant content in the viewport when atBottom was true throughout", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-viewport-passive",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  100_000,
+		})
+		// Mirror the post-sendMessage state — atBottom is set true on
+		// every user submit (intent.go:2832). Without seeding this the
+		// reproducer is testing a state the user can never reach
+		// organically (atBottom defaults to false on a fresh intent).
+		intent.SetAtBottomForTest(true)
+
+		// 80 chunks → ~5 KB of marker text spread over many newlines;
+		// large enough that the viewport's window will not show all of
+		// it at once, so the tail-visible assertion actually exercises
+		// GotoBottom.
+		_ = driveBurst(intent, 80)
+
+		full := intent.RenderedViewportContentForTest(120)
+		_, _, vpView := intent.MsgViewportDebugForTest()
+		Expect(full).To(ContainSubstring(burstChunkBody(0)))
+		Expect(full).To(ContainSubstring(burstChunkBody(79)))
+		Expect(vpView).To(ContainSubstring(burstChunkBody(79)),
+			"GotoBottom on the auto-grown content failed to bring the tail "+
+				"into the viewport window — passive-following user perceives "+
+				"the response as truncated")
+	})
+
+	It("snaps to bottom on Done when the user scrolled before the grace window expired", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "planner",
+			SessionID:    "session-viewport-scrolled",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  100_000,
+		})
+
+		// Pre-arm the heuristic: the user "scrolled away" 30s ago — well
+		// outside the 5s active-scroll grace window. The post-Done
+		// heuristic must snap them back to the bottom.
+		intent.SetAtBottomForTest(false)
+		intent.SetLastUserScrollAtForTest(time.Now().Add(-30 * time.Second))
+
+		_ = driveBurst(intent, 80)
+
+		Expect(intent.AtBottomForTest()).To(BeTrue(),
+			"end-of-stream heuristic must restore atBottom for an out-of-grace scroll")
+		view := intent.View()
+		Expect(view).To(ContainSubstring(burstChunkBody(79)),
+			"after the heuristic snaps and refresh runs, the tail must be visible")
+	})
+})
+
+// Regression: tokenCount used to be set only by finaliseStreamIfDone when
+// a live stream completed. handleSessionLoaded swapped the engine's store
+// out from under it but never repopulated tokenCount, so a freshly loaded
+// session showed a stale count — typically 0 on a brand-new TUI launch.
+//
+// After the fix, handleSessionLoaded counts tokens off the restored
+// messages immediately so the status bar reflects the loaded context's
+// size before the next stream runs.
+var _ = Describe("Token count on session load", Label("integration"), func() {
+	BeforeEach(func() {
+		chat.SetRunningInTestsForTest(true)
+		DeferCleanup(func() { chat.SetRunningInTestsForTest(false) })
+	})
+
+	It("populates tokenCount from the restored session's messages on load", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "session-fresh",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  4096,
+		})
+		Expect(intent.TokenCount()).To(Equal(0),
+			"sanity check: a brand-new intent has zero tokens accumulated")
+
+		// Build a store carrying enough message text that any reasonable
+		// token counter has to return >0 — but keep the fixture concrete
+		// (no random/long-string magic) so the regression assertion is
+		// easy to reason about.
+		store := recall.NewEmptyContextStore("test-model")
+		store.LoadFromSession([]recall.StoredMessage{
+			{
+				ID: "m1",
+				Message: provider.Message{
+					Role:    "user",
+					Content: "Walk me through the deterministic planning loop end-to-end.",
+				},
+			},
+			{
+				ID: "m2",
+				Message: provider.Message{
+					Role:    "assistant",
+					Content: "The planner orchestrates explorer, librarian, analyst, plan-writer, and plan-reviewer through the coordination_store. Each stage emits a verdict that gates the next step.",
+				},
+			},
+			{
+				ID: "m3",
+				Message: provider.Message{
+					Role: "assistant",
+					ToolCalls: []provider.ToolCall{
+						{
+							ID:   "call-1",
+							Name: "delegate",
+							Arguments: map[string]any{
+								"agent":   "explorer",
+								"message": "Locate the deterministic planning loop driver in the harness package.",
+							},
+						},
+					},
+				},
+			},
+		}, nil, "test-model")
+
+		intent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "session-loaded",
+			Store:     store,
+		})
+
+		Expect(intent.TokenCount()).To(BeNumerically(">", 0),
+			"after handleSessionLoaded the status-bar token count must reflect "+
+				"the loaded session's content; the previous behaviour left it "+
+				"at zero until the next stream completed")
+	})
+
+	It("returns zero when the loaded session is empty", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "session-fresh",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  4096,
+		})
+
+		intent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "session-empty",
+			Store:     recall.NewEmptyContextStore("test-model"),
+		})
+
+		Expect(intent.TokenCount()).To(Equal(0),
+			"an empty loaded session must not invent tokens out of nowhere")
+	})
+
+	It("clears the previous response token count on load", func() {
+		intent := chat.NewIntent(chat.IntentConfig{
+			AgentID:      "test-agent",
+			SessionID:    "session-fresh",
+			ProviderName: "test-provider",
+			ModelName:    "test-model",
+			TokenBudget:  4096,
+		})
+
+		// Simulate a prior in-flight response in the previous session.
+		intent.HandleStreamChunkForTest(chat.StreamChunkMsg{Content: "stale partial output", Done: false})
+		Expect(intent.ResponseTokenCountForTest()).To(BeNumerically(">", 0),
+			"sanity check: response token count is non-zero after a chunk")
+
+		intent.Update(sessionbrowser.SessionLoadedMsg{
+			SessionID: "session-loaded",
+			Store:     recall.NewEmptyContextStore("test-model"),
+		})
+
+		Expect(intent.ResponseTokenCountForTest()).To(Equal(0),
+			"loading a session must reset the in-flight response counter; "+
+				"otherwise the next status-bar update double-counts the prior session's chunks")
+	})
+})
+
+// burstChunkBody returns a deterministic, recognisable chunk body for
+// the long-stream regression specs. Including the chunk index in the
+// body lets the assertions pinpoint exactly which chunks (start /
+// middle / end) survived the throttle and viewport pipeline.
+func burstChunkBody(n int) string {
+	return "[chunk-" + burstPaddedIdx(n) + "-marker-with-discriminator] "
+}
+
+func burstPaddedIdx(n int) string {
+	switch {
+	case n < 10:
+		return "00" + string(rune('0'+n))
+	case n < 100:
+		return "0" + string(rune('0'+n/10)) + string(rune('0'+n%10))
+	}
+	return string(rune('0'+n/100)) + string(rune('0'+(n/10)%10)) + string(rune('0'+n%10))
+}
