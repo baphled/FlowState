@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/plan"
@@ -52,7 +51,7 @@ func newPlanListCmd(getApp func() *app.App) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a := getApp()
-			planDir := filepath.Join(a.Config.DataDir, "plans")
+			planDir := a.Config.ResolvedPlanLocation()
 
 			store, err := plan.NewStore(planDir)
 			if err != nil {
@@ -121,7 +120,7 @@ func newPlanSelectCmd(getApp func() *app.App) *cobra.Command {
 // Side effects:
 //   - Writes plan content to cmd.OutOrStdout().
 func displayPlan(cmd *cobra.Command, a *app.App, planID string) error {
-	planDir := filepath.Join(a.Config.DataDir, "plans")
+	planDir := a.Config.ResolvedPlanLocation()
 
 	store, err := plan.NewStore(planDir)
 	if err != nil {
@@ -290,7 +289,7 @@ func newPlanDeleteCmd(getApp func() *app.App) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a := getApp()
-			planDir := filepath.Join(a.Config.DataDir, "plans")
+			planDir := a.Config.ResolvedPlanLocation()
 			planID := args[0]
 
 			store, err := plan.NewStore(planDir)

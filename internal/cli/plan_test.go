@@ -33,6 +33,10 @@ var _ = Describe("Plan Command", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		testApp.Config.DataDir = filepath.Dir(planDir)
+		// Pin the plan location explicitly so the project-marker walk in
+		// ResolvedPlanLocation does NOT find the FlowState worktree's
+		// own .flowstate/ when these tests run from inside the repo.
+		testApp.Config.PlanLocation = planDir
 
 		err = os.MkdirAll(planDir, 0o755)
 		Expect(err).NotTo(HaveOccurred())
