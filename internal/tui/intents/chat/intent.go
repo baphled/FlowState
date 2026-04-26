@@ -4079,12 +4079,55 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	for _, sm := range msg.Store.GetStoredMessages() {
 		lastToolCallName = i.replayStoredMessage(sm, lastToolCallName)
 	}
+	// Without this the status-bar token count stays at whatever the
+	// previous in-memory session left behind — typically zero on a fresh
+	// TUI launch — until the next live stream completes and
+	// finaliseStreamIfDone updates it from engine.LastContextResult.
+	// Loaded sessions have no LastContextResult cached on the engine
+	// (the engine's last-build cache only fills during a live Stream
+	// call), so we count from the restored messages here.
+	i.tokenCount = i.countTokensFromStore(msg.Store)
+	i.responseTokenCount = 0
 	i.resetAndRestoreSwarmEvents(msg.SessionID)
 	i.atBottom = true
 	i.refreshViewport()
 	i.syncStatusBar()
 	i.refreshSessionTrail()
 	return nil
+}
+
+// countTokensFromStore walks the loaded session's stored messages and
+// returns the sum of tokens in their Content fields. This is an
+// approximation of what the engine's WindowBuilder would produce —
+// it ignores system-prompt and skill-header overhead — but is accurate
+// enough for the status bar's purpose, which is to give the user a
+// rough sense of how full the context window is. Returns zero when the
+// store or token counter is nil.
+func (i *Intent) countTokensFromStore(store contextStoreLike) int {
+	if store == nil || i.tokenCounter == nil {
+		return 0
+	}
+	total := 0
+	for _, sm := range store.GetStoredMessages() {
+		total += i.tokenCounter.Count(sm.Message.Content)
+		for _, tc := range sm.Message.ToolCalls {
+			total += i.tokenCounter.Count(tc.Name)
+			for _, v := range tc.Arguments {
+				if s, ok := v.(string); ok {
+					total += i.tokenCounter.Count(s)
+				}
+			}
+		}
+	}
+	return total
+}
+
+// contextStoreLike is the narrow surface countTokensFromStore needs.
+// Defined locally so the helper does not pull recall.FileContextStore
+// into a place that previously only knew about it via the
+// SessionLoadedMsg envelope.
+type contextStoreLike interface {
+	GetStoredMessages() []recall.StoredMessage
 }
 
 // refreshSessionTrail walks the ParentID chain via the session manager to
