@@ -20,6 +20,12 @@ func (m *mockResolver) ResolveContextLength(provider, model string) int {
 }
 
 var _ = Describe("TokenBudget", func() {
+	Describe("DefaultModelContextFallback", func() {
+		It("is 16384 — the post-bug-fix default that fits the 11-skill always-active bundle plus delegation tables", func() {
+			Expect(context.DefaultModelContextFallback).To(Equal(16384))
+		})
+	})
+
 	Describe("ApproximateCounter", func() {
 		Context("Count", func() {
 			It("returns positive count for non-empty text", func() {
@@ -43,15 +49,28 @@ var _ = Describe("TokenBudget", func() {
 				Expect(counter.ModelLimit("claude-sonnet-4-20250514")).To(Equal(200000))
 			})
 
-			It("returns 4096 fallback when resolver returns 0", func() {
+			It("returns the 16K default fallback when resolver returns 0", func() {
 				resolver := &mockResolver{limits: map[string]int{}}
 				counter := context.NewApproximateCounterWithResolver(resolver, "anthropic")
-				Expect(counter.ModelLimit("unknown-model")).To(Equal(4096))
+				Expect(counter.ModelLimit("unknown-model")).To(Equal(context.DefaultModelContextFallback))
 			})
 
-			It("returns 4096 fallback when no resolver configured", func() {
+			It("returns the 16K default fallback when no resolver configured", func() {
 				counter := context.NewApproximateCounter()
-				Expect(counter.ModelLimit("any-model")).To(Equal(4096))
+				Expect(counter.ModelLimit("any-model")).To(Equal(context.DefaultModelContextFallback))
+			})
+
+			It("honours an operator-supplied fallback override", func() {
+				counter := context.NewApproximateCounter()
+				counter.SetFallback(32768)
+				Expect(counter.ModelLimit("any-model")).To(Equal(32768))
+			})
+
+			It("ignores a non-positive fallback override", func() {
+				counter := context.NewApproximateCounter()
+				counter.SetFallback(0)
+				counter.SetFallback(-1)
+				Expect(counter.ModelLimit("any-model")).To(Equal(context.DefaultModelContextFallback))
 			})
 		})
 	})
@@ -74,15 +93,21 @@ var _ = Describe("TokenBudget", func() {
 				Expect(counter.ModelLimit("claude-sonnet-4-20250514")).To(Equal(200000))
 			})
 
-			It("returns 4096 fallback when resolver returns 0", func() {
+			It("returns the 16K default fallback when resolver returns 0", func() {
 				resolver := &mockResolver{limits: map[string]int{}}
 				counter := context.NewTiktokenCounterWithResolver(resolver, "anthropic")
-				Expect(counter.ModelLimit("unknown-model")).To(Equal(4096))
+				Expect(counter.ModelLimit("unknown-model")).To(Equal(context.DefaultModelContextFallback))
 			})
 
-			It("returns 4096 fallback when no resolver configured", func() {
+			It("returns the 16K default fallback when no resolver configured", func() {
 				counter := context.NewTiktokenCounter()
-				Expect(counter.ModelLimit("any-model")).To(Equal(4096))
+				Expect(counter.ModelLimit("any-model")).To(Equal(context.DefaultModelContextFallback))
+			})
+
+			It("honours an operator-supplied fallback override", func() {
+				counter := context.NewTiktokenCounter()
+				counter.SetFallback(32768)
+				Expect(counter.ModelLimit("any-model")).To(Equal(32768))
 			})
 		})
 	})

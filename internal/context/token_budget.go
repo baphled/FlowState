@@ -4,12 +4,39 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 )
 
+// DefaultModelContextFallback is the safety-net token cap used when a
+// provider/model lookup cannot supply a concrete ContextLength. It
+// supersedes the historical 4096 hardcode that quietly truncated ~70%
+// of an 11-skill FlowState system prompt to fit. 16K comfortably fits
+// the always-active skill bundle (skill bodies are 2-5K each, the
+// default bundle is 11 skills) plus the agent's own system_prompt and
+// delegation tables, while leaving room for conversation history. It
+// is well within every provider in the FlowState support matrix —
+// Anthropic (200K), OpenAI/Copilot/Gemini (128K), ZAI/OpenZen (128K+),
+// and the Ollama families that report 32K-131K but where RULER shows
+// quality drops past 32K (so 16K is the safe headroom for system
+// prompt + conversation). Operators with hardware that warrants a
+// different cap override via cfg.SystemPromptBudget (env:
+// FLOWSTATE_SYSTEM_PROMPT_BUDGET).
+const DefaultModelContextFallback = 16384
+
 // TokenCounter defines methods for counting tokens in text.
 type TokenCounter interface {
 	// Count returns the number of tokens in the given text.
 	Count(text string) int
 	// ModelLimit returns the token limit for the given model.
 	ModelLimit(model string) int
+}
+
+// FallbackSetter is implemented by token counters that allow operators
+// to override the model-context fallback used when the resolver cannot
+// supply a concrete ContextLength. App.New consults this interface so
+// cfg.SystemPromptBudget propagates into the same code path the engine
+// uses for ModelContextLimit. Implementations must accept a non-zero
+// value and ignore zero/negative inputs (so callers can pass a
+// possibly-unset config field without guarding the call site).
+type FallbackSetter interface {
+	SetFallback(limit int)
 }
 
 // ModelResolver resolves context window limits for provider models.
@@ -23,6 +50,7 @@ type TiktokenCounter struct {
 	encoding string
 	resolver ModelResolver
 	provider string
+	fallback int
 }
 
 // NewTiktokenCounter creates a new TiktokenCounter with the default cl100k_base encoding.
@@ -33,7 +61,26 @@ type TiktokenCounter struct {
 // Side effects:
 //   - None.
 func NewTiktokenCounter() *TiktokenCounter {
-	return &TiktokenCounter{encoding: "cl100k_base"}
+	return &TiktokenCounter{encoding: "cl100k_base", fallback: DefaultModelContextFallback}
+}
+
+// SetFallback overrides the model-context fallback returned when the
+// configured resolver yields zero (unknown model, missing provider).
+// Zero or negative inputs are ignored so callers may pass an unset
+// config field without guarding the call. See DefaultModelContextFallback
+// for the rationale on the shipped default.
+//
+// Expected:
+//   - limit is the new fallback token cap; values <= 0 leave the
+//     existing fallback untouched.
+//
+// Side effects:
+//   - Mutates the receiver.
+func (c *TiktokenCounter) SetFallback(limit int) {
+	if limit <= 0 {
+		return
+	}
+	c.fallback = limit
 }
 
 // NewTiktokenCounterWithResolver creates a new TiktokenCounter with a ModelResolver
@@ -48,7 +95,12 @@ func NewTiktokenCounter() *TiktokenCounter {
 // Side effects:
 //   - None.
 func NewTiktokenCounterWithResolver(resolver ModelResolver, provider string) *TiktokenCounter {
-	return &TiktokenCounter{encoding: "cl100k_base", resolver: resolver, provider: provider}
+	return &TiktokenCounter{
+		encoding: "cl100k_base",
+		resolver: resolver,
+		provider: provider,
+		fallback: DefaultModelContextFallback,
+	}
 }
 
 // Count returns the number of tokens in the text using tiktoken encoding.
@@ -77,7 +129,9 @@ func (c *TiktokenCounter) Count(text string) int {
 //
 // Returns:
 //   - The maximum token limit for the specified model, resolved from the
-//     configured ModelResolver if available, or 4096 as a safe fallback.
+//     configured ModelResolver if available, or the counter's configured
+//     fallback (DefaultModelContextFallback by default; override via
+//     SetFallback).
 //
 // Side effects:
 //   - None.
@@ -88,13 +142,33 @@ func (c *TiktokenCounter) ModelLimit(model string) int {
 			return limit
 		}
 	}
-	return 4096
+	return resolveFallback(c.fallback)
+}
+
+// resolveFallback returns the configured fallback when set, falling
+// back to DefaultModelContextFallback for zero-valued counters built
+// before the fallback field existed.
+//
+// Expected:
+//   - configured may be zero (unset) or a positive token cap.
+//
+// Returns:
+//   - configured when it is positive; DefaultModelContextFallback otherwise.
+//
+// Side effects:
+//   - None.
+func resolveFallback(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultModelContextFallback
 }
 
 // ApproximateCounter estimates token counts using character-based approximation.
 type ApproximateCounter struct {
 	resolver ModelResolver
 	provider string
+	fallback int
 }
 
 // NewApproximateCounter creates a new character-based approximate token counter.
@@ -105,7 +179,24 @@ type ApproximateCounter struct {
 // Side effects:
 //   - None.
 func NewApproximateCounter() *ApproximateCounter {
-	return &ApproximateCounter{}
+	return &ApproximateCounter{fallback: DefaultModelContextFallback}
+}
+
+// SetFallback overrides the model-context fallback returned when the
+// configured resolver yields zero. Mirrors TiktokenCounter.SetFallback;
+// see that method for semantics.
+//
+// Expected:
+//   - limit is the new fallback token cap; values <= 0 leave the
+//     existing fallback untouched.
+//
+// Side effects:
+//   - Mutates the receiver.
+func (c *ApproximateCounter) SetFallback(limit int) {
+	if limit <= 0 {
+		return
+	}
+	c.fallback = limit
 }
 
 // NewApproximateCounterWithResolver creates a new ApproximateCounter with a
@@ -120,7 +211,11 @@ func NewApproximateCounter() *ApproximateCounter {
 // Side effects:
 //   - None.
 func NewApproximateCounterWithResolver(resolver ModelResolver, provider string) *ApproximateCounter {
-	return &ApproximateCounter{resolver: resolver, provider: provider}
+	return &ApproximateCounter{
+		resolver: resolver,
+		provider: provider,
+		fallback: DefaultModelContextFallback,
+	}
 }
 
 // Count returns an approximate token count for the given text using character-based estimation.
@@ -151,7 +246,9 @@ func (c *ApproximateCounter) Count(text string) int {
 //
 // Returns:
 //   - The maximum token limit for the specified model, resolved from the
-//     configured ModelResolver if available, or 4096 as a safe fallback.
+//     configured ModelResolver if available, or the counter's configured
+//     fallback (DefaultModelContextFallback by default; override via
+//     SetFallback).
 //
 // Side effects:
 //   - None.
@@ -162,7 +259,7 @@ func (c *ApproximateCounter) ModelLimit(model string) int {
 			return limit
 		}
 	}
-	return 4096
+	return resolveFallback(c.fallback)
 }
 
 // TokenBudget tracks token allocation across categories against a total budget.

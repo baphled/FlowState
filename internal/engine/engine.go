@@ -51,6 +51,7 @@ type Engine struct {
 	recallBroker         recall.Broker
 	contextAssemblyHooks []plugin.ContextAssemblyHook
 	tokenCounter         ctxstore.TokenCounter
+	systemPromptBudget   int
 	streamTimeout        time.Duration
 	hookChain            *hook.Chain
 	toolRegistry         *tool.Registry
@@ -320,6 +321,18 @@ type Config struct {
 	// construction via SetSwarmContext when the CLI run path resolves
 	// `--agent <swarm-id>` after the engine is already up.
 	SwarmContext *swarm.Context
+
+	// SystemPromptBudget overrides the model-context fallback the engine
+	// returns from ModelContextLimit / ResolveContextLength when the
+	// failover manager and token counter cannot supply a concrete cap
+	// (no preferences set, no resolver wired, unknown model). Zero
+	// inherits ctxstore.DefaultModelContextFallback (16K), which is
+	// where the engine settled after replacing the historical 4096
+	// default that quietly truncated ~70% of an 11-skill FlowState
+	// system prompt to fit. Non-zero values are also propagated into
+	// the supplied TokenCounter (when it implements ctxstore.FallbackSetter)
+	// and FailoverManager so every fallback site shares the same cap.
+	SystemPromptBudget int
 }
 
 // New creates a new Engine from the given configuration.
@@ -356,9 +369,35 @@ func New(cfg Config) *Engine {
 	}
 
 	eng := assembleEngine(cfg, resolved)
+	propagateSystemPromptBudget(cfg)
 	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
 	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
 	return eng
+}
+
+// propagateSystemPromptBudget pushes the engine's configured fallback
+// budget into the supplied TokenCounter (when it implements
+// ctxstore.FallbackSetter) and FailoverManager so every fallback site
+// agrees on the same cap. Without this, ModelContextLimit could honour
+// a custom budget while a downstream WindowBuilder.Build call resolved
+// via the counter still returned the package default.
+//
+// Expected:
+//   - cfg.SystemPromptBudget may be zero (no override).
+//
+// Side effects:
+//   - Mutates cfg.TokenCounter and cfg.FailoverManager when both the
+//     budget is positive and the targets accept the override.
+func propagateSystemPromptBudget(cfg Config) {
+	if cfg.SystemPromptBudget <= 0 {
+		return
+	}
+	if setter, ok := cfg.TokenCounter.(ctxstore.FallbackSetter); ok {
+		setter.SetFallback(cfg.SystemPromptBudget)
+	}
+	if cfg.FailoverManager != nil {
+		cfg.FailoverManager.SetContextFallback(cfg.SystemPromptBudget)
+	}
 }
 
 // resolvedEngineDeps groups the dependencies New has already resolved
@@ -450,6 +489,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		recallBroker:              cfg.RecallBroker,
 		contextAssemblyHooks:      deps.assemblyHooks,
 		tokenCounter:              cfg.TokenCounter,
+		systemPromptBudget:        cfg.SystemPromptBudget,
 		streamTimeout:             deps.streamTimeout,
 		hookChain:                 deps.chain,
 		toolRegistry:              cfg.ToolRegistry,
@@ -3393,9 +3433,12 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 // ModelContextLimit returns the context window token limit for the configured model.
 //
 // Returns:
-//   - The token limit from the token counter using the first configured preference (DefaultModel).
-//   - Falls back to the last-used model if no configured preference exists.
-//   - Falls back to 4096 if no token counter is configured.
+//   - The token limit from the failover manager's first configured
+//     preference, or the token counter's resolution of LastModel.
+//   - Falls back to the engine's configured systemPromptBudget when no
+//     resolver is wired; that field defaults to
+//     ctxstore.DefaultModelContextFallback (16K) when cfg.SystemPromptBudget
+//     is unset.
 //
 // Side effects:
 //   - None.
@@ -3409,17 +3452,20 @@ func (e *Engine) ModelContextLimit() int {
 	if e.tokenCounter != nil {
 		return e.tokenCounter.ModelLimit(e.LastModel())
 	}
-	return 4096
+	return e.resolvedSystemPromptBudget()
 }
 
 // ResolveContextLength returns the context window limit for the given provider/model.
-// It delegates to the failover manager's resolver if available, or returns 4096.
+// It delegates to the failover manager's resolver if available, or returns the
+// engine's configured systemPromptBudget fallback otherwise.
 //
 // Expected:
 //   - providerName and model identify a known provider/model pair.
 //
 // Returns:
-//   - The context length in tokens, or 4096 if the provider/model is unknown.
+//   - The context length in tokens, or the configured fallback
+//     (ctxstore.DefaultModelContextFallback by default) when no failover
+//     manager is wired.
 //
 // Side effects:
 //   - None.
@@ -3427,7 +3473,21 @@ func (e *Engine) ResolveContextLength(providerName, model string) int {
 	if e.failoverManager != nil {
 		return e.failoverManager.ResolveContextLength(providerName, model)
 	}
-	return 4096
+	return e.resolvedSystemPromptBudget()
+}
+
+// resolvedSystemPromptBudget returns the engine's configured fallback
+// when set, otherwise ctxstore.DefaultModelContextFallback. Centralised
+// so ModelContextLimit and ResolveContextLength agree on the same
+// default and reading code only has to chase one helper.
+//
+// Side effects:
+//   - None.
+func (e *Engine) resolvedSystemPromptBudget() int {
+	if e.systemPromptBudget > 0 {
+		return e.systemPromptBudget
+	}
+	return ctxstore.DefaultModelContextFallback
 }
 
 // HasTool reports whether the engine has a tool with the given name.

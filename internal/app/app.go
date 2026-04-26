@@ -529,6 +529,12 @@ type engineParams struct {
 	// budget on the background_output tool. Zero means inherit the
 	// compiled-in default (120s).
 	backgroundOutputTimeout time.Duration
+	// systemPromptBudget mirrors cfg.ResolvedSystemPromptBudget(). Zero
+	// inherits the engine's compiled-in default
+	// (ctxstore.DefaultModelContextFallback, 16K). Forwarded to
+	// engine.New so propagateSystemPromptBudget can apply the same cap
+	// to the supplied TokenCounter and FailoverManager.
+	systemPromptBudget int
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -686,6 +692,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		streamTimeout:           in.setup.cfg.ParsedStreamTimeout(),
 		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
+		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 	}
 }
 
@@ -998,6 +1005,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		KnowledgeExtractorFactory: params.compression.knowledgeExtractorFactory,
 		StreamTimeout:             params.streamTimeout,
 		ToolTimeout:               params.toolTimeout,
+		SystemPromptBudget:        params.systemPromptBudget,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -1405,6 +1413,7 @@ func (a *App) createDelegateEngine(
 		KnowledgeExtractorFactory: delegateCompression.knowledgeExtractorFactory,
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
+		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {

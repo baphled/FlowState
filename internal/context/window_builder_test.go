@@ -611,5 +611,62 @@ var _ = Describe("WindowBuilder", func() {
 				Expect(logBuf.String()).To(ContainSubstring("system prompt truncated"))
 			})
 		})
+
+		Context("default 16K fallback budget vs always-active skill bundle", func() {
+			It("does not truncate a 13K-token system prompt at the new default fallback (regression: was 4096)", func() {
+				var logBuf bytes.Buffer
+				origOutput := log.Writer()
+				log.SetOutput(&logBuf)
+				DeferCleanup(func() { log.SetOutput(origOutput) })
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: simulatedSkillHeavySystemPrompt(13000),
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				result := builder.Build(manifest, store, context.DefaultModelContextFallback)
+
+				Expect(result.Truncated).To(BeFalse())
+				Expect(logBuf.String()).NotTo(ContainSubstring("system prompt truncated"))
+				Expect(result.Messages[0].Content).To(Equal(manifest.Instructions.SystemPrompt))
+			})
+
+			It("still emits the truncation warning when the prompt genuinely exceeds the budget", func() {
+				var logBuf bytes.Buffer
+				origOutput := log.Writer()
+				log.SetOutput(&logBuf)
+				DeferCleanup(func() { log.SetOutput(origOutput) })
+
+				manifest := &agent.Manifest{
+					Instructions: agent.Instructions{
+						SystemPrompt: simulatedSkillHeavySystemPrompt(20000),
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+
+				result := builder.BuildContextResult(manifest, "user msg", store, context.DefaultModelContextFallback)
+
+				Expect(result.Truncated).To(BeTrue())
+				Expect(logBuf.String()).To(ContainSubstring("system prompt truncated"))
+			})
+		})
 	})
 })
+
+// simulatedSkillHeavySystemPrompt builds a system-prompt body whose
+// approximate token count matches the supplied target, mirroring the
+// real-world shape of a FlowState always-active skill bundle (11
+// skills, 2-5K tokens each, plus the agent's own SystemPrompt and
+// delegation tables). The ApproximateCounter charges roughly one token
+// per four characters, so the helper emits a string sized to land at
+// or just over the target after counting.
+func simulatedSkillHeavySystemPrompt(targetTokens int) string {
+	const charsPerToken = 4
+	body := make([]byte, targetTokens*charsPerToken)
+	for i := range body {
+		body[i] = 'a'
+	}
+	return string(body)
+}
