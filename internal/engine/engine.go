@@ -2192,6 +2192,7 @@ func (e *Engine) storeAssistantToolUse(toolCall *provider.ToolCall, content stri
 		ToolCalls: []provider.ToolCall{
 			{ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
 		},
+		ModelID: e.LastModel(),
 	})
 }
 
@@ -3282,7 +3283,7 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 		return
 	}
 
-	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking}
+	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking, ModelID: e.LastModel()}
 	msgID := e.store.AppendReturningID(assistantMsg)
 	e.dualWriteToChainStore(assistantMsg)
 	e.embedMessage(ctx, content, msgID)
