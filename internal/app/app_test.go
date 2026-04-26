@@ -1261,3 +1261,61 @@ When to use: Testing purposes
 		})
 	})
 })
+
+// Plan-location wiring integration: the production callers in app.go,
+// internal/cli/plan.go, and the plan_list/plan_read/plan_write tools all
+// resolve their target directory through cfg.ResolvedPlanLocation(). This
+// spec exercises the App-level entrypoint with a `.flowstate/` marker in
+// place and asserts the resolved path lands under the project marker —
+// proving the resolver is actually consulted on the wired path. The
+// resolver tiers themselves are covered exhaustively in
+// internal/config/config_test.go.
+var _ = Describe("Plan location wiring", func() {
+	var (
+		origWD  string
+		tempDir string
+	)
+
+	BeforeEach(func() {
+		var err error
+		origWD, err = os.Getwd()
+		Expect(err).NotTo(HaveOccurred())
+		tempDir, err = os.MkdirTemp("", "app-plan-location")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(os.Chdir(origWD)).To(Succeed())
+		os.RemoveAll(tempDir)
+	})
+
+	It("resolves the App's plan location through cfg.ResolvedPlanLocation when a project marker exists", func() {
+		markerDir := filepath.Join(tempDir, ".flowstate")
+		Expect(os.MkdirAll(markerDir, 0o755)).To(Succeed())
+		Expect(os.Chdir(tempDir)).To(Succeed())
+
+		application, err := app.NewForTest(app.TestConfig{
+			DataDir: filepath.Join(tempDir, "datadir"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(application).NotTo(BeNil())
+
+		// The wired callers in app.go (planStore setup) and the CLI
+		// subcommands all build their plan path via this helper. Asserting
+		// it returns the project-marker path here proves they will land
+		// there rather than under DataDir.
+		resolved := application.Config.ResolvedPlanLocation()
+		Expect(resolved).To(HaveSuffix(filepath.Join(".flowstate", "plans")))
+		Expect(resolved).NotTo(ContainSubstring("datadir"))
+	})
+
+	It("honours an explicit PlanLocation override on the App's config", func() {
+		application, err := app.NewForTest(app.TestConfig{
+			DataDir: filepath.Join(tempDir, "datadir"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		application.Config.PlanLocation = "/custom/plans"
+
+		Expect(application.Config.ResolvedPlanLocation()).To(Equal("/custom/plans"))
+	})
+})

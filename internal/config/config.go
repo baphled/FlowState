@@ -69,6 +69,25 @@ type AppConfig struct {
 	// an explicit `timeout` argument. Empty means inherit the compiled-in
 	// default (120s).
 	BackgroundOutputTimeout string `json:"background_output_timeout,omitempty" yaml:"background_output_timeout,omitempty"`
+	// PlanLocation overrides the directory FlowState reads/writes plan
+	// markdown files from. Resolution rules (see ResolvedPlanLocation):
+	//
+	//   - Empty (default): walk up from the current working directory
+	//     looking for a `.flowstate/` marker directory. If found, use
+	//     `<projectRoot>/.flowstate/plans/`. If no marker is found, fall
+	//     back to `${cfg.DataDir}/plans/` so users without a project
+	//     setup still get a working location.
+	//   - Non-empty: the literal path is used verbatim, with `~` and
+	//     `~/` expanded against the user's home directory. Bare relative
+	//     paths are resolved against the user's CWD at call time, NOT
+	//     against `cfg.DataDir`. Allows `plan_location: ~/work/shared-plans/`
+	//     for a global override or `plan_location: ./.flowstate/plans/`
+	//     for a project-local pin.
+	//
+	// The project-marker default mirrors OMO's pattern: plans live next
+	// to the code they describe and can be checked into version control
+	// alongside it.
+	PlanLocation string `json:"plan_location,omitempty" yaml:"plan_location,omitempty"`
 }
 
 // ParsedStreamTimeout returns the parsed value of StreamTimeout, or 0 when
@@ -99,6 +118,62 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
+}
+
+// ResolvedPlanLocation returns the directory FlowState should use for plan
+// markdown files. The three-tier resolution mirrors the field godoc on
+// PlanLocation:
+//
+//  1. If PlanLocation is non-empty, expand a leading `~` / `~/` against
+//     the user's home directory and return the result. Bare relative
+//     paths are kept relative — they are resolved against the user's
+//     CWD at call time, never against cfg.DataDir.
+//  2. Otherwise walk parents of the current working directory looking
+//     for a `.flowstate/` marker. The first match wins; the resolver
+//     returns `<dir>/.flowstate/plans/`. This matches OMO's project-
+//     local layout and allows shared plans via `git`.
+//  3. Otherwise fall back to `<DataDir>/plans/` so fresh users with no
+//     project marker still get a working location.
+//
+// A nil receiver returns the empty string. App test fixtures construct
+// App with Config=nil and exercise paths that consult this helper.
+func (c *AppConfig) ResolvedPlanLocation() string {
+	if c == nil {
+		return ""
+	}
+	if c.PlanLocation != "" {
+		return expandTilde(c.PlanLocation)
+	}
+	if dir := findProjectFlowstateDir(); dir != "" {
+		return filepath.Join(dir, "plans")
+	}
+	return filepath.Join(c.DataDir, "plans")
+}
+
+// findProjectFlowstateDir walks parents of the current working directory
+// looking for a `.flowstate/` directory. Returns the absolute path to the
+// marker directory itself (so callers can append `plans/` etc.), or the
+// empty string when no marker is found.
+//
+// Side effects:
+//   - Reads os.Getwd() and stat()s candidate parents.
+func findProjectFlowstateDir() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := cwd
+	for {
+		candidate := filepath.Join(dir, ".flowstate")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func parseDurationField(s, key string) time.Duration {
@@ -648,6 +723,7 @@ func expandPaths(cfg *AppConfig) {
 	cfg.AgentDir = expandTilde(cfg.AgentDir)
 	cfg.SkillDir = expandTilde(cfg.SkillDir)
 	cfg.DataDir = expandTilde(cfg.DataDir)
+	cfg.PlanLocation = expandTilde(cfg.PlanLocation)
 	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)
 	for i, dir := range cfg.AgentDirs {
 		cfg.AgentDirs[i] = expandTilde(dir)

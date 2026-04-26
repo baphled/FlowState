@@ -245,7 +245,7 @@ func configureApplicationAfterBuild(
 	rt *pluginRuntime,
 ) {
 	eng := runtime.engine
-	planDir := filepath.Join(cfg.DataDir, "plans")
+	planDir := cfg.ResolvedPlanLocation()
 	planStore, err := plan.NewStore(planDir)
 	if err != nil {
 		log.Printf("warning: creating plan store: %v", err)
@@ -341,7 +341,7 @@ func buildApp(params appBuildParams) *App {
 		mcpTools:         runtime.mcpTools,
 	}
 
-	planDir := filepath.Join(cfg.DataDir, "plans")
+	planDir := cfg.ResolvedPlanLocation()
 	planStore, err := plan.NewStore(planDir)
 	if err != nil {
 		log.Printf("warning: creating plan store: %v", err)
@@ -773,7 +773,7 @@ type toolPipelineResult struct {
 func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	mcpMgr := mcpclient.NewManager()
 	todoStore := todotool.NewMemoryStore()
-	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, filepath.Join(cfg.DataDir, "plans"))
+	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation())
 	allServers := mergeMCPServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
