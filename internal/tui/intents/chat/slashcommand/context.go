@@ -44,12 +44,30 @@ type CommandContext struct {
 	// Registry is the parent registry, exposed so /help can iterate the
 	// command set without a separate handle.
 	Registry *Registry
+	// MessageSender lets a slash command inject a user-role message into
+	// the chat session as if the user had typed it themselves. /plans
+	// uses this to ask the active agent to call its plan_list tool and
+	// surface the result inside the conversation rather than via a local
+	// sub-picker. nil disables the capability.
+	MessageSender MessageSender
 }
 
 // MessageWiper is the narrow capability /clear consumes.
 type MessageWiper interface {
 	// ClearMessages wipes the chat view's message buffer.
 	ClearMessages()
+}
+
+// MessageSender is the narrow capability slash commands use to submit
+// a user-role message into the running chat session. The submission
+// path is the same one a user's keyboard input would take, so the
+// active agent receives the text as a normal turn and may respond with
+// tool calls / text just like any other prompt.
+type MessageSender interface {
+	// SendUserMessage submits text as a user-role message in the active
+	// chat session. Implementations are responsible for queueing the
+	// resulting tea.Cmd so it flushes alongside slash dispatch output.
+	SendUserMessage(text string)
 }
 
 // SystemMessageWriter is the narrow capability /help and /plans consume

@@ -11,7 +11,6 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	contextpkg "github.com/baphled/flowstate/internal/context"
-	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tui/intents/chat/slashcommand"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
@@ -105,46 +104,23 @@ var _ = Describe("Builtins", func() {
 	})
 
 	Describe("/plans", func() {
-		It("opens a sub-picker over plan summaries", func() {
+		It("does not open a sub-picker — plans are queried via the agent", func() {
 			cmd := lookup(reg, "plans")
-			lister := &stubPlanLister{
-				summaries: []plan.Summary{
-					{ID: "plan-1", Title: "First plan", Status: "draft"},
-				},
-			}
-			items := cmd.ItemsForPicker(slashcommand.CommandContext{PlanLister: lister})
-			Expect(items).To(HaveLen(1))
-			Expect(items[0].Label).To(Equal("First plan"))
-			Expect(items[0].Description).To(Equal("draft"))
+			Expect(cmd.ItemsForPicker).To(BeNil())
 		})
 
-		It("dumps the selected plan into the chat", func() {
+		It("submits a user-role list-plans message when invoked", func() {
 			cmd := lookup(reg, "plans")
-			writer := newWriter()
-			fetcher := &stubPlanFetcher{
-				file: &plan.File{ID: "plan-1", Title: "First plan", Status: "draft", TLDR: "Body"},
-			}
-			arg := widgets.Item{Value: "plan-1"}
-
-			cmd.Handler(slashcommand.CommandContext{
-				SystemMessageWriter: writer,
-				PlanFetcher:         fetcher,
-			}, &arg)
-			Expect(writer.lastMessage).To(ContainSubstring("First plan"))
-			Expect(writer.lastMessage).To(ContainSubstring("Body"))
+			sender := &stubMessageSender{}
+			cmd.Handler(slashcommand.CommandContext{MessageSender: sender}, nil)
+			Expect(sender.sent).To(ContainSubstring("plans"))
 		})
 
-		It("surfaces fetch errors as a system message", func() {
+		It("is a no-op when no MessageSender is wired", func() {
 			cmd := lookup(reg, "plans")
-			writer := newWriter()
-			fetcher := &stubPlanFetcher{err: errors.New("boom")}
-			arg := widgets.Item{Value: "plan-1"}
-
-			cmd.Handler(slashcommand.CommandContext{
-				SystemMessageWriter: writer,
-				PlanFetcher:         fetcher,
-			}, &arg)
-			Expect(writer.lastMessage).To(ContainSubstring("Failed to load plan"))
+			Expect(func() {
+				cmd.Handler(slashcommand.CommandContext{}, nil)
+			}).NotTo(Panic())
 		})
 	})
 
@@ -236,22 +212,12 @@ func (s *stubSessionLister) List() []contextpkg.SessionInfo {
 	return s.sessions
 }
 
-type stubPlanLister struct {
-	summaries []plan.Summary
-	err       error
+type stubMessageSender struct {
+	sent string
 }
 
-func (s *stubPlanLister) List() ([]plan.Summary, error) {
-	return s.summaries, s.err
-}
-
-type stubPlanFetcher struct {
-	file *plan.File
-	err  error
-}
-
-func (s *stubPlanFetcher) Get(_ string) (*plan.File, error) {
-	return s.file, s.err
+func (s *stubMessageSender) SendUserMessage(text string) {
+	s.sent = text
 }
 
 type stubAgentSwitcher struct {

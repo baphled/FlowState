@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/baphled/flowstate/internal/agent"
-	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
 
@@ -216,97 +215,33 @@ func sessionDescription(msgCount int, lastActive time.Time) string {
 	return ""
 }
 
-// newPlansCommand builds /plans which opens a sub-picker over plan
-// summaries and dumps the selected plan into the chat as a read-only
-// system message.
+// newPlansCommand builds /plans as a shortcut that asks the active
+// agent to list saved plans via its plan_list tool. The handler
+// submits a fixed user-role message into the running session and lets
+// the agent respond as it would to any other natural-language prompt.
+// This goes through the agent (not a local picker) so the planner's
+// existing tool-call surface keeps ownership of plan presentation.
 //
 // Returns:
 //   - The /plans Command.
 //
 // Side effects:
-//   - None (pure constructor).
+//   - None (pure constructor; the runtime side-effect lives in the
+//     handler when invoked).
 func newPlansCommand() Command {
 	return Command{
 		Name:        "plans",
-		Description: "Open a saved plan in the chat",
-		ItemsForPicker: func(ctx CommandContext) []widgets.Item {
-			if ctx.PlanLister == nil {
+		Description: "Ask the agent to list your saved plans",
+		Handler: func(ctx CommandContext, _ *widgets.Item) tea.Cmd {
+			if ctx.MessageSender == nil {
 				return nil
 			}
-			summaries, err := ctx.PlanLister.List()
-			if err != nil {
-				return nil
-			}
-			out := make([]widgets.Item, len(summaries))
-			for idx, s := range summaries {
-				out[idx] = widgets.Item{
-					Label:       planLabel(s),
-					Description: s.Status,
-					Value:       s.ID,
-				}
-			}
-			return out
-		},
-		Handler: func(ctx CommandContext, arg *widgets.Item) tea.Cmd {
-			if ctx.SystemMessageWriter == nil || arg == nil {
-				return nil
-			}
-			id, ok := arg.Value.(string)
-			if !ok || ctx.PlanFetcher == nil {
-				return nil
-			}
-			file, err := ctx.PlanFetcher.Get(id)
-			if err != nil {
-				ctx.SystemMessageWriter.AddSystemMessage("Failed to load plan: " + err.Error())
-				return nil
-			}
-			ctx.SystemMessageWriter.AddSystemMessage(formatPlan(file))
+			ctx.MessageSender.SendUserMessage("List the plans that you have")
 			return nil
 		},
 	}
 }
 
-// planLabel composes the popover label for a plan.
-//
-// Expected:
-//   - s is a Summary from plan.Store.List.
-//
-// Returns:
-//   - The plan's Title with an ID fallback.
-//
-// Side effects:
-//   - None.
-func planLabel(s plan.Summary) string {
-	if s.Title != "" {
-		return s.Title
-	}
-	return s.ID
-}
-
-// formatPlan composes the read-only chat dump for a plan.
-//
-// Expected:
-//   - file is a non-nil plan.File.
-//
-// Returns:
-//   - A multi-line string with title, status, and TL;DR.
-//
-// Side effects:
-//   - None.
-func formatPlan(file *plan.File) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Plan: %s\n", file.Title)
-	if file.Status != "" {
-		fmt.Fprintf(&b, "Status: %s\n", file.Status)
-	}
-	if file.Description != "" {
-		fmt.Fprintf(&b, "\n%s\n", file.Description)
-	}
-	if file.TLDR != "" {
-		fmt.Fprintf(&b, "\nTL;DR:\n%s\n", file.TLDR)
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
 
 // newAgentCommand builds /agent which opens a sub-picker over the agent
 // registry and applies the selected manifest to the running engine.

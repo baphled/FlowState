@@ -95,6 +95,7 @@ func (i *Intent) slashCommandContext() slashcommand.CommandContext {
 		MessageWiper:        slashWiper{intent: i},
 		SystemMessageWriter: slashWriter{intent: i},
 		SessionResumer:      slashResumer{intent: i},
+		MessageSender:       slashSender{intent: i},
 		AgentRegistry:       i.agentRegistry,
 		Registry:            i.slashRegistry,
 	}
@@ -431,6 +432,35 @@ func (s slashWriter) AddSystemMessage(content string) {
 	}
 	s.intent.view.AddMessage(chatview.Message{Role: "system", Content: content})
 	s.intent.refreshViewport()
+}
+
+// slashSender adapts the chat intent's user-message submission path
+// to the slashcommand.MessageSender interface so commands like /plans
+// can inject a natural-language prompt and let the active agent answer
+// via its existing tools (plan_list, etc.) rather than via a local
+// picker. Mirrors slashResumer's queueing pattern so the resulting
+// tea.Cmd flushes alongside other slash dispatch output.
+type slashSender struct {
+	intent *Intent
+}
+
+// SendUserMessage seeds the chat input with text and triggers the
+// same submission path the user's Enter keypress uses. The resulting
+// tea.Cmd is queued onto the intent's slash-cmd buffer so the next
+// Update tick flushes it.
+//
+// Side effects:
+//   - Mutates intent.input briefly (then sendMessage clears it).
+//   - Appends to intent.queuedSlashCmds.
+func (s slashSender) SendUserMessage(text string) {
+	if s.intent == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	s.intent.input = text
+	cmd := s.intent.sendMessage()
+	if cmd != nil {
+		s.intent.queuedSlashCmds = append(s.intent.queuedSlashCmds, cmd)
+	}
 }
 
 // slashResumer adapts the chat intent's session-switch path to the
