@@ -1612,8 +1612,12 @@ func (e *Engine) appendDelegationSections(base string) string {
 //   - e.mcpServerTools maps server names to their available tool names.
 //
 // Returns:
-//   - A map of allowed tool names, or nil when the manifest does not restrict tools
-//     (empty Capabilities.Tools means all tools are allowed for backward compatibility).
+//   - A non-nil map of allowed tool names. Empty/nil Capabilities.Tools is
+//     treated as "no tools allowed" (fail-closed) — manifests that do not
+//     declare tools get nothing beyond the always-on suggest_delegate
+//     escape hatch. Legacy manifests without an explicit tools list now
+//     surface as "stuck" agents rather than silently inheriting the full
+//     toolbelt; the loader emits a warning when such a manifest loads.
 //   - When Capabilities.Tools is non-empty, MCP tools are gated by
 //     Capabilities.MCPServers: each declared server name has its tools merged into
 //     the allowed set. Unknown server names are silently ignored. See
@@ -1623,11 +1627,7 @@ func (e *Engine) appendDelegationSections(base string) string {
 //   - None.
 func (e *Engine) buildAllowedToolSet() map[string]bool {
 	manifestTools := e.manifest.Capabilities.Tools
-	if len(manifestTools) == 0 {
-		return nil
-	}
-
-	allowed := make(map[string]bool, len(manifestTools))
+	allowed := make(map[string]bool, len(manifestTools)+1)
 	for _, mt := range manifestTools {
 		switch mt {
 		case "file":

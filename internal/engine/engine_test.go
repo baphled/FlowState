@@ -543,9 +543,15 @@ var _ = Describe("Engine", func() {
 				},
 			}
 
+			// Tool gating is fail-closed when capabilities.tools is empty,
+			// so the manifest must explicitly allow "search" for the
+			// schema to be forwarded to the provider.
+			searchManifest := manifest
+			searchManifest.Capabilities.Tools = []string{"search"}
+
 			eng := engine.New(engine.Config{
 				ChatProvider: chatProvider,
-				Manifest:     manifest,
+				Manifest:     searchManifest,
 				Tools:        []tool.Tool{toolWithSchema},
 			})
 

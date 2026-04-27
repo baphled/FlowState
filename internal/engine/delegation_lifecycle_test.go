@@ -153,7 +153,7 @@ var _ = Describe("DelegateTool lifecycle", func() {
 			})
 
 			Context("when the agent has an empty tools list", func() {
-				It("allows all tools (backward compatibility)", func() {
+				It("denies all tools (fail-closed)", func() {
 					reg.Register(&agent.Manifest{
 						ID:   "qa-agent",
 						Name: "QA Agent",
@@ -165,7 +165,8 @@ var _ = Describe("DelegateTool lifecycle", func() {
 					delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
 						WithRegistry(reg)
 
-					Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeTrue())
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "delegate")).To(BeFalse())
+					Expect(delegateTool.AgentHasToolPermission("qa-agent", "bash")).To(BeFalse())
 				})
 			})
 

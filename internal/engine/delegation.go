@@ -1513,8 +1513,15 @@ func (d *DelegateTool) resolveOrCreateSession(ctx context.Context, agentID, sess
 }
 
 // agentHasToolPermission reports whether the named agent is permitted to use toolName.
-// When no registry is configured, all tools are permitted.
-// When the agent's tool list is empty, all tools are permitted for backward compatibility.
+// When no registry is configured, all tools are permitted (the runtime has
+// no manifest to consult, so the only safe default is permissive). When the
+// agent ID is not found in the registry, all tools are also permitted —
+// the lookup miss means we have no manifest to gate against, which is a
+// configuration issue rather than a permission decision.
+// When the agent's tool list is empty, NO tools are permitted (fail-closed).
+// Legacy manifests without an explicit tools list previously inherited the
+// full toolbelt; that quietly defeated the orchestrator-strictness guarantee
+// and is now treated as the operator forgetting to declare capabilities.
 //
 // Expected:
 //   - agentID identifies the agent to inspect.
@@ -1534,7 +1541,7 @@ func (d *DelegateTool) agentHasToolPermission(agentID, toolName string) bool {
 		return true
 	}
 	if len(manifest.Capabilities.Tools) == 0 {
-		return true
+		return false
 	}
 	for _, t := range manifest.Capabilities.Tools {
 		if t == toolName {
