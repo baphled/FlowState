@@ -38,6 +38,14 @@ const AnalysisBundleV1Name = "analysis-bundle-v1"
 // without re-parsing the markdown.
 const PlanDocumentV1Name = "plan-document-v1"
 
+// CodeReviewVerdictV1Name is the SchemaRef the bug-triage swarm
+// (and any future review-flavoured swarm) uses on its post-member
+// gate to validate Code-Reviewer's structured output (see
+// ~/.config/flowstate/swarms/bug-triage.yml). The shape captures a
+// reviewer's verdict plus optional grounding so downstream synthesis
+// can quote concerns and references without re-parsing prose.
+const CodeReviewVerdictV1Name = "code-review-verdict-v1"
+
 // ReviewVerdictV1Schema returns the Phase 1 placeholder schema for
 // review-verdict-v1.
 //
@@ -260,6 +268,190 @@ func PlanDocumentV1Schema() *jsonschema.Schema {
 	}
 }
 
+// CodeReviewVerdictV1Schema returns the Phase 2 schema for
+// Code-Reviewer's structured output. The shape is deliberately
+// permissive: `additionalProperties` is left unset so reviewers
+// can attach extra annotations (rule ids, links, custom labels)
+// without re-cutting the schema. Only `verdict` and `summary` are
+// load-bearing — without those two there is nothing for the lead's
+// synthesis to act on.
+//
+// Phase 2 shape:
+//
+//   - object root with required string `verdict` (enum:
+//     "approve" / "request_changes" / "needs_more_evidence" /
+//     "abstain") and required string `summary`.
+//   - optional `concerns` (string array of categorised concerns).
+//   - optional `severity_breakdown` (object with int counts for
+//     critical / major / minor / nit; mirrors the bug-findings-v1
+//     severity vocabulary so reviewers can fold counts in trivially).
+//   - optional `references` array of {file, line?, snippet?} entries
+//     so the reviewer can ground each verdict in the codebase.
+//   - optional `confidence` enum (high / medium / low) for downstream
+//     gating logic ("auto-approve only when confidence == high").
+//
+// The verdict enum's design choices:
+//   - "approve" / "request_changes" mirror GitHub's review verbs so
+//     operators reading logs immediately recognise the semantics.
+//   - "needs_more_evidence" is distinct from "request_changes"
+//     because the upstream symptom is "explorer/librarian didn't
+//     surface enough to assess", not "the code itself is wrong".
+//   - "abstain" lets the reviewer step out without forcing a false
+//     positive on edge cases (e.g. domains the reviewer prompt
+//     doesn't cover).
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func CodeReviewVerdictV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"verdict":            codeReviewVerdictEnum(),
+			"summary":            {Type: "string"},
+			"concerns":           codeReviewConcernsArray(),
+			"severity_breakdown": codeReviewSeverityBreakdown(),
+			"references":         codeReviewReferencesArray(),
+			"confidence":         codeReviewConfidenceEnum(),
+		},
+		Required: []string{"verdict", "summary"},
+	}
+}
+
+// codeReviewVerdictEnum returns the verdict-property sub-schema.
+// Pulled out so the top-level constructor stays scannable.
+//
+// Returns:
+//   - A *jsonschema.Schema constraining `verdict` to the four
+//     supported terminal values.
+//
+// Side effects:
+//   - None.
+func codeReviewVerdictEnum() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "string",
+		Enum: []any{"approve", "request_changes", "needs_more_evidence", "abstain"},
+	}
+}
+
+// codeReviewConfidenceEnum returns the confidence-property
+// sub-schema. Confidence is optional; when present it must be one
+// of high / medium / low so downstream gating ("only auto-merge on
+// high confidence") has a stable vocabulary.
+//
+// Returns:
+//   - A *jsonschema.Schema constraining `confidence` to the three
+//     supported levels.
+//
+// Side effects:
+//   - None.
+func codeReviewConfidenceEnum() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "string",
+		Enum: []any{"high", "medium", "low"},
+	}
+}
+
+// codeReviewConcernsArray returns the concerns-property sub-schema:
+// an array of free-form strings the reviewer wants to flag without
+// committing to a per-concern object shape. A future revision can
+// promote this to a richer record type once the reviewer prompt
+// settles on a canonical concern vocabulary.
+//
+// Returns:
+//   - A *jsonschema.Schema describing a string array.
+//
+// Side effects:
+//   - None.
+func codeReviewConcernsArray() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type:  "array",
+		Items: &jsonschema.Schema{Type: "string"},
+	}
+}
+
+// codeReviewSeverityBreakdown returns the severity_breakdown
+// sub-schema: an object whose keys mirror the bug-findings-v1
+// severity vocabulary (critical / major / minor / nit) so a
+// reviewer that already classified findings can publish a count
+// per bucket without inventing a new vocabulary. All four counts
+// are optional integers; absent keys default to zero by convention
+// at the consumer.
+//
+// Returns:
+//   - A *jsonschema.Schema describing the four-int breakdown.
+//
+// Side effects:
+//   - None.
+func codeReviewSeverityBreakdown() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"critical": nonNegativeInt(),
+			"major":    nonNegativeInt(),
+			"minor":    nonNegativeInt(),
+			"nit":      nonNegativeInt(),
+		},
+	}
+}
+
+// nonNegativeInt returns a fresh integer schema constrained to >= 0.
+// The resolver in jsonschema-go requires the schema graph to form a
+// tree (no shared sub-schema pointers); each call returns a new value
+// so the four severity buckets stay distinct nodes.
+//
+// Returns:
+//   - A *jsonschema.Schema for non-negative integers.
+//
+// Side effects:
+//   - None.
+func nonNegativeInt() *jsonschema.Schema {
+	return &jsonschema.Schema{Type: "integer", Minimum: floatPtr(0)}
+}
+
+// codeReviewReferencesArray returns the references sub-schema: an
+// array of {file, line?, snippet?} objects so each concern can be
+// grounded in a repo path. Only `file` is required because not
+// every reference resolves to a single line (e.g. "the entire
+// auth/ package is over-coupled") and the snippet is a courtesy
+// for human readers rather than a load-bearing field.
+//
+// Returns:
+//   - A *jsonschema.Schema describing the references array.
+//
+// Side effects:
+//   - None.
+func codeReviewReferencesArray() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "array",
+		Items: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"file":    {Type: "string"},
+				"line":    {Type: "integer", Minimum: floatPtr(1)},
+				"snippet": {Type: "string"},
+			},
+			Required: []string{"file"},
+		},
+	}
+}
+
+// floatPtr is a tiny helper for the *float64 fields the jsonschema-go
+// library uses for numeric bounds. Pulled out so the schema bodies
+// above stay readable.
+//
+// Expected:
+//   - v is the literal float bound to publish.
+//
+// Returns:
+//   - A heap-allocated *float64 wrapping v.
+//
+// Side effects:
+//   - None.
+func floatPtr(v float64) *float64 { return &v }
+
 // SeedDefaultSchemas registers every Phase 1 builtin schema with the
 // in-process registry. The CLI / app construction calls this once at
 // startup so the planning-loop swarm's post-member gates have schemas
@@ -284,6 +476,7 @@ func SeedDefaultSchemas() error {
 		{ExternalRefsV1Name, ExternalRefsV1Schema()},
 		{AnalysisBundleV1Name, AnalysisBundleV1Schema()},
 		{PlanDocumentV1Name, PlanDocumentV1Schema()},
+		{CodeReviewVerdictV1Name, CodeReviewVerdictV1Schema()},
 	}
 	for _, seed := range seeds {
 		if err := RegisterSchema(seed.name, seed.schema); err != nil {
