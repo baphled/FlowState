@@ -3308,6 +3308,16 @@ func (i *Intent) View() string {
 		content = trailLine + "\n" + content
 	}
 
+	// Slash-command picker overlay: when the user has opened the
+	// command picker (or its sub-picker) by typing "/" on an empty
+	// buffer, render the picker's view immediately above the input
+	// line so the user can see the autocomplete shortlist while they
+	// type. The picker is dismissed (by Esc/Enter) via the dispatcher
+	// in slash_dispatch.go; this render call is purely visual.
+	if pickerView := i.renderSlashPickerOverlay(); pickerView != "" {
+		content = content + "\n" + pickerView
+	}
+
 	var inputLine string
 	switch {
 	case i.pendingPermission != nil:
