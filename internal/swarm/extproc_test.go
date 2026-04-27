@@ -110,6 +110,46 @@ var _ = Describe("ExtGateRunner registry", func() {
 	})
 })
 
+var _ = Describe("Gate runner — ext: routing", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+		swarm.ClearSchemasForTest()
+		Expect(swarm.SeedDefaultSchemas()).To(Succeed())
+	})
+
+	It("routes kind:ext:* to the registered ExtGateRunner", func() {
+		Expect(swarm.RegisterExtGateFunc("blocker", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+			return swarm.ExtGateResponse{Pass: false, Reason: "blocked"}, nil
+		})).To(Succeed())
+
+		err := swarm.RunGateForTest(context.Background(), swarm.GateSpec{
+			Name: "g", Kind: "ext:blocker", When: "post-member", Target: "x",
+		}, swarm.GateInput{MemberID: "x", Payload: []byte("p")})
+
+		Expect(err).To(HaveOccurred())
+		var gateErr *swarm.GateError
+		Expect(errors.As(err, &gateErr)).To(BeTrue())
+		Expect(gateErr.Reason).To(Equal("blocked"))
+	})
+
+	It("rejects an ext:* kind whose runner is not registered", func() {
+		err := swarm.RunGateForTest(context.Background(), swarm.GateSpec{
+			Name: "g", Kind: "ext:nope", When: "post", Target: "",
+		}, swarm.GateInput{})
+
+		Expect(err).To(MatchError(ContainSubstring("ext:nope")))
+	})
+
+	It("preserves the existing builtin path", func() {
+		err := swarm.RunGateForTest(context.Background(), swarm.GateSpec{
+			Name: "g", Kind: "builtin:result-schema", SchemaRef: "evidence-bundle-v1",
+			When: "post-member", Target: "explorer",
+		}, swarm.GateInput{MemberID: "explorer", Payload: []byte(`{"summary":"ok","findings":[]}`)})
+
+		Expect(err).ToNot(HaveOccurred())
+	})
+})
+
 func noopFunc(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
 	return swarm.ExtGateResponse{Pass: true}, nil
 }
