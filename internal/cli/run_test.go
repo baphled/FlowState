@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -16,6 +17,49 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type recordingGateRunner struct {
+	calls []swarm.GateSpec
+}
+
+func (r *recordingGateRunner) Run(_ context.Context, gate swarm.GateSpec, _ swarm.GateArgs) error {
+	r.calls = append(r.calls, gate)
+	return nil
+}
+
+func postSwarmGate() swarm.GateSpec {
+	return swarm.GateSpec{
+		Name: "post-swarm-aggregate",
+		Kind: "builtin:result-schema",
+		When: swarm.LifecyclePostSwarm,
+	}
+}
+
+func wireSwarmDelegateTool(testApp *app.App, runner swarm.GateRunner, gates []swarm.GateSpec) {
+	testApp.Registry = agent.NewRegistry()
+	testApp.Registry.Register(&agent.Manifest{
+		ID:           "worker",
+		Name:         "Worker",
+		Instructions: agent.Instructions{SystemPrompt: "work"},
+	})
+	swarmReg := swarm.NewRegistry()
+	swarmReg.Register(&swarm.Manifest{
+		ID:      "test-swarm",
+		Lead:    "worker",
+		Members: []string{"worker"},
+		Harness: swarm.HarnessConfig{Gates: gates},
+		Context: swarm.ContextConfig{ChainPrefix: "test"},
+	})
+	testApp.SwarmRegistry = swarmReg
+	dt := engine.NewDelegateToolWithBackground(
+		map[string]*engine.Engine{"worker": testApp.Engine},
+		agent.Delegation{CanDelegate: true},
+		"worker",
+		nil,
+		coordination.NewMemoryStore(),
+	).WithGateRunner(runner)
+	testApp.Engine.AddTool(dt)
+}
 
 func newRunSwarmRegistry() *swarm.Registry {
 	reg := swarm.NewRegistry()
@@ -302,4 +346,66 @@ var _ = Describe("run command", func() {
 			Expect(err.Error()).To(ContainSubstring(`no agent or swarm named "ghost"`))
 		})
 	})
+
+	Describe("post-swarm gate dispatch (T-swarm-3)", func() {
+		It("flushes swarm-level post gates after the lead's stream completes", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{{Content: "ok", Done: true}}, nil)
+			runner := &recordingGateRunner{}
+			wireSwarmDelegateTool(testApp, runner, []swarm.GateSpec{postSwarmGate()})
+
+			err := runCmd(testApp, "run", "--prompt", "hello", "--agent", "test-swarm")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runner.calls).To(HaveLen(1),
+				"post-swarm gate must fire exactly once when the lead's stream completes")
+			Expect(runner.calls[0].Name).To(Equal("post-swarm-aggregate"))
+			Expect(runner.calls[0].When).To(Equal(swarm.LifecyclePostSwarm))
+		})
+
+		It("does not invoke any runner when no swarm context is installed", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{{Content: "ok", Done: true}}, nil)
+			runner := &recordingGateRunner{}
+			dt := engine.NewDelegateToolWithBackground(
+				map[string]*engine.Engine{"worker": testApp.Engine},
+				agent.Delegation{CanDelegate: true},
+				"worker",
+				nil,
+				coordination.NewMemoryStore(),
+			).WithGateRunner(runner)
+			testApp.Engine.AddTool(dt)
+
+			err := runCmd(testApp, "run", "--prompt", "hello")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(runner.calls).To(BeEmpty())
+		})
+
+		It("returns the gate failure when the post-swarm runner reports an error", func() {
+			testApp := createRunTestApp([]provider.StreamChunk{{Content: "ok", Done: true}}, nil)
+			runner := &failingGateRunner{
+				err: &swarm.GateError{
+					GateName: "post-swarm-aggregate",
+					GateKind: "builtin:result-schema",
+					When:     swarm.LifecyclePostSwarm,
+					Reason:   "aggregate validation failed",
+				},
+			}
+			wireSwarmDelegateTool(testApp, runner, []swarm.GateSpec{postSwarmGate()})
+
+			err := runCmd(testApp, "run", "--prompt", "hello", "--agent", "test-swarm")
+
+			Expect(err).To(HaveOccurred())
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(ContainSubstring("aggregate validation failed"))
+		})
+	})
 })
+
+type failingGateRunner struct {
+	err error
+}
+
+func (r *failingGateRunner) Run(_ context.Context, _ swarm.GateSpec, _ swarm.GateArgs) error {
+	return r.err
+}

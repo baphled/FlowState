@@ -125,16 +125,12 @@ func IsMemberLifecyclePoint(when string) bool {
 }
 
 // DefaultMemberOutputKey is the coord-store sub-key the result-schema
-// runner reads when the manifest does not pin one explicitly. The
-// convention follows existing review-loop wiring (see
-// coordination/persisting_store.go and the planner workflow): a member
+// runner reads when the manifest does not pin one explicitly. A member
 // writes its terminal output under "<chainPrefix>/<memberID>/<key>",
-// with "review" being the canonical key for the plan-reviewer agent.
-//
-// TODO(swarm-3-output-key): the spec intends GateSpec to grow an
-// explicit `output_key` field. Until that lands, the runner uses
-// "review" for plan-reviewer and falls back to "output" otherwise; see
-// resolveOutputKey in gate_result_schema.go.
+// where <key> is GateSpec.OutputKey when set on the manifest, the
+// legacy "review" convention for plan-reviewer, or this default
+// otherwise. See candidateKeys in gate_result_schema.go for the full
+// resolution order.
 const DefaultMemberOutputKey = "output"
 
 // GateRunner dispatches a single gate against the runtime state and

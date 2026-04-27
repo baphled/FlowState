@@ -239,6 +239,50 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(errors.As(err, &gateErr)).To(BeTrue())
 			Expect(gateErr.Reason).To(ContainSubstring("coordination store unavailable"))
 		})
+
+		It("reads from the explicit output_key when set on the gate", func() {
+			gate.Target = "explorer"
+			gate.OutputKey = "evidence"
+			store := newGateStore(map[string][]byte{
+				"planning/explorer/evidence": []byte(`{"verdict":"approve"}`),
+				"planning/explorer/output":   []byte(`{"intentionally":"wrong"}`),
+			})
+			args := planningLoopArgs(store)
+			args.MemberID = "explorer"
+
+			err := runner.Run(context.Background(), gate, args)
+
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("does NOT fall back to the default key when an explicit output_key is set and the key is absent", func() {
+			gate.Target = "explorer"
+			gate.OutputKey = "missing"
+			store := newGateStore(map[string][]byte{
+				"planning/explorer/output": []byte(`{"verdict":"approve"}`),
+			})
+			args := planningLoopArgs(store)
+			args.MemberID = "explorer"
+
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(ContainSubstring("no member output found"))
+			Expect(gateErr.Reason).To(ContainSubstring("planning/explorer/missing"))
+			Expect(gateErr.Reason).NotTo(ContainSubstring("planning/explorer/output"))
+		})
+
+		It("uses the legacy plan-reviewer convention when no explicit output_key is set", func() {
+			gate.OutputKey = ""
+			store := newGateStore(map[string][]byte{
+				"planning/plan-reviewer/review": []byte(`{"verdict":"approve"}`),
+			})
+
+			err := runner.Run(context.Background(), gate, planningLoopArgs(store))
+
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("GateError", func() {

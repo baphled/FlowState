@@ -10,25 +10,21 @@ import (
 
 // reviewerOutputKey is the canonical coord-store sub-key the
 // plan-reviewer agent writes its verdict under (see
-// coordination/persisting_store.go and the planner workflow). The
-// result-schema runner falls back to this key when the target member
-// is "plan-reviewer" so the planning-loop reference swarm works
-// without further wiring. Other members default to
-// DefaultMemberOutputKey.
+// coordination/persisting_store.go and the planner workflow).
+// Retained as a fallback for manifests that pre-date the explicit
+// GateSpec.OutputKey field so existing planning-loop runs do not
+// regress; the planning-loop manifest itself now pins
+// `output_key: review` so the fallback is exercise-only.
 const reviewerOutputKey = "review"
 
 // resultSchemaRunner implements GateRunner for kind:
 // "builtin:result-schema". It validates the most-recent value the
 // target member wrote to the coordination_store at
 // "<chainPrefix>/<memberID>/<output-key>" against a JSON Schema
-// looked up in the in-process registry by gate.SchemaRef.
-//
-// Phase 1 caveats (TODO list mirrored on top-level package doc):
-//
-//   - The output-key convention is hard-coded — see resolveOutputKey.
-//   - The schema lookup is a registry-by-name only; Phase 2 will
-//     plug a SchemaResolver in here so on-disk schemas/ files load
-//     without re-compiling.
+// looked up in the in-process registry by gate.SchemaRef. The
+// output-key resolution priority is: gate.OutputKey (explicit, set on
+// the manifest) > the legacy plan-reviewer convention >
+// DefaultMemberOutputKey ("output").
 type resultSchemaRunner struct{}
 
 // NewResultSchemaRunner returns the production result-schema runner.
@@ -73,7 +69,7 @@ func (resultSchemaRunner) Run(ctx context.Context, gate GateSpec, args GateArgs)
 	if !ok {
 		return newGateFailure(gate, args, fmt.Sprintf("schema_ref %q is not registered", gate.SchemaRef), nil)
 	}
-	payload, err := readMemberOutput(args, gate.Target)
+	payload, err := readMemberOutput(gate, args)
 	if err != nil {
 		return newGateFailure(gate, args, err.Error(), err)
 	}
@@ -113,23 +109,24 @@ func preflightGate(gate GateSpec, args GateArgs) error {
 }
 
 // readMemberOutput pulls the most-recent member output from the
-// coord-store. Phase 1 looks up two key shapes in order: the
-// chain-prefixed reviewer key first (matching the existing
-// approval-callback convention) then the generic
-// "<chainPrefix>/<memberID>/output" fallback. The first hit wins.
+// coord-store, probing each candidate key in priority order. The first
+// hit wins; ErrKeyNotFound on a key advances to the next candidate so
+// older manifests (no explicit output_key, plan-reviewer convention)
+// keep working alongside the new explicit-key path.
 //
 // Expected:
 //   - args.CoordStore is non-nil (preflightGate has already checked).
-//   - memberID is the agent id whose output is being validated.
+//   - gate.Target is the agent id whose output is being validated.
 //
 // Returns:
 //   - The byte payload and nil on success.
-//   - nil and a wrapped error when neither candidate key exists.
+//   - nil and a wrapped error when no candidate key exists.
 //
 // Side effects:
 //   - Calls args.CoordStore.Get; no writes.
-func readMemberOutput(args GateArgs, memberID string) ([]byte, error) {
-	for _, key := range candidateKeys(args.ChainPrefix, memberID) {
+func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
+	keys := candidateKeys(gate, args.ChainPrefix)
+	for _, key := range keys {
 		payload, err := args.CoordStore.Get(key)
 		if err == nil {
 			return payload, nil
@@ -138,56 +135,54 @@ func readMemberOutput(args GateArgs, memberID string) ([]byte, error) {
 			return nil, fmt.Errorf("reading coord-store key %q: %w", key, err)
 		}
 	}
-	return nil, fmt.Errorf("no member output found at %v",
-		candidateKeys(args.ChainPrefix, memberID))
+	return nil, fmt.Errorf("no member output found at %v", keys)
 }
 
 // candidateKeys lists the coord-store keys the result-schema runner
-// will probe for memberID's terminal output, in priority order. The
-// list is stable so tests can pin the lookup ordering.
+// will probe for the gate target's terminal output, in priority order.
+// The list is stable so tests can pin the lookup ordering.
+//
+// Resolution priority:
+//   - If gate.OutputKey is set, that key is the only candidate. The
+//     manifest is authoritative; we do not fall back to a convention
+//     because a wrong-key read would silently validate the wrong data.
+//   - Otherwise the legacy plan-reviewer convention probes
+//     "<prefix>/plan-reviewer/review" first then
+//     "<prefix>/plan-reviewer/output" so existing manifests keep
+//     working.
+//   - Otherwise (any other member with no explicit OutputKey) the
+//     single candidate is "<prefix>/<target>/output".
 //
 // Expected:
-//   - chainPrefix is the swarm's coord-store namespace; may be empty
-//     (in which case the keys collapse to "<memberID>/<key>").
-//   - memberID is the agent id whose output is sought.
+//   - gate.Target is non-empty in production wiring; an empty Target
+//     yields keys with the "<chainPrefix>//<sub>" shape, which the
+//     coord-store will report as missing.
+//   - chainPrefix may be empty.
 //
 // Returns:
 //   - A slice of candidate keys; never nil.
 //
 // Side effects:
 //   - None.
-func candidateKeys(chainPrefix, memberID string) []string {
-	subKey := resolveOutputKey(memberID)
-	keys := []string{
-		joinKey(chainPrefix, memberID, subKey),
+func candidateKeys(gate GateSpec, chainPrefix string) []string {
+	if gate.OutputKey != "" {
+		return []string{joinKey(chainPrefix, gate.Target, gate.OutputKey)}
 	}
-	if subKey != DefaultMemberOutputKey {
-		keys = append(keys, joinKey(chainPrefix, memberID, DefaultMemberOutputKey))
+	if gate.Target == legacyReviewerMemberID {
+		return []string{
+			joinKey(chainPrefix, gate.Target, reviewerOutputKey),
+			joinKey(chainPrefix, gate.Target, DefaultMemberOutputKey),
+		}
 	}
-	return keys
+	return []string{joinKey(chainPrefix, gate.Target, DefaultMemberOutputKey)}
 }
 
-// resolveOutputKey returns the coord-store sub-key the named member
-// canonically writes its output under. Today the plan-reviewer
-// convention uses "review" (matching the approval-callback wiring in
-// coordination/persisting_store.go); every other agent falls back to
-// the generic "output" key. Phase 2 will replace this with an
-// explicit GateSpec.OutputKey field on the manifest.
-//
-// Expected:
-//   - memberID is the agent id whose output is sought.
-//
-// Returns:
-//   - The coord-store sub-key.
-//
-// Side effects:
-//   - None.
-func resolveOutputKey(memberID string) string {
-	if memberID == "plan-reviewer" {
-		return reviewerOutputKey
-	}
-	return DefaultMemberOutputKey
-}
+// legacyReviewerMemberID is the member id whose convention-based
+// fallback we keep for backwards compatibility with manifests that
+// pre-date the explicit GateSpec.OutputKey field. Hoisted to a named
+// constant so the candidateKeys branch reads as a deliberate legacy
+// concession rather than a hard-coded surprise.
+const legacyReviewerMemberID = "plan-reviewer"
 
 // joinKey builds a coord-store key from the parts, skipping empty
 // segments so an empty chainPrefix yields "<memberID>/<sub>" rather

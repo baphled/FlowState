@@ -117,6 +117,15 @@ type GateSpec struct {
 	// Target scopes a member-boundary gate to a single member id.
 	// Only meaningful for When="pre-member" / When="post-member".
 	Target string `json:"target,omitempty" yaml:"target,omitempty"`
+
+	// OutputKey is the coord-store sub-key under which the runner reads
+	// the target member's output. The full lookup key is
+	// "<chainPrefix>/<target>/<output_key>". Optional: when empty the
+	// runner falls back to DefaultMemberOutputKey ("output"). Pinning an
+	// explicit key keeps the gate readable from the manifest alone —
+	// readers do not have to consult the agent prompt to learn which
+	// coord-store slot the gate validates.
+	OutputKey string `json:"output_key,omitempty" yaml:"output_key,omitempty"`
 }
 
 // ContextConfig holds the coordination-store namespacing override.
