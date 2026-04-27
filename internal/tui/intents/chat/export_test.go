@@ -180,6 +180,19 @@ func (i *Intent) SetSessionStoreForTest(store SessionLister) {
 	i.sessionStore = store
 }
 
+// ApplyAgentSwitchForTest exposes the agent-switch helper so tests can
+// pin its contract directly (engine manifest, agent id, token budget,
+// view metadata refresh) without going through every UI dispatch path.
+func (i *Intent) ApplyAgentSwitchForTest(manifest *agent.Manifest) {
+	i.applyAgentSwitch(manifest)
+}
+
+// TokenBudgetForTest exposes the current token-budget snapshot so
+// tests can assert the budget retunes after an agent switch.
+func (i *Intent) TokenBudgetForTest() int {
+	return i.tokenBudget
+}
+
 // SessionIDForTest returns the current session ID for test assertions.
 func (i *Intent) SessionIDForTest() string {
 	return i.sessionID

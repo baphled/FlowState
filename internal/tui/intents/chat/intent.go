@@ -3172,9 +3172,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 	if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
 		if i.agentRegistry != nil {
 			if manifest, found := i.agentRegistry.Get(detected); found {
-				i.engine.SetManifest(*manifest)
-				i.agentID = detected
-				i.syncStatusBar()
+				i.applyAgentSwitch(manifest)
 			}
 		}
 	}
@@ -3708,11 +3706,7 @@ func (i *Intent) handleAgentCommand(args string) string {
 	if !found {
 		return "Unknown agent: " + agentID
 	}
-	i.engine.SetManifest(*manifest)
-	i.agentID = agentID
-	i.tokenBudget = i.engine.ModelContextLimit()
-	i.syncStatusBar()
-	i.syncViewAgentMeta()
+	i.applyAgentSwitch(manifest)
 	return "Switched to agent: " + agentID
 }
 
@@ -3838,6 +3832,7 @@ func (i *Intent) openModelSelector() tea.Cmd {
 				i.modelName = model
 				i.tokenBudget = i.engine.ModelContextLimit()
 				i.syncStatusBar()
+				i.syncViewAgentMeta()
 			},
 		})
 		return tuiintents.ShowModalMsg{Modal: modelIntent}
@@ -3871,10 +3866,7 @@ func (i *Intent) openAgentPicker() tea.Cmd {
 				if !found {
 					return
 				}
-				i.engine.SetManifest(*manifest)
-				i.agentID = agentID
-				i.tokenBudget = i.engine.ModelContextLimit()
-				i.syncStatusBar()
+				i.applyAgentSwitch(manifest)
 			},
 		})
 		return tuiintents.ShowModalMsg{Modal: pickerIntent}
@@ -4692,12 +4684,32 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	if next == nil {
 		return nil
 	}
-	i.engine.SetManifest(*next)
-	i.agentID = next.ID
+	i.applyAgentSwitch(next)
+	return nil
+}
+
+// applyAgentSwitch installs manifest as the engine's active agent and
+// brings every TUI surface that tracks the agent in sync — agent id,
+// token-budget recompute against the new model context, status-bar
+// label, and the view's agent-color / model-id metadata. The 5-line
+// dance is repeated at four call sites (Tab cycle, /agent slash,
+// agent picker OnSelect, swarm-mention dispatch) and skipping any
+// of them produces "agent changed but TUI didn't notice" bugs of
+// the kind reported on 2026-04-27 against the picker path.
+//
+// Expected:
+//   - manifest is non-nil and represents the agent the caller wants
+//     active. The function does not consult the registry; the caller
+//     is responsible for already having resolved the manifest.
+func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
+	if manifest == nil || i.engine == nil {
+		return
+	}
+	i.engine.SetManifest(*manifest)
+	i.agentID = manifest.ID
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
-	return nil
 }
 
 // maybeSwitchToSwarm resolves the first @<swarm-id> mention in message

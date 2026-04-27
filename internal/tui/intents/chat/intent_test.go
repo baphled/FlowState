@@ -3662,3 +3662,55 @@ func submitChatInput(intent *chat.Intent, message string) {
 	}
 	intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 }
+
+var _ = Describe("applyAgentSwitch helper", func() {
+	var (
+		switchIntent *chat.Intent
+		switchEng    *engine.Engine
+		swReg        *provider.Registry
+		swAgentReg   *agent.Registry
+		alphaA       agent.Manifest
+		betaA        agent.Manifest
+	)
+
+	BeforeEach(func() {
+		alphaA = agent.Manifest{ID: "alpha", Name: "Alpha"}
+		betaA = agent.Manifest{ID: "beta", Name: "Beta"}
+		swAgentReg = agent.NewRegistry()
+		swAgentReg.Register(&alphaA)
+		swAgentReg.Register(&betaA)
+
+		swReg = provider.NewRegistry()
+		swReg.Register(&stubProvider{providerName: "test-provider"})
+
+		switchEng = engine.New(engine.Config{Registry: swReg, Manifest: alphaA})
+		switchIntent = chat.NewIntent(chat.IntentConfig{
+			Engine:        switchEng,
+			Streamer:      switchEng,
+			AgentID:       "alpha",
+			SessionID:     "test-session",
+			ProviderName:  "test-provider",
+			ModelName:     "test-model",
+			TokenBudget:   4096,
+			AgentRegistry: swAgentReg,
+		})
+	})
+
+	It("updates agentID and token budget", func() {
+		switchIntent.ApplyAgentSwitchForTest(&betaA)
+
+		Expect(switchIntent.AgentIDForTest()).To(Equal("beta"))
+		Expect(switchIntent.TokenBudgetForTest()).To(Equal(switchEng.ModelContextLimit()))
+	})
+
+	It("ignores a nil manifest", func() {
+		before := switchIntent.AgentIDForTest()
+		switchIntent.ApplyAgentSwitchForTest(nil)
+		Expect(switchIntent.AgentIDForTest()).To(Equal(before))
+	})
+
+	It("renders the new agent in the view after the switch", func() {
+		switchIntent.ApplyAgentSwitchForTest(&betaA)
+		Expect(switchIntent.View()).To(ContainSubstring("beta"))
+	})
+})
