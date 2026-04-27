@@ -368,31 +368,25 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			Context("/help command", func() {
-				It("lists slash commands and keybindings for accessibility", func() {
-					// Accessibility B2: screen-reader users rely on /help to
-					// enumerate runtime keybindings. The dispatcher must emit
-					// both the slash-command list AND the full keybinding
-					// table so operators can discover Ctrl+T, Ctrl+S etc.
+				It("lists slash commands and keybindings via the picker's Overview entry", func() {
 					for _, r := range "/help" {
 						intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 					}
-					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-					Expect(cmd).NotTo(BeNil())
-					cmd()
+					intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+					Expect(intent.SlashPickerActiveForTest()).To(BeTrue())
+
+					intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 					messages := intent.MessagesForTest()
 					Expect(messages).NotTo(BeEmpty())
 					lastMsg := messages[len(messages)-1]
 					Expect(lastMsg.Role).To(Equal("system"))
 
-					// Slash-command listing is still present.
 					Expect(lastMsg.Content).To(ContainSubstring("Available slash commands:"))
-					Expect(lastMsg.Content).To(ContainSubstring("/models"))
+					Expect(lastMsg.Content).To(ContainSubstring("/model"))
 
-					// New: Keybindings section surfaces runtime bindings.
 					Expect(lastMsg.Content).To(ContainSubstring("Keybindings:"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+T"))
-					// P11 repurposed Ctrl+T from pane-toggle to filter-profile cycling.
 					Expect(lastMsg.Content).To(ContainSubstring("Cycle activity-timeline filter profile"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+S"))
 					Expect(lastMsg.Content).To(ContainSubstring("Ctrl+C"))

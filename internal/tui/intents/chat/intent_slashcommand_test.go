@@ -82,6 +82,20 @@ var _ = Describe("ChatIntent slash commands", func() {
 		})
 	})
 
+	Describe("/help via the picker", func() {
+		It("opens the help sub-picker on Enter (no longer dispatches through the legacy handler)", func() {
+			typeRune(intent, '/')
+			typeRune(intent, 'h')
+			typeRune(intent, 'e')
+			typeRune(intent, 'l')
+			typeRune(intent, 'p')
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+			Expect(intent.SlashPickerActiveForTest()).To(BeTrue())
+			Expect(intent.Input()).To(BeEmpty())
+		})
+	})
+
 	Describe("/swarm wizard", func() {
 		var dir string
 

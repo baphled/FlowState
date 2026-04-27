@@ -67,13 +67,23 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 				"plan-writer":   swarm.PlanDocumentV1Name,
 				"plan-reviewer": swarm.ReviewVerdictV1Name,
 			}
+			expectedKeys := map[string]string{
+				"explorer":      "output",
+				"librarian":     "output",
+				"analyst":       "output",
+				"plan-writer":   "output",
+				"plan-reviewer": "review",
+			}
 			seen := make(map[string]string, len(expected))
+			seenKeys := make(map[string]string, len(expected))
 			for _, gate := range m.Harness.Gates {
 				Expect(gate.Kind).To(Equal("builtin:result-schema"))
 				Expect(gate.When).To(Equal(swarm.LifecyclePostMember))
 				seen[gate.Target] = gate.SchemaRef
+				seenKeys[gate.Target] = gate.OutputKey
 			}
 			Expect(seen).To(Equal(expected))
+			Expect(seenKeys).To(Equal(expectedKeys))
 		})
 
 		It("parses solo.yml as a structurally valid swarm manifest", func() {

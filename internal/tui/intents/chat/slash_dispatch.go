@@ -434,12 +434,21 @@ func (i *Intent) routeCommandPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	return cmd, true
 }
 
-// legacySlashCommandNames lists the slash commands implemented by the
-// pre-existing handleSlashCommand dispatcher in sendMessage. The new
-// picker yields to the legacy pipeline when the user types one of
-// these names exactly so the existing test contracts (rich /help text,
-// /agents listing, /agent <id> switching, /models, /model
-// <provider>/<model>) survive.
+// legacySlashCommandNames lists the slash commands still implemented
+// by the pre-existing handleSlashCommand dispatcher in sendMessage.
+// The new picker yields to the legacy pipeline when the user types
+// one of these names exactly so the existing test contracts
+// (/agents listing, /agent <id> switching, /models, /model
+// <provider>/<model> argument forms) survive.
+//
+// /help has been absorbed into the new picker (see newHelpCommand's
+// "Overview" entry which folds in the legacy keybindings cheat-sheet).
+//
+// TODO(slash-unification): finish absorbing /agents, /agent, /models,
+// and /model into picker builtins. /agent <id> + /model <p>/<m> with
+// inline arguments need an arg-parser hook on Command before they can
+// retire from this set. When the set is empty, delete it and the
+// early-return block in confirmCommandPicker.
 //
 // Adding a slash command to handleSlashCommand requires extending this
 // set so the picker continues to defer.
@@ -448,7 +457,6 @@ var legacySlashCommandNames = map[string]struct{}{
 	"model":  {},
 	"agent":  {},
 	"agents": {},
-	"help":   {},
 }
 
 // confirmCommandPicker handles Enter inside the command picker. When

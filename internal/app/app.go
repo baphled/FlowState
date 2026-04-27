@@ -3591,11 +3591,24 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 		qdrantClient := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 		embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 		adapter := &qdrantClientAdapter{client: qdrantClient}
-		learningStore = learning.NewMem0LearningStore(adapter, embedder, cfg.Qdrant.Collection)
+		ensuring := learning.NewEnsuringVectorStore(
+			adapter,
+			qdrantClient,
+			qdrantrecall.IsCollectionNotFound,
+			defaultQdrantDistance,
+		)
+		learningStore = learning.NewMem0LearningStore(ensuring, embedder, cfg.Qdrant.Collection)
 	}
 
 	return sessionStore, learningStore, nil
 }
+
+// defaultQdrantDistance is the metric the auto-create path uses when
+// the user's Qdrant config does not pin a distance. Cosine matches the
+// vector-rag wiring in internal/vaultindex and the manual collection
+// the user created out-of-band; keeping it as a const so the two
+// FlowState collection layouts stay in lock-step.
+const defaultQdrantDistance = "Cosine"
 
 // runOrphanEventTmpScan sweeps leftover `.events.jsonl.tmp` files from
 // sessionsDir. Such files only exist as intermediate staging files for a
@@ -3864,7 +3877,13 @@ func buildDistiller(cfg *config.AppConfig, _ provider.Provider, ollamaProvider e
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	adapter := &qdrantClientAdapter{client: client}
-	memClient := learning.NewVectorStoreMemoryClient(adapter, embedder, col)
+	ensuring := learning.NewEnsuringVectorStore(
+		adapter,
+		client,
+		qdrantrecall.IsCollectionNotFound,
+		defaultQdrantDistance,
+	)
+	memClient := learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
 	return learning.NewStructuredDistiller(memClient)
 }
 

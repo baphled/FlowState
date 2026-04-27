@@ -155,13 +155,12 @@ var _ = Describe("Session tree wiring", func() {
 	})
 
 	Describe("/help output", func() {
-		It("contains Ctrl+G session tree keybinding", func() {
+		It("contains Ctrl+G session tree keybinding via the picker Overview entry", func() {
 			for _, r := range "/help" {
 				intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 			}
-			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-			Expect(cmd).NotTo(BeNil())
-			cmd()
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 			messages := intent.MessagesForTest()
 			Expect(messages).NotTo(BeEmpty())

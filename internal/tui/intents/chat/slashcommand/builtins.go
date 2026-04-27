@@ -53,9 +53,17 @@ func newClearCommand() Command {
 	}
 }
 
+// helpOverviewItemValue is the sentinel Value placed on the synthetic
+// "Overview" entry at the top of /help's sub-picker. Selecting it
+// dumps the global cheat-sheet (every registered command + the
+// canonical keybindings table) instead of a per-command blurb.
+type helpOverviewItemValue struct{}
+
 // newHelpCommand builds the /help command which opens a sub-picker over
-// every registered command. Selecting one dumps its help text into the
-// chat as a system message.
+// every registered command, plus an "Overview" entry that mirrors the
+// pre-picker /help text (full command list + keybindings cheat-sheet)
+// so users absorbing the legacy /help behaviour through the unified
+// dispatcher do not lose access to the keybindings reference.
 //
 // Returns:
 //   - The /help Command.
@@ -67,13 +75,24 @@ func newHelpCommand() Command {
 		Name:        "help",
 		Description: "List available slash commands",
 		ItemsForPicker: func(ctx CommandContext) []widgets.Item {
-			if ctx.Registry == nil {
-				return nil
+			items := []widgets.Item{
+				{
+					Label:       "Overview",
+					Description: "All slash commands + keybindings",
+					Value:       helpOverviewItemValue{},
+				},
 			}
-			return ctx.Registry.Items()
+			if ctx.Registry != nil {
+				items = append(items, ctx.Registry.Items()...)
+			}
+			return items
 		},
 		Handler: func(ctx CommandContext, arg *widgets.Item) tea.Cmd {
 			if ctx.SystemMessageWriter == nil || arg == nil {
+				return nil
+			}
+			if _, isOverview := arg.Value.(helpOverviewItemValue); isOverview {
+				ctx.SystemMessageWriter.AddSystemMessage(helpOverviewMessage(ctx))
 				return nil
 			}
 			cmd, ok := arg.Value.(Command)
@@ -103,6 +122,66 @@ func formatHelpEntry(cmd Command) string {
 		b.WriteString("\nSelecting this command opens a sub-picker for the argument.")
 	}
 	return b.String()
+}
+
+// helpOverviewMessage composes the "Overview" entry for /help. The
+// content is the union of every registered command (so the sheet
+// stays in sync as new commands land) and the canonical keybindings
+// table previously surfaced by the pre-picker /help dispatcher.
+//
+// Expected:
+//   - ctx may carry a nil Registry; the command list section degrades
+//     to "no commands registered".
+//
+// Returns:
+//   - A multi-line string ready for the SystemMessageWriter.
+//
+// Side effects:
+//   - None.
+func helpOverviewMessage(ctx CommandContext) string {
+	var b strings.Builder
+	b.WriteString("Available slash commands:\n")
+	if ctx.Registry != nil {
+		for _, cmd := range ctx.Registry.All() {
+			fmt.Fprintf(&b, "  /%s — %s\n", cmd.Name, cmd.Description)
+		}
+	} else {
+		b.WriteString("  (no commands registered)\n")
+	}
+	b.WriteString("\nKeybindings:\n")
+	b.WriteString(helpKeybindingsBlock())
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// helpKeybindingsBlock returns the canonical keybindings cheat-sheet,
+// pulled verbatim from the legacy /help text the dispatcher used to
+// emit. Hoisted to its own function so future keybinding-table edits
+// have one canonical location.
+//
+// Returns:
+//   - A multi-line keybindings table.
+//
+// Side effects:
+//   - None.
+func helpKeybindingsBlock() string {
+	return "  Enter        - Send message\n" +
+		"  Alt+Enter    - New line\n" +
+		"  Tab          - Toggle active agent\n" +
+		"  Esc          - Dismiss modal / picker / session viewer\n" +
+		"  Ctrl+C       - Cancel stream, save session, and quit\n" +
+		"  Ctrl+D       - Open delegation picker\n" +
+		"  Ctrl+A       - Open agent picker\n" +
+		"  Ctrl+P       - Open model selector\n" +
+		"  Ctrl+S       - Open session browser (may freeze on some terminals; try stty -ixon)\n" +
+		"  Ctrl+G       - Open session tree\n" +
+		"  Ctrl+E       - Open event details (may shadow terminal-muxer/IDE bindings)\n" +
+		"  Ctrl+T       - Cycle activity-timeline filter profile (may shadow terminal-muxer/IDE bindings)\n" +
+		"  Up/Down      - Scroll viewport line by line\n" +
+		"  PgUp/PgDn    - Scroll viewport or event-details modal by page\n" +
+		"  Home/End     - Jump to top / bottom of viewport or event-details modal\n" +
+		"\n" +
+		"See docs/design/keybindings.md for a note on Ctrl+T / Ctrl+E\n" +
+		"collisions with tmux, screen, and common IDEs."
 }
 
 // newExitCommand builds /exit and /quit. tea.Quit exits the program
