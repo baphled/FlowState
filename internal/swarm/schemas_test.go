@@ -50,7 +50,38 @@ func planningSchemaCases() []schemaCase {
 			valid:   `{"verdict":"approve","reasoning":"shipping"}`,
 			invalid: `{"reasoning":"missing verdict"}`,
 		},
+		{
+			schema:  swarm.CodeReviewVerdictV1Name,
+			valid:   codeReviewFullPayload(),
+			invalid: `{"summary":"missing verdict"}`,
+		},
 	}
+}
+
+func codeReviewFullPayload() string {
+	return `{
+		"verdict": "request_changes",
+		"summary": "Concerns around concurrency in cache.",
+		"concerns": ["race in updateCache", "missing test"],
+		"severity_breakdown": {"critical": 1, "major": 0, "minor": 2, "nit": 0},
+		"references": [
+			{"file": "internal/cache/cache.go", "line": 42, "snippet": "go func() { ... }"},
+			{"file": "internal/cache/cache_test.go"}
+		],
+		"confidence": "high"
+	}`
+}
+
+func codeReviewMinimalPayload() string {
+	return `{"verdict":"approve","summary":"LGTM"}`
+}
+
+func codeReviewBadVerdictPayload() string {
+	return `{"verdict":"merge","summary":"not in the enum"}`
+}
+
+func codeReviewMissingSummaryPayload() string {
+	return `{"verdict":"approve"}`
 }
 
 var _ = Describe("planning-loop schemas", func() {
@@ -80,10 +111,29 @@ var _ = Describe("planning-loop schemas", func() {
 				swarm.ExternalRefsV1Name,
 				swarm.AnalysisBundleV1Name,
 				swarm.PlanDocumentV1Name,
+				swarm.CodeReviewVerdictV1Name,
 			} {
 				_, ok := swarm.LookupSchema(name)
 				Expect(ok).To(BeTrue(), "expected %q to be registered", name)
 			}
+		})
+
+		It("exposes code-review-verdict-v1 via RegisteredSchemaNames", func() {
+			Expect(swarm.RegisteredSchemaNames()).To(ContainElement(swarm.CodeReviewVerdictV1Name))
+		})
+	})
+
+	Describe(swarm.CodeReviewVerdictV1Name+" edge cases", func() {
+		It("accepts a minimal payload with only verdict and summary", func() {
+			Expect(mustValidate(swarm.CodeReviewVerdictV1Name, codeReviewMinimalPayload())).To(Succeed())
+		})
+
+		It("rejects a verdict outside the enum", func() {
+			Expect(mustValidate(swarm.CodeReviewVerdictV1Name, codeReviewBadVerdictPayload())).To(HaveOccurred())
+		})
+
+		It("rejects a payload missing summary", func() {
+			Expect(mustValidate(swarm.CodeReviewVerdictV1Name, codeReviewMissingSummaryPayload())).To(HaveOccurred())
 		})
 	})
 })
