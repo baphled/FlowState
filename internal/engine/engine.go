@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/context/compaction"
+	"github.com/baphled/flowstate/internal/context/factstore"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -214,6 +215,13 @@ type Engine struct {
 	// CompressionConfig so the two layers can be enabled independently.
 	compactionConfig compaction.Config
 
+	// factService is the RLM Phase B Layer 3 service. It exposes a
+	// Recall(query, topK) call the engine consults inside
+	// buildContextWindow to prepend a "[recalled facts]" system block
+	// to the in-flight provider request. Nil disables Phase B
+	// regardless of compactionConfig.FactExtractionEnabled.
+	factService *factstore.Service
+
 	mu sync.RWMutex
 }
 
@@ -276,6 +284,12 @@ type Config struct {
 	// are dropped). Typically set to the active sessions dir at App
 	// wiring time.
 	CompactionStoreDir string
+	// FactService is the RLM Phase B Layer 3 service. When non-nil AND
+	// CompactionConfig.FactExtractionEnabled is true, the engine
+	// consults Recall on every buildContextWindow call to prepend a
+	// "[recalled facts]" system block to the provider request. Nil
+	// disables Phase B regardless of the toggle.
+	FactService *factstore.Service
 	// CompressionMetrics, when non-nil, is attached to the window
 	// builder and the engine so L1 offloads and L2 compactions are
 	// counted in a single place. Nil disables metrics.
@@ -539,7 +553,30 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		swarmContext:              cfg.SwarmContext,
 		microCompactor:            resolveMicroCompactor(cfg),
 		compactionConfig:          cfg.CompactionConfig,
+		factService:               resolveFactService(cfg),
 	}
+}
+
+// resolveFactService returns the RLM Phase B service the engine should
+// attach. Nil when the feature is disabled in CompactionConfig — the
+// applyFactRecall call site short-circuits a nil service so feature-
+// off has zero overhead on the hot path.
+//
+// Expected:
+//   - cfg is the Config handed to New.
+//
+// Returns:
+//   - cfg.FactService when CompactionConfig.FactExtractionEnabled is
+//     true AND the caller wired a non-nil service.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func resolveFactService(cfg Config) *factstore.Service {
+	if !cfg.CompactionConfig.FactExtractionEnabled {
+		return nil
+	}
+	return cfg.FactService
 }
 
 // resolveMicroCompactor returns the RLM Phase A compactor the engine
@@ -2449,6 +2486,13 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// WindowBuilder has no knowledge of the extra content.
 	result.Messages = e.maybeRehydrate(sessionID, result.Messages)
 
+	// RLM Phase B — Layer 3 fact recall. Inserted between the system
+	// prompt and the rest of history so micro-compaction (next step)
+	// sees the recall block in its final position. Recalled facts are
+	// system-role and never look like tool results, so Phase A leaves
+	// them alone.
+	result.Messages = e.applyFactRecall(ctx, sessionID, userMessage, result.Messages)
+
 	// RLM Phase A — Layer 1 micro-compaction. Applied last so the
 	// hot/cold split sees the final in-flight slice (system prompt,
 	// rehydrated files, recall observations, recent history). The
@@ -2723,6 +2767,106 @@ func (e *Engine) applyMicroCompaction(ctx context.Context, sessionID string, msg
 		return msgs
 	}
 	return out
+}
+
+// applyFactRecall asks the Phase B service for the top-K facts most
+// relevant to userMessage and splices a single "[recalled facts]"
+// system message between the system prompt and the rest of msgs.
+//
+// Expected:
+//   - ctx is the request context.
+//   - sessionID identifies the session whose facts.jsonl is consulted;
+//     an empty sessionID is a no-op.
+//   - userMessage is the next user turn — the recall query. Empty
+//     queries degrade to "most recent K" inside the store.
+//   - msgs is the in-flight slice from assembleBuildResult /
+//     maybeRehydrate.
+//
+// Returns:
+//   - msgs with the recall block inserted at index 1 (immediately
+//     after the system prompt) when the service yields ≥1 fact.
+//   - msgs unchanged when the service is nil, the toggle is off, the
+//     session has no facts, or the recall call fails.
+//
+// Side effects:
+//   - May read <sessionsDir>/<sessionID>/facts.jsonl.
+//   - Logs a warning on Recall errors; never panics.
+func (e *Engine) applyFactRecall(ctx context.Context, sessionID, userMessage string, msgs []provider.Message) []provider.Message {
+	if e.factService == nil || sessionID == "" || len(msgs) == 0 {
+		return msgs
+	}
+	hits, err := e.factService.Recall(ctx, sessionID, userMessage, 0)
+	if err != nil {
+		slog.Warn("engine fact recall failed; using full window",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return msgs
+	}
+	if len(hits) == 0 {
+		return msgs
+	}
+	return insertFactRecallBlock(msgs, formatFactRecallBlock(hits))
+}
+
+// formatFactRecallBlock turns the ranked Fact slice into the system-
+// message body the engine splices into the request slice.
+//
+// Returns:
+//   - A multi-line string starting with "[recalled facts]" and one
+//     "- <text>" per fact.
+func formatFactRecallBlock(facts []factstore.Fact) string {
+	var b strings.Builder
+	b.WriteString("[recalled facts]\n")
+	for _, f := range facts {
+		b.WriteString("- ")
+		b.WriteString(f.Text)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// insertFactRecallBlock splices a "[recalled facts]" system message
+// into msgs at index 1 when msgs[0] is the system prompt; falls back
+// to prepending when no system prompt is present.
+//
+// Expected:
+//   - msgs is non-empty.
+//   - body is the pre-formatted recall block.
+//
+// Returns:
+//   - A new slice with the recall block inserted.
+func insertFactRecallBlock(msgs []provider.Message, body string) []provider.Message {
+	block := provider.Message{Role: "system", Content: body}
+	if len(msgs) > 0 && msgs[0].Role == "system" {
+		out := make([]provider.Message, 0, len(msgs)+1)
+		out = append(out, msgs[0], block)
+		out = append(out, msgs[1:]...)
+		return out
+	}
+	out := make([]provider.Message, 0, len(msgs)+1)
+	out = append(out, block)
+	out = append(out, msgs...)
+	return out
+}
+
+// IngestForFactsForTest exposes the Phase B service's IngestSession
+// method to wiring tests so they can deterministically populate the
+// fact store before asserting against BuildContextWindowForTest. No-op
+// when the service is nil.
+//
+// Expected:
+//   - ctx is the test context.
+//   - sessionID is non-empty.
+//   - msgs is the synthetic message history fed to the extractor.
+//
+// Returns:
+//   - A non-nil error only when the underlying service propagates one.
+func (e *Engine) IngestForFactsForTest(ctx context.Context, sessionID string, msgs []provider.Message) error {
+	if e.factService == nil {
+		return nil
+	}
+	return e.factService.IngestSession(ctx, sessionID, msgs)
 }
 
 // rehydrateBestEffort iterates FilesToRestore and reads each in turn,
