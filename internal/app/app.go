@@ -1314,6 +1314,24 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 		dt.WithSessionsDir(a.SessionsDir())
 		dt.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
 	}
+
+	if a.SwarmRegistry != nil {
+		dt.WithSwarmRegistry(a.SwarmRegistry)
+		dt.WithRunnerFactory(swarmRunnerFactory)
+	}
+}
+
+// swarmRunnerFactory returns the per-swarm Runner the engine
+// dispatches members through. Constructed from the manifest's
+// EffectiveRetryPolicy + EffectiveCircuitBreaker so the runner
+// honours the addendum-A2/A3 defaults consistently with the manifest
+// helpers. A nil manifest falls back to all-defaults so the no-swarm-
+// context path still gets retry/breaker semantics.
+func swarmRunnerFactory(m *swarm.Manifest) *swarm.Runner {
+	if m == nil {
+		return swarm.NewRunner(swarm.RetryPolicy{}, swarm.CircuitBreakerConfig{})
+	}
+	return swarm.NewRunner(m.EffectiveRetryPolicy(), m.EffectiveCircuitBreaker())
 }
 
 // wireSuggestDelegateToolIfDisabled adds a SuggestDelegateTool to the engine
@@ -3961,6 +3979,7 @@ type TestConfig struct {
 	SkillsDir   string
 	SessionsDir string
 	DataDir     string
+	SwarmsDir   string
 	MCPClient   mcpclient.Client
 }
 
@@ -4050,9 +4069,17 @@ func NewForTest(tc TestConfig) (*App, error) {
 	}
 	disc := discovery.NewAgentDiscovery(manifestValues)
 
+	var swarmRegistry *swarm.Registry
+	if tc.SwarmsDir != "" {
+		swarmRegistry = setupSwarmRegistry(tc.SwarmsDir, agentRegistry)
+	} else {
+		swarmRegistry = swarm.NewRegistry()
+	}
+
 	return &App{
 		Config:           cfg,
 		Registry:         agentRegistry,
+		SwarmRegistry:    swarmRegistry,
 		Skills:           skills,
 		Engine:           nil,
 		Discovery:        disc,
