@@ -739,7 +739,7 @@ var _ = Describe("EmbeddedAgentsFS", func() {
 
 			entries, err := os.ReadDir(destDir)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(7))
+			Expect(entries).To(HaveLen(embeddedAgentCount()))
 
 			plannerContent, err := os.ReadFile(filepath.Join(destDir, "planner.md"))
 			Expect(err).NotTo(HaveOccurred())
