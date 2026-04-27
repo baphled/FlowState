@@ -9,6 +9,7 @@ import (
 	"time"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
+	compactionpkg "github.com/baphled/flowstate/internal/context/compaction"
 	"github.com/baphled/flowstate/internal/engine"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"gopkg.in/yaml.v3"
@@ -62,6 +63,14 @@ type AppConfig struct {
 	// (micro-compaction, auto-compaction, session-memory). All layers
 	// default to disabled; see internal/context.DefaultCompressionConfig.
 	Compression contextpkg.CompressionConfig `json:"compression" yaml:"compression"`
+	// Compaction controls the RLM Phase A Layer 1 micro-compaction —
+	// the hot-tail/cold-store split for compactable tool results. It
+	// defaults to ENABLED with a 3-result hot-tail floor and an 8000-
+	// token size budget; see internal/context/compaction.DefaultConfig.
+	// Distinct from Compression.MicroCompaction (the prior view-only
+	// L1 implementation) so the two can be enabled or disabled
+	// independently while Phase A is rolled out.
+	Compaction compactionpkg.Config `json:"compaction" yaml:"compaction"`
 
 	// StreamTimeout overrides the per-LLM-stream wall-clock budget. Empty
 	// means inherit the engine's compiled-in default (5m). Long delegations
@@ -633,6 +642,7 @@ func DefaultConfig() *AppConfig {
 		},
 		AgentOverrides:      make(map[string]AgentOverrideConfig),
 		Compression:         contextpkg.DefaultCompressionConfig(),
+		Compaction:          compactionpkg.DefaultConfig(),
 		ToolCapableModels:   defaultToolCapableModels(),
 		ToolIncapableModels: defaultToolIncapableModels(),
 	}
@@ -924,6 +934,7 @@ func applyDefaults(cfg *AppConfig) {
 	}
 
 	applyCompressionDefaults(&cfg.Compression, defaults.Compression)
+	compactionpkg.ApplyDefaults(&cfg.Compaction)
 }
 
 // applyCompressionDefaults fills empty numeric and path fields of the

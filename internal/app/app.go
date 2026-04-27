@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/config"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	compactionpkg "github.com/baphled/flowstate/internal/context/compaction"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
@@ -536,6 +537,11 @@ type engineParams struct {
 	// engine.New so propagateSystemPromptBudget can apply the same cap
 	// to the supplied TokenCounter and FailoverManager.
 	systemPromptBudget int
+	// compaction carries the RLM Phase A Layer 1 settings parsed from
+	// cfg.Compaction. The store directory is the active sessions dir so
+	// per-session cold storage lands at <sessionsDir>/<sid>/compacted/.
+	compaction         compactionpkg.Config
+	compactionStoreDir string
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -694,6 +700,8 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
+		compaction:              in.setup.cfg.Compaction,
+		compactionStoreDir:      sessionsDirFromCfg(in.setup.cfg),
 	}
 }
 
@@ -1007,6 +1015,8 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		StreamTimeout:             params.streamTimeout,
 		ToolTimeout:               params.toolTimeout,
 		SystemPromptBudget:        params.systemPromptBudget,
+		CompactionConfig:          params.compaction,
+		CompactionStoreDir:        params.compactionStoreDir,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -1415,6 +1425,8 @@ func (a *App) createDelegateEngine(
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
+		CompactionConfig:          a.delegateCompactionConfig(),
+		CompactionStoreDir:        a.delegateCompactionStoreDir(),
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
@@ -1712,6 +1724,40 @@ func (a *App) SkillsDir() string {
 //   - None.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
+}
+
+// delegateCompactionConfig returns the RLM Phase A compaction config
+// for delegate engines. Nil-safe so the App's tool-wiring tests (which
+// construct App without a Config) do not crash.
+//
+// Returns:
+//   - The configured compaction.Config when a.Config is non-nil.
+//   - The zero-value Config (MicroEnabled=false) otherwise.
+//
+// Side effects:
+//   - None.
+func (a *App) delegateCompactionConfig() compactionpkg.Config {
+	if a == nil || a.Config == nil {
+		return compactionpkg.Config{}
+	}
+	return a.Config.Compaction
+}
+
+// delegateCompactionStoreDir returns the cold-store root for delegate
+// engines. Nil-safe (see delegateCompactionConfig).
+//
+// Returns:
+//   - The active sessions directory when reachable.
+//   - Empty string otherwise (disables disk writes; Compact still
+//     rewrites the slice but the .txt payloads are dropped).
+//
+// Side effects:
+//   - None.
+func (a *App) delegateCompactionStoreDir() string {
+	if a == nil || a.Config == nil {
+		return ""
+	}
+	return a.SessionsDir()
 }
 
 // restorePersistedSessions loads session metadata from disk and registers the

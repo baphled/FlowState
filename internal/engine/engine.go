@@ -14,6 +14,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/context/compaction"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -202,6 +203,17 @@ type Engine struct {
 	// race-cleanly with reads from the streaming hot path.
 	swarmContext *swarm.Context
 
+	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
+	// hot/cold tool-result split to the in-flight provider message slice
+	// produced by buildContextWindow. Nil disables Phase A regardless of
+	// CompactionConfig. The persisted history (Store, session.Messages)
+	// stays full and recoverable; Compact only rewrites the request view.
+	microCompactor *compaction.MicroCompactor
+	// compactionConfig carries the Phase A knobs (MicroEnabled,
+	// HotTailMinResults, HotTailSizeBudget). Held alongside the existing
+	// CompressionConfig so the two layers can be enabled independently.
+	compactionConfig compaction.Config
+
 	mu sync.RWMutex
 }
 
@@ -253,6 +265,17 @@ type Config struct {
 	// engine consults it at assembly time to gate L2 (auto-compaction)
 	// behaviour. L1 and L3 wiring live in their own injection points.
 	CompressionConfig ctxstore.CompressionConfig
+	// CompactionConfig holds the RLM Phase A Layer 1 (micro-compaction)
+	// knobs. Defaults to disabled when zero-valued; production callers
+	// pass compaction.DefaultConfig() and override individual fields.
+	CompactionConfig compaction.Config
+	// CompactionStoreDir is the absolute parent directory under which
+	// per-session cold-storage subdirectories
+	// (<dir>/<sessionID>/compacted/) are created. Empty disables disk
+	// writes (Compact still rewrites the slice but the .txt payloads
+	// are dropped). Typically set to the active sessions dir at App
+	// wiring time.
+	CompactionStoreDir string
 	// CompressionMetrics, when non-nil, is attached to the window
 	// builder and the engine so L1 offloads and L2 compactions are
 	// counted in a single place. Nil disables metrics.
@@ -514,7 +537,37 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionRehydrated:         make(map[string]struct{}),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 		swarmContext:              cfg.SwarmContext,
+		microCompactor:            resolveMicroCompactor(cfg),
+		compactionConfig:          cfg.CompactionConfig,
 	}
+}
+
+// resolveMicroCompactor returns the RLM Phase A compactor the engine
+// should attach. Nil when the feature is disabled in CompactionConfig
+// — buildContextWindow short-circuits the call site so a nil compactor
+// has zero overhead on the hot path.
+//
+// Expected:
+//   - cfg is the Config handed to New.
+//
+// Returns:
+//   - A configured compaction.MicroCompactor when CompactionConfig.
+//     MicroEnabled is true.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func resolveMicroCompactor(cfg Config) *compaction.MicroCompactor {
+	if !cfg.CompactionConfig.MicroEnabled {
+		return nil
+	}
+	c := cfg.CompactionConfig
+	compaction.ApplyDefaults(&c)
+	return compaction.NewMicroCompactor(compaction.Options{
+		StoreRoot:  cfg.CompactionStoreDir,
+		HotTailMin: c.HotTailMinResults,
+		SizeBudget: c.HotTailSizeBudget,
+	})
 }
 
 // resolveToolCallCorrelator returns the ToolCallCorrelator the engine
@@ -2396,6 +2449,13 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// WindowBuilder has no knowledge of the extra content.
 	result.Messages = e.maybeRehydrate(sessionID, result.Messages)
 
+	// RLM Phase A — Layer 1 micro-compaction. Applied last so the
+	// hot/cold split sees the final in-flight slice (system prompt,
+	// rehydrated files, recall observations, recent history). The
+	// persisted Store is untouched: only the provider request gets
+	// the rewritten view.
+	result.Messages = e.applyMicroCompaction(ctx, sessionID, result.Messages)
+
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
 	e.attributeMicroCompactionToSession(sessionID, microBefore)
@@ -2626,6 +2686,43 @@ func (e *Engine) maybeRehydrate(sessionID string, msgs []provider.Message) []pro
 		return msgs
 	}
 	return insertBeforeUserTurn(msgs, rehydrated)
+}
+
+// applyMicroCompaction runs the RLM Phase A compactor on the in-flight
+// message slice. When the compactor is nil (feature disabled or
+// mis-configured at construction), msgs is returned unchanged.
+//
+// Expected:
+//   - ctx is the request context; cancellation aborts compaction with
+//     a fall-through to the original slice.
+//   - sessionID identifies the session whose cold storage receives any
+//     spilled .txt payloads. An empty sessionID is treated as a
+//     no-op for safety.
+//   - msgs is the finalised provider request slice from
+//     assembleBuildResult and maybeRehydrate.
+//
+// Returns:
+//   - The compacted slice on success.
+//   - The original slice on compactor failure (the engine prefers a
+//     full window over a half-rewritten one — Phase A is best-effort).
+//
+// Side effects:
+//   - May write per-message .txt payloads under
+//     <CompactionStoreDir>/<sessionID>/compacted/.
+//   - Logs a warning when Compact returns an error; never panics.
+func (e *Engine) applyMicroCompaction(ctx context.Context, sessionID string, msgs []provider.Message) []provider.Message {
+	if e.microCompactor == nil || sessionID == "" || len(msgs) == 0 {
+		return msgs
+	}
+	out, err := e.microCompactor.Compact(ctx, sessionID, msgs)
+	if err != nil {
+		slog.Warn("engine micro-compaction failed; using full window",
+			"session_id", sessionID,
+			"error", err,
+		)
+		return msgs
+	}
+	return out
 }
 
 // rehydrateBestEffort iterates FilesToRestore and reads each in turn,
