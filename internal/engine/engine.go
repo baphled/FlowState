@@ -1343,10 +1343,13 @@ func (e *Engine) Manifest() agent.Manifest {
 //
 // Side effects:
 //   - Replaces the engine's swarmContext under the write lock.
+//   - Invalidates the cached system prompt so the next BuildSystemPrompt
+//     call re-runs appendSwarmLeadSection against the new context.
 func (e *Engine) SetSwarmContext(swarmCtx *swarm.Context) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.swarmContext = swarmCtx
+	e.systemPromptDirty = true
 }
 
 // SwarmContext returns the T-swarm-2 envelope installed on this
@@ -1430,6 +1433,8 @@ func (e *Engine) BuildSystemPrompt() string {
 		base = e.appendDelegationSections(base)
 	}
 
+	base = e.appendSwarmLeadSection(base)
+
 	if e.agentOverrides != nil {
 		if appendText, ok := e.agentOverrides[e.manifest.ID]; ok && appendText != "" {
 			base = base + "\n\n" + appendText
@@ -1440,6 +1445,125 @@ func (e *Engine) BuildSystemPrompt() string {
 	e.systemPromptDirty = false
 
 	return base
+}
+
+// appendSwarmLeadSection appends a "Swarm Leadership" block to base when
+// the engine holds a swarm.Context AND the engine's manifest is the
+// swarm's lead. The block tells the model:
+//
+//  1. its swarm identity ("You are leading swarm <id>") so it stops
+//     behaving as a solo agent;
+//  2. the resolved roster of member ids together with each member's
+//     human-readable Name and Metadata.Role pulled from agentRegistry
+//     when the registry can resolve them — falls back to the bare id
+//     when the member has no registered manifest;
+//  3. an explicit instruction to call the `delegate` tool with
+//     `subagent_type: <member-id>` whenever a task matches a member's
+//     specialty, then synthesise findings into a final report;
+//  4. the canonical coord-store namespace prefix
+//     "<chain_prefix>/<lead-id>/..." so every member writes under a
+//     predictable path.
+//
+// Members who are not the lead receive the swarm.Context for chain-
+// prefix namespacing but they are targets, not coordinators — so this
+// section is suppressed for them. The function is pure and idempotent:
+// repeated calls with the same engine state produce the same string.
+//
+// Expected:
+//   - base is the partially built system prompt; non-empty in normal
+//     use but the function is robust to empty input.
+//   - The caller already holds e.mu (BuildSystemPrompt does so).
+//
+// Returns:
+//   - base unchanged when no swarm context is set or the engine is not
+//     the swarm's lead.
+//   - base with a "\n\n# Swarm Leadership\n..." block appended when the
+//     engine is the lead.
+//
+// Side effects:
+//   - None; reads e.swarmContext, e.manifest, and e.agentRegistry.
+func (e *Engine) appendSwarmLeadSection(base string) string {
+	swarmCtx := e.swarmContext
+	if swarmCtx == nil {
+		return base
+	}
+	if swarmCtx.LeadAgent == "" || swarmCtx.LeadAgent != e.manifest.ID {
+		return base
+	}
+
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("\n\n# Swarm Leadership\n\n")
+	b.WriteString("You are leading swarm `")
+	b.WriteString(swarmCtx.SwarmID)
+	b.WriteString("`. The user's request is owned by this swarm; you coordinate the members below rather than answering alone.\n\n")
+
+	b.WriteString("## Members\n\n")
+	if len(swarmCtx.Members) == 0 {
+		b.WriteString("- (no members declared)\n")
+	}
+	for _, memberID := range swarmCtx.Members {
+		b.WriteString("- `")
+		b.WriteString(memberID)
+		b.WriteString("`")
+		if name, role, ok := e.resolveSwarmMemberDetails(memberID); ok {
+			if name != "" {
+				b.WriteString(" — ")
+				b.WriteString(name)
+			}
+			if role != "" {
+				b.WriteString(" (")
+				b.WriteString(role)
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n## Delegation\n\n")
+	b.WriteString("When a task matches a member's specialty, call the `delegate` tool with `subagent_type: <member-id>` (one of the ids above). After all relevant members have contributed, synthesise their findings into a final report for the user.\n")
+
+	chainPrefix := swarmCtx.ChainPrefix
+	if chainPrefix == "" {
+		chainPrefix = swarmCtx.SwarmID
+	}
+	b.WriteString("\n## Coordination namespace\n\n")
+	b.WriteString("Write outputs to the coordination store under `")
+	b.WriteString(chainPrefix)
+	b.WriteString("/")
+	b.WriteString(e.manifest.ID)
+	b.WriteString("/...` so the swarm's members agree on where to read and write.\n")
+
+	return b.String()
+}
+
+// resolveSwarmMemberDetails looks up a swarm member id in the engine's
+// agent registry and returns its display Name and Metadata.Role. The
+// found flag is false when the registry is nil or the member is not
+// registered, in which case the caller falls back to printing only the
+// bare id.
+//
+// Expected:
+//   - memberID is the swarm member's agent id; non-empty in normal use.
+//
+// Returns:
+//   - name, role, true when the registry resolved the id.
+//   - "", "", false otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, bool) {
+	if e.agentRegistry == nil || memberID == "" {
+		return "", "", false
+	}
+	manifest, ok := e.agentRegistry.Get(memberID)
+	if !ok || manifest == nil {
+		manifest, ok = e.agentRegistry.GetByNameOrAlias(memberID)
+		if !ok || manifest == nil {
+			return "", "", false
+		}
+	}
+	return manifest.Name, manifest.Metadata.Role, true
 }
 
 // appendDelegationSections builds and appends delegation sections from agent metadata or fallback table.
