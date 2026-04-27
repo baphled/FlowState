@@ -231,10 +231,10 @@ func (m *Manifest) EffectiveCircuitBreaker() CircuitBreakerConfig {
 }
 
 // HarnessConfig groups the swarm-runner-level execution settings on a
-// manifest. Today the runtime is sequential-only — Parallel and
-// MaxParallel are read by §T37 once parallel exec lands, but the
-// loader/validator already accept the fields so manifests written
-// against the published schema are forward-compatible.
+// manifest. Parallel and MaxParallel feed swarm.DispatchMembers (the
+// §T37 dispatch surface) which honours strict sequential mode by
+// default and switches to bounded-fan-out goroutines when Parallel is
+// true.
 type HarnessConfig struct {
 	// Parallel selects parallel member dispatch. False (the default)
 	// runs members sequentially in roster order.
