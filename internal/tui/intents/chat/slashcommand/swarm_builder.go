@@ -48,12 +48,6 @@ const (
 // yet; once it does, expand the gate-kind picker.
 const gateKindResultSchema = "builtin:result-schema"
 
-// swarmsConfigSubdir is the on-disk subdirectory of the user config
-// root that holds swarm manifests. Hard-coded here because the platform
-// has only one user-config location today; if a second one lands the
-// caller-side override will move into CommandContext.
-const swarmsConfigSubdir = "swarms"
-
 // swarmBuilder is the multi-step state machine implementing Wizard for
 // /swarm. The exported NewSwarmBuilder constructor is what the /swarm
 // command's OpenWizard calls.

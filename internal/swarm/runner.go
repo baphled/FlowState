@@ -113,10 +113,10 @@ type Runner struct {
 	breaker CircuitBreakerConfig
 	path    string
 
-	mu              sync.Mutex
-	state           breakerState
-	consecutiveFail int
-	openedAt        time.Time
+	mu               sync.Mutex
+	state            breakerState
+	consecutiveFail  int
+	openedAt         time.Time
 	halfOpenInFlight int
 
 	// sleep is a seam for tests to skip real wall-clock waits. The

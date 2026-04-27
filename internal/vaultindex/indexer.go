@@ -57,16 +57,16 @@ type Logger interface {
 
 // IndexerConfig groups the options accepted by NewIndexer.
 type IndexerConfig struct {
-	VaultRoot      string
-	Collection     string
-	BatchSize      int
-	EmbeddingDim   int
-	Reindex        bool
-	Chunker        *Chunker
-	Embedder       Embedder
-	Store          VectorStore
-	State          *State
-	Logger         Logger
+	VaultRoot    string
+	Collection   string
+	BatchSize    int
+	EmbeddingDim int
+	Reindex      bool
+	Chunker      *Chunker
+	Embedder     Embedder
+	Store        VectorStore
+	State        *State
+	Logger       Logger
 }
 
 // Indexer walks a vault, chunks markdown, embeds chunks, and upserts the

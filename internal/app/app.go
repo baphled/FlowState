@@ -75,8 +75,8 @@ type MCPConnectionResult struct {
 
 // App is the main application container holding all initialized components.
 type App struct {
-	Config                 *config.AppConfig
-	Registry               *agent.Registry
+	Config   *config.AppConfig
+	Registry *agent.Registry
 	// SwarmRegistry holds the loaded swarm manifests from
 	// `~/.config/flowstate/swarms/`. Populated by setupSwarmRegistry
 	// during New(); the T-swarm-2 @-mention resolver queries this

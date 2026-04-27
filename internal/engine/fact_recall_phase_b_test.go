@@ -33,8 +33,8 @@ func (s phaseBStubExtractor) Extract(_ context.Context, sessionID string, _ []pr
 
 type phaseBTokenCounter struct{}
 
-func (phaseBTokenCounter) Count(text string) int     { return len(strings.Fields(text)) }
-func (phaseBTokenCounter) ModelLimit(_ string) int   { return 100000 }
+func (phaseBTokenCounter) Count(text string) int   { return len(strings.Fields(text)) }
+func (phaseBTokenCounter) ModelLimit(_ string) int { return 100000 }
 
 func phaseBSeed(store *recall.FileContextStore, userText string) {
 	store.Append(provider.Message{Role: "user", Content: userText})

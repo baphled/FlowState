@@ -323,7 +323,6 @@ func newPlansCommand() Command {
 	}
 }
 
-
 // newAgentCommand builds /agent which opens a sub-picker over the agent
 // registry and applies the selected manifest to the running engine.
 //

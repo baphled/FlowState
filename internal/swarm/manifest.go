@@ -1011,4 +1011,3 @@ func dfsForCycle(node *Manifest, swarms map[string]*Manifest, visited map[string
 	}
 	return nil
 }
-

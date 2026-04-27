@@ -128,13 +128,13 @@ type SchemaLoadSummary struct {
 //   - dir absent          — returns an empty summary, no error, INFO log.
 //   - dir empty           — returns an empty summary, no schemas registered.
 //   - dir has *.json      — each file is parsed; valid files register,
-//                           failures log WARN and are counted in Failed.
+//     failures log WARN and are counted in Failed.
 //   - dir has subdirs     — recursion is intentionally NOT followed.
-//                           Operators flatten their schema tree under
-//                           dir; nested layouts are deferred to a
-//                           future "schema bundles" feature so the
-//                           Phase 2 contract stays a one-level tree
-//                           that mirrors agents/ and skills/.
+//     Operators flatten their schema tree under
+//     dir; nested layouts are deferred to a
+//     future "schema bundles" feature so the
+//     Phase 2 contract stays a one-level tree
+//     that mirrors agents/ and skills/.
 //
 // Expected:
 //   - The package-level schema registry has already been seeded by

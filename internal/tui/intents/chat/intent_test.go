@@ -1759,12 +1759,12 @@ var _ = Describe("ChatIntent", func() {
 		// chat.Message slices line up on the fields renderToolMessage
 		// dispatches on.
 		var (
-			eng           *engine.Engine
-			reg           *provider.Registry
-			liveIntent    *chat.Intent
-			replayIntent  *chat.Intent
-			newConfig     func() chat.IntentConfig
-			buildIntent   func() *chat.Intent
+			eng          *engine.Engine
+			reg          *provider.Registry
+			liveIntent   *chat.Intent
+			replayIntent *chat.Intent
+			newConfig    func() chat.IntentConfig
+			buildIntent  func() *chat.Intent
 		)
 
 		BeforeEach(func() {
