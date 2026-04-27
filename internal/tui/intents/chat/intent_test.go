@@ -3196,7 +3196,7 @@ var _ = Describe("Intent: long burst-stream renders the full final message", Lab
 
 		const chunks = 200
 		var fullExpected strings.Builder
-		for n := 0; n < chunks; n++ {
+		for n := range chunks {
 			body := burstChunkBody(n)
 			fullExpected.WriteString(body)
 			intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{
@@ -3285,7 +3285,7 @@ var _ = Describe("Long-stream viewport reproducer", Label("integration"), func()
 		// constructed (intent.go:1342).
 		intent.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
-		for n := 0; n < chunks; n++ {
+		for n := range chunks {
 			body := burstParagraphBody(n)
 			fullExpected.WriteString(body)
 			intent.Update(chat.StreamChunkMsg{Content: body, Done: false})
@@ -3350,9 +3350,10 @@ var _ = Describe("Long-stream viewport reproducer", Label("integration"), func()
 })
 
 // Regression: tokenCount used to be set only by finaliseStreamIfDone when
-// a live stream completed. handleSessionLoaded swapped the engine's store
-// out from under it but never repopulated tokenCount, so a freshly loaded
-// session showed a stale count — typically 0 on a brand-new TUI launch.
+// a live stream completed. The handleSessionLoaded path swapped the
+// engine's store out from under it but never repopulated tokenCount, so
+// a freshly loaded session showed a stale count — typically 0 on a
+// brand-new TUI launch.
 //
 // After the fix, handleSessionLoaded counts tokens off the restored
 // messages immediately so the status bar reflects the loaded context's
@@ -3475,13 +3476,14 @@ func burstChunkBody(n int) string {
 }
 
 func burstPaddedIdx(n int) string {
+	digit := func(d int) string { return string(rune('0' + byte(d&0xFF))) }
 	switch {
 	case n < 10:
-		return "00" + string(rune('0'+n))
+		return "00" + digit(n)
 	case n < 100:
-		return "0" + string(rune('0'+n/10)) + string(rune('0'+n%10))
+		return "0" + digit(n/10) + digit(n%10)
 	}
-	return string(rune('0'+n/100)) + string(rune('0'+(n/10)%10)) + string(rune('0'+n%10))
+	return digit(n/100) + digit((n/10)%10) + digit(n%10)
 }
 
 // Delegation picker — left/right arrow alias of up/down. The user

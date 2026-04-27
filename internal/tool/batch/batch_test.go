@@ -26,9 +26,9 @@ type fakeTool struct {
 	release <-chan struct{}
 }
 
-func (f fakeTool) Name() string         { return f.name }
-func (f fakeTool) Description() string  { return "fake" }
-func (f fakeTool) Schema() tool.Schema  { return tool.Schema{Type: "object"} }
+func (f fakeTool) Name() string        { return f.name }
+func (f fakeTool) Description() string { return "fake" }
+func (f fakeTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
 func (f fakeTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
 	if f.started != nil {
 		f.started <- f.name

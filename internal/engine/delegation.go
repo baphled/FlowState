@@ -165,17 +165,22 @@ type DelegateTool struct {
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
 type delegationTarget struct {
-	agentID          string
-	engine           *Engine
-	message          string
-	handoff          *delegation.Handoff
-	chainID          string
-	chainIDFromCaller bool // chainIDFromCaller distinguishes a planner-supplied chainID from the auto-generated fallback; only the former drives preamble injection.
-	resolvedModel    string
-	resolvedProvider string
-	requestedSession string // requestedSession carries the caller-supplied session_id for resumption.
-	denyDelegate     bool   // denyDelegate is true when the target agent lacks the "delegate" tool permission.
-	denyTodoWrite    bool   // denyTodoWrite is true when the target agent lacks the "todowrite" tool permission.
+	agentID string
+	engine  *Engine
+	message string
+	handoff *delegation.Handoff
+	chainID string
+	// chainIDFromCaller distinguishes a planner-supplied chainID from the
+	// auto-generated fallback; only the former drives preamble injection.
+	chainIDFromCaller bool
+	resolvedModel     string
+	resolvedProvider  string
+	// requestedSession carries the caller-supplied session_id for resumption.
+	requestedSession string
+	// denyDelegate is true when the target agent lacks the "delegate" tool permission.
+	denyDelegate bool
+	// denyTodoWrite is true when the target agent lacks the "todowrite" tool permission.
+	denyTodoWrite bool
 }
 
 // delegationParams groups the parsed delegation input fields.
@@ -821,12 +826,48 @@ func (d *DelegateTool) Description() string {
 // Side effects:
 //   - None.
 func (d *DelegateTool) Schema() tool.Schema {
-	categoryOptions := make([]string, 0, len(DefaultCategoryRouting()))
-	for category := range DefaultCategoryRouting() {
-		categoryOptions = append(categoryOptions, category)
-	}
+	schema := buildDelegateSchema(delegateCategoryOptions())
+	applyRegistryEnum(&schema, d.registry)
+	return schema
+}
 
-	schema := tool.Schema{
+// delegateCategoryOptions returns the set of category keys derived from
+// DefaultCategoryRouting, used as the schema enum for the "category"
+// property.
+//
+// Expected:
+//   - DefaultCategoryRouting returns a non-nil map; the helper is safe
+//     against an empty map and returns an empty slice.
+//
+// Returns:
+//   - A slice of category keys in map-iteration order.
+//
+// Side effects:
+//   - None.
+func delegateCategoryOptions() []string {
+	categories := make([]string, 0, len(DefaultCategoryRouting()))
+	for category := range DefaultCategoryRouting() {
+		categories = append(categories, category)
+	}
+	return categories
+}
+
+// buildDelegateSchema returns the static delegate-tool schema,
+// parameterised only on the category enum. Registry-derived enums are
+// applied separately by applyRegistryEnum.
+//
+// Expected:
+//   - categoryOptions is the enum slice for the "category" property; an
+//     empty slice produces a schema with an empty enum, which the caller
+//     accepts.
+//
+// Returns:
+//   - A tool.Schema describing the delegate tool's input contract.
+//
+// Side effects:
+//   - None.
+func buildDelegateSchema(categoryOptions []string) tool.Schema {
+	return tool.Schema{
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"category": {
@@ -871,21 +912,37 @@ func (d *DelegateTool) Schema() tool.Schema {
 		},
 		Required: []string{"subagent_type", "message"},
 	}
+}
 
-	if d.registry != nil {
-		manifests := d.registry.List()
-		if len(manifests) > 0 {
-			agentIDs := make([]string, 0, len(manifests))
-			for _, m := range manifests {
-				agentIDs = append(agentIDs, m.ID)
-			}
-			prop := schema.Properties["subagent_type"]
-			prop.Enum = agentIDs
-			schema.Properties["subagent_type"] = prop
-		}
+// applyRegistryEnum overrides subagent_type.Enum with the live agent IDs
+// when a registry is present and non-empty. Mutates schema in place so
+// the caller can keep the literal definition declarative.
+//
+// Expected:
+//   - schema is non-nil and has the "subagent_type" property defined.
+//   - registry may be nil, in which case the function is a no-op.
+//
+// Returns:
+//   - Nothing; mutation occurs in place on schema.
+//
+// Side effects:
+//   - Replaces schema.Properties["subagent_type"].Enum with the live
+//     agent IDs from the registry when non-empty.
+func applyRegistryEnum(schema *tool.Schema, registry *agent.Registry) {
+	if registry == nil {
+		return
 	}
-
-	return schema
+	manifests := registry.List()
+	if len(manifests) == 0 {
+		return
+	}
+	agentIDs := make([]string, 0, len(manifests))
+	for _, m := range manifests {
+		agentIDs = append(agentIDs, m.ID)
+	}
+	prop := schema.Properties["subagent_type"]
+	prop.Enum = agentIDs
+	schema.Properties["subagent_type"] = prop
 }
 
 // Execute runs the delegation tool by routing the task to the appropriate sub-agent.
@@ -906,34 +963,9 @@ func (d *DelegateTool) Schema() tool.Schema {
 //   - Streams a request to the target agent's engine.
 //   - Emits DelegationInfo stream chunks when an output channel is available in ctx.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
-	if !d.circuitBreaker.Allow() {
-		return tool.Result{}, errCircuitBreakerOpen
-	}
-
-	if !d.delegation.CanDelegate {
-		return tool.Result{}, errDelegationNotAllowed
-	}
-
-	params, err := d.parseDelegationParams(input)
+	params, target, err := d.prepareExecution(ctx, input)
 	if err != nil {
 		return tool.Result{}, err
-	}
-
-	if err := d.checkSpawnLimits(params.handoff); err != nil {
-		return tool.Result{}, err
-	}
-
-	target, err := d.resolveTargetWithOptions(ctx, params)
-	if err != nil {
-		return tool.Result{}, err
-	}
-
-	if capErr := d.checkTargetToolCapability(target); capErr != nil {
-		return tool.Result{}, capErr
-	}
-
-	if rejErr := d.checkRejectionLimit(ctx, target.chainID); rejErr != nil {
-		return tool.Result{}, rejErr
 	}
 
 	outChan, hasOutput := streamOutputFromContext(ctx)
@@ -959,6 +991,83 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 
 	injectVisitedAgents(&target, d.sourceAgentID)
 
+	baseInfo := d.buildDelegationInfo(target, chainID)
+
+	if params.runAsync {
+		return d.executeAsync(ctx, target, baseInfo, outChan, hasOutput)
+	}
+
+	return d.executeSync(ctx, target, baseInfo, outChan, hasOutput)
+}
+
+// prepareExecution runs the gating checks (circuit, permission, parse,
+// spawn limit, target resolution, rejection limit) and returns the
+// parsed params plus resolved target. Splits Execute's pre-flight from
+// its dispatch logic.
+//
+// Expected:
+//   - ctx is a valid context for target resolution.
+//   - input contains the delegate-tool arguments to parse.
+//   - The DelegateTool has a configured circuit breaker, registry, and
+//     rejection tracker.
+//
+// Returns:
+//   - The parsed delegationParams and resolved delegationTarget on success.
+//   - errCircuitBreakerOpen, errDelegationNotAllowed, a parse error, a
+//     spawn-limit error, a target-resolution error, or a rejection-limit
+//     error on failure.
+//
+// Side effects:
+//   - Consults the circuit breaker (no state mutation on Allow check).
+//   - Consults the rejection tracker.
+//   - Resolves the target agent and engine via the registry/engine factory.
+func (d *DelegateTool) prepareExecution(
+	ctx context.Context, input tool.Input,
+) (delegationParams, delegationTarget, error) {
+	if !d.circuitBreaker.Allow() {
+		return delegationParams{}, delegationTarget{}, errCircuitBreakerOpen
+	}
+	if !d.delegation.CanDelegate {
+		return delegationParams{}, delegationTarget{}, errDelegationNotAllowed
+	}
+
+	params, err := d.parseDelegationParams(input)
+	if err != nil {
+		return delegationParams{}, delegationTarget{}, err
+	}
+	if err := d.checkSpawnLimits(params.handoff); err != nil {
+		return delegationParams{}, delegationTarget{}, err
+	}
+
+	target, err := d.resolveTargetWithOptions(ctx, params)
+	if err != nil {
+		return delegationParams{}, delegationTarget{}, err
+	}
+	if capErr := d.checkTargetToolCapability(target); capErr != nil {
+		return delegationParams{}, delegationTarget{}, capErr
+	}
+	if rejErr := d.checkRejectionLimit(ctx, target.chainID); rejErr != nil {
+		return delegationParams{}, delegationTarget{}, rejErr
+	}
+	return params, target, nil
+}
+
+// buildDelegationInfo assembles the provider.DelegationInfo emitted on
+// stream chunks, applying any caller-supplied overrides for model and
+// provider name.
+//
+// Expected:
+//   - target carries the resolved engine plus optional model/provider
+//     overrides supplied by the caller.
+//   - chainID is the coordination chain identifier (may be empty).
+//
+// Returns:
+//   - A provider.DelegationInfo populated with agent, model, provider,
+//     and chain identifiers for the active delegation.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) buildDelegationInfo(target delegationTarget, chainID string) provider.DelegationInfo {
 	modelName := target.engine.LastModel()
 	providerName := target.engine.LastProvider()
 	if target.resolvedModel != "" {
@@ -967,8 +1076,7 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	if target.resolvedProvider != "" {
 		providerName = target.resolvedProvider
 	}
-
-	baseInfo := provider.DelegationInfo{
+	return provider.DelegationInfo{
 		SourceAgent:  d.sourceAgentID,
 		TargetAgent:  target.agentID,
 		ChainID:      chainID,
@@ -977,12 +1085,6 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 		Description:  target.message,
 		StartedAt:    ptrTime(time.Now().UTC()),
 	}
-
-	if params.runAsync {
-		return d.executeAsync(ctx, target, baseInfo, outChan, hasOutput)
-	}
-
-	return d.executeSync(ctx, target, baseInfo, outChan, hasOutput)
 }
 
 // parseDelegationParams extracts delegation arguments into a typed parameter set.

@@ -324,7 +324,7 @@ var _ = Describe("View burst-stream finalisation", func() {
 		// session profile (3000+ chunks in 5min, 11823-char committed).
 		const chunks = 200
 		var fullExpected strings.Builder
-		for n := 0; n < chunks; n++ {
+		for n := range chunks {
 			chunk := chunkBody(n)
 			fullExpected.WriteString(chunk)
 			v.HandleChunk(chunk, false, "", "", "")
@@ -386,13 +386,14 @@ func paddedIdx(n int) string {
 	case n < 100:
 		s = "0"
 	}
+	digit := func(d int) string { return string(rune('0' + byte(d&0xFF))) }
 	switch {
 	case n < 10:
-		s += string(rune('0' + n))
+		s += digit(n)
 	case n < 100:
-		s += string(rune('0'+n/10)) + string(rune('0'+n%10))
+		s += digit(n/10) + digit(n%10)
 	default:
-		s += string(rune('0'+n/100)) + string(rune('0'+(n/10)%10)) + string(rune('0'+n%10))
+		s += digit(n/100) + digit((n/10)%10) + digit(n%10)
 	}
 	return s
 }

@@ -676,26 +676,26 @@ type engineAssemblyParams struct {
 func buildEngineParams(in engineAssemblyParams) engineParams {
 	appTools := appendChainTools(in.tools.tools, in.chainStore)
 	return engineParams{
-		defaultProvider:      in.traced.provider,
-		ollamaProvider:       in.setup.ollamaProvider,
-		providerRegistry:     in.setup.providerRegistry,
-		agentRegistry:        in.setup.agentRegistry,
-		defaultManifest:      in.setup.defaultManifest,
-		alwaysActiveSkills:   in.setup.alwaysActiveSkills,
-		appLevelSkillNames:   in.setup.cfg.AlwaysActiveSkills,
-		contextStore:         in.contextStore,
-		chainStore:           in.chainStore,
-		learningStore:        in.setup.learningStore,
-		appTools:             appTools,
-		toolRegistry:         in.tools.toolRegistry,
-		permissionHandler:    in.tools.permissionHandler,
-		mcpServerTools:       in.tools.mcpServerTools,
-		agentsFileLoader:     buildAgentsFileLoader(),
-		tokenCounter:         ctxstore.NewTiktokenCounterWithResolver(in.setup.failoverManager, in.setup.cfg.Providers.Default),
-		contextAssemblyHooks: in.setup.cfg.ContextAssemblyHooks,
-		failoverHook:         in.setup.failoverHook,
-		failoverManager:      in.setup.failoverManager,
-		dispatcher:           in.setup.dispatcher,
+		defaultProvider:         in.traced.provider,
+		ollamaProvider:          in.setup.ollamaProvider,
+		providerRegistry:        in.setup.providerRegistry,
+		agentRegistry:           in.setup.agentRegistry,
+		defaultManifest:         in.setup.defaultManifest,
+		alwaysActiveSkills:      in.setup.alwaysActiveSkills,
+		appLevelSkillNames:      in.setup.cfg.AlwaysActiveSkills,
+		contextStore:            in.contextStore,
+		chainStore:              in.chainStore,
+		learningStore:           in.setup.learningStore,
+		appTools:                appTools,
+		toolRegistry:            in.tools.toolRegistry,
+		permissionHandler:       in.tools.permissionHandler,
+		mcpServerTools:          in.tools.mcpServerTools,
+		agentsFileLoader:        buildAgentsFileLoader(),
+		tokenCounter:            ctxstore.NewTiktokenCounterWithResolver(in.setup.failoverManager, in.setup.cfg.Providers.Default),
+		contextAssemblyHooks:    in.setup.cfg.ContextAssemblyHooks,
+		failoverHook:            in.setup.failoverHook,
+		failoverManager:         in.setup.failoverManager,
+		dispatcher:              in.setup.dispatcher,
 		skillDir:                in.setup.cfg.SkillDir,
 		recallBroker:            in.broker,
 		compression:             in.compression,
@@ -1663,6 +1663,18 @@ func (a *App) PersistApprovedPlan(chainID string, coordinationStore coordination
 // parse via TasksFromPlanText, which scans the markdown body — so even
 // malformed frontmatter still yields a non-empty Tasks slice when the
 // "## Tasks" / "### Task N:" sections are well-formed.
+//
+// Expected:
+//   - chainID is the delegation chain identifier used for default ID/title
+//     and to scope the persisted plan.
+//   - planMarkdown is the raw plan text (ideally with YAML frontmatter).
+//
+// Returns:
+//   - A plan.File ready for Store.Create — frontmatter promoted onto the
+//     file when present, chainID-derived defaults otherwise.
+//
+// Side effects:
+//   - None (no I/O); persistence is the caller's responsibility.
 func buildPersistedPlanFile(chainID, planMarkdown string) plan.File {
 	now := time.Now().UTC()
 	defaults := plan.File{

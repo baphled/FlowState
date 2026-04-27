@@ -56,6 +56,16 @@ func WithCritic(critic *LLMCritic, p provider.Provider) Option {
 // accepted as if no critic were wired. This lets callers attach a single
 // critic at construction time but enable it selectively per agent (e.g.
 // only the planner runs the critic by default).
+//
+// Expected:
+//   - fn is a predicate keyed by agentID; nil disables the gate (legacy behaviour).
+//
+// Returns:
+//   - An Option that sets the per-agent critic gate on the Harness.
+//
+// Side effects:
+//   - None at call time; the predicate runs whenever the harness considers
+//     invoking the critic.
 func WithCriticEnabledFunc(fn func(agentID string) bool) Option {
 	return func(h *Harness) { h.criticEnabledFor = fn }
 }
@@ -612,25 +622,22 @@ func (h *Harness) validatePlan(planText string) *plan.ValidationResult {
 	return combineValidationResults(schemaResult, assertionResult, referenceResult)
 }
 
-// runCritic invokes the LLM critic if configured and returns feedback for retry, or empty string on pass.
-//
-// Expected:
-//   - ctx is a valid context.
-//   - planText is the raw plan text.
-//   - validation is the validator result to pass to the critic.
-//
-// Returns:
-//   - A feedback string for retry if the critic rejects the plan, or empty string if critic passes or is unconfigured.
-//
-// Side effects:
-//   - Sends a chat request to the critic provider when critic is configured and enabled.
 // shouldRunCriticForAgent gates a configured critic on the per-agent
-// predicate. nil predicate preserves legacy behaviour (run whenever a
+// predicate. A nil predicate preserves legacy behaviour (run whenever a
 // critic is wired). When the predicate returns false the critic is
 // silently skipped — the plan is accepted as if the critic verdict
-// were Pass. agentID may be empty (e.g. unit tests that bypass the
+// were Pass. The agentID may be empty (e.g. unit tests that skip the
 // streamer); in that case the predicate is consulted with "" and is
 // expected to handle it.
+//
+// Expected:
+//   - agentID identifies the agent whose plan is being evaluated; may be empty.
+//
+// Returns:
+//   - True when the critic should run, false when the per-agent gate vetoes it.
+//
+// Side effects:
+//   - None.
 func (h *Harness) shouldRunCriticForAgent(agentID string) bool {
 	if h.criticEnabledFor == nil {
 		return true
@@ -638,6 +645,22 @@ func (h *Harness) shouldRunCriticForAgent(agentID string) bool {
 	return h.criticEnabledFor(agentID)
 }
 
+// runCritic invokes the LLM critic when one is configured and the per-agent
+// gate permits it, returning retry feedback when the critic rejects the plan
+// or an empty string when the critic passes / is unconfigured / is gated off.
+//
+// Expected:
+//   - ctx is a valid context propagated to the critic provider call.
+//   - agentID identifies the agent whose plan is being reviewed.
+//   - planText is the raw plan markdown to review.
+//   - validation is the prior validator result; warnings may be appended to it.
+//
+// Returns:
+//   - Feedback text for retry when the critic rejects, or "" on pass / no critic.
+//
+// Side effects:
+//   - Sends a chat request to the critic provider when configured and enabled.
+//   - Appends a warning to validation when the critic call errors.
 func (h *Harness) runCritic(ctx context.Context, agentID, planText string, validation *plan.ValidationResult) string {
 	if h.critic == nil || h.criticProvider == nil {
 		return ""
@@ -688,7 +711,9 @@ func (h *Harness) evaluateStreamAttempt(
 		"warnings", len(validation.Warnings),
 	)
 	if validation.Valid {
-		return h.handleValidPlanStream(ctx, agentID, planText, validation, attempt, outCh)
+		return h.handleValidPlanStream(ctx, validPlan{
+			agentID: agentID, planText: planText, validation: validation,
+		}, attempt, outCh)
 	}
 
 	if attempt < h.maxRetries {
@@ -702,12 +727,21 @@ func (h *Harness) evaluateStreamAttempt(
 	}, ""
 }
 
+// validPlan bundles the per-evaluation inputs threaded through the
+// critic-on-valid-plan path so the call signature stays inside revive's
+// argument-count budget. Mirrors the runCriticStream signature.
+type validPlan struct {
+	agentID    string
+	planText   string
+	validation *plan.ValidationResult
+}
+
 // handleValidPlanStream runs the critic on a structurally valid plan, emitting feedback events to outCh.
 //
 // Expected:
 //   - ctx is a valid context.
-//   - planText is the structurally valid plan text.
-//   - validation is the passing ValidationResult.
+//   - vp.planText is the structurally valid plan text.
+//   - vp.validation is the passing ValidationResult.
 //   - attempt is the current 1-based attempt number.
 //   - outCh is the channel for emitting observability events.
 //
@@ -717,22 +751,22 @@ func (h *Harness) evaluateStreamAttempt(
 // Side effects:
 //   - Emits harness_critic_feedback via outCh when the critic runs.
 func (h *Harness) handleValidPlanStream(
-	ctx context.Context, agentID, planText string, validation *plan.ValidationResult, attempt int, outCh chan<- provider.StreamChunk,
+	ctx context.Context, vp validPlan, attempt int, outCh chan<- provider.StreamChunk,
 ) (*plan.EvaluationResult, string) {
-	criticFeedback := h.runCriticStream(ctx, agentID, planText, validation, outCh)
+	criticFeedback := h.runCriticStream(ctx, vp.agentID, vp.planText, vp.validation, outCh)
 	if criticFeedback == "" {
 		return &plan.EvaluationResult{
-			PlanText: planText, ValidationResult: validation,
-			AttemptCount: attempt, FinalScore: validation.Score,
+			PlanText: vp.planText, ValidationResult: vp.validation,
+			AttemptCount: attempt, FinalScore: vp.validation.Score,
 		}, ""
 	}
 	if attempt < h.maxRetries {
 		return nil, criticFeedback
 	}
-	validation.Warnings = append(validation.Warnings, "critic rejected plan on final attempt")
+	vp.validation.Warnings = append(vp.validation.Warnings, "critic rejected plan on final attempt")
 	return &plan.EvaluationResult{
-		PlanText: planText, ValidationResult: validation,
-		AttemptCount: attempt, FinalScore: validation.Score,
+		PlanText: vp.planText, ValidationResult: vp.validation,
+		AttemptCount: attempt, FinalScore: vp.validation.Score,
 	}, ""
 }
 

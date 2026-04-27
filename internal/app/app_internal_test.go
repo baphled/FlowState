@@ -153,6 +153,9 @@ var _ = Describe("buildPersistedPlanFile", func() {
 
 	It("returns a typed plan.File so downstream Store.Create accepts it", func() {
 		md := "---\nid: typecheck\ntitle: t\n---\n\n# body\n"
-		var _ plan.File = buildPersistedPlanFile("chain", md)
+		// Compile-time type pin: assignment to a plan.File-typed variable
+		// fails if buildPersistedPlanFile ever drifts to a different shape.
+		acceptsFile := func(plan.File) {}
+		acceptsFile(buildPersistedPlanFile("chain", md))
 	})
 })

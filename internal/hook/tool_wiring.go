@@ -19,7 +19,7 @@ import (
 //
 // When at least one signal applies and the corresponding tool is not
 // yet registered, ensureTools is called to lazily wire that manifest's
-// runtime tool set. req.Tools is then refreshed from the schema
+// runtime tool set, then req.Tools is refreshed from the schema
 // rebuilder so the provider sees the up-to-date tool list. Manifests
 // that satisfy neither signal short-circuit to the next handler — the
 // hook does not mutate the request.
@@ -68,6 +68,16 @@ func ToolWiringHook(
 // coordination_store tool via capabilities.tools. Local copy of the
 // canonical guard (App.hasCoordinationTool) to avoid a hook → app
 // import cycle; one allocation per request, net cost negligible.
+//
+// Expected:
+//   - manifest is the agent manifest whose capabilities are inspected.
+//
+// Returns:
+//   - True when "coordination_store" appears in manifest.Capabilities.Tools,
+//     false otherwise.
+//
+// Side effects:
+//   - None.
 func declaresCoordinationStore(manifest agent.Manifest) bool {
 	for _, t := range manifest.Capabilities.Tools {
 		if t == "coordination_store" {

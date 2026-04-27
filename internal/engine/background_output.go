@@ -18,6 +18,15 @@ type BackgroundOutputTool struct {
 
 // NewBackgroundOutputTool creates a new background output tool with the
 // compiled-in default poll timeout (120s). Use WithDefaultTimeout to override.
+//
+// Expected:
+//   - manager is the BackgroundTaskManager tracking in-flight background tasks.
+//
+// Returns:
+//   - A configured BackgroundOutputTool using the compiled-in default timeout.
+//
+// Side effects:
+//   - None.
 func NewBackgroundOutputTool(manager *BackgroundTaskManager) *BackgroundOutputTool {
 	return &BackgroundOutputTool{manager: manager}
 }
@@ -25,6 +34,15 @@ func NewBackgroundOutputTool(manager *BackgroundTaskManager) *BackgroundOutputTo
 // WithDefaultTimeout overrides the default poll-until-complete timeout used
 // when the caller does not pass an explicit `timeout` argument. Values <= 0
 // are ignored so the compiled-in 120s default keeps applying.
+//
+// Expected:
+//   - d is the desired default timeout; non-positive values are ignored.
+//
+// Returns:
+//   - The receiver for fluent chaining.
+//
+// Side effects:
+//   - Mutates b.defaultTimeoutMs when d is positive.
 func (b *BackgroundOutputTool) WithDefaultTimeout(d time.Duration) *BackgroundOutputTool {
 	if d > 0 {
 		b.defaultTimeoutMs = int(d / time.Millisecond)

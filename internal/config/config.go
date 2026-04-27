@@ -25,9 +25,9 @@ type AppConfig struct {
 	// AgentDirs lists user-defined agent directories merged into the registry after
 	// AgentDir. Agents in later directories override agents with the same ID from
 	// earlier directories and from AgentDir. Tilde paths (~/...) are expanded at load time.
-	AgentDirs          []string                         `json:"agent_dirs" yaml:"agent_dirs"`
-	SkillDir           string                           `json:"skill_dir" yaml:"skill_dir"`
-	DataDir            string                           `json:"data_dir" yaml:"data_dir"`
+	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
+	SkillDir  string   `json:"skill_dir" yaml:"skill_dir"`
+	DataDir   string   `json:"data_dir" yaml:"data_dir"`
 	// SchemaDir overrides the directory the swarm gate runner walks at
 	// startup to discover JSON Schema documents referenced by
 	// `builtin:result-schema` gates. Each file is registered under its
@@ -41,7 +41,7 @@ type AppConfig struct {
 	// gate is a subdirectory <GatesDir>/<name>/ with manifest.yml plus
 	// the executable. Default ~/.config/flowstate/gates; override here
 	// for system-wide installs (e.g. /etc/flowstate/gates).
-	GatesDir string `json:"gates_dir" yaml:"gates_dir"`
+	GatesDir           string                           `json:"gates_dir" yaml:"gates_dir"`
 	LogLevel           string                           `json:"log_level" yaml:"log_level"`
 	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
 	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
@@ -192,6 +192,12 @@ type AppConfig struct {
 // unset/invalid (callers treat 0 as "use engine default"). Invalid input is
 // logged once at WARN and treated as zero so a typo never crashes startup.
 // A nil receiver returns 0 — App test fixtures construct App with Config=nil.
+//
+// Returns:
+//   - The parsed StreamTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
 func (c *AppConfig) ParsedStreamTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -201,6 +207,12 @@ func (c *AppConfig) ParsedStreamTimeout() time.Duration {
 
 // ParsedToolTimeout returns the parsed value of ToolTimeout (see
 // ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed ToolTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
 func (c *AppConfig) ParsedToolTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -211,6 +223,12 @@ func (c *AppConfig) ParsedToolTimeout() time.Duration {
 // ParsedBackgroundOutputTimeout returns the parsed value of
 // BackgroundOutputTimeout (see ParsedStreamTimeout for semantics, including
 // nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed BackgroundOutputTimeout duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
 func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -342,6 +360,19 @@ func findProjectFlowstateDir() string {
 	}
 }
 
+// parseDurationField parses a duration string from a config field, returning 0
+// when empty or invalid. Invalid values are logged once at WARN with the field
+// key so the operator can find the typo without a startup crash.
+//
+// Expected:
+//   - s is the raw configured value; an empty string yields 0.
+//   - key is the config-field name used in the WARN log to identify the source.
+//
+// Returns:
+//   - The parsed duration, or 0 when s is empty or fails to parse.
+//
+// Side effects:
+//   - Logs a WARN entry when s is non-empty but fails to parse.
 func parseDurationField(s, key string) time.Duration {
 	if s == "" {
 		return 0
@@ -663,24 +694,24 @@ func DefaultConfig() *AppConfig {
 //
 // Evidence summary for the local-model entries:
 //   - qwen3:*       — BFCL-v3 72.4 + RULER 99.2 @32K (Qwen3-30B-A3B-Thinking
-//                     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER);
-//                     qwen3:8b verified live in FlowState (2 tool calls on the
-//                     /tmp .md count test).
+//     model card); qwen3:14b RULER 96.1 @32K (NVIDIA RULER);
+//     qwen3:8b verified live in FlowState (2 tool calls on the
+//     /tmp .md count test).
 //   - devstral:latest — SWE-Bench Verified 53.6 (Mistral / Devstral release);
-//                       verified live in FlowState (1 tool call after ~120s
-//                       first load).
+//     verified live in FlowState (1 tool call after ~120s
+//     first load).
 //   - llama3.1:latest — BFCL 0.761 + RULER 87.4 @32K (llm-stats, NVIDIA);
-//                       verified live in FlowState.
+//     verified live in FlowState.
 //   - llama3.3:latest — v2 BFCL ~77 (Galileo); reasoning > FC. Untested live
-//                       (70B too slow for the consumer-GPU smoke runner).
+//     (70B too slow for the consumer-GPU smoke runner).
 //   - gemini-3*     — gemini-3-flash-preview verified live in FlowState
-//                     (via github-copilot proxy).
+//     (via github-copilot proxy).
 //   - grok-code-*   — grok-code-fast-1 verified live in FlowState (via
-//                     github-copilot proxy).
+//     github-copilot proxy).
 //   - glm-*         — Z.AI's glm-4.5, glm-4.5-air, glm-4.6, glm-5,
-//                     glm-5-turbo, glm-5.1 all verified live in FlowState
-//                     (the broken `glm-4.7` is on the deny list and takes
-//                     precedence).
+//     glm-5-turbo, glm-5.1 all verified live in FlowState
+//     (the broken `glm-4.7` is on the deny list and takes
+//     precedence).
 func defaultToolCapableModels() []string {
 	return []string{
 		"claude-*",
@@ -709,30 +740,30 @@ func defaultToolCapableModels() []string {
 //
 // Evidence summary:
 //   - llama3.2*        — KB: planner produced zero tool calls when failover
-//                        landed here (Bug Fixes / Planner Harness Rescue).
+//     landed here (Bug Fixes / Planner Harness Rescue).
 //   - qwen2.5-coder*   — KB: broken on clean input under current Ollama
-//                        template (Investigations / Non-Anthropic Provider
-//                        Stream Termination).
+//     template (Investigations / Non-Anthropic Provider
+//     Stream Termination).
 //   - glm-4.7          — KB: returns prose instead of structured tool calls
-//                        (Investigations / GLM Delegation Failure).
+//     (Investigations / GLM Delegation Failure).
 //   - mistral:7b       — RULER 75.4 @32K → 13.8 @128K (effective ctx ≪32K);
-//                        pre-tool-format generation, FC is a prompt hack.
+//     pre-tool-format generation, FC is a prompt hack.
 //   - gpt-oss:20b*     — Five open Ollama bugs: no parallel tool calls
-//                        (#12159), thinking leaks into tool calls (#12203),
-//                        malformed tool names (#11704), 500 on call (#11800),
-//                        RAM blowup (#13401). Intersects FlowState's
-//                        multi-tool-per-turn pattern hard.
+//     (#12159), thinking leaks into tool calls (#12203),
+//     malformed tool names (#11704), 500 on call (#11800),
+//     RAM blowup (#13401). Intersects FlowState's
+//     multi-tool-per-turn pattern hard.
 //   - deepseek-r1:*    — Ollama template-broken for tools per #10935 / #8517.
-//                        The community fork lucasmg/...-tool-true exists but
-//                        has no published bench — local-bench before adopting.
+//     The community fork lucasmg/...-tool-true exists but
+//     has no published bench — local-bench before adopting.
 //   - claude-haiku*    — verified live in FlowState: claude-haiku-4.5 returns
-//                        prose instead of structured tool calls on the /tmp
-//                        .md count test. The cost-optimised distillates trade
-//                        tool-call reliability for latency.
+//     prose instead of structured tool calls on the /tmp
+//     .md count test. The cost-optimised distillates trade
+//     tool-call reliability for latency.
 //   - gpt-*-mini       — same pattern as claude-haiku: gpt-5-mini verified
-//                        prose-only on the same test. The deny pattern uses
-//                        the suffix glob so future *-mini releases are
-//                        captured automatically.
+//     prose-only on the same test. The deny pattern uses
+//     the suffix glob so future *-mini releases are
+//     captured automatically.
 func defaultToolIncapableModels() []string {
 	return []string{
 		"llama3.2*",

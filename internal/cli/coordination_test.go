@@ -28,10 +28,10 @@ import (
 // developer machines without authentic provider creds.
 var _ = Describe("coordination prune command", func() {
 	var (
-		out      *bytes.Buffer
-		testApp  *app.App
-		dataDir  string
-		runCmd   func(args ...string) error
+		out       *bytes.Buffer
+		testApp   *app.App
+		dataDir   string
+		runCmd    func(args ...string) error
 		coordPath string
 	)
 
@@ -79,11 +79,11 @@ var _ = Describe("coordination prune command", func() {
 	Context("when the coord-store contains a mix of orphan and chain-format keys", func() {
 		BeforeEach(func() {
 			writeStore(map[string]string{
-				"chain-1713898000000000000/plan":     "legit-plan-body",
-				"chain-1713898000000000000/review":   "legit-review",
-				"chainID":                            "stranded-top-level-key",
-				"flowstate/codebase-findings":        strings.Repeat("x", 1024),
-				"health-endpoint-plan/interview":     "ad-hoc-1",
+				"chain-1713898000000000000/plan":       "legit-plan-body",
+				"chain-1713898000000000000/review":     "legit-review",
+				"chainID":                              "stranded-top-level-key",
+				"flowstate/codebase-findings":          strings.Repeat("x", 1024),
+				"health-endpoint-plan/interview":       "ad-hoc-1",
 				"cli-sessions-prune/codebase-findings": "ad-hoc-2",
 			})
 		})

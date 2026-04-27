@@ -45,10 +45,10 @@ var chainIDPattern = regexp.MustCompile(`^chain-\d+$`)
 type orphanReason string
 
 const (
-	reasonNoChainPrefix    orphanReason = "no-chain-prefix"
-	reasonFlowstateNS      orphanReason = "flowstate-namespace"
-	reasonNonChainPrefix   orphanReason = "non-chain-prefix"
-	reasonChainFormat      orphanReason = "chain-format"
+	reasonNoChainPrefix  orphanReason = "no-chain-prefix"
+	reasonFlowstateNS    orphanReason = "flowstate-namespace"
+	reasonNonChainPrefix orphanReason = "non-chain-prefix"
+	reasonChainFormat    orphanReason = "chain-format"
 )
 
 // orphan describes a single stranded key in the coord-store.
@@ -181,32 +181,14 @@ func runCoordinationPrune(cmd *cobra.Command, application *app.App, opts pruneOp
 	orphans := classifyOrphans(store, keys, opts.includeChainFormat)
 	sort.Slice(orphans, func(i, j int) bool { return orphans[i].key < orphans[j].key })
 
-	header := fmt.Sprintf("Scanning coordination store at %s", coordPath)
-	if opts.apply {
-		header += " (apply: deleting classified orphans)"
-	} else {
-		header += " (dry-run: pass --apply to delete)"
-	}
-	if opts.prefix != "" {
-		header += fmt.Sprintf(" [prefix=%q]", opts.prefix)
-	}
-	if _, perr := fmt.Fprintln(w, header); perr != nil {
-		return perr
-	}
-
-	var totalBytes int
-	for _, o := range orphans {
-		if _, perr := fmt.Fprintf(w, "  %-60s %6d B  %s\n", o.key, o.size, o.reason); perr != nil {
-			return perr
-		}
-		totalBytes += o.size
+	totalBytes, err := renderOrphanReport(w, coordPath, orphans, opts)
+	if err != nil {
+		return err
 	}
 
 	if opts.apply {
-		for _, o := range orphans {
-			if delErr := store.Delete(o.key); delErr != nil {
-				return fmt.Errorf("deleting %q: %w", o.key, delErr)
-			}
+		if err := deleteOrphans(store, orphans); err != nil {
+			return err
 		}
 	}
 
@@ -217,6 +199,69 @@ func runCoordinationPrune(cmd *cobra.Command, application *app.App, opts pruneOp
 	_, perr := fmt.Fprintf(w, "Summary: %d orphan(s) totalling %d B %s\n",
 		len(orphans), totalBytes, suffix)
 	return perr
+}
+
+// renderOrphanReport writes the scan header and per-orphan rows, and
+// returns the cumulative byte total for the summary line.
+//
+// Expected:
+//   - w is a non-nil writer for the report output.
+//   - coordPath is the coordination-store path being scanned.
+//   - orphans is the classified orphan slice (may be empty).
+//   - opts.apply toggles between dry-run and apply messaging.
+//   - opts.prefix is rendered into the header when non-empty.
+//
+// Returns:
+//   - The total byte size of all orphans in the report.
+//   - An error if any write to w fails.
+//
+// Side effects:
+//   - Writes the header line and one row per orphan to w.
+func renderOrphanReport(w io.Writer, coordPath string, orphans []orphan, opts pruneOptions) (int, error) {
+	header := "Scanning coordination store at " + coordPath
+	if opts.apply {
+		header += " (apply: deleting classified orphans)"
+	} else {
+		header += " (dry-run: pass --apply to delete)"
+	}
+	if opts.prefix != "" {
+		header += fmt.Sprintf(" [prefix=%q]", opts.prefix)
+	}
+	if _, perr := fmt.Fprintln(w, header); perr != nil {
+		return 0, perr
+	}
+
+	var totalBytes int
+	for _, o := range orphans {
+		if _, perr := fmt.Fprintf(w, "  %-60s %6d B  %s\n", o.key, o.size, o.reason); perr != nil {
+			return 0, perr
+		}
+		totalBytes += o.size
+	}
+	return totalBytes, nil
+}
+
+// deleteOrphans removes each orphan key from the coord-store in
+// classification order. Stops at the first delete error and wraps it.
+//
+// Expected:
+//   - store is a non-nil coordination.Store.
+//   - orphans is the classified orphan slice to delete (may be empty).
+//
+// Returns:
+//   - nil when every key was deleted (or the slice was empty).
+//   - A wrapped error from the first failing store.Delete call.
+//
+// Side effects:
+//   - Calls store.Delete once per orphan; stops at the first failure so
+//     remaining orphans stay in the store.
+func deleteOrphans(store coordination.Store, orphans []orphan) error {
+	for _, o := range orphans {
+		if delErr := store.Delete(o.key); delErr != nil {
+			return fmt.Errorf("deleting %q: %w", o.key, delErr)
+		}
+	}
+	return nil
 }
 
 // classifyOrphans walks the listed keys, classifies each, and returns

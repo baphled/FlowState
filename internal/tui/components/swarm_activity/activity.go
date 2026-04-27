@@ -90,11 +90,12 @@ type SwarmActivityPane struct {
 // SwarmActivityPane.Render output. All fields are comparable so the
 // struct itself supports == for cache-hit detection.
 //
-// firstEventID + lastEventID are paired with eventCount because the
-// underlying MemorySwarmStore is append-only with eviction-at-capacity:
-// new events change the last ID; eviction at capacity changes the
-// first ID. With all three fields, any mutation to the visible event
-// window is detected without hashing every event each frame.
+// The firstEventID + lastEventID pair is keyed alongside eventCount
+// because the underlying MemorySwarmStore is append-only with
+// eviction-at-capacity: new events change the last ID; eviction at
+// capacity changes the first ID. With all three fields, any mutation
+// to the visible event window is detected without hashing every event
+// each frame.
 type renderCacheKey struct {
 	width             int
 	height            int
@@ -196,8 +197,18 @@ func (p *SwarmActivityPane) Render(width, height int) string {
 // computeRenderCacheKey builds the fingerprint of all inputs that
 // influence Render output. The events slice is keyed solely by length:
 // the swarm store is append-only, so a constant length implies constant
-// contents. visibleTypes is collapsed into a 5-bit mask using a fixed
-// type ordering so the key stays comparable.
+// contents. The visibleTypes set is collapsed into a 5-bit mask using a
+// fixed type ordering so the key stays comparable.
+//
+// Expected:
+//   - width and height are the current pane dimensions.
+//
+// Returns:
+//   - A renderCacheKey value that compares equal when the inputs to Render
+//     are unchanged.
+//
+// Side effects:
+//   - None.
 func (p *SwarmActivityPane) computeRenderCacheKey(width, height int) renderCacheKey {
 	var mask uint8
 	if p.visibleTypes[streaming.EventDelegation] {
