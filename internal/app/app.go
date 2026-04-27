@@ -181,6 +181,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
 	setupSwarmSchemas(cfg)
+	for _, err := range RegisterDiscoveredGates(context.Background(), cfg) {
+		slog.Warn("ext gate registration failed", "err", err)
+	}
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
 	if err := resolveDefaultProvider(providerRegistry, providerFailures, cfg.Providers.Default); err != nil {
