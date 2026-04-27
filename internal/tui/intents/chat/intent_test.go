@@ -1096,6 +1096,74 @@ var _ = Describe("ChatIntent", func() {
 			Expect(toggleIntent.AgentIDForTest()).To(Equal("planner"))
 			Expect(toggleIntent.Input()).To(Equal("hi"))
 		})
+
+		Context("with three agents in the registry", func() {
+			var (
+				cycleIntent *chat.Intent
+				agentA      agent.Manifest
+				agentB      agent.Manifest
+				agentC      agent.Manifest
+			)
+
+			BeforeEach(func() {
+				agentA = agent.Manifest{ID: "alpha", Name: "Alpha"}
+				agentB = agent.Manifest{ID: "beta", Name: "Beta"}
+				agentC = agent.Manifest{ID: "gamma", Name: "Gamma"}
+
+				agentReg = agent.NewRegistry()
+				agentReg.Register(&agentA)
+				agentReg.Register(&agentB)
+				agentReg.Register(&agentC)
+
+				reg = provider.NewRegistry()
+				reg.Register(&stubProvider{providerName: "test-provider"})
+
+				eng = engine.New(engine.Config{
+					Registry: reg,
+					Manifest: agentA,
+				})
+
+				cycleIntent = chat.NewIntent(chat.IntentConfig{
+					Engine:        eng,
+					Streamer:      eng,
+					AgentID:       "alpha",
+					SessionID:     "test-session",
+					ProviderName:  "test-provider",
+					ModelName:     "test-model",
+					TokenBudget:   4096,
+					AgentRegistry: agentReg,
+				})
+			})
+
+			It("cycles through every agent over a full pass", func() {
+				seen := map[string]bool{cycleIntent.AgentIDForTest(): true}
+				for n := 0; n < 5; n++ {
+					cycleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+					seen[cycleIntent.AgentIDForTest()] = true
+				}
+				Expect(seen).To(HaveKey("alpha"))
+				Expect(seen).To(HaveKey("beta"))
+				Expect(seen).To(HaveKey("gamma"))
+			})
+
+			It("wraps back to the starting agent after exactly len(agents) Tabs", func() {
+				start := cycleIntent.AgentIDForTest()
+				cycleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+				cycleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+				cycleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+				Expect(cycleIntent.AgentIDForTest()).To(Equal(start))
+			})
+
+			It("never lands on the same agent twice in a row", func() {
+				prev := cycleIntent.AgentIDForTest()
+				for n := 0; n < 6; n++ {
+					cycleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
+					next := cycleIntent.AgentIDForTest()
+					Expect(next).ToNot(Equal(prev))
+					prev = next
+				}
+			})
+		})
 	})
 
 	Describe("session saving", func() {
