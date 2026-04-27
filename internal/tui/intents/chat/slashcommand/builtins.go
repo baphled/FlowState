@@ -166,7 +166,7 @@ func helpOverviewMessage(ctx CommandContext) string {
 func helpKeybindingsBlock() string {
 	return "  Enter        - Send message\n" +
 		"  Alt+Enter    - New line\n" +
-		"  Tab          - Toggle active agent\n" +
+		"  Tab          - Cycle through agents\n" +
 		"  Esc          - Dismiss modal / picker / session viewer\n" +
 		"  Ctrl+C       - Cancel stream, save session, and quit\n" +
 		"  Ctrl+D       - Open delegation picker\n" +

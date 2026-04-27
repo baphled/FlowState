@@ -3742,7 +3742,7 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 				"Keybindings:\n" +
 				"  Enter        - Send message\n" +
 				"  Alt+Enter    - New line\n" +
-				"  Tab          - Toggle active agent\n" +
+				"  Tab          - Cycle through agents\n" +
 				"  Esc          - Dismiss modal / picker / session viewer\n" +
 				"  Ctrl+C       - Cancel stream, save session, and quit\n" +
 				"  Ctrl+D       - Open delegation picker\n" +
@@ -4652,11 +4652,15 @@ func (i *Intent) syncViewAgentMeta() {
 	i.view.SetModelID(i.modelName)
 }
 
-// toggleAgent alternates the active agent between "planner" and "executor".
+// toggleAgent advances the active agent to the next entry in the
+// registry's ordered list, wrapping at the end. The historical name
+// reflects the original two-agent design; the implementation cycles
+// through every registered agent so a user with N agents reaches all
+// of them via repeated Tab presses.
 //
 // Expected:
 //   - i.agentRegistry is non-nil.
-//   - Both "planner" and "executor" manifests exist in the registry.
+//   - At least one manifest exists in the registry.
 //
 // Returns:
 //   - nil (no async command needed — switch is synchronous).
@@ -4667,20 +4671,34 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	if i.agentRegistry == nil {
 		return nil
 	}
-	next := "planner"
-	if i.agentID == "planner" {
-		next = "executor"
-	}
-	manifest, found := i.agentRegistry.Get(next)
-	if !found {
+	next := nextAgentInCycle(i.agentRegistry.List(), i.agentID)
+	if next == nil {
 		return nil
 	}
-	i.engine.SetManifest(*manifest)
-	i.agentID = next
+	i.engine.SetManifest(*next)
+	i.agentID = next.ID
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
 	return nil
+}
+
+// nextAgentInCycle returns the manifest immediately after currentID in
+// the agent registry's ordered list, wrapping at the end. An empty
+// list yields nil; an unknown currentID lands on the first entry so a
+// stale agent ID still produces forward motion on the next Tab press.
+func nextAgentInCycle(agents []*agent.Manifest, currentID string) *agent.Manifest {
+	if len(agents) == 0 {
+		return nil
+	}
+	currentIdx := -1
+	for idx, m := range agents {
+		if m.ID == currentID {
+			currentIdx = idx
+			break
+		}
+	}
+	return agents[(currentIdx+1)%len(agents)]
 }
 
 // handlePermissionKey processes key input during permission mode. It
