@@ -1,6 +1,10 @@
 package qdrant
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"net/http"
+)
 
 // Error represents an error returned by the Qdrant HTTP API.
 type Error struct {
@@ -35,4 +39,30 @@ func (e *Error) Error() string {
 func (e *Error) Is(target error) bool {
 	_, ok := target.(*Error)
 	return ok
+}
+
+// IsCollectionNotFound reports whether err originates from a Qdrant
+// HTTP 404 response, which Qdrant uses both for missing collections and
+// for missing points within an existing collection. The auto-ensure
+// path treats any 404 from a write as "collection probably missing,
+// try to create it" — the subsequent CollectionExists check filters
+// out spurious creates.
+//
+// Expected:
+//   - err may be nil, a *Error, or any wrapped error chain.
+//
+// Returns:
+//   - true when the chain includes a *Error with StatusCode == 404.
+//
+// Side effects:
+//   - None.
+func IsCollectionNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var qerr *Error
+	if !errors.As(err, &qerr) {
+		return false
+	}
+	return qerr.StatusCode == http.StatusNotFound
 }

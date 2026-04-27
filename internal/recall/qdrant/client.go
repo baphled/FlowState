@@ -237,6 +237,37 @@ func (c *Client) DeleteCollection(ctx context.Context, name string) error {
 	return requireOK(body, status)
 }
 
+// EnsureCollection creates the named collection when it is absent, and
+// is a no-op when the collection already exists. Concurrent calls for
+// the same collection are safe but may race the create — Qdrant returns
+// a 4xx for the loser, which is wrapped into a *Error.
+//
+// Expected:
+//   - name identifies the collection to create.
+//   - vectorSize is the dimensionality of vectors stored in the collection.
+//   - distance is the Qdrant distance metric (e.g. "Cosine").
+//
+// Returns:
+//   - nil when the collection exists at return time.
+//   - A wrapped error from CollectionExists or CreateCollection otherwise.
+//
+// Side effects:
+//   - May issue PUT /collections/<name> when the collection is absent.
+func (c *Client) EnsureCollection(ctx context.Context, name string, vectorSize int, distance string) error {
+	exists, err := c.CollectionExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("checking collection %q: %w", name, err)
+	}
+	if exists {
+		return nil
+	}
+	cfg := CollectionConfig{VectorSize: vectorSize, Distance: distance}
+	if err := c.CreateCollection(ctx, name, cfg); err != nil {
+		return fmt.Errorf("creating collection %q: %w", name, err)
+	}
+	return nil
+}
+
 // CollectionExists reports whether the named Qdrant collection exists.
 //
 // Expected:

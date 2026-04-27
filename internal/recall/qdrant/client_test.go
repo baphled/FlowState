@@ -285,4 +285,70 @@ var _ = Describe("Client", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("EnsureCollection", func() {
+		Context("when the collection is missing", func() {
+			It("creates it with the supplied dim and distance", func() {
+				var createdBody []byte
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case r.Method == http.MethodGet:
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"status":"not found"}`))
+					case r.Method == http.MethodPut:
+						createdBody, _ = io.ReadAll(r.Body)
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{}`))
+					}
+				}))
+				DeferCleanup(server.Close)
+				client = qdrant.NewClient(server.URL, "", server.Client())
+
+				Expect(client.EnsureCollection(context.Background(), "auto", 768, "Cosine")).To(Succeed())
+
+				var payload map[string]any
+				Expect(json.Unmarshal(createdBody, &payload)).To(Succeed())
+				Expect(payload).To(HaveKey("vectors"))
+			})
+		})
+
+		Context("when the collection already exists", func() {
+			It("does not issue a second PUT", func() {
+				var puts int
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.Method {
+					case http.MethodGet:
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{}`))
+					case http.MethodPut:
+						puts++
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{}`))
+					}
+				}))
+				DeferCleanup(server.Close)
+				client = qdrant.NewClient(server.URL, "", server.Client())
+
+				Expect(client.EnsureCollection(context.Background(), "auto", 768, "Cosine")).To(Succeed())
+				Expect(puts).To(Equal(0))
+			})
+		})
+	})
+})
+
+var _ = Describe("IsCollectionNotFound", func() {
+	It("returns true for a wrapped *Error with status 404", func() {
+		err := &qdrant.Error{StatusCode: 404, Message: "missing"}
+		Expect(qdrant.IsCollectionNotFound(err)).To(BeTrue())
+	})
+
+	It("returns false for a non-404 *Error", func() {
+		err := &qdrant.Error{StatusCode: 500, Message: "boom"}
+		Expect(qdrant.IsCollectionNotFound(err)).To(BeFalse())
+	})
+
+	It("returns false for unrelated errors", func() {
+		Expect(qdrant.IsCollectionNotFound(errors.New("boom"))).To(BeFalse())
+		Expect(qdrant.IsCollectionNotFound(nil)).To(BeFalse())
+	})
 })

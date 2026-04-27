@@ -50,10 +50,11 @@ var _ = Describe("Builtins", func() {
 	})
 
 	Describe("/help", func() {
-		It("opens a sub-picker over every registered command", func() {
+		It("opens a sub-picker over every registered command plus an Overview entry", func() {
 			cmd := lookup(reg, "help")
 			items := cmd.ItemsForPicker(slashcommand.CommandContext{Registry: reg})
-			Expect(len(items)).To(BeNumerically(">=", 7))
+			Expect(len(items)).To(BeNumerically(">=", 8))
+			Expect(items[0].Label).To(Equal("Overview"))
 		})
 
 		It("dumps help for the chosen command into the chat", func() {
@@ -64,6 +65,23 @@ var _ = Describe("Builtins", func() {
 			cmd.Handler(slashcommand.CommandContext{SystemMessageWriter: writer}, &arg)
 			Expect(writer.lastMessage).To(ContainSubstring("/clear"))
 			Expect(writer.lastMessage).To(ContainSubstring("Wipe the chat buffer"))
+		})
+
+		It("renders the overview cheat-sheet (commands + keybindings) when Overview is selected", func() {
+			cmd := lookup(reg, "help")
+			writer := newWriter()
+			items := cmd.ItemsForPicker(slashcommand.CommandContext{Registry: reg})
+			overview := items[0]
+
+			cmd.Handler(slashcommand.CommandContext{
+				Registry:            reg,
+				SystemMessageWriter: writer,
+			}, &overview)
+
+			Expect(writer.lastMessage).To(ContainSubstring("Available slash commands:"))
+			Expect(writer.lastMessage).To(ContainSubstring("/clear"))
+			Expect(writer.lastMessage).To(ContainSubstring("Keybindings:"))
+			Expect(writer.lastMessage).To(ContainSubstring("Ctrl+S"))
 		})
 	})
 
