@@ -353,17 +353,14 @@ var _ = Describe("ChatIntent", func() {
 					Expect(lastMsg.Content).To(ContainSubstring("Unknown agent"))
 				})
 
-				It("shows usage when no agent ID provided", func() {
+				It("opens the agent sub-picker when no agent ID is provided", func() {
 					for _, r := range "/agent" {
 						agentIntent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 					}
-					cmd := agentIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-					Expect(cmd).NotTo(BeNil())
-					cmd()
-					messages := agentIntent.MessagesForTest()
-					Expect(messages).NotTo(BeEmpty())
-					lastMsg := messages[len(messages)-1]
-					Expect(lastMsg.Content).To(ContainSubstring("Usage: /agent"))
+					agentIntent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+					Expect(agentIntent.SlashPickerActiveForTest()).To(BeTrue())
+					Expect(agentIntent.SubPickerVisibleLabelsForTest()).To(ContainElement("Planner"))
 				})
 			})
 
@@ -395,7 +392,7 @@ var _ = Describe("ChatIntent", func() {
 			})
 
 			Context("/agents command", func() {
-				It("lists available agents", func() {
+				It("opens the agent sub-picker populated with the registered agents", func() {
 					agentReg := agent.NewRegistry()
 					agentReg.Register(&agent.Manifest{ID: "planner", Name: "Planner"})
 					agentReg.Register(&agent.Manifest{ID: "executor", Name: "Executor"})
@@ -404,30 +401,22 @@ var _ = Describe("ChatIntent", func() {
 					for _, r := range "/agents" {
 						intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 					}
-					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-					Expect(cmd).NotTo(BeNil())
-					cmd()
-					messages := intent.MessagesForTest()
-					Expect(messages).NotTo(BeEmpty())
-					lastMsg := messages[len(messages)-1]
-					Expect(lastMsg.Content).To(ContainSubstring("planner"))
-					Expect(lastMsg.Content).To(ContainSubstring("executor"))
+					intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+					Expect(intent.SlashPickerActiveForTest()).To(BeTrue())
+					Expect(intent.SubPickerVisibleLabelsForTest()).To(ContainElements("Planner", "Executor"))
 				})
 
-				It("shows message when no agents available", func() {
+				It("opens an empty sub-picker when no agents are registered", func() {
 					agentReg := agent.NewRegistry()
 					intent.SetAgentRegistryForTest(agentReg)
 
 					for _, r := range "/agents" {
 						intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 					}
-					cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
-					Expect(cmd).NotTo(BeNil())
-					cmd()
-					messages := intent.MessagesForTest()
-					Expect(messages).NotTo(BeEmpty())
-					lastMsg := messages[len(messages)-1]
-					Expect(lastMsg.Content).To(ContainSubstring("No agents available"))
+					intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+					Expect(intent.SlashPickerActiveForTest()).To(BeFalse())
 				})
 			})
 

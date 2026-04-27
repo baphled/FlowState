@@ -28,6 +28,7 @@ func RegisterBuiltins(reg *Registry) {
 	reg.Register(newSessionsCommand())
 	reg.Register(newPlansCommand())
 	reg.Register(newAgentCommand())
+	reg.Register(newAgentsCommand())
 	reg.Register(newModelCommand())
 	reg.Register(newSwarmCommand())
 }
@@ -366,6 +367,23 @@ func newAgentCommand() Command {
 			return nil
 		},
 	}
+}
+
+// newAgentsCommand builds /agents as an alias of /agent. Both names
+// open the same agent-registry sub-picker so users typing the plural
+// form land on the filterable picker rather than the legacy static
+// listing the chat intent used to emit.
+//
+// Returns:
+//   - The /agents Command sharing /agent's ItemsForPicker and Handler.
+//
+// Side effects:
+//   - None (pure constructor).
+func newAgentsCommand() Command {
+	base := newAgentCommand()
+	base.Name = "agents"
+	base.Description = "Switch the active agent (alias of /agent)"
+	return base
 }
 
 // newModelCommand builds /model which opens a sub-picker over every

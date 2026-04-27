@@ -1532,7 +1532,7 @@ func (i *Intent) dispatchSlashKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 //
 // Compound inputs ("/cmd arg arg") deliberately do NOT re-trigger the
 // picker — those flow through sendMessage's legacy slash-command
-// dispatcher so existing /agent /agents /help test contracts hold.
+// dispatcher so existing /agent /help test contracts hold.
 //
 // Expected:
 //   - msg is a tea.KeyMsg.
@@ -3673,29 +3673,6 @@ func (i *Intent) handleAgentCommand(args string) string {
 	return "Switched to agent: " + agentID
 }
 
-// handleAgentsCommand processes the /agents command.
-//
-// Returns:
-//   - A response message string listing available agents.
-//
-// Side effects:
-//   - None.
-func (i *Intent) handleAgentsCommand() string {
-	if i.agentRegistry == nil {
-		return "No agent registry available"
-	}
-	agents := i.agentRegistry.List()
-	if len(agents) == 0 {
-		return "No agents available"
-	}
-	var sb strings.Builder
-	sb.WriteString("Available agents:\n")
-	for _, m := range agents {
-		fmt.Fprintf(&sb, "  • %s\n", m.ID)
-	}
-	return sb.String()
-}
-
 // handleSlashCommand processes a slash command and returns a Cmd.
 //
 // Expected:
@@ -3727,9 +3704,6 @@ func (i *Intent) handleSlashCommand(cmd string) tea.Cmd {
 
 		case "agent":
 			response = i.handleAgentCommand(args)
-
-		case "agents":
-			response = i.handleAgentsCommand()
 
 		case "help":
 			response = "Available slash commands:\n" +

@@ -29,7 +29,7 @@ var _ = Describe("Builtins", func() {
 			names := commandNames(reg)
 			Expect(names).To(ContainElements(
 				"clear", "help", "exit", "quit",
-				"sessions", "plans", "agent", "model",
+				"sessions", "plans", "agent", "agents", "model",
 			))
 		})
 	})
@@ -164,6 +164,30 @@ var _ = Describe("Builtins", func() {
 			}, &arg)
 			Expect(switcher.applied).NotTo(BeNil())
 			Expect(switcher.applied.ID).To(Equal("planner-id"))
+		})
+
+		It("registers /agents as an alias that opens the same sub-picker", func() {
+			alias := lookup(reg, "agents")
+			Expect(alias.ItemsForPicker).NotTo(BeNil())
+			areg := newAgentRegistry()
+			items := alias.ItemsForPicker(slashcommand.CommandContext{AgentRegistry: areg})
+			Expect(items).To(HaveLen(2))
+			labels := []string{items[0].Label, items[1].Label}
+			Expect(labels).To(ContainElements("Planner", "Executor"))
+		})
+
+		It("delegates /agents handler to the same manifest switch as /agent", func() {
+			alias := lookup(reg, "agents")
+			areg := newAgentRegistry()
+			switcher := &stubAgentSwitcher{}
+			arg := widgets.Item{Value: "executor-id"}
+
+			alias.Handler(slashcommand.CommandContext{
+				AgentRegistry: areg,
+				AgentSwitcher: switcher,
+			}, &arg)
+			Expect(switcher.applied).NotTo(BeNil())
+			Expect(switcher.applied.ID).To(Equal("executor-id"))
 		})
 	})
 

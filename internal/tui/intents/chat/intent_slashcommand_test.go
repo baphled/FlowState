@@ -96,6 +96,53 @@ var _ = Describe("ChatIntent slash commands", func() {
 		})
 	})
 
+	Describe("/agent sub-picker", func() {
+		BeforeEach(func() {
+			seedAgentRegistry(intent)
+		})
+
+		It("opens the sub-picker on Enter", func() {
+			openAgentSubPicker(intent)
+			Expect(intent.SlashPickerActiveForTest()).To(BeTrue())
+			Expect(intent.SubPickerVisibleLabelsForTest()).To(ContainElements("Planner", "Executor"))
+		})
+
+		It("filters the sub-picker as the user types", func() {
+			openAgentSubPicker(intent)
+			typeRune(intent, 'p')
+
+			Expect(intent.SubPickerFilterForTest()).To(Equal("p"))
+			Expect(intent.SubPickerVisibleLabelsForTest()).To(ConsistOf("Planner"))
+		})
+
+		It("backspaces the sub-picker filter without disturbing chat input", func() {
+			openAgentSubPicker(intent)
+			typeRune(intent, 'p')
+			typeRune(intent, 'l')
+			intent.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+			Expect(intent.SubPickerFilterForTest()).To(Equal("p"))
+			Expect(intent.Input()).To(BeEmpty())
+		})
+
+		It("opens the same sub-picker via the /agents alias", func() {
+			typeRune(intent, '/')
+			for _, r := range "agents" {
+				typeRune(intent, r)
+			}
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+			Expect(intent.SlashPickerActiveForTest()).To(BeTrue())
+			Expect(intent.SubPickerVisibleLabelsForTest()).To(ContainElements("Planner", "Executor"))
+		})
+
+		It("dismisses the sub-picker on Esc", func() {
+			openAgentSubPicker(intent)
+			intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			Expect(intent.SlashPickerActiveForTest()).To(BeFalse())
+		})
+	})
+
 	Describe("/swarm wizard", func() {
 		var dir string
 
@@ -138,6 +185,14 @@ func seedAgentRegistry(intent *chat.Intent) {
 	reg.Register(&agent.Manifest{ID: "planner", Name: "Planner", Mode: "plan"})
 	reg.Register(&agent.Manifest{ID: "executor", Name: "Executor"})
 	intent.SetAgentRegistryForTest(reg)
+}
+
+func openAgentSubPicker(intent *chat.Intent) {
+	typeRune(intent, '/')
+	for _, r := range "agent" {
+		typeRune(intent, r)
+	}
+	intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
 func openSwarmWizard(intent *chat.Intent) {

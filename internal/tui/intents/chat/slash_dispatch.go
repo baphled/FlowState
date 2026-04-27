@@ -47,6 +47,12 @@ type slashState struct {
 	// step, separate from i.input so the wizard can clear it after
 	// each submission without disturbing the main chat input.
 	wizardInputBuffer string
+	// subPickerFilter holds the runes typed against the active
+	// sub-picker (e.g. /agent → "pl"). Tracked separately from
+	// i.input — which is torn down when the sub-picker opens — so
+	// the filter buffer can grow and shrink without the chat input
+	// pipeline observing it.
+	subPickerFilter string
 }
 
 // SetSlashRegistryForTest swaps the slash registry used by the chat
@@ -175,6 +181,43 @@ func (i *Intent) SlashStateForTest() any {
 //   - None.
 func (i *Intent) WizardActiveForTest() bool {
 	return i.slashState.wizard != nil
+}
+
+// SubPickerVisibleLabelsForTest returns the labels currently visible in
+// the active sub-picker after applying the live filter buffer. Used by
+// the /agent filter-as-you-type spec to pin the rune-routing contract
+// without exporting the picker pointer.
+//
+// Returns:
+//   - The Label of every Item in the sub-picker's filtered slice.
+//   - nil when no sub-picker is open.
+//
+// Side effects:
+//   - None.
+func (i *Intent) SubPickerVisibleLabelsForTest() []string {
+	picker := i.slashState.activeSubPicker
+	if picker == nil {
+		return nil
+	}
+	filtered := picker.Filtered()
+	out := make([]string, len(filtered))
+	for idx, item := range filtered {
+		out[idx] = item.Label
+	}
+	return out
+}
+
+// SubPickerFilterForTest returns the live sub-picker filter buffer.
+// Used by the /agent filter-as-you-type spec to pin that rune events
+// land on the dedicated sub-picker buffer rather than the chat input.
+//
+// Returns:
+//   - The current sub-picker filter string (empty when none typed).
+//
+// Side effects:
+//   - None.
+func (i *Intent) SubPickerFilterForTest() string {
+	return i.slashState.subPickerFilter
 }
 
 // inputStartsSlash reports whether the live input buffer begins with
@@ -407,18 +450,13 @@ func (i *Intent) routeCommandPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		i.dismissSlashPicker(false)
 		return nil, true
 	case tea.KeyRunes:
-		i.input += string(msg.Runes)
-		picker.SetFilter(strings.TrimPrefix(i.input, "/"))
+		appendFilterRunes(&i.input, picker, msg.Runes, "/")
 		return nil, true
 	case tea.KeyBackspace:
-		if i.input != "" {
-			i.input = i.input[:len(i.input)-1]
-		}
+		popFilterRune(&i.input, picker, "/")
 		if !strings.HasPrefix(i.input, "/") {
 			i.dismissSlashPicker(false)
-			return nil, true
 		}
-		picker.SetFilter(strings.TrimPrefix(i.input, "/"))
 		return nil, true
 	case tea.KeyEnter:
 		return i.confirmCommandPicker()
@@ -434,29 +472,70 @@ func (i *Intent) routeCommandPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	return cmd, true
 }
 
+// appendFilterRunes appends typed runes to a buffer and re-applies the
+// trimmed-prefix view to the picker's filter. Shared by the command
+// picker (whose buffer is the chat input with a leading "/") and the
+// sub-picker (whose buffer is slashState.subPickerFilter, no prefix).
+//
+// Expected:
+//   - buf is a non-nil string pointer the caller owns.
+//   - picker is the picker whose SetFilter is to be re-synced.
+//   - runes is the slice from a tea.KeyMsg.Runes payload.
+//   - trimPrefix is the prefix to strip from the buffer before passing
+//     to SetFilter (e.g. "/" for the command picker, "" for the
+//     sub-picker).
+//
+// Side effects:
+//   - Mutates *buf and the picker's filter state.
+func appendFilterRunes(buf *string, picker *widgets.Picker, runes []rune, trimPrefix string) {
+	*buf += string(runes)
+	picker.SetFilter(strings.TrimPrefix(*buf, trimPrefix))
+}
+
+// popFilterRune trims the last rune off the buffer and re-applies the
+// trimmed-prefix view to the picker's filter. The companion to
+// appendFilterRunes for the Backspace path.
+//
+// Expected:
+//   - buf is a non-nil string pointer the caller owns; empty buffers
+//     are left untouched.
+//   - picker is the picker whose SetFilter is to be re-synced.
+//   - trimPrefix is the prefix to strip from the buffer before passing
+//     to SetFilter.
+//
+// Side effects:
+//   - May mutate *buf and the picker's filter state.
+func popFilterRune(buf *string, picker *widgets.Picker, trimPrefix string) {
+	if *buf == "" {
+		return
+	}
+	*buf = (*buf)[:len(*buf)-1]
+	picker.SetFilter(strings.TrimPrefix(*buf, trimPrefix))
+}
+
 // legacySlashCommandNames lists the slash commands still implemented
 // by the pre-existing handleSlashCommand dispatcher in sendMessage.
 // The new picker yields to the legacy pipeline when the user types
 // one of these names exactly so the existing test contracts
-// (/agents listing, /agent <id> switching, /models, /model
-// <provider>/<model> argument forms) survive.
+// (/models, /model <provider>/<model> inline-argument forms) survive.
 //
-// /help has been absorbed into the new picker (see newHelpCommand's
-// "Overview" entry which folds in the legacy keybindings cheat-sheet).
+// /help, /agent, and /agents have been absorbed into the new picker.
+// Bare "/agent" or "/agents" + Enter opens the agent sub-picker; the
+// inline "/agent <id>" form still flows through the legacy dispatcher
+// because the Space keystroke dismisses the picker before the user
+// types the id, surrendering the buffer to sendMessage.
 //
-// TODO(slash-unification): finish absorbing /agents, /agent, /models,
-// and /model into picker builtins. /agent <id> + /model <p>/<m> with
-// inline arguments need an arg-parser hook on Command before they can
-// retire from this set. When the set is empty, delete it and the
-// early-return block in confirmCommandPicker.
+// TODO(slash-unification): finish absorbing /models and /model into
+// picker builtins. /model <p>/<m> with inline arguments needs an
+// arg-parser hook on Command before it can retire from this set. When
+// the set is empty, delete it and the early-return block in
+// confirmCommandPicker.
 //
 // Adding a slash command to handleSlashCommand requires extending this
 // set so the picker continues to defer.
 var legacySlashCommandNames = map[string]struct{}{
 	"models": {},
 	"model":  {},
-	"agent":  {},
-	"agents": {},
 }
 
 // confirmCommandPicker handles Enter inside the command picker. When
@@ -486,7 +565,9 @@ func (i *Intent) confirmCommandPicker() (tea.Cmd, bool) {
 }
 
 // routeSubPickerKey forwards a key event to the sub picker and dispatches
-// the parent command's handler when the user confirms.
+// the parent command's handler when the user confirms. Rune and Backspace
+// keys are absorbed into slashState.subPickerFilter so the sub-picker
+// narrows live as the user types (e.g. /agent → "p" leaves only Planner).
 //
 // Expected:
 //   - msg is a tea.KeyMsg.
@@ -495,9 +576,18 @@ func (i *Intent) confirmCommandPicker() (tea.Cmd, bool) {
 //   - (cmd, true) reflecting the sub-picker's outcome.
 //
 // Side effects:
-//   - May close the picker and run a command handler.
+//   - May close the picker, mutate slashState.subPickerFilter, or run a
+//     command handler.
 func (i *Intent) routeSubPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	picker := i.slashState.activeSubPicker
+	switch msg.Type {
+	case tea.KeyRunes:
+		appendFilterRunes(&i.slashState.subPickerFilter, picker, msg.Runes, "")
+		return nil, true
+	case tea.KeyBackspace:
+		popFilterRune(&i.slashState.subPickerFilter, picker, "")
+		return nil, true
+	}
 	cmd, event := picker.Update(msg)
 	switch event.Type {
 	case widgets.EventCancel:
