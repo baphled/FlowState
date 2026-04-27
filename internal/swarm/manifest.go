@@ -3,6 +3,9 @@ package swarm
 import (
 	"fmt"
 	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SchemaVersionV1 is the first stable swarm-manifest schema version. The
@@ -19,6 +22,78 @@ const (
 	gateKindBuiltinPrefix = "builtin:"
 	gateKindExtPrefix     = "ext:"
 )
+
+// Precedence enumerates the four ratified gate-precedence levels from
+// addendum §7 A6. Higher precedence gates run before lower precedence
+// gates within the same lifecycle point; ties preserve manifest
+// declaration order (the modal-registry pattern A6 cites). The string
+// representation matches the YAML enum so a manifest round-trip is
+// lossless.
+type Precedence string
+
+const (
+	// PrecedenceCritical names the highest precedence — security
+	// gates per A6's table. Runs before HIGH/MEDIUM/LOW.
+	PrecedenceCritical Precedence = "CRITICAL"
+	// PrecedenceHigh names the second-highest — safety gates per A6.
+	PrecedenceHigh Precedence = "HIGH"
+	// PrecedenceMedium is the default precedence applied when a gate
+	// omits the field. Quality gates per A6.
+	PrecedenceMedium Precedence = "MEDIUM"
+	// PrecedenceLow names the lowest precedence — optional checks
+	// per A6.
+	PrecedenceLow Precedence = "LOW"
+)
+
+// DefaultPrecedence is applied when a gate omits the field in YAML.
+// Pinned at MEDIUM per A6's table so existing manifests written
+// against the v1 schema retain their original ordering semantics.
+const DefaultPrecedence = PrecedenceMedium
+
+// legalPrecedences is the canonical lookup used by validatePrecedence
+// to reject unknown enum values at load time. The empty string is
+// accepted (treated as MEDIUM via DefaultPrecedence) so older
+// manifests remain valid.
+var legalPrecedences = map[Precedence]struct{}{
+	PrecedenceCritical: {},
+	PrecedenceHigh:     {},
+	PrecedenceMedium:   {},
+	PrecedenceLow:      {},
+}
+
+// FailurePolicy enumerates the per-gate failure-handling modes from
+// addendum §7 A1. The default is halt (matching today's behaviour
+// where every gate failure halts the swarm); continue and warn relax
+// that for non-critical checks. Stored as the YAML enum string for a
+// lossless manifest round-trip.
+type FailurePolicy string
+
+const (
+	// FailurePolicyHalt halts the swarm on the first gate failure.
+	// This is today's behaviour and the default when the manifest
+	// omits failurePolicy.
+	FailurePolicyHalt FailurePolicy = "halt"
+	// FailurePolicyContinue records the failure but allows subsequent
+	// gates and members to run. Used for non-blocking validation
+	// (e.g. observability sampling).
+	FailurePolicyContinue FailurePolicy = "continue"
+	// FailurePolicyWarn behaves like continue but tags the failure
+	// as a warning so downstream surfaces can render it differently.
+	FailurePolicyWarn FailurePolicy = "warn"
+)
+
+// DefaultFailurePolicy is applied when a gate omits the field. Halt
+// preserves backwards compatibility with manifests that pre-date A1.
+const DefaultFailurePolicy = FailurePolicyHalt
+
+// legalFailurePolicies is the canonical lookup used by
+// validateFailurePolicy. The empty string is accepted (treated as
+// halt via DefaultFailurePolicy) so legacy manifests stay valid.
+var legalFailurePolicies = map[FailurePolicy]struct{}{
+	FailurePolicyHalt:     {},
+	FailurePolicyContinue: {},
+	FailurePolicyWarn:     {},
+}
 
 // Manifest is the in-memory representation of a swarm manifest YAML
 // file. The field tags mirror the on-disk YAML (snake_case) so the
@@ -139,6 +214,77 @@ type GateSpec struct {
 	// readers do not have to consult the agent prompt to learn which
 	// coord-store slot the gate validates.
 	OutputKey string `json:"output_key,omitempty" yaml:"output_key,omitempty"`
+
+	// Precedence selects the evaluation tier per addendum §7 A6.
+	// CRITICAL gates run before HIGH which run before MEDIUM which run
+	// before LOW; ties preserve manifest order. Empty falls back to
+	// DefaultPrecedence (MEDIUM) so legacy manifests keep their
+	// declaration-order semantics.
+	Precedence Precedence `json:"precedence,omitempty" yaml:"precedence,omitempty"`
+
+	// FailurePolicy selects the per-gate failure handling per A1.
+	// halt (default) stops the swarm on failure; continue records the
+	// failure but lets the swarm continue; warn behaves like continue
+	// and tags the failure as a warning for log/UI distinction.
+	FailurePolicy FailurePolicy `json:"failurePolicy,omitempty" yaml:"failurePolicy,omitempty"`
+
+	// Timeout caps a single gate's runtime. Zero means "no per-gate
+	// timeout" (the dispatcher passes the parent context through
+	// unchanged). On expiry the gate is treated as failed and
+	// FailurePolicy decides whether the swarm halts. Parses YAML
+	// scalars like "5s" / "30s" via the time.Duration unmarshaller
+	// installed below.
+	Timeout time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+}
+
+// UnmarshalYAML parses a GateSpec from YAML and translates the
+// Timeout field from a duration scalar (e.g. "5s") to time.Duration.
+// time.Duration's default yaml unmarshaller treats the field as an
+// integer count of nanoseconds; A1's spec text uses the human
+// "5s" / "30s" form so the custom unmarshaller bridges them.
+//
+// Expected:
+//   - value is a YAML mapping node produced by gopkg.in/yaml.v3 for a
+//     single gate entry.
+//
+// Returns:
+//   - nil on a successful parse.
+//   - The wrapped yaml.v3 / time.ParseDuration error otherwise.
+//
+// Side effects:
+//   - Mutates the receiver's fields in place.
+func (g *GateSpec) UnmarshalYAML(value *yaml.Node) error {
+	type rawGateSpec struct {
+		Name          string        `yaml:"name"`
+		Kind          string        `yaml:"kind"`
+		SchemaRef     string        `yaml:"schema_ref"`
+		When          string        `yaml:"when"`
+		Target        string        `yaml:"target"`
+		OutputKey     string        `yaml:"output_key"`
+		Precedence    Precedence    `yaml:"precedence"`
+		FailurePolicy FailurePolicy `yaml:"failurePolicy"`
+		Timeout       string        `yaml:"timeout"`
+	}
+	var raw rawGateSpec
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	g.Name = raw.Name
+	g.Kind = raw.Kind
+	g.SchemaRef = raw.SchemaRef
+	g.When = raw.When
+	g.Target = raw.Target
+	g.OutputKey = raw.OutputKey
+	g.Precedence = raw.Precedence
+	g.FailurePolicy = raw.FailurePolicy
+	if raw.Timeout != "" {
+		d, err := time.ParseDuration(raw.Timeout)
+		if err != nil {
+			return fmt.Errorf("gate %q: parsing timeout %q: %w", raw.Name, raw.Timeout, err)
+		}
+		g.Timeout = d
+	}
+	return nil
 }
 
 // ContextConfig holds the coordination-store namespacing override.
@@ -489,6 +635,92 @@ func validateGateScalars(i int, gate GateSpec) error {
 		return &ValidationError{
 			Field:   fmt.Sprintf("harness.gates[%d].kind", i),
 			Message: fmt.Sprintf("must start with %q or %q (got %q)", gateKindBuiltinPrefix, gateKindExtPrefix, gate.Kind),
+		}
+	}
+	if err := validateGatePrecedence(i, gate); err != nil {
+		return err
+	}
+	if err := validateGateFailurePolicy(i, gate); err != nil {
+		return err
+	}
+	return validateGateTimeout(i, gate)
+}
+
+// validateGatePrecedence rejects any precedence string that is neither
+// empty (treated as the default at runtime) nor one of the four
+// ratified A6 levels. Holding the rule here means the gate-runner
+// never sees an unknown precedence at firing time.
+//
+// Expected:
+//   - i is the gate index in harness.gates.
+//   - gate is the GateSpec being validated.
+//
+// Returns:
+//   - nil when precedence is empty or a legal A6 enum value.
+//   - A *ValidationError naming the precedence field otherwise.
+//
+// Side effects:
+//   - None.
+func validateGatePrecedence(i int, gate GateSpec) error {
+	if gate.Precedence == "" {
+		return nil
+	}
+	if _, ok := legalPrecedences[gate.Precedence]; !ok {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].precedence", i),
+			Message: fmt.Sprintf("unknown precedence %q (expected CRITICAL, HIGH, MEDIUM, or LOW)", gate.Precedence),
+		}
+	}
+	return nil
+}
+
+// validateGateFailurePolicy rejects any failurePolicy string that is
+// neither empty (treated as halt at runtime) nor one of the three A1
+// modes. Catching this at load means the dispatcher's policy switch
+// never sees an unknown value.
+//
+// Expected:
+//   - i is the gate index in harness.gates.
+//   - gate is the GateSpec being validated.
+//
+// Returns:
+//   - nil when failurePolicy is empty or a legal A1 enum value.
+//   - A *ValidationError naming the failurePolicy field otherwise.
+//
+// Side effects:
+//   - None.
+func validateGateFailurePolicy(i int, gate GateSpec) error {
+	if gate.FailurePolicy == "" {
+		return nil
+	}
+	if _, ok := legalFailurePolicies[gate.FailurePolicy]; !ok {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].failurePolicy", i),
+			Message: fmt.Sprintf("unknown failurePolicy %q (expected halt, continue, or warn)", gate.FailurePolicy),
+		}
+	}
+	return nil
+}
+
+// validateGateTimeout rejects negative timeouts. Zero is a legal
+// sentinel meaning "no per-gate deadline"; positive values are
+// applied verbatim by Dispatch via context.WithTimeout.
+//
+// Expected:
+//   - i is the gate index in harness.gates.
+//   - gate is the GateSpec being validated.
+//
+// Returns:
+//   - nil when timeout is zero or positive.
+//   - A *ValidationError naming the timeout field when negative.
+//
+// Side effects:
+//   - None.
+func validateGateTimeout(i int, gate GateSpec) error {
+	if gate.Timeout < 0 {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].timeout", i),
+			Message: fmt.Sprintf("timeout must be non-negative (got %s)", gate.Timeout),
 		}
 	}
 	return nil

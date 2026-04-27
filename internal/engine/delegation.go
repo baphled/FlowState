@@ -1461,10 +1461,9 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID s
 		MemberID:    memberID,
 		CoordStore:  d.coordinationStore,
 	}
-	for _, gate := range matches {
-		if err := d.gateRunner.Run(ctx, gate, args); err != nil {
-			return err
-		}
+	report := swarm.Dispatch(ctx, d.gateRunner, matches, args)
+	if report.Halted {
+		return report.Err
 	}
 	return nil
 }
@@ -1574,10 +1573,9 @@ func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Contex
 		ChainPrefix: swarmCtx.ChainPrefix,
 		CoordStore:  d.coordinationStore,
 	}
-	for _, gate := range matches {
-		if err := d.gateRunner.Run(ctx, gate, args); err != nil {
-			return err
-		}
+	report := swarm.Dispatch(ctx, d.gateRunner, matches, args)
+	if report.Halted {
+		return report.Err
 	}
 	return nil
 }
