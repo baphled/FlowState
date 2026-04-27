@@ -5,6 +5,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
 )
 
@@ -106,6 +107,31 @@ var _ = Describe("AgentPickerIntent", func() {
 			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 			result := intent.Result()
 			Expect(result).To(BeNil())
+		})
+	})
+
+	Describe("modal dismissal", func() {
+		It("dispatches DismissModalMsg on Enter", func() {
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(cmd).NotTo(BeNil())
+			Expect(cmd()).To(Equal(intents.DismissModalMsg{}))
+		})
+
+		It("dispatches DismissModalMsg on Escape", func() {
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			Expect(cmd).NotTo(BeNil())
+			Expect(cmd()).To(Equal(intents.DismissModalMsg{}))
+		})
+
+		It("dispatches DismissModalMsg on Ctrl+C", func() {
+			cmd := intent.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			Expect(cmd).NotTo(BeNil())
+			Expect(cmd()).To(Equal(intents.DismissModalMsg{}))
+		})
+
+		It("does not dispatch DismissModalMsg on arrow navigation", func() {
+			Expect(intent.Update(tea.KeyMsg{Type: tea.KeyDown})).To(BeNil())
+			Expect(intent.Update(tea.KeyMsg{Type: tea.KeyUp})).To(BeNil())
 		})
 	})
 
