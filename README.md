@@ -227,6 +227,24 @@ Sample output:
 PASS
 ```
 
+## External Gates
+
+Swarm gates can dispatch to scripts the user authors in any language. Drop a directory under `~/.config/flowstate/gates/<name>/` containing a `manifest.yml` and an executable; reference it from a swarm manifest with `kind: ext:<name>`. FlowState forks the script on dispatch, hands it the request as JSON on stdin, and parses the JSON response from stdout.
+
+A 5-line Python or Bash gate is a complete implementation — there is no proto, no daemon, no codegen. The reference example `examples/gates/vault-fact-check/` is a Python gate that scores a member's claim against the operator's Obsidian vault.
+
+**Setup, manifest authoring, polyglot examples, test ergonomics:**
+- KB guide: `Documentation/Guides/Creating Custom Swarms (April 2026).md` §3a.
+- KB design + v0 ↔ v1 boundary: `Plans/FlowState Extension API v1.md` §"v0 Thin Slice — Polyglot Subprocess Gates".
+
+**Verifying activation:**
+
+```bash
+go run ./tools/smoke/ext_gate_subprocess
+```
+
+The smoke runs a fixture gate end-to-end and prints the response shape.
+
 ## MCP Integration
 
 FlowState natively supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). This allows the AI to use external tools, access resources, and interact with your filesystem or other services.
