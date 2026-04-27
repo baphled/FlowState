@@ -37,6 +37,11 @@ type AppConfig struct {
 	// drop-ins override programmatic seeds (see swarm.SchemaDirLoader
 	// for the precedence rationale).
 	SchemaDir string `json:"schema_dir,omitempty" yaml:"schema_dir,omitempty"`
+	// GatesDir is the discovery directory for v0 ext-gate manifests. Each
+	// gate is a subdirectory <GatesDir>/<name>/ with manifest.yml plus
+	// the executable. Default ~/.config/flowstate/gates; override here
+	// for system-wide installs (e.g. /etc/flowstate/gates).
+	GatesDir string `json:"gates_dir" yaml:"gates_dir"`
 	LogLevel           string                           `json:"log_level" yaml:"log_level"`
 	DefaultAgent       string                           `json:"default_agent" yaml:"default_agent"`
 	CategoryRouting    map[string]engine.CategoryConfig `json:"category_routing" yaml:"category_routing"`
@@ -606,6 +611,7 @@ func DefaultConfig() *AppConfig {
 		AgentDir:        filepath.Join(Dir(), "agents"),
 		SkillDir:        filepath.Join(Dir(), "skills"),
 		SchemaDir:       filepath.Join(Dir(), "schemas"),
+		GatesDir:        filepath.Join(Dir(), "gates"),
 		DataDir:         dataDir,
 		LogLevel:        "info",
 		DefaultAgent:    "executor",
@@ -892,6 +898,9 @@ func applyDefaults(cfg *AppConfig) {
 	if cfg.SchemaDir == "" {
 		cfg.SchemaDir = defaults.SchemaDir
 	}
+	if cfg.GatesDir == "" {
+		cfg.GatesDir = defaults.GatesDir
+	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = defaults.DataDir
 	}
@@ -1062,6 +1071,7 @@ func expandPaths(cfg *AppConfig) {
 	cfg.AgentDir = expandTilde(cfg.AgentDir)
 	cfg.SkillDir = expandTilde(cfg.SkillDir)
 	cfg.SchemaDir = expandTilde(cfg.SchemaDir)
+	cfg.GatesDir = expandTilde(cfg.GatesDir)
 	cfg.DataDir = expandTilde(cfg.DataDir)
 	cfg.PlanLocation = expandTilde(cfg.PlanLocation)
 	cfg.Plugins.Dir = expandTilde(cfg.Plugins.Dir)
