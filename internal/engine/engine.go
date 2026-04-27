@@ -1307,6 +1307,9 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 		dt.SetDelegation(manifest.Delegation)
 		dt.SetSourceAgentID(manifest.ID)
 	}
+	if st, ok := e.getSuggestDelegateToolLocked(); ok {
+		st.SetSourceAgentID(manifest.ID)
+	}
 	e.mu.Unlock()
 
 	if e.bus != nil && oldID != manifest.ID && oldID != "" {
@@ -1497,6 +1500,8 @@ func (e *Engine) appendSwarmLeadSection(base string) string {
 	b.WriteString("You are leading swarm `")
 	b.WriteString(swarmCtx.SwarmID)
 	b.WriteString("`. The user's request is owned by this swarm; you coordinate the members below rather than answering alone.\n\n")
+	b.WriteString("You have already been dispatched as the lead — the user does NOT need to confirm anything. Do not write \"Action Required: confirm dispatch\", \"Proceed?\", \"Should I continue?\" or any other prompt that asks the user to approve starting the swarm. Begin by delegating to a member immediately. If the user's scope is too vague to act on, delegate the scoping work itself (e.g. to an explorer or analyst member) rather than blocking on the user. Only return to the user with the synthesised final report.\n\n")
+	b.WriteString("Do NOT call `suggest_delegate` for this swarm or its members; the dispatch is already in flight, and the tool will refuse a self-dispatch suggestion. Use `delegate` for member calls.\n\n")
 
 	b.WriteString("## Members\n\n")
 	if len(swarmCtx.Members) == 0 {
@@ -4015,6 +4020,23 @@ func (e *Engine) getDelegateToolLocked() (*DelegateTool, bool) {
 	for _, t := range e.tools {
 		if dt, ok := t.(*DelegateTool); ok {
 			return dt, true
+		}
+	}
+	return nil, false
+}
+
+// getSuggestDelegateToolLocked returns the SuggestDelegateTool without
+// acquiring the lock. Caller must hold e.mu (read or write).
+//
+// Returns:
+//   - The SuggestDelegateTool and true when registered, or nil and false otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) getSuggestDelegateToolLocked() (*SuggestDelegateTool, bool) {
+	for _, t := range e.tools {
+		if st, ok := t.(*SuggestDelegateTool); ok {
+			return st, true
 		}
 	}
 	return nil, false

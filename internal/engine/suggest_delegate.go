@@ -74,6 +74,34 @@ func NewSuggestDelegateToolWithSwarms(reg *agent.Registry, swarmReg *swarm.Regis
 	return &SuggestDelegateTool{registry: reg, swarmRegistry: swarmReg, sourceAgentID: sourceAgentID}
 }
 
+// SetSourceAgentID updates the agent id this tool reports as `from_agent`
+// in its emitted payloads and uses to detect "lead suggesting its own swarm"
+// at Execute time. Engine.SetManifest calls this whenever the active
+// manifest changes so the tool's view of the current agent stays in sync
+// with the engine's runtime state.
+//
+// Expected:
+//   - id is the new active agent's ID; an empty string clears it.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Replaces the internal sourceAgentID used during Execute().
+func (s *SuggestDelegateTool) SetSourceAgentID(id string) {
+	s.sourceAgentID = id
+}
+
+// errSuggestDelegateLeadSelfDispatch fires when the active agent calls
+// suggest_delegate against the swarm it already leads. The lead has been
+// dispatched; suggesting "dispatch this swarm again" is nonsensical and
+// historically caused the model to relay the tool's user_prompt as an
+// "Action Required: confirm dispatch" message to the user, blocking the
+// swarm on a confirmation gate that should not exist.
+var errSuggestDelegateLeadSelfDispatch = errors.New(
+	"already leading this swarm; delegate to a member with the delegate tool instead of suggesting the same swarm",
+)
+
 // Name returns the tool name.
 //
 // Returns:
@@ -227,6 +255,9 @@ func (s *SuggestDelegateTool) buildSwarmSuggestion(swarmManifest *swarm.Manifest
 	leadID := swarmManifest.Lead
 	if leadID == "" {
 		return tool.Result{}, fmt.Errorf("swarm %q has no lead agent registered", swarmManifest.ID)
+	}
+	if leadID == s.sourceAgentID {
+		return tool.Result{}, errSuggestDelegateLeadSelfDispatch
 	}
 
 	payload := map[string]interface{}{
