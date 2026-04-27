@@ -163,9 +163,6 @@ func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App,
 		return err
 	}
 	agentName = resolvedAgent
-	if application.Engine != nil {
-		application.Engine.SetSwarmContext(swarmCtx)
-	}
 	sessionID := resolveSessionID(opts.Session)
 	loadExistingSession(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
@@ -184,13 +181,9 @@ func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App,
 		session.IDKey{},
 	)
 
-	response, err := streamResponse(ctx, cmd, wrappedStreamer, agentName, opts)
+	response, err := streamResponse(ctx, cmd, wrappedStreamer, application.Engine, swarmCtx, agentName, opts)
 	if err != nil {
 		return err
-	}
-
-	if flushErr := flushSwarmLifecycle(application); flushErr != nil {
-		return flushErr
 	}
 
 	// Wait for the L3 knowledge-extraction goroutine dispatched by the
@@ -330,30 +323,6 @@ func waitForBackgroundExtractions(waiter backgroundExtractionWaiter, timeout tim
 		"knowledge extraction timed out before exit; session memory may be incomplete",
 		"timeout_seconds", int(timeout/time.Second),
 	)
-}
-
-// flushSwarmLifecycle dispatches the swarm-level post gates after the
-// lead's stream completes. This is the spec-correct moment for swarm-
-// level `when: post` gates per T-swarm-3 — pre/post-member gates fire
-// inside the delegation hot path, but post-swarm waits for the lead's
-// own stream to wind down. Single-agent runs (no engine, no swarm
-// context) short-circuit to nil so the helper is safe to call from
-// every CLI/TUI entry point.
-//
-// Expected:
-//   - application may be nil; nil short-circuits to nil.
-//
-// Returns:
-//   - nil when no swarm is in flight or every post-swarm gate passes.
-//   - The first *swarm.GateError otherwise.
-//
-// Side effects:
-//   - Calls each post-swarm gate's runner via the delegate tool.
-func flushSwarmLifecycle(application *app.App) error {
-	if application == nil || application.Engine == nil {
-		return nil
-	}
-	return application.Engine.FlushSwarmLifecycle(context.Background())
 }
 
 // validateRunOptions checks that required options are set.
@@ -550,12 +519,14 @@ func streamResponse(
 	ctx context.Context,
 	cmd *cobra.Command,
 	streamer streaming.Streamer,
+	eng swarm.DispatchEngine,
+	swarmCtx *swarm.Context,
 	agentName string,
 	opts *RunOptions,
 ) (string, error) {
 	consumer := NewWriterConsumer(cmd.OutOrStdout(), opts.JSON)
-	if err := streaming.Run(ctx, streamer, consumer, agentName, opts.Prompt); err != nil {
-		return "", fmt.Errorf("streaming response: %w", err)
+	if err := swarm.DispatchSwarm(ctx, eng, swarmCtx, streamer, consumer, agentName, opts.Prompt); err != nil {
+		return "", err
 	}
 	if consumer.Err() != nil {
 		return "", fmt.Errorf("stream error: %w", consumer.Err())

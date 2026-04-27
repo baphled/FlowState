@@ -11,6 +11,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -117,9 +118,6 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		return resolveErr
 	}
 	agentName = resolvedAgent
-	if application.Engine != nil {
-		application.Engine.SetSwarmContext(swarmCtx)
-	}
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
@@ -136,13 +134,9 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	}
 
 	chatOpts := chatStreamOptions{outputFormat: opts.Output, verbosity: opts.Verbosity}
-	response, err := streamChatResponse(wrappedStreamer, agentName, opts.Message, chatOpts, writer)
+	response, err := streamChatResponse(wrappedStreamer, application.Engine, swarmCtx, agentName, opts.Message, chatOpts, writer)
 	if err != nil {
 		return err
-	}
-
-	if flushErr := flushSwarmLifecycle(application); flushErr != nil {
-		return flushErr
 	}
 
 	saveSessionIfAvailable(cmd, application, sessionID)
@@ -252,7 +246,13 @@ type chatStreamOptions struct {
 // Side effects:
 //   - Streams response chunks from the streamer.
 func streamChatResponse(
-	streamer streaming.Streamer, agentName string, message string, opts chatStreamOptions, writer io.Writer,
+	streamer streaming.Streamer,
+	eng swarm.DispatchEngine,
+	swarmCtx *swarm.Context,
+	agentName string,
+	message string,
+	opts chatStreamOptions,
+	writer io.Writer,
 ) (string, error) {
 	var inner streaming.StreamConsumer
 	if opts.outputFormat == "json" {
@@ -261,8 +261,8 @@ func streamChatResponse(
 		inner = NewWriterConsumer(writer, true)
 	}
 	consumer := streaming.NewVerbosityFilter(inner, parseCLIVerbosityLevel(opts.verbosity))
-	if err := streaming.Run(context.Background(), streamer, consumer, agentName, message); err != nil {
-		return "", fmt.Errorf("streaming response: %w", err)
+	if err := swarm.DispatchSwarm(context.Background(), eng, swarmCtx, streamer, consumer, agentName, message); err != nil {
+		return "", err
 	}
 	if err := getConsumerError(inner); err != nil {
 		return "", fmt.Errorf("stream error: %w", err)
