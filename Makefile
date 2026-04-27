@@ -1,4 +1,4 @@
-.PHONY: all build run test test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
 
 # Binary name
 BINARY_NAME=flowstate
@@ -37,9 +37,13 @@ clean: ## Clean build artifacts
 # Testing
 #
 
-test: ## Run all Go tests (excluding BDD features)
+test: ## Run all Go tests (excluding BDD features; default build tags exclude `e2e`)
 	@echo "Running tests..."
 	$(GOTEST) -v $(shell go list ./... | grep -v '/features/')
+
+test-e2e: ## Run BDD/e2e suite under features/ (opt-in via `-tags e2e`)
+	@echo "Running e2e BDD tests (features/...)..."
+	$(GOTEST) -tags e2e -timeout 600s ./features/...
 
 test-external: ## Run external integration tests (requires QDRANT_URL)
 	@if [ -z "$(QDRANT_URL)" ]; then \
@@ -73,19 +77,19 @@ coverage-check: ## Check test coverage against thresholds (excluding BDD feature
 
 bdd: ## Run all BDD tests
 	@echo "Running BDD tests..."
-	go test -v ./features/...
+	go test -tags e2e -v ./features/...
 
 bdd-smoke: ## Run smoke BDD tests
 	@echo "Running smoke tests..."
-	GODOG_TAGS="@smoke" go test -v ./features/... -run "Test"
+	GODOG_TAGS="@smoke" go test -tags e2e -v ./features/... -run "Test"
 
 bdd-wip: ## Run WIP BDD tests (scenarios tagged @wip)
 	@echo "Running WIP tests..."
-	GODOG_TAGS="@wip" go test -v ./features/... -run "Test"
+	GODOG_TAGS="@wip" go test -tags e2e -v ./features/... -run "Test"
 
 bdd-feature: ## Run specific feature (FEATURE=chat/basic_chat)
 	@echo "Running feature: $(FEATURE)"
-	go test -v ./features/... -run "Test"
+	go test -tags e2e -v ./features/... -run "Test"
 
 #
 # Code Quality

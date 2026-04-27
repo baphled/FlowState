@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Package support provides BDD test step definitions and fixtures.
 //
 // This package contains:
