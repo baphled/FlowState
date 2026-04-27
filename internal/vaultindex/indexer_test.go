@@ -16,15 +16,15 @@ import (
 )
 
 type fakeStore struct {
-	mu             sync.Mutex
-	exists         bool
-	createdName    string
-	createdConfig  qdrant.CollectionConfig
-	upserts        [][]qdrant.Point
-	upsertCol      string
-	collectionErr  error
-	createErr      error
-	upsertErr      error
+	mu            sync.Mutex
+	exists        bool
+	createdName   string
+	createdConfig qdrant.CollectionConfig
+	upserts       [][]qdrant.Point
+	upsertCol     string
+	collectionErr error
+	createErr     error
+	upsertErr     error
 }
 
 func (f *fakeStore) CollectionExists(_ context.Context, _ string) (bool, error) {

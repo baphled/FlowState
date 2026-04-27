@@ -31,12 +31,6 @@ func (s *stubAgentRegistry) Get(id string) (any, bool) {
 	return nil, false
 }
 
-const validSwarmYAML = `schema_version: "1.0.0"
-id: %s
-lead: %s
-members: %s
-`
-
 var _ = Describe("Registry", func() {
 	var (
 		reg     *swarm.Registry

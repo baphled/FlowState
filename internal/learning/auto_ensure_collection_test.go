@@ -33,7 +33,6 @@ func (r *recordingStore) Search(_ context.Context, _ string, _ []float64, _ int)
 type recordingEnsurer struct {
 	calls       int32
 	wantErr     error
-	wantSize    int
 	gotSize     int
 	collections []string
 }
@@ -210,4 +209,3 @@ func (a *clientAdapter) Search(ctx context.Context, collection string, vector []
 	}
 	return out, nil
 }
-

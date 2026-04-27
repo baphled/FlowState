@@ -108,6 +108,7 @@ var _ = Describe("swarm.Context", func() {
 		})
 
 		It("tolerates a nil context.Context", func() {
+			//lint:ignore SA1012 intentionally passing nil to pin defensive nil-handling in FromContext.
 			got, ok := swarm.FromContext(nil)
 
 			Expect(ok).To(BeFalse())

@@ -7,8 +7,8 @@ import (
 
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/intents/chat/slashcommand"
-	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
+	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 )
 
 // slashState tracks the picker visible to the user when they type "/".

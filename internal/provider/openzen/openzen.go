@@ -219,4 +219,3 @@ func fallbackModels() []provider.Model {
 		{ID: "gpt-4o", Provider: providerName, ContextLength: defaultContextLength},
 	}
 }
-

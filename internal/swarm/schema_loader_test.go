@@ -16,16 +16,6 @@ func writeSchemaFile(dir, name, body string) {
 	Expect(os.WriteFile(path, []byte(body), 0o644)).To(Succeed())
 }
 
-func validVerdictSchema() string {
-	return `{
-        "type": "object",
-        "properties": {
-            "verdict": {"type": "string"}
-        },
-        "required": ["verdict"]
-    }`
-}
-
 func customGreetingSchema() string {
 	return `{
         "type": "object",

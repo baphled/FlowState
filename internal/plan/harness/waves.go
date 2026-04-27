@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	"fmt"
 	"strings"
 )
 
@@ -17,14 +16,14 @@ import (
 // vocabulary:
 //
 //   - "wave"     — a stage of parallel work that advances together
-//                  (existing in the swarm spec §T38a "Dependency wave
-//                  scheduler").
+//     (existing in the swarm spec §T38a "Dependency wave
+//     scheduler").
 //   - "fan-in"   — the synchronisation point at the end of a wave
-//                  where N parallel children must all return before
-//                  the orchestrator advances. Standard concurrency-
-//                  literature term and the natural complement of the
-//                  "fan-out" already used in FlowState's tool-call-
-//                  atomicity ADR.
+//     where N parallel children must all return before
+//     the orchestrator advances. Standard concurrency-
+//     literature term and the natural complement of the
+//     "fan-out" already used in FlowState's tool-call-
+//     atomicity ADR.
 //
 // `gate` is deliberately NOT used here: in FlowState, gate already
 // means a *validation* checkpoint with pass/fail semantics (swarm
@@ -164,13 +163,4 @@ func buildWaveFeedback(stage WaveStage, missing []string, err error) string {
 	b.WriteString("Use background_output to wait for in-flight delegations to finish before yielding. ")
 	b.WriteString("Do NOT respond to the user until the next wave's pre-requisites are all in place.")
 	return b.String()
-}
-
-// formatWaveTopic builds the EventType string emitted on the harness
-// stream when a wave-incomplete re-prompt fires. Used by the TUI's
-// activity timeline so users can see exactly which stage the planner
-// got pulled back to. Pulled into a helper so the format stays
-// consistent between runStreamEvaluation and tests.
-func formatWaveTopic(stageName string) string {
-	return fmt.Sprintf("harness_wave_incomplete:%s", stageName)
 }

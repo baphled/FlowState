@@ -334,4 +334,3 @@ func classifyStreamErrors(ctx context.Context, rawCh <-chan provider.StreamChunk
 	}()
 	return ch
 }
-

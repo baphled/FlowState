@@ -98,4 +98,3 @@ func isValidOpenAIKey(credential string) bool {
 	}
 	return credential[:3] == "sk-"
 }
-
