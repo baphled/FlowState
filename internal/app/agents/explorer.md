@@ -29,6 +29,7 @@ capabilities:
     - research
     - critical-thinking
     - investigation
+    - chain-id-resolution
   mcp_servers: []
   capability_description: "Explores codebase to find patterns, structures, conventions, and understand existing code organisation"
 context_management:
@@ -91,10 +92,12 @@ Each finding entry should include:
 - `implication`: Why this finding matters for the current goal.
 
 ## Coordination Store Integration
-Once your investigation is complete, write the synthesized findings to the Coordination Store.
+Once your investigation is complete, write the synthesised findings to the Coordination Store.
 - **Key**: `{chainID}/codebase-findings`
 - **Content**: A complete summary of your discoveries, structured for machine consumption.
 - **Schema**: Your output is validated against `evidence-bundle-v1` — wrap the discoveries in an object with a `findings` array (each entry must include at least `file`).
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store`.
 
 ## Linguistic Standard
 Maintain all prose and documentation in British English (e.g., use "organise" instead of "organize", "colour" instead of "color", and "behaviour" instead of "behavior").

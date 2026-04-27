@@ -28,6 +28,7 @@ capabilities:
     - critical-thinking
     - epistemic-rigor
     - systems-thinker
+    - chain-id-resolution
   mcp_servers: []
   capability_description: "Synthesises research findings into structured evidence dossiers with critical analysis and system-level thinking"
 context_management:
@@ -76,6 +77,8 @@ You are the Evidence Analyst for the FlowState deterministic planning loop. Your
 You must read evidence from the following locations in the coordination store:
 - `{chainID}/codebase-findings`: Technical discoveries from the Explorer agent.
 - `{chainID}/external-refs`: Reference material and documentation from the Librarian agent.
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store` for reads or writes.
 
 ## Synthesis Framework
 Your analysis must evaluate the following dimensions:

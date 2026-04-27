@@ -27,6 +27,7 @@ capabilities:
     - discipline
     - critical-thinking
     - epistemic-rigor
+    - chain-id-resolution
   mcp_servers: []
   capability_description: "Reviews and validates generated plans for feasibility, completeness, risk assessment, and quality gate before execution"
 context_management:
@@ -78,6 +79,8 @@ Read the following entries for the given `{chainID}`:
 
 Write your verdict to:
 - `{chainID}/review`: The structured output of your review.
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store` for reads or writes.
 
 ## Review Rubric
 
