@@ -16,6 +16,8 @@ invariants without out-of-band access.
 |---|---|---|
 | [ADR - View-Only Context Compaction](./ADR%20-%20View-Only%20Context%20Compaction.md) | Compaction is a view-only transformation; it must not mutate `session.Messages` or the recall store. | Proposed |
 | [ADR - Tool-Call Atomicity in Context Compaction](./ADR%20-%20Tool-Call%20Atomicity%20in%20Context%20Compaction.md) | Compaction operates on indivisible "compactable units", never splitting a `tool_use`/`tool_result` pair. | Proposed |
+| [ADR - Dual-Scope Gate Runner](./ADR%20-%20Dual-Scope%20Gate%20Runner.md) | Swarm gates fire at four lifecycle points (`pre`, `post`, `pre-member`, `post-member`); `kind: builtin:result-schema` validates structured outputs against a registry where file discovery overrides programmatic seed. | Accepted |
+| [ADR - Tool-Capability Allowlist Gate](./ADR%20-%20Tool-Capability%20Allowlist%20Gate.md) | Delegation fails closed when the resolved (provider, model) is not on the tool-capable allowlist; deny precedence over allow; single-`*` glob patterns. | Accepted |
 
 ## Keeping these in sync
 
