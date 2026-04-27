@@ -1766,6 +1766,13 @@ func (d *DelegateTool) clampMaxParallelToBudget(manifestMax, rosterSize int) int
 // shared across every member of the fan-out so retry/breaker state
 // accumulates correctly on the cached Runner.
 //
+// When the member id resolves to another swarm in the registry, the
+// closure recurses into DispatchSwarmMembers with a child context
+// constructed via Context.NestSubSwarm so the chain prefix and depth
+// carry the parent/child trace (Task 5). The recursion shares the
+// engine's spawn-limit MaxTotalBudget so active fan-out across all
+// depths cannot exceed the configured ceiling (P0.6).
+//
 // Expected:
 //   - swarmCtx is the active swarm context.
 //   - message is the prompt forwarded to every member.
@@ -1774,11 +1781,17 @@ func (d *DelegateTool) clampMaxParallelToBudget(manifestMax, rosterSize int) int
 //   - A swarm.MemberRunner the dispatcher invokes per member.
 //
 // Side effects:
-//   - On invocation: resolves the target engine, streams the member's
-//     output, and persists the response via the existing per-call
-//     plumbing.
+//   - On invocation: resolves the target engine OR recurses into a
+//     nested DispatchSwarmMembers call.
 func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string) swarm.MemberRunner {
 	return func(ctx context.Context, memberID string) error {
+		if subSwarm := d.resolveSubSwarm(memberID); subSwarm != nil {
+			child := swarmCtx.NestSubSwarm(memberID)
+			child.LeadAgent = subSwarm.Lead
+			child.Members = append([]string(nil), subSwarm.Members...)
+			child.Gates = append([]swarm.GateSpec(nil), subSwarm.Harness.Gates...)
+			return d.DispatchSwarmMembers(ctx, &child, subSwarm.Members, message)
+		}
 		eng, ok := d.engines[memberID]
 		if !ok || eng == nil {
 			return fmt.Errorf("no engine for swarm member %q", memberID)
@@ -1794,6 +1807,37 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 			return d.streamAndCollect(dispatchCtx, target, &result)
 		})
 	}
+}
+
+// resolveSubSwarm returns the manifest for memberID when the swarm
+// registry has a swarm with that id AND no agent engine matches the
+// id. The agent-vs-swarm precedence mirrors swarm.Resolve: agents win
+// at the registry boundary so a swarm whose id collides with an
+// agent stays callable as the agent (the validator already prevents
+// this collision globally).
+//
+// Expected:
+//   - memberID is one entry from the swarm-context roster.
+//
+// Returns:
+//   - The child manifest when memberID resolves to a swarm and not an
+//     agent.
+//   - nil when memberID is an agent or unknown.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveSubSwarm(memberID string) *swarm.Manifest {
+	if d.swarmRegistry == nil {
+		return nil
+	}
+	if eng, ok := d.engines[memberID]; ok && eng != nil {
+		return nil
+	}
+	m, ok := d.swarmRegistry.Get(memberID)
+	if !ok {
+		return nil
+	}
+	return m
 }
 
 // buildPostMemberHook wires DispatchOptions.PostMember to the
