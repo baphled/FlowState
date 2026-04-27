@@ -29,6 +29,7 @@ func RegisterBuiltins(reg *Registry) {
 	reg.Register(newPlansCommand())
 	reg.Register(newAgentCommand())
 	reg.Register(newModelCommand())
+	reg.Register(newSwarmCommand())
 }
 
 // newClearCommand builds the /clear command which wipes the chat
@@ -376,6 +377,27 @@ func modelDescription(contextLength int) string {
 		return ""
 	}
 	return fmt.Sprintf("%d ctx", contextLength)
+}
+
+// newSwarmCommand builds /swarm which opens the multi-step swarm
+// builder wizard. The wizard collects name → lead → members → gates
+// then writes the resulting manifest to the configured swarms
+// directory.
+//
+// Returns:
+//   - The /swarm Command wired to OpenWizard.
+//
+// Side effects:
+//   - None (pure constructor).
+func newSwarmCommand() Command {
+	return Command{
+		Name:        "swarm",
+		Description: "Create a new swarm manifest interactively",
+		OpenWizard: func(ctx CommandContext) Wizard {
+			return NewSwarmBuilder(ctx.AgentRegistry, ctx.SchemaNames, ctx.SwarmsDir)
+		},
+		Handler: func(_ CommandContext, _ *widgets.Item) tea.Cmd { return nil },
+	}
 }
 
 // _ ensures the agent import is referenced even when builtins are

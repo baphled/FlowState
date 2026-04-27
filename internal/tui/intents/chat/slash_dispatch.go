@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/intents/chat/slashcommand"
 	chatview "github.com/baphled/flowstate/internal/tui/views/chat"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
@@ -12,9 +13,12 @@ import (
 
 // slashState tracks the picker visible to the user when they type "/".
 //
-// Two modes:
+// Three modes:
 //   - command picker: filtered by the user's typed buffer (after the "/").
 //   - sub picker: populated by a Command's ItemsForPicker.
+//   - wizard: a multi-step builder driven by Command.OpenWizard. The
+//     wizard renders either a sub-picker (single or multi-select) or a
+//     text-input prompt depending on its current step.
 //
 // The chat intent owns slashState and routes key events through it
 // before the normal text-input pipeline.
@@ -30,6 +34,19 @@ type slashState struct {
 	// savedInput preserves the chat input buffer so Esc can restore it
 	// when the user dismisses the picker.
 	savedInput string
+	// wizard is the active multi-step builder when non-nil. Mutually
+	// exclusive with the legacy single-step pickers above on the
+	// happy path; the wizard reuses activeSubPicker for its picker
+	// steps and the chat input buffer for its text-input steps.
+	wizard slashcommand.Wizard
+	// wizardPrompt is the prompt label rendered above the wizard's
+	// current surface. Cached so the View loop doesn't have to call
+	// Current() on every paint.
+	wizardPrompt string
+	// wizardInputBuffer holds typed characters during a wizard text
+	// step, separate from i.input so the wizard can clear it after
+	// each submission without disturbing the main chat input.
+	wizardInputBuffer string
 }
 
 // SetSlashRegistryForTest swaps the slash registry used by the chat
@@ -98,6 +115,8 @@ func (i *Intent) slashCommandContext() slashcommand.CommandContext {
 		MessageSender:       slashSender{intent: i},
 		AgentRegistry:       i.agentRegistry,
 		Registry:            i.slashRegistry,
+		SwarmsDir:           i.swarmsDir,
+		SchemaNames:         swarm.RegisteredSchemaNames(),
 	}
 	// Guard each interface assignment against typed-nil: a nil-pointer
 	// concrete type boxed in an interface value passes a `== nil` check
@@ -119,6 +138,43 @@ func (i *Intent) slashCommandContext() slashcommand.CommandContext {
 		ctx.ProviderLister = i.app
 	}
 	return ctx
+}
+
+// SetSwarmsDirForTest overrides the swarms-write directory the /swarm
+// wizard targets. Tests use this to redirect the wizard at a tmpdir
+// without touching the user-config tree.
+//
+// Expected:
+//   - dir is a writable directory; empty disables the wizard's write
+//     path entirely.
+//
+// Side effects:
+//   - Mutates i.swarmsDir.
+func (i *Intent) SetSwarmsDirForTest(dir string) {
+	i.swarmsDir = dir
+}
+
+// SlashStateForTest exposes the slash-state struct for test assertions
+// against wizard plumbing without leaking the unexported field name.
+//
+// Returns:
+//   - The current slashState.
+//
+// Side effects:
+//   - None.
+func (i *Intent) SlashStateForTest() any {
+	return i.slashState
+}
+
+// WizardActiveForTest reports whether a wizard is currently running.
+//
+// Returns:
+//   - true when slashState.wizard is non-nil.
+//
+// Side effects:
+//   - None.
+func (i *Intent) WizardActiveForTest() bool {
+	return i.slashState.wizard != nil
 }
 
 // inputStartsSlash reports whether the live input buffer begins with
@@ -150,6 +206,9 @@ func (i *Intent) handleSlashKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	if i.slashRegistry == nil {
 		return nil, false
 	}
+	if i.slashState.wizard != nil {
+		return i.routeWizardKey(msg)
+	}
 	if i.slashState.activeSubPicker != nil {
 		return i.routeSubPickerKey(msg)
 	}
@@ -160,6 +219,145 @@ func (i *Intent) handleSlashKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		return i.openCommandPicker(msg)
 	}
 	return nil, false
+}
+
+// routeWizardKey dispatches a key event to the active wizard. The
+// dispatch branch depends on the wizard's current step kind: text
+// steps consume the key as input, picker steps forward to the
+// sub-picker.
+//
+// Expected:
+//   - msg is a tea.KeyMsg.
+//
+// Returns:
+//   - (cmd, true) reflecting the wizard-step outcome.
+//
+// Side effects:
+//   - May advance the wizard, open a follow-up picker, or finish the
+//     wizard.
+func (i *Intent) routeWizardKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	wizard := i.slashState.wizard
+	step := wizard.Current()
+	switch step.Kind {
+	case slashcommand.StepInput:
+		return i.routeWizardInputKey(msg)
+	case slashcommand.StepPicker, slashcommand.StepMultiPicker, slashcommand.StepConfirm:
+		return i.routeWizardPickerKey(msg)
+	}
+	i.finishWizard()
+	return nil, true
+}
+
+// routeWizardInputKey consumes a key for a wizard text-input step,
+// committing the buffer on Enter and rolling back on Esc.
+//
+// Returns:
+//   - (cmd, true).
+//
+// Side effects:
+//   - Mutates the wizard input buffer or advances the wizard.
+func (i *Intent) routeWizardInputKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		i.slashState.wizard.Cancel()
+		i.dismissSlashPicker(true)
+		return nil, true
+	case tea.KeyBackspace:
+		if i.slashState.wizardInputBuffer != "" {
+			buf := i.slashState.wizardInputBuffer
+			i.slashState.wizardInputBuffer = buf[:len(buf)-1]
+		}
+		return nil, true
+	case tea.KeyEnter:
+		return i.submitWizardText()
+	case tea.KeySpace:
+		i.slashState.wizardInputBuffer += " "
+		return nil, true
+	case tea.KeyRunes:
+		i.slashState.wizardInputBuffer += string(msg.Runes)
+		return nil, true
+	}
+	return nil, true
+}
+
+// submitWizardText commits the wizard input buffer to the active
+// wizard, surfacing any validation error as a system message.
+//
+// Returns:
+//   - (cmd, true).
+//
+// Side effects:
+//   - Advances the wizard or surfaces an error.
+func (i *Intent) submitWizardText() (tea.Cmd, bool) {
+	wizard := i.slashState.wizard
+	if err := wizard.SubmitText(i.slashState.wizardInputBuffer); err != nil {
+		i.viewWriteSystem("swarm builder: " + err.Error())
+		return nil, true
+	}
+	i.applyWizardStep(wizard.Current())
+	return nil, true
+}
+
+// routeWizardPickerKey consumes a key for a wizard picker step,
+// forwarding to the underlying picker and advancing the wizard on
+// commit.
+//
+// Returns:
+//   - (cmd, true).
+//
+// Side effects:
+//   - May advance the wizard or roll it back on cancel.
+func (i *Intent) routeWizardPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	picker := i.slashState.activeSubPicker
+	if picker == nil {
+		return nil, true
+	}
+	cmd, event := picker.Update(msg)
+	switch event.Type {
+	case widgets.EventCancel:
+		i.slashState.wizard.Cancel()
+		i.dismissSlashPicker(true)
+		return cmd, true
+	case widgets.EventSelect:
+		return i.submitWizardItem(event.Item, cmd)
+	case widgets.EventMultiSelect:
+		return i.submitWizardMulti(event.Items, cmd)
+	}
+	return cmd, true
+}
+
+// submitWizardItem advances the wizard with a single picker selection.
+//
+// Returns:
+//   - (mergedCmd, true).
+//
+// Side effects:
+//   - Advances the wizard or surfaces an error.
+func (i *Intent) submitWizardItem(item widgets.Item, picker tea.Cmd) (tea.Cmd, bool) {
+	wizard := i.slashState.wizard
+	if err := wizard.SubmitItem(item); err != nil {
+		i.viewWriteSystem("swarm builder: " + err.Error())
+		return picker, true
+	}
+	i.applyWizardStep(wizard.Current())
+	return picker, true
+}
+
+// submitWizardMulti advances the wizard with a multi-picker commit.
+//
+// Returns:
+//   - (mergedCmd, true).
+//
+// Side effects:
+//   - Advances the wizard or surfaces an error.
+func (i *Intent) submitWizardMulti(items []widgets.Item, picker tea.Cmd) (tea.Cmd, bool) {
+	wizard := i.slashState.wizard
+	if err := wizard.SubmitMulti(items); err != nil {
+		i.viewWriteSystem("swarm builder: " + err.Error())
+		return picker, true
+	}
+	i.applyWizardStep(wizard.Current())
+	return picker, true
 }
 
 // openCommandPicker initialises the command-picker state on the first
@@ -311,8 +509,8 @@ func (i *Intent) routeSubPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 }
 
 // runSelectedCommand dispatches a command picker selection — either
-// opening a sub-picker for the argument or invoking the handler
-// directly.
+// opening a wizard, opening a sub-picker for the argument, or invoking
+// the handler directly.
 //
 // Expected:
 //   - item.Value is a slashcommand.Command.
@@ -321,12 +519,15 @@ func (i *Intent) routeSubPickerKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 //   - (cmd, true) reflecting the dispatch outcome.
 //
 // Side effects:
-//   - May open a sub-picker or run a command handler.
+//   - May open a wizard, sub-picker, or run a command handler.
 func (i *Intent) runSelectedCommand(item widgets.Item) (tea.Cmd, bool) {
 	cmd, ok := item.Value.(slashcommand.Command)
 	if !ok {
 		i.dismissSlashPicker(true)
 		return nil, true
+	}
+	if cmd.OpenWizard != nil {
+		return i.openWizard(cmd)
 	}
 	if cmd.ItemsForPicker == nil {
 		i.dismissSlashPicker(true)
@@ -339,6 +540,87 @@ func (i *Intent) runSelectedCommand(item widgets.Item) (tea.Cmd, bool) {
 	}
 	i.openSubPicker(cmd, items)
 	return nil, true
+}
+
+// openWizard activates the wizard returned by cmd.OpenWizard and
+// renders its first step.
+//
+// Expected:
+//   - cmd.OpenWizard is non-nil.
+//
+// Returns:
+//   - (nil, true) — the wizard owns the slash surface from this point
+//     until SubmitMulti / Cancel returns the wizard to StepDone.
+//
+// Side effects:
+//   - Replaces slashState with the wizard variant and may open a
+//     fresh sub-picker.
+func (i *Intent) openWizard(cmd slashcommand.Command) (tea.Cmd, bool) {
+	wizard := cmd.OpenWizard(i.slashCommandContext())
+	if wizard == nil {
+		i.dismissSlashPicker(true)
+		return nil, true
+	}
+	i.slashState = slashState{wizard: wizard}
+	i.input = ""
+	i.applyWizardStep(wizard.Current())
+	return nil, true
+}
+
+// applyWizardStep configures the slash surface for a fresh WizardStep,
+// rendering pickers for picker variants and clearing the input buffer
+// for input variants. Pulled out so each Submit* path can reuse the
+// step-application pipeline without duplicating picker construction.
+//
+// Expected:
+//   - step is the wizard's current step.
+//
+// Side effects:
+//   - May open a sub-picker, render a system message, or clear the
+//     wizard input buffer.
+func (i *Intent) applyWizardStep(step slashcommand.WizardStep) {
+	i.slashState.wizardPrompt = step.Prompt
+	i.slashState.wizardInputBuffer = ""
+	switch step.Kind {
+	case slashcommand.StepInput:
+		i.slashState.activeSubPicker = nil
+	case slashcommand.StepPicker:
+		i.slashState.activeSubPicker = widgets.NewPicker(step.Items)
+	case slashcommand.StepMultiPicker:
+		i.slashState.activeSubPicker = widgets.NewPicker(step.Items, widgets.WithMultiSelect())
+	case slashcommand.StepConfirm:
+		if step.PreviewMessage != "" {
+			i.viewWriteSystem(step.PreviewMessage)
+		}
+		i.slashState.activeSubPicker = widgets.NewPicker(step.Items)
+	case slashcommand.StepDone:
+		i.finishWizard()
+	}
+}
+
+// finishWizard tears down the wizard's slash state, surfacing the
+// completion message as a system message when the wizard provides one.
+//
+// Side effects:
+//   - Resets slashState; may write a system message.
+func (i *Intent) finishWizard() {
+	if i.slashState.wizard == nil {
+		return
+	}
+	if msg := i.slashState.wizard.CompleteMessage(); msg != "" {
+		i.viewWriteSystem(msg)
+	}
+	i.slashState = slashState{}
+}
+
+// viewWriteSystem proxies a system-message write through the chat
+// view, mirroring the slashWriter capability so wizard surfaces don't
+// have to round-trip through CommandContext.
+//
+// Side effects:
+//   - Mutates the chat view's message slice.
+func (i *Intent) viewWriteSystem(content string) {
+	slashWriter{intent: i}.AddSystemMessage(content)
 }
 
 // openSubPicker swaps the visible picker for a fresh one populated by

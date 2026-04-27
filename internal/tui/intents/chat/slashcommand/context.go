@@ -50,6 +50,14 @@ type CommandContext struct {
 	// surface the result inside the conversation rather than via a local
 	// sub-picker. nil disables the capability.
 	MessageSender MessageSender
+	// SwarmsDir is the on-disk directory the /swarm wizard writes
+	// manifests into. Empty disables the wizard's write path; the
+	// chat intent wires this to the user-config swarms directory.
+	SwarmsDir string
+	// SchemaNames is the snapshot of registered schema-ref names the
+	// /swarm wizard surfaces in its gate-schema picker. Empty falls
+	// back to a "(no schemas registered)" placeholder.
+	SchemaNames []string
 }
 
 // MessageWiper is the narrow capability /clear consumes.

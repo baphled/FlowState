@@ -44,6 +44,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -415,6 +416,32 @@ func LookupSchema(name string) (*jsonschema.Resolved, bool) {
 	defer schemaRegistry.mu.RUnlock()
 	s, ok := schemaRegistry.schemas[name]
 	return s, ok
+}
+
+// RegisteredSchemaNames returns a sorted snapshot of the schema
+// registry's known names. Pulled out so UI surfaces (the /swarm
+// builder's gate-schema picker, future config dumps) can enumerate the
+// SchemaRef values a manifest may legally cite without reaching into
+// the registry's private map. The slice is freshly allocated and safe
+// for the caller to mutate.
+//
+// Returns:
+//   - A sorted slice of the registered schema names; nil when empty.
+//
+// Side effects:
+//   - None (read-only access under the registry's RLock).
+func RegisteredSchemaNames() []string {
+	schemaRegistry.mu.RLock()
+	defer schemaRegistry.mu.RUnlock()
+	if len(schemaRegistry.schemas) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(schemaRegistry.schemas))
+	for name := range schemaRegistry.schemas {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ClearSchemasForTest empties the Phase 1 registry. Tests use this in

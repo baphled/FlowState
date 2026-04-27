@@ -153,7 +153,65 @@ var _ = Describe("Picker", func() {
 			Expect(p.View()).To(ContainSubstring("no matches"))
 		})
 	})
+
+	Describe("multi-select", func() {
+		It("toggles items in and out of the multi-set on Toggle", func() {
+			p := newMultiPicker(threeItems())
+			p.Toggle()
+			Expect(p.MultiSelected()).To(HaveLen(1))
+			Expect(p.MultiSelected()[0].Label).To(Equal("/help"))
+			p.Toggle()
+			Expect(p.MultiSelected()).To(BeEmpty())
+		})
+
+		It("commits the multi-set in display order", func() {
+			p := newMultiPicker(threeItems())
+			p.Update(tea.KeyMsg{Type: tea.KeyDown})
+			p.Update(tea.KeyMsg{Type: tea.KeySpace})
+			p.Update(tea.KeyMsg{Type: tea.KeyDown})
+			p.Update(tea.KeyMsg{Type: tea.KeySpace})
+			multi := p.MultiSelected()
+			Expect(multi).To(HaveLen(2))
+			Expect(multi[0].Label).To(Equal("/clear"))
+			Expect(multi[1].Label).To(Equal("/exit"))
+		})
+
+		It("emits EventMultiSelect on Enter", func() {
+			p := newMultiPicker(threeItems())
+			p.Update(tea.KeyMsg{Type: tea.KeySpace})
+			_, ev := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(ev.Type).To(Equal(widgets.EventMultiSelect))
+			Expect(ev.Items).To(HaveLen(1))
+		})
+
+		It("renders [x] / [ ] prefix for multi-select rows", func() {
+			p := newMultiPicker(threeItems())
+			p.Toggle()
+			view := p.View()
+			Expect(view).To(ContainSubstring("[x]"))
+			Expect(view).To(ContainSubstring("[ ]"))
+		})
+
+		It("preserves toggles across filter changes", func() {
+			p := newMultiPicker(threeItems())
+			p.Toggle()
+			p.SetFilter("clear")
+			p.SetFilter("")
+			Expect(p.MultiSelected()).To(HaveLen(1))
+		})
+
+		It("keeps single-select callers unchanged", func() {
+			p := newPickerWith(threeItems())
+			Expect(p.IsMultiSelect()).To(BeFalse())
+			_, ev := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			Expect(ev.Type).To(Equal(widgets.EventSelect))
+		})
+	})
 })
+
+func newMultiPicker(items []widgets.Item) *widgets.Picker {
+	return widgets.NewPicker(items, widgets.WithMultiSelect())
+}
 
 func newPickerWith(items []widgets.Item) *widgets.Picker {
 	return widgets.NewPicker(items)

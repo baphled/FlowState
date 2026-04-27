@@ -27,6 +27,13 @@ type Command struct {
 	// sub-picker. Returning a nil or empty slice short-circuits to a
 	// direct Handler invocation.
 	ItemsForPicker func(ctx CommandContext) []widgets.Item
+	// OpenWizard, when non-nil, is invoked instead of ItemsForPicker /
+	// Handler to drive a multi-step builder flow. The chat intent
+	// advances the returned Wizard through its steps, swapping the
+	// active sub-picker between text-input prompts and pickers as the
+	// wizard requests. Mutually exclusive with ItemsForPicker — when
+	// both are set, OpenWizard takes precedence.
+	OpenWizard func(ctx CommandContext) Wizard
 }
 
 // Registry holds the registered commands. Concurrency-safe so future
