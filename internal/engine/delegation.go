@@ -1644,6 +1644,146 @@ func (d *DelegateTool) manifestForSwarm(swarmID string) *swarm.Manifest {
 	return m
 }
 
+// DispatchSwarmMembers fans out the swarm-context members through
+// swarm.DispatchMembers honouring the manifest's Harness.Parallel +
+// Harness.MaxParallel. Each member's per-iteration work is the same
+// per-attempt closure executeSync drives for a single delegation:
+// resolveStreamer + Stream + collectWithProgress wrapped in the
+// per-swarm Runner cached by SwarmID.
+//
+// The PostMember hook fires post-member gates on the worker goroutine
+// before the semaphore slot releases, so peers still in flight do not
+// proceed past a failed validation. This is the §T37 contract baked
+// into DispatchOptions.PostMember.
+//
+// MaxParallel is clamped against d.spawnLimits.MaxTotalBudget so a
+// manifest cannot fan out beyond the engine-level concurrency
+// ceiling. Recursion into sub-swarms (Task 5) shares the same ceiling
+// to bound active fan-out across all depths (P0.6).
+//
+// Expected:
+//   - ctx is the lead-side delegation context.
+//   - swarmCtx is the active swarm context; non-nil.
+//   - members is the roster to fan out across; empty yields nil.
+//   - message is the prompt forwarded to every member.
+//
+// Returns:
+//   - nil when every member completes and every post-member gate
+//     passes.
+//   - The first error otherwise.
+//
+// Side effects:
+//   - Streams per-member work through the resolved streamers.
+//   - Fires the PostMember hook for each member as it lands.
+func (d *DelegateTool) DispatchSwarmMembers(ctx context.Context, swarmCtx *swarm.Context, members []string, message string) error {
+	if swarmCtx == nil || len(members) == 0 {
+		return nil
+	}
+	manifest := d.manifestForSwarm(swarmCtx.SwarmID)
+	parallel := false
+	maxParallel := 0
+	if manifest != nil {
+		parallel = manifest.Harness.Parallel
+		maxParallel = manifest.Harness.MaxParallel
+	}
+	maxParallel = d.clampMaxParallelToBudget(maxParallel, len(members))
+
+	memberRunner := d.buildMemberRunner(swarmCtx, message)
+	postMember := d.buildPostMemberHook()
+
+	return swarm.DispatchMembers(ctx, members, memberRunner, swarm.DispatchOptions{
+		Parallel:    parallel,
+		MaxParallel: maxParallel,
+		PostMember:  postMember,
+	})
+}
+
+// clampMaxParallelToBudget bounds the manifest's MaxParallel against
+// the engine's spawn-limit MaxTotalBudget so a single swarm cannot
+// monopolise the worker pool. A zero / negative input is treated as
+// "no swarm-level cap" and clamped down to the budget.
+//
+// Expected:
+//   - manifestMax is opts.MaxParallel from the manifest (may be 0).
+//   - rosterSize is len(members); used as the floor for unset caps.
+//
+// Returns:
+//   - The effective ceiling: min(rosterSize, MaxTotalBudget) when
+//     manifestMax <= 0; min(manifestMax, MaxTotalBudget) otherwise.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) clampMaxParallelToBudget(manifestMax, rosterSize int) int {
+	budget := d.spawnLimits.MaxTotalBudget
+	cap := manifestMax
+	if cap <= 0 {
+		cap = rosterSize
+	}
+	if budget > 0 && cap > budget {
+		cap = budget
+	}
+	return cap
+}
+
+// buildMemberRunner returns the swarm.MemberRunner closure that drives
+// one member's stream through the per-swarm Runner. The closure is
+// shared across every member of the fan-out so retry/breaker state
+// accumulates correctly on the cached Runner.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - message is the prompt forwarded to every member.
+//
+// Returns:
+//   - A swarm.MemberRunner the dispatcher invokes per member.
+//
+// Side effects:
+//   - On invocation: resolves the target engine, streams the member's
+//     output, and persists the response via the existing per-call
+//     plumbing.
+func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string) swarm.MemberRunner {
+	return func(ctx context.Context, memberID string) error {
+		eng, ok := d.engines[memberID]
+		if !ok || eng == nil {
+			return fmt.Errorf("no engine for swarm member %q", memberID)
+		}
+		runner := d.runnerForSwarm(swarmCtx.SwarmID, d.manifestForSwarm(swarmCtx.SwarmID))
+		target := delegationTarget{
+			agentID: memberID,
+			engine:  eng,
+			message: message,
+		}
+		var result delegationResult
+		return runner.Dispatch(ctx, memberID, func(dispatchCtx context.Context, _ string) error {
+			return d.streamAndCollect(dispatchCtx, target, &result)
+		})
+	}
+}
+
+// buildPostMemberHook wires DispatchOptions.PostMember to the
+// engine's existing post-member gate dispatcher. The hook fires on
+// the worker goroutine so peers still in flight see a gate failure
+// before they release the semaphore slot — matches the §T37
+// contract.
+//
+// Returns:
+//   - The MemberPostHook closure; nil when no gate runner is wired
+//     so the dispatcher skips the hook entirely.
+//
+// Side effects:
+//   - On invocation: calls dispatchPostMemberGates on the engine.
+func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
+	if d.gateRunner == nil {
+		return nil
+	}
+	return func(ctx context.Context, memberID string, runErr error) error {
+		if runErr != nil {
+			return nil
+		}
+		return d.dispatchPostMemberGates(ctx, memberID)
+	}
+}
+
 // dispatchPostMemberGates fires every post-member gate on the active
 // swarm context whose Target matches memberID. Thin wrapper over
 // dispatchMemberGates kept for call-site readability — executeSync
