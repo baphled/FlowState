@@ -158,6 +158,75 @@ compression: micro=N auto=N tokens_saved=N overhead=N
 
 Compression savings are asymptotic. With the default `token_threshold: 1000`, micro-compaction never fires on trivial chat — candidate messages need to exceed roughly a screenful of text before the heuristic considers offloading them. The useful win is on long sessions with substantial per-message content (large tool outputs, file reads, retrieval payloads) where the hot tail stays small but the cold range grows without bound. Short conversations should expect zero observable savings.
 
+## RLM Context Management
+
+The "Reinforcement Learning Machine" (RLM) is FlowState's next-generation context management system, rolling out alongside the original `compression:` block above. The two systems are intentionally parallel during the transition — operators opt into RLM by populating a separate top-level `compaction:` block. Both can run independently while we validate the new model in production.
+
+The full design lives in the KB note `Claude-Context-Compression-Architecture.md`; a short tour:
+
+- **Phase A — Layer 1 micro-compaction** (`internal/context/compaction/`). A hot-tail / cold-store split for compactable tool results (`read`, `bash`, `grep`, `glob`, `web`, `websearch`, `edit`, `multiedit`, `ls`, `apply_patch`). Cold payloads land at `<sessionsDir>/<sessionID>/compacted/<message-id>.txt` as plain UTF-8 with mode `0o600`; the in-flight provider slice gets a one-line reference message in their place. The agent re-reads cold content on demand using the existing `read` tool — there is no bespoke "uncompact" tool.
+- **Phase B — Layer 3 incremental fact extraction** (`internal/context/factstore/`). Durable single-sentence claims are pulled from session text by a swap-able `FactExtractor`, persisted to `<sessionsDir>/<sessionID>/facts.jsonl` (mode `0o600`), and recalled by keyword overlap with a recency tie-breaker. The top-K relevant facts prepend the provider request as a `[recalled facts]` system block. The default extractor is regex-based; Phase C will plug in an LLM-driven one without changing the engine wire-in.
+
+Layers 2 and 4 (auto-compaction enrichment and the server-side context-editing API) are deferred — see the KB note for the full roadmap.
+
+### Activating RLM
+
+Add this top-level block to `config.yaml`:
+
+```yaml
+compaction:
+  # Phase A: hot-tail/cold-store split for compactable tool results.
+  micro_enabled: true
+  # Minimum number of recent compactable tool results kept verbatim.
+  hot_tail_min_results: 3
+  # Soft byte cap for the hot tail (~ token×4). Older results overflow
+  # to cold once exceeded; non-positive disables the cap.
+  hot_tail_size_budget: 8192
+  # Phase B: regex-driven fact extraction + per-session JSONL recall.
+  fact_extraction_enabled: true
+```
+
+Defaults (when the block is omitted):
+
+| Field | Default | Notes |
+|---|---|---|
+| `micro_enabled` | `false` on the wire | YAML omission disables Phase A — set explicitly to opt in. |
+| `hot_tail_min_results` | `3` | Applied via `compaction.ApplyDefaults`. |
+| `hot_tail_size_budget` | `8000` | Applied via `compaction.ApplyDefaults`. |
+| `fact_extraction_enabled` | `false` | Phase B is independently gated. |
+
+### When to enable which system
+
+The legacy `compression:` block (`HotColdSplitter`-driven micro-compaction, structured-summary auto-compaction, model-driven session memory) and the RLM `compaction:` block solve overlapping problems with different mechanics. Today the recommendation is:
+
+- **Default new operators to RLM** (`compaction.micro_enabled: true`, `compaction.fact_extraction_enabled: true`) and leave `compression.*.enabled: false`. The RLM hot/cold split is simpler, the cold payloads are plain text (not JSON-wrapped), and the fact-extraction layer is a clean integration seam for future LLM-driven extractors.
+- **Keep `compression:` for users who already depend on its idle-sweeper, per-session metrics, or the L2 structured-summary auto-compaction.** RLM Phase C will add equivalent enrichment; until then, the legacy system remains the only path for L2 features.
+
+Running both at once is supported (the layers consume independent slice transformations) but redundant — pick one.
+
+### Verifying activation
+
+`tools/smoke/rlm_verify` is a single-binary smoke that exercises Phase A and Phase B against synthetic input and reports whether your `config.yaml` has the relevant blocks:
+
+```bash
+go run ./tools/smoke/rlm_verify
+```
+
+Sample output:
+```
+=== RLM Phase A — micro-compaction ===
+  spilled to cold:   3 (became reference messages)
+  hot tail kept:     2 (full content preserved)
+  cold-store files:  3
+=== RLM Phase B — fact extraction & recall ===
+  facts extracted:   2
+  recall("ai-commit", topK=3): 2 facts
+=== user config compaction status ===
+    new 'compaction:' block (Phase A MicroCompactor):           true
+    fact_extraction_enabled (Phase B):                          true
+PASS
+```
+
 ## MCP Integration
 
 FlowState natively supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). This allows the AI to use external tools, access resources, and interact with your filesystem or other services.
