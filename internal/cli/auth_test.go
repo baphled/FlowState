@@ -126,6 +126,11 @@ var _ = Describe("Auth Commands", func() {
 	})
 
 	Describe("GitHub Copilot OAuth", func() {
+		BeforeEach(func() {
+			if os.Getenv("FLOWSTATE_TEST_OAUTH_LIVE") == "" {
+				Skip("live OAuth test skipped — opens a real browser and hits github.com/login/device. Set FLOWSTATE_TEST_OAUTH_LIVE=1 to run.")
+			}
+		})
 		It("shows starting message for github-copilot command", func() {
 			cmd := cli.NewRootCmd(testApp)
 			cmd.SetArgs([]string{"auth", "github-copilot"})
