@@ -155,19 +155,19 @@ var _ = Describe("PersistingStore", func() {
 
 // errFakeWrite is the sentinel returned by erroringStore.Set so the spec
 // can assert exact error propagation via MatchError.
-var errFakeWrite = &fakeErr{msg: "simulated coord-store write failure"}
+var errFakeWrite = &fakeError{msg: "simulated coord-store write failure"}
 
-type fakeErr struct{ msg string }
+type fakeError struct{ msg string }
 
-func (e *fakeErr) Error() string { return e.msg }
+func (e *fakeError) Error() string { return e.msg }
 
 // erroringStore is a minimal coordination.Store that fails Set with a
 // configurable error. Used to verify PersistingStore's error-propagation
 // behaviour without standing up the file-backed store and breaking it.
 type erroringStore struct{ err error }
 
-func (s *erroringStore) Get(string) ([]byte, error)         { return nil, s.err }
-func (s *erroringStore) Set(string, []byte) error           { return s.err }
-func (s *erroringStore) List(string) ([]string, error)      { return nil, s.err }
-func (s *erroringStore) Delete(string) error                { return s.err }
-func (s *erroringStore) Increment(string) (int, error)      { return 0, s.err }
+func (s *erroringStore) Get(string) ([]byte, error)    { return nil, s.err }
+func (s *erroringStore) Set(string, []byte) error      { return s.err }
+func (s *erroringStore) List(string) ([]string, error) { return nil, s.err }
+func (s *erroringStore) Delete(string) error           { return s.err }
+func (s *erroringStore) Increment(string) (int, error) { return 0, s.err }

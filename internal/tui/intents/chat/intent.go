@@ -285,16 +285,16 @@ type SessionManager interface {
 
 // IntentConfig holds the configuration for creating a new chat Intent.
 type IntentConfig struct {
-	App                AppShell
-	Engine             *engine.Engine
-	Streamer           Streamer
-	SessionManager     SessionManager
-	AgentID            string
-	SessionID          string
-	ProviderName       string
-	ModelName          string
-	TokenBudget        int
-	AgentRegistry      *agent.Registry
+	App            AppShell
+	Engine         *engine.Engine
+	Streamer       Streamer
+	SessionManager SessionManager
+	AgentID        string
+	SessionID      string
+	ProviderName   string
+	ModelName      string
+	TokenBudget    int
+	AgentRegistry  *agent.Registry
 	// SwarmRegistry is the optional swarm-manifest registry consulted by
 	// the @-mention resolver after the agent registry misses (T-swarm-2,
 	// spec §2). Nil disables the swarm fallthrough — the resolver behaves
@@ -344,9 +344,9 @@ type Intent struct {
 	// minute the host process held hundreds of timers and the CPU
 	// pegged. ensureSpinnerActive returns tickSpinner() only when the
 	// chain is dead, so at most one chain is ever active.
-	spinnerActive bool
-	streamChan         <-chan provider.StreamChunk
-	pendingPermission  *ToolPermissionMsg
+	spinnerActive     bool
+	streamChan        <-chan provider.StreamChunk
+	pendingPermission *ToolPermissionMsg
 	// sessionApprovedTools is the P17.S3 session-scoped approval cache.
 	// Populated when the user resolves a prompt with the 's' key
 	// (ToolPermissionDecision.Remember=true); consulted by
@@ -367,19 +367,19 @@ type Intent struct {
 	// the recent past. Zero value means "never scrolled by user", which
 	// makes the heuristic safe on a fresh session.
 	lastUserScrollAt time.Time
-	agentRegistry        *agent.Registry
+	agentRegistry    *agent.Registry
 	// swarmRegistry is consulted by resolveAtMention after the agent
 	// registry misses; nil disables the swarm fallthrough so the
 	// premature-delegation-misfire detector (P7/C2) and any future
 	// routing surface degrade to the historical agent-only behaviour.
-	swarmRegistry        *swarm.Registry
-	sessionStore         SessionLister
-	childSessionLister   SessionChildLister
-	view                 *chat.View
-	loadingModal         *feedback.Modal
-	errorModal           *feedback.Modal
-	notifications        *notification.Component
-	notificationManager  notification.Manager
+	swarmRegistry       *swarm.Registry
+	sessionStore        SessionLister
+	childSessionLister  SessionChildLister
+	view                *chat.View
+	loadingModal        *feedback.Modal
+	errorModal          *feedback.Modal
+	notifications       *notification.Component
+	notificationManager notification.Manager
 	// activeToolCall holds the name of the currently executing tool call during streaming.
 	activeToolCall string
 	activeThinking string
@@ -3431,7 +3431,6 @@ func (i *Intent) View() string {
 		content = trailLine + "\n" + content
 	}
 
-
 	var inputLine string
 	switch {
 	case i.pendingPermission != nil:
@@ -4448,6 +4447,15 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 // enough for the status bar's purpose, which is to give the user a
 // rough sense of how full the context window is. Returns zero when the
 // store or token counter is nil.
+//
+// Expected:
+//   - store is the loaded session's context store; nil yields 0.
+//
+// Returns:
+//   - The summed token count across stored messages and tool-call payloads.
+//
+// Side effects:
+//   - None.
 func (i *Intent) countTokensFromStore(store contextStoreLike) int {
 	if store == nil || i.tokenCounter == nil {
 		return 0

@@ -65,7 +65,7 @@ var _ = Describe("WaitForBackgroundExtractions", func() {
 		cli.WaitForBackgroundExtractionsForTest(waiter, 35*time.Second)
 
 		Expect(waiter.calls).To(Equal(1))
-		Expect(waiter.gotTimeout).To(Equal(35*time.Second))
+		Expect(waiter.gotTimeout).To(Equal(35 * time.Second))
 		Expect(buf.String()).NotTo(ContainSubstring("knowledge extraction timed out"),
 			"unexpected warn on clean finish; log:\n%s", buf.String())
 	})

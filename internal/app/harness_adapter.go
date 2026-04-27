@@ -144,9 +144,11 @@ func createHarnessStreamer(
 		} else {
 			critic, err := harness.NewLLMCritic(true, criticModel)
 			if err == nil {
-				opts = append(opts, harness.WithCritic(critic, p))
-				opts = append(opts, harness.WithCriticEnabledFunc(
-					newCriticEnabler(registry, cfg.CriticEnabled)))
+				opts = append(opts,
+					harness.WithCritic(critic, p),
+					harness.WithCriticEnabledFunc(
+						newCriticEnabler(registry, cfg.CriticEnabled)),
+				)
 			}
 		}
 	}
@@ -190,6 +192,15 @@ func createHarnessStreamer(
 // override. Used so a critic instance is constructed even when the global
 // config flag is off — agents with the per-manifest override get the
 // critic without forcing it on the rest of the system.
+//
+// Expected:
+//   - registry is the agent.Registry to scan; nil yields false.
+//
+// Returns:
+//   - True when at least one manifest has Harness.CriticEnabled=true.
+//
+// Side effects:
+//   - None.
 func registryHasCriticEnabledAgent(registry *agent.Registry) bool {
 	if registry == nil {
 		return false
@@ -203,10 +214,21 @@ func registryHasCriticEnabledAgent(registry *agent.Registry) bool {
 }
 
 // newCriticEnabler returns a per-agent predicate that decides whether the
-// configured critic should fire. The agent's manifest override always wins;
-// the global config flag is the fallback when the agent doesn't express an
-// opinion. An empty agentID falls back to the global setting (defensive
-// default for unit-test paths that bypass the streamer).
+// configured critic should fire. The agent's manifest override takes
+// precedence; the global config flag is the fallback when the agent
+// doesn't express an opinion. An empty agentID falls back to the global
+// setting (defensive default for unit-test paths that skip the streamer).
+//
+// Expected:
+//   - registry is the manifest source; may be nil, in which case the
+//     predicate defers to globalDefault.
+//   - globalDefault is the fallback value when no manifest override is found.
+//
+// Returns:
+//   - A predicate that, given an agentID, returns whether the critic should run.
+//
+// Side effects:
+//   - None at call time; the returned predicate performs only registry lookups.
 func newCriticEnabler(registry *agent.Registry, globalDefault bool) func(string) bool {
 	return func(agentID string) bool {
 		if registry != nil && agentID != "" {

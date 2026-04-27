@@ -73,10 +73,10 @@ func main() {
 	//    1s here gives ample headroom for filesystem latency.
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(planFile); err == nil {
-			fmt.Println("PASS: auto-persist landed at", planFile)
-			info, _ := os.Stat(planFile)
-			fmt.Printf("       size=%d bytes\n", info.Size())
+		info, err := os.Stat(planFile)
+		if err == nil {
+			fmt.Fprintln(os.Stderr, "PASS: auto-persist landed at", planFile)
+			fmt.Fprintf(os.Stderr, "       size=%d bytes\n", info.Size())
 			os.Exit(0)
 		}
 		time.Sleep(20 * time.Millisecond)

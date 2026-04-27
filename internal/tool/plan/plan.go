@@ -508,6 +508,12 @@ func NewWrite(plansDir string) *WriteTool { return &WriteTool{plansDir: plansDir
 func (t *WriteTool) Name() string { return writeName }
 
 // Description returns a human-readable description of the tool.
+//
+// Returns:
+//   - A multi-line description explaining the plan_write tool's contract.
+//
+// Side effects:
+//   - None.
 func (t *WriteTool) Description() string {
 	return "Persist a FlowState plan to the plans data directory as a " +
 		"markdown file. The input must be the full plan text including " +
@@ -521,6 +527,9 @@ func (t *WriteTool) Description() string {
 // Returns:
 //   - An object schema with a required string property "markdown" carrying
 //     the full plan text including YAML frontmatter.
+//
+// Side effects:
+//   - None.
 func (t *WriteTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -567,7 +576,7 @@ func (t *WriteTool) Execute(_ context.Context, input tool.Input) (tool.Result, e
 		return tool.Result{}, fmt.Errorf("plan_write: parsing plan markdown: %w", err)
 	}
 	if parsed == nil || strings.TrimSpace(parsed.ID) == "" {
-		return tool.Result{}, fmt.Errorf("plan_write: plan frontmatter must include a non-empty `id` field")
+		return tool.Result{}, errors.New("plan_write: plan frontmatter must include a non-empty `id` field")
 	}
 	id := parsed.ID
 	if strings.ContainsAny(id, "/\\") || id == "." || id == ".." {

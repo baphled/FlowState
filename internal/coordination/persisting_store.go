@@ -96,6 +96,15 @@ func (p *PersistingStore) Set(key string, value []byte) error {
 // shape (`<chainID>/review`). A bare "review" key is not an approval
 // signal — the chainID prefix is required so the callback can scope its
 // follow-up work to the right chain.
+//
+// Expected:
+//   - key is the coordination-store key being inspected.
+//
+// Returns:
+//   - True when key has the form `<non-empty-prefix>/review`, false otherwise.
+//
+// Side effects:
+//   - None.
 func isApprovalKey(key string) bool {
 	if !strings.HasSuffix(key, "/review") {
 		return false
@@ -107,6 +116,15 @@ func isApprovalKey(key string) bool {
 // containsApprovalVerdict reports whether the review payload contains
 // the word "APPROVE" (case-sensitive). Matches the existing
 // PersistApprovedPlan check on app.App so the two paths stay aligned.
+//
+// Expected:
+//   - value is the raw review-verdict payload written to the coordination store.
+//
+// Returns:
+//   - True when value contains the substring "APPROVE", false otherwise.
+//
+// Side effects:
+//   - None.
 func containsApprovalVerdict(value []byte) bool {
 	return strings.Contains(string(value), "APPROVE")
 }
