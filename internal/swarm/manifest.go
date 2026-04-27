@@ -51,6 +51,19 @@ type Manifest struct {
 	// edits.
 	Members []string `json:"members" yaml:"members"`
 
+	// SwarmType selects the per-type depth default per addendum §7 A4.
+	// Legal values: SwarmTypeAnalysis (default) / SwarmTypeCodegen /
+	// SwarmTypeOrchestration. An empty value is treated as analysis so
+	// existing manifests stay forward-compatible without an edit.
+	SwarmType SwarmType `json:"swarm_type,omitempty" yaml:"swarm_type,omitempty"`
+
+	// MaxDepth is an optional manifest-level override for the
+	// delegation-depth ceiling. Zero means "use the per-type default
+	// from DefaultMaxDepthForType(SwarmType)"; a positive value pins
+	// the cap regardless of swarm_type. Negative values are rejected
+	// at validation time.
+	MaxDepth int `json:"max_depth,omitempty" yaml:"max_depth,omitempty"`
+
 	// Harness configures the swarm-runner-level execution policy:
 	// parallel-vs-sequential member dispatch, the parallelism ceiling,
 	// and the swarm-scoped gates evaluated at swarm/member boundaries.
@@ -249,6 +262,14 @@ func (m *Manifest) Validate(v Validator) error {
 	}
 
 	if err := m.validateScalars(); err != nil {
+		return err
+	}
+
+	if err := m.validateSwarmType(); err != nil {
+		return err
+	}
+
+	if err := m.validateMaxDepth(); err != nil {
 		return err
 	}
 
