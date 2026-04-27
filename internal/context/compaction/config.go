@@ -29,6 +29,13 @@ type Config struct {
 	// combined size of compactable tool-result content kept in the hot
 	// tail. Older results overflow to cold storage. Default 8000.
 	HotTailSizeBudget int `json:"hot_tail_size_budget" yaml:"hot_tail_size_budget"`
+	// FactExtractionEnabled toggles RLM Phase B Layer 3 (incremental
+	// fact extraction). When true, the engine wires a factstore.Service
+	// that prepends a "[recalled facts]" system block to each provider
+	// request. Default false — Phase B ships behind a flag because the
+	// regex extractor is intentionally conservative and the LLM-driven
+	// extractor lands in Phase C.
+	FactExtractionEnabled bool `json:"fact_extraction_enabled" yaml:"fact_extraction_enabled"`
 }
 
 // DefaultConfig returns the production-safe Phase A defaults.
