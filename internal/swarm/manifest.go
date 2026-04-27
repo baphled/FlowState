@@ -149,6 +149,85 @@ type Manifest struct {
 	// explicitly lets users keep documented chain keys stable across
 	// renames.
 	Context ContextConfig `json:"context" yaml:"context"`
+
+	// Retry configures the per-member retry policy applied when a
+	// dispatch returns a CategoryRetryable error. Pointer so the
+	// loader can distinguish "block omitted" (nil; defaults apply)
+	// from "block present with explicit zeros" (validated). See §7 A2
+	// of the swarm-manifest addendum.
+	Retry *RetryPolicy `json:"retry,omitempty" yaml:"retry,omitempty"`
+
+	// CircuitBreaker configures the swarm-wide circuit breaker the
+	// runner trips when consecutive retryable failures hit Threshold.
+	// Same nil-vs-zero contract as Retry above.
+	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+}
+
+// EffectiveRetryPolicy returns the manifest's RetryPolicy with empty
+// fields filled in from the package defaults. The runner consults
+// this method rather than the raw Retry field so behaviour stays
+// stable when authors leave optional knobs unset. A nil Retry block
+// yields an all-defaults policy with Jitter enabled.
+//
+// Returns:
+//   - A RetryPolicy with all fields populated.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) EffectiveRetryPolicy() RetryPolicy {
+	if m.Retry == nil {
+		return RetryPolicy{
+			MaxAttempts:    DefaultRetryMaxAttempts,
+			InitialBackoff: DefaultRetryInitialBackoff,
+			MaxBackoff:     DefaultRetryMaxBackoff,
+			Multiplier:     DefaultRetryMultiplier,
+			Jitter:         true,
+		}
+	}
+	out := *m.Retry
+	if out.MaxAttempts < 1 {
+		out.MaxAttempts = DefaultRetryMaxAttempts
+	}
+	if out.InitialBackoff <= 0 {
+		out.InitialBackoff = DefaultRetryInitialBackoff
+	}
+	if out.MaxBackoff <= 0 {
+		out.MaxBackoff = DefaultRetryMaxBackoff
+	}
+	if out.Multiplier <= 0 {
+		out.Multiplier = DefaultRetryMultiplier
+	}
+	return out
+}
+
+// EffectiveCircuitBreaker returns the manifest's CircuitBreakerConfig
+// with empty fields filled in from the package defaults. A nil block
+// yields the all-defaults breaker configuration.
+//
+// Returns:
+//   - A CircuitBreakerConfig with all fields populated.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) EffectiveCircuitBreaker() CircuitBreakerConfig {
+	if m.CircuitBreaker == nil {
+		return CircuitBreakerConfig{
+			Threshold:        DefaultBreakerThreshold,
+			Cooldown:         DefaultBreakerCooldown,
+			HalfOpenAttempts: DefaultBreakerHalfOpenAttempts,
+		}
+	}
+	out := *m.CircuitBreaker
+	if out.Threshold < 1 {
+		out.Threshold = DefaultBreakerThreshold
+	}
+	if out.Cooldown <= 0 {
+		out.Cooldown = DefaultBreakerCooldown
+	}
+	if out.HalfOpenAttempts < 1 {
+		out.HalfOpenAttempts = DefaultBreakerHalfOpenAttempts
+	}
+	return out
 }
 
 // HarnessConfig groups the swarm-runner-level execution settings on a
@@ -431,7 +510,64 @@ func (m *Manifest) Validate(v Validator) error {
 		return err
 	}
 
-	return m.validateGates()
+	if err := m.validateGates(); err != nil {
+		return err
+	}
+
+	return m.validateResilience()
+}
+
+// validateResilience enforces the §7 A2 rules on the optional retry
+// and circuit-breaker blocks. Authors may omit either block entirely
+// (defaults apply via EffectiveRetryPolicy / EffectiveCircuitBreaker);
+// when they include a block, every populated field must be sensible
+// (no zero-or-negative attempts, no negative thresholds, etc).
+func (m *Manifest) validateResilience() error {
+	if err := validateRetryBlock(m.Retry); err != nil {
+		return err
+	}
+	return validateBreakerBlock(m.CircuitBreaker)
+}
+
+// validateRetryBlock enforces the per-field invariants on a present
+// retry block. A nil receiver short-circuits to nil because "block
+// omitted" inherits package defaults.
+func validateRetryBlock(r *RetryPolicy) error {
+	if r == nil {
+		return nil
+	}
+	if r.MaxAttempts < 1 {
+		return &ValidationError{Field: "retry.max_attempts", Message: "must be >= 1"}
+	}
+	if r.InitialBackoff < 0 {
+		return &ValidationError{Field: "retry.initial_backoff", Message: "must be non-negative"}
+	}
+	if r.MaxBackoff < 0 {
+		return &ValidationError{Field: "retry.max_backoff", Message: "must be non-negative"}
+	}
+	if r.Multiplier < 0 {
+		return &ValidationError{Field: "retry.multiplier", Message: "must be non-negative"}
+	}
+	return nil
+}
+
+// validateBreakerBlock enforces the per-field invariants on a present
+// circuit-breaker block. A nil receiver short-circuits to nil for the
+// same reason as validateRetryBlock.
+func validateBreakerBlock(b *CircuitBreakerConfig) error {
+	if b == nil {
+		return nil
+	}
+	if b.Threshold < 1 {
+		return &ValidationError{Field: "circuit_breaker.threshold", Message: "must be >= 1"}
+	}
+	if b.Cooldown < 0 {
+		return &ValidationError{Field: "circuit_breaker.cooldown", Message: "must be non-negative"}
+	}
+	if b.HalfOpenAttempts < 0 {
+		return &ValidationError{Field: "circuit_breaker.half_open_attempts", Message: "must be >= 1"}
+	}
+	return nil
 }
 
 // validateScalars enforces the trivial non-empty / version-recognised
