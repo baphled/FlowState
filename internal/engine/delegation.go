@@ -122,6 +122,31 @@ type DelegateTool struct {
 	// a swarm.MultiRunner pre-registered with builtin:result-schema.
 	gateRunner swarm.GateRunner
 
+	// swarmRegistry is the lookup the dispatch path consults to find
+	// the manifest backing the active swarm.Context. Init-time only:
+	// set once via WithSwarmRegistry at app boot, never mutated
+	// thereafter, so concurrent reads inside Execute / executeSync do
+	// not need synchronisation. nil means no swarm wiring — every
+	// swarm-aware code path falls through to the historical (pre-A2)
+	// behaviour.
+	swarmRegistry *swarm.Registry
+
+	// runnerFactory builds a per-swarm-run *swarm.Runner from the
+	// active manifest. Init-time only; the closure is captured once
+	// at app boot via WithRunnerFactory and returns a fresh Runner
+	// for every previously-unseen swarm id. nil means the dispatcher
+	// constructs an all-defaults Runner.
+	runnerFactory RunnerFactory
+
+	// runnerCache caches one *swarm.Runner per swarm.Context.SwarmID.
+	// Caching is the P0.1 fix: a fresh Runner inside the per-call
+	// closure means breaker state never accumulates, defeating the
+	// addendum-A2/A3 retry-and-breaker promise. Keyed by SwarmID
+	// rather than the *Context pointer because a chat session may
+	// reinstall the same context value across delegations and
+	// breaker state must persist across that boundary.
+	runnerCache sync.Map
+
 	// swarmLifecycleMu guards prefiredSwarmIDs against concurrent
 	// dispatches when the lead engine fan-outs to multiple members
 	// in parallel (Phase 3 territory but the mutex costs nothing
@@ -273,6 +298,123 @@ func (d *DelegateTool) WithToolCapability(allow, deny []string) *DelegateTool {
 func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
 	d.gateRunner = runner
 	return d
+}
+
+// RunnerFactory builds the *swarm.Runner the dispatch loop installs
+// for a given manifest. The runner is constructed once per swarm id
+// and cached; the factory is consulted only on the first dispatch
+// against a swarm context. A nil manifest signals "no swarm context"
+// and the factory MUST return a Runner with default retry/breaker
+// values so the no-swarm path still gets retry semantics.
+type RunnerFactory func(*swarm.Manifest) *swarm.Runner
+
+// defaultRunnerFactory returns the all-defaults factory used when the
+// app forgets to inject one via WithRunnerFactory. Constructs a Runner
+// from Manifest.EffectiveRetryPolicy / EffectiveCircuitBreaker (so
+// addendum-A2 defaults apply consistently with the manifest helpers)
+// or, when manifest is nil, a Runner from zero-value RetryPolicy /
+// CircuitBreakerConfig that the swarm package fills in with its own
+// defaults.
+func defaultRunnerFactory(m *swarm.Manifest) *swarm.Runner {
+	if m == nil {
+		return swarm.NewRunner(swarm.RetryPolicy{}, swarm.CircuitBreakerConfig{})
+	}
+	return swarm.NewRunner(m.EffectiveRetryPolicy(), m.EffectiveCircuitBreaker())
+}
+
+// WithSwarmRegistry installs the swarm.Registry the dispatch path uses
+// to resolve the active swarm.Context's manifest. Production wiring
+// passes the same instance the chat-input @<id> resolver consults so
+// the engine sees the same source of truth.
+//
+// Init-time only: set once at app boot, never mutated thereafter.
+// Concurrent reads inside Execute / executeSync rely on the contract
+// that no caller mutates this field after the first delegation lands.
+//
+// Expected:
+//   - reg may be nil to disable swarm-aware lookup (the historical
+//     pre-Task-1 behaviour).
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously installed registry.
+func (d *DelegateTool) WithSwarmRegistry(reg *swarm.Registry) *DelegateTool {
+	d.swarmRegistry = reg
+	return d
+}
+
+// WithRunnerFactory installs the closure the dispatcher consults to
+// build a *swarm.Runner the first time a given swarm id appears in a
+// delegation. Production wiring closes over Manifest helpers so the
+// runner picks up retry / breaker defaults from the manifest.
+//
+// Init-time only: configured once at app boot, never mutated
+// thereafter. The cache lookup (runnerCache) reads the factory under
+// the same init-time-only contract.
+//
+// Expected:
+//   - f may be nil to fall back to defaultRunnerFactory.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously installed factory and clears any
+//     cached Runners so a fresh factory takes effect on the next
+//     dispatch.
+func (d *DelegateTool) WithRunnerFactory(f RunnerFactory) *DelegateTool {
+	d.runnerFactory = f
+	d.runnerCache = sync.Map{}
+	return d
+}
+
+// runnerForSwarm returns the cached *swarm.Runner for swarmID,
+// constructing it via the configured factory on first use. Subsequent
+// calls with the same id return the same pointer so retry/breaker
+// state accumulates across delegations within the swarm run.
+//
+// Expected:
+//   - swarmID is the active swarm.Context.SwarmID; non-empty.
+//   - manifest is the manifest backing swarmID; may be nil when the
+//     registry could not resolve it (the factory falls back to
+//     defaults).
+//
+// Returns:
+//   - The cached or freshly-built *swarm.Runner.
+//
+// Side effects:
+//   - Inserts a new Runner into runnerCache on first miss.
+func (d *DelegateTool) runnerForSwarm(swarmID string, manifest *swarm.Manifest) *swarm.Runner {
+	if cached, ok := d.runnerCache.Load(swarmID); ok {
+		if runner, isRunner := cached.(*swarm.Runner); isRunner {
+			return runner
+		}
+	}
+	factory := d.runnerFactory
+	if factory == nil {
+		factory = defaultRunnerFactory
+	}
+	runner := factory(manifest)
+	actual, _ := d.runnerCache.LoadOrStore(swarmID, runner)
+	if existing, ok := actual.(*swarm.Runner); ok {
+		return existing
+	}
+	return runner
+}
+
+// RunnerForSwarmIDForTest exposes the cached Runner for swarmID so
+// wiring tests can pin runner-cache identity (P0.1 verification).
+// Production code never calls this; it is intentionally a thin
+// pointer accessor.
+func (d *DelegateTool) RunnerForSwarmIDForTest(swarmID string) *swarm.Runner {
+	if cached, ok := d.runnerCache.Load(swarmID); ok {
+		if runner, isRunner := cached.(*swarm.Runner); isRunner {
+			return runner
+		}
+	}
+	return nil
 }
 
 // resolveStreamer returns the Streamer for agentID, falling back to eng when none is registered.
@@ -1330,30 +1472,17 @@ func (d *DelegateTool) executeSync(
 	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
 
-	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(delegateCtx, target.agentID, target.message)
-	if err != nil {
-		d.circuitBreaker.RecordFailure()
-		completedAt := time.Now().UTC()
-		baseInfo.CompletedAt = &completedAt
-		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		return tool.Result{}, fmt.Errorf("delegation failed: %w", err)
-	}
-
-	chunks = d.withHarnessEvents(ctx, target, chunks, outChan, hasOutput)
-	chunks = d.wrapWithAccumulator(ctx, chunks, delegateSessionID, target.agentID)
-
-	result, err := d.collectWithProgress(ctx, chunks, time.Now())
-	if err != nil {
-		d.circuitBreaker.RecordFailure()
+	var result delegationResult
+	dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result)
+	if dispatchErr != nil {
 		completedAt := time.Now().UTC()
 		baseInfo.ToolCalls = result.toolCalls
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		return tool.Result{}, err
+		return tool.Result{}, dispatchErr
 	}
 
-	d.circuitBreaker.RecordSuccess()
 	completedAt := time.Now().UTC()
 	modelName := target.engine.LastModel()
 	providerName := target.engine.LastProvider()
@@ -1380,6 +1509,139 @@ func (d *DelegateTool) executeSync(
 			"provider":  providerName,
 		},
 	}, nil
+}
+
+// runStreamThroughRunner dispatches the target's Stream + collect
+// pipeline through the per-swarm-context Runner when one is in flight,
+// or through the historical CircuitBreaker on the no-swarm path.
+//
+// On the swarm path the closure is the work the runner re-invokes per
+// retry attempt: a fresh Stream call followed by collectWithProgress.
+// CategorisedErrors flow through unchanged so the runner sees the
+// retry/terminal verdict the source layer attached. Plain errors get
+// CategoryUnknown which the runner treats as terminal — this is the
+// addendum-A3 contract that uncategorised errors NEVER silently
+// retry.
+//
+// On the no-swarm path the historical delegation.CircuitBreaker still
+// records failures and successes; the swarm.Runner is OUT of the
+// dispatch chain (per the multi-expert review's OQ.3 resolution).
+//
+// Expected:
+//   - delegateCtx is the per-call context with the delegate session id.
+//   - target is the resolved delegation target.
+//   - result is an out-parameter the caller reads after success or
+//     failure — toolCalls / lastTool flow through it for emit metadata.
+//
+// Returns:
+//   - nil on success; a wrapped error otherwise.
+//
+// Side effects:
+//   - Calls Stream on the resolved streamer and drains its chunks.
+//   - Mutates the historical breaker on the no-swarm path only.
+//   - Caches a Runner per active swarm id on first use.
+func (d *DelegateTool) runStreamThroughRunner(delegateCtx context.Context, target delegationTarget, result *delegationResult) error {
+	swarmCtx, hasSwarm := d.activeSwarmContext()
+	if !hasSwarm {
+		return d.runStreamWithLegacyBreaker(delegateCtx, target, result)
+	}
+
+	runner := d.runnerForSwarm(swarmCtx.SwarmID, d.manifestForSwarm(swarmCtx.SwarmID))
+	dispatchErr := runner.Dispatch(delegateCtx, target.agentID, func(ctx context.Context, _ string) error {
+		return d.streamAndCollect(ctx, target, result)
+	})
+	return dispatchErr
+}
+
+// runStreamWithLegacyBreaker preserves the historical no-swarm-context
+// dispatch semantics: the legacy delegation.CircuitBreaker tracks
+// process-wide failure counts and the error wrapper matches the
+// pre-Task-1 surface so existing tests (and any caller that does not
+// install a swarm context) behave identically.
+//
+// Expected:
+//   - delegateCtx is the per-call context.
+//   - target is the resolved delegation target.
+//   - result is the out-parameter populated by collectWithProgress.
+//
+// Returns:
+//   - nil on success.
+//   - "delegation failed: %w" on Stream error; the underlying error
+//     from collectWithProgress otherwise.
+//
+// Side effects:
+//   - Calls RecordSuccess / RecordFailure on the historical breaker.
+func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, target delegationTarget, result *delegationResult) error {
+	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(delegateCtx, target.agentID, target.message)
+	if err != nil {
+		d.circuitBreaker.RecordFailure()
+		return fmt.Errorf("delegation failed: %w", err)
+	}
+	chunks = d.withHarnessEvents(delegateCtx, target, chunks, nil, false)
+	chunks = d.wrapWithAccumulator(delegateCtx, chunks, sessionIDFromContext(delegateCtx), target.agentID)
+	res, collectErr := d.collectWithProgress(delegateCtx, chunks, time.Now())
+	*result = res
+	if collectErr != nil {
+		d.circuitBreaker.RecordFailure()
+		return collectErr
+	}
+	d.circuitBreaker.RecordSuccess()
+	return nil
+}
+
+// streamAndCollect is the per-attempt closure body the swarm Runner
+// re-invokes under retry. A streamer panic surfaces as a
+// CategoryTerminal CategorisedError so the runner halts at attempt 1
+// (P1.3); a Stream-error and a collectWithProgress-error pass through
+// unchanged so any caller-categorisation reaches the runner intact.
+//
+// Expected:
+//   - ctx is the runner's per-attempt context.
+//   - target is the resolved delegation target.
+//   - result is the out-parameter populated on success or partial
+//     completion (so tool-call counts surface even on failure).
+//
+// Returns:
+//   - nil when the stream drained cleanly.
+//   - A categorised error wrapping the underlying cause otherwise.
+//
+// Side effects:
+//   - Calls Stream on the resolved streamer and drains its chunks.
+func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTarget, result *delegationResult) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = &swarm.CategorisedError{
+				Category: swarm.CategoryTerminal,
+				MemberID: target.agentID,
+				Cause:    fmt.Errorf("streamer panic: %v", r),
+			}
+		}
+	}()
+
+	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
+	if err != nil {
+		return err
+	}
+	chunks = d.withHarnessEvents(ctx, target, chunks, nil, false)
+	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
+	res, collectErr := d.collectWithProgress(ctx, chunks, time.Now())
+	*result = res
+	return collectErr
+}
+
+// manifestForSwarm returns the swarm.Manifest backing swarmID via the
+// installed registry, or nil when no registry is wired or no manifest
+// is registered. Pulled into a helper so the runner-cache lookup can
+// stay focused on the cache contract.
+func (d *DelegateTool) manifestForSwarm(swarmID string) *swarm.Manifest {
+	if d.swarmRegistry == nil {
+		return nil
+	}
+	m, ok := d.swarmRegistry.Get(swarmID)
+	if !ok {
+		return nil
+	}
+	return m
 }
 
 // dispatchPostMemberGates fires every post-member gate on the active
