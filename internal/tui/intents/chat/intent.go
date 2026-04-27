@@ -2908,6 +2908,40 @@ func extractAtMentions(message string) []string {
 	return out
 }
 
+// firstSwarmMention scans message for @<id> tokens and returns the first
+// one that resolves to a swarm. Mirrors the CLI's resolveAgentOrSwarm
+// behaviour at internal/cli/run.go: agent-mentions are passed through
+// silently (the existing slash-command + Tab-cycle paths already cover
+// agent switching); only swarm hits drive a context-switch in sendMessage.
+//
+// Expected:
+//   - message is the raw user prompt.
+//   - agentReg / swarmReg may be nil; nil treats the registry as empty.
+//
+// Returns:
+//   - swarmID is the user-typed id (without leading "@") when a swarm
+//     mention was found; "" otherwise.
+//   - manifest is the resolved swarm manifest; nil when none found.
+//   - leadAgent is the swarm's lead agent id; "" when no swarm matched.
+//
+// Side effects:
+//   - None.
+func firstSwarmMention(message string, agentReg *agent.Registry, swarmReg *swarm.Registry) (swarmID string, manifest *swarm.Manifest, leadAgent string) {
+	if swarmReg == nil {
+		return "", nil, ""
+	}
+	for _, name := range extractAtMentions(message) {
+		kind, m, err := resolveAtMention(name, agentReg, swarmReg)
+		if err != nil {
+			continue
+		}
+		if kind == swarm.KindSwarm && m != nil && m.Lead != "" {
+			return name, m, m.Lead
+		}
+	}
+	return "", nil, ""
+}
+
 // detectPrematureDelegationMisfire returns a user-facing warning message
 // when the P7/C2 signature is detected: an agent whose manifest sets
 // can_delegate:false emits a bare tool_use as the very first content of
@@ -3144,6 +3178,15 @@ func (i *Intent) sendMessage() tea.Cmd {
 			}
 		}
 	}
+
+	// @<swarm-id> mention dispatch: when the user's message references a
+	// registered swarm, switch to its lead agent and attach the swarm
+	// context to the engine — same shape as the CLI's resolveAgentOrSwarm
+	// path at internal/cli/run.go. Without this the TUI silently drops
+	// swarm mentions: the model sees "@bug-hunt" as text, calls
+	// suggest_delegate, the consumer doesn't know what to do with the
+	// dispatch_swarm payload, and the user's turn fizzles.
+	i.maybeSwitchToSwarm(userMessage)
 
 	// P7/C2 + D1: reset all per-turn state via the shared beginTurn helper
 	// so the new stream starts with a clean slate — including a cleared
@@ -4655,6 +4698,36 @@ func (i *Intent) toggleAgent() tea.Cmd {
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
 	return nil
+}
+
+// maybeSwitchToSwarm resolves the first @<swarm-id> mention in message
+// and, when found, swaps the engine's active manifest to the swarm's
+// lead agent and attaches a fresh swarm.Context. Idempotent — re-
+// invoking with the same message after the switch has already landed
+// is a no-op (the swarm context is already set; SetManifest with the
+// already-active lead is a cheap rewrite).
+//
+// Mirrors the CLI's resolveAgentOrSwarm flow so chat-input @<swarm>
+// dispatch behaves identically to `flowstate run --agent <swarm>`.
+func (i *Intent) maybeSwitchToSwarm(message string) {
+	if i.engine == nil || i.agentRegistry == nil {
+		return
+	}
+	_, swarmManifest, leadID := firstSwarmMention(message, i.agentRegistry, i.swarmRegistry)
+	if swarmManifest == nil {
+		return
+	}
+	leadManifest, found := i.agentRegistry.Get(leadID)
+	if !found || leadManifest == nil {
+		return
+	}
+	swarmCtx := swarm.NewContext(swarmManifest.ID, swarmManifest)
+	i.engine.SetManifest(*leadManifest)
+	i.engine.SetSwarmContext(&swarmCtx)
+	i.agentID = leadID
+	i.tokenBudget = i.engine.ModelContextLimit()
+	i.syncStatusBar()
+	i.syncViewAgentMeta()
 }
 
 // nextAgentInCycle returns the manifest immediately after currentID in
