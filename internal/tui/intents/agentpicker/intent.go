@@ -109,12 +109,20 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 				i.onSelect(selectedID)
 			}
 		}
-		return nil
+		return dismissModal
 	case tea.KeyEsc, tea.KeyCtrlC:
 		i.result = nil
-		return nil
+		return dismissModal
 	}
 	return nil
+}
+
+// dismissModal yields the message the parent app loop reads to unmount
+// the modal overlay. Identical pattern to models.Intent's navigateBack
+// helper; defined at package scope because the picker has no use for
+// a closure over receiver state on dismiss.
+func dismissModal() tea.Msg {
+	return intents.DismissModalMsg{}
 }
 
 // View renders the agent selection interface.
