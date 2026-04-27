@@ -440,3 +440,31 @@ func (s slashResumer) ResumeSession(sessionID string) {
 		s.intent.queuedSlashCmds = append(s.intent.queuedSlashCmds, cmd)
 	}
 }
+
+// renderSlashPickerOverlay returns the View() of whichever slash
+// picker is currently active (sub-picker takes precedence over the
+// command picker because they are mutually exclusive but the sub
+// shadows the command surface visually). Returns the empty string
+// when no picker is open so the caller can chain with `+ "\n"`
+// without leaving a dangling blank line.
+//
+// Expected:
+//   - Receiver may have nil slashState; safe.
+//
+// Returns:
+//   - The active picker's rendered view, or "".
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderSlashPickerOverlay() string {
+	if i == nil {
+		return ""
+	}
+	if p := i.slashState.activeSubPicker; p != nil {
+		return p.View()
+	}
+	if p := i.slashState.activeCommandPicker; p != nil {
+		return p.View()
+	}
+	return ""
+}
