@@ -42,6 +42,16 @@ func main() {
 	manifests, err := swarm.LoadDir(swarmDir)
 	must("load swarms", err)
 
+	// Index manifests by ID so per-member resolution can fall back to
+	// sub-swarm membership in O(1). Mirrors what the runtime does via
+	// swarm.Resolve → KindSwarm; without it any roster entry naming a
+	// sibling swarm (e.g. expert-consult inside planning-loop) would
+	// be reported as MISSING even though execution accepts it.
+	swarmIndex := make(map[string]*swarm.Manifest, len(manifests))
+	for _, m := range manifests {
+		swarmIndex[m.ID] = m
+	}
+
 	failures := 0
 	for _, m := range manifests {
 		fmt.Printf("\n  swarm: %s\n", m.ID)
@@ -52,12 +62,11 @@ func main() {
 		}
 		fmt.Printf("    lead: %-25s [%s]\n", m.Lead, leadStatus)
 		for _, member := range m.Members {
-			st := "OK"
-			if _, ok := registry.GetByNameOrAlias(member); !ok {
-				st = "MISSING"
+			kind := resolveMemberKind(member, registry, swarmIndex)
+			if kind == "MISSING" {
 				failures++
 			}
-			fmt.Printf("    member: %-23s [%s]\n", member, st)
+			fmt.Printf("    member: %-23s [%s]\n", member, kind)
 		}
 		fmt.Printf("    gates: %d\n", len(m.Harness.Gates))
 		for _, g := range m.Harness.Gates {
@@ -85,4 +94,17 @@ func must(label string, err error) {
 		fmt.Printf("FAIL %s: %v\n", label, err)
 		os.Exit(1)
 	}
+}
+
+// resolveMemberKind classifies a roster entry the same way the runtime
+// resolver does: prefer agents, then fall back to registered sub-swarms.
+// Returns "agent", "swarm", or "MISSING" for the per-member status column.
+func resolveMemberKind(member string, registry *agent.Registry, swarmIndex map[string]*swarm.Manifest) string {
+	if _, ok := registry.GetByNameOrAlias(member); ok {
+		return "agent"
+	}
+	if _, ok := swarmIndex[member]; ok {
+		return "swarm"
+	}
+	return "MISSING"
 }
