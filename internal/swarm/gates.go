@@ -213,6 +213,11 @@ type GateError struct {
 	// jsonschema validation error). Surfaced via Unwrap so
 	// errors.Is / errors.As work transparently.
 	Cause error
+
+	// ExtEvidence is populated by ext:<name> gate failures and carries
+	// the snippet/source/similarity payload the gate returned alongside
+	// its pass:false verdict. Empty for builtin gates.
+	ExtEvidence []ExtGateEvidence
 }
 
 // Error renders the structured fields in a stable "gate <name> (<when>
