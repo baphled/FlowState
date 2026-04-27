@@ -180,6 +180,7 @@ func newChatIntent(application *flowapp.App, agentID string, sessionID string) *
 		ProviderName:       application.Engine.LastProvider(),
 		TokenBudget:        application.Engine.ModelContextLimit(),
 		AgentRegistry:      application.Registry,
+		SwarmRegistry:      application.SwarmRegistry,
 		SessionStore:       application.Sessions,
 		ModelResolver:      application.Engine.FailoverManager(),
 		ChildSessionLister: application.SessionMgr(),
