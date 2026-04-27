@@ -307,6 +307,36 @@ var _ = Describe("SuggestDelegateTool", func() {
 				ContainSubstring("not found"),
 			))
 		})
+
+		Context("when the calling agent is the lead of the target swarm", func() {
+			It("errors with a self-dispatch refusal so the model does not echo a confirmation prompt to the user", func() {
+				leadTool := engine.NewSuggestDelegateToolWithSwarms(registry, swarmReg, "router")
+
+				_, err := leadTool.Execute(ctx, tool.Input{
+					Arguments: map[string]interface{}{
+						"target_agent": "bug-hunt",
+						"reason":       "double-checking the dispatch",
+					},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("already leading this swarm"))
+			})
+
+			It("honours SetSourceAgentID so an engine-level manifest swap propagates the lead-self check at runtime", func() {
+				tl.SetSourceAgentID("router")
+
+				_, err := tl.Execute(ctx, tool.Input{
+					Arguments: map[string]interface{}{
+						"target_agent": "bug-hunt",
+						"reason":       "post-switch sanity check",
+					},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("already leading this swarm"))
+			})
+		})
 	})
 })
 
