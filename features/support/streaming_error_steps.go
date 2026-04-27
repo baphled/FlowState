@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Package support provides BDD test step definitions and helpers.
 //
 // This file wires the three P18a streaming-error scenarios in

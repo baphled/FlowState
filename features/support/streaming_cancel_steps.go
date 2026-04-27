@@ -1,3 +1,5 @@
+//go:build e2e
+
 // Package support provides BDD step definitions and helpers.
 //
 // This file implements the step definitions that exercise the TUI's double-Esc
