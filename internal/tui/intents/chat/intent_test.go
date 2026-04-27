@@ -1086,6 +1086,67 @@ var _ = Describe("ChatIntent", func() {
 			Expect(toggleIntent.Input()).To(Equal("hi"))
 		})
 
+		Context("with a swarm registry and an @<swarm-id> mention", func() {
+			var swarmIntent *chat.Intent
+			var swarmEng *engine.Engine
+
+			BeforeEach(func() {
+				leadManifest := agent.Manifest{ID: "Senior-Engineer", Name: "Senior"}
+				memberManifest := agent.Manifest{ID: "explorer", Name: "Explorer"}
+				agentReg = agent.NewRegistry()
+				agentReg.Register(&leadManifest)
+				agentReg.Register(&memberManifest)
+				agentReg.Register(&executorManifest)
+
+				swarmReg := swarm.NewRegistry()
+				swarmReg.Register(&swarm.Manifest{
+					SchemaVersion: "1.0.0",
+					ID:            "bug-hunt",
+					Lead:          "Senior-Engineer",
+					Members:       []string{"explorer"},
+				})
+
+				reg = provider.NewRegistry()
+				reg.Register(&streamingStubProvider{providerName: "test-provider", chunks: []provider.StreamChunk{}})
+				swarmEng = engine.New(engine.Config{Registry: reg, Manifest: executorManifest})
+				swarmIntent = chat.NewIntent(chat.IntentConfig{
+					Engine:        swarmEng,
+					Streamer:      swarmEng,
+					AgentID:       "executor",
+					SessionID:     "test-session",
+					ProviderName:  "test-provider",
+					ModelName:     "test-model",
+					TokenBudget:   4096,
+					AgentRegistry: agentReg,
+					SwarmRegistry: swarmReg,
+				})
+			})
+
+			It("switches the active agent to the swarm's lead", func() {
+				submitChatInput(swarmIntent, "@bug-hunt find issues in the auth path")
+				Expect(swarmIntent.AgentIDForTest()).To(Equal("Senior-Engineer"))
+			})
+
+			It("attaches a swarm context to the engine", func() {
+				submitChatInput(swarmIntent, "@bug-hunt find issues")
+				ctx := swarmEng.SwarmContext()
+				Expect(ctx).NotTo(BeNil())
+				Expect(ctx.SwarmID).To(Equal("bug-hunt"))
+			})
+
+			It("leaves the agent unchanged when the mention is an agent id, not a swarm id", func() {
+				submitChatInput(swarmIntent, "@explorer look at internal/swarm/")
+				Expect(swarmIntent.AgentIDForTest()).To(Equal("executor"))
+				Expect(swarmEng.SwarmContext()).To(BeNil())
+			})
+
+			It("ignores unknown @-mentions", func() {
+				submitChatInput(swarmIntent, "@no-such-thing hello")
+				Expect(swarmIntent.AgentIDForTest()).To(Equal("executor"))
+				Expect(swarmEng.SwarmContext()).To(BeNil())
+			})
+		})
+
 		Context("with three agents in the registry", func() {
 			var (
 				cycleIntent *chat.Intent
@@ -3590,3 +3651,14 @@ var _ = Describe("@-mention resolver (T-swarm-2)", func() {
 		Expect(err.Error()).To(Equal(`no agent or swarm named "ghost"`))
 	})
 })
+
+// submitChatInput types message into the intent's input buffer one rune at
+// a time and presses Enter to submit. Mirrors the keypress sequence a
+// real user produces; lets the swarm-mention dispatch test exercise the
+// real sendMessage path without reaching for an export hook.
+func submitChatInput(intent *chat.Intent, message string) {
+	for _, r := range message {
+		intent.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+}
