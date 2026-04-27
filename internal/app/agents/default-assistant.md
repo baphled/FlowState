@@ -14,8 +14,6 @@ capabilities:
     - file
     - web
     - skill_load
-    - plan_list
-    - plan_read
     - coordination_store
   skills:
     - research
