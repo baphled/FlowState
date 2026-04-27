@@ -614,7 +614,7 @@ func DefaultConfig() *AppConfig {
 		GatesDir:        filepath.Join(Dir(), "gates"),
 		DataDir:         dataDir,
 		LogLevel:        "info",
-		DefaultAgent:    "executor",
+		DefaultAgent:    "default-assistant",
 		CategoryRouting: engine.DefaultCategoryRouting(),
 		AlwaysActiveSkills: []string{
 			"pre-action",
