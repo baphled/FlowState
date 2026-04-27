@@ -129,6 +129,9 @@ var _ = Describe("Tool wiring integration", func() {
 			plannerManifest := agent.Manifest{
 				ID:   "planner",
 				Name: "Planner",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate"},
+				},
 				Delegation: agent.Delegation{
 					CanDelegate: true,
 				},

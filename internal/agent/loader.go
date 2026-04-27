@@ -4,12 +4,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// warnIfNoTools emits a slog warning when a loaded manifest declares no
+// capabilities.tools. The engine's tool-gating is fail-closed (empty/nil
+// Tools yields an empty allowlist), so legacy manifests carried over from
+// the implicit-grant era now produce silently-stuck agents. The warning
+// surfaces the broken manifest at load time so operators can update it
+// rather than discover the issue when an agent fails to do anything.
+func warnIfNoTools(m *Manifest, path string) {
+	if m == nil || len(m.Capabilities.Tools) > 0 {
+		return
+	}
+	slog.Warn(
+		"agent manifest has no capabilities.tools; agent will have no tools available beyond suggest_delegate",
+		"path", path,
+		"agent_id", m.ID,
+	)
+}
 
 // LoadManifest loads an agent manifest from the given path, supporting JSON and Markdown formats.
 //
@@ -58,6 +76,7 @@ func LoadManifestJSON(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	applyDefaults(&m)
+	warnIfNoTools(&m, path)
 	return &m, nil
 }
 
@@ -110,6 +129,7 @@ func LoadManifestMarkdown(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	applyDefaults(&m)
+	warnIfNoTools(&m, path)
 	return &m, nil
 }
 

@@ -127,7 +127,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 
 		Context("when manifest has empty tools list", func() {
-			It("exposes all registered tools for backward compatibility", func() {
+			It("exposes only suggest_delegate (fail-closed)", func() {
 				manifest := agent.Manifest{
 					ID:   "legacy-agent",
 					Name: "Legacy Agent",
@@ -152,12 +152,17 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
-				Expect(chatProvider.capturedRequest.Tools).To(HaveLen(len(allTools)))
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).NotTo(ContainElement("bash"))
+				Expect(names).NotTo(ContainElement("read"))
+				Expect(names).NotTo(ContainElement("write"))
+				Expect(names).NotTo(ContainElement("web"))
+				Expect(names).NotTo(ContainElement("delegate"))
 			})
 		})
 
 		Context("when manifest has nil tools list", func() {
-			It("exposes all registered tools for backward compatibility", func() {
+			It("exposes only suggest_delegate (fail-closed)", func() {
 				manifest := agent.Manifest{
 					ID:   "nil-tools-agent",
 					Name: "Nil Tools Agent",
@@ -180,7 +185,12 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
-				Expect(chatProvider.capturedRequest.Tools).To(HaveLen(len(allTools)))
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).NotTo(ContainElement("bash"))
+				Expect(names).NotTo(ContainElement("read"))
+				Expect(names).NotTo(ContainElement("write"))
+				Expect(names).NotTo(ContainElement("web"))
+				Expect(names).NotTo(ContainElement("delegate"))
 			})
 		})
 
@@ -348,8 +358,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
-		Context("when the manifest tools list is empty, the legacy permissive branch exposes every registered tool", func() {
-			It("exposes all built-in tools for backward compatibility regardless of mcp_servers", func() {
+		Context("when the manifest tools list is empty (fail-closed)", func() {
+			It("exposes no built-in tools and no MCP tools (suggest_delegate aside)", func() {
 				manifest := agent.Manifest{
 					ID:   "legacy-permissive-agent",
 					Name: "Legacy Permissive Agent",
@@ -378,7 +388,10 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
-				Expect(chatProvider.capturedRequest.Tools).To(HaveLen(len(allTools)))
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).NotTo(ContainElement("bash"))
+				Expect(names).NotTo(ContainElement("create_entities"))
+				Expect(names).NotTo(ContainElement("search_nodes"))
 			})
 		})
 
