@@ -34,6 +34,7 @@ capabilities:
     - assumption-tracker
     - scope-management
     - estimation
+    - chain-id-resolution
   mcp_servers: []
   capability_description: "Generates structured, executable plans from coordinated evidence and requirements with detailed implementation steps"
 context_management:
@@ -111,6 +112,8 @@ You MUST use the `coordination_store` tool to read evidence before planning:
 1. **Read Requirements**: `coordination_store read {chainID}/requirements`
 2. **Read Interview Log**: `coordination_store read {chainID}/interview`
 3. **Read Analysis**: `coordination_store read {chainID}/analysis`
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store` for reads or writes.
 
 ## Expanded OMO Plan Format
 

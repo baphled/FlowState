@@ -27,6 +27,7 @@ capabilities:
     - discipline
     - research
     - critical-thinking
+    - chain-id-resolution
   mcp_servers:
     - vault-rag
   capability_description: "Searches official documentation, library best practices, and external references for accurate technical information"
@@ -101,6 +102,8 @@ When your research is complete, you must write your findings to the coordination
 Ensure the data is formatted as a structured JSON object containing an array of the references found.
 
 Your output is validated against `external-refs-v1` — wrap the references in an object with a `references` array (each entry must include at least `url`).
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store`.
 
 ## Constraints
 
