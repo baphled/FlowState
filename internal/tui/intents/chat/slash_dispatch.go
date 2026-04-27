@@ -91,19 +91,33 @@ func (i *Intent) EnsureDefaultSlashRegistry() {
 // Side effects:
 //   - None.
 func (i *Intent) slashCommandContext() slashcommand.CommandContext {
-	return slashcommand.CommandContext{
+	ctx := slashcommand.CommandContext{
 		MessageWiper:        slashWiper{intent: i},
 		SystemMessageWriter: slashWriter{intent: i},
 		SessionResumer:      slashResumer{intent: i},
-		SessionLister:       i.sessionStore,
-		PlanLister:          i.planStore,
-		PlanFetcher:         i.planStore,
 		AgentRegistry:       i.agentRegistry,
-		AgentSwitcher:       i.engine,
-		ProviderLister:      i.app,
-		ModelSwitcher:       i.engine,
 		Registry:            i.slashRegistry,
 	}
+	// Guard each interface assignment against typed-nil: a nil-pointer
+	// concrete type boxed in an interface value passes a `== nil` check
+	// (because the interface's type slot is non-nil), then panics on
+	// method dispatch. Assign only when the concrete pointer is non-nil
+	// so handlers see a true-nil interface they can guard against.
+	if i.sessionStore != nil {
+		ctx.SessionLister = i.sessionStore
+	}
+	if i.planStore != nil {
+		ctx.PlanLister = i.planStore
+		ctx.PlanFetcher = i.planStore
+	}
+	if i.engine != nil {
+		ctx.AgentSwitcher = i.engine
+		ctx.ModelSwitcher = i.engine
+	}
+	if i.app != nil {
+		ctx.ProviderLister = i.app
+	}
+	return ctx
 }
 
 // inputStartsSlash reports whether the live input buffer begins with

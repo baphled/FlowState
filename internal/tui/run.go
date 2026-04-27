@@ -183,6 +183,7 @@ func newChatIntent(application *flowapp.App, agentID string, sessionID string) *
 		SessionStore:       application.Sessions,
 		ModelResolver:      application.Engine.FailoverManager(),
 		ChildSessionLister: application.SessionMgr(),
+		PlanStore:          application.Store,
 	})
 }
 
