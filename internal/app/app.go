@@ -1379,7 +1379,7 @@ func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest age
 		// tool schema the same way a stale suggest_delegate would.
 		return
 	}
-	eng.AddTool(engine.NewSuggestDelegateTool(a.Registry, manifest.ID))
+	eng.AddTool(engine.NewSuggestDelegateToolWithSwarms(a.Registry, a.SwarmRegistry, manifest.ID))
 }
 
 // createDelegateEngine creates an isolated engine instance for a delegation target.
@@ -4069,11 +4069,17 @@ func NewForTest(tc TestConfig) (*App, error) {
 	}
 	disc := discovery.NewAgentDiscovery(manifestValues)
 
+	// SwarmRegistry stays nil when SwarmsDir is empty — that matches
+	// the pre-engine-wiring contract that resolveAgentOrSwarm depends
+	// on. An empty-but-non-nil registry seems harmless until the CLI
+	// resolver consults it and rejects every id (no agent + empty
+	// swarm → NotFoundError) instead of falling through to the
+	// historical pass-through path. Tests that exercise the swarm
+	// registry pass a non-empty SwarmsDir and load fixtures
+	// explicitly.
 	var swarmRegistry *swarm.Registry
 	if tc.SwarmsDir != "" {
 		swarmRegistry = setupSwarmRegistry(tc.SwarmsDir, agentRegistry)
-	} else {
-		swarmRegistry = swarm.NewRegistry()
 	}
 
 	return &App{

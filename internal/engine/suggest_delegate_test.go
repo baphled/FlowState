@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -253,4 +254,76 @@ var _ = Describe("SuggestDelegateTool", func() {
 			})
 		})
 	})
+
+	Describe("swarm-id targets", func() {
+		var swarmReg *swarm.Registry
+
+		BeforeEach(func() {
+			swarmReg = newSwarmRegistryWithBugHunt(registry)
+			tl = engine.NewSuggestDelegateToolWithSwarms(registry, swarmReg, "executor")
+		})
+
+		It("falls through to the swarm registry when target is a swarm id", func() {
+			result, err := tl.Execute(ctx, tool.Input{
+				Arguments: map[string]interface{}{
+					"target_agent": "bug-hunt",
+					"reason":       "user mentioned bug-hunt swarm",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			payload := decodeSuggestPayload(result)
+			Expect(payload["target_swarm"]).To(Equal("bug-hunt"))
+			Expect(payload["target_kind"]).To(Equal("swarm"))
+			Expect(payload["target_lead"]).To(Equal("router"))
+			Expect(payload["user_prompt"]).To(ContainSubstring("@bug-hunt"))
+		})
+
+		It("returns target_kind=agent for plain agent targets", func() {
+			result, err := tl.Execute(ctx, tool.Input{
+				Arguments: map[string]interface{}{
+					"target_agent": "team-lead",
+					"reason":       "specialist needed",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			payload := decodeSuggestPayload(result)
+			Expect(payload["target_kind"]).To(Equal("agent"))
+			Expect(payload).NotTo(HaveKey("target_swarm"))
+		})
+
+		It("errors when target matches neither registry", func() {
+			_, err := tl.Execute(ctx, tool.Input{
+				Arguments: map[string]interface{}{
+					"target_agent": "no-such-thing",
+					"reason":       "anything",
+				},
+			})
+
+			Expect(err).To(MatchError(ContainSubstring(`"no-such-thing"`)))
+			Expect(err.Error()).To(SatisfyAny(
+				ContainSubstring("agent or swarm not found"),
+				ContainSubstring("not found"),
+			))
+		})
+	})
 })
+
+func newSwarmRegistryWithBugHunt(agentReg *agent.Registry) *swarm.Registry {
+	_ = agentReg
+	reg := swarm.NewRegistry()
+	reg.Register(&swarm.Manifest{
+		SchemaVersion: "1.0.0",
+		ID:            "bug-hunt",
+		Lead:          "router",
+		Members:       []string{"team-lead"},
+	})
+	return reg
+}
+
+func decodeSuggestPayload(result tool.Result) map[string]interface{} {
+	var payload map[string]interface{}
+	Expect(json.Unmarshal([]byte(result.Output), &payload)).To(Succeed())
+	return payload
+}

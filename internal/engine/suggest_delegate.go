@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -23,6 +24,7 @@ import (
 // that emit bare tool_use chunks instead of calling suggest_delegate.
 type SuggestDelegateTool struct {
 	registry      *agent.Registry
+	swarmRegistry *swarm.Registry
 	sourceAgentID string
 }
 
@@ -54,6 +56,22 @@ var (
 //   - None.
 func NewSuggestDelegateTool(reg *agent.Registry, sourceAgentID string) *SuggestDelegateTool {
 	return &SuggestDelegateTool{registry: reg, sourceAgentID: sourceAgentID}
+}
+
+// NewSuggestDelegateToolWithSwarms constructs a SuggestDelegateTool
+// that resolves a target id against the agent registry first and the
+// swarm registry second. Mirrors the precedence rule in
+// internal/swarm.Resolve and the chat-input @-mention resolver. When
+// the target matches a swarm id, the emitted payload sets
+// target_kind="swarm", target_swarm to the swarm id, and to_agent /
+// target_lead to the swarm's lead so the chat layer renders a
+// swarm-dispatch suggestion instead of a plain agent-switch
+// suggestion.
+//
+// A nil swarmReg makes this constructor functionally identical to
+// NewSuggestDelegateTool.
+func NewSuggestDelegateToolWithSwarms(reg *agent.Registry, swarmReg *swarm.Registry, sourceAgentID string) *SuggestDelegateTool {
+	return &SuggestDelegateTool{registry: reg, swarmRegistry: swarmReg, sourceAgentID: sourceAgentID}
 }
 
 // Name returns the tool name.
@@ -143,10 +161,35 @@ func (s *SuggestDelegateTool) Execute(_ context.Context, input tool.Input) (tool
 	}
 
 	targetManifest, found := s.registry.GetByNameOrAlias(target)
-	if !found || targetManifest == nil {
-		return tool.Result{}, fmt.Errorf("target agent not found: %q", target)
+	if found && targetManifest != nil {
+		return s.buildAgentSuggestion(targetManifest, reason)
 	}
 
+	if swarmManifest, ok := s.lookupSwarm(target); ok {
+		return s.buildSwarmSuggestion(swarmManifest, reason)
+	}
+
+	return tool.Result{}, fmt.Errorf("target agent or swarm not found: %q", target)
+}
+
+// lookupSwarm reports whether id resolves to a registered swarm. nil
+// swarmRegistry is treated as an empty registry so the historical
+// agent-only constructor still works.
+func (s *SuggestDelegateTool) lookupSwarm(id string) (*swarm.Manifest, bool) {
+	if s.swarmRegistry == nil {
+		return nil, false
+	}
+	m, ok := s.swarmRegistry.Get(id)
+	if !ok || m == nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// buildAgentSuggestion is the agent-target payload path: resolves a
+// router via resolveRouter and emits target_kind="agent". Preserves
+// the historical payload shape; target_kind is additive.
+func (s *SuggestDelegateTool) buildAgentSuggestion(targetManifest *agent.Manifest, reason string) (tool.Result, error) {
 	routerID := s.resolveRouter()
 	if routerID == "" {
 		return tool.Result{}, errSuggestDelegateNoDelegatingAgent
@@ -157,6 +200,7 @@ func (s *SuggestDelegateTool) Execute(_ context.Context, input tool.Input) (tool
 		"from_agent":   s.sourceAgentID,
 		"to_agent":     routerID,
 		"target_agent": targetManifest.ID,
+		"target_kind":  "agent",
 		"reason":       reason,
 		"user_prompt": fmt.Sprintf(
 			"Switch to %s to delegate to @%s?", routerID, targetManifest.ID,
@@ -171,6 +215,40 @@ func (s *SuggestDelegateTool) Execute(_ context.Context, input tool.Input) (tool
 	return tool.Result{
 		Output: string(out),
 		Title:  "Suggested switch: " + routerID,
+	}, nil
+}
+
+// buildSwarmSuggestion emits the payload variant the chat layer
+// renders as a "dispatch swarm @<id>?" suggestion. to_agent /
+// target_lead point at the swarm's lead so the user sees which agent
+// will receive the prompt; target_swarm carries the swarm id so the
+// chat layer can construct an `@<swarm-id>` re-prompt verbatim.
+func (s *SuggestDelegateTool) buildSwarmSuggestion(swarmManifest *swarm.Manifest, reason string) (tool.Result, error) {
+	leadID := swarmManifest.Lead
+	if leadID == "" {
+		return tool.Result{}, fmt.Errorf("swarm %q has no lead agent registered", swarmManifest.ID)
+	}
+
+	payload := map[string]interface{}{
+		"suggestion":   "dispatch_swarm",
+		"from_agent":   s.sourceAgentID,
+		"to_agent":     leadID,
+		"target_swarm": swarmManifest.ID,
+		"target_lead":  leadID,
+		"target_kind":  "swarm",
+		"reason":       reason,
+		"user_prompt": fmt.Sprintf(
+			"Dispatch swarm @%s (led by %s)?", swarmManifest.ID, leadID,
+		),
+	}
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("marshalling suggest_delegate swarm payload: %w", err)
+	}
+	return tool.Result{
+		Output: string(out),
+		Title:  "Suggested swarm dispatch: " + swarmManifest.ID,
 	}, nil
 }
 

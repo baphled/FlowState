@@ -114,7 +114,7 @@ func runPrompt(cmd *cobra.Command, application *app.App, opts *RunOptions) error
 		return errors.New("engine not configured")
 	}
 
-	agentName := resolveAgentName(opts.Agent)
+	agentName := resolveAgentName(opts.Agent, configDefaultAgent(application))
 	resolvedAgent, swarmCtx, err := resolveAgentOrSwarm(application, agentName)
 	if err != nil {
 		return err
@@ -409,22 +409,37 @@ func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Contex
 	}
 }
 
-// resolveAgentName returns the agent name, defaulting to "worker" if empty.
-//
-// Expected:
-//   - agent is a string (may be empty or whitespace).
-//
-// Returns:
-//   - The agent name, or "worker" if agent is empty or whitespace.
-//
-// Side effects:
-//   - None.
-func resolveAgentName(agent string) string {
-	name := strings.TrimSpace(agent)
-	if name == "" {
-		return "worker"
+// configDefaultAgent reads application.Config.DefaultAgent defensively
+// — the App is fully wired in production but tests sometimes drive
+// runPrompt against a partial App where Config is nil. Returning ""
+// in those cases lets resolveAgentName fall through to the historical
+// "worker" sentinel without crashing.
+func configDefaultAgent(application *app.App) string {
+	if application == nil || application.Config == nil {
+		return ""
 	}
-	return name
+	return application.Config.DefaultAgent
+}
+
+// resolveAgentName returns the trimmed agent name. When agent is empty
+// or whitespace-only, it falls back to defaultAgent. When BOTH are
+// empty, it falls back to the historical "worker" sentinel — kept so
+// pre-existing callers that pass only the user-supplied flag (with no
+// config fallback) keep their old behaviour.
+//
+// The two-argument shape mirrors resolveChatAgentName so the CLI run
+// command can honour the operator's config.default_agent the same
+// way `flowstate chat` already does.
+func resolveAgentName(agent, defaultAgent string) string {
+	name := strings.TrimSpace(agent)
+	if name != "" {
+		return name
+	}
+	fallback := strings.TrimSpace(defaultAgent)
+	if fallback != "" {
+		return fallback
+	}
+	return "worker"
 }
 
 // resolveSessionID returns the session ID, generating a new one if empty.
