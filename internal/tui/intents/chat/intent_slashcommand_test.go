@@ -1,10 +1,14 @@
 package chat_test
 
 import (
+	"os"
+	"path/filepath"
+
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
@@ -77,6 +81,34 @@ var _ = Describe("ChatIntent slash commands", func() {
 			Expect(intent.Input()).To(BeEmpty())
 		})
 	})
+
+	Describe("/swarm wizard", func() {
+		var dir string
+
+		BeforeEach(func() {
+			dir = GinkgoT().TempDir()
+			intent.SetSwarmsDirForTest(dir)
+			seedAgentRegistry(intent)
+		})
+
+		It("opens the wizard when /swarm is selected", func() {
+			openSwarmWizard(intent)
+			Expect(intent.WizardActiveForTest()).To(BeTrue())
+		})
+
+		It("rolls back partially-written manifests on Esc", func() {
+			openSwarmWizard(intent)
+			typeWizardText(intent, "ws")
+			intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+			path := filepath.Join(dir, "ws.yml")
+			_, err := os.Stat(path)
+			Expect(os.IsNotExist(err)).To(BeTrue())
+
+			intent.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			Expect(intent.WizardActiveForTest()).To(BeFalse())
+		})
+	})
 })
 
 func typeRune(intent *chat.Intent, r rune) {
@@ -85,4 +117,27 @@ func typeRune(intent *chat.Intent, r rune) {
 
 func seedAssistantMessage(intent *chat.Intent, content string) {
 	intent.AppendAssistantMessageForTest(content)
+}
+
+func seedAgentRegistry(intent *chat.Intent) {
+	reg := agent.NewRegistry()
+	reg.Register(&agent.Manifest{ID: "planner", Name: "Planner", Mode: "plan"})
+	reg.Register(&agent.Manifest{ID: "executor", Name: "Executor"})
+	intent.SetAgentRegistryForTest(reg)
+}
+
+func openSwarmWizard(intent *chat.Intent) {
+	typeRune(intent, '/')
+	typeRune(intent, 's')
+	typeRune(intent, 'w')
+	typeRune(intent, 'a')
+	typeRune(intent, 'r')
+	typeRune(intent, 'm')
+	intent.Update(tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+func typeWizardText(intent *chat.Intent, value string) {
+	for _, r := range value {
+		typeRune(intent, r)
+	}
 }

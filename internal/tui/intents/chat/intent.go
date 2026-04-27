@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -471,6 +473,10 @@ type Intent struct {
 	// (e.g. /sessions resume) so the next Update tick can flush them
 	// alongside normal command output.
 	queuedSlashCmds []tea.Cmd
+	// swarmsDir is the on-disk destination for the /swarm wizard's
+	// manifest writes. The chat intent's constructor populates it from
+	// the user-config root; tests override via SetSwarmsDirForTest.
+	swarmsDir string
 }
 
 var runningInTests bool
@@ -699,10 +705,29 @@ func NewIntent(cfg IntentConfig) *Intent {
 		sessionTrail:         navigation.NewSessionTrail(),
 		sessionApprovedTools: map[string]struct{}{},
 		planStore:            cfg.PlanStore,
+		swarmsDir:            defaultSwarmsDir(),
 	}
 	intent.refreshSessionTrail()
 	intent.EnsureDefaultSlashRegistry()
 	return intent
+}
+
+// defaultSwarmsDir returns the user-config swarms directory used by the
+// /swarm wizard. Falls back to an empty string when os.UserConfigDir
+// cannot resolve so the wizard surface can still render but the write
+// path stays disabled.
+//
+// Returns:
+//   - The "<config>/flowstate/swarms" path, or empty on failure.
+//
+// Side effects:
+//   - None (does not create the directory).
+func defaultSwarmsDir() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "flowstate", "swarms")
 }
 
 // buildSwarmStore constructs the per-intent SwarmEventStore. When the
@@ -1520,6 +1545,9 @@ func (i *Intent) dispatchSlashKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 //     command from an empty buffer.
 func (i *Intent) slashTriggered(msg tea.KeyMsg) bool {
 	if i.slashState.activeCommandPicker != nil || i.slashState.activeSubPicker != nil {
+		return true
+	}
+	if i.slashState.wizard != nil {
 		return true
 	}
 	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '/' && i.input == "" {
