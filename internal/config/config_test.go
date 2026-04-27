@@ -1045,4 +1045,27 @@ providers:
 			Expect(cfg.Providers.ZAI.Plan).To(BeEmpty())
 		})
 	})
+
+	Describe("gates_dir config", func() {
+		It("parses an explicit gates_dir", func() {
+			configPath := filepath.Join(tempDir, "config.yaml")
+			Expect(os.WriteFile(configPath, []byte("gates_dir: /custom/path/gates\n"), 0o600)).To(Succeed())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.GatesDir).To(Equal("/custom/path/gates"))
+		})
+
+		It("defaults to ~/.config/flowstate/gates when omitted", func() {
+			configPath := filepath.Join(tempDir, "config.yaml")
+			Expect(os.WriteFile(configPath, []byte(""), 0o600)).To(Succeed())
+
+			cfg, err := config.LoadConfigFromPath(configPath)
+
+			Expect(err).NotTo(HaveOccurred())
+			home, _ := os.UserHomeDir()
+			Expect(cfg.GatesDir).To(Equal(filepath.Join(home, ".config", "flowstate", "gates")))
+		})
+	})
 })
