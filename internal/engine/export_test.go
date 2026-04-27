@@ -81,6 +81,20 @@ func SanitiseDelegationMessageForTest(msg string) string {
 	return sanitiseDelegationMessage(msg)
 }
 
+// CheckSpawnLimitsForTest exposes checkSpawnLimits so the depth-
+// resolution test can assert the manifest-aware ceiling without
+// driving Execute end-to-end.
+func (d *DelegateTool) CheckSpawnLimitsForTest(handoff *delegation.Handoff) error {
+	return d.checkSpawnLimits(handoff)
+}
+
+// SetEnginesForTest installs the engines map on a DelegateTool after
+// construction so depth-resolution tests can swap in a lead engine
+// carrying the swarm context without rebuilding the tool.
+func (d *DelegateTool) SetEnginesForTest(engines map[string]*Engine) {
+	d.engines = engines
+}
+
 // ResolveTargetWithOptionsForTest exposes resolveTargetWithOptions for white-box testing of delegation guards.
 func (d *DelegateTool) ResolveTargetWithOptionsForTest(ctx context.Context, params DelegationParamsForTest) (string, error) {
 	p := delegationParams{

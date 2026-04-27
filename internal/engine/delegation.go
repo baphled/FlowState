@@ -741,7 +741,12 @@ func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
 		}
 	}
 
-	if d.spawnLimits.ExceedsDepth(depth) {
+	effectiveLimits := d.spawnLimits
+	if maxDepth := d.swarmAwareMaxDepth(); maxDepth > 0 {
+		effectiveLimits.MaxDepth = maxDepth
+	}
+
+	if effectiveLimits.ExceedsDepth(depth) {
 		return errDepthLimitExceeded
 	}
 
@@ -752,6 +757,37 @@ func (d *DelegateTool) checkSpawnLimits(handoff *delegation.Handoff) error {
 	}
 
 	return nil
+}
+
+// swarmAwareMaxDepth returns the manifest-resolved depth ceiling for
+// the active swarm context, or 0 when no context / registry / manifest
+// is in flight (caller falls back to d.spawnLimits.MaxDepth).
+//
+// Resolution honours addendum A4: an explicit Manifest.MaxDepth wins
+// over the per-type default; SwarmType=analysis stays at 8, codegen
+// at 16, orchestration at 32.
+//
+// Expected:
+//   - The receiver may have no swarm context wired; returns 0 in that
+//     case.
+//
+// Returns:
+//   - The resolved depth ceiling when a swarm context + registry +
+//     manifest are in flight.
+//   - 0 when any link in that chain is missing.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) swarmAwareMaxDepth() int {
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok {
+		return 0
+	}
+	manifest := d.manifestForSwarm(swarmCtx.SwarmID)
+	if manifest == nil {
+		return 0
+	}
+	return manifest.ResolveMaxDepth()
 }
 
 // Name returns the tool name.
