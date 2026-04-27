@@ -16,6 +16,13 @@ import "context"
 // tool, gate runner, activity-pane streamer) can read it without a
 // new constructor argument on every site.
 //
+// IMMUTABILITY: Context values are immutable post-construction. The
+// dispatcher hands the same Context value to N concurrent member
+// closures (Task 2's fan-out + Task 5's sub-swarm recursion); any
+// in-place mutation by a worker would race against its peers. Call
+// sites that need to derive a child context (e.g. NestSubSwarm) MUST
+// return a new value, not mutate the receiver.
+//
 // Fields mirror spec §2:
 //   - SwarmID is the resolved swarm id (the user-facing name they
 //     typed after `@`).
@@ -33,12 +40,17 @@ import "context"
 //     swarm composition (spec §4) layers child prefixes under
 //     parents using `<parent>/<child>`. Defaults to the swarm id
 //     when the manifest leaves it blank.
+//   - Depth is the nesting level: 1 for the root context, 2 for the
+//     first sub-swarm layer, etc. Set in NestSubSwarm so the
+//     dispatcher can compare against Manifest.ResolveMaxDepth /
+//     SpawnLimits.MaxTotalBudget without parsing the chain prefix.
 type Context struct {
 	SwarmID     string
 	LeadAgent   string
 	Members     []string
 	Gates       []GateSpec
 	ChainPrefix string
+	Depth       int
 }
 
 // NewContext constructs a Context from a resolved Manifest plus the
@@ -72,6 +84,7 @@ func NewContext(id string, m *Manifest) Context {
 		Members:     append([]string(nil), m.Members...),
 		Gates:       append([]GateSpec(nil), m.Harness.Gates...),
 		ChainPrefix: prefix,
+		Depth:       1,
 	}
 }
 
@@ -113,6 +126,11 @@ func (c Context) NestSubSwarm(childID string) Context {
 		out.ChainPrefix = c.ChainPrefix
 	default:
 		out.ChainPrefix = c.ChainPrefix + "/" + childID
+	}
+	if out.Depth < 1 {
+		out.Depth = 2
+	} else {
+		out.Depth = c.Depth + 1
 	}
 	return out
 }
