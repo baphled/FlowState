@@ -44,12 +44,11 @@ var _ = Describe("SwarmWiring", func() {
 	})
 
 	Context("when NewForTest receives no SwarmsDir", func() {
-		It("populates SwarmRegistry with an empty registry rather than nil", func() {
+		It("leaves SwarmRegistry nil so resolveAgentOrSwarm preserves the historical pass-through", func() {
 			a, err := app.NewForTest(app.TestConfig{})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(a.SwarmRegistry).NotTo(BeNil())
-			Expect(a.SwarmRegistry.List()).To(BeEmpty())
+			Expect(a.SwarmRegistry).To(BeNil())
 		})
 	})
 })

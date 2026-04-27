@@ -104,6 +104,13 @@ func (p *runTestProvider) Models() ([]provider.Model, error) {
 }
 func createRunTestApp(streamChunks []provider.StreamChunk, streamErr error) *app.App {
 	testApp := createTestApp("", "")
+	workerManifest := agent.Manifest{
+		ID:                "worker",
+		Name:              "Worker",
+		Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+	registerWorkerInTestRegistry(testApp, workerManifest)
 	chatProvider := &runTestProvider{
 		name:         "run-test-provider",
 		streamChunks: streamChunks,
@@ -111,16 +118,27 @@ func createRunTestApp(streamChunks []provider.StreamChunk, streamErr error) *app
 	}
 	eng := engine.New(engine.Config{
 		ChatProvider: chatProvider,
-		Manifest: agent.Manifest{
-			ID:                "worker",
-			Name:              "Worker",
-			Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
-			ContextManagement: agent.DefaultContextManagement(),
-		},
+		Manifest:     workerManifest,
 	})
 	testApp.Engine = eng
 	testApp.Streamer = eng
 	return testApp
+}
+
+// registerWorkerInTestRegistry mirrors the production wiring shape:
+// the agent registry MUST hold an entry for whichever id the engine
+// is configured against, otherwise resolveAgentOrSwarm rejects the
+// name with a NotFoundError before runPrompt ever reaches the
+// engine. Pre-existing tests relied on the agent/swarm resolver
+// being a no-op when no swarm registry was configured; that
+// invariant changed when app.NewForTest started seeding an empty
+// swarm.Registry unconditionally.
+func registerWorkerInTestRegistry(testApp *app.App, manifest agent.Manifest) {
+	if testApp.Registry == nil {
+		testApp.Registry = agent.NewRegistry()
+	}
+	clone := manifest
+	testApp.Registry.Register(&clone)
 }
 
 var _ = Describe("run command", func() {
