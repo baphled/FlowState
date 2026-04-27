@@ -439,12 +439,37 @@ func (i *Intent) renderContent() string {
 		lines = append(lines, "", fmt.Sprintf("Delete session '%s' and its activity timeline? (y/N)", target))
 	}
 
+	lines = append(lines, "", i.renderHelpLine())
+
 	var buf strings.Builder
 	for _, line := range lines {
 		buf.WriteString(line)
 		buf.WriteString("\n")
 	}
 	return buf.String()
+}
+
+// renderHelpLine returns the footer help text naming the active key bindings
+// for the session browser. The line adapts to the configured affordances —
+// the delete hint is suppressed when no Deleter is wired, and likewise for
+// fork — so the surface always advertises only the keys that actually do
+// something.
+//
+// Returns:
+//   - A single-line string of " · "-separated key/action pairs.
+//
+// Side effects:
+//   - None.
+func (i *Intent) renderHelpLine() string {
+	parts := []string{"up/down navigate", "Enter open"}
+	if i.deleter != nil {
+		parts = append(parts, "d delete")
+	}
+	if i.forker != nil {
+		parts = append(parts, "f fork")
+	}
+	parts = append(parts, "Esc close")
+	return strings.Join(parts, " · ")
 }
 
 // IsConfirmingDelete reports whether the browser is currently prompting the

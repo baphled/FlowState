@@ -105,6 +105,43 @@ var _ = Describe("SessionBrowserIntent", func() {
 		})
 	})
 
+	Describe("help line", func() {
+		It("always names the navigation, open, and close keys", func() {
+			view := intent.View()
+			Expect(view).To(ContainSubstring("up/down navigate"))
+			Expect(view).To(ContainSubstring("Enter open"))
+			Expect(view).To(ContainSubstring("Esc close"))
+		})
+
+		It("omits the delete hint when no Deleter is configured", func() {
+			view := intent.View()
+			Expect(view).NotTo(ContainSubstring("d delete"))
+		})
+
+		It("omits the fork hint when no Forker is configured", func() {
+			view := intent.View()
+			Expect(view).NotTo(ContainSubstring("f fork"))
+		})
+
+		It("includes the delete hint when a Deleter is configured", func() {
+			intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+				Sessions: sessions,
+				Deleter:  &recordingDeleter{},
+			})
+			view := intent.View()
+			Expect(view).To(ContainSubstring("d delete"))
+		})
+
+		It("includes the fork hint when a Forker is configured", func() {
+			intent = sessionbrowser.NewIntent(sessionbrowser.IntentConfig{
+				Sessions: sessions,
+				Forker:   &recordingForker{newID: "forked-session-xyz"},
+			})
+			view := intent.View()
+			Expect(view).To(ContainSubstring("f fork"))
+		})
+	})
+
 	Describe("navigation", func() {
 		Context("KeyDown", func() {
 			It("moves selection down", func() {
