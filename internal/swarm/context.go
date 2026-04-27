@@ -75,6 +75,48 @@ func NewContext(id string, m *Manifest) Context {
 	}
 }
 
+// SubSwarmPath returns the slash-delimited path used by the runner to
+// label errors and structured logs (§7 A3 of the swarm-manifest
+// addendum). The path equals ChainPrefix; nested sub-swarms produce
+// their child path via NestSubSwarm. An empty receiver yields an
+// empty string so callers can rely on simple non-empty checks.
+//
+// Returns:
+//   - The swarm context's slash-delimited path.
+//
+// Side effects:
+//   - None.
+func (c Context) SubSwarmPath() string {
+	return c.ChainPrefix
+}
+
+// NestSubSwarm builds a child Context whose ChainPrefix concatenates
+// the receiver's path with childID under a "/" separator. Used at
+// sub-swarm dispatch boundaries so the inner runner attaches the full
+// parent/child trace to its errors. The receiver is unchanged.
+//
+// Expected:
+//   - childID is the sub-swarm id; non-empty.
+//
+// Returns:
+//   - A new Context whose ChainPrefix is "<parent>/<child>" (or just
+//     "<child>" when the parent path is empty).
+//
+// Side effects:
+//   - None.
+func (c Context) NestSubSwarm(childID string) Context {
+	out := c
+	switch {
+	case c.ChainPrefix == "":
+		out.ChainPrefix = childID
+	case childID == "":
+		out.ChainPrefix = c.ChainPrefix
+	default:
+		out.ChainPrefix = c.ChainPrefix + "/" + childID
+	}
+	return out
+}
+
 // AllowlistMembers returns the delegation allowlist the runner should
 // install for the duration of this swarm run. It is a copy of
 // Members so callers can mutate it (e.g. extend with the lead's own
