@@ -505,7 +505,7 @@ func MemberGatesFor(gates []GateSpec, when, memberID string) []GateSpec {
 			out = append(out, g)
 		}
 	}
-	return out
+	return SortGatesByPrecedence(out)
 }
 
 // SwarmGatesFor returns the gates whose When matches when (a swarm-
@@ -534,7 +534,7 @@ func SwarmGatesFor(gates []GateSpec, when string) []GateSpec {
 			out = append(out, g)
 		}
 	}
-	return out
+	return SortGatesByPrecedence(out)
 }
 
 // decodeJSONInstance unmarshals a coord-store payload into the

@@ -10,6 +10,29 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// UnmarshalManifest parses YAML bytes into a Manifest without touching
+// the filesystem or running validation. Tests use this to assert that
+// custom unmarshallers (notably GateSpec.UnmarshalYAML for duration
+// strings like "5s") round-trip correctly without paying the cost of
+// writing files to disk just to exercise parsing.
+//
+// Expected:
+//   - data is a UTF-8 YAML document representing one swarm manifest.
+//
+// Returns:
+//   - The parsed *Manifest on success.
+//   - The wrapped yaml.v3 parse error otherwise.
+//
+// Side effects:
+//   - None.
+func UnmarshalManifest(data []byte) (*Manifest, error) {
+	var m Manifest
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing swarm manifest: %w", err)
+	}
+	return &m, nil
+}
+
 // Load reads a single swarm manifest YAML file, unmarshals it onto a
 // Manifest value, and runs Validate against the no-op validator so
 // scalar / self-reference / gate-prefix rules fire even before any
