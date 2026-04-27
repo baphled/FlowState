@@ -200,6 +200,13 @@ func (i *Intent) AllViewMessagesForTest() []chatview.Message {
 	return i.view.Messages()
 }
 
+// AppendAssistantMessageForTest seeds a single assistant-role message
+// onto the chat view so slash-command tests can assert that /clear
+// wipes existing content.
+func (i *Intent) AppendAssistantMessageForTest(content string) {
+	i.view.AddMessage(chatview.Message{Role: "assistant", Content: content})
+}
+
 // RenderedViewportContentForTest returns the rendered chat view content as
 // it would be pushed into the message viewport via SetContent. Used by the
 // long-stream regression spec to assert the full committed assistant

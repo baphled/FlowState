@@ -187,6 +187,26 @@ func (v *View) Messages() []Message {
 	return append([]Message(nil), v.messages...)
 }
 
+// ClearMessages wipes the message buffer and any streaming-time
+// caches. /clear in the slash-command surface consumes this; the
+// streaming flag and partial response are cleared so the next turn
+// starts from a clean slate.
+//
+// Side effects:
+//   - Truncates messages, response, tool-call state, and partial caches.
+func (v *View) ClearMessages() {
+	v.messages = nil
+	v.response = ""
+	v.streaming = false
+	v.toolCallName = ""
+	v.toolCallStatus = ""
+	v.toolCallArgs = nil
+	v.toolCallResult = ""
+	v.activeThinking = ""
+	v.renderedMessages = nil
+	v.invalidatePartialCache()
+}
+
 // StartStreaming marks the view as actively streaming and clears partial state.
 //
 // Side effects:
