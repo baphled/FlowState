@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
@@ -32,6 +33,7 @@ import (
 	swarmactivity "github.com/baphled/flowstate/internal/tui/components/swarm_activity"
 	tuiintents "github.com/baphled/flowstate/internal/tui/intents"
 	"github.com/baphled/flowstate/internal/tui/intents/agentpicker"
+	"github.com/baphled/flowstate/internal/tui/intents/chat/slashcommand"
 	"github.com/baphled/flowstate/internal/tui/intents/eventdetails"
 	"github.com/baphled/flowstate/internal/tui/intents/models"
 	"github.com/baphled/flowstate/internal/tui/intents/sessionbrowser"
@@ -299,6 +301,9 @@ type IntentConfig struct {
 	SessionStore       SessionLister
 	ModelResolver      contextpkg.ModelResolver // Optional: enables dynamic model context limits
 	ChildSessionLister SessionChildLister
+	// PlanStore is the optional plan-document backing store consulted by
+	// the /plans slash command. Leave nil to disable the command.
+	PlanStore *plan.Store
 }
 
 // Intent handles chat interactions in the TUI.
@@ -452,6 +457,20 @@ type Intent struct {
 	// notification per user turn so a chain of misfired tool_use chunks
 	// does not spam the notification area.
 	prematureWarningFired bool
+	// slashRegistry holds the user-facing slash-command registry. nil
+	// disables the surface entirely (early-startup or test harness
+	// without command wiring).
+	slashRegistry *slashcommand.Registry
+	// slashState tracks the active picker (if any) — see slashState in
+	// slash_dispatch.go for the per-mode contract.
+	slashState slashState
+	// planStore optionally backs the /plans command. nil disables the
+	// command's sub-picker and its handler.
+	planStore *plan.Store
+	// queuedSlashCmds buffers tea.Cmds emitted by slash command handlers
+	// (e.g. /sessions resume) so the next Update tick can flush them
+	// alongside normal command output.
+	queuedSlashCmds []tea.Cmd
 }
 
 var runningInTests bool
@@ -679,8 +698,10 @@ func NewIntent(cfg IntentConfig) *Intent {
 		swarmFilterProfile:   swarmFilterProfileAll,
 		sessionTrail:         navigation.NewSessionTrail(),
 		sessionApprovedTools: map[string]struct{}{},
+		planStore:            cfg.PlanStore,
 	}
 	intent.refreshSessionTrail()
+	intent.EnsureDefaultSlashRegistry()
 	return intent
 }
 
@@ -1422,6 +1443,9 @@ func (i *Intent) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 // Side effects:
 //   - Updates i.input on typing keys.
 func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
+	if cmd, handled := i.dispatchSlashKey(msg); handled {
+		return cmd
+	}
 	switch msg.Type {
 	case tea.KeyEsc:
 		return i.handleEscapeKey()
@@ -1450,6 +1474,87 @@ func (i *Intent) handleInputKey(msg tea.KeyMsg) tea.Cmd {
 		return i.cancelActiveTool()
 	}
 	return i.handleTextInputKey(msg)
+}
+
+// dispatchSlashKey routes a key event through the slash-command surface
+// and is the single entry point handleInputKey uses to decide whether
+// to honour the user's keystroke as a slash interaction or fall back
+// to the normal input pipeline. The function intercepts the very first
+// "/" keystroke (so the picker opens) and forwards subsequent keys to
+// the active picker until it is dismissed or selected.
+//
+// Expected:
+//   - msg is a tea.KeyMsg from the chat intent's main key dispatcher.
+//
+// Returns:
+//   - (cmd, true) when consumed by the slash surface; (nil, false)
+//     otherwise.
+//
+// Side effects:
+//   - May mutate i.input and i.slashState.
+func (i *Intent) dispatchSlashKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	if !i.slashTriggered(msg) {
+		return i.flushQueuedSlashCmds(nil), false
+	}
+	cmd, handled := i.handleSlashKey(msg)
+	return i.flushQueuedSlashCmds(cmd), handled
+}
+
+// slashTriggered reports whether the slash surface should consider the
+// incoming key. The trigger gates are:
+//   - a picker is already open, OR
+//   - the user just typed "/" on an empty buffer.
+//
+// Compound inputs ("/cmd arg arg") deliberately do NOT re-trigger the
+// picker — those flow through sendMessage's legacy slash-command
+// dispatcher so existing /agent /agents /help test contracts hold.
+//
+// Expected:
+//   - msg is a tea.KeyMsg.
+//
+// Returns:
+//   - true when the slash surface should consume the event.
+//
+// Side effects:
+//   - May seed i.input with "/" when the user begins a fresh slash
+//     command from an empty buffer.
+func (i *Intent) slashTriggered(msg tea.KeyMsg) bool {
+	if i.slashState.activeCommandPicker != nil || i.slashState.activeSubPicker != nil {
+		return true
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == '/' && i.input == "" {
+		i.input = "/"
+		return true
+	}
+	return false
+}
+
+// flushQueuedSlashCmds drains the slash-handler queue and folds the
+// queued cmds with cmd into a single tea.Batch. The queue is reset
+// regardless of cmd's value.
+//
+// Expected:
+//   - cmd may be nil.
+//
+// Returns:
+//   - A tea.Cmd combining cmd and the queued slash cmds; nil when both
+//     sides are empty.
+//
+// Side effects:
+//   - Truncates i.queuedSlashCmds.
+func (i *Intent) flushQueuedSlashCmds(cmd tea.Cmd) tea.Cmd {
+	if len(i.queuedSlashCmds) == 0 {
+		return cmd
+	}
+	cmds := i.queuedSlashCmds
+	i.queuedSlashCmds = nil
+	if cmd != nil {
+		cmds = append([]tea.Cmd{cmd}, cmds...)
+	}
+	if len(cmds) == 1 {
+		return cmds[0]
+	}
+	return tea.Batch(cmds...)
 }
 
 // handleTextInputKey processes keys that mutate the input buffer directly
