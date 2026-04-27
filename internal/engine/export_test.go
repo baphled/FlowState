@@ -88,6 +88,13 @@ func (d *DelegateTool) CheckSpawnLimitsForTest(handoff *delegation.Handoff) erro
 	return d.checkSpawnLimits(handoff)
 }
 
+// DispatchPostMemberGatesForTest exposes dispatchPostMemberGates so
+// the ext-gate routing test can confirm the kind:ext:<name> path
+// reaches the registered ExtGateFunc.
+func (d *DelegateTool) DispatchPostMemberGatesForTest(ctx context.Context, memberID string) error {
+	return d.dispatchPostMemberGates(ctx, memberID)
+}
+
 // SetEnginesForTest installs the engines map on a DelegateTool after
 // construction so depth-resolution tests can swap in a lead engine
 // carrying the swarm context without rebuilding the tool.

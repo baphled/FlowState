@@ -314,10 +314,16 @@ func (m *MultiRunner) Register(kind string, runner GateRunner) {
 }
 
 // Run dispatches gate to the registered runner whose key matches
-// gate.Kind. Returns a *GateError with reason "no runner registered
-// for kind <kind>" when no backend is registered — that surface is
-// the same one used for runtime validation failures so callers can
-// branch uniformly on *GateError.
+// gate.Kind. When no backend is registered AND the kind has the
+// "ext:" prefix, MultiRunner falls back to the public RunGate
+// dispatcher so ext: gates resolve through the registered ext gate
+// (subprocess or func) without every MultiRunner caller having to
+// pre-register a backend per ext gate.
+//
+// Single-source dispatch table: the OQ.2 resolution from the multi-
+// expert review picks promote-RunGate over silent-fallback inside
+// swarm.Dispatch so the ext path has a public dispatcher tests can
+// pin against.
 //
 // Expected:
 //   - gate is a populated GateSpec the swarm runner has already
@@ -338,17 +344,48 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 	m.mu.RLock()
 	runner, ok := m.backends[gate.Kind]
 	m.mu.RUnlock()
-	if !ok {
-		return &GateError{
-			GateName: gate.Name,
-			GateKind: gate.Kind,
-			When:     gate.When,
-			SwarmID:  args.SwarmID,
-			MemberID: args.MemberID,
-			Reason:   fmt.Sprintf("no runner registered for kind %q", gate.Kind),
-		}
+	if ok {
+		return runner.Run(ctx, gate, args)
 	}
-	return runner.Run(ctx, gate, args)
+	if strings.HasPrefix(gate.Kind, gateKindExtPrefix) {
+		return RunGate(ctx, gate, gateInputFromArgs(gate, args))
+	}
+	return &GateError{
+		GateName: gate.Name,
+		GateKind: gate.Kind,
+		When:     gate.When,
+		SwarmID:  args.SwarmID,
+		MemberID: args.MemberID,
+		Reason:   fmt.Sprintf("no runner registered for kind %q", gate.Kind),
+	}
+}
+
+// gateInputFromArgs projects a GateArgs (the runner-facing envelope
+// carrying CoordStore + ChainPrefix) onto a GateInput (the ext-gate
+// wire shape carrying MemberID + Payload + Policy). Coord-store reads
+// are best-effort: a missing key surfaces as an empty Payload so the
+// ext gate can decide for itself whether to fail or pass-through.
+//
+// Expected:
+//   - gate is the GateSpec being dispatched; supplies Target /
+//     OutputKey for the coord-store lookup.
+//   - args is the runtime envelope; CoordStore may be nil.
+//
+// Returns:
+//   - A populated GateInput. Payload is empty when no coord-store is
+//     wired or no value is registered at the target's output key.
+//
+// Side effects:
+//   - Reads at most one key from args.CoordStore.
+func gateInputFromArgs(gate GateSpec, args GateArgs) GateInput {
+	in := GateInput{MemberID: args.MemberID}
+	if args.CoordStore == nil {
+		return in
+	}
+	if payload, err := readMemberOutput(gate, args); err == nil {
+		in.Payload = payload
+	}
+	return in
 }
 
 // schemaRegistry is the Phase 1 in-process JSON-schema lookup table.
@@ -555,19 +592,38 @@ type GateInput struct {
 	Policy   map[string]any
 }
 
-// RunGateForTest is exposed only for in-package and adjacent
-// (swarm_test) tests that need to exercise the kind-routing
-// dispatcher in isolation. Production code reaches the same logic
-// through the engine's delegation path, which keeps using the
-// MultiRunner+GateArgs surface to read coord-store state.
+// RunGateForTest is retained as a thin alias for the renamed public
+// RunGate so existing in-package and adjacent test callers keep
+// compiling. New code should reach RunGate directly.
+//
+// Deprecated: use RunGate.
 func RunGateForTest(ctx context.Context, spec GateSpec, in GateInput) error {
-	return runGateByKind(ctx, spec, in)
+	return RunGate(ctx, spec, in)
 }
 
-// runGateByKind is the dispatch switch routing spec.Kind to either the
-// in-process builtin runner or the ext:* DispatchExt path. New gate
-// families plug in here; everything else is bookkeeping.
-func runGateByKind(ctx context.Context, spec GateSpec, in GateInput) error {
+// RunGate is the public dispatch switch routing spec.Kind to either
+// the in-process builtin runner or the ext:* DispatchExt path. The
+// MultiRunner reaches this from its `ext:` fallback so ext gates
+// resolve through the registered runner without a per-gate backend
+// pre-registration step (per the multi-expert review's OQ.2
+// resolution).
+//
+// Expected:
+//   - spec.Kind starts with "builtin:" or "ext:". An unrecognised
+//     prefix returns an error from the default branch.
+//   - in carries the MemberID + payload + policy the ext gate
+//     evaluates against. Empty Payload is allowed; the ext gate
+//     decides whether to halt or pass.
+//
+// Returns:
+//   - nil on pass.
+//   - A *GateError on fail.
+//   - A descriptive error for an unknown kind prefix (programmer fault
+//     — the validator should have rejected this manifest).
+//
+// Side effects:
+//   - Calls the registered ext runner or the builtin runner.
+func RunGate(ctx context.Context, spec GateSpec, in GateInput) error {
 	switch {
 	case strings.HasPrefix(spec.Kind, gateKindBuiltinPrefix):
 		return runBuiltinGate(ctx, spec, in)
