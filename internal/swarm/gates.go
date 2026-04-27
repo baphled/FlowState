@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -540,6 +541,98 @@ func SwarmGatesFor(gates []GateSpec, when string) []GateSpec {
 		}
 	}
 	return SortGatesByPrecedence(out)
+}
+
+// GateInput is the runtime payload supplied to a gate at dispatch.
+// runBuiltinGate validates Payload directly against the schema named
+// by the GateSpec; the ext: arm forwards it onto the subprocess via
+// DispatchExt. The shape is intentionally narrow — keep it close to
+// the wire-shape ExtGateRequest exposes so the dispatch switch is a
+// straight projection rather than a translation.
+type GateInput struct {
+	MemberID string
+	Payload  []byte
+	Policy   map[string]any
+}
+
+// RunGateForTest is exposed only for in-package and adjacent
+// (swarm_test) tests that need to exercise the kind-routing
+// dispatcher in isolation. Production code reaches the same logic
+// through the engine's delegation path, which keeps using the
+// MultiRunner+GateArgs surface to read coord-store state.
+func RunGateForTest(ctx context.Context, spec GateSpec, in GateInput) error {
+	return runGateByKind(ctx, spec, in)
+}
+
+// runGateByKind is the dispatch switch routing spec.Kind to either the
+// in-process builtin runner or the ext:* DispatchExt path. New gate
+// families plug in here; everything else is bookkeeping.
+func runGateByKind(ctx context.Context, spec GateSpec, in GateInput) error {
+	switch {
+	case strings.HasPrefix(spec.Kind, gateKindBuiltinPrefix):
+		return runBuiltinGate(ctx, spec, in)
+	case strings.HasPrefix(spec.Kind, gateKindExtPrefix):
+		return DispatchExt(ctx, spec.Kind, ExtGateRequest{
+			MemberID: in.MemberID,
+			When:     spec.When,
+			Payload:  in.Payload,
+			Policy:   in.Policy,
+		})
+	default:
+		return fmt.Errorf("gate %q: unknown kind family %q", spec.Name, spec.Kind)
+	}
+}
+
+// runBuiltinGate handles the builtin:result-schema family. It
+// validates in.Payload directly against the schema named by
+// spec.SchemaRef. Failure paths return a *GateError shaped the same
+// way the MultiRunner+CoordStore path does so callers downstream of
+// runGateByKind can branch uniformly on *GateError.
+func runBuiltinGate(_ context.Context, spec GateSpec, in GateInput) error {
+	if spec.Kind != "builtin:result-schema" {
+		return fmt.Errorf("gate %q: unsupported builtin kind %q", spec.Name, spec.Kind)
+	}
+	if spec.SchemaRef == "" {
+		return &GateError{
+			GateName: spec.Name,
+			GateKind: spec.Kind,
+			When:     spec.When,
+			MemberID: in.MemberID,
+			Reason:   "missing schema_ref on builtin:result-schema gate",
+		}
+	}
+	resolved, ok := LookupSchema(spec.SchemaRef)
+	if !ok {
+		return &GateError{
+			GateName: spec.Name,
+			GateKind: spec.Kind,
+			When:     spec.When,
+			MemberID: in.MemberID,
+			Reason:   fmt.Sprintf("schema_ref %q is not registered", spec.SchemaRef),
+		}
+	}
+	instance, err := decodeJSONInstance(in.Payload)
+	if err != nil {
+		return &GateError{
+			GateName: spec.Name,
+			GateKind: spec.Kind,
+			When:     spec.When,
+			MemberID: in.MemberID,
+			Reason:   err.Error(),
+			Cause:    err,
+		}
+	}
+	if err := resolved.Validate(instance); err != nil {
+		return &GateError{
+			GateName: spec.Name,
+			GateKind: spec.Kind,
+			When:     spec.When,
+			MemberID: in.MemberID,
+			Reason:   fmt.Sprintf("schema validation failed: %s", err.Error()),
+			Cause:    err,
+		}
+	}
+	return nil
 }
 
 // decodeJSONInstance unmarshals a coord-store payload into the
