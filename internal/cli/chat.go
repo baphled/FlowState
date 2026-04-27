@@ -141,6 +141,10 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		return err
 	}
 
+	if flushErr := flushSwarmLifecycle(application); flushErr != nil {
+		return flushErr
+	}
+
 	saveSessionIfAvailable(cmd, application, sessionID)
 
 	if opts.Output == "json" {

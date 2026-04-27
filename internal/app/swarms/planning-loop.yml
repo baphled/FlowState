@@ -45,26 +45,31 @@ harness:
       schema_ref: evidence-bundle-v1
       when: post-member
       target: explorer
+      output_key: output
     - name: post-member-librarian-external-refs
       kind: builtin:result-schema
       schema_ref: external-refs-v1
       when: post-member
       target: librarian
+      output_key: output
     - name: post-member-analyst-analysis-bundle
       kind: builtin:result-schema
       schema_ref: analysis-bundle-v1
       when: post-member
       target: analyst
+      output_key: output
     - name: post-member-plan-writer-plan-document
       kind: builtin:result-schema
       schema_ref: plan-document-v1
       when: post-member
       target: plan-writer
+      output_key: output
     - name: post-member-plan-reviewer-result-schema
       kind: builtin:result-schema
       schema_ref: review-verdict-v1
       when: post-member
       target: plan-reviewer
+      output_key: review
 
 context:
   # Coordination_store namespace for this swarm's runs. Defaults to the

@@ -3573,6 +3573,32 @@ func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
 	return e.getDelegateToolLocked()
 }
 
+// FlushSwarmLifecycle proxies to DelegateTool.FlushSwarmLifecycle on
+// the engine's delegate tool. CLI / TUI entry points invoke this after
+// the lead's stream completes so swarm-level `when: post` gates fire
+// at the spec-correct moment. When no delegate tool is wired (single-
+// agent runs, tests with a bare engine) the call is a no-op so callers
+// do not have to nil-check the tool surface.
+//
+// Expected:
+//   - ctx is the entry point's outer context (the same one driving the
+//     lead's Stream).
+//
+// Returns:
+//   - nil when no delegate tool is wired, no swarm is in flight, or
+//     every post-swarm gate passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each post-swarm gate's runner via the delegate tool.
+func (e *Engine) FlushSwarmLifecycle(ctx context.Context) error {
+	dt, ok := e.GetDelegateTool()
+	if !ok {
+		return nil
+	}
+	return dt.FlushSwarmLifecycle(ctx)
+}
+
 // getDelegateToolLocked returns the DelegateTool without acquiring the lock.
 // Caller must hold e.mu (read or write).
 //

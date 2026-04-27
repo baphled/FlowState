@@ -1226,6 +1226,45 @@ var _ = Describe("Engine", func() {
 		})
 	})
 
+	Describe("FlushSwarmLifecycle (T-swarm-3)", func() {
+		It("returns nil when no delegate tool is wired", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{ID: "test-agent"},
+			})
+
+			Expect(eng.FlushSwarmLifecycle(context.Background())).To(Succeed())
+		})
+
+		It("proxies to DelegateTool.FlushSwarmLifecycle when wired", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{ID: "lead"},
+			})
+			eng.SetSwarmContext(&swarm.Context{
+				SwarmID:     "test-swarm",
+				LeadAgent:   "lead",
+				ChainPrefix: "test",
+				Gates: []swarm.GateSpec{{
+					Name: "post-aggregate",
+					Kind: "builtin:result-schema",
+					When: swarm.LifecyclePostSwarm,
+				}},
+			})
+			runner := &recordingRunner{}
+			dt := engine.NewDelegateToolWithBackground(
+				map[string]*engine.Engine{"lead": eng},
+				agent.Delegation{CanDelegate: true},
+				"lead",
+				nil,
+				nil,
+			).WithGateRunner(runner)
+			eng.AddTool(dt)
+
+			Expect(eng.FlushSwarmLifecycle(context.Background())).To(Succeed())
+			Expect(runner.calls).To(HaveLen(1))
+			Expect(runner.calls[0].When).To(Equal(swarm.LifecyclePostSwarm))
+		})
+	})
+
 	Describe("LoadedSkills", func() {
 		It("returns the skills passed via cfg.Skills", func() {
 			cfg := engine.Config{

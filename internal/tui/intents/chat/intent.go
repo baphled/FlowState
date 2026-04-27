@@ -2049,6 +2049,7 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	}
 	if msg.Done {
 		i.resetTurnState()
+		i.flushSwarmLifecycleOnTurnEnd()
 	}
 	if !msg.Done && msg.Next != nil {
 		return batchCmds(tea.Batch(msg.Next, i.ensureSpinnerActive()), appendedCmd)
@@ -2057,6 +2058,59 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		return batchCmds(i.saveSession(), appendedCmd)
 	}
 	return batchCmds(i.ensureSpinnerActive(), appendedCmd)
+}
+
+// flushSwarmLifecycleOnTurnEnd dispatches the swarm-level post gates
+// after the lead's stream completes within the TUI. Mirrors the CLI
+// run / chat-message wiring: post-swarm is the last lifecycle point in
+// a swarm run, and the TUI's Done chunk is the first moment the lead's
+// own stream has finished. When no swarm context is installed on the
+// engine the call is a no-op.
+//
+// Errors are surfaced via the notification manager rather than
+// returned: the TUI is mid-render and a returned error would otherwise
+// only get logged, leaving the operator with no feedback. The chat
+// view stays responsive on a gate failure; the next user turn is the
+// natural retry surface.
+//
+// Expected:
+//   - i is non-nil; called from handleStreamChunkMsg on a Done chunk.
+//
+// Side effects:
+//   - May call DelegateTool gate runners via the engine's flush proxy.
+//   - On gate failure, posts a Warning notification.
+func (i *Intent) flushSwarmLifecycleOnTurnEnd() {
+	if i.engine == nil {
+		return
+	}
+	if err := i.engine.FlushSwarmLifecycle(context.Background()); err != nil {
+		i.surfaceSwarmGateFailure(err)
+	}
+}
+
+// surfaceSwarmGateFailure renders a swarm gate failure as a warning
+// notification so the operator sees the structured failure detail
+// without having to dig through the activity pane. Falls back to a
+// silent return when the notification manager is not wired (test
+// scaffolds, headless drivers).
+//
+// Expected:
+//   - err is non-nil; typically a *swarm.GateError.
+//
+// Side effects:
+//   - Posts a Warning notification when notifications are wired.
+func (i *Intent) surfaceSwarmGateFailure(err error) {
+	if i.notificationManager == nil {
+		return
+	}
+	i.notificationManager.Add(notification.Notification{
+		ID:        "swarm-gate-failure-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Swarm gate failure",
+		Message:   err.Error(),
+		Level:     notification.LevelWarning,
+		Duration:  8 * time.Second,
+		CreatedAt: time.Now(),
+	})
 }
 
 // maybeWarnPrematureDelegationMisfire adds a notification when the current
