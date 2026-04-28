@@ -196,9 +196,10 @@ func runAutoresearch(_ context.Context, cmd *cobra.Command, application *app.App
 		return fmt.Errorf("writing manifest record: %w", err)
 	}
 
-	// Slice 1b stops here — Slice 1c wires the trial loop, Slice 1d the
-	// final summary. A max-trials=0 run is a clean spine smoke that
-	// proves the precondition + worktree + record path.
+	// max-trials=0 is the smoke path — set up, write the manifest
+	// record, exit cleanly without running trials. Useful for
+	// integration tests that exercise the precondition + worktree +
+	// record sequence without provider/script dependencies.
 	if resolved.maxTrials == 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 			"autoresearch run %s: setup complete (max-trials=0; no trials run)\n",
@@ -206,10 +207,17 @@ func runAutoresearch(_ context.Context, cmd *cobra.Command, application *app.App
 		return nil
 	}
 
-	// Slice 1c will replace this stub with the trial loop.
+	terminationReason, err := runTrialLoop(resolved, worktreePath, store, cmd.OutOrStdout())
+	if err != nil {
+		return err
+	}
+
+	// Slice 1d hardens the final summary; the spine prints a single
+	// status line so seam tests can assert termination_reason via
+	// the persisted result record.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-		"autoresearch run %s: setup complete (trial loop lands in Slice 1c)\n",
-		resolved.runID)
+		"autoresearch run %s: done (termination_reason=%s)\n",
+		resolved.runID, terminationReason)
 	return nil
 }
 
