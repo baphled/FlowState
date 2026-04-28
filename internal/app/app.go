@@ -3793,8 +3793,8 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 
 	// Create Mem0LearningStore with Qdrant if configured, otherwise fall back to JSONFileStore
 	var learningStore learning.Store
-	if cfg.Qdrant.URL != "" {
-		qdrantClient := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	if qdrantEnabled(cfg) {
+		qdrantClient := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 		embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 		adapter := &qdrantClientAdapter{client: qdrantClient}
 		ensuring := learning.NewEnsuringVectorStore(
@@ -3807,6 +3807,43 @@ func createDataStores(cfg *config.AppConfig, ollamaProvider embedRequester) (*ct
 	}
 
 	return sessionStore, learningStore, nil
+}
+
+// qdrantEnabled reports whether the Qdrant-backed recall pipeline should
+// be wired for the supplied config. It is the single gating predicate
+// every Qdrant-dependent init site funnels through, so an operator who
+// sets only QDRANT_URL gets the same wiring as one who sets only YAML.
+//
+// Expected:
+//   - cfg may be nil; nil reports disabled.
+//
+// Returns:
+//   - true when AppConfig.ResolvedQdrantURL() is non-empty (YAML field
+//     populated, or QDRANT_URL env var set as fallback).
+//   - false otherwise — recall broker/distiller take the Qdrant-less branch.
+//
+// Side effects:
+//   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
+func qdrantEnabled(cfg *config.AppConfig) bool {
+	return qdrantURL(cfg) != ""
+}
+
+// qdrantURL returns the resolved Qdrant base URL the broker, distiller,
+// and learning-store paths should connect to. Funnelling every read
+// through this helper keeps the YAML/env precedence consistent across
+// the app's three Qdrant-dependent init sites.
+//
+// Expected:
+//   - cfg may be nil; nil returns "" so callers see "disabled".
+//
+// Returns:
+//   - The resolved URL when one is configured.
+//   - The empty string otherwise.
+//
+// Side effects:
+//   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
+func qdrantURL(cfg *config.AppConfig) string {
+	return cfg.ResolvedQdrantURL()
 }
 
 // defaultQdrantDistance is the metric the auto-create path uses when
@@ -4043,15 +4080,15 @@ func buildRecallBrokerWithVault(params recallBrokerParams, vaultPath string) rec
 		slog.Warn("vault path unset; vault-rag recall source disabled — set a vault path to enable Obsidian-backed recall")
 	}
 
-	if cfg.Qdrant.URL == "" {
-		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL to enable vector recall")
+	if !qdrantEnabled(cfg) {
+		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL or qdrant.url in config.yaml to enable vector recall")
 		return recall.NewRecallBroker(sessionSrc, chainSrc, nil, nil, extras...)
 	}
 	col := cfg.Qdrant.Collection
 	if col == "" {
 		col = "flowstate-recall"
 	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(params.ollamaProvider, cfg.ResolvedEmbeddingModel())
 	source := qdrantrecall.NewSource(client, embedder, col)
 	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, extras...)
@@ -4073,14 +4110,14 @@ func buildRecallBrokerWithVault(params recallBrokerParams, vaultPath string) rec
 // Side effects:
 //   - None; Qdrant connections are established lazily per-request.
 func buildDistiller(cfg *config.AppConfig, _ provider.Provider, ollamaProvider embedRequester) learning.Distiller {
-	if cfg == nil || cfg.Qdrant.URL == "" {
+	if cfg == nil || !qdrantEnabled(cfg) {
 		return nil
 	}
 	col := cfg.Qdrant.Collection
 	if col == "" {
 		col = "flowstate-recall"
 	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	adapter := &qdrantClientAdapter{client: client}
 	ensuring := learning.NewEnsuringVectorStore(
