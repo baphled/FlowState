@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -222,6 +223,55 @@ func writeMemoryToolFile(destPath string, data []byte) error {
 		return fmt.Errorf("chmod %s: %w", destPath, err)
 	}
 	return nil
+}
+
+// MaterialiseMemoryToolsOnStartup is the auto-materialise hook called
+// by app.New so a fresh user gets a working mem0 MCP server on first
+// run without having to invoke `flowstate memory-tools install`
+// manually. The default skip-on-existing semantics make this safe to
+// call on every startup — steady-state runs classify every entry as
+// Unchanged and write nothing.
+//
+// Failure handling is deliberately permissive: if the destination
+// cannot be created, the embedded source is corrupt, or any I/O fails,
+// the helper returns nil rather than propagating the error. The caller
+// (app.New) treats this as a soft failure — the user's session
+// continues with no memory MCP rather than refusing to start. The
+// failure is still logged so the operator can investigate.
+//
+// Expected:
+//   - destDir is the directory under which the embedded payload should
+//     be written. Defaults to DefaultMemoryToolsDir() when callers
+//     pass an empty string.
+//
+// Returns:
+//   - The MemoryToolsReport on success (which may classify every entry
+//     as Unchanged on a steady-state run). Returns nil when materialise
+//     fails; callers must tolerate a nil report.
+//
+// Side effects:
+//   - Creates destDir if missing and writes the bundled payload on
+//     first run; subsequent runs are read-only no-ops.
+//   - Logs a single info line when at least one file was created,
+//     and a warning on failure.
+func MaterialiseMemoryToolsOnStartup(destDir string) MemoryToolsReport {
+	if destDir == "" {
+		destDir = DefaultMemoryToolsDir()
+	}
+
+	report, err := InstallMemoryTools(EmbeddedMemoryToolsFS(), destDir, MemoryToolsInstallOptions{})
+	if err != nil {
+		log.Printf("warning: auto-materialise mem0 MCP server at %q: %v", destDir, err)
+		return nil
+	}
+
+	for _, entry := range report {
+		if entry.Status == MemoryToolStatusCreated {
+			log.Printf("info: materialised mem0 MCP server at %s; first-run setup", destDir)
+			break
+		}
+	}
+	return report
 }
 
 // DefaultMemoryToolsDir resolves the default destination for materialised

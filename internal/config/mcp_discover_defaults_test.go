@@ -12,17 +12,27 @@ import (
 
 var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration"), func() {
 	var (
-		tmpDir  string
-		origPAT string
+		tmpDir   string
+		origPAT  string
+		origHome string
 	)
 
 	BeforeEach(func() {
 		tmpDir = GinkgoT().TempDir()
 		origPAT = os.Getenv("PATH")
+		// Isolate HOME so the install-location-first probe in
+		// DiscoverMCPServers cannot pick up the operator's actual
+		// `~/.local/share/flowstate/memory-tools/` payload (which now
+		// auto-materialises on every `flowstate run`). Without this
+		// isolation, the "no known servers" case fails on any
+		// developer machine that has booted FlowState at least once.
+		origHome = os.Getenv("HOME")
+		os.Setenv("HOME", GinkgoT().TempDir())
 	})
 
 	AfterEach(func() {
 		os.Setenv("PATH", origPAT)
+		os.Setenv("HOME", origHome)
 	})
 
 	Context("when mcp-mem0-server is available in PATH", func() {

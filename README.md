@@ -8,7 +8,7 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 
 - **Ollama-first** - Local models as first-class citizens.
 - **Provider-agnostic** - Plug in any model provider (OpenAI, Anthropic, etc.).
-- **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol.
+- **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol. The mem0 memory server is bundled and materialised on first run; no separate clone or install is required.
 - **Vector-backed Recall** - Optional Qdrant integration for semantic memory and learning.
 - **Session management** - Persistent conversations with search.
 - **Tool system** - Bash, file operations, web fetching with granular permissions.
@@ -57,14 +57,51 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
     enabled: true
-  - name: "memory"
-    command: "flowstate-memory-server"
-    enabled: false
+  # The "memory" server is auto-discovered when the bundled
+  # mcp-mem0-server is materialised on disk (see "Memory dependency"
+  # below). Override here only if you want to disable it or point at
+  # a custom build.
 
 always_active_skills:
   - "pre-action"
   - "memory-keeper"
 ```
+
+## Memory dependency
+
+FlowState ships an embedded mem0-compatible MCP server (`mcp-mem0-server`)
+inside the binary. There is no need to clone the upstream `dotopencode`
+repo or install a memory server separately.
+
+- **Auto-materialisation.** On the first `flowstate run` (or any
+  subcommand that initialises the application), FlowState writes the
+  bundled wrapper and JavaScript bundle to
+  `~/.local/share/flowstate/memory-tools/`. Subsequent runs detect that
+  the payload already matches the embedded version and write nothing,
+  so the cost is paid exactly once per upgrade.
+- **Auto-discovery.** `DiscoverMCPServers` probes the install location
+  first, then falls back to `PATH`. A fresh user therefore gets a
+  working `memory` MCP server with no configuration. Operators with a
+  pre-existing `mcp-mem0-server` on `PATH` continue to work unchanged
+  when the install location is empty.
+- **Node.js requirement.** The mem0 server is a Node.js script. Node
+  (>= 18) must be installed and on `PATH` at runtime. The wrapper
+  invokes `node` directly; FlowState does not bundle a JavaScript
+  runtime.
+- **Manual install.** If you want to materialise the payload ahead of
+  time, control the destination, or refresh after an upgrade, run:
+
+  ```bash
+  flowstate memory-tools install
+  flowstate memory-tools install --force      # overwrite operator edits
+  flowstate memory-tools install --target ... # custom destination
+  ```
+
+- **Specialist agents.** Twenty-five bundled specialist agents declare
+  `mcp_servers: [memory]` in their manifests and use the `search_nodes`
+  and `open_nodes` tools to read and write the persistent memory graph.
+  Auto-materialisation guarantees those tools resolve on a fresh
+  machine.
 
 ## Quick Start
 
@@ -250,6 +287,11 @@ The smoke runs a fixture gate end-to-end and prints the response shape.
 FlowState natively supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). This allows the AI to use external tools, access resources, and interact with your filesystem or other services.
 
 Configure MCP servers in your `config.yaml` under the `mcp_servers` section. Each server requires a `name` and a `command`. FlowState currently supports the `stdio` transport.
+
+The bundled `mcp-mem0-server` is materialised automatically on first
+run (see [Memory dependency](#memory-dependency) above) and surfaced
+as the `memory` server through MCP auto-discovery. No `mcp_servers`
+entry is required to use it.
 
 ## Keyboard Shortcuts
 

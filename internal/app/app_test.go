@@ -1301,3 +1301,77 @@ var _ = Describe("Plan location wiring", func() {
 		Expect(application.Config.ResolvedPlanLocation()).To(Equal("/custom/plans"))
 	})
 })
+
+// Auto-materialise on app startup is the seam that lets fresh users
+// drive the FlowState memory MCP without first running `flowstate
+// memory-tools install`. Without this, every fresh-machine bootstrap
+// has to follow a documented two-step ritual; the auto-materialise
+// makes the binary self-bootstrapping. Tests target the small helper
+// `MaterialiseMemoryToolsOnStartup` so the wiring is verifiable in
+// isolation from the full `app.New` pipeline (which needs a provider,
+// agents dir, etc.).
+var _ = Describe("MaterialiseMemoryToolsOnStartup", func() {
+	var destDir string
+
+	BeforeEach(func() {
+		destDir = filepath.Join(GinkgoT().TempDir(), "memory-tools")
+	})
+
+	Context("when the destination directory is missing", func() {
+		It("creates the directory and writes the embedded payload", func() {
+			report := app.MaterialiseMemoryToolsOnStartup(destDir)
+
+			Expect(destDir).To(BeADirectory())
+			Expect(filepath.Join(destDir, "mcp-mem0-server")).To(BeAnExistingFile())
+			Expect(filepath.Join(destDir, "mcp-mem0-server.js")).To(BeAnExistingFile())
+			Expect(report).NotTo(BeEmpty(),
+				"first-run materialise must report what it created so the caller can log it")
+
+			var sawCreated bool
+			for _, entry := range report {
+				if entry.Status == app.MemoryToolStatusCreated {
+					sawCreated = true
+				}
+			}
+			Expect(sawCreated).To(BeTrue(),
+				"first-run materialise must classify at least one file as Created so the wire-in can log only when bytes were actually written")
+		})
+
+		It("writes the wrapper with the executable bit set so PATH/discovery can invoke it", func() {
+			_ = app.MaterialiseMemoryToolsOnStartup(destDir)
+
+			info, err := os.Stat(filepath.Join(destDir, "mcp-mem0-server"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Mode().Perm() & 0o111).NotTo(BeZero(),
+				"wrapper must be executable so the auto-discovered command is invokable")
+		})
+	})
+
+	Context("when the embedded payload is already materialised byte-for-byte", func() {
+		It("classifies every file as Unchanged on the second call", func() {
+			first := app.MaterialiseMemoryToolsOnStartup(destDir)
+			Expect(first).NotTo(BeEmpty())
+
+			second := app.MaterialiseMemoryToolsOnStartup(destDir)
+
+			Expect(second).To(HaveLen(len(first)))
+			for _, entry := range second {
+				Expect(entry.Status).To(Equal(app.MemoryToolStatusUnchanged),
+					"steady-state runs must not rewrite or relog the materialised payload")
+			}
+		})
+	})
+
+	Context("when the destination directory cannot be created", func() {
+		It("returns nil without panicking so app startup can proceed", func() {
+			// A path under /dev/null cannot be a directory; MkdirAll
+			// surfaces ENOTDIR. The helper must swallow this so a
+			// permissions or disk-full failure on the install dir does
+			// not abort `flowstate run`.
+			report := app.MaterialiseMemoryToolsOnStartup("/dev/null/cannot-create-here")
+
+			Expect(report).To(BeNil(),
+				"materialise failures must not abort app startup; the user should still get a working FlowState")
+		})
+	})
+})
