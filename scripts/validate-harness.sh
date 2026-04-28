@@ -11,6 +11,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." &>/dev/null && pwd)"
 PROMPT_DIR="$SCRIPT_DIR/harness-prompts"
+FIXTURE_DIR="$PROMPT_DIR/fixtures"
 AGENTS_DIR="$REPO_ROOT/internal/app/agents"
 
 FLOWSTATE_BIN="${FLOWSTATE_BIN:-$REPO_ROOT/build/flowstate}"
@@ -19,11 +20,35 @@ if [[ ! -x "$FLOWSTATE_BIN" ]]; then
   elif command -v flowstate &>/dev/null; then FLOWSTATE_BIN="$(command -v flowstate)"; fi
 fi
 FLOWSTATE_SESSIONS_DIR="${FLOWSTATE_SESSIONS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/flowstate/sessions}"
+FLOWSTATE_DATA_DIR="${FLOWSTATE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/flowstate}"
+COORD_STORE_PATH="$FLOWSTATE_DATA_DIR/coordination.json"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 [[ -x "$FLOWSTATE_BIN" ]] || die "flowstate binary not found: $FLOWSTATE_BIN (run 'make build' or set FLOWSTATE_BIN)"
 command -v jq &>/dev/null || die "jq is required but not installed"
+
+# seed_coord_store_fixture merges a fixture JSON into the live coord-store
+# so agent prompts that reference pre-seeded chains (e.g. plan-writer's
+# "validate-harness-001/requirements") have stable inputs across runs. The
+# merge is deterministic and idempotent: identical fixture keys overwrite
+# the live values on every invocation, so two consecutive validator runs
+# starting from the same fixture produce identical warning counts.
+#
+# The fixture format is the on-disk shape of FileStore (see
+# internal/coordination/file_store.go:54): a flat JSON object mapping
+# "<chainID>/<key>" to a string value.
+seed_coord_store_fixture() {
+  local fixture="$1"
+  [[ -f "$fixture" ]] || return 0
+  mkdir -p "$(dirname -- "$COORD_STORE_PATH")"
+  local existing='{}'
+  [[ -s "$COORD_STORE_PATH" ]] && existing="$(<"$COORD_STORE_PATH")"
+  local merged
+  merged="$(jq -s '.[0] * .[1]' <(printf '%s' "$existing") "$fixture")" \
+    || die "failed to merge fixture $fixture into $COORD_STORE_PATH"
+  printf '%s\n' "$merged" > "$COORD_STORE_PATH"
+}
 
 validate_one() {
   local agent="$1" prompt="$2"
@@ -114,6 +139,11 @@ validate_one() {
 }
 
 main() {
+  # Seed the canonical validate-harness-001 chain before any agent runs so
+  # plan-writer/plan-reviewer prompts find their expected coord-store keys.
+  # Idempotent: re-running the validator never drifts the seeded values.
+  seed_coord_store_fixture "$FIXTURE_DIR/validate-harness-001.json"
+
   local agents=()
   if [[ "${1:-}" == "--all" ]]; then
     for a in planner plan-writer plan-reviewer executor tech-lead; do
