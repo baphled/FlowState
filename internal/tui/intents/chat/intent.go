@@ -29,6 +29,7 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/swarm"
 	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
@@ -1985,22 +1986,13 @@ func (i *Intent) finaliseStreamIfDone(msg StreamChunkMsg) {
 	contextResult := i.engine.LastContextResult()
 	i.tokenCount = contextResult.TokensUsed
 
-	// Wind down a swarm dispatch: flush post-swarm gates, clear the
-	// engine's swarm context, restore the engine's pre-dispatch
-	// manifest (Engine.Stream auto-swapped it to the lead at the
-	// start of this turn), and reset the per-turn lead override so
-	// the next user turn lands on the chat's persistent agent.
-	// Mirrors the CLI's flow at the end of swarm.DispatchSwarm —
-	// see ADR - Swarm Dispatch Across Access Methods.
-	if i.pendingSwarmLeadID != "" {
-		_ = i.engine.FlushSwarmLifecycle(context.Background())
-		i.engine.SetSwarmContext(nil)
-		if i.preDispatchManifest.ID != "" {
-			i.engine.SetManifest(i.preDispatchManifest)
-			i.preDispatchManifest = agent.Manifest{}
-		}
-		i.pendingSwarmLeadID = ""
-	}
+	// Swarm-dispatch lifecycle is now owned by orchestrator.Stream
+	// (per ADR - Session Orchestrator for Surface Parity). The
+	// previous inline flush + manifest revert lived here because
+	// Phase 2's TUI-only re-implementation needed it; with the TUI
+	// routing dispatches through orchestrator.Stream, the
+	// orchestrator's goroutine handles flush + restore symmetrically
+	// when the chunk channel drains. Nothing for the TUI to do here.
 }
 
 // appendThinking accumulates streaming thinking content for later display.
@@ -3183,14 +3175,11 @@ func (i *Intent) sendMessage() tea.Cmd {
 		}
 	}
 
-	// @<swarm-id> mention dispatch: when the user's message references a
-	// registered swarm, install the swarm context and stash the lead's
-	// agent id so this turn's stream routes to the lead. The chat's
-	// persistent agentID is unchanged — swarm dispatch is a one-shot
-	// task, not an identity swap. ADR - Swarm Dispatch Across Access
-	// Methods covers the rationale; same shape as the CLI's
-	// `Engine.Stream(ctx, leadID, message)` per-call dispatch.
-	i.maybeBeginSwarmDispatch(userMessage)
+	// Note: swarm @-mention dispatch used to set up state here via
+	// maybeBeginSwarmDispatch; per ADR - Session Orchestrator for
+	// Surface Parity that lifecycle now lives inside
+	// orchestrator.Stream and is invoked from the tea.Cmd below
+	// when the message contains a @<swarm-id> mention.
 
 	// P7/C2 + D1: reset all per-turn state via the shared beginTurn helper
 	// so the new stream starts with a clean slate — including a cleared
@@ -3215,26 +3204,53 @@ func (i *Intent) sendMessage() tea.Cmd {
 	i.streamCancel = cancel
 	i.streamCtx = ctx
 
-	return func() tea.Msg {
-		var stream <-chan provider.StreamChunk
-		var err error
-		// Swarm dispatch turns route through the streamer with the
-		// lead's id directly: the session manager binds messages to
-		// the chat's persistent agent (i.agentID) and would tag this
-		// dispatch as continuing the assistant's chat, which is the
-		// wrong association — the dispatch is a discrete task. Plain
-		// turns continue to use the session manager when available.
-		switch {
-		case i.pendingSwarmLeadID != "":
-			stream, err = i.streamer.Stream(ctx, i.pendingSwarmLeadID, userMessage)
-		case i.sessionManager != nil:
-			i.sessionManager.EnsureSession(i.sessionID, i.agentID)
-			stream, err = i.sessionManager.SendMessage(ctx, i.sessionID, userMessage)
-		default:
-			stream, err = i.streamer.Stream(ctx, i.agentID, userMessage)
+	// Per ADR - Session Orchestrator for Surface Parity: swarm-
+	// dispatch turns (message contains a @<swarm-id>) route through
+	// the shared orchestrator's Stream method, which drives the same
+	// swarm.DispatchSwarm lifecycle as CLI/API. The chat's persistent
+	// agent (i.agentID) is unchanged across the dispatch.
+	//
+	// orchestrator.Stream's setup phase (resolve, manifest snapshot,
+	// SetSwarmContext install) is synchronous — only the post-stream
+	// flush + manifest restore run asynchronously when the chunk
+	// channel drains. So we kick this off *before* returning the
+	// tea.Cmd so the engine's swarm context is observable
+	// immediately to test assertions / activity-pane reads.
+	//
+	// Plain agent turns continue to use the session manager so
+	// chat-history bookkeeping (user-message append, assistant + tool
+	// message accumulation) keeps working. IsSwarmMention is the
+	// chat-vs-dispatch discriminator.
+	var dispatchStream <-chan provider.StreamChunk
+	var dispatchErr error
+	if i.swarmRegistry != nil && i.engine != nil {
+		orch := orchestrator.New(i.engine, i.agentRegistry, i.swarmRegistry, i.streamer)
+		if orch.IsSwarmMention(userMessage) {
+			dispatchStream, dispatchErr = orch.Stream(ctx, orchestrator.UserInput{
+				Message:      userMessage,
+				DefaultAgent: i.agentID,
+				ScanMentions: true,
+			})
 		}
-		if err != nil {
-			return StreamChunkMsg{Content: "", Error: err, Done: true}
+	}
+
+	return func() tea.Msg {
+		if dispatchErr != nil {
+			return StreamChunkMsg{Content: "", Error: dispatchErr, Done: true}
+		}
+		stream := dispatchStream
+		if stream == nil {
+			var err error
+			switch {
+			case i.sessionManager != nil:
+				i.sessionManager.EnsureSession(i.sessionID, i.agentID)
+				stream, err = i.sessionManager.SendMessage(ctx, i.sessionID, userMessage)
+			default:
+				stream, err = i.streamer.Stream(ctx, i.agentID, userMessage)
+			}
+			if err != nil {
+				return StreamChunkMsg{Content: "", Error: err, Done: true}
+			}
 		}
 		return i.readNextChunkFrom(stream)
 	}

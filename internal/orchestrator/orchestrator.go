@@ -14,6 +14,7 @@ import (
 	"errors"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -158,6 +159,88 @@ func (o *Orchestrator) ProcessUserInput(
 	return swarm.DispatchSwarm(ctx, o.engine, swarmCtx, o.streamer, consumer, leadID, req.Message)
 }
 
+// Stream is the async cousin of ProcessUserInput. Returns a channel
+// of provider.StreamChunk values (the same shape the TUI's existing
+// readNextChunkFrom expects) plus an error if resolution or the
+// initial Stream call fails. Lifecycle (manifest snapshot →
+// SetSwarmContext → stream → flush → RestoreManifest) is wrapped
+// around the chunk-channel consumption inside an internal goroutine
+// so callers see only "request → channel of chunks" and the engine
+// state restores symmetrically when the channel closes.
+//
+// Use this from event-loop surfaces (the TUI's Bubble Tea Cmd) where
+// blocking on a synchronous Consumer is incompatible with the
+// surface's async model. CLI/API call ProcessUserInput instead —
+// they're synchronous and the Consumer pattern fits naturally.
+//
+// Expected:
+//   - ctx is a valid context controlling the streamed run.
+//   - req carries the message and routing intent.
+//
+// Returns:
+//   - A channel that emits provider.StreamChunk values until the
+//     underlying stream completes, then closes. Never nil on a
+//     successful return.
+//   - An error from resolve() (errNoTarget / NotFoundError) or from
+//     the initial streamer.Stream call. When non-nil, the chan
+//     return is nil and lifecycle side-effects have been rolled back.
+//
+// Side effects:
+//   - When a target resolves, calls eng.SetSwarmContext(swarmCtx)
+//     immediately and schedules eng.FlushSwarmLifecycle +
+//     eng.RestoreManifest to run when the chunk channel drains.
+//   - Drives streamer.Stream(ctx, leadID, message) once.
+func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provider.StreamChunk, error) {
+	leadID, swarmCtx, err := o.resolve(req)
+	if err != nil {
+		return nil, err
+	}
+
+	var snapshot any
+	if o.engine != nil {
+		snapshot = o.engine.ManifestSnapshot()
+		o.engine.SetSwarmContext(swarmCtx)
+	}
+
+	src, err := o.streamer.Stream(ctx, leadID, req.Message)
+	if err != nil {
+		// Roll back snapshot/install on initial-stream failure so
+		// the engine doesn't end up in a half-installed state.
+		if o.engine != nil {
+			o.engine.RestoreManifest(snapshot)
+		}
+		return nil, err
+	}
+
+	out := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(out)
+		// Forward every chunk verbatim — surfaces decode tool
+		// calls, delegation info, etc. from the StreamChunk just
+		// like they did when calling streamer.Stream directly.
+		for chunk := range src {
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				// Drain the source so the producer goroutine
+				// doesn't park on a full chan we'll never read,
+				// then break to the cleanup phase.
+				go func() {
+					for range src {
+					}
+				}()
+				goto cleanup
+			}
+		}
+	cleanup:
+		if o.engine != nil {
+			_ = o.engine.FlushSwarmLifecycle(ctx)
+			o.engine.RestoreManifest(snapshot)
+		}
+	}()
+	return out, nil
+}
+
 // resolve picks the target agent or swarm based on the supplied
 // UserInput. ScanMentions=true causes a left-to-right scan of
 // req.Message for @-mentions; the first one that resolves to a swarm
@@ -190,6 +273,42 @@ func (o *Orchestrator) resolve(req UserInput) (string, *swarm.Context, error) {
 		return "", nil, errNoTarget
 	}
 	return swarm.ResolveTarget(hasAgent, o.swarmRegistry, req.DefaultAgent)
+}
+
+// IsSwarmMention reports whether message contains an @-mention that
+// resolves to a registered swarm (not just any agent). Useful for
+// surfaces that need to discriminate "swarm dispatch turn" vs "normal
+// agent turn" before deciding which streaming path to use — the TUI
+// in particular needs this so it can keep its session-manager path
+// for normal chat while routing swarm dispatches through Stream.
+//
+// Returns false when the orchestrator's swarmRegistry is nil
+// (orchestrator never resolves a swarm in that state).
+//
+// Expected:
+//   - message is the raw user input.
+//
+// Returns:
+//   - true when at least one @-mention in message resolves to a
+//     swarm via swarm.Resolve.
+//   - false otherwise — including when the message contains
+//     @-mentions that resolve to plain agents (those go through
+//     the surface's normal agent-chat path).
+//
+// Side effects:
+//   - None.
+func (o *Orchestrator) IsSwarmMention(message string) bool {
+	if o.swarmRegistry == nil {
+		return false
+	}
+	hasAgent := o.agentLookup()
+	for _, mention := range swarm.ExtractAtMentions(message) {
+		kind, _ := swarm.Resolve(mention, hasAgent, o.swarmRegistry)
+		if kind == swarm.KindSwarm {
+			return true
+		}
+	}
+	return false
 }
 
 // agentLookup returns a swarm.HasAgent closure backed by the
