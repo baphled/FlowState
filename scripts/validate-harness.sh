@@ -183,6 +183,15 @@ resolve_prompt_file() {
 }
 
 main() {
+  # --score: emit a single integer scalar (sum of WARNING: lines across
+  # the resolved agents) on stdout, nothing else. Designed for use as
+  # the autoresearch evaluator's metric source — see plan § 5.4.
+  local score_mode=0
+  if [[ "${1:-}" == "--score" ]]; then
+    score_mode=1
+    shift
+  fi
+
   # Seed the canonical validate-harness-001 chain before any agent runs so
   # plan-writer/plan-reviewer prompts find their expected coord-store keys.
   # Idempotent: re-running the validator never drifts the seeded values.
@@ -192,10 +201,17 @@ main() {
   if [[ "${1:-}" == "--all" ]]; then
     for a in planner plan-writer plan-reviewer executor tech-lead; do
       if [[ -f "$AGENTS_DIR/$a.md" ]]; then agents+=("$a")
-      else echo "skip: $a (manifest not found at $AGENTS_DIR/$a.md)"; fi
+      else
+        # Score mode keeps stdout clean: skip lines route to stderr.
+        if [[ "$score_mode" == "1" ]]; then
+          echo "skip: $a (manifest not found at $AGENTS_DIR/$a.md)" >&2
+        else
+          echo "skip: $a (manifest not found at $AGENTS_DIR/$a.md)"
+        fi
+      fi
     done
   else
-    [[ $# -ge 1 ]] || die "usage: $0 <agent> [prompt] | --all"
+    [[ $# -ge 1 ]] || die "usage: $0 [--score] <agent> [prompt] | [--score] --all"
     local resolved
     resolved="$(resolve_agent_name "$1")" \
       || die "manifest not found for agent '$1' (looked under $AGENTS_DIR with literal, PascalCase, and lowercase variants)"
@@ -203,6 +219,7 @@ main() {
   fi
 
   local rc=0
+  local total_warnings=0
   for agent in "${agents[@]}"; do
     local prompt
     if [[ "${1:-}" != "--all" && -n "${2:-}" ]]; then
@@ -210,11 +227,35 @@ main() {
     else
       local pf
       pf="$(resolve_prompt_file "$agent")"
-      [[ -n "$pf" ]] || { echo "skip: $agent (no default prompt at $PROMPT_DIR/$agent.txt)"; continue; }
+      if [[ -z "$pf" ]]; then
+        if [[ "$score_mode" == "1" ]]; then
+          echo "skip: $agent (no default prompt at $PROMPT_DIR/$agent.txt)" >&2
+        else
+          echo "skip: $agent (no default prompt at $PROMPT_DIR/$agent.txt)"
+        fi
+        continue
+      fi
       prompt="$(<"$pf")"
     fi
-    validate_one "$agent" "$prompt" || rc=$?
+
+    if [[ "$score_mode" == "1" ]]; then
+      # Capture validate_one stdout, route human-readable noise to stderr,
+      # count WARNING: lines, accumulate. validate_one's own non-zero
+      # exit propagates so CLI/session I/O failures still trip the rc.
+      local captured
+      captured="$(validate_one "$agent" "$prompt")" || rc=$?
+      local n
+      n="$(printf '%s\n' "$captured" | grep -c '^WARNING:' || true)"
+      total_warnings=$((total_warnings + n))
+      printf '%s\n' "$captured" >&2
+    else
+      validate_one "$agent" "$prompt" || rc=$?
+    fi
   done
+
+  if [[ "$score_mode" == "1" ]]; then
+    printf '%d\n' "$total_warnings"
+  fi
   exit "$rc"
 }
 
