@@ -2676,6 +2676,223 @@ planner body %s
 	})
 })
 
+// Lifecycle plan Slice 4 — `flowstate autoresearch promote <run-id>`
+// cherry-picks the best kept commit from a finished run's branch onto
+// the parent branch. The shape mirrors `coordination prune` (dry-run
+// by default, --apply opt-in) and refuses to run against a detached
+// HEAD parent unless --target <branch> is supplied.
+var _ = Describe("autoresearch promote command", func() {
+	var (
+		out       *bytes.Buffer
+		testApp   *app.App
+		dataDir   string
+		repoDir   string
+		coordPath string
+		surface   string
+		runCmd    func(args ...string) error
+	)
+
+	initRepo := func(repo string) {
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
+		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
+		body := `---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role
+capabilities:
+  tools: [read, plan]
+---
+planner body
+`
+		Expect(os.WriteFile(manifestPath, []byte(body), 0o600)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
+
+		run := func(args ...string) {
+			gc := exec.Command("git", args...)
+			gc.Dir = repo
+			gc.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+			)
+			combined, err := gc.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+		}
+		run("init", "--initial-branch=main", repo)
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "test")
+		run("add", ".")
+		run("commit", "--no-verify", "-m", "initial")
+	}
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		dataDir = GinkgoT().TempDir()
+		repoDir = GinkgoT().TempDir()
+		coordPath = filepath.Join(dataDir, "coordination.json")
+		_ = coordPath
+
+		initRepo(repoDir)
+		surface = filepath.Join(repoDir, "internal", "app", "agents", "planner.md")
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{
+			DataDir:   dataDir,
+			AgentsDir: filepath.Join(repoDir, "internal", "app", "agents"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	// runImprovingTrial seeds a one-trial run that produces a kept
+	// commit on the run's branch. The deterministic driver / scorer
+	// pattern mirrors the existing trial-loop specs: trial 1 lowers
+	// the score from 10 (baseline) to 5 (improvement).
+	runImprovingTrial := func(runID string) {
+		// Driver replaces the surface with an updated body keyed by trial.
+		driverPath := filepath.Join(dataDir, "improve-driver.sh")
+		body := `#!/usr/bin/env bash
+set -eu
+n=$(cat "$DATA_DIR/trial-counter" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$DATA_DIR/trial-counter"
+cat "$DATA_DIR/candidate-1" > "$FLOWSTATE_AUTORESEARCH_SURFACE"
+`
+		Expect(os.WriteFile(driverPath, []byte(body), 0o755)).To(Succeed())
+
+		scorerPath := filepath.Join(dataDir, "improve-scorer.sh")
+		scorerBody := `#!/usr/bin/env bash
+set -eu
+n=$(cat "$DATA_DIR/trial-counter" 2>/dev/null || echo 0)
+if [ "$n" -le 0 ]; then echo 10; exit 0; fi
+echo 5
+`
+		Expect(os.WriteFile(scorerPath, []byte(scorerBody), 0o755)).To(Succeed())
+
+		Expect(os.WriteFile(filepath.Join(dataDir, "candidate-1"), []byte(`---
+schema_version: "1"
+id: planner
+name: Planner-Improved
+complexity: standard
+metadata:
+  role: improved role
+capabilities:
+  tools: [read, plan]
+---
+planner body improved
+`), 0o600)).To(Succeed())
+
+		Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+		DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+		Expect(runCmd("autoresearch", "run",
+			"--surface", surface,
+			"--run-id", runID,
+			"--max-trials", "1",
+			"--time-budget", "30s",
+			"--metric-direction", "min",
+			"--worktree-base", filepath.Join(dataDir, "wt-"+runID),
+			"--driver-script", driverPath,
+			"--evaluator-script", scorerPath,
+		)).To(Succeed(), "out: %s", out.String())
+	}
+
+	It("dry-runs by default, naming the SHA, branch, and target", func() {
+		runImprovingTrial("promotedr-rest-of-id")
+		out.Reset()
+
+		err := runCmd("autoresearch", "promote", "promotedr-rest-of-id")
+		Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+		Expect(out.String()).To(ContainSubstring("dry-run"))
+		Expect(out.String()).To(ContainSubstring("autoresearch/promoted"))
+		Expect(out.String()).To(ContainSubstring("main"))
+	})
+
+	It("cherry-picks the best commit onto the parent branch with --apply", func() {
+		runImprovingTrial("promoteap-rest-of-id")
+		out.Reset()
+
+		// Capture parent HEAD before promote.
+		preCmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+		preOut, err := preCmd.Output()
+		Expect(err).NotTo(HaveOccurred())
+		preHead := strings.TrimSpace(string(preOut))
+
+		Expect(runCmd("autoresearch", "promote", "promoteap-rest-of-id", "--apply")).
+			To(Succeed(), "out: %s", out.String())
+		Expect(out.String()).To(ContainSubstring("cherry-picked"))
+
+		// Parent HEAD must have advanced.
+		postCmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+		postOut, err := postCmd.Output()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(string(postOut))).NotTo(Equal(preHead),
+			"parent HEAD must advance after cherry-pick")
+	})
+
+	It("errors when the run produced no kept candidates (no best pointer)", func() {
+		err := runCmd("autoresearch", "promote", "no-such-run")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no best pointer"))
+	})
+
+	It("refuses to promote onto a detached HEAD parent without --target", func() {
+		runImprovingTrial("promotedt-rest-of-id")
+		out.Reset()
+
+		// Detach the parent HEAD.
+		detach := exec.Command("git", "-C", repoDir, "checkout", "--detach", "HEAD")
+		Expect(detach.Run()).To(Succeed())
+		DeferCleanup(func() {
+			_ = exec.Command("git", "-C", repoDir, "checkout", "main").Run()
+		})
+
+		err := runCmd("autoresearch", "promote", "promotedt-rest-of-id", "--apply")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("detached"))
+		Expect(err.Error()).To(ContainSubstring("--target"))
+	})
+
+	It("honours --target <branch> as the cherry-pick destination", func() {
+		runImprovingTrial("promotett-rest-of-id")
+		out.Reset()
+
+		// Create a sibling branch and detach so plain promote would
+		// refuse; --target must succeed.
+		createBranch := exec.Command("git", "-C", repoDir, "branch", "feature-target", "main")
+		Expect(createBranch.Run()).To(Succeed())
+		detach := exec.Command("git", "-C", repoDir, "checkout", "--detach", "HEAD")
+		Expect(detach.Run()).To(Succeed())
+		DeferCleanup(func() {
+			_ = exec.Command("git", "-C", repoDir, "checkout", "main").Run()
+		})
+
+		Expect(runCmd("autoresearch", "promote", "promotett-rest-of-id",
+			"--apply", "--target", "feature-target")).
+			To(Succeed(), "out: %s", out.String())
+
+		// feature-target HEAD must differ from main now.
+		featCmd := exec.Command("git", "-C", repoDir, "rev-parse", "feature-target")
+		featOut, err := featCmd.Output()
+		Expect(err).NotTo(HaveOccurred())
+		mainCmd := exec.Command("git", "-C", repoDir, "rev-parse", "main")
+		mainOut, err := mainCmd.Output()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(string(featOut))).NotTo(Equal(strings.TrimSpace(string(mainOut))))
+	})
+})
+
 // jsonStringSlice renders a Go []string as a JSON array literal for
 // inline manifest fixtures.
 func jsonStringSlice(items []string) string {
