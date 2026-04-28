@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	contextpkg "github.com/baphled/flowstate/internal/context"
@@ -448,6 +449,41 @@ type QdrantConfig struct {
 	URL        string `json:"url" yaml:"url"`
 	Collection string `json:"collection" yaml:"collection"`
 	APIKey     string `json:"api_key" yaml:"api_key"`
+}
+
+// QdrantURLEnv is the environment variable consulted by ResolvedQdrantURL
+// as a fallback when AppConfig.Qdrant.URL is empty. Honouring the env var
+// keeps `flowstate run` aligned with `flowstate-vault-server`, which has
+// always read QDRANT_URL — operators expect the same env-var override
+// surface across both binaries, and the user-facing warning at
+// internal/app/app.go:3920 names QDRANT_URL by name. Without this resolver
+// the warning was a contract lie.
+const QdrantURLEnv = "QDRANT_URL"
+
+// ResolvedQdrantURL returns the effective Qdrant base URL for the recall
+// pipeline, applying the documented precedence: an explicit YAML
+// `qdrant.url` value beats the QDRANT_URL env-var fallback, and an empty
+// result means "Qdrant is not configured" (recall broker stays disabled).
+// A nil receiver returns the empty string so test fixtures that construct
+// AppConfig as nil still produce a well-formed resolution.
+//
+// Returns:
+//   - The trimmed YAML field when populated.
+//   - The trimmed QDRANT_URL env var when YAML is empty.
+//   - The empty string when neither carries a usable value.
+//
+// Side effects:
+//   - Reads the QDRANT_URL environment variable.
+func (c *AppConfig) ResolvedQdrantURL() string {
+	if c != nil {
+		if u := strings.TrimSpace(c.Qdrant.URL); u != "" {
+			return u
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv(QdrantURLEnv)); v != "" {
+		return v
+	}
+	return ""
 }
 
 // ProvidersConfig configures all available LLM providers.
