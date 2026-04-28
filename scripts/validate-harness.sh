@@ -138,6 +138,50 @@ validate_one() {
   echo
 }
 
+# resolve_agent_name maps a user-supplied agent name to the canonical
+# manifest basename on disk. Lookup order:
+#   1. literal as supplied (e.g. "planner", "Tech-Lead").
+#   2. PascalCase variant of a kebab-cased input (e.g. "code-reviewer"
+#      -> "Code-Reviewer") for users who typed the lowercase form.
+#   3. fully lowercase variant (e.g. "Planner" -> "planner") for users
+#      who capitalised a kebab-cased planner-loop manifest.
+#
+# Prints the resolved basename (without ".md") on stdout, exits non-zero
+# when no variant exists. The default --all loop is unaffected: it
+# iterates a literal lowercase list and never calls this function.
+resolve_agent_name() {
+  local input="$1"
+  [[ -f "$AGENTS_DIR/$input.md" ]] && { printf '%s' "$input"; return 0; }
+
+  # PascalCase: capitalise each kebab segment.
+  local pascal
+  pascal="$(printf '%s' "$input" | awk -F'-' '{ for (i=1; i<=NF; i++) { $i = toupper(substr($i,1,1)) tolower(substr($i,2)) } } 1' OFS='-')"
+  [[ -f "$AGENTS_DIR/$pascal.md" ]] && { printf '%s' "$pascal"; return 0; }
+
+  # Lowercase fallback.
+  local lower
+  lower="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+  [[ -f "$AGENTS_DIR/$lower.md" ]] && { printf '%s' "$lower"; return 0; }
+
+  return 1
+}
+
+# resolve_prompt_file mirrors resolve_agent_name for the prompt fixture
+# lookup. Prints the resolved path on stdout, prints nothing and returns
+# 0 when no fixture exists (the caller logs the skip line).
+resolve_prompt_file() {
+  local agent="$1"
+  local literal="$PROMPT_DIR/$agent.txt"
+  [[ -f "$literal" ]] && { printf '%s' "$literal"; return 0; }
+
+  local lower
+  lower="$(printf '%s' "$agent" | tr '[:upper:]' '[:lower:]')"
+  local lower_pf="$PROMPT_DIR/$lower.txt"
+  [[ -f "$lower_pf" ]] && { printf '%s' "$lower_pf"; return 0; }
+
+  return 0
+}
+
 main() {
   # Seed the canonical validate-harness-001 chain before any agent runs so
   # plan-writer/plan-reviewer prompts find their expected coord-store keys.
@@ -152,7 +196,10 @@ main() {
     done
   else
     [[ $# -ge 1 ]] || die "usage: $0 <agent> [prompt] | --all"
-    agents=("$1")
+    local resolved
+    resolved="$(resolve_agent_name "$1")" \
+      || die "manifest not found for agent '$1' (looked under $AGENTS_DIR with literal, PascalCase, and lowercase variants)"
+    agents=("$resolved")
   fi
 
   local rc=0
@@ -161,8 +208,9 @@ main() {
     if [[ "${1:-}" != "--all" && -n "${2:-}" ]]; then
       prompt="$2"
     else
-      local pf="$PROMPT_DIR/$agent.txt"
-      [[ -f "$pf" ]] || { echo "skip: $agent (no default prompt at $pf)"; continue; }
+      local pf
+      pf="$(resolve_prompt_file "$agent")"
+      [[ -n "$pf" ]] || { echo "skip: $agent (no default prompt at $PROMPT_DIR/$agent.txt)"; continue; }
       prompt="$(<"$pf")"
     fi
     validate_one "$agent" "$prompt" || rc=$?
