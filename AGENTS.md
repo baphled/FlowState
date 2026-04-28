@@ -529,3 +529,75 @@ Agent manifests in `~/.config/flowstate/agents/` must use **current model names*
 Anthropic's streaming API sends tool call arguments via `input_json_delta` events across multiple chunks. The Anthropic provider handles this via `streamEventHandler` (`internal/provider/anthropic/streaming.go`), which accumulates `input_json_delta` fragments by block index and emits a complete `tool_call` chunk on `content_block_stop`.
 
 OpenAI-compatible providers (OpenAI, Z.AI, OpenZen) handle streaming tool calls correctly via the `openaicompat` package, which uses `ChatCompletionAccumulator` to reassemble fragmented tool call arguments before dispatching.
+
+## Autoresearch
+
+`flowstate autoresearch run` is a generic, pluggable ratcheting harness inspired by Karpathy's `autoresearch` (https://github.com/karpathy/autoresearch). Any agent can invoke it to drive a single artefact (a manifest, a Go source file, a skill body) towards a scalar metric under the constraints of a plain-English program skill, using a fixed budget and a git-managed accept/reject loop.
+
+The harness is **agnostic to what is being optimised**. Three primitives are operator-controlled:
+
+| Primitive | Flag | Notes |
+|---|---|---|
+| Surface | `--surface <path>` | The single file the run is allowed to edit. |
+| Evaluator | `--evaluator-script <path>` | Script that prints one non-negative integer to stdout, exit 0. Lives at the worktree root. |
+| Program | `--program <skill-name \| path>` | Plain-English skill body describing the run's goal and off-limits set. Defaults to the canonical `autoresearch` registry skill. |
+
+Other useful flags: `--metric-direction min|max` (default `min`), `--max-trials <int>` (default 10), `--time-budget <duration>` (default 5m), `--calling-agent <manifest-path>` (enables the N12 always-active de-dup check when `--program` is a registry name).
+
+State for a run lives under `autoresearch/<runID>/...` in the coord-store (manifest, per-trial records, fixed-point ring, final result). Cleanup via `flowstate coordination prune --prefix autoresearch/`.
+
+### What ships
+
+- **Skill of record:** `skills/autoresearch/SKILL.md` — the canonical program-of-record body. Every preset is a thin wrapper around the sections in this file.
+- **Presets:**
+  - `skills/autoresearch-presets/planner-quality.md` — minimises the harness validate warning count against a planner-class manifest without weakening `always_active_skills`, the coord-store wiring, or canonical chain-id resolution.
+  - `skills/autoresearch-presets/perf-preserve-behaviour.md` — drives `ns/op` down on a Go source file under `--metric-direction min` while preserving exported signatures and `go test ./...` greenness.
+- **Reference evaluator:** `scripts/autoresearch-evaluators/bench.sh` — wraps `go test -bench` and emits `ns/op` as the scalar; canonical example of the integer-stdout-zero-exit contract documented in § 4.6 of the plan note.
+
+### Invocation examples
+
+Planner manifest ratchet (the MVP shape):
+
+```bash
+flowstate autoresearch run \
+  --surface internal/app/agents/planner.md \
+  --evaluator-script scripts/validate-harness.sh \
+  --program planner-quality \
+  --metric-direction min \
+  --max-trials 3 \
+  --time-budget 15m \
+  --calling-agent internal/app/agents/default-assistant.md
+```
+
+Function performance ratchet (Slice 5 reference example):
+
+```bash
+flowstate autoresearch run \
+  --surface internal/engine/some_hot_path.go \
+  --evaluator-script scripts/autoresearch-evaluators/bench.sh \
+  --program skills/autoresearch-presets/perf-preserve-behaviour.md \
+  --metric-direction min \
+  --max-trials 30 \
+  --time-budget 1h
+```
+
+Skill body ratchet (Slice 6 reference example, requires authoring a `skill-qa.sh` evaluator):
+
+```bash
+flowstate autoresearch run \
+  --surface skills/critical-thinking/SKILL.md \
+  --evaluator-script scripts/autoresearch-evaluators/skill-qa.sh \
+  --program skills/autoresearch-presets/skill-prose-ratchet.md \
+  --metric-direction max \
+  --max-trials 20 \
+  --time-budget 1h
+```
+
+The harness manages worktree isolation under `<cfg.DataDir>/autoresearch/<runID>/worktree`, fixed-point detection via a SHA-256 ring, rate-limit handling parsed from session JSON, and trial commits with `--no-verify` (the broken `make check` exception is documented separately).
+
+### Further reading
+
+- Vault: `[[Autoresearch Loop]]` (Documentation/Architecture) — engine seams, evaluator contract, coord-store schema, manifest gate.
+- Vault: `[[Autoresearch]]` (Features) — feature-overview "what does this do for me".
+- Vault: `[[Autoresearch Loop Integration (April 2026)]]` — full plan with Karpathy mapping, slice sequencing, risk register, and live-invocation records.
+- Skill: `skills/autoresearch/SKILL.md` (program-of-record discipline, off-limits enumeration, score-gaming prohibitions).
