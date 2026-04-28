@@ -8,9 +8,11 @@
 //  2. Fixed-point gate — SHA-256 the new surface content; if the SHA
 //     is already in the seen-candidates ring, record
 //     `fixed-point-skipped` and revert any uncommitted edit.
-//  3. Manifest gate — when the surface is a manifest, validate it
-//     via agent.LoadAndValidateManifest. Failure records
+//  3. Manifest gate — when the surface is classified as type
+//     "manifest" (per detectSurfaceType / § 4.4), validate it via
+//     agent.LoadAndValidateManifest. Failure records
 //     `manifest-validate-failed` and reverts the uncommitted edit.
+//     Skill and source surfaces skip the gate.
 //  4. Commit candidate — git commit -a --no-verify (per § 5.5 N13
 //     and [[make check Gate Structurally Broken on Origin (April 2026)]]).
 //  5. Evaluator — invoke the evaluator script with the worktree as
@@ -59,7 +61,9 @@ import (
 )
 
 // trialOutcome captures the per-trial decision. The reason string is
-// the canonical taxonomy from plan § 4.2.
+// the canonical taxonomy from plan § 4.2. SurfaceType is stamped on
+// every record (Slice 4) so an operator can audit which gate fired
+// without having to cross-reference the manifest record.
 type trialOutcome struct {
 	N            int     `json:"n"`
 	CommitSHA    string  `json:"commit_sha"`
@@ -67,6 +71,7 @@ type trialOutcome struct {
 	Score        float64 `json:"score"`
 	Kept         bool    `json:"kept"`
 	Reason       string  `json:"reason"`
+	SurfaceType  string  `json:"surface_type"`
 	DurationS    float64 `json:"duration_s"`
 	StartedAt    string  `json:"started_at"`
 	EndedAt      string  `json:"ended_at"`
@@ -291,8 +296,9 @@ func runOneTrial(
 ) (trialOutcome, error) {
 	startedAt := time.Now()
 	outcome := trialOutcome{
-		N:         n,
-		StartedAt: startedAt.UTC().Format(time.RFC3339),
+		N:           n,
+		StartedAt:   startedAt.UTC().Format(time.RFC3339),
+		SurfaceType: string(resolved.surfaceType),
 	}
 
 	if err := runDriverScript(resolved.driverScript, worktreePath, relSurface, resolved.runID); err != nil {
@@ -325,7 +331,11 @@ func runOneTrial(
 		return outcome, nil
 	}
 
-	if isManifestSurface(resolved.surface) {
+	// Slice 4 — manifest gate fires only when the detected
+	// surface type is "manifest" (path heuristic OR frontmatter
+	// probe per § 4.4). Skill and source surfaces skip the gate
+	// and proceed straight to scoring.
+	if resolved.surfaceType == SurfaceTypeManifest {
 		if _, vErr := agent.LoadAndValidateManifest(worktreeSurface); vErr != nil {
 			if err := gitCheckoutSurface(worktreePath, relSurface); err != nil {
 				return outcome, fmt.Errorf("reverting manifest-gate failure: %w", err)
@@ -561,21 +571,6 @@ func isImprovement(state *trialLoopState, score float64, direction string) bool 
 		return score > state.bestScore
 	}
 	return score < state.bestScore
-}
-
-// isManifestSurface returns true when the surface path is under
-// `internal/app/agents/`. Slice 4 broadens the detection rule per
-// § 4.4; Slice 1 sticks with the MVP path-prefix probe so the gate
-// fires for the planner.md hard-coded surface.
-func isManifestSurface(surface string) bool {
-	cleaned := filepath.Clean(surface)
-	parts := strings.Split(cleaned, string(filepath.Separator))
-	for i := 0; i+2 < len(parts); i++ {
-		if parts[i] == "internal" && parts[i+1] == "app" && parts[i+2] == "agents" {
-			return true
-		}
-	}
-	return false
 }
 
 // relativeSurfacePath returns the surface path relative to the

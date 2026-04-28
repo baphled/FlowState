@@ -783,4 +783,448 @@ broken candidate body
 			})
 		})
 	})
+
+	// Slice 4 — pluggable surface + surface-type detection per
+	// plan v3.1 § 4.4. The MVP's hard-coded planner.md gate is
+	// generalised: any single file is acceptable as a surface, and
+	// the manifest-validate gate fires only when type=manifest.
+	//
+	// Detection rules (in order):
+	//   1. path under cfg.AgentDir or cfg.AgentDirs              → manifest
+	//   2. .md file with frontmatter carrying capabilities.tools
+	//      or delegation.delegation_allowlist                    → manifest
+	//   3. path under skills/ ending in SKILL.md                 → skill
+	//   4. else                                                  → source
+	//
+	// The detected type is persisted on the manifest record AND on
+	// each trial record so an operator can audit which gate fired.
+	Describe("surface-type detection (Slice 4)", func() {
+		writeNoOpDriver := func() string {
+			path := filepath.Join(dataDir, "noop-driver-st.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+		writeNoOpScorer := func() string {
+			path := filepath.Join(dataDir, "noop-scorer-st.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+
+		// makeSurface writes content to a path inside repoDir,
+		// creates parent directories as needed, and re-commits the
+		// repo so the clean-tree precondition still holds.
+		makeSurface := func(relPath, body string) string {
+			abs := filepath.Join(repoDir, relPath)
+			Expect(os.MkdirAll(filepath.Dir(abs), 0o755)).To(Succeed())
+			Expect(os.WriteFile(abs, []byte(body), 0o600)).To(Succeed())
+
+			run := func(args ...string) {
+				c := exec.Command("git", args...)
+				c.Dir = repoDir
+				c.Env = append(os.Environ(),
+					"GIT_AUTHOR_NAME=test",
+					"GIT_AUTHOR_EMAIL=test@example.com",
+					"GIT_COMMITTER_NAME=test",
+					"GIT_COMMITTER_EMAIL=test@example.com",
+				)
+				combined, err := c.CombinedOutput()
+				Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+			}
+			run("add", relPath)
+			run("commit", "--no-verify", "-m", "add "+relPath)
+			return abs
+		}
+
+		runSetup := func(runID, surfacePath string, extraArgs ...string) error {
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surfacePath,
+				"--run-id", runID,
+				"--max-trials", "0",
+				"--time-budget", "30s",
+				"--worktree-base", filepath.Join(dataDir, "wt-"+runID),
+				"--driver-script", writeNoOpDriver(),
+				"--evaluator-script", writeNoOpScorer(),
+			}
+			args = append(args, extraArgs...)
+			return runCmd(args...)
+		}
+
+		It("detects a surface under cfg.AgentDir as manifest (path heuristic)", func() {
+			// The default planner.md surface lives under AgentDir →
+			// rule 1 fires.
+			err := runSetup("st-manifest-path", surface)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-manifest-path")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "manifest"))
+		})
+
+		It("detects an .md surface with capabilities.tools as manifest (frontmatter probe)", func() {
+			// Same manifest body but parked outside AgentDir so
+			// rule 1 misses; rule 2 catches it.
+			body := `---
+schema_version: "1"
+id: stray
+name: Stray
+complexity: standard
+metadata:
+  role: stray role
+capabilities:
+  tools: [read]
+---
+stray manifest body
+`
+			path := makeSurface(filepath.Join("docs", "stray.md"), body)
+
+			err := runSetup("st-manifest-fm", path)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-manifest-fm")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "manifest"))
+		})
+
+		It("detects an .md surface with delegation_allowlist as manifest (frontmatter probe)", func() {
+			body := `---
+schema_version: "1"
+id: gateway
+name: Gateway
+complexity: standard
+metadata:
+  role: gateway role
+delegation:
+  delegation_allowlist: [child-a, child-b]
+---
+gateway manifest body
+`
+			path := makeSurface(filepath.Join("ops", "gateway.md"), body)
+
+			err := runSetup("st-manifest-deleg", path)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-manifest-deleg")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "manifest"))
+		})
+
+		It("does NOT auto-classify schema_version-only frontmatter as manifest", func() {
+			// schema_version was rejected as a marker per § 4.4 —
+			// it appears on plan and ADR notes too. Such files fall
+			// to rule 4 (source) when neither path heuristic nor
+			// the manifest-only keys match.
+			body := `---
+schema_version: "1"
+title: Some Plan
+---
+plan body
+`
+			path := makeSurface(filepath.Join("plans", "some-plan.md"), body)
+
+			err := runSetup("st-not-manifest", path)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-not-manifest")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "source"))
+		})
+
+		It("detects a SKILL.md under skills/ as skill", func() {
+			body := `---
+name: example-skill
+---
+# Skill body
+
+Prose only — no manifest keys.
+`
+			path := makeSurface(filepath.Join("skills", "example", "SKILL.md"), body)
+
+			err := runSetup("st-skill", path)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-skill")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "skill"))
+		})
+
+		It("classifies arbitrary source files as source", func() {
+			body := "package fixture\n\nfunc Demo() int { return 0 }\n"
+			path := makeSurface(filepath.Join("internal", "fixture", "demo.go"), body)
+
+			err := runSetup("st-source", path)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("st-source")
+			Expect(rec).To(HaveKeyWithValue("surface_type", "source"))
+		})
+
+		It("includes the surface_type in the run summary line", func() {
+			err := runSetup("st-summary", surface)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			Expect(out.String()).To(ContainSubstring("surface_type=manifest"))
+		})
+	})
+
+	// Slice 4 — manifest gate behaviour now keys off detected type
+	// rather than the MVP's path-prefix probe. Manifest gate fires
+	// for type=manifest (regardless of file location). For
+	// type ∈ {skill, source} the gate is a no-op and the trial
+	// proceeds to scoring.
+	Describe("manifest gate behaviour by surface type (Slice 4)", func() {
+		// makeSurface mirrors the helper in the surface-type
+		// Describe — written here so the gate spec can stand alone.
+		makeSurface := func(relPath, body string) string {
+			abs := filepath.Join(repoDir, relPath)
+			Expect(os.MkdirAll(filepath.Dir(abs), 0o755)).To(Succeed())
+			Expect(os.WriteFile(abs, []byte(body), 0o600)).To(Succeed())
+
+			run := func(args ...string) {
+				c := exec.Command("git", args...)
+				c.Dir = repoDir
+				c.Env = append(os.Environ(),
+					"GIT_AUTHOR_NAME=test",
+					"GIT_AUTHOR_EMAIL=test@example.com",
+					"GIT_COMMITTER_NAME=test",
+					"GIT_COMMITTER_EMAIL=test@example.com",
+				)
+				combined, err := c.CombinedOutput()
+				Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+			}
+			run("add", relPath)
+			run("commit", "--no-verify", "-m", "add "+relPath)
+			return abs
+		}
+
+		// brokenManifest is a frontmatter-keyed manifest with an
+		// invalid colour — Validate rejects it. Used to prove the
+		// gate fires for type=manifest detected via the probe.
+		brokenManifestBody := `---
+schema_version: "1"
+id: stray-broken
+name: StrayBroken
+color: not-a-hex
+complexity: standard
+metadata:
+  role: broken stray
+capabilities:
+  tools: [read]
+---
+broken stray manifest
+`
+
+		// validManifestBody seeds the surface. The driver overwrites
+		// it with brokenManifestBody to trip the gate.
+		validManifestBody := `---
+schema_version: "1"
+id: stray-valid
+name: StrayValid
+complexity: standard
+metadata:
+  role: valid stray
+capabilities:
+  tools: [read]
+---
+valid stray manifest
+`
+
+		writeOverwriteDriver := func(replacementPath string) string {
+			path := filepath.Join(dataDir, "overwrite-driver.sh")
+			body := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+cp %q "$FLOWSTATE_AUTORESEARCH_SURFACE"
+`, replacementPath)
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		writeNoOpScorer := func() string {
+			path := filepath.Join(dataDir, "noop-scorer-gate.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+
+		readTrialRecord := func(runID string, n int) map[string]any {
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+			key := fmt.Sprintf("autoresearch/%s/trial-%d", runID, n)
+			val, ok := entries[key]
+			Expect(ok).To(BeTrue(), "trial-%d record expected at %s", n, key)
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+			return record
+		}
+
+		It("fires the manifest gate for a manifest detected via frontmatter probe", func() {
+			surfacePath := makeSurface(filepath.Join("docs", "stray-manifest.md"), validManifestBody)
+
+			// Stage the broken replacement separately so the driver
+			// can copy it without re-touching the worktree's
+			// committed state.
+			brokenPath := filepath.Join(dataDir, "broken-replacement.md")
+			Expect(os.WriteFile(brokenPath, []byte(brokenManifestBody), 0o600)).To(Succeed())
+
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surfacePath,
+				"--run-id", "gate-fm",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--no-improve-window", "10",
+				"--worktree-base", filepath.Join(dataDir, "wt-gate-fm"),
+				"--driver-script", writeOverwriteDriver(brokenPath),
+				"--evaluator-script", writeNoOpScorer(),
+			}
+			err := runCmd(args...)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("gate-fm", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "manifest-validate-failed"))
+		})
+
+		It("does NOT fire the manifest gate for a skill surface", func() {
+			// SKILL.md contains nothing the manifest validator
+			// would accept. If the gate fires, the trial would
+			// fail with manifest-validate-failed instead of being
+			// kept. Pin: trial-1 is kept (improved) under min.
+			seedBody := "---\nname: example\n---\n\nseed body v0\n"
+			surfacePath := makeSurface(filepath.Join("skills", "example", "SKILL.md"), seedBody)
+
+			replaceBody := "---\nname: example\n---\n\nimproved body v1\n"
+			replacePath := filepath.Join(dataDir, "skill-replacement.md")
+			Expect(os.WriteFile(replacePath, []byte(replaceBody), 0o600)).To(Succeed())
+
+			// Scorer drops from 10 → 5 so trial 1 is kept under min.
+			scorer := filepath.Join(dataDir, "drop-scorer.sh")
+			scorerBody := `#!/usr/bin/env bash
+set -eu
+state="$DATA_DIR/drop-scorer-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 10
+else
+  echo 5
+fi
+`
+			Expect(os.WriteFile(scorer, []byte(scorerBody), 0o755)).To(Succeed())
+
+			Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surfacePath,
+				"--run-id", "gate-skill",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--no-improve-window", "10",
+				"--worktree-base", filepath.Join(dataDir, "wt-gate-skill"),
+				"--driver-script", writeOverwriteDriver(replacePath),
+				"--evaluator-script", scorer,
+			}
+			err := runCmd(args...)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("gate-skill", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", true))
+			Expect(rec).To(HaveKeyWithValue("reason", "improved"))
+		})
+
+		It("does NOT fire the manifest gate for a source surface", func() {
+			// A Go source file that the manifest validator would
+			// reject outright. If the gate fires the trial would
+			// short-circuit; pin that scoring proceeds normally.
+			seedBody := "package demo\n\nfunc Demo() int { return 0 }\n"
+			surfacePath := makeSurface(filepath.Join("internal", "demo", "demo.go"), seedBody)
+
+			replaceBody := "package demo\n\nfunc Demo() int { return 1 }\n"
+			replacePath := filepath.Join(dataDir, "source-replacement.go")
+			Expect(os.WriteFile(replacePath, []byte(replaceBody), 0o600)).To(Succeed())
+
+			scorer := filepath.Join(dataDir, "drop-scorer-src.sh")
+			scorerBody := `#!/usr/bin/env bash
+set -eu
+state="$DATA_DIR/drop-scorer-src-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 10
+else
+  echo 5
+fi
+`
+			Expect(os.WriteFile(scorer, []byte(scorerBody), 0o755)).To(Succeed())
+
+			Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surfacePath,
+				"--run-id", "gate-source",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--no-improve-window", "10",
+				"--worktree-base", filepath.Join(dataDir, "wt-gate-source"),
+				"--driver-script", writeOverwriteDriver(replacePath),
+				"--evaluator-script", scorer,
+			}
+			err := runCmd(args...)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("gate-source", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", true))
+			Expect(rec).To(HaveKeyWithValue("reason", "improved"))
+		})
+
+		It("persists surface_type on each trial record", func() {
+			seedBody := "package demo\n\nfunc Demo() int { return 0 }\n"
+			surfacePath := makeSurface(filepath.Join("internal", "trace", "trace.go"), seedBody)
+
+			replaceBody := "package demo\n\nfunc Demo() int { return 1 }\n"
+			replacePath := filepath.Join(dataDir, "trace-replacement.go")
+			Expect(os.WriteFile(replacePath, []byte(replaceBody), 0o600)).To(Succeed())
+
+			scorer := filepath.Join(dataDir, "drop-scorer-trace.sh")
+			scorerBody := `#!/usr/bin/env bash
+set -eu
+state="$DATA_DIR/drop-scorer-trace-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 10
+else
+  echo 5
+fi
+`
+			Expect(os.WriteFile(scorer, []byte(scorerBody), 0o755)).To(Succeed())
+
+			Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surfacePath,
+				"--run-id", "trace-st",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--no-improve-window", "10",
+				"--worktree-base", filepath.Join(dataDir, "wt-trace-st"),
+				"--driver-script", writeOverwriteDriver(replacePath),
+				"--evaluator-script", scorer,
+			}
+			err := runCmd(args...)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("trace-st", 1)
+			Expect(rec).To(HaveKeyWithValue("surface_type", "source"))
+		})
+	})
 })
