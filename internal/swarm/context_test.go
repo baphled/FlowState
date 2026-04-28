@@ -2,6 +2,7 @@ package swarm_test
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -175,6 +176,78 @@ var _ = Describe("swarm.Context", func() {
 			kind, _ := swarm.Resolve("tech-team", hasAgent, nil)
 
 			Expect(kind).To(Equal(swarm.KindNone))
+		})
+	})
+
+	Describe("ResolveTarget", func() {
+		var swarmReg *swarm.Registry
+
+		BeforeEach(func() {
+			swarmReg = newTechTeamRegistry()
+		})
+
+		It("returns the id verbatim with nil ctx for an agent target", func() {
+			hasAgent := func(id string) bool { return id == "explorer" }
+
+			leadID, ctx, err := swarm.ResolveTarget(hasAgent, swarmReg, "explorer")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leadID).To(Equal("explorer"))
+			Expect(ctx).To(BeNil())
+		})
+
+		It("returns the lead id and a fresh *Context for a swarm target", func() {
+			hasAgent := func(_ string) bool { return false }
+
+			leadID, ctx, err := swarm.ResolveTarget(hasAgent, swarmReg, "tech-team")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leadID).To(Equal("tech-lead"))
+			Expect(ctx).NotTo(BeNil())
+			Expect(ctx.SwarmID).To(Equal("tech-team"))
+			Expect(ctx.LeadAgent).To(Equal("tech-lead"))
+		})
+
+		It("returns *NotFoundError when neither registry knows the id", func() {
+			hasAgent := func(_ string) bool { return false }
+
+			leadID, ctx, err := swarm.ResolveTarget(hasAgent, swarmReg, "ghost")
+
+			Expect(err).To(HaveOccurred())
+			Expect(leadID).To(Equal(""))
+			Expect(ctx).To(BeNil())
+			var notFound *swarm.NotFoundError
+			Expect(errors.As(err, &notFound)).To(BeTrue())
+			Expect(notFound.ID).To(Equal("ghost"))
+		})
+
+		It("errors when the swarm manifest has an empty Lead", func() {
+			leadlessReg := swarm.NewRegistry()
+			leadlessReg.Register(&swarm.Manifest{ID: "leadless", Lead: "", Members: []string{"explorer"}})
+			hasAgent := func(_ string) bool { return false }
+
+			_, _, err := swarm.ResolveTarget(hasAgent, leadlessReg, "leadless")
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no lead agent"))
+		})
+
+		It("passes through (id, nil, nil) when hasAgent is nil — preserves the bare-engine CLI test contract", func() {
+			leadID, ctx, err := swarm.ResolveTarget(nil, swarmReg, "anything")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leadID).To(Equal("anything"))
+			Expect(ctx).To(BeNil())
+		})
+
+		It("passes through (id, nil, nil) when swarmReg is nil — same bare-engine contract", func() {
+			hasAgent := func(_ string) bool { return false }
+
+			leadID, ctx, err := swarm.ResolveTarget(hasAgent, nil, "anything")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leadID).To(Equal("anything"))
+			Expect(ctx).To(BeNil())
 		})
 	})
 
