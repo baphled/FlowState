@@ -11,6 +11,16 @@
 // <skill|path>`) arrive in Slices 4–6 — the plumbing landed here is
 // intentionally restrictive so future slices extend, not retrofit.
 //
+// Slice 5 formalises the evaluator contract: `--evaluator-script`
+// gains up-front path validation (regular file + executable bit),
+// `--evaluator-timeout` caps wall-clock per invocation, and
+// non-conforming stdout / non-zero exit / timeout all collapse onto
+// `evaluator-contract-violation` with the three-strikes
+// `evaluator-contract-failure-rate` hard stop. The full operator-
+// facing contract lives in skills/autoresearch/SKILL.md "Writing an
+// evaluator" and plan v3.1 § 4.6; the runEvaluatorScript doc-comment
+// in autoresearch_loop.go pins the same contract at the seam.
+//
 // The harness owns the worktree's git history end-to-end. Per-trial
 // commits inside the worktree MUST use `--no-verify` (plan § 5.5 N13
 // + [[make check Gate Structurally Broken on Origin (April 2026)]]);
@@ -48,16 +58,17 @@ import (
 
 // autoresearchRunOptions holds the parsed flag values for one run.
 type autoresearchRunOptions struct {
-	surface         string
-	surfaceType     SurfaceType
-	maxTrials       int
-	metricDirection string
-	timeBudget      time.Duration
-	runID           string
-	worktreeBase    string
-	noImproveWindow int
-	driverScript    string
-	evaluatorScript string
+	surface          string
+	surfaceType      SurfaceType
+	maxTrials        int
+	metricDirection  string
+	timeBudget       time.Duration
+	runID            string
+	worktreeBase     string
+	noImproveWindow  int
+	driverScript     string
+	evaluatorScript  string
+	evaluatorTimeout time.Duration
 }
 
 // metric direction enumeration.
@@ -156,7 +167,9 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.driverScript, "driver-script", "",
 		"Fixture driver script path (testing only; produces candidate edits in the worktree)")
 	flags.StringVar(&opts.evaluatorScript, "evaluator-script", "",
-		"Evaluator script path (default: scripts/validate-harness.sh --score)")
+		"Evaluator script path. Any executable that satisfies the contract in plan v3.1 § 4.6 (one non-negative integer to stdout, exit 0; see skills/autoresearch/SKILL.md \"Writing an evaluator\"). Default: scripts/validate-harness.sh --score")
+	flags.DurationVar(&opts.evaluatorTimeout, "evaluator-timeout", 5*time.Minute,
+		"Per-invocation evaluator wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` and counts toward `evaluator-contract-failure-rate`")
 
 	return cmd
 }
@@ -233,10 +246,18 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	}
 	worktreeSurface := filepath.Join(worktreePath, relSurface)
 
-	baselineScore, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID)
+	baseline, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
 	if err != nil {
 		return fmt.Errorf("baseline evaluator: %w", err)
 	}
+	if baseline.ContractViolation {
+		// Baseline contract violation is a hard fail — the
+		// evaluator is broken before any trial has run, so
+		// reporting `evaluator-contract-failure-rate` later in the
+		// loop would be noise. Surface the underlying reason now.
+		return fmt.Errorf("baseline evaluator: contract violation: %s", baseline.Reason)
+	}
+	baselineScore := baseline.Score
 	baselineCommit, err := worktreeHeadSHA(worktreePath)
 	if err != nil {
 		return fmt.Errorf("baseline commit: %w", err)
@@ -382,6 +403,15 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 		return opts, fmt.Errorf("detecting surface type for %q: %w", opts.surface, err)
 	}
 	opts.surfaceType = surfaceType
+
+	// Slice 5 — explicit `--evaluator-script` paths are validated up
+	// front so the operator gets a clear error before any worktree
+	// work begins. Empty path falls through to the MVP default.
+	if opts.evaluatorScript != "" {
+		if err := validateEvaluatorScriptPath(opts.evaluatorScript); err != nil {
+			return opts, err
+		}
+	}
 
 	if opts.runID == "" {
 		opts.runID = uuid.NewString()
@@ -535,10 +565,16 @@ func openCoordStore(application *app.App) (coordination.Store, error) {
 // fills surface_type via detectSurfaceType (§ 4.4). evaluator and
 // program carry the MVP hard-coded defaults so the record is
 // consistent across runs.
+//
+// EvaluatorScript carries the resolved `--evaluator-script` path when
+// the operator supplied one (Slice 5); empty when the MVP default
+// fires. The field is `omitempty` so older readers parsing
+// pre-Slice-5 records continue to work unchanged.
 type manifestRecord struct {
 	Surface         string  `json:"surface"`
 	SurfaceType     string  `json:"surface_type"`
 	Evaluator       string  `json:"evaluator"`
+	EvaluatorScript string  `json:"evaluator_script,omitempty"`
 	Program         string  `json:"program"`
 	MetricDirection string  `json:"metric_direction"`
 	MaxTrials       int     `json:"max_trials"`
@@ -580,6 +616,7 @@ func writeManifestRecord(
 		Surface:         opts.surface,
 		SurfaceType:     string(opts.surfaceType),
 		Evaluator:       defaultEvaluator(opts.evaluatorScript),
+		EvaluatorScript: opts.evaluatorScript,
 		Program:         "autoresearch",
 		MetricDirection: opts.metricDirection,
 		MaxTrials:       opts.maxTrials,
@@ -614,4 +651,36 @@ func defaultEvaluator(supplied string) string {
 		return supplied
 	}
 	return "scripts/validate-harness.sh --score"
+}
+
+// validateEvaluatorScriptPath enforces the operator-facing half of
+// the evaluator contract from plan v3.1 § 4.6: the path the operator
+// hands to `--evaluator-script` must exist, must be a regular file,
+// and must be executable. Failures here produce a clear error before
+// any worktree is created — operators don't have to wait for the
+// baseline-scoring step to find out their script was mis-typed.
+//
+// Expected:
+//   - path is a non-empty operator-supplied evaluator path
+//     (absolute or relative to the process cwd).
+//
+// Returns:
+//   - nil on a regular, executable file.
+//   - A descriptive error mentioning `--evaluator-script` and the
+//     specific failure mode (missing, not regular, not executable).
+//
+// Side effects:
+//   - Stat-checks the path.
+func validateEvaluatorScriptPath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("--evaluator-script %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("--evaluator-script %q: not a regular file", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("--evaluator-script %q: not executable (chmod +x)", path)
+	}
+	return nil
 }

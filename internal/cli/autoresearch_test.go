@@ -1227,4 +1227,405 @@ fi
 			Expect(rec).To(HaveKeyWithValue("surface_type", "source"))
 		})
 	})
+
+	// Slice 5 — formal evaluator contract per plan v3.1 § 4.6 +
+	// reference `bench.sh` evaluator + `--metric-direction max`
+	// end-to-end demonstration. The MVP plumbing accepted any non-zero
+	// scalar; Slice 5 hardens that surface so contract violations are
+	// caught and the operator-facing `--evaluator-script` flag has a
+	// documented, testable contract.
+	//
+	// Pinned behaviour:
+	//   - stdout containing a non-integer string → evaluator-contract-violation
+	//   - stdout containing a negative integer    → evaluator-contract-violation
+	//   - stdout containing more than one non-empty line (after trim)
+	//                                              → evaluator-contract-violation
+	//   - non-zero exit code                       → evaluator-contract-violation
+	//   - evaluator wall-clock exceeds --evaluator-timeout
+	//                                              → evaluator-contract-violation
+	//                                                + evaluator_timeout_ms recorded on the trial
+	//   - three consecutive evaluator-contract-violation trials
+	//                                              → terminate with
+	//                                                reason=evaluator-contract-failure-rate
+	//   - --metric-direction max with the reference bench.sh evaluator
+	//                                              → higher scores kept
+	Describe("evaluator contract (Slice 5)", func() {
+		writeNoOpDriver := func() string {
+			path := filepath.Join(dataDir, "noop-driver-eval.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+
+		// writeAlwaysEditDriver writes a driver that overwrites the
+		// surface with a unique trial-N body each invocation so the
+		// fixed-point gate never fires; we want each trial to reach
+		// the evaluator so the contract checks actually run.
+		writeAlwaysEditDriver := func() string {
+			path := filepath.Join(dataDir, "always-edit-driver.sh")
+			body := `#!/usr/bin/env bash
+set -eu
+trial_file="$DATA_DIR/eval-counter"
+n=$(cat "$trial_file" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$trial_file"
+cat <<EOF > "$FLOWSTATE_AUTORESEARCH_SURFACE"
+---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role - eval-trial-$n
+capabilities:
+  tools: [read, plan]
+---
+planner body trial $n
+EOF
+`
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		// writeContractEvaluator writes an evaluator whose stdout body
+		// is taken verbatim from the supplied string for trial-level
+		// invocations. The very first invocation (baseline scoring)
+		// always emits a clean `0\n` so the run reaches the trial
+		// loop; otherwise the run would abort during baseline.
+		// Used to drive the contract-violation specs (non-integer,
+		// negative, multi-line, etc.).
+		writeContractEvaluator := func(stdoutBody string) string {
+			path := filepath.Join(dataDir, "contract-evaluator.sh")
+			body := fmt.Sprintf(`#!/usr/bin/env bash
+state="$DATA_DIR/contract-evaluator-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 0
+  exit 0
+fi
+cat <<'STDOUT_EOF'
+%s
+STDOUT_EOF
+`, stdoutBody)
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		// writeNonZeroExitEvaluator writes an evaluator that emits a
+		// clean baseline `0` then exits non-zero on every trial-level
+		// invocation — the MVP-canonical way to signal evaluator-side
+		// failure per plan § 4.6.
+		writeNonZeroExitEvaluator := func() string {
+			path := filepath.Join(dataDir, "exit-fail-evaluator.sh")
+			body := `#!/usr/bin/env bash
+state="$DATA_DIR/exit-fail-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 0
+  exit 0
+fi
+echo "boom" >&2
+exit 7
+`
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		// writeSlowEvaluator writes an evaluator that emits `0`
+		// instantly on the baseline call then sleeps for `seconds`
+		// on subsequent trial-level calls. Used to exercise the
+		// --evaluator-timeout SIGTERM path.
+		writeSlowEvaluator := func(seconds int) string {
+			path := filepath.Join(dataDir, "slow-evaluator.sh")
+			body := fmt.Sprintf(`#!/usr/bin/env bash
+state="$DATA_DIR/slow-eval-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  echo 0
+  exit 0
+fi
+sleep %d
+echo 0
+`, seconds)
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		readTrialRecord := func(runID string, n int) map[string]any {
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+			key := fmt.Sprintf("autoresearch/%s/trial-%d", runID, n)
+			val, ok := entries[key]
+			Expect(ok).To(BeTrue(), "trial-%d record expected at %s", n, key)
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+			return record
+		}
+
+		readResultRecord := func(runID string) map[string]any {
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+			key := fmt.Sprintf("autoresearch/%s/result", runID)
+			val, ok := entries[key]
+			Expect(ok).To(BeTrue(), "result record expected at %s", key)
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+			return record
+		}
+
+		runWithEvaluator := func(runID string, maxTrials int, evaluator string, extraArgs ...string) error {
+			args := []string{
+				"autoresearch", "run",
+				"--surface", surface,
+				"--run-id", runID,
+				"--max-trials", fmt.Sprintf("%d", maxTrials),
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--no-improve-window", "10",
+				"--worktree-base", filepath.Join(dataDir, "wt-"+runID),
+				"--driver-script", writeAlwaysEditDriver(),
+				"--evaluator-script", evaluator,
+			}
+			args = append(args, extraArgs...)
+			Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+			return runCmd(args...)
+		}
+
+		It("exposes --evaluator-timeout in run --help", func() {
+			err := runCmd("autoresearch", "run", "--help")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("--evaluator-timeout"))
+		})
+
+		It("rejects evaluator stdout that is not an integer", func() {
+			eval := writeContractEvaluator("not-a-number")
+			err := runWithEvaluator("eval-non-int", 1, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("eval-non-int", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "evaluator-contract-violation"))
+		})
+
+		It("rejects evaluator stdout that is a negative integer", func() {
+			eval := writeContractEvaluator("-5")
+			err := runWithEvaluator("eval-neg", 1, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("eval-neg", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "evaluator-contract-violation"))
+		})
+
+		It("rejects evaluator stdout containing more than one non-empty line", func() {
+			eval := writeContractEvaluator("12\n34")
+			err := runWithEvaluator("eval-multi", 1, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("eval-multi", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "evaluator-contract-violation"))
+		})
+
+		It("treats a non-zero evaluator exit as an evaluator-contract-violation (not a regression)", func() {
+			eval := writeNonZeroExitEvaluator()
+			err := runWithEvaluator("eval-exit", 1, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("eval-exit", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "evaluator-contract-violation"))
+		})
+
+		It("terminates with reason=evaluator-contract-failure-rate after three consecutive violations", func() {
+			eval := writeNonZeroExitEvaluator()
+			err := runWithEvaluator("eval-rate", 5, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			result := readResultRecord("eval-rate")
+			Expect(result).To(HaveKeyWithValue("termination_reason", "evaluator-contract-failure-rate"))
+			// Run halts on trial 3, not trial 5.
+			Expect(result["total_trials"]).To(BeNumerically("==", 3))
+		})
+
+		It("records evaluator_timeout_ms on a trial when --evaluator-timeout fires", func() {
+			eval := writeSlowEvaluator(5)
+			err := runWithEvaluator("eval-timeout", 1, eval, "--evaluator-timeout", "200ms")
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readTrialRecord("eval-timeout", 1)
+			Expect(rec).To(HaveKeyWithValue("kept", false))
+			Expect(rec).To(HaveKeyWithValue("reason", "evaluator-contract-violation"))
+			Expect(rec).To(HaveKey("evaluator_timeout_ms"))
+			Expect(rec["evaluator_timeout_ms"]).To(BeNumerically(">=", 200))
+		})
+
+		It("records evaluator_script on the manifest record", func() {
+			eval := writeContractEvaluator("0")
+			err := runWithEvaluator("eval-script-name", 0, eval)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("eval-script-name")
+			Expect(rec).To(HaveKeyWithValue("evaluator_script", eval))
+		})
+
+		// The reference bench.sh evaluator parses ns/op out of a
+		// `go test -bench` style output and emits ops/sec for the
+		// max-direction demonstration. Tests do NOT run live `go
+		// test -bench` — instead, the script is fed a fixture
+		// captured to $FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT, mirroring
+		// the convention in plan v3.1 § 5.9.
+		Context("reference bench.sh evaluator", func() {
+			testdataPath := func(name string) string {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				return filepath.Join(filepath.Dir(thisFile), "testdata", name)
+			}
+
+			scriptPath := func() string {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				// scripts/ lives at the repo root; walk up from the
+				// test file (internal/cli/) two directories.
+				return filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "autoresearch-evaluators", "bench.sh")
+			}
+
+			It("emits a non-negative integer to stdout for a fixture bench output", func() {
+				bench := scriptPath()
+				info, statErr := os.Stat(bench)
+				Expect(statErr).NotTo(HaveOccurred(), "scripts/autoresearch-evaluators/bench.sh must exist")
+				Expect(info.Mode()&0o111).NotTo(BeZero(), "bench.sh must be executable")
+
+				fixture := testdataPath("fake-bench-output.txt")
+				_, statErr = os.Stat(fixture)
+				Expect(statErr).NotTo(HaveOccurred(), "testdata/fake-bench-output.txt must exist")
+
+				cmd := exec.Command(bench)
+				cmd.Env = append(os.Environ(),
+					"FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT="+fixture,
+				)
+				stdout, runErr := cmd.Output()
+				Expect(runErr).NotTo(HaveOccurred(), "bench.sh: %s", string(stdout))
+
+				line := strings.TrimSpace(string(stdout))
+				Expect(line).NotTo(BeEmpty())
+				Expect(strings.Contains(line, "\n")).To(BeFalse(), "bench.sh must emit exactly one line")
+
+				// Positive integer: ops/sec derived from a positive
+				// ns/op. Plan § 4.6 allows non-negative; for a real
+				// benchmark fixture the value is strictly > 0.
+				var n int
+				_, scanErr := fmt.Sscanf(line, "%d", &n)
+				Expect(scanErr).NotTo(HaveOccurred(), "bench.sh stdout %q must parse as int", line)
+				Expect(n).To(BeNumerically(">", 0))
+			})
+
+			It("ratchets under --metric-direction max when bench.sh reports an improving ops/sec", func() {
+				// Two fixture files: trial 1 reports a slower ns/op
+				// (lower ops/sec); trial 2 reports a faster ns/op
+				// (higher ops/sec). Under max direction, trial 1 is
+				// the new best (first scored trial always kept) and
+				// trial 2 ratchets upward.
+				slowFixture := filepath.Join(dataDir, "bench-slow.txt")
+				fastFixture := filepath.Join(dataDir, "bench-fast.txt")
+				Expect(os.WriteFile(slowFixture, []byte(
+					"BenchmarkDemo-8   	1000000	      1000 ns/op\n"+
+						"PASS\n"+
+						"ok  	example.com/demo	1.234s\n",
+				), 0o600)).To(Succeed())
+				Expect(os.WriteFile(fastFixture, []byte(
+					"BenchmarkDemo-8   	5000000	       100 ns/op\n"+
+						"PASS\n"+
+						"ok  	example.com/demo	1.234s\n",
+				), 0o600)).To(Succeed())
+
+				// Wrapper evaluator: maintains its own invocation
+				// counter so the trajectory is:
+				//   call 1 (baseline scoring)         → very-slow (low ops/sec)
+				//   call 2 (trial 1 candidate score)  → slow      (mid ops/sec, improvement)
+				//   call 3 (trial 2 candidate score)  → fast      (high ops/sec, further improvement)
+				// Driver runs strictly between scoring calls so we
+				// can't share the driver's eval-counter here.
+				verySlowFixture := filepath.Join(dataDir, "bench-baseline.txt")
+				Expect(os.WriteFile(verySlowFixture, []byte(
+					"BenchmarkDemo-8   	1000	      10000 ns/op\n"+
+						"PASS\n"+
+						"ok  	example.com/demo	1.234s\n",
+				), 0o600)).To(Succeed())
+
+				wrapper := filepath.Join(dataDir, "bench-wrapper.sh")
+				wrapperBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+state="$DATA_DIR/bench-wrapper-state"
+n=$(cat "$state" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$state"
+if [ "$n" -le 1 ]; then
+  export FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT=%q
+elif [ "$n" -le 2 ]; then
+  export FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT=%q
+else
+  export FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT=%q
+fi
+exec %q
+`, verySlowFixture, slowFixture, fastFixture, scriptPath())
+				Expect(os.WriteFile(wrapper, []byte(wrapperBody), 0o755)).To(Succeed())
+
+				err := runWithEvaluator("eval-max-bench", 2, wrapper, "--metric-direction", "max")
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				trial1 := readTrialRecord("eval-max-bench", 1)
+				Expect(trial1).To(HaveKeyWithValue("kept", true))
+				Expect(trial1).To(HaveKeyWithValue("reason", "improved"))
+
+				trial2 := readTrialRecord("eval-max-bench", 2)
+				Expect(trial2).To(HaveKeyWithValue("kept", true))
+				Expect(trial2).To(HaveKeyWithValue("reason", "improved"))
+				Expect(trial2["score"]).To(BeNumerically(">", trial1["score"]))
+			})
+		})
+
+		Context("evaluator validation", func() {
+			It("rejects --evaluator-script when the path does not exist", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "eval-missing",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-eval-missing"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", filepath.Join(dataDir, "ghost-evaluator.sh"),
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("evaluator-script"))
+			})
+
+			It("rejects --evaluator-script when the path is not executable", func() {
+				notExec := filepath.Join(dataDir, "not-exec.sh")
+				Expect(os.WriteFile(notExec, []byte("#!/usr/bin/env bash\necho 0\n"), 0o644)).To(Succeed())
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "eval-not-exec",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-eval-not-exec"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", notExec,
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("executable"))
+			})
+		})
+	})
 })

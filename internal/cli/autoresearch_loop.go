@@ -46,6 +46,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -54,6 +55,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -64,17 +66,23 @@ import (
 // the canonical taxonomy from plan § 4.2. SurfaceType is stamped on
 // every record (Slice 4) so an operator can audit which gate fired
 // without having to cross-reference the manifest record.
+//
+// EvaluatorTimeoutMS is set only when the evaluator wall-clock
+// exceeded `--evaluator-timeout` for this trial; the field is
+// `omitempty` so older readers parsing pre-Slice-5 records continue
+// to work unchanged.
 type trialOutcome struct {
-	N            int     `json:"n"`
-	CommitSHA    string  `json:"commit_sha"`
-	CandidateSHA string  `json:"candidate_sha"`
-	Score        float64 `json:"score"`
-	Kept         bool    `json:"kept"`
-	Reason       string  `json:"reason"`
-	SurfaceType  string  `json:"surface_type"`
-	DurationS    float64 `json:"duration_s"`
-	StartedAt    string  `json:"started_at"`
-	EndedAt      string  `json:"ended_at"`
+	N                  int     `json:"n"`
+	CommitSHA          string  `json:"commit_sha"`
+	CandidateSHA       string  `json:"candidate_sha"`
+	Score              float64 `json:"score"`
+	Kept               bool    `json:"kept"`
+	Reason             string  `json:"reason"`
+	SurfaceType        string  `json:"surface_type"`
+	DurationS          float64 `json:"duration_s"`
+	StartedAt          string  `json:"started_at"`
+	EndedAt            string  `json:"ended_at"`
+	EvaluatorTimeoutMS int64   `json:"evaluator_timeout_ms,omitempty"`
 }
 
 // trialReason values — pinned per plan § 4.2.
@@ -98,9 +106,14 @@ const (
 	terminationSignal                     = "signal"
 
 	// Threshold constants from plan § 4.7.
-	fixedPointSaturationLimit  = 10
-	manifestGateFailureLimit   = 3
-	seenCandidatesRingCapacity = 20
+	fixedPointSaturationLimit       = 10
+	manifestGateFailureLimit        = 3
+	evaluatorContractFailureLimit   = 3
+	seenCandidatesRingCapacity      = 20
+
+	// evaluatorTermGracePeriod is the wall-clock granted between
+	// SIGTERM and SIGKILL when --evaluator-timeout fires (plan § 4.6).
+	evaluatorTermGracePeriod = 30 * time.Second
 
 	// trialStdoutCaptureLimit caps the bytes captured from the
 	// evaluator's stdout to avoid pathological evaluators bloating
@@ -113,16 +126,17 @@ const (
 // rules across trials. Kept separate from autoresearchRunOptions so
 // the option type stays a pure config bag.
 type trialLoopState struct {
-	consecutiveFixedPoint    int
-	consecutiveManifestFails int
-	consecutiveNoImprove     int
-	bestScore                float64
-	bestScoreSet             bool
-	bestCommitSHA            string
-	bestTrialN               int
-	seenCandidates           []seenCandidate
-	keptCount                int
-	revertedCount            int
+	consecutiveFixedPoint     int
+	consecutiveManifestFails  int
+	consecutiveEvaluatorFails int
+	consecutiveNoImprove      int
+	bestScore                 float64
+	bestScoreSet              bool
+	bestCommitSHA             string
+	bestTrialN                int
+	seenCandidates            []seenCandidate
+	keptCount                 int
+	revertedCount             int
 }
 
 // seenCandidate is one entry in the SHA ring. Stored as a slice and
@@ -250,6 +264,10 @@ func runTrialLoop(
 			terminationReason = terminationManifestGateFailureRate
 			break
 		}
+		if state.consecutiveEvaluatorFails >= evaluatorContractFailureLimit {
+			terminationReason = terminationEvaluatorContractFailure
+			break
+		}
 		if state.consecutiveNoImprove >= resolved.noImproveWindow {
 			terminationReason = terminationConverged
 			break
@@ -363,26 +381,40 @@ func runOneTrial(
 	}
 	outcome.CommitSHA = commitSHA
 
-	score, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID)
+	evalRes, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
 	if err != nil {
-		// Evaluator-side failure: revert and record. Slice 5
-		// formalises the contract; Slice 1 just records the
-		// underlying signal.
+		return outcome, fmt.Errorf("evaluator harness failure: %w", err)
+	}
+	if evalRes.ContractViolation {
+		// Slice 5 — formal contract enforcement (plan § 4.6). Any
+		// deviation is recorded as evaluator-contract-violation;
+		// three consecutive violations trip the
+		// evaluator-contract-failure-rate hard stop in the loop.
 		if rErr := gitResetHard(worktreePath); rErr != nil {
 			return outcome, fmt.Errorf("evaluator failure recovery: %w", rErr)
 		}
 		outcome.Kept = false
 		outcome.Reason = reasonEvaluatorContractFail
 		outcome.Score = 0
+		// The candidate commit was rolled back; do not advertise
+		// the SHA on the trial record.
+		outcome.CommitSHA = ""
+		if evalRes.TimedOut {
+			outcome.EvaluatorTimeoutMS = evalRes.TimeoutMS
+		}
 		state.consecutiveFixedPoint = 0
 		state.consecutiveManifestFails = 0
+		state.consecutiveEvaluatorFails++
+		// evaluator-contract-violation does NOT count toward
+		// no-improve-window per § 4.7.
 		state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
 			CandidateSHA: candidateSHA, TrialN: n, Score: 0,
 		})
 		finishOutcome(&outcome, startedAt)
 		return outcome, nil
 	}
-	outcome.Score = score
+	outcome.Score = evalRes.Score
+	score := evalRes.Score
 
 	improved := isImprovement(state, score, resolved.metricDirection)
 	if improved {
@@ -410,6 +442,7 @@ func runOneTrial(
 
 	state.consecutiveFixedPoint = 0
 	state.consecutiveManifestFails = 0
+	state.consecutiveEvaluatorFails = 0
 	state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
 		CandidateSHA: candidateSHA, TrialN: n, Score: score,
 	})
@@ -459,59 +492,194 @@ func runDriverScript(driverPath, worktreePath, relSurface, runID string) error {
 	return nil
 }
 
-// runEvaluatorScript invokes the evaluator script and parses its
-// stdout into an integer score. Per the evaluator contract (§ 4.6),
-// stdout is exactly one integer line; stderr is free-form. The score
-// is returned as float64 so the ratchet can compare via standard
-// numeric ops; the trial record persists the same value.
+// evaluatorResult captures the contract-aware outcome of one
+// evaluator invocation. ContractViolation is true when the script's
+// behaviour deviated from plan v3.1 § 4.6 (non-zero exit, non-integer
+// stdout, negative integer, multi-line stdout, timeout). When set,
+// Reason carries a short human-readable description for the trial
+// record; the trial outcome's reason is mapped to
+// `evaluator-contract-violation` regardless. TimeoutMS is the
+// `--evaluator-timeout` budget that fired (in milliseconds) when
+// TimedOut is true; otherwise zero.
+type evaluatorResult struct {
+	Score             float64
+	ContractViolation bool
+	Reason            string
+	TimedOut          bool
+	TimeoutMS         int64
+}
+
+// runEvaluatorScript invokes the evaluator script and applies the
+// formal evaluator contract from plan v3.1 § 4.6.
+//
+// Contract enforced here (caller is responsible for mapping
+// ContractViolation onto the trial reason):
+//
+//  1. Stdout — exactly one line (after trimming a trailing newline),
+//     a non-negative integer in decimal. Multi-line stdout, empty
+//     stdout, or any non-integer scalar is a contract violation.
+//  2. Exit code — 0 on success. Non-zero is a contract violation.
+//  3. Stderr — free-form; captured for diagnostics only.
+//  4. Working directory — the worktree root.
+//  5. Environment — FLOWSTATE_AUTORESEARCH_RUN_ID,
+//     FLOWSTATE_AUTORESEARCH_SURFACE, FLOWSTATE_AGENT_DIR.
+//  6. Time budget — `timeout` caps wall-clock; SIGTERM at deadline,
+//     SIGKILL `evaluatorTermGracePeriod` later. A timeout records a
+//     contract violation with TimedOut=true and TimeoutMS set so the
+//     trial record can persist `evaluator_timeout_ms`.
 //
 // Expected:
 //   - evaluatorPath is the script to invoke; empty falls back to
-//     the MVP default (validate-harness.sh --score). For Slice 1
-//     tests we always pass an explicit script, so the empty-path
-//     branch is not exercised by the seam spec.
+//     the MVP default (validate-harness.sh).
 //   - worktreePath becomes the cwd for the script.
 //   - relSurface is exposed to the script via the documented env.
 //   - runID is propagated.
+//   - timeout is the evaluator wall-clock cap. Zero or negative
+//     disables the timeout (used in the Slice 1 setup-only paths).
 //
 // Returns:
-//   - The parsed integer score on success.
-//   - An error if the script exits non-zero, stdout is not parseable,
-//     or stdout is empty.
+//   - An evaluatorResult populated with either the parsed score or a
+//     ContractViolation flag and Reason. The function only returns a
+//     non-nil error for harness-side I/O failures (e.g. unable to
+//     fork the process for reasons other than the script being
+//     missing); contract failures are returned in-band so the caller
+//     can record them on the trial.
 //
 // Side effects:
-//   - Executes the evaluator script as a subprocess.
-func runEvaluatorScript(evaluatorPath, worktreePath, relSurface, runID string) (float64, error) {
+//   - Executes the evaluator script as a subprocess. The subprocess
+//     receives SIGTERM/SIGKILL on timeout.
+func runEvaluatorScript(evaluatorPath, worktreePath, relSurface, runID string, timeout time.Duration) (evaluatorResult, error) {
 	if evaluatorPath == "" {
 		evaluatorPath = "scripts/validate-harness.sh"
 	}
-	cmd := exec.Command(evaluatorPath)
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	timedOut := false
+	timeoutMS := int64(0)
+	if timeout > 0 {
+		// CommandContext cancels by SIGKILL by default; wrap with a
+		// SIGTERM-then-grace-then-SIGKILL pattern so well-behaved
+		// evaluators get a chance to clean up.
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, evaluatorPath)
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(),
 		"FLOWSTATE_AUTORESEARCH_RUN_ID="+runID,
 		"FLOWSTATE_AUTORESEARCH_SURFACE="+relSurface,
 		"FLOWSTATE_AGENT_DIR="+filepath.Join(worktreePath, "internal", "app", "agents"),
 	)
-	stdout, err := cmd.Output()
-	if err != nil {
-		return 0, fmt.Errorf("evaluator %q: %w", evaluatorPath, err)
+	cmd.Cancel = func() error {
+		// Send SIGTERM first; CommandContext's default behaviour is
+		// SIGKILL which would skip the documented grace window.
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = evaluatorTermGracePeriod
+
+	if timeout > 0 {
+		timeoutMS = timeout.Milliseconds()
+		// Trip the cancel after the configured timeout. The
+		// WaitDelay above forces SIGKILL grace.
+		timer := time.AfterFunc(timeout, func() {
+			cancel()
+		})
+		defer timer.Stop()
+	}
+
+	startedAt := time.Now()
+	stdout, runErr := cmd.Output()
+
+	// Detect timeout: ctx is cancelled iff the timer fired (we
+	// only cancel from the timer in the timeout path).
+	if timeout > 0 && ctx.Err() != nil && time.Since(startedAt) >= timeout {
+		timedOut = true
+	}
+
+	if timedOut {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q exceeded --evaluator-timeout %s", evaluatorPath, timeout),
+			TimedOut:          true,
+			TimeoutMS:         timeoutMS,
+		}, nil
+	}
+	if runErr != nil {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q exited non-zero: %v", evaluatorPath, runErr),
+		}, nil
 	}
 
 	if len(stdout) > trialStdoutCaptureLimit {
 		stdout = stdout[:trialStdoutCaptureLimit]
 	}
-	line := strings.TrimSpace(string(stdout))
-	if line == "" {
-		return 0, fmt.Errorf("evaluator %q emitted no integer scalar", evaluatorPath)
+
+	score, parseErr := parseEvaluatorStdout(string(stdout))
+	if parseErr != nil {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q: %s", evaluatorPath, parseErr.Error()),
+		}, nil
 	}
-	// Take only the first non-empty line in case the evaluator
-	// emits structured output. Slice 5 will harden the parse.
-	firstLine := strings.SplitN(line, "\n", 2)[0]
-	score, err := strconv.ParseInt(strings.TrimSpace(firstLine), 10, 64)
+	return evaluatorResult{Score: float64(score)}, nil
+}
+
+// parseEvaluatorStdout enforces the stdout half of plan v3.1 § 4.6.
+//
+// Accepted shapes:
+//   - "<digits>\n"
+//   - "<digits>" (no trailing newline)
+//
+// Rejected (returns non-nil error):
+//   - empty stdout
+//   - any character outside [0-9] inside the integer (negative sign
+//     included — non-negative integer is the rule)
+//   - more than one non-empty line after splitting on '\n'
+//
+// Whitespace surrounding the integer on its single line is trimmed.
+func parseEvaluatorStdout(stdout string) (int64, error) {
+	// Drop a single trailing newline so a well-formed
+	// "12\n" parses identically to "12". Anything beyond that is
+	// inspected line-by-line below.
+	body := strings.TrimRight(stdout, "\n")
+	if strings.TrimSpace(body) == "" {
+		return 0, errors.New("stdout was empty (contract: exactly one non-negative integer)")
+	}
+
+	lines := strings.Split(body, "\n")
+	nonEmpty := 0
+	var integerLine string
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		nonEmpty++
+		integerLine = strings.TrimSpace(ln)
+	}
+	if nonEmpty != 1 {
+		return 0, fmt.Errorf(
+			"stdout had %d non-empty lines (contract: exactly one non-negative integer)",
+			nonEmpty,
+		)
+	}
+
+	score, err := strconv.ParseInt(integerLine, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("evaluator %q: stdout %q not an integer: %w", evaluatorPath, firstLine, err)
+		return 0, fmt.Errorf(
+			"stdout %q not a base-10 integer (contract: exactly one non-negative integer)",
+			integerLine,
+		)
 	}
-	return float64(score), nil
+	if score < 0 {
+		return 0, fmt.Errorf(
+			"stdout %d is negative (contract: exactly one non-negative integer; --metric-direction max inverts comparison logic, evaluator does not emit negatives)",
+			score,
+		)
+	}
+	return score, nil
 }
 
 // surfaceSHA returns the hex-encoded SHA-256 of the surface file's
