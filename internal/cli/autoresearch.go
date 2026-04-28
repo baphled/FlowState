@@ -49,6 +49,7 @@ import (
 // autoresearchRunOptions holds the parsed flag values for one run.
 type autoresearchRunOptions struct {
 	surface         string
+	surfaceType     SurfaceType
 	maxTrials       int
 	metricDirection string
 	timeBudget      time.Duration
@@ -213,9 +214,13 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 		if err := writeManifestRecord(store, resolved, worktreePath, 0, ""); err != nil {
 			return fmt.Errorf("writing manifest record: %w", err)
 		}
+		// Setup-only path still surfaces the detected type so an
+		// operator running `--max-trials 0` (the smoke probe used
+		// by the spec) can confirm the gate would behave as
+		// expected before committing to a real trial.
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-			"autoresearch run %s: setup complete (max-trials=0; no trials run)\n",
-			resolved.runID)
+			"autoresearch run %s: setup complete (max-trials=0; no trials run) surface_type=%s\n",
+			resolved.runID, string(resolved.surfaceType))
 		return nil
 	}
 
@@ -300,33 +305,52 @@ func printRunSummary(
 	}
 	_, _ = fmt.Fprintf(w,
 		"autoresearch run %s: summary trials_run=%d kept=%d reverted=%d "+
-			"best_score=%g best_commit=%s termination_reason=%s worktree=%s\n",
+			"best_score=%g best_commit=%s surface_type=%s "+
+			"termination_reason=%s worktree=%s\n",
 		resolved.runID,
 		totalTrials,
 		state.keptCount,
 		state.revertedCount,
 		bestScore,
 		bestSHA,
+		string(resolved.surfaceType),
 		terminationReason,
 		worktreePath,
 	)
 }
 
 // resolveAutoresearchOptions normalises CLI flags into the run shape:
-// fills defaults, generates the run-id, and validates the metric
-// direction and surface path. Surface defaults to
-// <agents-dir>/planner.md per the MVP hard-coding.
+// fills defaults, generates the run-id, validates the metric
+// direction and surface path, and runs surface-type detection so
+// later phases (manifest record write, manifest gate, summary)
+// agree on a single classification.
+//
+// Surface validation (Slice 4 per § 5.8):
+//   - Exists, regular file (not a directory).
+//   - Readable — opening for reading must succeed; this is the
+//     contract the harness assumes when it stages per-trial edits
+//     against the worktree mirror of the surface.
+//
+// Surface type detection per § 4.4:
+//   - Path under cfg.AgentDir / cfg.AgentDirs        → manifest
+//   - .md with capabilities.tools / delegation key   → manifest
+//   - SKILL.md under skills/                         → skill
+//   - else                                           → source
 //
 // Expected:
 //   - application is a non-nil App.
 //   - opts contains the parsed flag values.
 //
 // Returns:
-//   - The resolved options with all defaults filled.
+//   - The resolved options with all defaults filled and
+//     surface_type set.
 //   - An error if any flag is invalid.
 //
 // Side effects:
 //   - Stat-checks the surface path.
+//   - Opens the surface briefly for the readability probe.
+//   - Reads up to 8 KiB of the surface for the frontmatter probe
+//     (only when rule 2 is consulted).
 func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOptions) (autoresearchRunOptions, error) {
 	if opts.metricDirection != metricDirectionMin && opts.metricDirection != metricDirectionMax {
 		return opts, fmt.Errorf(
@@ -343,6 +367,21 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 	} else if info.IsDir() {
 		return opts, fmt.Errorf("--surface %q: not a regular file", opts.surface)
 	}
+	// Readability probe — Slice 4 widens the surface contract to
+	// any reachable file, so we explicitly verify the harness can
+	// actually read the path before any worktree work begins.
+	if f, err := os.Open(opts.surface); err != nil {
+		return opts, fmt.Errorf("--surface %q: not readable: %w", opts.surface, err)
+	} else {
+		_ = f.Close()
+	}
+
+	agentDirs := agentDirsFromConfig(application)
+	surfaceType, err := detectSurfaceType(opts.surface, agentDirs)
+	if err != nil {
+		return opts, fmt.Errorf("detecting surface type for %q: %w", opts.surface, err)
+	}
+	opts.surfaceType = surfaceType
 
 	if opts.runID == "" {
 		opts.runID = uuid.NewString()
@@ -353,6 +392,22 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 	}
 
 	return opts, nil
+}
+
+// agentDirsFromConfig assembles the union of cfg.AgentDir and
+// cfg.AgentDirs into a single slice for the path heuristic. An
+// empty primary AgentDir is dropped so the heuristic does not
+// silently match every path under the empty string.
+func agentDirsFromConfig(application *app.App) []string {
+	if application == nil || application.Config == nil {
+		return nil
+	}
+	dirs := make([]string, 0, 1+len(application.Config.AgentDirs))
+	if application.Config.AgentDir != "" {
+		dirs = append(dirs, application.Config.AgentDir)
+	}
+	dirs = append(dirs, application.Config.AgentDirs...)
+	return dirs
 }
 
 // surfaceRepoRoot returns the parent git repository root for the
@@ -476,12 +531,13 @@ func openCoordStore(application *app.App) (coordination.Store, error) {
 // manifestRecord is the shape persisted at autoresearch/<runID>/manifest.
 // Schema per plan § 4.2: surface, evaluator, program, surface_type,
 // metric_direction, max_trials, time_budget, no_improve_window,
-// baseline_score, baseline_commit, started_at, worktree_path. Slice 1
-// fills every field except surface_type (Slice 4 owns the type-detection
-// rule). evaluator and program carry the MVP hard-coded defaults so
-// the record is consistent across runs.
+// baseline_score, baseline_commit, started_at, worktree_path. Slice 4
+// fills surface_type via detectSurfaceType (§ 4.4). evaluator and
+// program carry the MVP hard-coded defaults so the record is
+// consistent across runs.
 type manifestRecord struct {
 	Surface         string  `json:"surface"`
+	SurfaceType     string  `json:"surface_type"`
 	Evaluator       string  `json:"evaluator"`
 	Program         string  `json:"program"`
 	MetricDirection string  `json:"metric_direction"`
@@ -522,6 +578,7 @@ func writeManifestRecord(
 ) error {
 	rec := manifestRecord{
 		Surface:         opts.surface,
+		SurfaceType:     string(opts.surfaceType),
 		Evaluator:       defaultEvaluator(opts.evaluatorScript),
 		Program:         "autoresearch",
 		MetricDirection: opts.metricDirection,
