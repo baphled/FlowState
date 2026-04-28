@@ -3853,6 +3853,45 @@ func qdrantURL(cfg *config.AppConfig) string {
 // FlowState collection layouts stay in lock-step.
 const defaultQdrantDistance = "Cosine"
 
+// canonicalRecallCollection is the architectural default Qdrant
+// collection name for FlowState recall. It matches the
+// "FlowState Recall Architecture" Obsidian doc and the infrastructure
+// notes (Qdrant + LlamaIndex Native Install, Local Dev Setup) that
+// declare `flowstate-recall` canonical. Operators can override via
+// cfg.Qdrant.Collection (e.g. legacy `opencode_memory` deployments);
+// when unset the broker, distiller, and learning-store paths all
+// converge on this constant so the architectural intent stays
+// explicit at every wiring site.
+//
+// Note: this is distinct from the vault-server's `flowstate-vault`
+// default (cmd/flowstate-vault-server/main.go) — that collection
+// indexes the Obsidian vault for cross-agent recall and lives next
+// to this one in the same Qdrant instance.
+const canonicalRecallCollection = "flowstate-recall"
+
+// resolveRecallCollection returns the effective recall collection
+// name: an explicit YAML override beats the canonical architectural
+// default. Funnel every site that names a collection through this
+// helper so the canonical name is the single source of truth.
+//
+// Expected:
+//   - cfg may be nil; nil returns the canonical default.
+//
+// Returns:
+//   - cfg.Qdrant.Collection when non-empty.
+//   - canonicalRecallCollection otherwise.
+//
+// Side effects:
+//   - None.
+func resolveRecallCollection(cfg *config.AppConfig) string {
+	if cfg != nil {
+		if c := strings.TrimSpace(cfg.Qdrant.Collection); c != "" {
+			return c
+		}
+	}
+	return canonicalRecallCollection
+}
+
 // runOrphanEventTmpScan sweeps leftover `.events.jsonl.tmp` files from
 // sessionsDir. Such files only exist as intermediate staging files for a
 // SwarmEvent compaction; a surviving one after process shutdown means a
@@ -4096,12 +4135,20 @@ func buildRecallBrokerWithVault(params recallBrokerParams, vaultPath string) rec
 		slog.Warn("Qdrant not configured; recall broker disabled — set QDRANT_URL or qdrant.url in config.yaml to enable vector recall")
 		return recall.NewRecallBroker(sessionSrc, chainSrc, nil, nil, extras...)
 	}
-	col := cfg.Qdrant.Collection
-	if col == "" {
-		col = "flowstate-recall"
-	}
-	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
-	embedder := newRecallEmbedder(params.ollamaProvider, cfg.ResolvedEmbeddingModel())
+	col := resolveRecallCollection(cfg)
+	url := qdrantURL(cfg)
+	embedModel := cfg.ResolvedEmbeddingModel()
+	// One-line greppable startup signal so operators can confirm which
+	// collection / URL / embedding model the broker is wired against.
+	// Without this, dimensional or naming drift fails silently — see
+	// the Bug 2 KB note's "detection improvements" recommendation.
+	slog.Info("recall broker wired",
+		"collection", col,
+		"qdrant_url", url,
+		"embedding_model", embedModel,
+	)
+	client := qdrantrecall.NewClient(url, cfg.Qdrant.APIKey, nil)
+	embedder := newRecallEmbedder(params.ollamaProvider, embedModel)
 	source := qdrantrecall.NewSource(client, embedder, col)
 	return recall.NewRecallBroker(sessionSrc, chainSrc, nil, source, extras...)
 }
@@ -4125,10 +4172,7 @@ func buildDistiller(cfg *config.AppConfig, _ provider.Provider, ollamaProvider e
 	if cfg == nil || !qdrantEnabled(cfg) {
 		return nil
 	}
-	col := cfg.Qdrant.Collection
-	if col == "" {
-		col = "flowstate-recall"
-	}
+	col := resolveRecallCollection(cfg)
 	client := qdrantrecall.NewClient(qdrantURL(cfg), cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	adapter := &qdrantClientAdapter{client: client}
