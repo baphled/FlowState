@@ -74,6 +74,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 		newServeCmd(getApp),
 		newAgentCmd(getApp),
 		newAgentsCmd(getApp),
+		newVaultToolsCmd(getApp),
 		newCoordinationCmd(getApp),
 		newSwarmCmd(getApp),
 		newSkillCmd(getApp),
