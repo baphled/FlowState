@@ -158,11 +158,12 @@ func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App,
 	}
 
 	agentName := resolveAgentName(opts.Agent, configDefaultAgent(application))
-	resolvedAgent, swarmCtx, err := resolveAgentOrSwarm(application, agentName)
-	if err != nil {
+	// Pre-flight resolve so unknown ids fail before we set up a session.
+	// Resolution is then re-run by the orchestrator at dispatch time
+	// (single source of truth per ADR-001 / Session Orchestrator ADR).
+	if _, _, err := resolveAgentOrSwarm(application, agentName); err != nil {
 		return err
 	}
-	agentName = resolvedAgent
 	sessionID := resolveSessionID(opts.Session)
 	loadExistingSession(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
@@ -181,7 +182,7 @@ func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App,
 		session.IDKey{},
 	)
 
-	response, err := streamResponse(ctx, cmd, wrappedStreamer, application.Engine, swarmCtx, agentName, opts)
+	response, err := streamResponse(ctx, cmd, application, wrappedStreamer, agentName, opts)
 	if err != nil {
 		return err
 	}
@@ -487,14 +488,35 @@ func loadExistingSession(application *app.App, sessionParam string) {
 func streamResponse(
 	ctx context.Context,
 	cmd *cobra.Command,
+	application *app.App,
 	streamer streaming.Streamer,
-	eng swarm.DispatchEngine,
-	swarmCtx *swarm.Context,
 	agentName string,
 	opts *RunOptions,
 ) (string, error) {
 	consumer := NewWriterConsumer(cmd.OutOrStdout(), opts.JSON)
-	if err := swarm.DispatchSwarm(ctx, eng, swarmCtx, streamer, consumer, agentName, opts.Prompt); err != nil {
+	// Per ADR-001 §"Wrappers not duplicates" + ADR - Session
+	// Orchestrator for Surface Parity, the CLI dispatches through
+	// the shared SessionOrchestrator instead of calling
+	// swarm.DispatchSwarm directly. The orchestrator owns @-mention
+	// resolution + dispatch lifecycle so CLI/API/TUI cannot drift.
+	// The session-context-aware streamer parameter is passed through
+	// so the per-session wrapping (NewSessionContextStreamer) is
+	// preserved — the orchestrator uses application.Streamer
+	// internally, but the CLI's session-aware wrapping happens at
+	// the request-level streamer the caller provides. Keep the
+	// caller's streamer for now by overriding the orchestrator's
+	// streamer for this call:
+	orch := app.NewSessionOrchestrator(
+		application.Engine,
+		application.Registry,
+		application.SwarmRegistry,
+		streamer,
+	)
+	err := orch.ProcessUserInput(ctx, app.UserInput{
+		Message:      opts.Prompt,
+		DefaultAgent: agentName,
+	}, consumer)
+	if err != nil {
 		return "", err
 	}
 	if consumer.Err() != nil {

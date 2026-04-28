@@ -89,6 +89,14 @@ type App struct {
 	Learning               learning.Store
 	API                    *api.Server
 	Streamer               streaming.Streamer
+	// Orchestrator is the canonical user-input → event-stream pipeline
+	// per ADR - Session Orchestrator for Surface Parity. CLI, API, and
+	// TUI all route through Orchestrator.ProcessUserInput; surfaces
+	// adapt their I/O via streaming.StreamConsumer implementations but
+	// never reimplement the dispatch lifecycle. See ADR-001 (Multi-
+	// Access Method Architecture) §"Wrappers not duplicates" for the
+	// parent rule this finishes applying.
+	Orchestrator *SessionOrchestrator
 	TodoStore              todotool.Store
 	mcpClient              mcpclient.Client
 	plugins                *pluginRuntime
@@ -415,6 +423,12 @@ func buildApp(params appBuildParams) *App {
 		Learning:         learningStore,
 		API:              runtime.apiServer,
 		Streamer:         runtime.streamer,
+		Orchestrator: NewSessionOrchestrator(
+			runtime.engine,
+			agentRegistry,
+			params.swarmRegistry,
+			runtime.streamer,
+		),
 		TodoStore:        runtime.todoStore,
 		mcpClient:        runtime.mcpManager,
 		plugins:          pluginRuntime,
