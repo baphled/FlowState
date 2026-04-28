@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -264,13 +265,13 @@ func streamChatResponse(
 	// shared SessionOrchestrator so CLI/API/TUI cannot diverge on
 	// resolution + dispatch lifecycle. The session-aware streamer
 	// is threaded through for per-call context tagging.
-	orch := app.NewSessionOrchestrator(
+	orch := orchestrator.New(
 		application.Engine,
 		application.Registry,
 		application.SwarmRegistry,
 		streamer,
 	)
-	if err := orch.ProcessUserInput(context.Background(), app.UserInput{
+	if err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 		Message:      message,
 		DefaultAgent: agentName,
 	}, consumer); err != nil {

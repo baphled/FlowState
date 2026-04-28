@@ -1,4 +1,13 @@
-package app
+// Package orchestrator provides the canonical user-input → event-stream
+// pipeline shared by every FlowState access method (CLI, API, TUI).
+//
+// Per ADR - Multi-Access Method Architecture (ADR-001) and ADR -
+// Session Orchestrator for Surface Parity, surfaces are thin wrappers
+// over Orchestrator.ProcessUserInput; they own only their I/O
+// adapter (StreamConsumer implementation), never the dispatch
+// lifecycle. Lives in its own package so the api/ and tui/ trees
+// can import it without forcing import cycles through internal/app.
+package orchestrator
 
 import (
 	"context"
@@ -9,12 +18,12 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
-// SessionOrchestrator is the canonical user-input → event-stream
+// Orchestrator is the canonical user-input → event-stream
 // pipeline shared by CLI, API, and TUI surfaces.
 //
 // Per ADR - Multi-Access Method Architecture (ADR-001) §"Five
 // Principles", access methods MUST be thin wrappers over `internal/`
-// services with no business logic. The SessionOrchestrator is the
+// services with no business logic. The Orchestrator is the
 // service that owns @-mention resolution, swarm dispatch lifecycle,
 // and stream event delivery for any user-input → response interaction.
 //
@@ -31,7 +40,7 @@ import (
 // semantics — the architectural drift that produced multiple
 // recurring bug classes (TUI persistent identity swap, child
 // session events.jsonl gaps, manifest leak across turns).
-type SessionOrchestrator struct {
+type Orchestrator struct {
 	engine        swarm.DispatchEngine
 	agentRegistry *agent.Registry
 	swarmRegistry *swarm.Registry
@@ -78,7 +87,7 @@ type UserInput struct {
 // the orchestrator; this error is a defensive guard.
 var errNoTarget = errors.New("session orchestrator: no agent or swarm target resolved from input")
 
-// NewSessionOrchestrator wires the orchestrator's dependencies. All
+// New wires the orchestrator's dependencies. All
 // fields are required for production use; tests may pass fakes that
 // satisfy the narrow interfaces.
 //
@@ -92,17 +101,17 @@ var errNoTarget = errors.New("session orchestrator: no agent or swarm target res
 //     same *engine.Engine via the Streamer interface).
 //
 // Returns:
-//   - A configured *SessionOrchestrator.
+//   - A configured *Orchestrator.
 //
 // Side effects:
 //   - None.
-func NewSessionOrchestrator(
+func New(
 	eng swarm.DispatchEngine,
 	agentReg *agent.Registry,
 	swarmReg *swarm.Registry,
 	streamer streaming.Streamer,
-) *SessionOrchestrator {
-	return &SessionOrchestrator{
+) *Orchestrator {
+	return &Orchestrator{
 		engine:        eng,
 		agentRegistry: agentReg,
 		swarmRegistry: swarmReg,
@@ -137,7 +146,7 @@ func NewSessionOrchestrator(
 //   - Drives swarm.DispatchSwarm — see that function for the full
 //     side-effect list (manifest snapshot/restore, swarm context
 //     install, post-flush).
-func (o *SessionOrchestrator) ProcessUserInput(
+func (o *Orchestrator) ProcessUserInput(
 	ctx context.Context,
 	req UserInput,
 	consumer streaming.StreamConsumer,
@@ -165,7 +174,7 @@ func (o *SessionOrchestrator) ProcessUserInput(
 //
 // Side effects:
 //   - None.
-func (o *SessionOrchestrator) resolve(req UserInput) (string, *swarm.Context, error) {
+func (o *Orchestrator) resolve(req UserInput) (string, *swarm.Context, error) {
 	hasAgent := o.agentLookup()
 
 	if req.ScanMentions {
@@ -191,7 +200,7 @@ func (o *SessionOrchestrator) resolve(req UserInput) (string, *swarm.Context, er
 //
 // Side effects:
 //   - None.
-func (o *SessionOrchestrator) agentLookup() swarm.HasAgent {
+func (o *Orchestrator) agentLookup() swarm.HasAgent {
 	if o.agentRegistry == nil {
 		return nil
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/session"
@@ -506,13 +507,13 @@ func streamResponse(
 	// the request-level streamer the caller provides. Keep the
 	// caller's streamer for now by overriding the orchestrator's
 	// streamer for this call:
-	orch := app.NewSessionOrchestrator(
+	orch := orchestrator.New(
 		application.Engine,
 		application.Registry,
 		application.SwarmRegistry,
 		streamer,
 	)
-	err := orch.ProcessUserInput(ctx, app.UserInput{
+	err := orch.ProcessUserInput(ctx, orchestrator.UserInput{
 		Message:      opts.Prompt,
 		DefaultAgent: agentName,
 	}, consumer)
