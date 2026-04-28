@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -92,14 +91,34 @@ type autoresearchRunOptions struct {
 	programDeduplicated  bool
 	// keepWorktree opts out of the end-of-run worktree removal on a
 	// clean termination (lifecycle plan Slice 2). Default false; the
-	// branch is always preserved regardless of this flag.
+	// branch is always preserved regardless of this flag. Requires
+	// --commit-trials in the in-memory default substrate (April 2026).
 	keepWorktree bool
 	// allowDirty opts out of the clean-tree precondition (lifecycle
 	// plan Slice 3). When set, the harness stashes the parent's
 	// uncommitted state at run start and restores it on exit so the
 	// trial loop runs against an effectively-clean tree without
-	// forcing the operator to commit unrelated edits.
+	// forcing the operator to commit unrelated edits. Requires
+	// --commit-trials in the in-memory default substrate.
 	allowDirty bool
+	// commitTrials toggles the trial substrate. Default false enables
+	// the in-memory loop (April 2026 In-Memory Default plan): the
+	// harness reads the surface once, drives the driver via stdin,
+	// captures the candidate string from stdout, pipes it to the
+	// evaluator, and persists `{candidate_content, candidate_content_sha,
+	// score, kept, reason}` per trial — no worktree, no branch, no
+	// commit, no `git reset` in the default code path. When true the
+	// harness restores today's git-mediated behaviour byte-for-byte
+	// (worktree, named branches, per-trial commits, ratchet via
+	// reset, promote/list/--allow-dirty/--keep-worktree). The flag is
+	// the single switch the pivot's breaking-change strategy hangs on.
+	commitTrials bool
+	// maxCandidateBytes caps the bytes of candidate content the
+	// harness persists on each trial record. Larger candidates are
+	// recorded with `candidate_content_truncated=true` and the SHA
+	// preserved. Default 256 KiB per the plan; raise for surfaces
+	// where full audit trails matter more than coord-store size.
+	maxCandidateBytes int
 	// programBody is the program-of-record skill body, read once at
 	// run start from programResolvedPath. The synthesiser embeds it
 	// verbatim in every per-trial prompt so the off-limits constraints
@@ -220,19 +239,30 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.callingAgentManifest, "calling-agent", "",
 		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
 	flags.BoolVar(&opts.keepWorktree, "keep-worktree", false,
-		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Lifecycle plan (April 2026) Slice 2.")
+		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Requires --commit-trials in the in-memory default substrate (April 2026); hard-error otherwise. Lifecycle plan (April 2026) Slice 2.")
 	flags.BoolVar(&opts.allowDirty, "allow-dirty", false,
-		"Bypass the clean-tree precondition by stashing the parent's uncommitted state at run start and restoring it on exit. The trial worktree itself is unaffected — autoresearch always works in an isolated branch. Lifecycle plan (April 2026) Slice 3.")
+		"Bypass the clean-tree precondition by stashing the parent's uncommitted state at run start and restoring it on exit. The trial worktree itself is unaffected — autoresearch always works in an isolated branch. Requires --commit-trials in the in-memory default substrate; hard-error otherwise. Lifecycle plan (April 2026) Slice 3.")
+	flags.BoolVar(&opts.commitTrials, "commit-trials", false,
+		"Opt in to the legacy git-mediated substrate: trial worktree, named branches, per-trial commits with --no-verify, ratchet via `git reset --hard HEAD~1`, promote/list/--allow-dirty/--keep-worktree. Default off — the harness runs the in-memory loop (read surface once, drive via stdin, score candidates as strings) per the April 2026 In-Memory Default plan.")
+	flags.IntVar(&opts.maxCandidateBytes, "max-candidate-bytes", 256*1024,
+		"Cap on the candidate-content bytes persisted per trial in the in-memory default substrate. Larger candidates are recorded with `candidate_content_truncated=true` and the content SHA is preserved. Ignored under --commit-trials.")
 
 	return cmd
 }
 
 // runAutoresearch drives one autoresearch run end-to-end.
 //
-// Slice 1b establishes the spine: option resolution, surface
+// April 2026 In-Memory Default substrate: the default code path
+// (commit-trials=false) reads the surface once, runs the trial loop
+// in memory (driver/evaluator exchange candidate strings via
+// stdin/stdout), and never spawns a `git` subprocess. The legacy
+// git-mediated substrate (worktree, branches, per-trial commits,
+// ratchet via reset) is preserved verbatim behind --commit-trials.
+//
+// Slice 1b established the spine: option resolution, surface
 // validation, clean-tree precondition, worktree creation, manifest
 // record write, run-id generation. The trial loop and termination
-// matrix arrive in Slice 1c; the final summary in Slice 1d.
+// matrix landed in Slice 1c; the final summary in Slice 1d.
 //
 // Expected:
 //   - cmd is a non-nil cobra.Command with an initialised output writer.
@@ -244,9 +274,15 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 //   - non-nil error if any precondition fails.
 //
 // Side effects:
-//   - Creates a worktree under <worktree-base>/<runID>/worktree.
-//   - Writes the manifest record to <DataDir>/coordination.json.
+//   - In default mode: writes the manifest record to
+//     <DataDir>/coordination.json.
+//   - Under --commit-trials: additionally creates a worktree under
+//     <worktree-base>/<runID>/worktree.
 func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.App, opts autoresearchRunOptions) error {
+	if err := rejectGitModeFlagsWithoutCommitTrials(cmd, opts); err != nil {
+		return err
+	}
+
 	resolved, err := resolveAutoresearchOptions(application, opts)
 	if err != nil {
 		return err
@@ -259,6 +295,118 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	// program_resolved annotation.
 	resolved.programDeduplicated = applyCallingAgentDeDup(resolved, cmd.OutOrStdout())
 
+	if !resolved.commitTrials {
+		return runAutoresearchInMemory(ctx, cmd, application, resolved)
+	}
+	return runAutoresearchCommitTrials(ctx, cmd, application, resolved)
+}
+
+// rejectGitModeFlagsWithoutCommitTrials enforces the In-Memory Default
+// plan's hard-error contract on git-mode-only flags. --allow-dirty,
+// --keep-worktree, and --worktree-base are meaningful only under the
+// legacy substrate; passing them without --commit-trials is a
+// configuration error the operator must resolve before any side
+// effects fire.
+//
+// Implementation note: cobra's `Flags().Changed(name)` distinguishes
+// "explicitly set" from "unset; default-zero", so the guard does not
+// trigger on the default zero values produced by the flagset.
+func rejectGitModeFlagsWithoutCommitTrials(cmd *cobra.Command, opts autoresearchRunOptions) error {
+	if opts.commitTrials {
+		return nil
+	}
+	flags := cmd.Flags()
+	for _, name := range []string{"allow-dirty", "keep-worktree", "worktree-base"} {
+		if flags == nil {
+			break
+		}
+		if flags.Changed(name) {
+			return fmt.Errorf(
+				"--%s is meaningful only with --commit-trials; default in-memory mode does not touch the parent tree",
+				name)
+		}
+	}
+	return nil
+}
+
+// runAutoresearchInMemory implements the default substrate (April 2026
+// In-Memory Default plan). The surface bytes are read once, the trial
+// loop drives the driver via stdin/stdout, and candidates flow as
+// strings — no worktree, no commits, no `git` subprocesses in this
+// code path.
+func runAutoresearchInMemory(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
+	store, err := openCoordStore(application)
+	if err != nil {
+		return err
+	}
+
+	// max-trials=0 is the smoke path — write a manifest record with
+	// no baseline data and return cleanly. The in-memory record
+	// leaves baseline_commit and worktree_path empty.
+	if resolved.maxTrials == 0 {
+		if err := writeManifestRecord(store, resolved, "", 0, ""); err != nil {
+			return fmt.Errorf("writing manifest record: %w", err)
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+			"autoresearch run %s: setup complete (max-trials=0; no trials run; mode=in-memory) surface_type=%s\n",
+			resolved.runID, string(resolved.surfaceType))
+		return nil
+	}
+
+	// Read the surface once into memory — the immutable task the
+	// driver trains against. Subsequent reads from disk would defeat
+	// the substrate swap.
+	surfaceBytes, err := os.ReadFile(resolved.surface)
+	if err != nil {
+		return fmt.Errorf("reading surface: %w", err)
+	}
+	relSurface, err := surfaceRelativeToRepo(resolved.surface)
+	if err != nil {
+		return fmt.Errorf("resolving surface relative path: %w", err)
+	}
+
+	// Baseline-score the unmodified surface bytes via the in-memory
+	// evaluator channel. The harness still treats a baseline contract
+	// violation as a hard fail so a broken evaluator is surfaced
+	// before any trial runs.
+	baseline, err := runEvaluatorInMemory(ctx, resolved.evaluatorScript, resolved.runID, surfaceBytes, resolved.evaluatorTimeout)
+	if err != nil {
+		return fmt.Errorf("baseline evaluator: %w", err)
+	}
+	if baseline.ContractViolation {
+		return fmt.Errorf("baseline evaluator: contract violation: %s", baseline.Reason)
+	}
+	baselineScore := baseline.Score
+	if err := writeManifestRecord(store, resolved, "", baselineScore, ""); err != nil {
+		return fmt.Errorf("writing manifest record: %w", err)
+	}
+
+	baselineSHA := contentSHA(surfaceBytes)
+	state := &trialLoopState{
+		bestScore:      baselineScore,
+		bestScoreSet:   true,
+		bestContentSHA: baselineSHA,
+		surfaceBytes:   surfaceBytes,
+	}
+	state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+		CandidateSHA: baselineSHA, TrialN: 0, Score: baselineScore,
+	})
+	if err := writeSeenCandidates(store, resolved.runID, state.seenCandidates); err != nil {
+		return fmt.Errorf("seeding seen-candidates: %w", err)
+	}
+
+	terminationReason, lastOutcome, err := runTrialLoop(ctx, resolved, "", store, cmd.OutOrStdout(), state, relSurface)
+	if err != nil {
+		return err
+	}
+	printRunSummary(cmd.OutOrStdout(), resolved, state, lastOutcome, terminationReason, "")
+	return nil
+}
+
+// runAutoresearchCommitTrials implements the legacy git-mediated
+// substrate. Behaviour preserved byte-for-byte from the pre-pivot
+// runAutoresearch — only the entry-point branching is new.
+func runAutoresearchCommitTrials(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
 	surfaceRepoRoot, err := surfaceRepoRoot(resolved.surface)
 	if err != nil {
 		return fmt.Errorf("resolving surface repo root: %w", err)
@@ -285,19 +433,10 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 		return err
 	}
 
-	// max-trials=0 is the smoke path — set up, write the manifest
-	// record (without baseline data), exit cleanly without running
-	// trials. Useful for integration tests that exercise the
-	// precondition + worktree + record sequence without
-	// provider/script dependencies.
 	if resolved.maxTrials == 0 {
 		if err := writeManifestRecord(store, resolved, worktreePath, 0, ""); err != nil {
 			return fmt.Errorf("writing manifest record: %w", err)
 		}
-		// Setup-only path still surfaces the detected type so an
-		// operator running `--max-trials 0` (the smoke probe used
-		// by the spec) can confirm the gate would behave as
-		// expected before committing to a real trial.
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 			"autoresearch run %s: setup complete (max-trials=0; no trials run) surface_type=%s\n",
 			resolved.runID, string(resolved.surfaceType))
@@ -318,10 +457,6 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 		return fmt.Errorf("baseline evaluator: %w", err)
 	}
 	if baseline.ContractViolation {
-		// Baseline contract violation is a hard fail — the
-		// evaluator is broken before any trial has run, so
-		// reporting `evaluator-contract-failure-rate` later in the
-		// loop would be noise. Surface the underlying reason now.
 		return fmt.Errorf("baseline evaluator: contract violation: %s", baseline.Reason)
 	}
 	baselineScore := baseline.Score
@@ -350,7 +485,7 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 		return fmt.Errorf("seeding seen-candidates: %w", err)
 	}
 
-	terminationReason, lastOutcome, err := runTrialLoop(ctx, resolved, worktreePath, store, cmd.OutOrStdout(), state)
+	terminationReason, lastOutcome, err := runTrialLoop(ctx, resolved, worktreePath, store, cmd.OutOrStdout(), state, relSurface)
 	if err != nil {
 		return err
 	}
@@ -360,10 +495,30 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	return nil
 }
 
+// surfaceRelativeToRepo returns the surface path relative to its
+// enclosing git repository. Used by the in-memory substrate to give
+// the synthesiser a stable relSurface anchor without requiring a
+// worktree.
+func surfaceRelativeToRepo(surface string) (string, error) {
+	repoRoot, err := surfaceRepoRoot(surface)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(surface)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(repoRoot, abs)
+	if err != nil {
+		return "", fmt.Errorf("surface relative to repo root: %w", err)
+	}
+	return rel, nil
+}
+
 // worktreeHeadSHA returns the worktree's current HEAD SHA via
 // `git -C <worktree> rev-parse HEAD`.
 func worktreeHeadSHA(worktreePath string) (string, error) {
-	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	cmd := observedCommand("git", "-C", worktreePath, "rev-parse", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
@@ -747,7 +902,7 @@ func surfaceRepoRoot(surface string) (string, error) {
 // Side effects:
 //   - Shells `git status --porcelain` against the repoRoot.
 func requireCleanTree(repoRoot string) error {
-	cmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain")
+	cmd := observedCommand("git", "-C", repoRoot, "status", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("running git status in %s: %w", repoRoot, err)
@@ -792,7 +947,7 @@ const autoresearchStashMessage = "flowstate-autoresearch-allow-dirty"
 //     when allowDirty is true and the tree is dirty.
 //   - Logs a one-line "stashing/preserved" notice to w.
 func preflightCleanTree(w io.Writer, repoRoot string, allowDirty bool) (string, error) {
-	statusCmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain")
+	statusCmd := observedCommand("git", "-C", repoRoot, "status", "--porcelain")
 	statusOut, err := statusCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("running git status in %s: %w", repoRoot, err)
@@ -811,7 +966,7 @@ func preflightCleanTree(w io.Writer, repoRoot string, allowDirty bool) (string, 
 	// Stash everything (tracked + untracked) so the worktree branch
 	// branches off a clean HEAD-equivalent state. The stash is
 	// restored on every exit path via restoreParentStash.
-	stashCmd := exec.Command("git", "-C", repoRoot, "stash", "push",
+	stashCmd := observedCommand("git", "-C", repoRoot, "stash", "push",
 		"--include-untracked", "-m", autoresearchStashMessage)
 	if pushOut, err := stashCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("stashing parent state: %w (output: %s)",
@@ -820,7 +975,7 @@ func preflightCleanTree(w io.Writer, repoRoot string, allowDirty bool) (string, 
 
 	// Resolve the stash to a stable SHA — `stash@{0}` shifts each
 	// time another stash is pushed, but the SHA is permanent.
-	revCmd := exec.Command("git", "-C", repoRoot, "rev-parse", "stash@{0}")
+	revCmd := observedCommand("git", "-C", repoRoot, "rev-parse", "stash@{0}")
 	revOut, err := revCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolving stash sha: %w", err)
@@ -857,7 +1012,7 @@ func restoreParentStash(w io.Writer, repoRoot, stashRef string) {
 	if stashRef == "" {
 		return
 	}
-	applyCmd := exec.Command("git", "-C", repoRoot, "stash", "apply", stashRef)
+	applyCmd := observedCommand("git", "-C", repoRoot, "stash", "apply", stashRef)
 	if applyOut, err := applyCmd.CombinedOutput(); err != nil {
 		_, _ = fmt.Fprintf(w,
 			"autoresearch cleanup: restoring --allow-dirty stash %s failed: %v (output: %s) — recover via `git stash list && git stash pop`\n",
@@ -868,7 +1023,7 @@ func restoreParentStash(w io.Writer, repoRoot, stashRef string) {
 	// Walk `git stash list --format=%H` to find the index that maps
 	// to our SHA, then drop it. This is robust to other stashes the
 	// operator may have pushed between preflight and restore.
-	listCmd := exec.Command("git", "-C", repoRoot, "stash", "list", "--format=%H")
+	listCmd := observedCommand("git", "-C", repoRoot, "stash", "list", "--format=%H")
 	listOut, err := listCmd.Output()
 	if err != nil {
 		_, _ = fmt.Fprintf(w,
@@ -879,7 +1034,7 @@ func restoreParentStash(w io.Writer, repoRoot, stashRef string) {
 		if strings.TrimSpace(line) != stashRef {
 			continue
 		}
-		dropCmd := exec.Command("git", "-C", repoRoot, "stash", "drop", fmt.Sprintf("stash@{%d}", i))
+		dropCmd := observedCommand("git", "-C", repoRoot, "stash", "drop", fmt.Sprintf("stash@{%d}", i))
 		if dropOut, dropErr := dropCmd.CombinedOutput(); dropErr != nil {
 			_, _ = fmt.Fprintf(w,
 				"autoresearch cleanup: stash applied but drop failed: %v (output: %s)\n",
@@ -953,7 +1108,7 @@ func createTrialWorktree(repoRoot, worktreePath, branchName string) error {
 	// --run-id), git's error is propagated verbatim — the operator
 	// is directed at `flowstate autoresearch list` (Slice 5) by the
 	// surrounding command's documentation.
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "-b", branchName, worktreePath, "HEAD")
+	cmd := observedCommand("git", "-C", repoRoot, "worktree", "add", "-b", branchName, worktreePath, "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add -b %s: %w (output: %s)", branchName, err, strings.TrimSpace(string(output)))
@@ -1033,7 +1188,7 @@ func cleanupTrialWorktree(w io.Writer, repoRoot, worktreePath, terminationReason
 	// files (notably .autoresearch/prompt-* written by the live-driver
 	// synthesiser). The branch is the durable artefact; uncommitted
 	// scratch state inside the worktree is by design ephemeral.
-	removeCmd := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath)
+	removeCmd := observedCommand("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath)
 	if output, err := removeCmd.CombinedOutput(); err != nil {
 		_, _ = fmt.Fprintf(w,
 			"autoresearch cleanup: worktree removal failed at %s: %v (output: %s) — branch is preserved\n",
@@ -1043,7 +1198,7 @@ func cleanupTrialWorktree(w io.Writer, repoRoot, worktreePath, terminationReason
 	// `git worktree prune` reaps stale administrative records left
 	// behind under .git/worktrees/ when remove succeeds; without it
 	// `git worktree list` continues to mention the removed entry.
-	pruneCmd := exec.Command("git", "-C", repoRoot, "worktree", "prune")
+	pruneCmd := observedCommand("git", "-C", repoRoot, "worktree", "prune")
 	if output, err := pruneCmd.CombinedOutput(); err != nil {
 		_, _ = fmt.Fprintf(w,
 			"autoresearch cleanup: worktree removed but prune failed: %v (output: %s)\n",
@@ -1118,6 +1273,13 @@ type manifestRecord struct {
 	// AllowDirty is true when the run was started against a dirty
 	// parent tree via --allow-dirty. Lifecycle plan Slice 3.
 	AllowDirty bool `json:"allow_dirty,omitempty"`
+	// CommitTrials is true when the run was started with
+	// --commit-trials, restoring the legacy git-mediated substrate.
+	// April 2026 In-Memory Default plan Slice 1. The field is keyed
+	// on the explicit name rather than `omitempty` so consumers
+	// reading older records reliably observe the absence as the
+	// default-mode (in-memory) substrate.
+	CommitTrials bool `json:"commit_trials"`
 }
 
 // writeManifestRecord serialises the run config to the coord-store at
@@ -1166,6 +1328,7 @@ func writeManifestRecord(
 		DriverTimeoutMS:     opts.driverTimeout.Milliseconds(),
 		PromptHistoryWindow: opts.promptHistoryWindow,
 		AllowDirty:          opts.allowDirty,
+		CommitTrials:        opts.commitTrials,
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {

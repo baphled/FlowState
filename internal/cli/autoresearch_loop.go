@@ -71,6 +71,12 @@ import (
 // exceeded `--evaluator-timeout` for this trial; the field is
 // `omitempty` so older readers parsing pre-Slice-5 records continue
 // to work unchanged.
+//
+// Autoresearch In-Memory Default (April 2026): default in-memory mode
+// adds CandidateContent + CandidateContentSHA so the trial record
+// carries the candidate string directly (the substrate, no longer git
+// commits). Both fields are `omitempty` so git-mode (`--commit-trials`)
+// records remain byte-shape identical to pre-pivot records.
 type trialOutcome struct {
 	N                  int     `json:"n"`
 	CommitSHA          string  `json:"commit_sha"`
@@ -91,6 +97,16 @@ type trialOutcome struct {
 	PromptSHA       string `json:"prompt_sha,omitempty"`
 	DriverSessionID string `json:"driver_session_id,omitempty"`
 	DriverTurns     int    `json:"driver_turns,omitempty"`
+	// In-memory default substrate (Autoresearch In-Memory Default,
+	// April 2026). CandidateContent is the full candidate string
+	// produced by the driver (capped at maxCandidateBytes; truncation
+	// flagged via CandidateContentTruncated). CandidateContentSHA is
+	// sha256(full content) regardless of truncation, so the candidate
+	// remains uniquely identified even when the body is too large to
+	// persist verbatim.
+	CandidateContent          string `json:"candidate_content,omitempty"`
+	CandidateContentTruncated bool   `json:"candidate_content_truncated,omitempty"`
+	CandidateContentSHA       string `json:"candidate_content_sha,omitempty"`
 }
 
 // trialReason values — pinned per plan § 4.2.
@@ -141,6 +157,7 @@ type trialLoopState struct {
 	bestScore                 float64
 	bestScoreSet              bool
 	bestCommitSHA             string
+	bestContentSHA            string
 	bestTrialN                int
 	seenCandidates            []seenCandidate
 	keptCount                 int
@@ -151,6 +168,71 @@ type trialLoopState struct {
 	// promptHistoryWindow; bounded by the number of trials actually
 	// run so the slice never exceeds maxTrials.
 	recentOutcomes []trialOutcome
+	// In-memory default substrate (April 2026). The current surface
+	// bytes (read once at run start in default mode) are the immutable
+	// task the driver trains against. Empty in --commit-trials mode
+	// where the substrate is the worktree's surface file.
+	surfaceBytes []byte
+}
+
+// commandRunner is the factory the harness uses to construct
+// `*exec.Cmd` instances. Tests swap it via SetCommandRunnerForTest to
+// observe every subprocess the harness builds — the
+// "no git in default mode" assertion (April 2026 In-Memory Default
+// plan, R1.2 spec) depends on this seam.
+//
+// Default behaviour mirrors `exec.CommandContext`. The hook fires
+// before the *exec.Cmd is returned so test observers can inspect
+// (name, args) without affecting subprocess execution.
+type commandRunner func(name string, args ...string)
+
+var (
+	currentCommandRunner   commandRunner
+	defaultMaxCandidateCap = 256 * 1024
+)
+
+// SetCommandRunnerForTest installs an observer the harness calls
+// every time it builds an `*exec.Cmd`. The observer receives (binary
+// name, args) and MUST NOT mutate them. Used by the in-memory default
+// spec to assert the harness never spawns `git` in default mode.
+//
+// Reset via ResetCommandRunnerForTest in a DeferCleanup so adjacent
+// tests are not affected.
+func SetCommandRunnerForTest(observer commandRunner) {
+	currentCommandRunner = observer
+}
+
+// ResetCommandRunnerForTest clears any observer installed by
+// SetCommandRunnerForTest.
+func ResetCommandRunnerForTest() {
+	currentCommandRunner = nil
+}
+
+// observeCommand notifies the test observer (if installed) that a
+// subprocess command is being built. Always safe to call — a nil
+// observer is a no-op.
+func observeCommand(name string, args ...string) {
+	if currentCommandRunner != nil {
+		currentCommandRunner(name, args...)
+	}
+}
+
+// observedCommand is the harness-internal wrapper around exec.Command
+// that fires the test observer on every construction. Used by every
+// subprocess invocation under the autoresearch command tree so the
+// "no git in default mode" assertion (April 2026 In-Memory Default
+// plan, R1.2) covers every code path.
+func observedCommand(name string, args ...string) *exec.Cmd {
+	observeCommand(name, args...)
+	return exec.Command(name, args...)
+}
+
+// observedCommandContext is the context-bound twin of observedCommand.
+// Used by subprocess invocations that honour ctx cancellation
+// (driver, evaluator).
+func observedCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	observeCommand(name, args...)
+	return exec.CommandContext(ctx, name, args...)
 }
 
 // seenCandidate is one entry in the SHA ring. Stored as a slice and
@@ -172,10 +254,18 @@ type resultRecord struct {
 }
 
 // bestRecord is the shape persisted at autoresearch/<runID>/best.
+//
+// In-memory default (Autoresearch In-Memory Default, April 2026):
+// CandidateContentSHA identifies the best candidate by content rather
+// than by commit. In `--commit-trials` mode CommitSHA is populated
+// alongside (today's behaviour preserved verbatim); in default mode
+// CommitSHA stays empty and CandidateContentSHA is the load-bearing
+// pointer used by `apply` (Slice 2 of the pivot).
 type bestRecord struct {
-	CommitSHA string  `json:"commit_sha"`
-	Score     float64 `json:"score"`
-	TrialN    int     `json:"trial_n"`
+	CommitSHA           string  `json:"commit_sha"`
+	CandidateContentSHA string  `json:"candidate_content_sha,omitempty"`
+	Score               float64 `json:"score"`
+	TrialN              int     `json:"trial_n"`
 }
 
 // runTrialLoop executes the per-trial loop until a termination
@@ -211,14 +301,16 @@ func runTrialLoop(
 	store coordination.Store,
 	out io.Writer,
 	state *trialLoopState,
+	relSurface string,
 ) (string, trialOutcome, error) {
 	deadline := time.Now().Add(resolved.timeBudget)
 
-	relSurface, err := relativeSurfacePath(resolved.surface, worktreePath)
-	if err != nil {
-		return "", trialOutcome{}, err
+	worktreeSurface := ""
+	if resolved.commitTrials {
+		// In git-mode the worktree-anchored path is the substrate the
+		// driver writes to; the in-memory branch never touches disk.
+		worktreeSurface = filepath.Join(worktreePath, relSurface)
 	}
-	worktreeSurface := filepath.Join(worktreePath, relSurface)
 
 	terminationReason := ""
 
@@ -241,7 +333,15 @@ func runTrialLoop(
 			break
 		}
 
-		outcome, err := runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state)
+		var (
+			outcome trialOutcome
+			err     error
+		)
+		if resolved.commitTrials {
+			outcome, err = runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state)
+		} else {
+			outcome, err = runOneTrialInMemory(ctx, n, resolved, relSurface, state)
+		}
 		if err != nil {
 			return "", lastOutcome, fmt.Errorf("trial %d: %w", n, err)
 		}
@@ -275,12 +375,17 @@ func runTrialLoop(
 			"trial %d: kept=%v reason=%s score=%g\n",
 			outcome.N, outcome.Kept, outcome.Reason, outcome.Score)
 
-		// Termination checks (post-trial).
+		// Termination checks (post-trial). The
+		// manifest-gate-failure-rate exit is git-mode-only per the
+		// April 2026 In-Memory Default plan — in-memory mode still
+		// fires the per-trial manifest gate (records
+		// `manifest-validate-failed` reasons) but does not abort the
+		// run on a streak of them.
 		if state.consecutiveFixedPoint >= fixedPointSaturationLimit {
 			terminationReason = terminationFixedPointSaturated
 			break
 		}
-		if state.consecutiveManifestFails >= manifestGateFailureLimit {
+		if resolved.commitTrials && state.consecutiveManifestFails >= manifestGateFailureLimit {
 			terminationReason = terminationManifestGateFailureRate
 			break
 		}
@@ -544,6 +649,459 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 	o.DurationS = end.Sub(startedAt).Seconds()
 }
 
+// runOneTrialInMemory drives a single trial under the in-memory
+// substrate (April 2026 In-Memory Default plan):
+//
+//  1. Synthesise the per-trial prompt against state.surfaceBytes.
+//  2. Pipe the prompt to the driver via stdin; capture the candidate
+//     string from stdout.
+//  3. Fixed-point gate by sha256(candidate_content); skip and revert
+//     no on-disk state (there is none to revert).
+//  4. Manifest gate by writing the candidate to a tempfile and
+//     calling agent.LoadAndValidateManifest. Per-trial gate fires;
+//     run-level manifest-gate-failure-rate termination is git-mode-only.
+//  5. Pipe the candidate to the evaluator via stdin AND a tempfile
+//     exposed as FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE.
+//  6. Ratchet on the score; persist {candidate_content,
+//     candidate_content_sha, score, kept, reason} on the outcome.
+//
+// The function never spawns `git` and never writes to the surface.
+// runEvaluatorInMemory and runDriverInMemory enforce that contract at
+// the seam.
+//
+// Expected:
+//   - ctx cancellation propagates to the driver and evaluator
+//     subprocesses.
+//   - n is the 1-based trial counter.
+//   - resolved is the validated options.
+//   - relSurface is the surface path relative to the surface's repo
+//     root — passed to the synthesiser verbatim.
+//   - state.surfaceBytes carries the immutable surface content read
+//     once at run start.
+func runOneTrialInMemory(
+	ctx context.Context,
+	n int,
+	resolved autoresearchRunOptions,
+	relSurface string,
+	state *trialLoopState,
+) (trialOutcome, error) {
+	startedAt := time.Now()
+	outcome := trialOutcome{
+		N:           n,
+		StartedAt:   startedAt.UTC().Format(time.RFC3339),
+		SurfaceType: string(resolved.surfaceType),
+	}
+
+	// Synthesise the per-trial prompt. Determinism contract preserved
+	// — same inputs produce byte-identical prompts. The prompt SHA is
+	// recorded on the outcome so the operator can detect stuck-prompt
+	// patterns post-hoc (LD1 in plan § 6.2).
+	promptBytes, bErr := BuildDriverPrompt(
+		resolved.programBody,
+		relSurface,
+		state.surfaceBytes,
+		state.recentOutcomes,
+		resolved.promptHistoryWindow,
+	)
+	if bErr != nil {
+		return outcome, fmt.Errorf("building driver prompt: %w", bErr)
+	}
+	outcome.PromptSHA = driverPromptSHA(promptBytes)
+
+	candidateBytes, timedOut, dErr := runDriverInMemory(ctx, driverInvocation{
+		driverPath:     resolved.driverScript,
+		runID:          resolved.runID,
+		trialN:         n,
+		relSurface:     relSurface,
+		timeout:        resolved.driverTimeout,
+		maxTurns:       resolved.driverMaxTurns,
+	}, promptBytes)
+	if dErr != nil {
+		// Driver failure (non-zero exit, timeout) collapses onto
+		// validator-io-error per plan § 4.5; the trial is recorded
+		// but does NOT count toward no-improve-window.
+		outcome.Kept = false
+		outcome.Reason = reasonValidatorIOError
+		if timedOut {
+			outcome.EvaluatorTimeoutMS = resolved.driverTimeout.Milliseconds()
+		}
+		state.consecutiveFixedPoint = 0
+		state.consecutiveManifestFails = 0
+		_ = dErr
+		finishOutcome(&outcome, startedAt)
+		return outcome, nil
+	}
+
+	candidateSHA := contentSHA(candidateBytes)
+	outcome.CandidateSHA = candidateSHA
+	outcome.CandidateContentSHA = candidateSHA
+	stored, truncated := truncateCandidate(candidateBytes, resolved.maxCandidateBytes)
+	outcome.CandidateContent = string(stored)
+	outcome.CandidateContentTruncated = truncated
+
+	if isFixedPoint(state.seenCandidates, candidateSHA) {
+		outcome.Kept = false
+		outcome.Reason = reasonFixedPointSkipped
+		state.consecutiveFixedPoint++
+		state.consecutiveManifestFails = 0
+		state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+			CandidateSHA: candidateSHA, TrialN: n, Score: 0,
+		})
+		finishOutcome(&outcome, startedAt)
+		return outcome, nil
+	}
+
+	// Manifest gate (per-trial). Write the candidate to a tempfile
+	// purely for the validator's path-based API; no surface mutation.
+	if resolved.surfaceType == SurfaceTypeManifest {
+		if err := validateManifestCandidateInMemory(candidateBytes, relSurface); err != nil {
+			outcome.Kept = false
+			outcome.Reason = reasonManifestValidateFail
+			state.consecutiveManifestFails++
+			state.consecutiveFixedPoint = 0
+			state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+				CandidateSHA: candidateSHA, TrialN: n, Score: 0,
+			})
+			finishOutcome(&outcome, startedAt)
+			return outcome, nil
+		}
+	}
+
+	evalRes, err := runEvaluatorInMemory(ctx, resolved.evaluatorScript, resolved.runID, candidateBytes, resolved.evaluatorTimeout)
+	if err != nil {
+		return outcome, fmt.Errorf("evaluator harness failure: %w", err)
+	}
+	if evalRes.ContractViolation {
+		outcome.Kept = false
+		outcome.Reason = reasonEvaluatorContractFail
+		outcome.Score = 0
+		if evalRes.TimedOut {
+			outcome.EvaluatorTimeoutMS = evalRes.TimeoutMS
+		}
+		state.consecutiveFixedPoint = 0
+		state.consecutiveManifestFails = 0
+		state.consecutiveEvaluatorFails++
+		state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+			CandidateSHA: candidateSHA, TrialN: n, Score: 0,
+		})
+		finishOutcome(&outcome, startedAt)
+		return outcome, nil
+	}
+	outcome.Score = evalRes.Score
+	score := evalRes.Score
+
+	improved := isImprovement(state, score, resolved.metricDirection)
+	if improved {
+		outcome.Kept = true
+		outcome.Reason = reasonImproved
+		state.bestScore = score
+		state.bestScoreSet = true
+		state.bestContentSHA = candidateSHA
+		state.bestCommitSHA = "" // in-memory mode never sets a commit
+		state.bestTrialN = n
+		state.consecutiveNoImprove = 0
+	} else {
+		outcome.Kept = false
+		outcome.Reason = reasonRegression
+		state.consecutiveNoImprove++
+	}
+
+	state.consecutiveFixedPoint = 0
+	state.consecutiveManifestFails = 0
+	state.consecutiveEvaluatorFails = 0
+	state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+		CandidateSHA: candidateSHA, TrialN: n, Score: score,
+	})
+	finishOutcome(&outcome, startedAt)
+	return outcome, nil
+}
+
+// contentSHA returns the lowercase hex SHA-256 of the supplied bytes.
+// Shared by the in-memory baseline seeding and the per-trial candidate
+// hashing — the SHA is the canonical content identifier under the
+// April 2026 substrate swap.
+func contentSHA(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// truncateCandidate enforces the harness-side `--max-candidate-bytes`
+// cap. Returns (stored, truncated) where stored is at most
+// maxBytes long and truncated is true when the input exceeded the
+// cap. A non-positive maxBytes falls back to defaultMaxCandidateCap.
+func truncateCandidate(content []byte, maxBytes int) ([]byte, bool) {
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxCandidateCap
+	}
+	if len(content) <= maxBytes {
+		return content, false
+	}
+	return content[:maxBytes], true
+}
+
+// validateManifestCandidateInMemory writes the candidate bytes to a
+// tempfile and runs the agent.LoadAndValidateManifest gate against
+// it. The tempfile is removed on every exit path; the surface file
+// on disk is never touched.
+//
+// relSurface is used to derive a temp filename suffix that mirrors
+// the surface basename, so any error message the validator emits
+// references the operator's mental model rather than an opaque
+// generated path.
+func validateManifestCandidateInMemory(candidate []byte, relSurface string) error {
+	base := filepath.Base(relSurface)
+	if base == "" {
+		base = "candidate.md"
+	}
+	tmp, err := os.CreateTemp("", "autoresearch-candidate-*-"+base)
+	if err != nil {
+		return fmt.Errorf("staging candidate tempfile: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, wErr := tmp.Write(candidate); wErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing candidate tempfile: %w", wErr)
+	}
+	if cErr := tmp.Close(); cErr != nil {
+		return fmt.Errorf("closing candidate tempfile: %w", cErr)
+	}
+	if _, vErr := agent.LoadAndValidateManifest(tmpPath); vErr != nil {
+		return vErr
+	}
+	return nil
+}
+
+// runDriverInMemory invokes the driver subprocess with the prompt
+// bytes piped to stdin and captures the candidate from stdout. A
+// parallel FLOWSTATE_AUTORESEARCH_PROMPT_FILE tempfile is populated
+// for drivers that prefer a path-based input channel; both shapes are
+// always available so script authors choose by convenience. The
+// surface env var is exposed RELATIVE to the operator's invocation
+// directory and is documented as read-only — the harness no longer
+// owns a worktree to enforce immutability, so this is a contract
+// rather than an enforcement.
+//
+// Expected:
+//   - inv.driverPath is the executable. Empty falls back to a no-op
+//     driver (returns the surface bytes unchanged) so fixture-driven
+//     tests can exercise the in-memory loop without authoring a
+//     fixture script. The surface bytes are not available here so
+//     the empty-driverPath path returns an empty candidate; callers
+//     in production always supply a driver.
+//   - prompt is the synthesised per-trial prompt; piped to stdin.
+//
+// Returns:
+//   - candidate bytes captured from stdout.
+//   - timedOut flag when the driver wall-clock cap fired.
+//   - non-nil error on non-zero exit, timeout, or harness-side I/O
+//     failure.
+func runDriverInMemory(ctx context.Context, inv driverInvocation, prompt []byte) (candidate []byte, timedOut bool, err error) {
+	if inv.driverPath == "" {
+		// Empty driver path is treated as a configuration error in
+		// the in-memory substrate: the caller cannot infer a "no
+		// edit" candidate without a substrate file to copy from.
+		// Surface a clean error so the operator gets the failure
+		// mode pinned at the seam rather than a downstream
+		// hash-empty surprise.
+		return nil, false, errors.New("driver script path is empty (in-memory mode requires a driver)")
+	}
+	driverCtx := ctx
+	var cancel context.CancelFunc
+	if inv.timeout > 0 {
+		driverCtx, cancel = context.WithTimeout(ctx, inv.timeout)
+		defer cancel()
+	}
+	cmd := observedCommandContext(driverCtx, inv.driverPath)
+	// Operator's invocation cwd — leave Dir unset so the subprocess
+	// inherits whichever directory `flowstate autoresearch run` was
+	// invoked from. The substrate swap deliberately removes the
+	// implicit "cwd is the worktree" contract.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
+		return nil
+	}
+	cmd.WaitDelay = evaluatorTermGracePeriod
+
+	// Mirror channel: write the prompt to a tempfile and expose its
+	// path via FLOWSTATE_AUTORESEARCH_PROMPT_FILE. Drivers may use
+	// stdin or the file; the harness populates both.
+	promptFile, perr := os.CreateTemp("", fmt.Sprintf("autoresearch-prompt-%s-trial-%d-*.txt", inv.runID, inv.trialN))
+	if perr != nil {
+		return nil, false, fmt.Errorf("staging prompt tempfile: %w", perr)
+	}
+	promptPath := promptFile.Name()
+	defer func() { _ = os.Remove(promptPath) }()
+	if _, wErr := promptFile.Write(prompt); wErr != nil {
+		_ = promptFile.Close()
+		return nil, false, fmt.Errorf("writing prompt tempfile: %w", wErr)
+	}
+	if cErr := promptFile.Close(); cErr != nil {
+		return nil, false, fmt.Errorf("closing prompt tempfile: %w", cErr)
+	}
+
+	env := append(os.Environ(),
+		"FLOWSTATE_AUTORESEARCH_RUN_ID="+inv.runID,
+		"FLOWSTATE_AUTORESEARCH_SURFACE="+inv.relSurface,
+		fmt.Sprintf("FLOWSTATE_AUTORESEARCH_TRIAL=%d", inv.trialN),
+		"FLOWSTATE_AUTORESEARCH_PROMPT_FILE="+promptPath,
+	)
+	if inv.maxTurns > 0 {
+		env = append(env, fmt.Sprintf("FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS=%d", inv.maxTurns))
+	}
+	cmd.Env = env
+
+	stdin, pipeErr := cmd.StdinPipe()
+	if pipeErr != nil {
+		return nil, false, fmt.Errorf("driver stdin pipe: %w", pipeErr)
+	}
+	stdoutPipe, pipeErr := cmd.StdoutPipe()
+	if pipeErr != nil {
+		_ = stdin.Close()
+		return nil, false, fmt.Errorf("driver stdout pipe: %w", pipeErr)
+	}
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+
+	if startErr := cmd.Start(); startErr != nil {
+		return nil, false, fmt.Errorf("starting driver %q: %w", inv.driverPath, startErr)
+	}
+
+	// Write the prompt to stdin in a goroutine so a slow driver does
+	// not deadlock the harness; close stdin when done so the driver
+	// sees EOF.
+	writeErrCh := make(chan error, 1)
+	go func() {
+		defer close(writeErrCh)
+		_, wErr := stdin.Write(prompt)
+		_ = stdin.Close()
+		if wErr != nil {
+			writeErrCh <- wErr
+		}
+	}()
+
+	stdout, readErr := io.ReadAll(stdoutPipe)
+	if readErr != nil {
+		_ = cmd.Wait()
+		return nil, false, fmt.Errorf("reading driver stdout: %w", readErr)
+	}
+	waitErr := cmd.Wait()
+	if wErr := <-writeErrCh; wErr != nil {
+		// stdin write errors are usually noise (driver exited
+		// before consuming the full prompt); surface only if the
+		// command itself failed.
+		if waitErr != nil {
+			return nil, false, fmt.Errorf("driver %q stdin: %w (wait: %v) (stderr: %s)",
+				inv.driverPath, wErr, waitErr, strings.TrimSpace(stderrBuf.String()))
+		}
+	}
+	if waitErr != nil {
+		if driverCtx.Err() == context.DeadlineExceeded {
+			return nil, true, fmt.Errorf("driver %q timed out after %s (stderr: %s)",
+				inv.driverPath, inv.timeout, strings.TrimSpace(stderrBuf.String()))
+		}
+		return nil, false, fmt.Errorf("driver %q: %w (stderr: %s)",
+			inv.driverPath, waitErr, strings.TrimSpace(stderrBuf.String()))
+	}
+	return stdout, false, nil
+}
+
+// runEvaluatorInMemory invokes the evaluator subprocess with the
+// candidate bytes piped to stdin. A parallel FLOWSTATE_AUTORESEARCH_
+// CANDIDATE_FILE tempfile carries the same bytes for evaluators that
+// prefer a path-based channel; both shapes are always available.
+// FLOWSTATE_AUTORESEARCH_SURFACE is NOT exposed in default mode — the
+// candidate IS the surface; reading the on-disk surface would defeat
+// the substrate swap.
+//
+// Contract enforcement is identical to runEvaluatorScript (plan v3.1
+// § 4.6): one non-negative integer to stdout, exit 0, SIGTERM-then-
+// SIGKILL on timeout. The shared parseEvaluatorStdout enforces the
+// stdout shape.
+func runEvaluatorInMemory(ctx context.Context, evaluatorPath, runID string, candidate []byte, timeout time.Duration) (evaluatorResult, error) {
+	if evaluatorPath == "" {
+		evaluatorPath = "scripts/validate-harness.sh"
+	}
+
+	evalCtx := ctx
+	timedOut := false
+	timeoutMS := int64(0)
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		evalCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+	}
+
+	// Mirror channel: write the candidate to a tempfile.
+	candFile, perr := os.CreateTemp("", fmt.Sprintf("autoresearch-candidate-%s-*.txt", runID))
+	if perr != nil {
+		return evaluatorResult{}, fmt.Errorf("staging candidate tempfile: %w", perr)
+	}
+	candPath := candFile.Name()
+	defer func() { _ = os.Remove(candPath) }()
+	if _, wErr := candFile.Write(candidate); wErr != nil {
+		_ = candFile.Close()
+		return evaluatorResult{}, fmt.Errorf("writing candidate tempfile: %w", wErr)
+	}
+	if cErr := candFile.Close(); cErr != nil {
+		return evaluatorResult{}, fmt.Errorf("closing candidate tempfile: %w", cErr)
+	}
+
+	cmd := observedCommandContext(evalCtx, evaluatorPath)
+	cmd.Env = append(os.Environ(),
+		"FLOWSTATE_AUTORESEARCH_RUN_ID="+runID,
+		"FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE="+candPath,
+	)
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return cmd.Process.Signal(syscall.SIGTERM)
+		}
+		return nil
+	}
+	cmd.WaitDelay = evaluatorTermGracePeriod
+
+	if timeout > 0 {
+		timeoutMS = timeout.Milliseconds()
+		timer := time.AfterFunc(timeout, cancel)
+		defer timer.Stop()
+	}
+
+	cmd.Stdin = strings.NewReader(string(candidate))
+	startedAt := time.Now()
+	stdout, runErr := cmd.Output()
+
+	if timeout > 0 && evalCtx.Err() != nil && time.Since(startedAt) >= timeout {
+		timedOut = true
+	}
+	if timedOut {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q exceeded --evaluator-timeout %s", evaluatorPath, timeout),
+			TimedOut:          true,
+			TimeoutMS:         timeoutMS,
+		}, nil
+	}
+	if runErr != nil {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q exited non-zero: %v", evaluatorPath, runErr),
+		}, nil
+	}
+	if len(stdout) > trialStdoutCaptureLimit {
+		stdout = stdout[:trialStdoutCaptureLimit]
+	}
+	score, parseErr := parseEvaluatorStdout(string(stdout))
+	if parseErr != nil {
+		return evaluatorResult{
+			ContractViolation: true,
+			Reason:            fmt.Sprintf("evaluator %q: %s", evaluatorPath, parseErr.Error()),
+		}, nil
+	}
+	return evaluatorResult{Score: float64(score)}, nil
+}
+
 // driverInvocation bundles the per-trial inputs runDriverScript needs.
 // Live-driver Slice 1 grew the call site enough that a positional
 // signature was getting unwieldy; the struct keeps callers readable
@@ -604,7 +1162,7 @@ func runDriverScript(inv driverInvocation) (timedOut bool, err error) {
 		ctx, cancel = context.WithTimeout(ctx, inv.timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, inv.driverPath)
+	cmd := observedCommandContext(ctx, inv.driverPath)
 	cmd.Dir = inv.worktreePath
 	cmd.Cancel = func() error {
 		// Mirror runEvaluatorScript's SIGTERM-then-grace pattern so a
@@ -713,7 +1271,7 @@ func runEvaluatorScript(evaluatorPath, worktreePath, relSurface, runID string, t
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, evaluatorPath)
+	cmd := observedCommandContext(ctx, evaluatorPath)
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(),
 		"FLOWSTATE_AUTORESEARCH_RUN_ID="+runID,
@@ -931,11 +1489,11 @@ func relativeSurfacePath(surface, worktreePath string) (string, error) {
 // Per § 5.5 N13, --no-verify is mandatory; the worktree inherits the
 // parent's hooks including the make-check gate broken on origin.
 func gitCommitTrial(worktreePath string, n int) (string, error) {
-	addCmd := exec.Command("git", "-C", worktreePath, "add", "-A")
+	addCmd := observedCommand("git", "-C", worktreePath, "add", "-A")
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git add: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
-	commitCmd := exec.Command("git", "-C", worktreePath, "commit",
+	commitCmd := observedCommand("git", "-C", worktreePath, "commit",
 		"--no-verify",
 		"--allow-empty-message",
 		"-m", fmt.Sprintf("autoresearch trial-%d", n),
@@ -949,7 +1507,7 @@ func gitCommitTrial(worktreePath string, n int) (string, error) {
 	if out, err := commitCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git commit: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
-	revCmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	revCmd := observedCommand("git", "-C", worktreePath, "rev-parse", "HEAD")
 	out, err := revCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
@@ -960,7 +1518,7 @@ func gitCommitTrial(worktreePath string, n int) (string, error) {
 // gitResetHard runs `git reset --hard HEAD~1` inside the worktree —
 // the canonical revert for a regression-or-no-improve candidate.
 func gitResetHard(worktreePath string) error {
-	cmd := exec.Command("git", "-C", worktreePath, "reset", "--hard", "HEAD~1")
+	cmd := observedCommand("git", "-C", worktreePath, "reset", "--hard", "HEAD~1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git reset --hard HEAD~1: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
@@ -972,7 +1530,7 @@ func gitResetHard(worktreePath string) error {
 // where the driver wrote a candidate but no commit was issued, so
 // `reset --hard HEAD~1` would over-revert.
 func gitCheckoutSurface(worktreePath, relSurface string) error {
-	cmd := exec.Command("git", "-C", worktreePath, "checkout", "HEAD", "--", relSurface)
+	cmd := observedCommand("git", "-C", worktreePath, "checkout", "HEAD", "--", relSurface)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout HEAD %s: %w (output: %s)", relSurface, err, strings.TrimSpace(string(out)))
 	}
@@ -990,11 +1548,16 @@ func writeTrialRecord(store coordination.Store, runID string, outcome trialOutco
 }
 
 // writeBestRecord persists the best-so-far pointer to the coord-store.
+//
+// In-memory mode (April 2026 In-Memory Default): CommitSHA is empty
+// and CandidateContentSHA carries the load-bearing content identifier.
+// In --commit-trials mode the legacy CommitSHA stays populated.
 func writeBestRecord(store coordination.Store, runID string, state *trialLoopState) error {
 	rec := bestRecord{
-		CommitSHA: state.bestCommitSHA,
-		Score:     state.bestScore,
-		TrialN:    state.bestTrialN,
+		CommitSHA:           state.bestCommitSHA,
+		CandidateContentSHA: state.bestContentSHA,
+		Score:               state.bestScore,
+		TrialN:              state.bestTrialN,
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {

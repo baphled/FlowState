@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -144,7 +143,7 @@ func runAutoresearchPromote(cmd *cobra.Command, application *app.App, runID stri
 		return err
 	}
 
-	cherryCmd := exec.Command("git", "-C", parentRepoRoot, "cherry-pick", best.CommitSHA)
+	cherryCmd := observedCommand("git", "-C", parentRepoRoot, "cherry-pick", best.CommitSHA)
 	if output, err := cherryCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf(
 			"cherry-pick %s onto %s failed: %w\n%s\nresolve manually with `git cherry-pick --abort` or `git cherry-pick --continue`",
@@ -210,7 +209,7 @@ func resolvePromoteTarget(parentRepoRoot, explicitTarget string) (string, error)
 	if explicitTarget != "" {
 		return explicitTarget, nil
 	}
-	headCmd := exec.Command("git", "-C", parentRepoRoot, "rev-parse", "--abbrev-ref", "HEAD")
+	headCmd := observedCommand("git", "-C", parentRepoRoot, "rev-parse", "--abbrev-ref", "HEAD")
 	headOut, err := headCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("reading parent HEAD: %w", err)
@@ -229,7 +228,7 @@ func resolvePromoteTarget(parentRepoRoot, explicitTarget string) (string, error)
 // without manually checking it out first; failures propagate as
 // errors.
 func checkoutBranch(parentRepoRoot, target string) error {
-	headCmd := exec.Command("git", "-C", parentRepoRoot, "rev-parse", "--abbrev-ref", "HEAD")
+	headCmd := observedCommand("git", "-C", parentRepoRoot, "rev-parse", "--abbrev-ref", "HEAD")
 	headOut, err := headCmd.Output()
 	if err != nil {
 		return fmt.Errorf("reading parent HEAD pre-checkout: %w", err)
@@ -237,7 +236,7 @@ func checkoutBranch(parentRepoRoot, target string) error {
 	if strings.TrimSpace(string(headOut)) == target {
 		return nil
 	}
-	checkoutCmd := exec.Command("git", "-C", parentRepoRoot, "checkout", target)
+	checkoutCmd := observedCommand("git", "-C", parentRepoRoot, "checkout", target)
 	if output, err := checkoutCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout %s: %w (output: %s)", target, err, strings.TrimSpace(string(output)))
 	}
