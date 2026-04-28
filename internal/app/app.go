@@ -1369,15 +1369,24 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 //     swarm manifest's gate slice is silently inert — the failure mode
 //     that let @bug-hunt's malformed/hallucinated findings through to
 //     the lead's synthesis.
+//   - "builtin:evidence-grounding": cross-checks every bug-findings-v1
+//     finding's evidence string against the cited file's contents.
+//     Catches LLM hallucination — a member that fabricates a code
+//     snippet (or attributes one to the wrong file) fails the gate
+//     before the lead aggregates it. Anchored at the process working
+//     directory because `flowstate serve` runs in the user's repo.
 //
 // Returns:
 //   - A *swarm.MultiRunner ready for WithGateRunner.
 //
 // Side effects:
-//   - None beyond constructing in-memory state.
+//   - The evidence-grounding runner reads from the filesystem at
+//     dispatch time; constructor-time only resolves the working
+//     directory.
 func buildSwarmGateRunner() swarm.GateRunner {
 	runner := swarm.NewMultiRunner()
 	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
+	runner.Register(swarm.EvidenceGroundingGateKind, swarm.NewEvidenceGroundingRunner(""))
 	return runner
 }
 
