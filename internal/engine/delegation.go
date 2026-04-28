@@ -305,6 +305,22 @@ func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
 	return d
 }
 
+// GateRunner returns the currently installed swarm gate dispatcher (or
+// nil when none has been wired). Exposed so the App-level wiring tests
+// can pin "production wiring installs a non-nil runner" without having
+// to spin up a full swarm dispatch end-to-end. Production code never
+// reads this field directly — the dispatch path consults d.gateRunner
+// internally.
+//
+// Returns:
+//   - The installed runner or nil.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) GateRunner() swarm.GateRunner {
+	return d.gateRunner
+}
+
 // RunnerFactory builds the *swarm.Runner the dispatch loop installs
 // for a given manifest. The runner is constructed once per swarm id
 // and cached; the factory is consulted only on the first dispatch

@@ -84,6 +84,28 @@ var _ = Describe("Session manager wiring integration", Label("integration"), fun
 		It("wires the delegate tool onto the engine", func() {
 			Expect(eng.HasTool("delegate")).To(BeTrue())
 		})
+
+		It("installs the app's gate runner on the delegate tool when one is configured", func() {
+			application.gateRunner = buildSwarmGateRunner()
+
+			application.wireDelegateToolIfEnabled(eng, delegatingManifest)
+
+			dt, ok := eng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			Expect(dt.GateRunner()).NotTo(BeNil(),
+				"production wiring must install the App's MultiRunner so post-member result-schema gates actually fire")
+		})
+
+		It("leaves the gate runner unset when the app has none", func() {
+			application.gateRunner = nil
+
+			application.wireDelegateToolIfEnabled(eng, delegatingManifest)
+
+			dt, ok := eng.GetDelegateTool()
+			Expect(ok).To(BeTrue())
+			Expect(dt.GateRunner()).To(BeNil(),
+				"a nil App.gateRunner must not be promoted to a non-nil DelegateTool runner; pin the no-op fallback")
+		})
 	})
 
 	Context("when session manager is nil", func() {

@@ -109,6 +109,16 @@ type App struct {
 	backgroundManager      *engine.BackgroundTaskManager
 	sessionManager         *session.Manager
 	completionOrchestrator *engine.CompletionOrchestrator
+	// gateRunner is the swarm gate dispatcher every wired DelegateTool
+	// shares. Built once at app boot via buildSwarmGateRunner with the
+	// builtin:result-schema runner pre-registered; per-tool wiring
+	// installs this same instance so a single MultiRunner backs every
+	// delegating agent's post-member contract enforcement. Pre-this, the
+	// DelegateTool's gate dispatch was a silent no-op in production —
+	// gateRunner was only ever set in tests, and the @bug-hunt swarm's
+	// post-member result-schema gates never fired against malformed
+	// member output.
+	gateRunner swarm.GateRunner
 	// compression is the shared compression wiring for both the root
 	// engine and every delegate engine. Retained on App so
 	// createDelegateEngine can reuse the same CompressionConfig, metrics,
@@ -441,6 +451,7 @@ func buildApp(params appBuildParams) *App {
 		compression:      runtime.compression,
 		mcpServerTools:   runtime.mcpServerTools,
 		mcpTools:         runtime.mcpTools,
+		gateRunner:       buildSwarmGateRunner(),
 	}
 
 	planDir := cfg.ResolvedPlanLocation()
@@ -1338,6 +1349,36 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 		dt.WithSwarmRegistry(a.SwarmRegistry)
 		dt.WithRunnerFactory(swarmRunnerFactory)
 	}
+
+	if a.gateRunner != nil {
+		dt.WithGateRunner(a.gateRunner)
+	}
+}
+
+// buildSwarmGateRunner constructs the production swarm gate dispatcher
+// with the builtin runners pre-registered. Centralised here so every
+// DelegateTool that participates in a swarm shares the same MultiRunner
+// instance — registering a backend on it is a one-time boot step rather
+// than a per-tool concern.
+//
+// Currently registers:
+//   - "builtin:result-schema": validates a member's terminal output
+//     against the JSON Schema named by the gate's SchemaRef. Without
+//     this registration the dispatch loop's post-member hook
+//     short-circuits (see DelegateTool.buildPostMemberHook) and the
+//     swarm manifest's gate slice is silently inert — the failure mode
+//     that let @bug-hunt's malformed/hallucinated findings through to
+//     the lead's synthesis.
+//
+// Returns:
+//   - A *swarm.MultiRunner ready for WithGateRunner.
+//
+// Side effects:
+//   - None beyond constructing in-memory state.
+func buildSwarmGateRunner() swarm.GateRunner {
+	runner := swarm.NewMultiRunner()
+	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
+	return runner
 }
 
 // swarmRunnerFactory returns the per-swarm Runner the engine
