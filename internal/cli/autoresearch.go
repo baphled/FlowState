@@ -31,10 +31,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
@@ -121,7 +124,16 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 			"defers full advisory locking.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runAutoresearch(cmd.Context(), cmd, getApp(), opts)
+			// Install a signal-linked context so SIGTERM / SIGINT
+			// terminates the trial loop with reason=signal and a
+			// best-effort result-record write — mirrors the pattern
+			// in runPrompt added by f2a23be (see § 4.7 termination
+			// matrix). signal.NotifyContext delivers a single
+			// cancellation; a second Ctrl-C still kills the process
+			// so operators retain the usual escape hatch.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runAutoresearch(ctx, cmd, getApp(), opts)
 		},
 	}
 
@@ -167,7 +179,7 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 // Side effects:
 //   - Creates a worktree under <worktree-base>/<runID>/worktree.
 //   - Writes the manifest record to <DataDir>/coordination.json.
-func runAutoresearch(_ context.Context, cmd *cobra.Command, application *app.App, opts autoresearchRunOptions) error {
+func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.App, opts autoresearchRunOptions) error {
 	resolved, err := resolveAutoresearchOptions(application, opts)
 	if err != nil {
 		return err
@@ -192,33 +204,112 @@ func runAutoresearch(_ context.Context, cmd *cobra.Command, application *app.App
 		return err
 	}
 
-	if err := writeManifestRecord(store, resolved, worktreePath); err != nil {
-		return fmt.Errorf("writing manifest record: %w", err)
-	}
-
 	// max-trials=0 is the smoke path — set up, write the manifest
-	// record, exit cleanly without running trials. Useful for
-	// integration tests that exercise the precondition + worktree +
-	// record sequence without provider/script dependencies.
+	// record (without baseline data), exit cleanly without running
+	// trials. Useful for integration tests that exercise the
+	// precondition + worktree + record sequence without
+	// provider/script dependencies.
 	if resolved.maxTrials == 0 {
+		if err := writeManifestRecord(store, resolved, worktreePath, 0, ""); err != nil {
+			return fmt.Errorf("writing manifest record: %w", err)
+		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 			"autoresearch run %s: setup complete (max-trials=0; no trials run)\n",
 			resolved.runID)
 		return nil
 	}
 
-	terminationReason, err := runTrialLoop(resolved, worktreePath, store, cmd.OutOrStdout())
+	// Baseline-score the unmodified surface so the manifest record
+	// captures both baseline_score and baseline_commit before the
+	// trial loop mutates the worktree.
+	relSurface, err := relativeSurfacePath(resolved.surface, worktreePath)
+	if err != nil {
+		return err
+	}
+	worktreeSurface := filepath.Join(worktreePath, relSurface)
+
+	baselineScore, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID)
+	if err != nil {
+		return fmt.Errorf("baseline evaluator: %w", err)
+	}
+	baselineCommit, err := worktreeHeadSHA(worktreePath)
+	if err != nil {
+		return fmt.Errorf("baseline commit: %w", err)
+	}
+
+	if err := writeManifestRecord(store, resolved, worktreePath, baselineScore, baselineCommit); err != nil {
+		return fmt.Errorf("writing manifest record: %w", err)
+	}
+
+	baselineSHA, err := surfaceSHA(worktreeSurface)
+	if err != nil {
+		return fmt.Errorf("hashing baseline surface: %w", err)
+	}
+
+	state := &trialLoopState{
+		bestScore:    baselineScore,
+		bestScoreSet: true,
+	}
+	state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+		CandidateSHA: baselineSHA, TrialN: 0, Score: baselineScore,
+	})
+	if err := writeSeenCandidates(store, resolved.runID, state.seenCandidates); err != nil {
+		return fmt.Errorf("seeding seen-candidates: %w", err)
+	}
+
+	terminationReason, lastOutcome, err := runTrialLoop(ctx, resolved, worktreePath, store, cmd.OutOrStdout(), state)
 	if err != nil {
 		return err
 	}
 
-	// Slice 1d hardens the final summary; the spine prints a single
-	// status line so seam tests can assert termination_reason via
-	// the persisted result record.
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-		"autoresearch run %s: done (termination_reason=%s)\n",
-		resolved.runID, terminationReason)
+	printRunSummary(cmd.OutOrStdout(), resolved, state, lastOutcome, terminationReason, worktreePath)
 	return nil
+}
+
+// worktreeHeadSHA returns the worktree's current HEAD SHA via
+// `git -C <worktree> rev-parse HEAD`.
+func worktreeHeadSHA(worktreePath string) (string, error) {
+	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// printRunSummary writes the human-readable end-of-run summary to the
+// configured writer. Per § 5.5 the summary lists trials run, kept and
+// reverted counts, best score and commit SHA, termination reason,
+// run-id, and worktree path so the operator has the breadcrumbs to
+// inspect kept commits or trigger Slice 1d's cherry-pick (deferred
+// to Slice 4+ — Slice 1's summary is informational only).
+func printRunSummary(
+	w io.Writer,
+	resolved autoresearchRunOptions,
+	state *trialLoopState,
+	last trialOutcome,
+	terminationReason string,
+	worktreePath string,
+) {
+	totalTrials := last.N
+	bestSHA := state.bestCommitSHA
+	bestScore := state.bestScore
+	if !state.bestScoreSet {
+		bestSHA = ""
+		bestScore = 0
+	}
+	_, _ = fmt.Fprintf(w,
+		"autoresearch run %s: summary trials_run=%d kept=%d reverted=%d "+
+			"best_score=%g best_commit=%s termination_reason=%s worktree=%s\n",
+		resolved.runID,
+		totalTrials,
+		state.keptCount,
+		state.revertedCount,
+		bestScore,
+		bestSHA,
+		terminationReason,
+		worktreePath,
+	)
 }
 
 // resolveAutoresearchOptions normalises CLI flags into the run shape:
@@ -385,29 +476,36 @@ func openCoordStore(application *app.App) (coordination.Store, error) {
 // manifestRecord is the shape persisted at autoresearch/<runID>/manifest.
 // Schema per plan § 4.2: surface, evaluator, program, surface_type,
 // metric_direction, max_trials, time_budget, no_improve_window,
-// baseline_score, baseline_commit, started_at, worktree_path. Slice 1b
-// fills the fields it knows; surface_type/baseline_score/baseline_commit
-// are pinned in later slices. evaluator and program carry the MVP
-// hard-coded defaults so the record is consistent.
+// baseline_score, baseline_commit, started_at, worktree_path. Slice 1
+// fills every field except surface_type (Slice 4 owns the type-detection
+// rule). evaluator and program carry the MVP hard-coded defaults so
+// the record is consistent across runs.
 type manifestRecord struct {
-	Surface         string `json:"surface"`
-	Evaluator       string `json:"evaluator"`
-	Program         string `json:"program"`
-	MetricDirection string `json:"metric_direction"`
-	MaxTrials       int    `json:"max_trials"`
-	TimeBudget      string `json:"time_budget"`
-	NoImproveWindow int    `json:"no_improve_window"`
-	StartedAt       string `json:"started_at"`
-	WorktreePath    string `json:"worktree_path"`
+	Surface         string  `json:"surface"`
+	Evaluator       string  `json:"evaluator"`
+	Program         string  `json:"program"`
+	MetricDirection string  `json:"metric_direction"`
+	MaxTrials       int     `json:"max_trials"`
+	TimeBudget      string  `json:"time_budget"`
+	NoImproveWindow int     `json:"no_improve_window"`
+	BaselineScore   float64 `json:"baseline_score"`
+	BaselineCommit  string  `json:"baseline_commit"`
+	StartedAt       string  `json:"started_at"`
+	WorktreePath    string  `json:"worktree_path"`
 }
 
 // writeManifestRecord serialises the run config to the coord-store at
-// `autoresearch/<runID>/manifest`.
+// `autoresearch/<runID>/manifest`. The baseline values are 0/"" when
+// the spine is exited via max-trials=0 (no trials, no baseline scoring).
 //
 // Expected:
 //   - store is a non-nil coordination.Store.
 //   - opts is the resolved-options struct.
 //   - worktreePath is the absolute worktree path.
+//   - baselineScore is the integer-as-float64 score of the unmodified
+//     surface (0 when baseline scoring did not run).
+//   - baselineCommit is the worktree HEAD SHA at run start (empty
+//     when baseline scoring did not run).
 //
 // Returns:
 //   - nil on successful Set.
@@ -415,7 +513,13 @@ type manifestRecord struct {
 //
 // Side effects:
 //   - Writes one entry to the coord-store.
-func writeManifestRecord(store coordination.Store, opts autoresearchRunOptions, worktreePath string) error {
+func writeManifestRecord(
+	store coordination.Store,
+	opts autoresearchRunOptions,
+	worktreePath string,
+	baselineScore float64,
+	baselineCommit string,
+) error {
 	rec := manifestRecord{
 		Surface:         opts.surface,
 		Evaluator:       defaultEvaluator(opts.evaluatorScript),
@@ -424,6 +528,8 @@ func writeManifestRecord(store coordination.Store, opts autoresearchRunOptions, 
 		MaxTrials:       opts.maxTrials,
 		TimeBudget:      opts.timeBudget.String(),
 		NoImproveWindow: opts.noImproveWindow,
+		BaselineScore:   baselineScore,
+		BaselineCommit:  baselineCommit,
 		StartedAt:       time.Now().UTC().Format(time.RFC3339),
 		WorktreePath:    worktreePath,
 	}

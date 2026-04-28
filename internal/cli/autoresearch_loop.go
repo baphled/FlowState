@@ -40,6 +40,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -115,6 +116,8 @@ type trialLoopState struct {
 	bestCommitSHA            string
 	bestTrialN               int
 	seenCandidates           []seenCandidate
+	keptCount                int
+	revertedCount            int
 }
 
 // seenCandidate is one entry in the SHA ring. Stored as a slice and
@@ -161,50 +164,45 @@ type bestRecord struct {
 //     and the final result record to the coord-store.
 //   - Mutates the worktree's git history (kept commits stay; reverts
 //     restore HEAD~1 inside the worktree only).
+// runTrialLoop is invoked by runAutoresearch with a pre-seeded state
+// (baseline score + seen-candidates ring + best). The caller owns
+// baseline scoring and manifest-record persistence; the loop owns
+// per-trial driving, ratchet, and result-record finalisation.
+//
+// Returns the termination reason, the last outcome (for the result
+// record + summary), and any harness-side error.
 func runTrialLoop(
+	ctx context.Context,
 	resolved autoresearchRunOptions,
 	worktreePath string,
 	store coordination.Store,
 	out io.Writer,
-) (string, error) {
-	state := &trialLoopState{}
+	state *trialLoopState,
+) (string, trialOutcome, error) {
 	deadline := time.Now().Add(resolved.timeBudget)
 
 	relSurface, err := relativeSurfacePath(resolved.surface, worktreePath)
 	if err != nil {
-		return "", err
+		return "", trialOutcome{}, err
 	}
 	worktreeSurface := filepath.Join(worktreePath, relSurface)
-
-	// Baseline scoring: hash + score the unmodified surface so trial
-	// 1 has a `best` to compare against. Without this, the very
-	// first scored trial would always be `improved` regardless of
-	// its scalar — the seam tests pin the regression-on-trial-1
-	// case directly. Per § 4.2 the manifest record's
-	// `baseline_score`/`baseline_commit` are the persistent home of
-	// this value; Slice 1d will extend the manifest record write to
-	// include it.
-	baselineSHA, err := surfaceSHA(worktreeSurface)
-	if err != nil {
-		return "", fmt.Errorf("hashing baseline surface: %w", err)
-	}
-	baselineScore, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID)
-	if err != nil {
-		return "", fmt.Errorf("baseline evaluator: %w", err)
-	}
-	state.bestScore = baselineScore
-	state.bestScoreSet = true
-	state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
-		CandidateSHA: baselineSHA, TrialN: 0, Score: baselineScore,
-	})
-	if err := writeSeenCandidates(store, resolved.runID, state.seenCandidates); err != nil {
-		return "", fmt.Errorf("seeding seen-candidates: %w", err)
-	}
 
 	terminationReason := ""
 
 	var lastOutcome trialOutcome
 	for n := 1; n <= resolved.maxTrials; n++ {
+		// Context cancellation (SIGTERM/SIGINT) takes precedence over
+		// time-budget per § 4.7 termination matrix. The loop writes a
+		// best-effort result record before returning so partial state
+		// is recoverable.
+		select {
+		case <-ctx.Done():
+			terminationReason = terminationSignal
+		default:
+		}
+		if terminationReason != "" {
+			break
+		}
 		if time.Now().After(deadline) {
 			terminationReason = terminationTimeBudget
 			break
@@ -212,19 +210,25 @@ func runTrialLoop(
 
 		outcome, err := runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state)
 		if err != nil {
-			return "", fmt.Errorf("trial %d: %w", n, err)
+			return "", lastOutcome, fmt.Errorf("trial %d: %w", n, err)
 		}
 		lastOutcome = outcome
 
+		if outcome.Kept {
+			state.keptCount++
+		} else {
+			state.revertedCount++
+		}
+
 		if err := writeTrialRecord(store, resolved.runID, outcome); err != nil {
-			return "", fmt.Errorf("writing trial-%d record: %w", n, err)
+			return "", lastOutcome, fmt.Errorf("writing trial-%d record: %w", n, err)
 		}
 		if err := writeSeenCandidates(store, resolved.runID, state.seenCandidates); err != nil {
-			return "", fmt.Errorf("writing seen-candidates: %w", err)
+			return "", lastOutcome, fmt.Errorf("writing seen-candidates: %w", err)
 		}
 		if outcome.Kept {
 			if err := writeBestRecord(store, resolved.runID, state); err != nil {
-				return "", fmt.Errorf("writing best record: %w", err)
+				return "", lastOutcome, fmt.Errorf("writing best record: %w", err)
 			}
 		}
 
@@ -252,10 +256,10 @@ func runTrialLoop(
 	}
 
 	if err := writeResultRecord(store, resolved.runID, terminationReason, state, lastOutcome); err != nil {
-		return terminationReason, fmt.Errorf("writing result record: %w", err)
+		return terminationReason, lastOutcome, fmt.Errorf("writing result record: %w", err)
 	}
 
-	return terminationReason, nil
+	return terminationReason, lastOutcome, nil
 }
 
 // runOneTrial drives a single trial: driver edit, fixed-point gate,
