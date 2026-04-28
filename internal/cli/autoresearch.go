@@ -79,6 +79,9 @@ type autoresearchRunOptions struct {
 	worktreeBase         string
 	noImproveWindow      int
 	driverScript         string
+	driverTimeout        time.Duration
+	driverMaxTurns       int
+	promptHistoryWindow  int
 	evaluatorScript      string
 	evaluatorTimeout     time.Duration
 	program              string
@@ -86,6 +89,12 @@ type autoresearchRunOptions struct {
 	programResolvedPath  string
 	programIsSkillName   bool
 	programDeduplicated  bool
+	// programBody is the program-of-record skill body, read once at
+	// run start from programResolvedPath. The synthesiser embeds it
+	// verbatim in every per-trial prompt so the off-limits constraints
+	// reach the live driver without an extra disk read per trial.
+	// Live-driver Slice 1.
+	programBody string
 }
 
 // metric direction enumeration.
@@ -182,7 +191,13 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.IntVar(&opts.noImproveWindow, "no-improve-window", 5,
 		"Consecutive non-improving trials before terminating with reason=converged")
 	flags.StringVar(&opts.driverScript, "driver-script", "",
-		"Fixture driver script path (testing only; produces candidate edits in the worktree)")
+		"Driver script path. The harness invokes this script once per trial inside the worktree; the script is responsible for editing the surface in place. The synthesised prompt-file path is exposed via FLOWSTATE_AUTORESEARCH_PROMPT_FILE. See scripts/autoresearch-drivers/default-assistant-driver.sh for the canonical reference driver.")
+	flags.DurationVar(&opts.driverTimeout, "driver-timeout", 3*time.Minute,
+		"Per-invocation driver wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `validator-io-error` with a timeout marker and does NOT count toward no-improve-window. Live-driver plan § 4.6 (R1.1).")
+	flags.IntVar(&opts.driverMaxTurns, "driver-max-turns", 10,
+		"Cap on the agent turns the driver subprocess may use (propagated via FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS). Default 10 covers a reasonable read-prompt → optionally one tool roundtrip → produce edit; raise it for drivers that legitimately investigate.")
+	flags.IntVar(&opts.promptHistoryWindow, "prompt-history-window", driverPromptHistoryDefault,
+		"Number of recent trial outcomes embedded in the synthesised driver prompt's # HISTORY section (default 5). Higher values show the driver more trajectory at the cost of prompt size.")
 	flags.StringVar(&opts.evaluatorScript, "evaluator-script", "",
 		"Evaluator script path. Any executable that satisfies the contract in plan v3.1 § 4.6 (one non-negative integer to stdout, exit 0; see skills/autoresearch/SKILL.md \"Writing an evaluator\"). Default: scripts/validate-harness.sh --score")
 	flags.DurationVar(&opts.evaluatorTimeout, "evaluator-timeout", 5*time.Minute,
@@ -456,6 +471,27 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 	}
 	opts.programResolvedPath = resolvedProgram
 	opts.programIsSkillName = isSkillName
+
+	// Live-driver Slice 1 — read the program body once at run start so
+	// the synthesiser does not need to re-stat the file each trial.
+	// A read failure here is operator-facing in the same shape as the
+	// resolution error above; the synthesiser tolerates an empty body
+	// (it emits a literal placeholder) but a stat-but-cannot-read path
+	// is a misconfiguration we surface up front.
+	if body, readErr := os.ReadFile(resolvedProgram); readErr != nil {
+		return opts, fmt.Errorf("--program %q: reading body for synthesiser: %w", opts.program, readErr)
+	} else {
+		opts.programBody = string(body)
+	}
+
+	// Live-driver Slice 1 — surface a sane default for
+	// --prompt-history-window when the operator omits the flag.
+	// resolveAutoresearchOptions is the single entry point all callers
+	// share, so defaulting here keeps the synthesiser's contract
+	// uniform across the cobra path and the test harness.
+	if opts.promptHistoryWindow <= 0 {
+		opts.promptHistoryWindow = driverPromptHistoryDefault
+	}
 
 	if opts.runID == "" {
 		opts.runID = uuid.NewString()
@@ -771,6 +807,14 @@ type manifestRecord struct {
 	BaselineCommit  string  `json:"baseline_commit"`
 	StartedAt       string  `json:"started_at"`
 	WorktreePath    string  `json:"worktree_path"`
+	// Live-driver Slice 1 (plan § 4.4 R1.2): all four new fields are
+	// optional on read — predecessor records lack them, and consumers
+	// MUST treat absence as zero-value strings/ints. `omitempty` keeps
+	// older readers parsing unchanged.
+	DriverMode          string `json:"driver_mode,omitempty"`
+	DriverScript        string `json:"driver_script,omitempty"`
+	DriverTimeoutMS     int64  `json:"driver_timeout_ms,omitempty"`
+	PromptHistoryWindow int    `json:"prompt_history_window,omitempty"`
 }
 
 // writeManifestRecord serialises the run config to the coord-store at
@@ -800,20 +844,24 @@ func writeManifestRecord(
 	baselineCommit string,
 ) error {
 	rec := manifestRecord{
-		Surface:         opts.surface,
-		SurfaceType:     string(opts.surfaceType),
-		Evaluator:       defaultEvaluator(opts.evaluatorScript),
-		EvaluatorScript: opts.evaluatorScript,
-		Program:         opts.program,
-		ProgramResolved: programResolvedRecord(opts),
-		MetricDirection: opts.metricDirection,
-		MaxTrials:       opts.maxTrials,
-		TimeBudget:      opts.timeBudget.String(),
-		NoImproveWindow: opts.noImproveWindow,
-		BaselineScore:   baselineScore,
-		BaselineCommit:  baselineCommit,
-		StartedAt:       time.Now().UTC().Format(time.RFC3339),
-		WorktreePath:    worktreePath,
+		Surface:             opts.surface,
+		SurfaceType:         string(opts.surfaceType),
+		Evaluator:           defaultEvaluator(opts.evaluatorScript),
+		EvaluatorScript:     opts.evaluatorScript,
+		Program:             opts.program,
+		ProgramResolved:     programResolvedRecord(opts),
+		MetricDirection:     opts.metricDirection,
+		MaxTrials:           opts.maxTrials,
+		TimeBudget:          opts.timeBudget.String(),
+		NoImproveWindow:     opts.noImproveWindow,
+		BaselineScore:       baselineScore,
+		BaselineCommit:      baselineCommit,
+		StartedAt:           time.Now().UTC().Format(time.RFC3339),
+		WorktreePath:        worktreePath,
+		DriverMode:          driverModeForRecord(opts),
+		DriverScript:        opts.driverScript,
+		DriverTimeoutMS:     opts.driverTimeout.Milliseconds(),
+		PromptHistoryWindow: opts.promptHistoryWindow,
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
@@ -839,6 +887,20 @@ func defaultEvaluator(supplied string) string {
 		return supplied
 	}
 	return "scripts/validate-harness.sh --score"
+}
+
+// driverModeForRecord returns the manifest record's `driver_mode`
+// label. Live-driver Slice 1 ships only the script mode; Slice 4 of
+// the plan adds an in-engine alternative behind a flag. Empty
+// driver-script means no driver runs (the harness's max-trials=0
+// smoke path or a fixed-point-only fixture run); the field is left
+// empty so downstream readers can distinguish "no driver" from
+// "script driver".
+func driverModeForRecord(opts autoresearchRunOptions) string {
+	if opts.driverScript == "" {
+		return ""
+	}
+	return "script"
 }
 
 // programResolvedRecord renders the manifest record's `program_resolved`

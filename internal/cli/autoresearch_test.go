@@ -154,6 +154,10 @@ planner body
 			Expect(output).To(ContainSubstring("--no-improve-window"))
 			Expect(output).To(ContainSubstring("--program"))
 			Expect(output).To(ContainSubstring("--calling-agent"))
+			// Live-driver Slice 1 flags.
+			Expect(output).To(ContainSubstring("--driver-timeout"))
+			Expect(output).To(ContainSubstring("--driver-max-turns"))
+			Expect(output).To(ContainSubstring("--prompt-history-window"))
 		})
 	})
 
@@ -1946,6 +1950,174 @@ exec %q
 				Expect(err).NotTo(HaveOccurred(), "perf-preserve-behaviour.md preset must exist")
 				Expect(info.Mode().IsRegular()).To(BeTrue())
 			})
+		})
+	})
+
+	Describe("live driver prompt synthesiser (Slice 1)", func() {
+		// writePromptRecorderDriver returns a fixture driver script
+		// path that records (a) the value of FLOWSTATE_AUTORESEARCH_PROMPT_FILE,
+		// (b) the contents of the file at that path, and (c) the trial
+		// counter env var, into a sentinel file under dataDir. The
+		// fixture exits 0 without editing the surface so the trial
+		// records `fixed-point-skipped` — the spec asserts on the
+		// recorded file rather than the trial outcome.
+		writePromptRecorderDriver := func(sentinelPath string) string {
+			path := filepath.Join(dataDir, "prompt-recorder-driver.sh")
+			body := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+{
+  echo "PROMPT_FILE_ENV=${FLOWSTATE_AUTORESEARCH_PROMPT_FILE:-MISSING}"
+  echo "TRIAL_ENV=${FLOWSTATE_AUTORESEARCH_TRIAL:-MISSING}"
+  echo "MAX_TURNS_ENV=${FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS:-MISSING}"
+  echo "RUN_ID_ENV=${FLOWSTATE_AUTORESEARCH_RUN_ID:-MISSING}"
+  echo "----PROMPT-START----"
+  if [ -n "${FLOWSTATE_AUTORESEARCH_PROMPT_FILE:-}" ] && [ -f "${FLOWSTATE_AUTORESEARCH_PROMPT_FILE}" ]; then
+    cat "${FLOWSTATE_AUTORESEARCH_PROMPT_FILE}"
+  else
+    echo "MISSING_PROMPT_FILE"
+  fi
+  echo "----PROMPT-END----"
+} > %q
+exit 0
+`, sentinelPath)
+			Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+			return path
+		}
+
+		writeNoOpScorer := func() string {
+			path := filepath.Join(dataDir, "noop-scorer.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+
+		It("writes the synthesised prompt and exposes its path via FLOWSTATE_AUTORESEARCH_PROMPT_FILE", func() {
+			sentinelPath := filepath.Join(dataDir, "driver-recorded.txt")
+			driver := writePromptRecorderDriver(sentinelPath)
+			scorer := writeNoOpScorer()
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "ld-slice1-prompt",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--worktree-base", filepath.Join(dataDir, "wt-ld-slice1"),
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			recorded, readErr := os.ReadFile(sentinelPath)
+			Expect(readErr).NotTo(HaveOccurred(), "driver should have recorded the prompt env to the sentinel")
+			body := string(recorded)
+
+			// Env var is set and points at an existing file under
+			// the worktree's `.autoresearch/` scratch dir.
+			Expect(body).NotTo(ContainSubstring("PROMPT_FILE_ENV=MISSING"))
+			Expect(body).To(ContainSubstring(filepath.Join(".autoresearch", "trial-1-prompt.txt")))
+			Expect(body).To(ContainSubstring("TRIAL_ENV=1"))
+			Expect(body).To(ContainSubstring("RUN_ID_ENV=ld-slice1-prompt"))
+			// max-turns default of 10 is propagated.
+			Expect(body).To(ContainSubstring("MAX_TURNS_ENV=10"))
+
+			// Section markers appear in fixed order (R1.5).
+			programIdx := strings.Index(body, "# PROGRAM")
+			surfaceIdx := strings.Index(body, "# SURFACE")
+			historyIdx := strings.Index(body, "# HISTORY")
+			instructionIdx := strings.Index(body, "# INSTRUCTION")
+			Expect(programIdx).To(BeNumerically(">", 0), "# PROGRAM marker must appear")
+			Expect(surfaceIdx).To(BeNumerically(">", programIdx), "# SURFACE must follow # PROGRAM")
+			Expect(historyIdx).To(BeNumerically(">", surfaceIdx), "# HISTORY must follow # SURFACE")
+			Expect(instructionIdx).To(BeNumerically(">", historyIdx), "# INSTRUCTION must follow # HISTORY")
+
+			// First-trial history is the literal placeholder.
+			Expect(body).To(ContainSubstring("(no prior trials)"))
+
+			// Surface section quotes the surface path verbatim and
+			// embeds the full surface contents.
+			Expect(body).To(ContainSubstring("internal/app/agents/planner.md"))
+			Expect(body).To(ContainSubstring("planner body"))
+
+			// Instruction section pins the fenced-block contract.
+			Expect(body).To(ContainSubstring("```surface"))
+		})
+
+		It("records prompt_file and prompt_sha on the trial record", func() {
+			sentinelPath := filepath.Join(dataDir, "driver-recorded-sha.txt")
+			driver := writePromptRecorderDriver(sentinelPath)
+			scorer := writeNoOpScorer()
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "ld-slice1-sha",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--worktree-base", filepath.Join(dataDir, "wt-ld-slice1-sha"),
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+
+			trialKey := "autoresearch/ld-slice1-sha/trial-1"
+			val, ok := entries[trialKey]
+			Expect(ok).To(BeTrue(), "trial-1 record expected at %s", trialKey)
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+
+			Expect(record).To(HaveKey("prompt_file"))
+			Expect(record).To(HaveKey("prompt_sha"))
+			promptSHA, _ := record["prompt_sha"].(string)
+			Expect(promptSHA).To(MatchRegexp(`^[a-f0-9]{64}$`), "prompt_sha must be a sha-256 hex string")
+		})
+
+		It("records driver_mode, driver_script, and prompt_history_window on the manifest record", func() {
+			sentinelPath := filepath.Join(dataDir, "driver-recorded-manifest.txt")
+			driver := writePromptRecorderDriver(sentinelPath)
+			scorer := writeNoOpScorer()
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "ld-slice1-manifest",
+				"--max-trials", "0",
+				"--worktree-base", filepath.Join(dataDir, "wt-ld-slice1-manifest"),
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+				"--prompt-history-window", "7",
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			record := readManifestRecord("ld-slice1-manifest")
+			Expect(record).To(HaveKeyWithValue("driver_mode", "script"))
+			Expect(record).To(HaveKeyWithValue("driver_script", driver))
+			Expect(record).To(HaveKey("driver_timeout_ms"))
+			Expect(record).To(HaveKeyWithValue("prompt_history_window", float64(7)))
+		})
+
+		It("BuildDriverPrompt is deterministic and emits the four section markers in order", func() {
+			programBody := "# Program\n\nDo not break X. Do not regress Y."
+			surfacePath := "internal/app/agents/planner.md"
+			surfaceBytes := []byte("---\nid: planner\n---\nplanner body\n")
+
+			out1, err := cli.BuildDriverPrompt(programBody, surfacePath, surfaceBytes, nil, 0)
+			Expect(err).NotTo(HaveOccurred())
+			out2, err := cli.BuildDriverPrompt(programBody, surfacePath, surfaceBytes, nil, 0)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out1).To(Equal(out2), "synthesiser must be deterministic on identical inputs")
+
+			body := string(out1)
+			Expect(body).To(ContainSubstring("# PROGRAM"))
+			Expect(body).To(ContainSubstring("# SURFACE"))
+			Expect(body).To(ContainSubstring("# HISTORY"))
+			Expect(body).To(ContainSubstring("# INSTRUCTION"))
+			Expect(strings.Index(body, "# PROGRAM")).To(BeNumerically("<", strings.Index(body, "# SURFACE")))
+			Expect(strings.Index(body, "# SURFACE")).To(BeNumerically("<", strings.Index(body, "# HISTORY")))
+			Expect(strings.Index(body, "# HISTORY")).To(BeNumerically("<", strings.Index(body, "# INSTRUCTION")))
 		})
 	})
 })

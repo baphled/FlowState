@@ -83,6 +83,14 @@ type trialOutcome struct {
 	StartedAt          string  `json:"started_at"`
 	EndedAt            string  `json:"ended_at"`
 	EvaluatorTimeoutMS int64   `json:"evaluator_timeout_ms,omitempty"`
+	// Live-driver Slice 1 (plan § 4.4 R1.2): all four fields are
+	// optional on read — predecessor trial records lack them and
+	// consumers must treat absence as zero-value. `omitempty` keeps
+	// older readers parsing unchanged.
+	PromptFile      string `json:"prompt_file,omitempty"`
+	PromptSHA       string `json:"prompt_sha,omitempty"`
+	DriverSessionID string `json:"driver_session_id,omitempty"`
+	DriverTurns     int    `json:"driver_turns,omitempty"`
 }
 
 // trialReason values — pinned per plan § 4.2.
@@ -137,6 +145,12 @@ type trialLoopState struct {
 	seenCandidates            []seenCandidate
 	keptCount                 int
 	revertedCount             int
+	// recentOutcomes carries the last-N trial outcomes the synthesiser
+	// renders into the # HISTORY section of the per-trial driver
+	// prompt. Live-driver Slice 1. Capped softly by the loop using
+	// promptHistoryWindow; bounded by the number of trials actually
+	// run so the slice never exceeds maxTrials.
+	recentOutcomes []trialOutcome
 }
 
 // seenCandidate is one entry in the SHA ring. Stored as a slice and
@@ -233,6 +247,12 @@ func runTrialLoop(
 		}
 		lastOutcome = outcome
 
+		// Live-driver Slice 1 — recentOutcomes feeds the next trial's
+		// synthesised prompt # HISTORY section; appending here keeps
+		// the slice consistent regardless of which runOneTrial path
+		// produced the outcome.
+		state.recentOutcomes = appendRecentOutcomes(state.recentOutcomes, outcome, resolved.promptHistoryWindow)
+
 		if outcome.Kept {
 			state.keptCount++
 		} else {
@@ -319,8 +339,75 @@ func runOneTrial(
 		SurfaceType: string(resolved.surfaceType),
 	}
 
-	if err := runDriverScript(resolved.driverScript, worktreePath, relSurface, resolved.runID); err != nil {
-		return outcome, fmt.Errorf("driver script: %w", err)
+	// Live-driver Slice 1 — synthesise the per-trial prompt, write it
+	// under the worktree's `.autoresearch/` scratch directory, and
+	// expose the path to the driver subprocess via env. The synthesiser
+	// is deterministic so two consecutive trials with identical inputs
+	// produce byte-identical prompts (operators see this via the
+	// recorded `prompt_sha`).
+	promptFilePath := ""
+	promptSHA := ""
+	if resolved.driverScript != "" {
+		surfaceBytes, err := os.ReadFile(worktreeSurface)
+		if err != nil {
+			return outcome, fmt.Errorf("reading surface for prompt synthesis: %w", err)
+		}
+		promptBytes, bErr := BuildDriverPrompt(
+			resolved.programBody,
+			relSurface,
+			surfaceBytes,
+			state.recentOutcomes,
+			resolved.promptHistoryWindow,
+		)
+		if bErr != nil {
+			return outcome, fmt.Errorf("building driver prompt: %w", bErr)
+		}
+		promptDir := filepath.Join(worktreePath, ".autoresearch")
+		if mkErr := os.MkdirAll(promptDir, 0o755); mkErr != nil {
+			return outcome, fmt.Errorf("creating prompt dir: %w", mkErr)
+		}
+		promptFilePath = filepath.Join(promptDir, fmt.Sprintf("trial-%d-prompt.txt", n))
+		if wErr := os.WriteFile(promptFilePath, promptBytes, 0o600); wErr != nil {
+			return outcome, fmt.Errorf("writing prompt file: %w", wErr)
+		}
+		promptSHA = driverPromptSHA(promptBytes)
+		outcome.PromptFile = promptFilePath
+		outcome.PromptSHA = promptSHA
+	}
+
+	timedOut, dErr := runDriverScript(driverInvocation{
+		driverPath:     resolved.driverScript,
+		worktreePath:   worktreePath,
+		relSurface:     relSurface,
+		runID:          resolved.runID,
+		trialN:         n,
+		promptFilePath: promptFilePath,
+		timeout:        resolved.driverTimeout,
+		maxTurns:       resolved.driverMaxTurns,
+	})
+	if dErr != nil {
+		// Live-driver Slice 1 — driver failures (non-zero exit or
+		// timeout) collapse onto `validator-io-error` per plan § 4.5.
+		// The trial is recorded but does NOT count toward
+		// no-improve-window; the loop carries on so a transient
+		// provider blip does not prematurely converge the run.
+		if rErr := gitCheckoutSurface(worktreePath, relSurface); rErr != nil {
+			return outcome, fmt.Errorf("reverting after driver failure: %w (driver error: %v)", rErr, dErr)
+		}
+		outcome.Kept = false
+		outcome.Reason = reasonValidatorIOError
+		if timedOut {
+			outcome.EvaluatorTimeoutMS = resolved.driverTimeout.Milliseconds()
+		}
+		state.consecutiveFixedPoint = 0
+		state.consecutiveManifestFails = 0
+		// Do not increment evaluator/no-improve counters — driver I/O
+		// errors are explicitly outside both per § 4.5.
+		// We have no candidate SHA at this point; record the outcome
+		// without one so the trial trajectory is auditable.
+		finishOutcome(&outcome, startedAt)
+		_ = dErr // surfaced via reason; harness continues to next trial
+		return outcome, nil
 	}
 
 	candidateSHA, err := surfaceSHA(worktreeSurface)
@@ -457,39 +544,100 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 	o.DurationS = end.Sub(startedAt).Seconds()
 }
 
+// driverInvocation bundles the per-trial inputs runDriverScript needs.
+// Live-driver Slice 1 grew the call site enough that a positional
+// signature was getting unwieldy; the struct keeps callers readable
+// and lets future flags ride along without further breakage.
+type driverInvocation struct {
+	driverPath     string
+	worktreePath   string
+	relSurface     string
+	runID          string
+	trialN         int
+	promptFilePath string
+	timeout        time.Duration
+	maxTurns       int
+}
+
 // runDriverScript invokes the driver script with the worktree as cwd
-// and the per-trial environment.
+// and the per-trial environment. Live-driver Slice 1 wires the prompt
+// file and the timeout/turn caps through to the subprocess.
 //
 // Expected:
-//   - driverPath may be empty (no-op driver — useful for fixed-point
-//     trajectories in tests where the driver makes no edit).
-//   - worktreePath is the worktree root.
-//   - relSurface is the surface path relative to the worktree.
-//   - runID is propagated to the driver via FLOWSTATE_AUTORESEARCH_RUN_ID.
+//   - inv.driverPath may be empty (no-op driver — useful for
+//     fixed-point trajectories in tests where the driver makes no
+//     edit). When empty, the function is a no-op and returns nil.
+//   - inv.worktreePath is the worktree root.
+//   - inv.relSurface is the surface path relative to the worktree.
+//   - inv.runID is propagated via FLOWSTATE_AUTORESEARCH_RUN_ID.
+//   - inv.trialN is the 1-based trial counter, exposed via
+//     FLOWSTATE_AUTORESEARCH_TRIAL.
+//   - inv.promptFilePath is the absolute path to the synthesised
+//     per-trial prompt (may be empty when --driver-script is empty;
+//     real driver runs always populate it).
+//   - inv.timeout is the per-invocation wall-clock cap. A zero
+//     duration disables the timeout (useful for fixture drivers in
+//     tests where the deadline would race the subprocess).
+//   - inv.maxTurns is propagated via
+//     FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS so script drivers can
+//     forward the cap to whatever underlying agent loop they wrap.
 //
 // Returns:
-//   - nil on a 0-exit driver invocation, or when driverPath is empty.
-//   - non-nil on a non-zero driver exit.
+//   - (nil, nil) on a 0-exit invocation or when driverPath is empty.
+//   - (nil, error) with timedOut=true wrapped in the error message
+//     when the timeout fires.
+//   - (nil, non-nil error) on a non-zero exit.
 //
 // Side effects:
 //   - Executes the driver script as a subprocess; the script may
 //     mutate any file under the worktree (including the surface).
-func runDriverScript(driverPath, worktreePath, relSurface, runID string) error {
-	if driverPath == "" {
+//   - On timeout the subprocess is sent SIGTERM at the deadline and
+//     SIGKILL `evaluatorTermGracePeriod` later (mirrors the evaluator
+//     wall-clock pattern in runEvaluatorScript).
+func runDriverScript(inv driverInvocation) (timedOut bool, err error) {
+	if inv.driverPath == "" {
+		return false, nil
+	}
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if inv.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, inv.timeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, inv.driverPath)
+	cmd.Dir = inv.worktreePath
+	cmd.Cancel = func() error {
+		// Mirror runEvaluatorScript's SIGTERM-then-grace pattern so a
+		// well-behaved driver can flush partial state.
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
 		return nil
 	}
-	cmd := exec.Command(driverPath)
-	cmd.Dir = worktreePath
-	cmd.Env = append(os.Environ(),
-		"FLOWSTATE_AUTORESEARCH_RUN_ID="+runID,
-		"FLOWSTATE_AUTORESEARCH_SURFACE="+relSurface,
-		"FLOWSTATE_AGENT_DIR="+filepath.Join(worktreePath, "internal", "app", "agents"),
+	cmd.WaitDelay = evaluatorTermGracePeriod
+
+	env := append(os.Environ(),
+		"FLOWSTATE_AUTORESEARCH_RUN_ID="+inv.runID,
+		"FLOWSTATE_AUTORESEARCH_SURFACE="+inv.relSurface,
+		"FLOWSTATE_AGENT_DIR="+filepath.Join(inv.worktreePath, "internal", "app", "agents"),
+		fmt.Sprintf("FLOWSTATE_AUTORESEARCH_TRIAL=%d", inv.trialN),
 	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("driver %q: %w (output: %s)", driverPath, err, strings.TrimSpace(string(output)))
+	if inv.promptFilePath != "" {
+		env = append(env, "FLOWSTATE_AUTORESEARCH_PROMPT_FILE="+inv.promptFilePath)
 	}
-	return nil
+	if inv.maxTurns > 0 {
+		env = append(env, fmt.Sprintf("FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS=%d", inv.maxTurns))
+	}
+	cmd.Env = env
+
+	output, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return true, fmt.Errorf("driver %q: timed out after %s (output: %s)", inv.driverPath, inv.timeout, strings.TrimSpace(string(output)))
+		}
+		return false, fmt.Errorf("driver %q: %w (output: %s)", inv.driverPath, runErr, strings.TrimSpace(string(output)))
+	}
+	return false, nil
 }
 
 // evaluatorResult captures the contract-aware outcome of one
@@ -722,6 +870,24 @@ func appendSeenRing(ring []seenCandidate, entry seenCandidate) []seenCandidate {
 		ring = ring[len(ring)-seenCandidatesRingCapacity:]
 	}
 	return ring
+}
+
+// appendRecentOutcomes appends a trial outcome to the rolling history
+// the synthesiser renders into the # HISTORY section of the next
+// trial's driver prompt. Live-driver Slice 1.
+//
+// window caps the slice from the front. A non-positive window falls
+// back to driverPromptHistoryDefault so the loop never accumulates an
+// unbounded slice when the operator passes --prompt-history-window 0.
+func appendRecentOutcomes(history []trialOutcome, entry trialOutcome, window int) []trialOutcome {
+	if window <= 0 {
+		window = driverPromptHistoryDefault
+	}
+	history = append(history, entry)
+	if len(history) > window {
+		history = history[len(history)-window:]
+	}
+	return history
 }
 
 // isImprovement compares score against the best-so-far given
