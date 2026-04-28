@@ -61,14 +61,14 @@ The off-limits derivation runs in my head before every edit. Skipping it because
 
 ## Trial protocol
 
-Each trial follows the same six steps:
+The harness reads the surface once at run start (April 2026 In-Memory Default — the default substrate) and the candidate flows as a STRING per trial. Each trial follows the same six steps:
 
-1. **Read history.** Look at the last N entries from `autoresearch/<runID>/seen-candidates` (the SHA ring) and any `autoresearch/<runID>/trial-*` records I can reach. The harness writes these; I never need to invent the keys.
-2. **Read current surface.** The surface file is the canonical state. Whatever is on disk in the worktree at trial start is what I edit from.
+1. **Read history.** The synthesised prompt's `# HISTORY` section carries the last N trial outcomes (score, kept flag, reason, candidate SHA). I do not query the coord-store directly; the harness has already rendered everything I need.
+2. **Read the current substrate.** The synthesised prompt's `# SURFACE` section embeds the surface bytes verbatim. In default (in-memory) mode this is the immutable surface read at run start; in `--commit-trials` mode it is the worktree's mirror at trial start. Either way, the prompt is canonical.
 3. **Derive off-limits.** Per §4, build the off-limits set from the current frontmatter.
 4. **Edit.** Produce one candidate edit. The edit may be small or large; what matters is that it does not violate §3 or §4 and has a plausible argument for moving the scalar in the favoured direction.
-5. **Signal harness.** Exit cleanly. The harness commits, scores, and ratchets.
-6. **Repeat.** The harness invokes me again with the same protocol; my history grows by one record.
+5. **Signal harness.** Reply with the full updated surface contents in a single fenced ` ```surface ` block. The harness extracts the block body, scores it, and ratchets. In default mode the candidate is held entirely in memory; the surface file on disk is never touched. In `--commit-trials` mode the harness writes the candidate to the worktree's surface file, commits, and reverts on regression.
+6. **Repeat.** The harness invokes me again with a fresh synthesised prompt; my history grows by one record.
 
 I never invoke `git`, the evaluator, or the coordination store directly. The harness owns those operations.
 
@@ -104,24 +104,52 @@ A single restatement, in priority order:
 3. This skill body. The program of record is the prose the harness already loaded; I do not edit it during a run.
 4. Anything outside the file at `--surface`. The worktree contains many tempting files; none are mine to touch.
 
-## Writing an evaluator
+## Writing a driver (default — in-memory)
 
-The harness invokes the evaluator script as a subprocess once per trial (and once at run start to score the baseline). Operators wire one in via `--evaluator-script <path>`. The contract from plan v3.1 § 4.6 is small but strict; deviations are recorded as `evaluator-contract-violation` and three consecutive violations terminate the run with `evaluator-contract-failure-rate`.
+The harness invokes the driver script once per trial. The April 2026 In-Memory Default substrate exchanges candidate strings via stdin/stdout; the driver does not write to the surface file on disk.
 
 **Contract:**
 
-1. **Stdout** — exactly one line, a non-negative integer in decimal. Trailing newline allowed; nothing else on stdout. Multi-line, empty, non-integer, or negative scalars are contract violations. Comparison logic for `--metric-direction max` is inverted by the harness (kept when `score > baseline`); the evaluator does NOT emit negative scalars to signal max-direction.
-2. **Exit code** — `0` on successful scoring. Non-zero is a contract violation, recorded as `evaluator-contract-violation`. The harness counts non-zero exits toward the `evaluator-contract-failure-rate` hard stop.
-3. **Stderr** — free for diagnostic output. Captured but not parsed.
-4. **Working directory** — invoked from the worktree root.
-5. **Environment** — `FLOWSTATE_AGENT_DIR=<worktree>/internal/app/agents`, `FLOWSTATE_AUTORESEARCH_RUN_ID=<runID>`, `FLOWSTATE_AUTORESEARCH_SURFACE=<path-to-surface-relative-to-worktree>`. Evaluator-specific env vars (e.g. `FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT` in the reference `bench.sh`) are fair game alongside the documented set.
-6. **Time budget** — `--evaluator-timeout` (default 5m) caps wall-clock. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` on the trial outcome and counts as a contract violation.
+1. **Stdin** — the synthesised per-trial prompt (4 sections — `# PROGRAM` / `# SURFACE` / `# HISTORY` / `# INSTRUCTION`). The same body is also written to `FLOWSTATE_AUTORESEARCH_PROMPT_FILE`; either channel is fine.
+2. **Stdout** — the candidate, verbatim. The full string emitted to stdout is the candidate the harness scores. No fenced-block wrapping on the way out.
+3. **Stderr** — free for diagnostics; captured by the harness for its log.
+4. **Exit 0** — candidate produced. Non-zero is mapped to `validator-io-error` per plan § 4.5.
+5. **Working directory** — the operator's invocation cwd. The harness no longer creates a worktree in default mode; the surface env var is read-only by contract.
+6. **Environment** — `FLOWSTATE_AUTORESEARCH_RUN_ID`, `FLOWSTATE_AUTORESEARCH_TRIAL`, `FLOWSTATE_AUTORESEARCH_SURFACE` (relative path; read-only), `FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS`, `FLOWSTATE_AUTORESEARCH_PROMPT_FILE`.
+7. **Time budget** — `--driver-timeout` (default 3m) caps wall-clock. A timeout collapses onto `validator-io-error`.
 
-**Validation up front.** The harness checks `--evaluator-script` exists, is a regular file, and is executable before any worktree work begins. Mis-typed paths fail fast.
+**Reference example.** `scripts/autoresearch-drivers/default-assistant-driver.sh` wraps `flowstate run --agent default-assistant`, parses the agent's fenced ` ```surface ` block, and writes the candidate to stdout. Operators wanting a different driver shape (a research model, a local llama, a scripted heuristic edit) copy this script and edit the body — the env-var contract and the stdin/stdout convention are the only load-bearing parts.
 
-**Reference example.** `scripts/autoresearch-evaluators/bench.sh` wraps `go test -bench=<name> -run=^$ -benchmem <pkg>`, parses the `ns/op` value, and emits `1_000_000_000 / ns_per_op` so the score pairs with `--metric-direction max` as ops/sec. Operators copy the script into their own repo and adapt the `BENCH_PKG` / `BENCH_NAME` / `BENCH_METRIC` env knobs (or the parse step) for their surface. The contract is identical; only the benchmark target changes.
+## Writing an evaluator (default — in-memory)
 
-**To pair with `--metric-direction min`** — emit a metric where lower is better (e.g. `validate-harness.sh --score` counts warnings; the bench wrapper above can also flip to `BENCH_METRIC=ns_per_op`).
+The harness invokes the evaluator script once per trial (and once at run start to score the baseline). Operators wire one in via `--evaluator-script <path>`. The contract is small but strict; deviations are recorded as `evaluator-contract-violation` and three consecutive violations terminate the run with `evaluator-contract-failure-rate`.
+
+**Contract:**
+
+1. **Stdin** — the candidate string (full). The same bytes are also written to `FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE`; either channel is fine.
+2. **Stdout** — exactly one line, a non-negative integer in decimal. Trailing newline allowed; nothing else on stdout. Multi-line, empty, non-integer, or negative scalars are contract violations. Comparison logic for `--metric-direction max` is inverted by the harness (kept when `score > baseline`); the evaluator does NOT emit negative scalars to signal max-direction.
+3. **Exit code** — `0` on successful scoring. Non-zero is a contract violation.
+4. **Stderr** — free for diagnostic output. Captured but not parsed.
+5. **Working directory** — the operator's invocation cwd (no worktree in default mode).
+6. **Environment** — `FLOWSTATE_AUTORESEARCH_RUN_ID`, `FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE`. **No** `FLOWSTATE_AUTORESEARCH_SURFACE` in default mode (the surface IS the candidate; reading the on-disk surface would defeat the substrate swap). Evaluator-specific env vars are fair game alongside the documented set.
+7. **Time budget** — `--evaluator-timeout` (default 5m) caps wall-clock. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` on the trial outcome.
+
+**Validation up front.** The harness checks `--evaluator-script` exists, is a regular file, and is executable before any work begins. Mis-typed paths fail fast.
+
+**Reference examples.**
+- `scripts/autoresearch-evaluators/planner-validate.sh` — wraps `validate-harness.sh --score --all` against the candidate manifest. Reads the candidate from stdin/env, stages it in a tempfile, runs the validator, returns the integer warning count. Pairs with `--metric-direction min`.
+- `scripts/autoresearch-evaluators/bench.sh` — Go benchmark wrapper. Reads the candidate from stdin (drains it; the bench keys off compiled binaries), invokes `go test -bench=<name>`, parses `ns/op`, emits `1_000_000_000 / ns_per_op` so the score pairs with `--metric-direction max`. Knobs: `FLOWSTATE_AUTORESEARCH_BENCH_PKG`, `FLOWSTATE_AUTORESEARCH_BENCH_NAME`, `FLOWSTATE_AUTORESEARCH_BENCH_METRIC`.
+
+**To pair with `--metric-direction min`** — emit a metric where lower is better (e.g. `planner-validate.sh` counts warnings; `bench.sh` can flip to `BENCH_METRIC=ns_per_op`).
+
+## Opt in to git substrate (`--commit-trials`)
+
+The legacy git-mediated substrate is preserved verbatim behind `--commit-trials`. Operators who want a kept-commit cherry-pick workflow (`flowstate autoresearch promote --apply`), or a git-native audit trail of every trial, add `--commit-trials` to the run command. The reference scripts for that mode live under the `-commit.sh` siblings:
+
+- `scripts/autoresearch-drivers/default-assistant-driver-commit.sh` — driver writes the candidate to the surface file inside a worktree; harness commits per trial.
+- `scripts/autoresearch-evaluators/bench-commit.sh` and `planner-validate-commit.sh` — evaluators read the on-disk surface from inside the trial worktree (today's cwd contract).
+
+`--commit-trials` mode requires a clean parent tree (or `--allow-dirty` to stash); without `--commit-trials`, `--allow-dirty`, `--keep-worktree`, and `--worktree-base` hard-error at flag-parse time.
 
 ## Related skills
 

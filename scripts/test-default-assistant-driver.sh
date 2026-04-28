@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Hermetic smoke for scripts/autoresearch-drivers/default-assistant-driver.sh.
+# Hermetic smoke for scripts/autoresearch-drivers/default-assistant-driver-commit.sh
+# (the legacy git-substrate driver renamed in Slice 3 of the April 2026
+# In-Memory Default plan).
 #
 # Per the Autoresearch Live Driver Integration plan (April 2026, vault
 # commit 11ee9ed) § 5.2 arbiter: with the FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT
@@ -15,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-DRIVER="$SCRIPT_DIR/autoresearch-drivers/default-assistant-driver.sh"
+DRIVER="$SCRIPT_DIR/autoresearch-drivers/default-assistant-driver-commit.sh"
 
 [[ -x "$DRIVER" ]] || {
   echo "default-assistant-driver smoke: driver not executable at $DRIVER" >&2

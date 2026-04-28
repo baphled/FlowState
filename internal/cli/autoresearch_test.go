@@ -2318,7 +2318,7 @@ echo 0
 		// test -bench` — instead, the script is fed a fixture
 		// captured to $FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT, mirroring
 		// the convention in plan v3.1 § 5.9.
-		Context("reference bench.sh evaluator", func() {
+		Context("reference bench-commit.sh evaluator (legacy git substrate)", func() {
 			testdataPath := func(name string) string {
 				_, thisFile, _, ok := runtime.Caller(0)
 				Expect(ok).To(BeTrue())
@@ -2330,14 +2330,14 @@ echo 0
 				Expect(ok).To(BeTrue())
 				// scripts/ lives at the repo root; walk up from the
 				// test file (internal/cli/) two directories.
-				return filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "autoresearch-evaluators", "bench.sh")
+				return filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "autoresearch-evaluators", "bench-commit.sh")
 			}
 
 			It("emits a non-negative integer to stdout for a fixture bench output", func() {
 				bench := scriptPath()
 				info, statErr := os.Stat(bench)
-				Expect(statErr).NotTo(HaveOccurred(), "scripts/autoresearch-evaluators/bench.sh must exist")
-				Expect(info.Mode()&0o111).NotTo(BeZero(), "bench.sh must be executable")
+				Expect(statErr).NotTo(HaveOccurred(), "scripts/autoresearch-evaluators/bench-commit.sh must exist")
+				Expect(info.Mode()&0o111).NotTo(BeZero(), "bench-commit.sh must be executable")
 
 				fixture := testdataPath("fake-bench-output.txt")
 				_, statErr = os.Stat(fixture)
@@ -2943,19 +2943,23 @@ exit 0
 	})
 
 	Describe("default-assistant driver script (Slice 2)", func() {
-		// repoDriverPath returns the absolute path to the
-		// default-assistant-driver.sh shipped under
-		// scripts/autoresearch-drivers/. Resolved via runtime.Caller
-		// so the spec is independent of the test runner's cwd.
+		// repoDriverPath returns the absolute path to the legacy
+		// git-substrate driver shipped at
+		// scripts/autoresearch-drivers/default-assistant-driver-commit.sh.
+		// The April 2026 In-Memory Default plan, Slice 3, renamed the
+		// previous canonical driver to the `-commit.sh` form because
+		// the in-memory shape now claims the canonical name; this
+		// Describe pins the legacy fenced-block-back-to-surface
+		// behaviour.
 		repoDriverPath := func() string {
 			_, thisFile, _, ok := runtime.Caller(0)
 			Expect(ok).To(BeTrue())
 			path := filepath.Join(filepath.Dir(thisFile), "..", "..",
-				"scripts", "autoresearch-drivers", "default-assistant-driver.sh")
+				"scripts", "autoresearch-drivers", "default-assistant-driver-commit.sh")
 			abs, err := filepath.Abs(path)
 			Expect(err).NotTo(HaveOccurred())
 			info, statErr := os.Stat(abs)
-			Expect(statErr).NotTo(HaveOccurred(), "default-assistant-driver.sh must exist at %s", abs)
+			Expect(statErr).NotTo(HaveOccurred(), "default-assistant-driver-commit.sh must exist at %s", abs)
 			Expect(info.Mode()&0o100).NotTo(BeZero(), "driver must be executable")
 			return abs
 		}
@@ -3068,6 +3072,85 @@ planner body %s
 			// validator-io-error per plan § 4.5.
 			Expect(record).To(HaveKeyWithValue("reason", "validator-io-error"))
 			Expect(record).To(HaveKeyWithValue("kept", false))
+		})
+
+		// April 2026 In-Memory Default plan, Slice 3 — the canonical
+		// `default-assistant-driver.sh` now hosts the in-memory shape:
+		// reads the synthesised prompt from stdin (or
+		// FLOWSTATE_AUTORESEARCH_PROMPT_FILE), invokes the agent, parses
+		// the fenced ```surface block, writes the candidate to stdout.
+		// This Context pins the syntactic shape of the in-memory script
+		// (executable, parseable, contract docstring); the live agent
+		// invocation is exercised by the Slice 1 substrate specs above
+		// via the FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT escape hatch.
+		Context("in-memory canonical default-assistant-driver.sh (Slice 3)", func() {
+			repoInMemoryDriverPath := func() string {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				path := filepath.Join(filepath.Dir(thisFile), "..", "..",
+					"scripts", "autoresearch-drivers", "default-assistant-driver.sh")
+				abs, err := filepath.Abs(path)
+				Expect(err).NotTo(HaveOccurred())
+				return abs
+			}
+
+			It("ships at the canonical path, executable", func() {
+				abs := repoInMemoryDriverPath()
+				info, statErr := os.Stat(abs)
+				Expect(statErr).NotTo(HaveOccurred(),
+					"in-memory canonical driver must exist at %s", abs)
+				Expect(info.Mode()&0o100).NotTo(BeZero(),
+					"driver must be executable")
+			})
+
+			It("parses with `bash -n` (no syntax errors)", func() {
+				abs := repoInMemoryDriverPath()
+				cmd := exec.Command("bash", "-n", abs)
+				output, runErr := cmd.CombinedOutput()
+				Expect(runErr).NotTo(HaveOccurred(),
+					"bash -n must accept the in-memory driver: %s", string(output))
+			})
+
+			It("documents the in-memory contract (stdin prompt, stdout candidate)", func() {
+				abs := repoInMemoryDriverPath()
+				body, readErr := os.ReadFile(abs)
+				Expect(readErr).NotTo(HaveOccurred())
+				bodyStr := string(body)
+				// The contract docstring must mention both channels
+				// the harness populates so script authors land on the
+				// right shape without diving into the harness source.
+				Expect(bodyStr).To(ContainSubstring("stdin"))
+				Expect(bodyStr).To(ContainSubstring("stdout"))
+				Expect(bodyStr).To(ContainSubstring("FLOWSTATE_AUTORESEARCH_PROMPT_FILE"))
+				Expect(bodyStr).To(ContainSubstring("```surface"))
+			})
+
+			It("emits the parsed candidate to stdout under FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT", func() {
+				// Hermetic exercise: the FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT
+				// escape hatch lets us feed a canned agent response and
+				// assert the driver writes the parsed surface block to
+				// stdout. No flowstate binary, no provider auth.
+				abs := repoInMemoryDriverPath()
+				responsePath := filepath.Join(dataDir, "stdin-canned-response.txt")
+				canned := "Reasoning prelude.\n\n```surface\nin-memory candidate body\n```\n"
+				Expect(os.WriteFile(responsePath, []byte(canned), 0o600)).To(Succeed())
+
+				promptPath := filepath.Join(dataDir, "stdin-canned-prompt.txt")
+				Expect(os.WriteFile(promptPath, []byte("synthesised prompt body"), 0o600)).To(Succeed())
+
+				cmd := exec.Command(abs)
+				cmd.Env = append(os.Environ(),
+					"FLOWSTATE_AUTORESEARCH_PROMPT_FILE="+promptPath,
+					"FLOWSTATE_AUTORESEARCH_RUN_ID=stdin-smoke",
+					"FLOWSTATE_AUTORESEARCH_TRIAL=1",
+					"FLOWSTATE_AUTORESEARCH_SURFACE=internal/app/agents/planner.md",
+					"FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT="+responsePath,
+				)
+				cmd.Stdin = strings.NewReader("synthesised prompt body via stdin")
+				stdout, runErr := cmd.Output()
+				Expect(runErr).NotTo(HaveOccurred(), "in-memory driver must exit 0")
+				Expect(strings.TrimRight(string(stdout), "\n")).To(Equal("in-memory candidate body"))
+			})
 		})
 	})
 })

@@ -1,52 +1,71 @@
 #!/usr/bin/env bash
-# Reference autoresearch live driver — wraps `flowstate run --agent
-# default-assistant` so each trial of `flowstate autoresearch run`
-# produces a candidate edit to the surface file.
+# Reference autoresearch live driver — IN-MEMORY shape.
 #
-# Per the Autoresearch Live Driver Integration plan (April 2026,
-# vault commit `11ee9ed`) § 5.2, this is the canonical operator-readable
-# example of a live driver. Operators wanting a different driver shape
-# (a research model, a local llama, a scripted heuristic edit) copy
-# this script and edit the body — the env-var contract and surface-write
-# convention are the only load-bearing parts.
+# Per the April 2026 In-Memory Default plan (Slice 3), the canonical
+# `default-assistant-driver.sh` reads the synthesised per-trial prompt
+# from stdin (or FLOWSTATE_AUTORESEARCH_PROMPT_FILE), invokes
+# `flowstate run --agent default-assistant`, parses the agent's
+# fenced ```surface block, and writes the candidate VERBATIM to
+# stdout. The harness owns the candidate string as substrate; this
+# script never writes to the surface file on disk.
+#
+# Operators wanting the legacy git-mediated behaviour (driver writes
+# to surface in place, harness commits per trial) point
+# `--driver-script` at `default-assistant-driver-commit.sh` (the
+# pre-pivot script renamed at Slice 3 of the In-Memory Default plan)
+# AND set `--commit-trials` on `flowstate autoresearch run`.
 #
 # ============================================================
 # Contract
 # ============================================================
 #
-# Env vars consumed (set by the autoresearch harness; see
-# runDriverScript in internal/cli/autoresearch_loop.go):
-#   FLOWSTATE_AUTORESEARCH_PROMPT_FILE — absolute path to the synthesised
-#       per-trial prompt (4 sections: PROGRAM / SURFACE / HISTORY /
-#       INSTRUCTION). MUST exist; absent value is a hard error.
-#   FLOWSTATE_AUTORESEARCH_RUN_ID      — the run identifier; combined with
+# Stdin: the synthesised per-trial prompt (4 sections — PROGRAM /
+#   SURFACE / HISTORY / INSTRUCTION). Drivers may also read the same
+#   prompt body from FLOWSTATE_AUTORESEARCH_PROMPT_FILE; both channels
+#   are populated by the harness so script authors choose by
+#   convenience.
+#
+# Stdout: the candidate, verbatim. The full string emitted to stdout
+#   is the candidate the harness scores. No fenced-block wrapping on
+#   the way out — the harness applies it verbatim as the new in-
+#   memory candidate.
+#
+# Stderr: free for diagnostics; the harness routes captured stderr
+#   to its log.
+#
+# Env vars consumed (set by the autoresearch harness — see
+# runDriverInMemory in internal/cli/autoresearch_loop.go):
+#   FLOWSTATE_AUTORESEARCH_PROMPT_FILE — path to the same prompt body
+#       piped on stdin. Either channel is fine.
+#   FLOWSTATE_AUTORESEARCH_RUN_ID      — run identifier; combined with
 #       FLOWSTATE_AUTORESEARCH_TRIAL to produce a unique session id.
 #   FLOWSTATE_AUTORESEARCH_TRIAL       — 1-based trial counter.
 #   FLOWSTATE_AUTORESEARCH_SURFACE     — surface path RELATIVE to the
-#       worktree (cwd). The driver writes the new content here.
-#   FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS — soft cap on agent turns
-#       (currently informational; the harness wall-clock --driver-timeout
-#       is the hard stop). Default 10 if unset.
+#       operator's invocation cwd. Read-only by contract; the in-
+#       memory substrate intentionally does not enforce this at the
+#       seam.
+#   FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS — soft cap on agent turns.
+#       Default 10 if unset.
 #
 # Test-only escape hatches (off by default):
-#   FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT — when set, the driver skips
-#       the `flowstate run` invocation and reads the agent response from
-#       this file. Used by the Slice 2 hermetic spec to exercise the
+#   FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT — when set, the driver SKIPS
+#       the `flowstate run` invocation and reads the agent response
+#       from this file. Used by hermetic specs to exercise the
 #       fenced-block parser without provider auth.
-#   FLOWSTATE_BIN — explicit path to the flowstate binary; bypasses the
-#       PATH / worktree-build fallback chain.
+#   FLOWSTATE_BIN — explicit path to the flowstate binary; bypasses
+#       the PATH / build fallback chain.
 #
-# Output convention (parsed back into the surface):
+# Output convention (parsed back into the candidate):
 #   The agent's response MUST contain a single fenced block tagged
 #   `surface`:
 #
 #     ```surface
-#     <full updated surface contents>
+#     <full candidate contents>
 #     ```
 #
-#   The driver applies the block's contents verbatim as the new surface
-#   (atomic write via temp-file + rename). Per the parser robustness
-#   contract in plan § 5.2 R1.3:
+#   The driver extracts the block's body and writes it to stdout
+#   followed by a single newline. Per the parser robustness contract
+#   in plan § 5.2 R1.3:
 #     1. Primary    — single ` ```surface ` block.
 #     2. Fallback A — single ` ``` ` (no language tag) block, ONLY when
 #                     the response contains exactly one fenced block.
@@ -54,24 +73,22 @@
 #                     no fenced block at all → exit non-zero with a
 #                     clear stderr message; the harness records
 #                     `validator-io-error`.
-#   Fallback B (unified-diff via `patch -p1`) is documented in the plan
-#   as an engineer's-call extension; this MVP ships the two cases above.
 #
 # Exit codes:
-#   0  — applied an edit successfully.
+#   0  — candidate written to stdout successfully.
 #   2  — `flowstate run` invocation failed (non-zero exit, missing
 #         binary, etc).
 #   3  — fenced-block parse failure (driver-no-edit-produced).
-#   4  — surface write failure (atomic rename failed).
 #
-# Working directory: the harness invokes the script with cwd ==
-#   <worktree-root>; FLOWSTATE_AUTORESEARCH_SURFACE is relative to this.
+# Working directory: the operator's invocation cwd (the harness no
+# longer creates a worktree in default mode); FLOWSTATE_AUTORESEARCH_
+# SURFACE is relative to that.
 #
 # Per-trial session lifecycle: the script names the session
 #   `autoresearch-${RUN_ID}-trial-${TRIAL}` so operators can inspect
 #   driver turns post-hoc via `flowstate session show`. Sessions are
 #   NOT cleaned up — operators run `flowstate session prune` if they
-#   want to reclaim them (plan § 12 Q5 v1).
+#   want to reclaim them.
 
 set -euo pipefail
 
@@ -87,29 +104,35 @@ require_env() {
   fi
 }
 
-require_env FLOWSTATE_AUTORESEARCH_PROMPT_FILE
 require_env FLOWSTATE_AUTORESEARCH_RUN_ID
 require_env FLOWSTATE_AUTORESEARCH_TRIAL
-require_env FLOWSTATE_AUTORESEARCH_SURFACE
 
-PROMPT_FILE="$FLOWSTATE_AUTORESEARCH_PROMPT_FILE"
 RUN_ID="$FLOWSTATE_AUTORESEARCH_RUN_ID"
 TRIAL="$FLOWSTATE_AUTORESEARCH_TRIAL"
-SURFACE_REL="$FLOWSTATE_AUTORESEARCH_SURFACE"
 
-if [[ ! -f "$PROMPT_FILE" ]]; then
-  echo "default-assistant-driver: prompt file does not exist: $PROMPT_FILE" >&2
-  exit 2
+# ------------------------------------------------------------
+# Prompt acquisition — stdin OR FLOWSTATE_AUTORESEARCH_PROMPT_FILE.
+# Both channels are populated by the harness; the script prefers
+# stdin and falls back to the file when stdin is empty (e.g. an
+# operator runs the driver standalone for inspection).
+# ------------------------------------------------------------
+
+PROMPT_BODY=""
+if [[ ! -t 0 ]]; then
+  PROMPT_BODY="$(cat)"
 fi
-
-SURFACE_ABS="$(pwd)/$SURFACE_REL"
-if [[ ! -f "$SURFACE_ABS" ]]; then
-  echo "default-assistant-driver: surface file does not exist: $SURFACE_ABS" >&2
+if [[ -z "$PROMPT_BODY" && -n "${FLOWSTATE_AUTORESEARCH_PROMPT_FILE:-}" && -f "${FLOWSTATE_AUTORESEARCH_PROMPT_FILE}" ]]; then
+  PROMPT_BODY="$(cat -- "$FLOWSTATE_AUTORESEARCH_PROMPT_FILE")"
+fi
+if [[ -z "$PROMPT_BODY" ]]; then
+  echo "default-assistant-driver: no prompt on stdin and FLOWSTATE_AUTORESEARCH_PROMPT_FILE unset/empty" >&2
   exit 2
 fi
 
 # ------------------------------------------------------------
-# Binary resolution — mirror planner-validate.sh's three-tier fallback.
+# Binary resolution — three-tier fallback (FLOWSTATE_BIN env, PATH,
+# repo build artefact). The repo build is keyed off this script's
+# location so the driver works without a configured worktree.
 # ------------------------------------------------------------
 
 resolve_flowstate_bin() {
@@ -121,15 +144,15 @@ resolve_flowstate_bin() {
     echo "$HOST_BIN"
     return 0
   fi
-  # Worktree-build fallback. The autoresearch harness scores each
-  # trial from a freshly-cloned worktree; if the operator has no
-  # `flowstate` on PATH and FLOWSTATE_BIN is unset, build inside the
-  # worktree on first invocation. The build is invariant per trial
-  # for manifest/skill surfaces (no Go code changes), so the cost is
-  # paid once and reused.
+  local script_dir
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
   local repo_root
-  repo_root="$(pwd)"
-  echo "default-assistant-driver: building flowstate binary inside worktree at $repo_root/build/flowstate" >&2
+  repo_root="$(cd -- "$script_dir/../.." &>/dev/null && pwd)"
+  if [[ -x "$repo_root/build/flowstate" ]]; then
+    echo "$repo_root/build/flowstate"
+    return 0
+  fi
+  echo "default-assistant-driver: building flowstate binary at $repo_root/build/flowstate" >&2
   if ! ( cd -- "$repo_root" && make build >/dev/null 2>&1 ); then
     echo "default-assistant-driver: failed to build flowstate binary at $repo_root" >&2
     return 1
@@ -141,13 +164,9 @@ resolve_flowstate_bin() {
 # Agent invocation
 # ------------------------------------------------------------
 
-# Capture the agent's response text in $RESPONSE.
 RESPONSE=""
 
 if [[ -n "${FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT:-}" ]]; then
-  # Test-only escape hatch — read the canned agent response from a
-  # file. The Slice 2 hermetic spec uses this to exercise the
-  # fenced-block parser without provider auth.
   if [[ ! -f "$FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT" ]]; then
     echo "default-assistant-driver: FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT does not exist: $FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT" >&2
     exit 2
@@ -157,15 +176,7 @@ else
   if ! FLOWSTATE_BIN_PATH="$(resolve_flowstate_bin)"; then
     exit 2
   fi
-
   SESSION_ID="autoresearch-${RUN_ID}-trial-${TRIAL}"
-
-  # Read the synthesised prompt and pass it via --prompt. flowstate
-  # run does not currently support --prompt-file, so the prompt body
-  # is shell-substituted; the prompt file is bounded by the synthesiser
-  # so a few KiB is the realistic ceiling.
-  PROMPT_BODY="$(cat -- "$PROMPT_FILE")"
-
   if ! RESPONSE="$(
     "$FLOWSTATE_BIN_PATH" run \
       --agent default-assistant \
@@ -184,22 +195,11 @@ if [[ -z "$RESPONSE" ]]; then
 fi
 
 # ------------------------------------------------------------
-# Fenced-block parser
+# Fenced-block parser — same shape as the legacy commit-mode driver
+# (see default-assistant-driver-commit.sh). The output convention is
+# identical; only the destination differs (stdout in default mode,
+# surface file in commit mode).
 # ------------------------------------------------------------
-#
-# Strategy:
-#   1. Try to extract a ` ```surface ` ... ` ``` ` block (primary).
-#   2. If none found, count the bare ` ``` ` fences in the response;
-#      if exactly two (i.e. one fenced block with no language tag),
-#      extract its body (Fallback A).
-#   3. Otherwise → exit 3 (driver-no-edit-produced).
-#
-# The parser uses awk to keep the dependencies POSIX. The opening
-# fence regex matches `^[[:space:]]*` + "```surface" + optional
-# trailing whitespace; the closing fence matches `^[[:space:]]*` +
-# "```" + optional trailing whitespace. Multiple `surface` blocks
-# emit the first one and a stderr warning (per plan § 5.2 — engineer
-# may tighten to a hard error in a follow-up).
 
 extract_surface_block() {
   awk '
@@ -227,16 +227,8 @@ extract_surface_block() {
 }
 
 extract_bare_block() {
-  # Used when no ```surface block was found AND there is exactly one
-  # bare ``` fenced block in the response.
-  awk '
-    BEGIN { count = 0 }
-    /^[[:space:]]*```[[:space:]]*$/ { count++ }
-    END { print count }
-  ' <<< "$RESPONSE" > /tmp/.fence-count.$$ 2>/dev/null
   local fence_count
   fence_count="$(awk '/^[[:space:]]*```[[:space:]]*$/ { count++ } END { print count+0 }' <<< "$RESPONSE")"
-  rm -f /tmp/.fence-count.$$
   if [[ "$fence_count" != "2" ]]; then
     echo ""
     return 0
@@ -252,32 +244,19 @@ extract_bare_block() {
   ' <<< "$RESPONSE"
 }
 
-NEW_SURFACE="$(extract_surface_block)"
-if [[ -z "$NEW_SURFACE" ]]; then
-  NEW_SURFACE="$(extract_bare_block)"
+CANDIDATE="$(extract_surface_block)"
+if [[ -z "$CANDIDATE" ]]; then
+  CANDIDATE="$(extract_bare_block)"
 fi
 
-if [[ -z "$NEW_SURFACE" ]]; then
+if [[ -z "$CANDIDATE" ]]; then
   echo "default-assistant-driver: driver-no-edit-produced (no fenced block found in response)" >&2
   exit 3
 fi
 
 # ------------------------------------------------------------
-# Atomic surface write
+# Emit candidate to stdout — that is the entire output contract.
 # ------------------------------------------------------------
 
-TMP_SURFACE="${SURFACE_ABS}.driver-tmp.$$"
-trap 'rm -f -- "$TMP_SURFACE"' EXIT
-
-if ! printf '%s\n' "$NEW_SURFACE" > "$TMP_SURFACE"; then
-  echo "default-assistant-driver: failed to write temp surface at $TMP_SURFACE" >&2
-  exit 4
-fi
-
-if ! mv -- "$TMP_SURFACE" "$SURFACE_ABS"; then
-  echo "default-assistant-driver: failed to rename $TMP_SURFACE → $SURFACE_ABS" >&2
-  exit 4
-fi
-
-trap - EXIT
+printf '%s\n' "$CANDIDATE"
 exit 0

@@ -532,68 +532,86 @@ OpenAI-compatible providers (OpenAI, Z.AI, OpenZen) handle streaming tool calls 
 
 ## Autoresearch
 
-`flowstate autoresearch run` is a generic, pluggable ratcheting harness inspired by Karpathy's `autoresearch` (https://github.com/karpathy/autoresearch). Any agent can invoke it to drive a single artefact (a manifest, a Go source file, a skill body) towards a scalar metric under the constraints of a plain-English program skill, using a fixed budget and a git-managed accept/reject loop.
+`flowstate autoresearch run` is a generic, pluggable ratcheting harness. Any agent can invoke it to drive a single artefact (a manifest, a Go source file, a skill body) towards a scalar metric under the constraints of a plain-English program skill, using a fixed budget.
+
+**Default substrate is in-memory** (April 2026 In-Memory Default plan). The harness reads the surface once, drives the driver via stdin, captures the candidate string from stdout, pipes it to the evaluator, and persists `{candidate_content, candidate_content_sha, score, kept, reason}` per trial — no worktree, no branch, no commit, no `git reset` in the default code path. The legacy git-mediated substrate (worktree, named branches, per-trial commits with `--no-verify`, ratchet via reset, `promote` cherry-pick) is preserved verbatim behind opt-in `--commit-trials`.
 
 The harness is **agnostic to what is being optimised**. Three primitives are operator-controlled:
 
 | Primitive | Flag | Notes |
 |---|---|---|
-| Surface | `--surface <path>` | The single file the run is allowed to edit. |
-| Evaluator | `--evaluator-script <path>` | Script that prints one non-negative integer to stdout, exit 0. Lives at the worktree root. |
+| Surface | `--surface <path>` | The single file the run reads at start. Default mode never writes to it; `--commit-trials` mode writes candidates to its worktree mirror. |
+| Evaluator | `--evaluator-script <path>` | Script that consumes the candidate via stdin and prints one non-negative integer to stdout, exit 0. |
 | Program | `--program <skill-name \| path>` | Plain-English skill body describing the run's goal and off-limits set. Defaults to the canonical `autoresearch` registry skill. |
 
-Other useful flags: `--metric-direction min|max` (default `min`), `--max-trials <int>` (default 10), `--time-budget <duration>` (default 5m), `--calling-agent <manifest-path>` (enables the N12 always-active de-dup check when `--program` is a registry name).
+Other useful flags: `--metric-direction min|max` (default `min`), `--max-trials <int>` (default 10), `--time-budget <duration>` (default 5m), `--calling-agent <manifest-path>` (enables the N12 always-active de-dup check when `--program` is a registry name), `--max-candidate-bytes <int>` (default 256 KiB; caps in-memory candidate persistence), `--commit-trials` (opt in to legacy git substrate).
 
-State for a run lives under `autoresearch/<runID>/...` in the coord-store (manifest, per-trial records, fixed-point ring, final result). Cleanup via `flowstate coordination prune --prefix autoresearch/`.
+`--allow-dirty`, `--keep-worktree`, and `--worktree-base` are git-mode-only; passing them without `--commit-trials` is a hard error.
+
+State for a run lives under `autoresearch/<runID>/...` in the coord-store (manifest, per-trial records with candidate content + SHA, fixed-point ring, final result). Cleanup via `flowstate coordination prune --prefix autoresearch/`.
 
 ### What ships
 
-- **Skill of record:** `skills/autoresearch/SKILL.md` — the canonical program-of-record body. Every preset is a thin wrapper around the sections in this file.
+- **Skill of record:** `skills/autoresearch/SKILL.md` — the canonical program-of-record body covering both substrates.
 - **Presets:**
   - `skills/autoresearch-presets/planner-quality.md` — minimises the harness validate warning count against a planner-class manifest without weakening `always_active_skills`, the coord-store wiring, or canonical chain-id resolution.
   - `skills/autoresearch-presets/perf-preserve-behaviour.md` — drives `ns/op` down on a Go source file under `--metric-direction min` while preserving exported signatures and `go test ./...` greenness.
-- **Reference evaluator:** `scripts/autoresearch-evaluators/bench.sh` — wraps `go test -bench` and emits `ns/op` as the scalar; canonical example of the integer-stdout-zero-exit contract documented in § 4.6 of the plan note.
+- **Reference driver (default — in-memory):** `scripts/autoresearch-drivers/default-assistant-driver.sh` — reads the synthesised prompt from stdin, invokes `flowstate run --agent default-assistant`, parses the fenced ` ```surface ` block, writes the candidate to stdout.
+- **Reference evaluators (default — in-memory):**
+  - `scripts/autoresearch-evaluators/planner-validate.sh` — reads the candidate from stdin, stages it in a tempfile, runs `validate-harness.sh --score --all`, returns the integer warning count.
+  - `scripts/autoresearch-evaluators/bench.sh` — Go benchmark wrapper. Reads the candidate from stdin (drains; bench keys off compiled binaries), parses `ns/op` from `go test -bench`, emits `1_000_000_000 / ns_per_op`. Pairs with `--metric-direction max`.
+- **Legacy `-commit.sh` siblings:** the pre-pivot scripts are preserved at `default-assistant-driver-commit.sh`, `bench-commit.sh`, `planner-validate-commit.sh` for operators using `--commit-trials`.
+- **Apply subcommand (default — in-memory):** `flowstate autoresearch apply <run-id>` materialises the best candidate. Default prints to stdout; `--write <path>` writes to an operator-chosen destination outside the surface repo (`--force-inside-repo` overrides). Refuses runs that used `--commit-trials` and redirects to `flowstate autoresearch promote`.
 
 ### Invocation examples
 
-Planner manifest ratchet (the MVP shape):
+Planner manifest ratchet (default in-memory mode):
 
 ```bash
 flowstate autoresearch run \
   --surface internal/app/agents/planner.md \
-  --evaluator-script scripts/validate-harness.sh \
+  --evaluator-script scripts/autoresearch-evaluators/planner-validate.sh \
+  --driver-script scripts/autoresearch-drivers/default-assistant-driver.sh \
   --program planner-quality \
   --metric-direction min \
   --max-trials 3 \
-  --time-budget 15m \
-  --calling-agent internal/app/agents/default-assistant.md
+  --time-budget 15m
 ```
 
-Function performance ratchet (Slice 5 reference example):
+Materialise the kept candidate after the run:
+
+```bash
+flowstate autoresearch apply <run-id>          # prints to stdout
+flowstate autoresearch apply <run-id> --write /tmp/best.md
+```
+
+Function performance ratchet (default in-memory mode):
 
 ```bash
 flowstate autoresearch run \
   --surface internal/engine/some_hot_path.go \
   --evaluator-script scripts/autoresearch-evaluators/bench.sh \
+  --driver-script scripts/autoresearch-drivers/default-assistant-driver.sh \
   --program skills/autoresearch-presets/perf-preserve-behaviour.md \
   --metric-direction min \
   --max-trials 30 \
   --time-budget 1h
 ```
 
-Skill body ratchet (Slice 6 reference example, requires authoring a `skill-qa.sh` evaluator):
+Legacy git substrate (cherry-pick the kept commit back to the parent branch):
 
 ```bash
 flowstate autoresearch run \
-  --surface skills/critical-thinking/SKILL.md \
-  --evaluator-script scripts/autoresearch-evaluators/skill-qa.sh \
-  --program skills/autoresearch-presets/skill-prose-ratchet.md \
-  --metric-direction max \
-  --max-trials 20 \
-  --time-budget 1h
+  --commit-trials \
+  --surface internal/app/agents/planner.md \
+  --evaluator-script scripts/autoresearch-evaluators/planner-validate-commit.sh \
+  --driver-script scripts/autoresearch-drivers/default-assistant-driver-commit.sh \
+  --program planner-quality \
+  --metric-direction min
+flowstate autoresearch promote <run-id> --apply
 ```
 
-The harness manages worktree isolation under `<cfg.DataDir>/autoresearch/<runID>/worktree`, fixed-point detection via a SHA-256 ring, rate-limit handling parsed from session JSON, and trial commits with `--no-verify` (the broken `make check` exception is documented separately).
+The legacy substrate manages worktree isolation under `<surfaceRepoRoot>/.flowstate/autoresearch/<runID>/worktree`, named-branch ratchet (`autoresearch/<run-id-short>`), and per-trial commits with `--no-verify` (the broken `make check` exception is documented separately).
 
 ### Further reading
 
