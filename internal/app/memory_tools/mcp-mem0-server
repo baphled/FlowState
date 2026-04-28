@@ -1,0 +1,23 @@
+#!/bin/bash
+# MCP server wrapper for the mem0-compatible memory backend.
+#
+# Materialised by `flowstate memory-tools install`. Resolves `node` from PATH
+# and execs the sibling bundled JavaScript entry point. The wrapper is the
+# binary the operator places on PATH; Node is required at runtime but is not
+# embedded in the FlowState binary.
+#
+# Environment variables consumed by the JS server itself:
+#   MEM0_QDRANT_URL       Qdrant server URL      (default: http://localhost:6333)
+#   MEM0_OLLAMA_URL       Ollama server URL      (default: http://localhost:11434)
+#   MEM0_COLLECTION       Qdrant collection name (default: opencode_memory)
+#   MEM0_EMBEDDING_MODEL  Embedding model        (default: nomic-embed-text)
+#   MEM0_ENABLED          Set to 'false' to use the in-memory backend
+set -euo pipefail
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "mcp-mem0-server: 'node' not found on PATH; install Node.js (>=18) to run the mem0 MCP server" >&2
+  exit 127
+fi
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+exec node "${script_dir}/mcp-mem0-server.js" "$@"
