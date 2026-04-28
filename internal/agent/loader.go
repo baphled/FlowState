@@ -29,6 +29,36 @@ func warnIfNoTools(m *Manifest, path string) {
 	)
 }
 
+// LoadAndValidateManifest is the manifest-gate primitive used by the
+// autoresearch harness (plan § 5.5 / § 4.7). It composes LoadManifest
+// with Manifest.Validate so the harness has a single call site that
+// distinguishes parse failure from validation failure: parse errors
+// are wrapped by the underlying loader (e.g. "parsing JSON: ...");
+// validation failures surface as *ValidationError so callers can
+// classify a candidate as `manifest-validate-failed` and revert the
+// trial without aborting the run.
+//
+// Expected:
+//   - path is a valid filesystem path to a .json or .md manifest file.
+//
+// Returns:
+//   - The parsed and validated Manifest on success.
+//   - nil + a parse error if the file cannot be read or decoded.
+//   - nil + a *ValidationError if the parsed manifest fails Validate.
+//
+// Side effects:
+//   - Reads from the filesystem.
+func LoadAndValidateManifest(path string) (*Manifest, error) {
+	m, err := LoadManifest(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // LoadManifest loads an agent manifest from the given path, supporting JSON and Markdown formats.
 //
 // Expected:
