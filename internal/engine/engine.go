@@ -1472,6 +1472,22 @@ func (e *Engine) BuildSystemPrompt() string {
 // section is suppressed for them. The function is pure and idempotent:
 // repeated calls with the same engine state produce the same string.
 //
+// Defence-in-depth note (post `ADR - Swarm Dispatch Across Access
+// Methods`): the "do not block on user confirmation" directive in
+// the prompt body used to be load-bearing — when the TUI persistently
+// re-identified the chat as the swarm lead, the lead's LLM saw a
+// chat surface and hedged with "Action Required: confirm dispatch"
+// preambles. With Phase 2 (one-shot dispatch via pendingSwarmLeadID)
+// and Phase 3 (resolver consolidation) landed, the lead is invoked
+// the same way the CLI invokes it — as a one-shot per-call Stream.
+// The directive is retained as belt-and-braces so a future surface
+// that re-introduces a chat-style intake by accident still gets the
+// signal pushed through to the model. Same goes for the
+// "do not call suggest_delegate" line: the tool already refuses
+// lead-self-dispatch (errSuggestDelegateLeadSelfDispatch in
+// suggest_delegate.go), but spelling it out at the prompt layer
+// keeps the model from wasting tokens trying.
+//
 // Expected:
 //   - base is the partially built system prompt; non-empty in normal
 //     use but the function is robust to empty input.
