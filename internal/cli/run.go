@@ -383,19 +383,6 @@ func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Contex
 	if application == nil {
 		return id, nil, nil
 	}
-	swarmReg := application.SwarmRegistry
-	if swarmReg == nil {
-		// T-swarm-2 is gated on the swarm registry being present.
-		// When it is nil the swarm subsystem is disabled (or
-		// T-swarm-1 has not yet wired up the loader on this build),
-		// so the resolver is a no-op and the historical CLI
-		// contract is preserved verbatim. The agent registry alone
-		// is not enough to enforce precedence — the historical
-		// suite drives a bare engine through `--agent <unknown>`
-		// and depends on the engine, not the resolver, for the
-		// runtime fallback.
-		return id, nil, nil
-	}
 	agentReg := application.Registry
 	hasAgent := func(name string) bool {
 		if agentReg == nil {
@@ -407,25 +394,7 @@ func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Contex
 		_, ok := agentReg.GetByNameOrAlias(name)
 		return ok
 	}
-	kind, manifest := swarm.Resolve(id, hasAgent, swarmReg)
-	switch kind {
-	case swarm.KindAgent:
-		return id, nil, nil
-	case swarm.KindSwarm:
-		swarmCtx := swarm.NewContext(id, manifest)
-		if swarmCtx.LeadAgent == "" {
-			// Spec §1 validation guards this case at manifest load
-			// time; a defensive guard here keeps the CLI from
-			// silently passing the swarm id through as an agent id
-			// when an upstream loader bug lets a lead-less manifest
-			// slip through.
-			return "", nil, fmt.Errorf("swarm %q has no lead agent", id)
-		}
-		return swarmCtx.LeadAgent, &swarmCtx, nil
-	default:
-		// Spec §2: error with the canonical message naming the id.
-		return "", nil, &swarm.NotFoundError{ID: id}
-	}
+	return swarm.ResolveTarget(hasAgent, application.SwarmRegistry, id)
 }
 
 // configDefaultAgent reads application.Config.DefaultAgent defensively

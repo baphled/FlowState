@@ -2929,40 +2929,6 @@ func extractAtMentions(message string) []string {
 	return out
 }
 
-// firstSwarmMention scans message for @<id> tokens and returns the first
-// one that resolves to a swarm. Mirrors the CLI's resolveAgentOrSwarm
-// behaviour at internal/cli/run.go: agent-mentions are passed through
-// silently (the existing slash-command + Tab-cycle paths already cover
-// agent switching); only swarm hits drive a context-switch in sendMessage.
-//
-// Expected:
-//   - message is the raw user prompt.
-//   - agentReg / swarmReg may be nil; nil treats the registry as empty.
-//
-// Returns:
-//   - swarmID is the user-typed id (without leading "@") when a swarm
-//     mention was found; "" otherwise.
-//   - manifest is the resolved swarm manifest; nil when none found.
-//   - leadAgent is the swarm's lead agent id; "" when no swarm matched.
-//
-// Side effects:
-//   - None.
-func firstSwarmMention(message string, agentReg *agent.Registry, swarmReg *swarm.Registry) (swarmID string, manifest *swarm.Manifest, leadAgent string) {
-	if swarmReg == nil {
-		return "", nil, ""
-	}
-	for _, name := range extractAtMentions(message) {
-		kind, m, err := resolveAtMention(name, agentReg, swarmReg)
-		if err != nil {
-			continue
-		}
-		if kind == swarm.KindSwarm && m != nil && m.Lead != "" {
-			return name, m, m.Lead
-		}
-	}
-	return "", nil, ""
-}
-
 // detectPrematureDelegationMisfire returns a user-facing warning message
 // when the P7/C2 signature is detected: an agent whose manifest sets
 // can_delegate:false emits a bare tool_use as the very first content of
@@ -4764,20 +4730,30 @@ func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
 // is cleared and the chat returns to whatever agent the user was
 // already talking to. Mirrors the CLI's `Engine.Stream(ctx, leadID,
 // message)` per-call shape rather than a persistent SetManifest swap.
+//
+// Resolution goes through swarm.ResolveTarget — the same shared
+// resolver the CLI's resolveAgentOrSwarm calls — so both surfaces
+// agree on what an @<id> means.
 func (i *Intent) maybeBeginSwarmDispatch(message string) {
-	if i.engine == nil || i.agentRegistry == nil {
+	if i.engine == nil || i.agentRegistry == nil || i.swarmRegistry == nil {
 		return
 	}
-	_, swarmManifest, leadID := firstSwarmMention(message, i.agentRegistry, i.swarmRegistry)
-	if swarmManifest == nil {
+	hasAgent := func(name string) bool {
+		if _, ok := i.agentRegistry.Get(name); ok {
+			return true
+		}
+		_, ok := i.agentRegistry.GetByNameOrAlias(name)
+		return ok
+	}
+	for _, mention := range extractAtMentions(message) {
+		leadID, swarmCtx, err := swarm.ResolveTarget(hasAgent, i.swarmRegistry, mention)
+		if err != nil || swarmCtx == nil {
+			continue
+		}
+		i.engine.SetSwarmContext(swarmCtx)
+		i.pendingSwarmLeadID = leadID
 		return
 	}
-	if _, found := i.agentRegistry.Get(leadID); !found {
-		return
-	}
-	swarmCtx := swarm.NewContext(swarmManifest.ID, swarmManifest)
-	i.engine.SetSwarmContext(&swarmCtx)
-	i.pendingSwarmLeadID = leadID
 }
 
 // nextAgentInCycle returns the manifest immediately after currentID in
