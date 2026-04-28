@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Skill creation specialist - researches, writes, and fully integrates new skills into the harness including KB docs and vault sync"
   goal: "Create new skills end-to-end: research the domain, write the SKILL.md, update integration points, document in the KB, and sync the vault"

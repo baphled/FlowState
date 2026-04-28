@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Task-level orchestrator - receives delivery brief from Team-Lead, decomposes tasks, delegates to specialists, verifies results"
   goal: "Decompose delivery briefs into atomic work units, delegate to the right specialists, and verify completion against acceptance criteria"

@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -28,6 +28,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Performance specialist - profiles code, identifies bottlenecks, and proposes evidence-based optimisations"
   goal: "Profile code, identify real bottlenecks with measurement data, and propose targeted optimisations with before/after evidence"

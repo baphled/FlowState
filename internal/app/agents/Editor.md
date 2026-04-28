@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Editorial specialist - reviews, edits, and improves written content for clarity, structure, and tone"
   goal: "Improve written drafts by sharpening clarity, restructuring sections, ensuring consistent tone, and flagging factual gaps"

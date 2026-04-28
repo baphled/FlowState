@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -25,6 +25,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Linux administration and system expertise - configuration, troubleshooting, package management"
   goal: "Administer Linux systems, configure operating systems, and troubleshoot system-level issues with deep OS knowledge"

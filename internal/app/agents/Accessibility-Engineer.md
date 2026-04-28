@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Accessibility specialist - reviews terminal UX and documentation for inclusive design, ensuring usability for all users including those with disabilities"
   goal: "Ensure user-facing terminal output and documentation meet accessibility standards before tasks close"

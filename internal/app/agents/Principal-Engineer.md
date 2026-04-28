@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -28,6 +28,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Independent standards gatekeeper - enforces TDD, architecture, clean code, and technical debt discipline"
   goal: "Issue explicit gate verdicts (PASS/FAIL/SKIP-with-reason) for code changes, validating TDD evidence, architecture boundaries, clean code, and tech debt"
