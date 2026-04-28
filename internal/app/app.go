@@ -196,6 +196,15 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: swarms seeded to %q", swarmDir)
 	}
 
+	// Auto-materialise the bundled mem0 MCP wrapper before the tool
+	// pipeline assembles its MCP servers. DiscoverMCPServers probes
+	// the install location first, so a freshly-materialised binary is
+	// picked up on the same startup with no operator action. The hook
+	// is idempotent (skip-on-existing) and failure-tolerant — a write
+	// failure logs a warning but lets app init continue without
+	// memory.
+	MaterialiseMemoryToolsOnStartup(DefaultMemoryToolsDir())
+
 	providerRegistry, ollamaProvider, providerFailures := setupProvidersWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
