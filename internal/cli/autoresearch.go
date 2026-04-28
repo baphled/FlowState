@@ -94,6 +94,12 @@ type autoresearchRunOptions struct {
 	// clean termination (lifecycle plan Slice 2). Default false; the
 	// branch is always preserved regardless of this flag.
 	keepWorktree bool
+	// allowDirty opts out of the clean-tree precondition (lifecycle
+	// plan Slice 3). When set, the harness stashes the parent's
+	// uncommitted state at run start and restores it on exit so the
+	// trial loop runs against an effectively-clean tree without
+	// forcing the operator to commit unrelated edits.
+	allowDirty bool
 	// programBody is the program-of-record skill body, read once at
 	// run start from programResolvedPath. The synthesiser embeds it
 	// verbatim in every per-trial prompt so the off-limits constraints
@@ -213,6 +219,8 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
 	flags.BoolVar(&opts.keepWorktree, "keep-worktree", false,
 		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Lifecycle plan (April 2026) Slice 2.")
+	flags.BoolVar(&opts.allowDirty, "allow-dirty", false,
+		"Bypass the clean-tree precondition by stashing the parent's uncommitted state at run start and restoring it on exit. The trial worktree itself is unaffected — autoresearch always works in an isolated branch. Lifecycle plan (April 2026) Slice 3.")
 
 	return cmd
 }
@@ -254,9 +262,15 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 		return fmt.Errorf("resolving surface repo root: %w", err)
 	}
 
-	if err := requireCleanTree(surfaceRepoRoot); err != nil {
+	// Clean-tree precondition. --allow-dirty (lifecycle plan Slice 3)
+	// stashes the parent's uncommitted state before the loop and
+	// restores it on every exit path; without the flag a dirty tree
+	// is rejected as before.
+	stashRef, err := preflightCleanTree(cmd.OutOrStdout(), surfaceRepoRoot, resolved.allowDirty)
+	if err != nil {
 		return err
 	}
+	defer restoreParentStash(cmd.OutOrStdout(), surfaceRepoRoot, stashRef)
 
 	worktreePath := filepath.Join(resolved.worktreeBase, resolved.runID, "worktree")
 	branchName := autoresearchBranchName(resolved.runID)
@@ -727,10 +741,144 @@ func requireCleanTree(repoRoot string) error {
 	}
 	if len(strings.TrimSpace(string(output))) > 0 {
 		return fmt.Errorf(
-			"surface working tree at %s is dirty; commit or stash before running autoresearch:\n%s",
+			"surface working tree at %s is dirty; commit or stash before running autoresearch (or pass --allow-dirty):\n%s",
 			repoRoot, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// autoresearchStashMessage tags every harness-managed stash so
+// `git stash list` makes the provenance obvious to operators.
+const autoresearchStashMessage = "flowstate-autoresearch-allow-dirty"
+
+// preflightCleanTree enforces the clean-tree precondition (lifecycle
+// plan Slice 3). When allowDirty is false, behaviour mirrors the
+// previous direct call to requireCleanTree.
+//
+// When allowDirty is true and the tree is non-empty, the helper runs
+// `git stash push --include-untracked` so the loop runs against an
+// effectively-clean parent. The returned stash ref is the SHA of the
+// stash commit (`stash@{0}` resolved at create time) and is consumed
+// by restoreParentStash on every exit path. An empty return value
+// indicates "nothing to restore".
+//
+// Expected:
+//   - w is the writer for operator-visible status lines.
+//   - repoRoot is the parent repo root.
+//   - allowDirty is the operator's --allow-dirty flag.
+//
+// Returns:
+//   - The stash ref (SHA) when a stash was created; "" when the tree
+//     was clean to begin with or allowDirty was false on a clean tree.
+//   - An error if the precondition fails (allowDirty=false + dirty)
+//     or the stash command itself fails.
+//
+// Side effects:
+//   - Shells `git status --porcelain`.
+//   - Shells `git stash push -u -m <tag>` and `git rev-parse stash@{0}`
+//     when allowDirty is true and the tree is dirty.
+//   - Logs a one-line "stashing/preserved" notice to w.
+func preflightCleanTree(w io.Writer, repoRoot string, allowDirty bool) (string, error) {
+	statusCmd := exec.Command("git", "-C", repoRoot, "status", "--porcelain")
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("running git status in %s: %w", repoRoot, err)
+	}
+	clean := len(strings.TrimSpace(string(statusOut))) == 0
+
+	if clean {
+		return "", nil
+	}
+	if !allowDirty {
+		return "", fmt.Errorf(
+			"surface working tree at %s is dirty; commit or stash before running autoresearch (or pass --allow-dirty):\n%s",
+			repoRoot, strings.TrimSpace(string(statusOut)))
+	}
+
+	// Stash everything (tracked + untracked) so the worktree branch
+	// branches off a clean HEAD-equivalent state. The stash is
+	// restored on every exit path via restoreParentStash.
+	stashCmd := exec.Command("git", "-C", repoRoot, "stash", "push",
+		"--include-untracked", "-m", autoresearchStashMessage)
+	if pushOut, err := stashCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("stashing parent state: %w (output: %s)",
+			err, strings.TrimSpace(string(pushOut)))
+	}
+
+	// Resolve the stash to a stable SHA — `stash@{0}` shifts each
+	// time another stash is pushed, but the SHA is permanent.
+	revCmd := exec.Command("git", "-C", repoRoot, "rev-parse", "stash@{0}")
+	revOut, err := revCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolving stash sha: %w", err)
+	}
+	ref := strings.TrimSpace(string(revOut))
+	_, _ = fmt.Fprintf(w,
+		"autoresearch preflight: --allow-dirty stashed parent state as %s (%s); restored on exit\n",
+		ref, autoresearchStashMessage)
+	return ref, nil
+}
+
+// restoreParentStash pops the harness-managed stash recorded by
+// preflightCleanTree. It is safe to call with an empty stashRef (the
+// no-stash case) and emits a non-fatal warning if the apply step
+// fails — at which point the operator inherits the stash entry and
+// can recover via `git stash list`/`git stash pop`.
+//
+// The implementation uses `git stash apply <sha>` followed by
+// `git stash drop <ref>` rather than `git stash pop` because the
+// latter is keyed by the now-shifted `stash@{N}` index.
+//
+// Expected:
+//   - w is the writer for operator-visible status lines.
+//   - repoRoot is the parent repo root.
+//   - stashRef is the stash SHA returned by preflightCleanTree (or
+//     empty when no stash was created).
+//
+// Side effects:
+//   - When stashRef is non-empty: shells `git stash apply <sha>` and,
+//     on success, walks `git stash list` to find the matching entry
+//     by SHA and drops it.
+//   - Logs the outcome to w.
+func restoreParentStash(w io.Writer, repoRoot, stashRef string) {
+	if stashRef == "" {
+		return
+	}
+	applyCmd := exec.Command("git", "-C", repoRoot, "stash", "apply", stashRef)
+	if applyOut, err := applyCmd.CombinedOutput(); err != nil {
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: restoring --allow-dirty stash %s failed: %v (output: %s) — recover via `git stash list && git stash pop`\n",
+			stashRef, err, strings.TrimSpace(string(applyOut)))
+		return
+	}
+
+	// Walk `git stash list --format=%H` to find the index that maps
+	// to our SHA, then drop it. This is robust to other stashes the
+	// operator may have pushed between preflight and restore.
+	listCmd := exec.Command("git", "-C", repoRoot, "stash", "list", "--format=%H")
+	listOut, err := listCmd.Output()
+	if err != nil {
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: stash applied but list failed (%v); harness-managed stash entry remains\n", err)
+		return
+	}
+	for i, line := range strings.Split(strings.TrimSpace(string(listOut)), "\n") {
+		if strings.TrimSpace(line) != stashRef {
+			continue
+		}
+		dropCmd := exec.Command("git", "-C", repoRoot, "stash", "drop", fmt.Sprintf("stash@{%d}", i))
+		if dropOut, dropErr := dropCmd.CombinedOutput(); dropErr != nil {
+			_, _ = fmt.Fprintf(w,
+				"autoresearch cleanup: stash applied but drop failed: %v (output: %s)\n",
+				dropErr, strings.TrimSpace(string(dropOut)))
+			return
+		}
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: --allow-dirty stash %s restored and dropped\n", stashRef)
+		return
+	}
+	_, _ = fmt.Fprintf(w,
+		"autoresearch cleanup: stash applied but no list entry matched %s; harness-managed stash entry may remain\n", stashRef)
 }
 
 // autoresearchBranchName returns the branch name a run's worktree is
@@ -954,6 +1102,9 @@ type manifestRecord struct {
 	DriverScript        string `json:"driver_script,omitempty"`
 	DriverTimeoutMS     int64  `json:"driver_timeout_ms,omitempty"`
 	PromptHistoryWindow int    `json:"prompt_history_window,omitempty"`
+	// AllowDirty is true when the run was started against a dirty
+	// parent tree via --allow-dirty. Lifecycle plan Slice 3.
+	AllowDirty bool `json:"allow_dirty,omitempty"`
 }
 
 // writeManifestRecord serialises the run config to the coord-store at
@@ -1001,6 +1152,7 @@ func writeManifestRecord(
 		DriverScript:        opts.driverScript,
 		DriverTimeoutMS:     opts.driverTimeout.Milliseconds(),
 		PromptHistoryWindow: opts.promptHistoryWindow,
+		AllowDirty:          opts.allowDirty,
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {

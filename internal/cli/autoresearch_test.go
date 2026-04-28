@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -425,6 +426,131 @@ planner body
 				err := runCmd(args2...)
 				Expect(err).To(HaveOccurred(), "second run should fail on branch collision")
 				Expect(err.Error()).To(ContainSubstring("autoresearch/clashfix"))
+			})
+		})
+
+		// Lifecycle plan Slice 3 — `--allow-dirty` stashes the parent's
+		// uncommitted state at run start and restores it on exit so
+		// the operator can run the harness against an in-progress
+		// edit without forcing a commit. Without the flag the
+		// pre-existing dirty-tree refusal still applies.
+		Context("when the parent working tree is dirty and --allow-dirty toggles the precondition", func() {
+			dirtyParent := func() {
+				Expect(os.WriteFile(filepath.Join(repoDir, "dirty.txt"),
+					[]byte("uncommitted-by-operator"), 0o600)).To(Succeed())
+			}
+			parentWorkingState := func() string {
+				path := filepath.Join(repoDir, "dirty.txt")
+				body, err := os.ReadFile(path)
+				if errors.Is(err, os.ErrNotExist) {
+					return ""
+				}
+				Expect(err).NotTo(HaveOccurred())
+				return string(body)
+			}
+
+			It("is a no-op on a clean tree (--allow-dirty does not stash)", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "alldircl-rest-of-id",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-allow-clean"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", writeNoOpScorer(),
+					"--allow-dirty",
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				Expect(out.String()).NotTo(ContainSubstring("stashed parent state"),
+					"clean tree must not trigger stash flow")
+			})
+
+			It("refuses a dirty tree when --allow-dirty is not set", func() {
+				dirtyParent()
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "alldirno-rest-of-id",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-allow-refused"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", writeNoOpScorer(),
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("dirty"))
+				Expect(err.Error()).To(ContainSubstring("--allow-dirty"))
+
+				// Operator's edit must remain intact.
+				Expect(parentWorkingState()).To(Equal("uncommitted-by-operator"))
+			})
+
+			It("stashes the dirty tree, runs the loop, restores the stash on clean exit", func() {
+				dirtyParent()
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "alldiryes-rest-of-id",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-allow-yes"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", writeNoOpScorer(),
+					"--allow-dirty",
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				Expect(out.String()).To(ContainSubstring("stashed parent state"))
+				Expect(out.String()).To(ContainSubstring("stash"))
+				Expect(out.String()).To(ContainSubstring("restored"))
+
+				// Operator's edit must be back in place after the run.
+				Expect(parentWorkingState()).To(Equal("uncommitted-by-operator"))
+
+				// Manifest record carries the audit annotation.
+				record := readManifestRecord("alldiryes-rest-of-id")
+				Expect(record).To(HaveKeyWithValue("allow_dirty", true))
+
+				// No leftover harness-tagged stash entry.
+				stashList := exec.Command("git", "-C", repoDir, "stash", "list")
+				stashOut, _ := stashList.CombinedOutput()
+				Expect(string(stashOut)).NotTo(ContainSubstring("flowstate-autoresearch-allow-dirty"))
+			})
+
+			It("restores the parent's stash on a non-clean (evaluator-contract-failure-rate) termination", func() {
+				// An evaluator that always violates the contract drives
+				// the loop to terminationEvaluatorContractFailure after
+				// three strikes — a non-clean termination. The
+				// harness-managed stash must still be restored on this
+				// exit path so the operator's edit survives.
+				badEvaluator := filepath.Join(dataDir, "bad-evaluator.sh")
+				Expect(os.WriteFile(badEvaluator,
+					[]byte("#!/usr/bin/env bash\necho not-an-integer\nexit 0\n"), 0o755)).To(Succeed())
+
+				dirtyParent()
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "alldirerr-rest-of-id",
+					"--max-trials", "10",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-allow-err"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", badEvaluator,
+					"--allow-dirty",
+				)
+				// The baseline evaluator runs first and fails the
+				// contract; the harness aborts before the loop. The
+				// defer-shaped stash restore must still fire.
+				Expect(err).To(HaveOccurred(),
+					"baseline evaluator contract violation surfaces as harness error")
+
+				// Operator's edit must still be restored despite the error.
+				Expect(parentWorkingState()).To(Equal("uncommitted-by-operator"))
+				stashList := exec.Command("git", "-C", repoDir, "stash", "list")
+				stashOut, _ := stashList.CombinedOutput()
+				Expect(string(stashOut)).NotTo(ContainSubstring("flowstate-autoresearch-allow-dirty"))
 			})
 		})
 
