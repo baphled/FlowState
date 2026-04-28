@@ -415,21 +415,47 @@ make test          # Go tests
 | `features/*.feature` | BDD scenarios |
 | `.sisyphus/plans/` | Active and historical delivery plans |
 
-## Qdrant Vector Store (Optional)
+## Qdrant Vector Store
 
-FlowState uses Qdrant for vector-backed recall and learning pipelines. These features are disabled by default and require external dependencies.
+FlowState uses Qdrant for vector-backed recall and learning pipelines. The recall feature is **optional** at runtime — if `QDRANT_URL` is unset or unreachable, FlowState boots normally and logs a warning that the recall broker is disabled (`internal/app/app.go`). It is, however, a **required dev dependency** for anyone working on `internal/recall/...`, `cmd/flowstate-vault-server`, or vector-learning pipelines.
 
-### Setup
+### Setup (recommended: docker-compose.dev.yml)
 
-1. **Start Qdrant**:
-   ```bash
-   docker run -p 6333:6333 qdrant/qdrant:v1.12.0
-   ```
+The repo ships a Compose file that brings up Qdrant against the canonical host data dir at `~/.local/share/qdrant/`:
 
-2. **Pull Embedding Model**:
-   ```bash
-   ollama pull nomic-embed-text
-   ```
+```bash
+make qdrant-up        # starts Qdrant in the background
+make qdrant-status    # health + list of existing collections
+make qdrant-logs      # tail logs
+make qdrant-down      # stop (host data dir is untouched)
+```
+
+The Compose file pins `qdrant/qdrant:v1.16.3`, runs as UID:GID `1000:1000` to match host ownership, exposes only `127.0.0.1:6333` (REST) and `127.0.0.1:6334` (gRPC), and bind-mounts the user's tuning at `~/.local/share/qdrant/config/config.yaml` as `/qdrant/config/production.yaml` (read-only). See `docker-compose.dev.yml` for the full setup.
+
+**Do not** run `docker compose down -v` against this stack — the data dir is a bind mount, not a managed volume, but the warning matters: the host directory holds canonical vault collections that cannot be re-synced quickly.
+
+Requires Docker plus the Compose v2 plugin (`docker compose`). On Arch: `pacman -S docker-compose`.
+
+For end-to-end vector recall you also need the embedding model:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+### Setup (alternative: bare `docker run`)
+
+If you prefer not to use Compose, the equivalent one-shot:
+
+```bash
+docker run -d --name flowstate-qdrant \
+  -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \
+  --user 1000:1000 \
+  -v "$HOME/.local/share/qdrant/storage:/qdrant/storage" \
+  -v "$HOME/.local/share/qdrant/snapshots:/qdrant/snapshots" \
+  -e QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage \
+  -e QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/snapshots \
+  qdrant/qdrant:v1.16.3
+```
 
 ### Configuration
 
@@ -446,11 +472,15 @@ qdrant:
 
 ### External Integration Tests
 
-Standard tests (`make test`) do not require Qdrant. To run external integration tests, ensure Qdrant is running and the `QDRANT_URL` environment variable is set:
+Standard tests (`make test`) do not require Qdrant. To run external integration tests, ensure Qdrant is running (`make qdrant-up`) and the `QDRANT_URL` environment variable is set:
 
 ```bash
 QDRANT_URL=http://localhost:6333 make test-external
 ```
+
+### Further reading
+
+For full setup, the LlamaIndex side, and recovery from snapshot reverts, see the vault note `Qdrant + LlamaIndex Local Dev Setup (April 2026)` under `1. Projects/FlowState/Documentation/Infrastructure/`.
 
 ## Provider Requirements for Planner/Executor
 

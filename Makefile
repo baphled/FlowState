@@ -1,4 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
 
 # Binary name
 BINARY_NAME=flowstate
@@ -315,6 +315,44 @@ session-ids: ## Extract all IDs from a session (ID=<session-id>)
 		exit 1; \
 	fi
 	@python3 scripts/session-history.py "$(ID)" --ids-only
+
+#
+# Local Development Services (Qdrant)
+#
+# These targets manage the Qdrant container described in
+# docker-compose.dev.yml. The compose file mounts the host's existing
+# Qdrant data directory at ~/.local/share/qdrant/. Do NOT erase that
+# directory — it holds the canonical pre-synced vault collections.
+#
+# Requires: docker (any modern version) plus the Compose v2 plugin
+# (`docker compose ...`). On Arch Linux: pacman -S docker-compose.
+#
+
+qdrant-up: ## Start the local Qdrant container in the background
+	@echo "Starting Qdrant via docker-compose.dev.yml..."
+	docker compose -f docker-compose.dev.yml up -d qdrant
+	@echo ""
+	@echo "Qdrant REST: http://127.0.0.1:6333"
+	@echo "Dashboard:   http://127.0.0.1:6333/dashboard"
+	@echo "Run 'make qdrant-status' once health is green."
+
+qdrant-down: ## Stop the local Qdrant container (data persists on host)
+	@echo "Stopping Qdrant (data dir on host is untouched)..."
+	docker compose -f docker-compose.dev.yml down
+
+qdrant-logs: ## Tail the local Qdrant container logs
+	docker compose -f docker-compose.dev.yml logs -f --tail=50 qdrant
+
+qdrant-status: ## Show Qdrant health and list collections
+	@echo "Container state:"
+	@docker compose -f docker-compose.dev.yml ps qdrant
+	@echo ""
+	@echo "Health:"
+	@curl -fsS http://127.0.0.1:6333/healthz && echo "" || echo "(not healthy yet)"
+	@echo ""
+	@echo "Collections:"
+	@curl -fsS http://127.0.0.1:6333/collections | jq -r '.result.collections[].name' 2>/dev/null \
+		|| echo "(curl/jq failed — is Qdrant up?)"
 
 #
 # Help
