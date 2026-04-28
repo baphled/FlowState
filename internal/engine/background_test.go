@@ -269,6 +269,23 @@ var _ = Describe("BackgroundTaskManager", func() {
 	})
 
 	Describe("EvictCompleted", func() {
+		// EvictCompleted's new contract (per the BackgroundTaskManager
+		// premature-eviction fix) waits BackgroundTaskEvictionGrace
+		// after MarkAccessed before allowing a task to be evicted.
+		// These specs assert the eviction *can* happen, so we shrink
+		// the grace to zero up-front; the grace-window behaviour
+		// itself gets its own dedicated specs further down.
+		var origGrace time.Duration
+
+		BeforeEach(func() {
+			origGrace = engine.BackgroundTaskEvictionGrace
+			engine.BackgroundTaskEvictionGrace = 0
+		})
+
+		AfterEach(func() {
+			engine.BackgroundTaskEvictionGrace = origGrace
+		})
+
 		Context("when completed tasks exist", func() {
 			It("removes terminal tasks from the map when they are marked as accessed", func() {
 				ctx := context.Background()
@@ -376,6 +393,66 @@ var _ = Describe("BackgroundTaskManager", func() {
 				Expect(finishedFound).To(BeFalse())
 
 				close(slow)
+			})
+		})
+
+		// New specs pinning the grace-window contract introduced to fix
+		// the "task not found" cascade observed in session
+		// 175b873e-5ee5-4917-b217-0efa6a4417d9: a lead delegated to
+		// members, the eviction defer at end-of-tool-loop fired between
+		// the lead's first read and second read of background_output,
+		// and 12 of the lead's subsequent re-reads errored out.
+		Context("when an accessed terminal task is still within its grace window", func() {
+			It("preserves the task across multiple background_output re-reads", func() {
+				engine.BackgroundTaskEvictionGrace = 5 * time.Second
+
+				ctx := context.Background()
+				manager.Launch(ctx, "evict-grace", "agent-1", "grace test", func(ctx context.Context) (string, error) {
+					return "result", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("evict-grace")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				manager.MarkAccessed("evict-grace")
+				manager.EvictCompleted()
+
+				_, found := manager.Get("evict-grace")
+				Expect(found).To(BeTrue(),
+					"a grace-window-protected task must survive the first eviction sweep "+
+						"so the lead's subsequent background_output(task_id) calls succeed")
+			})
+
+			It("evicts the task once the grace window expires", func() {
+				// Override the grace to a tiny duration we can wait
+				// past with a controlled time source. We use a real
+				// sleep here (5ms) instead of mocking time because
+				// the BackgroundTaskManager reads time.Now()
+				// directly inside EvictCompleted; threading a clock
+				// through would expand the diff beyond the eviction
+				// fix.
+				engine.BackgroundTaskEvictionGrace = 5 * time.Millisecond
+
+				ctx := context.Background()
+				manager.Launch(ctx, "evict-grace-expire", "agent-1", "grace expire", func(ctx context.Context) (string, error) {
+					return "result", nil
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("evict-grace-expire")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				manager.MarkAccessed("evict-grace-expire")
+				time.Sleep(20 * time.Millisecond)
+				manager.EvictCompleted()
+
+				_, found := manager.Get("evict-grace-expire")
+				Expect(found).To(BeFalse(),
+					"once accessedAt + EvictionGrace has passed, the task must "+
+						"finally evict so memory pressure stays bounded")
 			})
 		})
 	})
