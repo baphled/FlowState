@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Code quality guardian - enforces Boy Scout Rule, clean code standards, and incremental refactoring during implementation"
   goal: "Improve code quality through Boy Scout Rule application, anti-pattern flagging, and safe incremental refactoring without changing behaviour"

@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -28,6 +28,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "API contract and boundary specialist - designs clean, consistent, versioned APIs; enforces backwards compatibility; prevents breaking changes; ensures security at the boundary"
   goal: "Design RESTful/gRPC APIs with consistent contracts, backwards compatibility, secure boundaries, and clear documentation"

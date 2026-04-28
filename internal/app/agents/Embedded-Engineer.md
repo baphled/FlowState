@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Embedded systems expert - firmware, microcontrollers, RTOS, IoT devices, hardware integration"
   goal: "Develop reliable firmware for resource-constrained hardware, integrate with peripherals, and validate via hardware-in-the-loop testing"

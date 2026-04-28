@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -30,6 +30,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Senior software engineer - implements features, fixes bugs, and refactors code as directed by Tech-Lead or the orchestrator"
   goal: "Deliver high-quality, well-tested code that follows project conventions and architecture guidelines"

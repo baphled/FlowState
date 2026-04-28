@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Infrastructure, CI/CD pipelines, containerisation, IaC, deployment strategies, and reproducible builds"
   goal: "Automate deployment pipelines, manage infrastructure as code, and ensure reproducible environments across dev/staging/prod"

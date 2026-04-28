@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -28,6 +28,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Technical writer expert - documentation, API docs, tutorials, blogs with accessible writing"
   goal: "Create clear, comprehensive, accessible documentation that follows Obsidian standards"

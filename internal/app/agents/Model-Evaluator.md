@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Evaluates local LLM models for harness compatibility - tests tool calling, performance, and agent viability"
   goal: "Systematically test whether a local LLM (e.g., via Ollama) can function as an agent — tool calling, file operations, and agent workflow viability"

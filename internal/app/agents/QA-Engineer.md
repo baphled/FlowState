@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Quality assurance and testing expert - adversarial tester, finds gaps and edge cases"
   goal: "Ensure high-quality software through comprehensive testing, coverage analysis, and edge case discovery"

@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -28,6 +28,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Project/sprint coordinator - assembles squad, sets merge gates, owns delivery risk, declares merge readiness"
   goal: "Assemble the right squad for a delivery, set required signoffs, track delivery risk, and own merge readiness across multi-domain features"

@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Data analyst - data exploration, statistical analysis, log analysis, deriving insights"
   goal: "Explore data, perform statistical analysis, find patterns, and derive actionable insights with rigorous methodology"

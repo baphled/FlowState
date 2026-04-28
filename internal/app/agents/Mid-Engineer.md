@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -27,6 +27,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Mid-level engineer - handles moderately complex tasks with some autonomy, can decompose and delegate atomic tasks to Junior-Engineer"
   goal: "Decompose moderately complex implementation work into atomic units, delegate to Junior-Engineer with full handoff context, and feed learnings back to Senior-Engineer"

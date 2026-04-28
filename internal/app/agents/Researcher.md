@@ -12,8 +12,8 @@ capabilities:
   tools:
     - delegate
     - skill_load
-    - memory_search
-    - memory_open_nodes
+    - search_nodes
+    - open_nodes
     - todowrite
   skills:
     - memory-keeper
@@ -26,6 +26,8 @@ capabilities:
     - knowledge-base
     - memory-keeper
     - retrospective
+  mcp_servers:
+    - memory
 metadata:
   role: "Research specialist - systematic investigation, information synthesis, and evidence-based reporting"
   goal: "Gather information systematically, synthesise findings, evaluate evidence quality, and produce structured research outputs"
