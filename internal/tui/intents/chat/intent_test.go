@@ -1122,9 +1122,14 @@ var _ = Describe("ChatIntent", func() {
 				})
 			})
 
-			It("switches the active agent to the swarm's lead", func() {
+			It("preserves the chat's persistent agent id (swarm dispatch is one-shot, not an identity swap)", func() {
 				submitChatInput(swarmIntent, "@bug-hunt find issues in the auth path")
-				Expect(swarmIntent.AgentIDForTest()).To(Equal("Senior-Engineer"))
+				// Per ADR - Swarm Dispatch Across Access Methods: the
+				// chat's active agent is unchanged across a swarm
+				// dispatch. The lead receives this turn's stream via
+				// pendingSwarmLeadID; the next user turn lands back on
+				// the original agent.
+				Expect(swarmIntent.AgentIDForTest()).To(Equal("executor"))
 			})
 
 			It("attaches a swarm context to the engine", func() {
