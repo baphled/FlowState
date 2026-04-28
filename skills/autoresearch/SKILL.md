@@ -104,6 +104,25 @@ A single restatement, in priority order:
 3. This skill body. The program of record is the prose the harness already loaded; I do not edit it during a run.
 4. Anything outside the file at `--surface`. The worktree contains many tempting files; none are mine to touch.
 
+## Writing an evaluator
+
+The harness invokes the evaluator script as a subprocess once per trial (and once at run start to score the baseline). Operators wire one in via `--evaluator-script <path>`. The contract from plan v3.1 § 4.6 is small but strict; deviations are recorded as `evaluator-contract-violation` and three consecutive violations terminate the run with `evaluator-contract-failure-rate`.
+
+**Contract:**
+
+1. **Stdout** — exactly one line, a non-negative integer in decimal. Trailing newline allowed; nothing else on stdout. Multi-line, empty, non-integer, or negative scalars are contract violations. Comparison logic for `--metric-direction max` is inverted by the harness (kept when `score > baseline`); the evaluator does NOT emit negative scalars to signal max-direction.
+2. **Exit code** — `0` on successful scoring. Non-zero is a contract violation, recorded as `evaluator-contract-violation`. The harness counts non-zero exits toward the `evaluator-contract-failure-rate` hard stop.
+3. **Stderr** — free for diagnostic output. Captured but not parsed.
+4. **Working directory** — invoked from the worktree root.
+5. **Environment** — `FLOWSTATE_AGENT_DIR=<worktree>/internal/app/agents`, `FLOWSTATE_AUTORESEARCH_RUN_ID=<runID>`, `FLOWSTATE_AUTORESEARCH_SURFACE=<path-to-surface-relative-to-worktree>`. Evaluator-specific env vars (e.g. `FLOWSTATE_AUTORESEARCH_BENCH_OUTPUT` in the reference `bench.sh`) are fair game alongside the documented set.
+6. **Time budget** — `--evaluator-timeout` (default 5m) caps wall-clock. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` on the trial outcome and counts as a contract violation.
+
+**Validation up front.** The harness checks `--evaluator-script` exists, is a regular file, and is executable before any worktree work begins. Mis-typed paths fail fast.
+
+**Reference example.** `scripts/autoresearch-evaluators/bench.sh` wraps `go test -bench=<name> -run=^$ -benchmem <pkg>`, parses the `ns/op` value, and emits `1_000_000_000 / ns_per_op` so the score pairs with `--metric-direction max` as ops/sec. Operators copy the script into their own repo and adapt the `BENCH_PKG` / `BENCH_NAME` / `BENCH_METRIC` env knobs (or the parse step) for their surface. The contract is identical; only the benchmark target changes.
+
+**To pair with `--metric-direction min`** — emit a metric where lower is better (e.g. `validate-harness.sh --score` counts warnings; the bench wrapper above can also flip to `BENCH_METRIC=ns_per_op`).
+
 ## Related skills
 
 - `chain-id-resolution` — Coordination store key handling for any agent that reads autoresearch records directly (most do not; the harness handles it).
