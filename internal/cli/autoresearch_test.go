@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
@@ -423,6 +425,202 @@ planner body
 				err := runCmd(args2...)
 				Expect(err).To(HaveOccurred(), "second run should fail on branch collision")
 				Expect(err.Error()).To(ContainSubstring("autoresearch/clashfix"))
+			})
+		})
+
+		// Lifecycle plan Slice 2 — auto-prune cleanup. After
+		// printRunSummary the harness removes the worktree on a clean
+		// termination; the branch is always preserved as the durable
+		// kept-commit anchor. Four states per the plan's § Auto-prune
+		// contract:
+		//   1. Clean termination → worktree removed, branch preserved.
+		//   2. --keep-worktree set → worktree preserved on clean exit.
+		//   3. Signal termination → worktree preserved regardless.
+		//   4. Cleanup failure → run still succeeds, branch preserved.
+		Context("when the run terminates and the auto-prune contract fires", func() {
+			// runMaxTrialsOne drives a one-trial run with the no-op
+			// fixtures. The fixed-point-skipped trial 1 + maxTrials=1
+			// produces terminationReason=max-trials (a clean exit).
+			runMaxTrialsOne := func(runID, worktreeBase string, extra ...string) error {
+				args := []string{
+					"autoresearch", "run",
+					"--surface", surface,
+					"--run-id", runID,
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--worktree-base", worktreeBase,
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", writeNoOpScorer(),
+				}
+				args = append(args, extra...)
+				return runCmd(args...)
+			}
+
+			It("removes the worktree and preserves the branch on a clean termination", func() {
+				worktreeBase := filepath.Join(dataDir, "wt-clean")
+				err := runMaxTrialsOne("cleanrun-rest-of-id", worktreeBase)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				// Worktree directory must be gone.
+				worktreePath := filepath.Join(worktreeBase, "cleanrun-rest-of-id", "worktree")
+				_, statErr := os.Stat(worktreePath)
+				Expect(os.IsNotExist(statErr)).To(BeTrue(),
+					"worktree should be removed; got stat err: %v\nout: %s", statErr, out.String())
+
+				// `git worktree list` must not mention the path.
+				listCmd := exec.Command("git", "-C", repoDir, "worktree", "list")
+				listOut, listErr := listCmd.CombinedOutput()
+				Expect(listErr).NotTo(HaveOccurred(), "git worktree list: %s", string(listOut))
+				Expect(string(listOut)).NotTo(ContainSubstring(worktreePath))
+
+				// Branch must remain.
+				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/cleanrun")
+				branchOut, branchErr := branchCmd.CombinedOutput()
+				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
+				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
+					"autoresearch/cleanrun branch should be preserved")
+
+				// Summary stdout must mention the cleanup line.
+				Expect(out.String()).To(ContainSubstring("worktree removed"))
+			})
+
+			It("preserves the worktree on clean termination when --keep-worktree is set", func() {
+				worktreeBase := filepath.Join(dataDir, "wt-keep")
+				err := runMaxTrialsOne("keeprunn-rest-of-id", worktreeBase, "--keep-worktree")
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				worktreePath := filepath.Join(worktreeBase, "keeprunn-rest-of-id", "worktree")
+				info, statErr := os.Stat(worktreePath)
+				Expect(statErr).NotTo(HaveOccurred(),
+					"worktree should be preserved with --keep-worktree")
+				Expect(info.IsDir()).To(BeTrue())
+
+				// Branch must remain (always preserved).
+				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/keeprunn")
+				branchOut, _ := branchCmd.CombinedOutput()
+				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty())
+
+				// Summary stdout must mention --keep-worktree.
+				Expect(out.String()).To(ContainSubstring("--keep-worktree"))
+			})
+
+			It("preserves the worktree on a signal termination regardless of --keep-worktree default", func() {
+				// A driver that drops a marker file then waits long
+				// enough for the test goroutine to cancel the parent
+				// context. Cancelling cmd.Context() propagates through
+				// signal.NotifyContext into the loop's <-ctx.Done()
+				// branch, producing terminationReason=signal — same
+				// contract as the operator-Ctrl-C path without the
+				// fragility of sending SIGTERM to the test binary
+				// (which collides with Ginkgo's own interrupt handler).
+				markerPath := filepath.Join(dataDir, "signal-marker")
+				driverPath := filepath.Join(dataDir, "wait-driver.sh")
+				driverBody := fmt.Sprintf(`#!/usr/bin/env bash
+touch %q
+# Wait long enough for the test to cancel the parent context.
+# The driver subprocess uses context.Background() so this sleep is
+# bounded by --driver-timeout, not the run-level signal.
+sleep 5
+exit 0
+`, markerPath)
+				Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+				worktreeBase := filepath.Join(dataDir, "wt-signal")
+				ctx, cancel := context.WithCancel(context.Background())
+				DeferCleanup(cancel)
+
+				// Watcher goroutine: when the driver drops the marker,
+				// cancel the run context; the loop's next iteration
+				// observes <-ctx.Done() and breaks with reason=signal.
+				go func() {
+					defer GinkgoRecover()
+					deadline := time.Now().Add(10 * time.Second)
+					for time.Now().Before(deadline) {
+						if _, err := os.Stat(markerPath); err == nil {
+							cancel()
+							return
+						}
+						time.Sleep(20 * time.Millisecond)
+					}
+				}()
+
+				root := cli.NewRootCmd(testApp)
+				root.SetOut(out)
+				root.SetErr(out)
+				root.SetArgs([]string{
+					"autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "signalrn-rest-of-id",
+					"--max-trials", "5",
+					"--time-budget", "30s",
+					"--driver-timeout", "8s",
+					"--worktree-base", worktreeBase,
+					"--driver-script", driverPath,
+					"--evaluator-script", writeNoOpScorer(),
+				})
+				err := root.ExecuteContext(ctx)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				worktreePath := filepath.Join(worktreeBase, "signalrn-rest-of-id", "worktree")
+				_, statErr := os.Stat(worktreePath)
+				Expect(statErr).NotTo(HaveOccurred(),
+					"worktree should be preserved on signal termination")
+
+				// Summary stdout must mention preserve + signal reason.
+				Expect(out.String()).To(ContainSubstring("worktree preserved"))
+				Expect(out.String()).To(ContainSubstring("signal"))
+			})
+
+			It("reports cleanup failure non-fatally and preserves the branch", func() {
+				// A driver that locks the worktree via `git worktree
+				// lock` makes `git worktree remove --force` refuse with
+				// "is locked" — exercising the cleanup-failure path.
+				// The branch is preserved as the durable artefact and
+				// the run still returns nil.
+				driverPath := filepath.Join(dataDir, "lock-driver.sh")
+				driverBody := `#!/usr/bin/env bash
+set -eu
+# Resolve the parent repo via this worktree's git dir, then lock
+# the worktree by its path. Locked worktrees refuse
+# 'git worktree remove' even with --force.
+worktree_root="$PWD"
+git -c gc.auto=0 worktree lock "$worktree_root" 2>/dev/null || true
+exit 0
+`
+				Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+				worktreeBase := filepath.Join(dataDir, "wt-cleanup-fail")
+				args := []string{
+					"autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "cleanupf-rest-of-id",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--worktree-base", worktreeBase,
+					"--driver-script", driverPath,
+					"--evaluator-script", writeNoOpScorer(),
+				}
+				err := runCmd(args...)
+				Expect(err).NotTo(HaveOccurred(),
+					"cleanup failure must not fail the run; out: %s", out.String())
+
+				// Cleanup failure surfaces as a log line.
+				Expect(out.String()).To(ContainSubstring("cleanup"))
+				Expect(out.String()).To(ContainSubstring("removal failed"))
+
+				// Branch must still exist regardless.
+				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/cleanupf")
+				branchOut, _ := branchCmd.CombinedOutput()
+				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
+					"branch must be preserved even when worktree removal fails")
+
+				// Manual cleanup: unlock so other tests / teardown can
+				// proceed without git complaining.
+				worktreePath := filepath.Join(worktreeBase, "cleanupf-rest-of-id", "worktree")
+				DeferCleanup(func() {
+					_ = exec.Command("git", "-C", repoDir, "worktree", "unlock", worktreePath).Run()
+					_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", worktreePath).Run()
+				})
 			})
 		})
 	})
