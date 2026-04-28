@@ -3289,6 +3289,256 @@ planner body improved
 	})
 })
 
+// April 2026 In-Memory Default plan, Slice 2 — `flowstate
+// autoresearch apply <run-id>` materialises the best candidate
+// from an in-memory run. Default: print to stdout. --write <path>
+// writes to an operator-chosen destination; refuses inside-repo
+// without --force-inside-repo. Hard refusal when the run used
+// --commit-trials (no in-memory candidate to dump; redirect to
+// `flowstate autoresearch promote --apply`).
+var _ = Describe("autoresearch apply command", func() {
+	var (
+		out       *bytes.Buffer
+		testApp   *app.App
+		dataDir   string
+		repoDir   string
+		coordPath string
+		surface   string
+		runCmd    func(args ...string) error
+	)
+
+	initRepo := func(repo string) {
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
+		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
+		body := `---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role
+capabilities:
+  tools: [read, plan]
+---
+planner body
+`
+		Expect(os.WriteFile(manifestPath, []byte(body), 0o600)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
+
+		run := func(args ...string) {
+			gc := exec.Command("git", args...)
+			gc.Dir = repo
+			gc.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+			)
+			combined, err := gc.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+		}
+		run("init", "--initial-branch=main", repo)
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "test")
+		run("add", ".")
+		run("commit", "--no-verify", "-m", "initial")
+	}
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		dataDir = GinkgoT().TempDir()
+		repoDir = GinkgoT().TempDir()
+		coordPath = filepath.Join(dataDir, "coordination.json")
+		_ = coordPath
+
+		initRepo(repoDir)
+		surface = filepath.Join(repoDir, "internal", "app", "agents", "planner.md")
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{
+			DataDir:   dataDir,
+			AgentsDir: filepath.Join(repoDir, "internal", "app", "agents"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	// runInMemoryImprovingTrial produces an in-memory run whose
+	// trial 1 improves on the baseline and is therefore kept; the
+	// spec asserts on apply's view of the kept candidate. The
+	// driver and scorer follow the brief's stdin/stdout contract.
+	runInMemoryImprovingTrial := func(runID string) string {
+		candidate := `---
+schema_version: "1"
+id: planner
+name: Planner-Improved-InMem
+complexity: standard
+metadata:
+  role: in-memory improved
+capabilities:
+  tools: [read, plan]
+---
+in-memory improved body
+`
+		candidatePath := filepath.Join(dataDir, "apply-cand-"+runID)
+		Expect(os.WriteFile(candidatePath, []byte(candidate), 0o600)).To(Succeed())
+
+		driverPath := filepath.Join(dataDir, "apply-driver-"+runID+".sh")
+		driverBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+cat %q
+`, candidatePath)
+		Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+		counterPath := filepath.Join(dataDir, "apply-counter-"+runID)
+		scorerPath := filepath.Join(dataDir, "apply-scorer-"+runID+".sh")
+		scorerBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+n=$(cat %q 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > %q
+if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
+`, counterPath, counterPath)
+		Expect(os.WriteFile(scorerPath, []byte(scorerBody), 0o755)).To(Succeed())
+
+		Expect(runCmd("autoresearch", "run",
+			"--surface", surface,
+			"--run-id", runID,
+			"--max-trials", "1",
+			"--time-budget", "30s",
+			"--metric-direction", "min",
+			"--driver-script", driverPath,
+			"--evaluator-script", scorerPath,
+		)).To(Succeed(), "in-memory run setup failed; out: %s", out.String())
+		return candidate
+	}
+
+	It("prints the best candidate content to stdout by default", func() {
+		candidate := runInMemoryImprovingTrial("apply-stdout-id")
+		out.Reset()
+
+		err := runCmd("autoresearch", "apply", "apply-stdout-id")
+		Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+		Expect(out.String()).To(Equal(candidate))
+	})
+
+	It("writes the best candidate to --write <path> outside the repo", func() {
+		candidate := runInMemoryImprovingTrial("apply-write-id")
+		out.Reset()
+
+		outPath := filepath.Join(dataDir, "applied.md")
+		err := runCmd("autoresearch", "apply", "apply-write-id", "--write", outPath)
+		Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+		body, readErr := os.ReadFile(outPath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(body)).To(Equal(candidate))
+		// Stdout summary names the destination so operators have
+		// the breadcrumb without piping to file.
+		Expect(out.String()).To(ContainSubstring(outPath))
+	})
+
+	It("refuses --write to a path inside the surface repo without --force-inside-repo", func() {
+		runInMemoryImprovingTrial("apply-inside-id")
+		out.Reset()
+
+		insidePath := filepath.Join(repoDir, "applied-inside.md")
+		err := runCmd("autoresearch", "apply", "apply-inside-id", "--write", insidePath)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("inside"))
+		Expect(err.Error()).To(ContainSubstring("--force-inside-repo"))
+
+		// Destination must NOT have been written.
+		_, statErr := os.Stat(insidePath)
+		Expect(os.IsNotExist(statErr)).To(BeTrue(),
+			"refused write must not leave a file behind; statErr=%v", statErr)
+	})
+
+	It("honours --force-inside-repo on an in-repo destination", func() {
+		candidate := runInMemoryImprovingTrial("apply-force-id")
+		out.Reset()
+
+		insidePath := filepath.Join(repoDir, "applied-forced.md")
+		err := runCmd("autoresearch", "apply", "apply-force-id",
+			"--write", insidePath, "--force-inside-repo")
+		Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+		body, readErr := os.ReadFile(insidePath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(body)).To(Equal(candidate))
+	})
+
+	It("refuses with a redirect to `promote` when the run used --commit-trials", func() {
+		// Stage a commit-mode run via the existing legacy path.
+		driverPath := filepath.Join(dataDir, "ct-driver.sh")
+		driverBody := `#!/usr/bin/env bash
+set -eu
+cat > "$FLOWSTATE_AUTORESEARCH_SURFACE" <<'BODY'
+---
+schema_version: "1"
+id: planner
+name: Planner-CT
+complexity: standard
+metadata:
+  role: commit-trials role
+capabilities:
+  tools: [read, plan]
+---
+commit-trials body
+BODY
+`
+		Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+		counterPath := filepath.Join(dataDir, "ct-counter")
+		scorerPath := filepath.Join(dataDir, "ct-scorer.sh")
+		scorerBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+n=$(cat %q 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > %q
+if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
+`, counterPath, counterPath)
+		Expect(os.WriteFile(scorerPath, []byte(scorerBody), 0o755)).To(Succeed())
+
+		Expect(runCmd("autoresearch", "run", "--commit-trials",
+			"--surface", surface,
+			"--run-id", "applyct-id",
+			"--max-trials", "1",
+			"--time-budget", "30s",
+			"--metric-direction", "min",
+			"--worktree-base", filepath.Join(dataDir, "wt-applyct"),
+			"--driver-script", driverPath,
+			"--evaluator-script", scorerPath,
+		)).To(Succeed(), "commit-mode run setup failed; out: %s", out.String())
+		out.Reset()
+
+		err := runCmd("autoresearch", "apply", "applyct-id")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("--commit-trials"))
+		Expect(err.Error()).To(ContainSubstring("autoresearch promote"))
+	})
+
+	It("errors when the run does not exist or produced no kept candidates", func() {
+		// A non-existent run and a run with no kept candidate both
+		// surface as a hard error mentioning the run id. The exact
+		// phrasing is the harness's call (manifest-missing vs
+		// best-missing have distinct messages); the spec pins that
+		// SOME clear error fires rather than panicking or returning
+		// empty.
+		err := runCmd("autoresearch", "apply", "no-such-apply-run")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no-such-apply-run"))
+	})
+})
+
 // Lifecycle plan Slice 5 — `flowstate autoresearch list` enumerates
 // runs from the coord-store, joining the manifest record with `git
 // worktree list` to derive the 4-value status enum (absent | present
