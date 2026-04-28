@@ -22,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,11 +30,15 @@ import (
 )
 
 type mockStreamer struct {
-	chunks []provider.StreamChunk
-	err    error
+	chunks            []provider.StreamChunk
+	err               error
+	capturedAgentID   string
+	capturedMessage   string
 }
 
-func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+func (m *mockStreamer) Stream(_ context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
+	m.capturedAgentID = agentID
+	m.capturedMessage = message
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -43,6 +48,24 @@ func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan pro
 	}
 	close(ch)
 	return ch, nil
+}
+
+// fakeDispatchEngine satisfies swarm.DispatchEngine for the API parity
+// tests. Records every SetSwarmContext + FlushSwarmLifecycle call so
+// the test can assert the swarm dispatch path actually went through
+// the engine — not just the streamer.
+type fakeDispatchEngine struct {
+	installedContext *swarm.Context
+	flushCalls       int
+}
+
+func (f *fakeDispatchEngine) SetSwarmContext(ctx *swarm.Context) {
+	f.installedContext = ctx
+}
+
+func (f *fakeDispatchEngine) FlushSwarmLifecycle(_ context.Context) error {
+	f.flushCalls++
+	return nil
 }
 
 var _ = Describe("Server", func() {
@@ -288,6 +311,86 @@ var _ = Describe("Server", func() {
 				events := parseSSEEvents(recorder.Body)
 				Expect(events).To(ContainElement(ContainSubstring(`"error":"stream failed"`)))
 				Expect(events).To(ContainElement("[DONE]"))
+			})
+		})
+
+		// API/CLI/TUI parity per ADR - Swarm Dispatch Across Access Methods.
+		// The web surface used to call streaming.Run directly with whatever
+		// the client sent as agent_id, so a swarm id arrived as a phantom
+		// agent and the engine streamed nothing useful. With WithSwarmRegistry
+		// + WithDispatchEngine wired, the handler resolves the id through
+		// swarm.ResolveTarget and dispatches via swarm.DispatchSwarm — same
+		// shape as cli/run.go's flow.
+		Context("when agent_id resolves to a swarm", func() {
+			var (
+				swarmReg *swarm.Registry
+				engStub  *fakeDispatchEngine
+			)
+
+			BeforeEach(func() {
+				registry.Register(&agent.Manifest{ID: "test-lead", Name: "Test Lead"})
+				swarmReg = swarm.NewRegistry()
+				swarmReg.Register(&swarm.Manifest{
+					SchemaVersion: "1.0.0",
+					ID:            "test-swarm",
+					Lead:          "test-lead",
+					Members:       []string{},
+				})
+				engStub = &fakeDispatchEngine{}
+				server = api.NewServer(streamer, registry, disc, skills,
+					api.WithSwarmRegistry(swarmReg),
+					api.WithDispatchEngine(engStub),
+				)
+			})
+
+			It("streams from the swarm's lead, not the swarm id verbatim", func() {
+				body := `{"agent_id":"test-swarm","message":"trace please"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(streamer.capturedAgentID).To(Equal("test-lead"))
+				Expect(streamer.capturedMessage).To(Equal("trace please"))
+			})
+
+			It("installs a swarm context on the engine and flushes the lifecycle", func() {
+				body := `{"agent_id":"test-swarm","message":"hi"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(engStub.installedContext).NotTo(BeNil())
+				Expect(engStub.installedContext.SwarmID).To(Equal("test-swarm"))
+				Expect(engStub.installedContext.LeadAgent).To(Equal("test-lead"))
+				Expect(engStub.flushCalls).To(Equal(1))
+			})
+
+			It("passes a plain agent id through unchanged (no swarm context)", func() {
+				body := `{"agent_id":"test-lead","message":"hi"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(streamer.capturedAgentID).To(Equal("test-lead"))
+				// SetSwarmContext is still called — with nil — so the engine
+				// reverts to single-agent shape if a previous swarm dispatch
+				// left context behind. Flush still runs to keep the wind-down
+				// idempotent.
+				Expect(engStub.installedContext).To(BeNil())
+				Expect(engStub.flushCalls).To(Equal(1))
+			})
+
+			It("returns 400 when agent_id matches neither registry", func() {
+				body := `{"agent_id":"ghost","message":"hi"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+				Expect(streamer.capturedAgentID).To(Equal(""))
+				Expect(engStub.installedContext).To(BeNil())
+				Expect(engStub.flushCalls).To(Equal(0))
 			})
 		})
 	})

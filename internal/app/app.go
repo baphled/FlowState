@@ -201,6 +201,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		providerRegistry:   providerRegistry,
 		ollamaProvider:     ollamaProvider,
 		agentRegistry:      agentRegistry,
+		swarmRegistry:      swarmRegistry,
 		defaultManifest:    defaultManifest,
 		alwaysActiveSkills: alwaysActiveSkills,
 		skills:             skills,
@@ -622,6 +623,8 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		params.agentRegistry,
 		disc,
 		params.skills,
+		api.WithSwarmRegistry(params.swarmRegistry),
+		api.WithDispatchEngine(eng),
 		api.WithSessions(params.sessionStore),
 		api.WithSessionManager(sessionMgr),
 		api.WithTodoStore(tp.todoStore),
@@ -927,6 +930,7 @@ type setupEngineParams struct {
 	providerRegistry   *provider.Registry
 	ollamaProvider     *ollama.Provider
 	agentRegistry      *agent.Registry
+	swarmRegistry      *swarm.Registry
 	defaultManifest    agent.Manifest
 	alwaysActiveSkills []skill.Skill
 	skills             []skill.Skill

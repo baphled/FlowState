@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 )
 
@@ -34,6 +35,8 @@ type Streamer interface {
 type Server struct {
 	streamer               Streamer
 	registry               *agent.Registry
+	swarmRegistry          *swarm.Registry
+	dispatchEngine         swarm.DispatchEngine
 	discovery              *discovery.AgentDiscovery
 	skills                 []skill.Skill
 	sessions               *ctxstore.FileSessionStore
@@ -49,6 +52,30 @@ type Server struct {
 
 // ServerOption configures an optional Server dependency.
 type ServerOption func(*Server)
+
+// WithSwarmRegistry installs the swarm registry on the API server so the
+// chat handler can route @<swarm-id> requests through the same shared
+// dispatch service the CLI and TUI use. Without this option the handler
+// falls back to plain streaming and any swarm id supplied as agent_id
+// reaches the engine as if it were an agent — a silent no-op that
+// breaks parity with the other surfaces.
+//
+// Per ADR - Swarm Dispatch Across Access Methods, all three surfaces
+// (CLI, TUI, web) resolve through swarm.ResolveTarget and dispatch
+// through swarm.DispatchSwarm; this option is what makes that true on
+// the web side.
+func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
+	return func(s *Server) { s.swarmRegistry = reg }
+}
+
+// WithDispatchEngine installs the engine used to install/flush a swarm
+// context around dispatched runs. Without it the API can still resolve
+// swarms (so error messages stay correct), but it cannot honour
+// post-swarm gates or context propagation. Production wires
+// *engine.Engine here; tests may pass a fake.
+func WithDispatchEngine(eng swarm.DispatchEngine) ServerOption {
+	return func(s *Server) { s.dispatchEngine = eng }
+}
 
 // WithSessionBroker sets the session broker for live event streaming.
 //
@@ -363,17 +390,31 @@ type sseError struct {
 //   - Request body contains JSON-encoded chatRequest with agent_id and message.
 //   - ResponseWriter supports HTTP flushing for streaming.
 //   - Optional query parameter "verbosity" accepts "minimal", "standard", or "verbose".
+//   - When agent_id resolves to a registered swarm via the swarm registry
+//     (WithSwarmRegistry option), the request is dispatched through
+//     swarm.DispatchSwarm so post-swarm gates fire and the swarm context
+//     is installed on the engine — matching the CLI and TUI shapes.
+//   - When the swarm registry is not configured or agent_id resolves to a
+//     plain agent, falls back to plain streaming.Run for backward
+//     compatibility with API consumers built against the agent-only
+//     contract.
 //
 // Side effects:
 //   - Writes HTTP 200 with Content-Type text/event-stream.
 //   - Streams content chunks, errors, and completion marker as SSE data lines.
-//   - Writes HTTP 400 if request body is invalid JSON.
+//   - Writes HTTP 400 if request body is invalid JSON or agent_id is unknown.
 //   - Writes HTTP 500 if streaming is not supported.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	leadID, swarmCtx, err := s.resolveDispatchTarget(req.AgentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -390,9 +431,48 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	verbosityParam := r.URL.Query().Get("verbosity")
 	consumer := streaming.NewVerbosityFilter(sseConsumer, parseVerbosityLevel(verbosityParam))
 
-	if err := streaming.Run(r.Context(), s.streamer, consumer, req.AgentID, req.Message); err != nil {
+	if err := swarm.DispatchSwarm(r.Context(), s.dispatchEngine, swarmCtx, s.streamer, consumer, leadID, req.Message); err != nil {
 		log.Printf("[api] chat stream error: %v", err)
 	}
+}
+
+// resolveDispatchTarget classifies req.AgentID into a (lead-or-agent,
+// swarmCtx) pair using the same shared swarm.ResolveTarget the CLI's
+// resolveAgentOrSwarm and the TUI's maybeBeginSwarmDispatch use. When
+// the swarm registry is not installed (test surface, or a build that
+// omitted the loader), passes the input id through verbatim with a nil
+// swarmCtx — matching the CLI's bare-engine pass-through contract.
+//
+// Expected:
+//   - id is the user-supplied agent_id from the chat request body.
+//
+// Returns:
+//   - leadID: the agent id to drive the streamer with. For agent
+//     targets and pass-through this is id verbatim; for swarm targets
+//     it is the swarm's lead.
+//   - swarmCtx: the *swarm.Context to install on the engine; nil for
+//     agent targets and pass-through.
+//   - err: non-nil only when both registries are configured and id
+//     matches neither (the api surface treats this as a 400 to keep
+//     the contract symmetric with the CLI's *swarm.NotFoundError).
+//
+// Side effects:
+//   - None.
+func (s *Server) resolveDispatchTarget(id string) (string, *swarm.Context, error) {
+	if s.swarmRegistry == nil {
+		return id, nil, nil
+	}
+	hasAgent := func(name string) bool {
+		if s.registry == nil {
+			return false
+		}
+		if _, ok := s.registry.Get(name); ok {
+			return true
+		}
+		_, ok := s.registry.GetByNameOrAlias(name)
+		return ok
+	}
+	return swarm.ResolveTarget(hasAgent, s.swarmRegistry, id)
 }
 
 // handleDiscover retrieves agent suggestions based on a message query parameter.
