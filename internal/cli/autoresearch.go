@@ -224,7 +224,7 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.IntVar(&opts.noImproveWindow, "no-improve-window", 5,
 		"Consecutive non-improving trials before terminating with reason=converged")
 	flags.StringVar(&opts.driverScript, "driver-script", "",
-		"Driver script path. The harness invokes this script once per trial inside the worktree; the script is responsible for editing the surface in place. The synthesised prompt-file path is exposed via FLOWSTATE_AUTORESEARCH_PROMPT_FILE. See scripts/autoresearch-drivers/default-assistant-driver.sh for the canonical reference driver.")
+		"Driver script path. In default in-memory mode (April 2026 In-Memory Default plan) the harness pipes the synthesised prompt to the driver via stdin and captures the candidate string from stdout; FLOWSTATE_AUTORESEARCH_PROMPT_FILE is populated as a parallel channel. Under --commit-trials the driver is invoked inside the worktree and edits the surface in place. See scripts/autoresearch-drivers/default-assistant-driver.sh for the canonical reference driver (in-memory shape) or default-assistant-driver-commit.sh for the legacy shape.")
 	flags.DurationVar(&opts.driverTimeout, "driver-timeout", 3*time.Minute,
 		"Per-invocation driver wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `validator-io-error` with a timeout marker and does NOT count toward no-improve-window. Live-driver plan § 4.6 (R1.1).")
 	flags.IntVar(&opts.driverMaxTurns, "driver-max-turns", 10,
