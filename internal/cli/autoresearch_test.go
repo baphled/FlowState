@@ -324,6 +324,107 @@ planner body
 				Expect(exists).To(BeFalse())
 			}
 		})
+
+		// Lifecycle plan Slice 1 — named-branch worktrees. Every run's
+		// worktree is created on a real branch named
+		// `autoresearch/<run-id-short>` so kept commits remain reachable
+		// as a branch ref after the worktree is removed (Slice 2). The
+		// run-id prefix is the first 8 characters; this matches the
+		// `.claude/worktrees/agent-<8hex>/` convention.
+		Context("when the trial worktree is created on a named branch", func() {
+			It("checks the worktree out on autoresearch/<run-id-short>, not detached HEAD", func() {
+				driver := writeNoOpDriver()
+				scorer := writeNoOpScorer()
+
+				// run-id is chosen so the first 8 chars form a stable
+				// readable suffix the assertions below pin verbatim.
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "fixrunaa-rest-of-id",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-branch"),
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("fixrunaa-rest-of-id")
+				worktreePath, _ := record["worktree_path"].(string)
+				Expect(worktreePath).NotTo(BeEmpty())
+
+				// HEAD inside the worktree must resolve to the named
+				// branch, not the literal "HEAD" symbolic ref produced
+				// by --detach.
+				headCmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+				headOut, headErr := headCmd.CombinedOutput()
+				Expect(headErr).NotTo(HaveOccurred(), "git rev-parse: %s", string(headOut))
+				Expect(strings.TrimSpace(string(headOut))).To(Equal("autoresearch/fixrunaa"))
+
+				// And the branch must exist as a parent-repo branch ref.
+				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/fixrunaa")
+				branchOut, branchErr := branchCmd.CombinedOutput()
+				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
+				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
+					"branch autoresearch/fixrunaa should exist in the parent repo")
+			})
+
+			It("uses the first 8 characters of the run-id as the branch suffix", func() {
+				driver := writeNoOpDriver()
+				scorer := writeNoOpScorer()
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "deadbeefcafef00d-extra-tail",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-prefix"),
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/deadbeef")
+				branchOut, branchErr := branchCmd.CombinedOutput()
+				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
+				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
+					"branch autoresearch/deadbeef should exist (8-char prefix of run-id)")
+			})
+
+			It("fails when the branch already exists (collision on rerun with same run-id)", func() {
+				driver := writeNoOpDriver()
+				scorer := writeNoOpScorer()
+
+				args := []string{
+					"autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "clashfix-rest-of-id",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-collide"),
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				}
+
+				// First run succeeds and creates autoresearch/clashfix.
+				Expect(runCmd(args...)).To(Succeed(), "first run should succeed; out: %s", out.String())
+
+				// Second run with the same run-id targets a different
+				// worktree path; the branch collision is what must
+				// fail. Use a distinct base so the worktree path itself
+				// is fresh.
+				out.Reset()
+				args2 := append([]string{}, args...)
+				for i, a := range args2 {
+					if a == "--worktree-base" {
+						args2[i+1] = filepath.Join(dataDir, "wt-collide-2")
+					}
+				}
+				err := runCmd(args2...)
+				Expect(err).To(HaveOccurred(), "second run should fail on branch collision")
+				Expect(err.Error()).To(ContainSubstring("autoresearch/clashfix"))
+			})
+		})
 	})
 
 	// Trial-loop specs (Slice 1c). The driver script appends a marker

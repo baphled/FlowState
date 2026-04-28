@@ -252,7 +252,8 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	}
 
 	worktreePath := filepath.Join(resolved.worktreeBase, resolved.runID, "worktree")
-	if err := createTrialWorktree(surfaceRepoRoot, worktreePath); err != nil {
+	branchName := autoresearchBranchName(resolved.runID)
+	if err := createTrialWorktree(surfaceRepoRoot, worktreePath, branchName); err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 
@@ -724,33 +725,69 @@ func requireCleanTree(repoRoot string) error {
 	return nil
 }
 
+// autoresearchBranchName returns the branch name a run's worktree is
+// created on. Per the lifecycle plan (April 2026) § Branch-naming
+// convention, every run gets a branch named
+// `autoresearch/<run-id-short>` where <run-id-short> is the first 8
+// characters of the run ID. UUID4 8-char prefix collision probability
+// is ~2.3e-10 per run; below the noise floor for any realistic run
+// count. The 8-char prefix matches the convention seen in
+// `.claude/worktrees/agent-<8hex>/` worktrees.
+//
+// Expected:
+//   - runID is the resolved run identifier (UUID4 or operator-supplied).
+//
+// Returns:
+//   - The branch name string.
+func autoresearchBranchName(runID string) string {
+	short := runID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return "autoresearch/" + short
+}
+
 // createTrialWorktree adds a git worktree at worktreePath off the
-// surface repo's HEAD. The worktree is the harness's owned playground
-// for per-trial commits; the operator's tree is never touched.
+// surface repo's HEAD on a named branch. The worktree is the harness's
+// owned playground for per-trial commits; the operator's tree is never
+// touched.
+//
+// The branch is created as `autoresearch/<run-id-short>` (lifecycle
+// plan Slice 1) so kept commits are reachable as a real branch ref
+// after the worktree is removed — not as bare detached SHAs reachable
+// only via the worktree checkout.
 //
 // Expected:
 //   - repoRoot is the parent repo root.
 //   - worktreePath is the desired worktree path; its parent
 //     directories are created as needed.
+//   - branchName is the branch the worktree is created on; the branch
+//     is created off the parent repo's current HEAD.
 //
 // Returns:
 //   - nil on a successful `git worktree add`.
-//   - non-nil error if the worktree cannot be created.
+//   - non-nil error if the worktree or branch cannot be created (e.g.
+//     branch name collision when re-running with an existing run-id).
 //
 // Side effects:
 //   - Creates parent directories of worktreePath.
-//   - Calls `git worktree add` to materialise the worktree.
-func createTrialWorktree(repoRoot, worktreePath string) error {
+//   - Calls `git worktree add -b <branch>` to materialise the worktree
+//     and the branch atomically.
+func createTrialWorktree(repoRoot, worktreePath, branchName string) error {
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 		return fmt.Errorf("creating worktree parent: %w", err)
 	}
-	// Reuse the parent's HEAD; no branch is created. The harness
-	// will commit per-trial against the detached HEAD inside the
-	// worktree (Slice 1c). Slice 1d cherry-picks kept commits back.
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", worktreePath, "HEAD")
+	// Create the branch and worktree atomically off the parent's
+	// HEAD. The branch persists after the worktree is removed (Slice
+	// 2 auto-prune); kept commits are reachable as branch refs. If
+	// the branch already exists (operator re-ran with an existing
+	// --run-id), git's error is propagated verbatim — the operator
+	// is directed at `flowstate autoresearch list` (Slice 5) by the
+	// surrounding command's documentation.
+	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "-b", branchName, worktreePath, "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git worktree add: %w (output: %s)", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("git worktree add -b %s: %w (output: %s)", branchName, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
