@@ -50,6 +50,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/google/uuid"
@@ -57,18 +58,34 @@ import (
 )
 
 // autoresearchRunOptions holds the parsed flag values for one run.
+//
+// Slice 6 fields:
+//   - program              — operator-supplied skill name or path
+//   - callingAgentManifest — best-effort path to the calling agent's
+//     manifest, used for the N12 de-dup check
+// Resolved-state fields populated during resolveAutoresearchOptions:
+//   - programResolvedPath   — absolute path the program string resolves to
+//   - programIsSkillName    — true when the operator supplied a registry
+//     name (no '/' and no '.md' suffix)
+//   - programDeduplicated   — true when the resolved program skill name
+//     matches an entry in the calling agent's always_active_skills
 type autoresearchRunOptions struct {
-	surface          string
-	surfaceType      SurfaceType
-	maxTrials        int
-	metricDirection  string
-	timeBudget       time.Duration
-	runID            string
-	worktreeBase     string
-	noImproveWindow  int
-	driverScript     string
-	evaluatorScript  string
-	evaluatorTimeout time.Duration
+	surface              string
+	surfaceType          SurfaceType
+	maxTrials            int
+	metricDirection      string
+	timeBudget           time.Duration
+	runID                string
+	worktreeBase         string
+	noImproveWindow      int
+	driverScript         string
+	evaluatorScript      string
+	evaluatorTimeout     time.Duration
+	program              string
+	callingAgentManifest string
+	programResolvedPath  string
+	programIsSkillName   bool
+	programDeduplicated  bool
 }
 
 // metric direction enumeration.
@@ -170,6 +187,10 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 		"Evaluator script path. Any executable that satisfies the contract in plan v3.1 § 4.6 (one non-negative integer to stdout, exit 0; see skills/autoresearch/SKILL.md \"Writing an evaluator\"). Default: scripts/validate-harness.sh --score")
 	flags.DurationVar(&opts.evaluatorTimeout, "evaluator-timeout", 5*time.Minute,
 		"Per-invocation evaluator wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` and counts toward `evaluator-contract-failure-rate`")
+	flags.StringVar(&opts.program, "program", "autoresearch",
+		"Program-of-record for this run. Either a registry skill name (resolved as `skills/<name>/SKILL.md` under the repo root) or a path (anything containing '/' or ending in '.md', resolved relative to the repo root or absolute). Default: `autoresearch`. Pluggable per Slice 6 of the autoresearch plan v3.1.")
+	flags.StringVar(&opts.callingAgentManifest, "calling-agent", "",
+		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
 
 	return cmd
 }
@@ -198,6 +219,13 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	if err != nil {
 		return err
 	}
+
+	// Slice 6 — log the N12 de-dup decision before any worktree work
+	// so the operator-visible record matches the trial loop's actual
+	// behaviour. The log line goes to stdout (same writer used by the
+	// run summary) and the boolean lands on the manifest record's
+	// program_resolved annotation.
+	resolved.programDeduplicated = applyCallingAgentDeDup(resolved, cmd.OutOrStdout())
 
 	surfaceRepoRoot, err := surfaceRepoRoot(resolved.surface)
 	if err != nil {
@@ -413,6 +441,22 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 		}
 	}
 
+	// Slice 6 — resolve `--program` to a concrete file path before any
+	// worktree work begins. Failure here is operator-facing (typo'd
+	// skill name, missing path) and must reject the run before the
+	// clean-tree precondition fires so the operator sees one clear
+	// error rather than a chain of misleading downstream symptoms.
+	repoRoot, repoErr := surfaceRepoRoot(opts.surface)
+	if repoErr != nil {
+		return opts, fmt.Errorf("resolving repo root for --program: %w", repoErr)
+	}
+	resolvedProgram, isSkillName, programErr := resolveProgram(opts.program, repoRoot)
+	if programErr != nil {
+		return opts, programErr
+	}
+	opts.programResolvedPath = resolvedProgram
+	opts.programIsSkillName = isSkillName
+
 	if opts.runID == "" {
 		opts.runID = uuid.NewString()
 	}
@@ -422,6 +466,148 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 	}
 
 	return opts, nil
+}
+
+// programIsPathForm returns true when the operator-supplied `--program`
+// value should be interpreted as a path rather than a registry skill
+// name. Per plan § 5.10, anything containing a path separator or
+// ending in `.md` is a path; bare identifiers are skill names. This
+// rule keeps the surface predictable: skill names live in
+// `skills/<name>/SKILL.md` and never carry a slash; ad-hoc programs
+// are operator-authored markdown files.
+func programIsPathForm(value string) bool {
+	if strings.ContainsRune(value, '/') {
+		return true
+	}
+	if strings.EqualFold(filepath.Ext(value), ".md") {
+		return true
+	}
+	return false
+}
+
+// resolveProgram converts the operator-supplied `--program` value into
+// an absolute path on disk. The two resolution forms follow plan
+// § 5.10:
+//
+//   - Skill name (no '/' and no '.md' suffix): looked up as
+//     `<repoRoot>/skills/<name>/SKILL.md`. The skill body is read by
+//     the registry; the harness only confirms the file exists and is
+//     a regular file — content validation belongs to the engine's
+//     skill loader, not to the autoresearch surface gate.
+//   - Path (contains '/' or ends in '.md'): resolved as an absolute
+//     path when given absolute, otherwise relative to the repo root.
+//     The path must point at an existing regular file.
+//
+// Expected:
+//   - value is a non-empty operator-supplied program identifier.
+//   - repoRoot is an absolute path to the surface's enclosing git repo,
+//     used as the search base for skill-name lookups and relative
+//     paths.
+//
+// Returns:
+//   - The absolute resolved path on success.
+//   - isSkillName: true when the input was treated as a registry skill
+//     name (drives the N12 de-dup detection in applyCallingAgentDeDup).
+//   - A descriptive error mentioning `--program` and the failure mode
+//     when the path does not exist, is not a regular file, or is not
+//     readable.
+//
+// Side effects:
+//   - Stat-checks the resolved path.
+func resolveProgram(value, repoRoot string) (resolved string, isSkillName bool, err error) {
+	if value == "" {
+		return "", false, errors.New("--program: must not be empty (default is `autoresearch`)")
+	}
+	if programIsPathForm(value) {
+		candidate := value
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(repoRoot, candidate)
+		}
+		info, statErr := os.Stat(candidate)
+		if statErr != nil {
+			return "", false, fmt.Errorf("--program %q: %w", value, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			return "", false, fmt.Errorf("--program %q: not a regular file", value)
+		}
+		abs, absErr := filepath.Abs(candidate)
+		if absErr != nil {
+			return "", false, fmt.Errorf("--program %q: resolving absolute path: %w", value, absErr)
+		}
+		return abs, false, nil
+	}
+	// Skill-name form — look up `skills/<name>/SKILL.md` under the
+	// repo root. The harness deliberately does NOT search the user-
+	// global skill registry (~/.claude/skills/...); registry-named
+	// programs must live alongside the surface so kept commits the
+	// harness cherry-picks back are reproducible across machines.
+	skillPath := filepath.Join(repoRoot, "skills", value, "SKILL.md")
+	info, statErr := os.Stat(skillPath)
+	if statErr != nil {
+		return "", false, fmt.Errorf("--program %q: skill not found at %s: %w", value, skillPath, statErr)
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, fmt.Errorf("--program %q: %s is not a regular file", value, skillPath)
+	}
+	abs, absErr := filepath.Abs(skillPath)
+	if absErr != nil {
+		return "", false, fmt.Errorf("--program %q: resolving absolute path: %w", value, absErr)
+	}
+	return abs, true, nil
+}
+
+// applyCallingAgentDeDup implements the N12 contract from plan § 5.10.
+//
+// When --program resolves to a registry skill name AND --calling-agent
+// points at a loadable manifest whose `always_active_skills` list
+// contains the program name, the harness logs a de-dup decision and
+// returns true so the caller can annotate the run's manifest record.
+// Path-based programs never trigger de-dup — they are anonymous
+// surfaces with no registry-name to match. Missing / unparseable
+// calling-agent manifests are ignored silently per the best-effort
+// contract: operators driving the harness directly from a shell never
+// see spurious errors about manifests they did not supply.
+//
+// Expected:
+//   - opts has been resolved (programResolvedPath, programIsSkillName,
+//     program, callingAgentManifest all populated).
+//   - w is the destination for the human-readable de-dup log line.
+//
+// Returns:
+//   - true when a de-dup match was logged; false otherwise.
+//
+// Side effects:
+//   - Reads the calling-agent manifest from disk.
+//   - Writes a single de-dup log line to w when a match fires.
+func applyCallingAgentDeDup(opts autoresearchRunOptions, w io.Writer) bool {
+	if !opts.programIsSkillName {
+		return false
+	}
+	if opts.callingAgentManifest == "" {
+		return false
+	}
+	manifest, err := agent.LoadManifest(opts.callingAgentManifest)
+	if err != nil || manifest == nil {
+		// Best-effort — a missing or unparseable calling-agent manifest
+		// is not a hard fail. Operators may invoke the harness from a
+		// shell with no agent context at all, in which case there is
+		// no manifest to consult.
+		return false
+	}
+	for _, name := range manifest.Capabilities.AlwaysActiveSkills {
+		if name == opts.program {
+			// Single quotes (rather than %q) are the documented form
+			// in plan v3.1 § 5.10. Operators grepping the run output
+			// for the de-dup line should match the literal sentence
+			// from the plan, not the Go-canonical %q rendering.
+			_, _ = fmt.Fprintf(w,
+				"autoresearch: program skill '%s' already loaded by calling agent; skipping re-injection\n",
+				opts.program,
+			)
+			return true
+		}
+	}
+	return false
 }
 
 // agentDirsFromConfig assembles the union of cfg.AgentDir and
@@ -576,6 +762,7 @@ type manifestRecord struct {
 	Evaluator       string  `json:"evaluator"`
 	EvaluatorScript string  `json:"evaluator_script,omitempty"`
 	Program         string  `json:"program"`
+	ProgramResolved string  `json:"program_resolved"`
 	MetricDirection string  `json:"metric_direction"`
 	MaxTrials       int     `json:"max_trials"`
 	TimeBudget      string  `json:"time_budget"`
@@ -617,7 +804,8 @@ func writeManifestRecord(
 		SurfaceType:     string(opts.surfaceType),
 		Evaluator:       defaultEvaluator(opts.evaluatorScript),
 		EvaluatorScript: opts.evaluatorScript,
-		Program:         "autoresearch",
+		Program:         opts.program,
+		ProgramResolved: programResolvedRecord(opts),
 		MetricDirection: opts.metricDirection,
 		MaxTrials:       opts.maxTrials,
 		TimeBudget:      opts.timeBudget.String(),
@@ -651,6 +839,18 @@ func defaultEvaluator(supplied string) string {
 		return supplied
 	}
 	return "scripts/validate-harness.sh --score"
+}
+
+// programResolvedRecord renders the manifest record's `program_resolved`
+// field. By default it is the absolute resolved path; when the N12
+// de-dup fired, the path is suffixed with " (deduplicated against
+// calling agent)" so an auditor can reconcile the logged line with
+// the persisted record without cross-referencing stdout.
+func programResolvedRecord(opts autoresearchRunOptions) string {
+	if opts.programDeduplicated {
+		return opts.programResolvedPath + " (deduplicated against calling agent)"
+	}
+	return opts.programResolvedPath
 }
 
 // validateEvaluatorScriptPath enforces the operator-facing half of

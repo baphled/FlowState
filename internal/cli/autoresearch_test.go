@@ -40,14 +40,20 @@ var _ = Describe("autoresearch run command", func() {
 		runCmd    func(args ...string) error
 	)
 
-	// initRepo creates a temp git repo with a single committed manifest
-	// at internal/app/agents/planner.md. The harness's hard-coded MVP
-	// surface is `internal/app/agents/planner.md` per § 5.5; the test
-	// repo mirrors that layout so the surface path validation is real.
+	// initRepo creates a temp git repo with a committed planner manifest
+	// at internal/app/agents/planner.md (the harness's hard-coded MVP
+	// surface per § 5.5) and a committed default `autoresearch` skill at
+	// skills/autoresearch/SKILL.md. The skill stub is the resolution
+	// target for the default `--program autoresearch` flag (Slice 6) —
+	// without it the skill-name resolver fails before the run starts.
 	initRepo := func(repo, manifestBody string) {
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
 		Expect(os.WriteFile(manifestPath, []byte(manifestBody), 0o600)).To(Succeed())
+
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		skillPath := filepath.Join(repo, "skills", "autoresearch", "SKILL.md")
+		Expect(os.WriteFile(skillPath, []byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
 
 		run := func(args ...string) {
 			cmd := exec.Command("git", args...)
@@ -146,6 +152,8 @@ planner body
 			Expect(output).To(ContainSubstring("--run-id"))
 			Expect(output).To(ContainSubstring("--worktree-base"))
 			Expect(output).To(ContainSubstring("--no-improve-window"))
+			Expect(output).To(ContainSubstring("--program"))
+			Expect(output).To(ContainSubstring("--calling-agent"))
 		})
 	})
 
@@ -1628,4 +1636,329 @@ exec %q
 			})
 		})
 	})
+
+	// Slice 6 — `--program <skill-name | path>` resolves the program-of-
+	// record. Skill names look up `skills/<name>/SKILL.md` under the
+	// repo root; paths (anything containing `/` or ending in `.md`)
+	// resolve relative to repo root or absolute. Missing programs
+	// reject before the run starts. The N12 de-dup behaviour pins
+	// double-loading: when the calling agent already declares the
+	// program skill in its `always_active_skills`, the harness logs
+	// the de-dup decision and annotates the manifest record.
+	Describe("program resolution (Slice 6)", func() {
+		var (
+			noOpDriver  string
+			noOpScorer  string
+			worktreeDir string
+		)
+
+		// writeProgramSkill creates `skills/<name>/SKILL.md` under the
+		// test repoDir so skill-name resolution has something real to
+		// point at. The body is minimal but valid markdown — the
+		// harness only resolves the path; it does not parse the
+		// content beyond a frontmatter/file-existence probe.
+		writeProgramSkill := func(name, body string) string {
+			skillDir := filepath.Join(repoDir, "skills", name)
+			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+			skillPath := filepath.Join(skillDir, "SKILL.md")
+			Expect(os.WriteFile(skillPath, []byte(body), 0o600)).To(Succeed())
+			// Re-stage and re-commit so the worktree starts clean.
+			gitCmd := func(args ...string) {
+				c := exec.Command("git", args...)
+				c.Dir = repoDir
+				c.Env = append(os.Environ(),
+					"GIT_AUTHOR_NAME=test",
+					"GIT_AUTHOR_EMAIL=test@example.com",
+					"GIT_COMMITTER_NAME=test",
+					"GIT_COMMITTER_EMAIL=test@example.com",
+				)
+				combined, err := c.CombinedOutput()
+				Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+			}
+			gitCmd("add", ".")
+			gitCmd("commit", "--no-verify", "-m", "add skill "+name)
+			return skillPath
+		}
+
+		// writeCallingAgentManifest authors a JSON manifest under the
+		// dataDir (NOT inside the surface repo — placing it under
+		// repoDir/internal/app/agents would dirty the tree and trip
+		// the clean-tree precondition before the run starts). The
+		// manifest is read by `applyCallingAgentDeDup` purely as input
+		// to the N12 de-dup check; it does not need to live alongside
+		// the surface. JSON over markdown so always_active_skills is
+		// honoured via the JSON tag directly rather than re-mapped
+		// through `default_skills`.
+		writeCallingAgentManifest := func(id string, alwaysActive []string) string {
+			manifestPath := filepath.Join(dataDir, id+".json")
+			body := fmt.Sprintf(`{
+  "schema_version": "1",
+  "id": %q,
+  "name": %q,
+  "complexity": "standard",
+  "metadata": {"role": "calling agent"},
+  "capabilities": {
+    "tools": ["read"],
+    "always_active_skills": %s
+  }
+}`, id, id, jsonStringSlice(alwaysActive))
+			Expect(os.WriteFile(manifestPath, []byte(body), 0o600)).To(Succeed())
+			return manifestPath
+		}
+
+		BeforeEach(func() {
+			noOpDriver = filepath.Join(dataDir, "noop-driver.sh")
+			Expect(os.WriteFile(noOpDriver, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755)).To(Succeed())
+			noOpScorer = filepath.Join(dataDir, "noop-scorer.sh")
+			Expect(os.WriteFile(noOpScorer, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+			worktreeDir = filepath.Join(dataDir, "wt-program")
+		})
+
+		Context("skill-name resolution", func() {
+			It("defaults --program to the autoresearch skill when omitted", func() {
+				skillPath := writeProgramSkill("autoresearch", "skill body")
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-default",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("prog-default")
+				Expect(record).To(HaveKeyWithValue("program", "autoresearch"))
+				Expect(record).To(HaveKeyWithValue("program_resolved", skillPath))
+			})
+
+			It("resolves --program <skill-name> via skills/<name>/SKILL.md", func() {
+				skillPath := writeProgramSkill("custom-program", "another skill body")
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-named",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", "custom-program",
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("prog-named")
+				Expect(record).To(HaveKeyWithValue("program", "custom-program"))
+				Expect(record).To(HaveKeyWithValue("program_resolved", skillPath))
+			})
+
+			It("rejects --program <skill-name> when skills/<name>/SKILL.md does not exist", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-missing-skill",
+					"--max-trials", "1",
+					"--worktree-base", worktreeDir,
+					"--program", "ghost-skill",
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("program"))
+				Expect(err.Error()).To(ContainSubstring("ghost-skill"))
+			})
+		})
+
+		Context("path resolution", func() {
+			It("resolves --program <path> as an absolute file path", func() {
+				adHocDir := filepath.Join(dataDir, "ad-hoc")
+				Expect(os.MkdirAll(adHocDir, 0o755)).To(Succeed())
+				adHocPath := filepath.Join(adHocDir, "program.md")
+				Expect(os.WriteFile(adHocPath, []byte("ad-hoc program body"), 0o600)).To(Succeed())
+
+				// A skill that looks like the default still must not
+				// be picked up — the path form takes precedence.
+				_ = writeProgramSkill("autoresearch", "ignored-skill-body")
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-abs-path",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", adHocPath,
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("prog-abs-path")
+				Expect(record).To(HaveKeyWithValue("program", adHocPath))
+				Expect(record).To(HaveKeyWithValue("program_resolved", adHocPath))
+			})
+
+			It("rejects --program <path> when the file does not exist", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-missing-path",
+					"--max-trials", "1",
+					"--worktree-base", worktreeDir,
+					"--program", filepath.Join(dataDir, "missing", "program.md"),
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("program"))
+			})
+
+			It("treats values containing '/' as paths, not skill names", func() {
+				_ = writeProgramSkill("autoresearch", "default skill body")
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-slash-form",
+					"--max-trials", "1",
+					"--worktree-base", worktreeDir,
+					// "skills/autoresearch" without trailing SKILL.md is
+					// a path (contains '/'), and as a path it does not
+					// exist as a regular file → reject.
+					"--program", "skills/autoresearch",
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("program"))
+			})
+		})
+
+		Context("N12 de-dup against calling agent's always_active_skills", func() {
+			It("logs de-dup and annotates program_resolved when the calling agent declares the program skill", func() {
+				skillPath := writeProgramSkill("autoresearch", "shared skill body")
+				callingAgent := writeCallingAgentManifest("planner-orchestrator",
+					[]string{"pre-action", "autoresearch"})
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-dedup",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", "autoresearch",
+					"--calling-agent", callingAgent,
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				output := out.String()
+				Expect(output).To(ContainSubstring("autoresearch: program skill 'autoresearch' already loaded by calling agent"))
+				Expect(output).To(ContainSubstring("skipping re-injection"))
+
+				record := readManifestRecord("prog-dedup")
+				Expect(record).To(HaveKeyWithValue("program", "autoresearch"))
+				resolved, _ := record["program_resolved"].(string)
+				Expect(resolved).To(ContainSubstring(skillPath))
+				Expect(resolved).To(ContainSubstring("deduplicated against calling agent"))
+			})
+
+			It("does NOT fire de-dup when the calling agent does not declare the program skill", func() {
+				skillPath := writeProgramSkill("autoresearch", "skill body")
+				callingAgent := writeCallingAgentManifest("solo-agent",
+					[]string{"pre-action", "memory-keeper"})
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-no-dedup",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", "autoresearch",
+					"--calling-agent", callingAgent,
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				Expect(out.String()).NotTo(ContainSubstring("skipping re-injection"))
+				record := readManifestRecord("prog-no-dedup")
+				Expect(record).To(HaveKeyWithValue("program_resolved", skillPath))
+			})
+
+			It("does NOT fire de-dup when the program is supplied as a path even if the calling agent matches", func() {
+				_ = writeProgramSkill("autoresearch", "skill body")
+				callingAgent := writeCallingAgentManifest("path-orchestrator",
+					[]string{"autoresearch"})
+
+				adHocPath := filepath.Join(dataDir, "path-program.md")
+				Expect(os.WriteFile(adHocPath, []byte("ad-hoc program"), 0o600)).To(Succeed())
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-path-no-dedup",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", adHocPath,
+					"--calling-agent", callingAgent,
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				Expect(out.String()).NotTo(ContainSubstring("skipping re-injection"))
+				record := readManifestRecord("prog-path-no-dedup")
+				Expect(record).To(HaveKeyWithValue("program_resolved", adHocPath))
+			})
+
+			It("ignores --calling-agent when the manifest cannot be loaded (best-effort de-dup)", func() {
+				skillPath := writeProgramSkill("autoresearch", "skill body")
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "prog-bad-calling-agent",
+					"--max-trials", "0",
+					"--worktree-base", worktreeDir,
+					"--program", "autoresearch",
+					"--calling-agent", filepath.Join(dataDir, "no-such-manifest.json"),
+					"--driver-script", noOpDriver,
+					"--evaluator-script", noOpScorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				Expect(out.String()).NotTo(ContainSubstring("skipping re-injection"))
+				record := readManifestRecord("prog-bad-calling-agent")
+				Expect(record).To(HaveKeyWithValue("program_resolved", skillPath))
+			})
+		})
+
+		Context("preset programs", func() {
+			It("ships skills/autoresearch-presets/planner-quality.md as a reference program", func() {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				preset := filepath.Join(filepath.Dir(thisFile), "..", "..",
+					"skills", "autoresearch-presets", "planner-quality.md")
+				info, err := os.Stat(preset)
+				Expect(err).NotTo(HaveOccurred(), "planner-quality.md preset must exist")
+				Expect(info.Mode().IsRegular()).To(BeTrue())
+			})
+
+			It("ships skills/autoresearch-presets/perf-preserve-behaviour.md as a reference program", func() {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				preset := filepath.Join(filepath.Dir(thisFile), "..", "..",
+					"skills", "autoresearch-presets", "perf-preserve-behaviour.md")
+				info, err := os.Stat(preset)
+				Expect(err).NotTo(HaveOccurred(), "perf-preserve-behaviour.md preset must exist")
+				Expect(info.Mode().IsRegular()).To(BeTrue())
+			})
+		})
+	})
 })
+
+// jsonStringSlice renders a Go []string as a JSON array literal for
+// inline manifest fixtures.
+func jsonStringSlice(items []string) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	parts := make([]string, len(items))
+	for i, s := range items {
+		parts[i] = fmt.Sprintf("%q", s)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
