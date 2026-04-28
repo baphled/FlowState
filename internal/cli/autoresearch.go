@@ -142,6 +142,7 @@ func newAutoresearchCmd(getApp func() *app.App) *cobra.Command {
 	}
 	cmd.AddCommand(newAutoresearchRunCmd(getApp))
 	cmd.AddCommand(newAutoresearchPromoteCmd(getApp))
+	cmd.AddCommand(newAutoresearchListCmd(getApp))
 	return cmd
 }
 

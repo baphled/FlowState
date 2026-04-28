@@ -2893,6 +2893,201 @@ planner body improved
 	})
 })
 
+// Lifecycle plan Slice 5 — `flowstate autoresearch list` enumerates
+// runs from the coord-store, joining the manifest record with `git
+// worktree list` to derive the 4-value status enum (absent | present
+// | missing-branch | legacy-detached).
+var _ = Describe("autoresearch list command", func() {
+	var (
+		out     *bytes.Buffer
+		testApp *app.App
+		dataDir string
+		repoDir string
+		surface string
+		runCmd  func(args ...string) error
+	)
+
+	defaultManifestBody := `---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role
+capabilities:
+  tools: [read, plan]
+---
+planner body
+`
+	initRepo := func(repo string) {
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
+			[]byte(defaultManifestBody), 0o600)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
+
+		run := func(args ...string) {
+			gc := exec.Command("git", args...)
+			gc.Dir = repo
+			gc.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+			)
+			combined, err := gc.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+		}
+		run("init", "--initial-branch=main", repo)
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "test")
+		run("add", ".")
+		run("commit", "--no-verify", "-m", "initial")
+	}
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		dataDir = GinkgoT().TempDir()
+		repoDir = GinkgoT().TempDir()
+		initRepo(repoDir)
+		surface = filepath.Join(repoDir, "internal", "app", "agents", "planner.md")
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{
+			DataDir:   dataDir,
+			AgentsDir: filepath.Join(repoDir, "internal", "app", "agents"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	// runOneTrialRun seeds a one-trial successful run that produces a
+	// kept commit on the run's branch. Used by the status-enum cases.
+	runOneTrialRun := func(runID string, extra ...string) {
+		driver := filepath.Join(dataDir, "drv-"+runID)
+		Expect(os.WriteFile(driver,
+			[]byte(`#!/usr/bin/env bash
+set -eu
+cat "$DATA_DIR/cand" > "$FLOWSTATE_AUTORESEARCH_SURFACE"
+`), 0o755)).To(Succeed())
+
+		scorer := filepath.Join(dataDir, "scr-"+runID)
+		Expect(os.WriteFile(scorer,
+			[]byte(`#!/usr/bin/env bash
+set -eu
+n=$(cat "$DATA_DIR/n-`+runID+`" 2>/dev/null || echo 0)
+n=$((n+1))
+echo "$n" > "$DATA_DIR/n-`+runID+`"
+if [ "$n" = "1" ]; then echo 10; else echo 5; fi
+`), 0o755)).To(Succeed())
+
+		Expect(os.WriteFile(filepath.Join(dataDir, "cand"), []byte(`---
+schema_version: "1"
+id: planner
+name: Planner-Updated
+complexity: standard
+metadata:
+  role: updated
+capabilities:
+  tools: [read, plan]
+---
+updated body
+`), 0o600)).To(Succeed())
+
+		Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+		DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+		args := []string{
+			"autoresearch", "run",
+			"--surface", surface,
+			"--run-id", runID,
+			"--max-trials", "1",
+			"--time-budget", "30s",
+			"--metric-direction", "min",
+			"--worktree-base", filepath.Join(dataDir, "wt-"+runID),
+			"--driver-script", driver,
+			"--evaluator-script", scorer,
+		}
+		args = append(args, extra...)
+		Expect(runCmd(args...)).To(Succeed(), "out: %s", out.String())
+		out.Reset()
+	}
+
+	It("renders a no-runs notice when the coord-store is empty", func() {
+		Expect(runCmd("autoresearch", "list")).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("No autoresearch runs"))
+	})
+
+	It("classifies a clean-exit run as status=absent", func() {
+		runOneTrialRun("absentab-rest-of-id")
+		Expect(runCmd("autoresearch", "list")).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("absentab"))
+		Expect(out.String()).To(ContainSubstring("absent"))
+	})
+
+	It("classifies a --keep-worktree run as status=present", func() {
+		runOneTrialRun("presentp-rest-of-id", "--keep-worktree")
+		Expect(runCmd("autoresearch", "list")).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("presentp"))
+		Expect(out.String()).To(ContainSubstring("present"))
+	})
+
+	It("classifies a kept worktree whose branch was deleted as status=missing-branch", func() {
+		runOneTrialRun("missingb-rest-of-id", "--keep-worktree")
+		// `git branch -D` refuses while the worktree holds the branch
+		// checked out. Use `git update-ref -d` to delete the ref
+		// directly — the worktree's HEAD becomes a stale name pointer
+		// (the exact "missing-branch" inconsistency the list command
+		// is meant to surface).
+		out2, err := exec.Command("git", "-C", repoDir, "update-ref", "-d",
+			"refs/heads/autoresearch/missingb").CombinedOutput()
+		Expect(err).NotTo(HaveOccurred(), "git update-ref: %s", string(out2))
+
+		Expect(runCmd("autoresearch", "list")).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("missingb"))
+		Expect(out.String()).To(ContainSubstring("missing-branch"))
+	})
+
+	It("classifies a pre-Slice-1 detached-HEAD worktree as status=legacy-detached", func() {
+		// Manually fabricate a pre-Slice-1 record: a worktree on
+		// detached HEAD with a manifest record but no branch ref.
+		legacyRunID := "legacydt-rest-of-id"
+		legacyWorktree := filepath.Join(dataDir, "legacy-wt", legacyRunID, "worktree")
+		Expect(os.MkdirAll(filepath.Dir(legacyWorktree), 0o755)).To(Succeed())
+		Expect(exec.Command("git", "-C", repoDir, "worktree", "add", "--detach",
+			legacyWorktree, "HEAD").Run()).To(Succeed())
+		DeferCleanup(func() {
+			_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", legacyWorktree).Run()
+		})
+
+		// Synthesise the manifest record by hand — exercises the list
+		// command's handling of legacy records that predate
+		// `--keep-worktree` and the named-branch convention.
+		coord := filepath.Join(dataDir, "coordination.json")
+		entries := map[string]string{}
+		if raw, err := os.ReadFile(coord); err == nil {
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+		}
+		legacyManifest := fmt.Sprintf(
+			`{"surface":%q,"surface_type":"manifest","metric_direction":"min","max_trials":1,"started_at":"2024-01-01T00:00:00Z","worktree_path":%q}`,
+			surface, legacyWorktree)
+		entries["autoresearch/"+legacyRunID+"/manifest"] = legacyManifest
+		body, err := json.Marshal(entries)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(coord, body, 0o600)).To(Succeed())
+
+		Expect(runCmd("autoresearch", "list")).To(Succeed())
+		Expect(out.String()).To(ContainSubstring("legacydt"))
+		Expect(out.String()).To(ContainSubstring("legacy-detached"))
+	})
+})
+
 // jsonStringSlice renders a Go []string as a JSON array literal for
 // inline manifest fixtures.
 func jsonStringSlice(items []string) string {
