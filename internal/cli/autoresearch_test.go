@@ -2120,6 +2120,135 @@ exit 0
 			Expect(strings.Index(body, "# HISTORY")).To(BeNumerically("<", strings.Index(body, "# INSTRUCTION")))
 		})
 	})
+
+	Describe("default-assistant driver script (Slice 2)", func() {
+		// repoDriverPath returns the absolute path to the
+		// default-assistant-driver.sh shipped under
+		// scripts/autoresearch-drivers/. Resolved via runtime.Caller
+		// so the spec is independent of the test runner's cwd.
+		repoDriverPath := func() string {
+			_, thisFile, _, ok := runtime.Caller(0)
+			Expect(ok).To(BeTrue())
+			path := filepath.Join(filepath.Dir(thisFile), "..", "..",
+				"scripts", "autoresearch-drivers", "default-assistant-driver.sh")
+			abs, err := filepath.Abs(path)
+			Expect(err).NotTo(HaveOccurred())
+			info, statErr := os.Stat(abs)
+			Expect(statErr).NotTo(HaveOccurred(), "default-assistant-driver.sh must exist at %s", abs)
+			Expect(info.Mode()&0o100).NotTo(BeZero(), "driver must be executable")
+			return abs
+		}
+
+		writeNoOpScorer := func() string {
+			path := filepath.Join(dataDir, "noop-scorer-slice2.sh")
+			Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+			return path
+		}
+
+		// validManifestSurface produces a fenced-block response whose
+		// body is a structurally-valid planner manifest (so the
+		// manifest gate passes and the trial reaches scoring rather
+		// than dying at validation).
+		validManifestSurface := func(marker string) string {
+			body := fmt.Sprintf(`---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: %s
+capabilities:
+  tools: [read, plan]
+---
+planner body %s
+`, marker, marker)
+			return "Here is the next candidate:\n\n```surface\n" + body + "```\n"
+		}
+
+		It("applies the agent's fenced-surface block and produces a non-fixed-point trial", func() {
+			driver := repoDriverPath()
+			scorer := writeNoOpScorer()
+
+			// Canned response file the driver reads via its
+			// FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT escape hatch.
+			responseFile := filepath.Join(dataDir, "canned-response.txt")
+			Expect(os.WriteFile(responseFile, []byte(validManifestSurface("slice2-applied")), 0o600)).To(Succeed())
+
+			Expect(os.Setenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT", responseFile)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT") })
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "ld-slice2-applied",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--worktree-base", filepath.Join(dataDir, "wt-ld-slice2-applied"),
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			// The trial must NOT be fixed-point-skipped — the driver
+			// changed the surface, so the candidate SHA differs from
+			// the baseline. The MVP DoD's pass criterion (plan § 5.3)
+			// is exactly this: at least one trial escapes
+			// fixed-point-skipped.
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+
+			val, ok := entries["autoresearch/ld-slice2-applied/trial-1"]
+			Expect(ok).To(BeTrue(), "trial-1 record expected")
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+
+			Expect(record).NotTo(HaveKeyWithValue("reason", "fixed-point-skipped"),
+				"driver applied an edit; the trial must not be fixed-point-skipped")
+			// Fenced-block parser dropped the trailing newline; the
+			// surface-bytes hash is reflected in candidate_sha.
+			Expect(record).To(HaveKey("candidate_sha"))
+		})
+
+		It("records validator-io-error when the agent emits no fenced block", func() {
+			driver := repoDriverPath()
+			scorer := writeNoOpScorer()
+
+			responseFile := filepath.Join(dataDir, "no-fenced-block-response.txt")
+			Expect(os.WriteFile(responseFile, []byte("I cannot produce a fenced block, sorry.\n"), 0o600)).To(Succeed())
+
+			Expect(os.Setenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT", responseFile)).To(Succeed())
+			DeferCleanup(func() { _ = os.Unsetenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT") })
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "ld-slice2-no-block",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--worktree-base", filepath.Join(dataDir, "wt-ld-slice2-no-block"),
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			raw, err := os.ReadFile(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+			var entries map[string]string
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+
+			val, ok := entries["autoresearch/ld-slice2-no-block/trial-1"]
+			Expect(ok).To(BeTrue(), "trial-1 record expected")
+			var record map[string]any
+			Expect(json.Unmarshal([]byte(val), &record)).To(Succeed())
+
+			// Driver exit-3 (driver-no-edit-produced) collapses onto
+			// validator-io-error per plan § 4.5.
+			Expect(record).To(HaveKeyWithValue("reason", "validator-io-error"))
+			Expect(record).To(HaveKeyWithValue("kept", false))
+		})
+	})
 })
 
 // jsonStringSlice renders a Go []string as a JSON array literal for
