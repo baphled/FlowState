@@ -256,6 +256,21 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 	})
 
 	Describe("EvictCompleted clears terminal tasks", func() {
+		// Eviction now waits for BackgroundTaskEvictionGrace after
+		// MarkAccessed (premature-eviction fix). Existing specs assert
+		// "accessed terminal tasks evict on the next sweep"; collapse
+		// the grace to zero for them so the assertion still pins the
+		// underlying eviction logic.
+		var origGrace time.Duration
+
+		BeforeEach(func() {
+			origGrace = engine.BackgroundTaskEvictionGrace
+			engine.BackgroundTaskEvictionGrace = 0
+		})
+		AfterEach(func() {
+			engine.BackgroundTaskEvictionGrace = origGrace
+		})
+
 		Context("when tasks are completed and EvictCompleted is called", func() {
 			It("removes completed and accessed tasks from the list but leaves pending/running tasks", func() {
 				manager := engine.NewBackgroundTaskManager()

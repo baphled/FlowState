@@ -45,7 +45,32 @@ type BackgroundTask struct {
 	ConcurrencyKey  string
 	ParentSessionID string
 	accessed        bool
+	// accessedAt records the wall-clock moment MarkAccessed was last
+	// called. EvictCompleted gates eviction on time.Since(accessedAt) >
+	// EvictionGrace so a lead that calls background_output(task_id)
+	// across multiple turns continues to see the task during the grace
+	// window. Without this gate, the eviction defer in
+	// streamWithToolLoop fires at the end of the FIRST turn that read
+	// the task, so any subsequent re-read (a planning loop, a critic
+	// retry, or the lead's own multi-stage synthesis) gets a "task
+	// not found" error — observed extensively in session
+	// 175b873e-5ee5-4917-b217-0efa6a4417d9 (12 task-not-found errors).
+	accessedAt time.Time
 }
+
+// BackgroundTaskEvictionGrace is the wall-clock window after MarkAccessed
+// during which a terminal-state task remains in the manager. Subsequent
+// background_output(task_id) reads within this window all succeed.
+//
+// 5 minutes was chosen to comfortably exceed the typical lead turn-cycle
+// duration (most synthesis loops finish in seconds; outliers are
+// minutes). Memory pressure stays bounded because the eviction defer
+// fires per-turn — long-lived processes still see steady cleanup, just
+// not immediately-on-first-read.
+//
+// Exported as a var rather than a const so tests can shrink it without
+// having to wait wall-clock time.
+var BackgroundTaskEvictionGrace = 5 * time.Minute
 
 // atomicValue provides atomic string operations.
 type atomicValue struct {
@@ -550,8 +575,12 @@ func (m *BackgroundTaskManager) List() []BackgroundTask {
 	return tasks
 }
 
-// MarkAccessed marks a task as accessed (retrieved via background_output).
-// Only accessed terminal tasks are eligible for eviction.
+// MarkAccessed marks a task as accessed (retrieved via background_output)
+// and records the access time. Only accessed terminal tasks whose
+// access predates the grace window become eligible for eviction —
+// this lets a lead re-read the same task across multiple turns
+// (planning loops, critic retries, multi-stage synthesis) without
+// hitting "task not found".
 //
 // Expected:
 //   - taskID identifies an existing task.
@@ -560,36 +589,49 @@ func (m *BackgroundTaskManager) List() []BackgroundTask {
 //   - None.
 //
 // Side effects:
-//   - Sets the accessed flag on the identified task under write lock.
+//   - Sets the accessed flag and accessedAt timestamp on the
+//     identified task under write lock.
 func (m *BackgroundTaskManager) MarkAccessed(taskID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if task, ok := m.tasks[taskID]; ok {
 		task.accessed = true
+		task.accessedAt = time.Now()
 	}
 }
 
 // EvictCompleted removes terminal-state tasks (completed, failed, cancelled)
-// that have been accessed (retrieved via background_output) from the internal task map.
-// This prevents premature eviction while ensuring memory is eventually freed after retrieval.
+// that have been accessed AND whose first access predates the
+// BackgroundTaskEvictionGrace window. The grace window prevents the
+// eviction defer in streamWithToolLoop (which runs end-of-turn) from
+// removing tasks the lead is about to re-read in the next turn.
 // Running, pending, and unaccessed tasks are not affected.
 //
 // Returns:
 //   - None.
 //
 // Side effects:
-//   - Deletes accessed terminal tasks from the tasks map under write lock.
+//   - Deletes accessed terminal tasks past their grace window from the
+//     tasks map under write lock.
 func (m *BackgroundTaskManager) EvictCompleted() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := time.Now()
 	for id, task := range m.tasks {
 		status := task.Status.Load()
-		// Only evict if: terminal state AND accessed by user (via background_output)
-		if task.accessed && (status == "completed" || status == "failed" || status == "cancelled") {
-			delete(m.tasks, id)
+		// Only evict if: terminal state AND accessed AND grace-expired.
+		if !task.accessed {
+			continue
 		}
+		if status != "completed" && status != "failed" && status != "cancelled" {
+			continue
+		}
+		if now.Sub(task.accessedAt) < BackgroundTaskEvictionGrace {
+			continue
+		}
+		delete(m.tasks, id)
 	}
 }
 
