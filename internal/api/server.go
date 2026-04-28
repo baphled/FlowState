@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
@@ -76,6 +77,7 @@ func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
 func WithDispatchEngine(eng swarm.DispatchEngine) ServerOption {
 	return func(s *Server) { s.dispatchEngine = eng }
 }
+
 
 // WithSessionBroker sets the session broker for live event streaming.
 //
@@ -412,6 +414,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-resolve to surface unknown agent_id as HTTP 400 BEFORE we
+	// commit to SSE. The orchestrator (or legacy DispatchSwarm) would
+	// also resolve internally; this duplicate-but-cheap pre-flight
+	// preserves the historical 400-on-unknown-id contract.
 	leadID, swarmCtx, err := s.resolveDispatchTarget(req.AgentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -431,6 +437,35 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	verbosityParam := r.URL.Query().Get("verbosity")
 	consumer := streaming.NewVerbosityFilter(sseConsumer, parseVerbosityLevel(verbosityParam))
 
+	// Pre-flight resolution result is consumed inside the orchestrator
+	// path's own resolve; we keep the variables in scope for the
+	// legacy fallback below.
+	_ = leadID
+	_ = swarmCtx
+
+	// Per ADR-001 §"Wrappers not duplicates" + ADR - Session
+	// Orchestrator for Surface Parity, /api/chat routes through the
+	// shared orchestrator when the engine + registries are wired
+	// (production path — every NewServer call from app.go has
+	// these). Tests that construct a Server without the swarm
+	// registry option fall back to legacy plain streaming via the
+	// dispatch helper, preserving the agent-only contract used by
+	// older API consumers.
+	if s.swarmRegistry != nil {
+		orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer)
+		err := orch.ProcessUserInput(r.Context(), orchestrator.UserInput{
+			Message:      req.Message,
+			DefaultAgent: req.AgentID,
+		}, consumer)
+		if err != nil {
+			log.Printf("[api] chat stream error: %v", err)
+		}
+		return
+	}
+
+	// Legacy path retained for tests that construct Server without
+	// the swarm registry. Pre-flight resolution above produced
+	// (id-verbatim, nil) for this case, so we just stream as agent.
 	if err := swarm.DispatchSwarm(r.Context(), s.dispatchEngine, swarmCtx, s.streamer, consumer, leadID, req.Message); err != nil {
 		log.Printf("[api] chat stream error: %v", err)
 	}

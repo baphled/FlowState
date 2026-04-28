@@ -1,4 +1,4 @@
-package app_test
+package orchestrator_test
 
 import (
 	"context"
@@ -7,10 +7,16 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
-	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/swarm"
+	"testing"
 )
+
+func TestOrchestrator(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Orchestrator Suite")
+}
 
 // fakeOrchestratorStreamer captures the agent id + message threaded to
 // streaming.Run by the orchestrator. The streamed channel emits a
@@ -109,9 +115,9 @@ var _ = Describe("SessionOrchestrator", func() {
 	Describe("ProcessUserInput", func() {
 		Context("when DefaultAgent resolves to an agent and ScanMentions is false", func() {
 			It("streams from that agent without installing a swarm context", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "hello",
 					DefaultAgent: "executor",
 				}, consumer)
@@ -132,9 +138,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when DefaultAgent resolves to a swarm and ScanMentions is false", func() {
 			It("streams from the swarm's lead and installs the swarm context", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "trace the auth path",
 					DefaultAgent: "bug-hunt",
 				}, consumer)
@@ -150,9 +156,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true and the message contains @<swarm-id>", func() {
 			It("the @-mention overrides DefaultAgent", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "@bug-hunt please look at the auth module",
 					DefaultAgent: "executor",
 					ScanMentions: true,
@@ -168,9 +174,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true but only agent @-mentions appear", func() {
 			It("falls through to DefaultAgent (agent mentions don't redirect)", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "ask @explorer to look at this",
 					DefaultAgent: "executor",
 					ScanMentions: true,
@@ -184,9 +190,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true and an unknown @-mention appears", func() {
 			It("skips it and falls through to DefaultAgent", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "ping @ghost-thing about it",
 					DefaultAgent: "executor",
 					ScanMentions: true,
@@ -199,9 +205,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when both DefaultAgent is empty and ScanMentions matches no swarm", func() {
 			It("returns the no-target error", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "",
 					DefaultAgent: "",
 				}, consumer)
@@ -216,9 +222,9 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when DefaultAgent is unknown", func() {
 			It("returns swarm.NotFoundError without driving the streamer", func() {
-				orch := app.NewSessionOrchestrator(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer)
 
-				err := orch.ProcessUserInput(context.Background(), app.UserInput{
+				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "hi",
 					DefaultAgent: "ghost",
 				}, consumer)

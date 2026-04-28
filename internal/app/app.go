@@ -46,6 +46,7 @@ import (
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -96,7 +97,7 @@ type App struct {
 	// never reimplement the dispatch lifecycle. See ADR-001 (Multi-
 	// Access Method Architecture) §"Wrappers not duplicates" for the
 	// parent rule this finishes applying.
-	Orchestrator *SessionOrchestrator
+	Orchestrator *orchestrator.Orchestrator
 	TodoStore              todotool.Store
 	mcpClient              mcpclient.Client
 	plugins                *pluginRuntime
@@ -423,7 +424,7 @@ func buildApp(params appBuildParams) *App {
 		Learning:         learningStore,
 		API:              runtime.apiServer,
 		Streamer:         runtime.streamer,
-		Orchestrator: NewSessionOrchestrator(
+		Orchestrator: orchestrator.New(
 			runtime.engine,
 			agentRegistry,
 			params.swarmRegistry,
