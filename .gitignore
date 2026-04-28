@@ -36,6 +36,8 @@ Thumbs.db
 
 # Local config (keep .flowstate/config.json.example)
 .flowstate/config.json
+# autoresearch: project-local worktree base (default for `flowstate autoresearch run`)
+.flowstate/autoresearch/
 .env
 .env.*
 

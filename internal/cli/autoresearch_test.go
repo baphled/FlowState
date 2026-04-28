@@ -290,6 +290,66 @@ planner body
 			Expect(info.IsDir()).To(BeTrue())
 		})
 
+		// Default --worktree-base resolution (April 2026): when the
+		// operator omits --worktree-base, the harness defaults to
+		// <surfaceRepoRoot>/.flowstate/autoresearch/<runID>/worktree
+		// rather than <DataDir>/autoresearch/<runID>/worktree. The
+		// project-local default makes runs discoverable via filesystem
+		// navigation, IDE inspection, and `flowstate autoresearch list`.
+		// The supplied-value override path is unchanged.
+		It("defaults --worktree-base to <surfaceRepoRoot>/.flowstate/autoresearch when omitted", func() {
+			driver := writeNoOpDriver()
+			scorer := writeNoOpScorer()
+
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "fixture-default-base",
+				"--max-trials", "0",
+				"--time-budget", "30s",
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			record := readManifestRecord("fixture-default-base")
+			worktreePath, _ := record["worktree_path"].(string)
+			Expect(worktreePath).NotTo(BeEmpty())
+
+			expectedBase := filepath.Join(repoDir, ".flowstate", "autoresearch")
+			Expect(worktreePath).To(HavePrefix(expectedBase),
+				"default worktree path %q should sit under %q", worktreePath, expectedBase)
+			Expect(worktreePath).NotTo(HavePrefix(filepath.Join(dataDir, "autoresearch")),
+				"default must not fall back to <DataDir>/autoresearch")
+
+			info, statErr := os.Stat(worktreePath)
+			Expect(statErr).NotTo(HaveOccurred(), "worktree directory should exist at %s", worktreePath)
+			Expect(info.IsDir()).To(BeTrue())
+		})
+
+		It("uses an explicit --worktree-base verbatim, ignoring the project-local default", func() {
+			driver := writeNoOpDriver()
+			scorer := writeNoOpScorer()
+
+			explicitBase := filepath.Join(dataDir, "operator-chosen-base")
+			err := runCmd("autoresearch", "run",
+				"--surface", surface,
+				"--run-id", "fixture-explicit-base",
+				"--max-trials", "0",
+				"--time-budget", "30s",
+				"--worktree-base", explicitBase,
+				"--driver-script", driver,
+				"--evaluator-script", scorer,
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			record := readManifestRecord("fixture-explicit-base")
+			worktreePath, _ := record["worktree_path"].(string)
+			Expect(worktreePath).To(HavePrefix(explicitBase),
+				"explicit --worktree-base %q must override the project-local default", explicitBase)
+			Expect(worktreePath).NotTo(ContainSubstring(filepath.Join(repoDir, ".flowstate")),
+				"explicit override must not be silently rerouted into <surfaceRepoRoot>/.flowstate")
+		})
+
 		It("rejects the run when the surface path does not exist", func() {
 			err := runCmd("autoresearch", "run",
 				"--surface", filepath.Join(repoDir, "internal", "app", "agents", "ghost.md"),

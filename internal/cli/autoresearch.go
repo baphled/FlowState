@@ -200,7 +200,7 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.runID, "run-id", "",
 		"Run identifier; empty → generated UUID")
 	flags.StringVar(&opts.worktreeBase, "worktree-base", "",
-		"Worktree parent directory; empty → <DataDir>/autoresearch/<runID>/worktree")
+		"Worktree parent directory; empty → <surfaceRepoRoot>/.flowstate/autoresearch/<runID>/worktree")
 	flags.IntVar(&opts.noImproveWindow, "no-improve-window", 5,
 		"Consecutive non-improving trials before terminating with reason=converged")
 	flags.StringVar(&opts.driverScript, "driver-script", "",
@@ -522,8 +522,19 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 		opts.runID = uuid.NewString()
 	}
 
+	// Default --worktree-base to a project-local path under the
+	// surface's repo root rather than the FlowState DataDir. The repo
+	// root is already in hand from the --program resolution above; we
+	// reuse it verbatim so a single absent flag yields a discoverable
+	// worktree at <surfaceRepoRoot>/.flowstate/autoresearch/<runID>/.
+	// An explicitly supplied --worktree-base is honoured verbatim,
+	// preserving the operator escape hatch (e.g. running against a
+	// read-only repo, or a CI sandbox that mounts the source tree
+	// read-only and writes elsewhere). FlowState's own .gitignore
+	// excludes .flowstate/; downstream consumers wire the same one-line
+	// entry once.
 	if opts.worktreeBase == "" {
-		opts.worktreeBase = filepath.Join(application.Config.DataDir, "autoresearch")
+		opts.worktreeBase = filepath.Join(repoRoot, ".flowstate", "autoresearch")
 	}
 
 	return opts, nil
