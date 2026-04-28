@@ -383,6 +383,19 @@ type Intent struct {
 	// SetManifest swap so the chat keeps its conversational identity
 	// across dispatches.
 	pendingSwarmLeadID  string
+	// preDispatchManifest is the engine's manifest captured at the
+	// moment a swarm dispatch begins. The engine's Stream method
+	// auto-swaps its persistent manifest to whatever agent_id the
+	// caller passes — long-standing behaviour to support
+	// `flowstate run --agent <id>` — which means a swarm dispatch
+	// permanently re-identifies the engine as the lead unless we
+	// explicitly revert. Stashed by maybeBeginSwarmDispatch and
+	// restored by finaliseStreamIfDone so the chat returns to its
+	// pre-dispatch persistent agent. Same shape as the CLI's
+	// snapshot/restore inside swarm.DispatchSwarm — keeps CLI/TUI
+	// behaviour symmetric per ADR - Swarm Dispatch Across Access
+	// Methods.
+	preDispatchManifest agent.Manifest
 	sessionStore        SessionLister
 	childSessionLister  SessionChildLister
 	view                *chat.View
@@ -1973,13 +1986,19 @@ func (i *Intent) finaliseStreamIfDone(msg StreamChunkMsg) {
 	i.tokenCount = contextResult.TokensUsed
 
 	// Wind down a swarm dispatch: flush post-swarm gates, clear the
-	// engine's swarm context, and reset the per-turn lead override so
-	// the next user turn lands on the chat's persistent agent. Mirrors
-	// the CLI's flow at the end of `flowstate run --agent <swarm>` —
+	// engine's swarm context, restore the engine's pre-dispatch
+	// manifest (Engine.Stream auto-swapped it to the lead at the
+	// start of this turn), and reset the per-turn lead override so
+	// the next user turn lands on the chat's persistent agent.
+	// Mirrors the CLI's flow at the end of swarm.DispatchSwarm —
 	// see ADR - Swarm Dispatch Across Access Methods.
 	if i.pendingSwarmLeadID != "" {
 		_ = i.engine.FlushSwarmLifecycle(context.Background())
 		i.engine.SetSwarmContext(nil)
+		if i.preDispatchManifest.ID != "" {
+			i.engine.SetManifest(i.preDispatchManifest)
+			i.preDispatchManifest = agent.Manifest{}
+		}
 		i.pendingSwarmLeadID = ""
 	}
 }
@@ -4750,6 +4769,15 @@ func (i *Intent) maybeBeginSwarmDispatch(message string) {
 		if err != nil || swarmCtx == nil {
 			continue
 		}
+		// Snapshot the engine's pre-dispatch manifest BEFORE installing
+		// the swarm context. Engine.Stream will auto-swap to the lead's
+		// manifest on the upcoming Stream call; finaliseStreamIfDone
+		// restores this snapshot once the dispatched turn completes so
+		// the chat's persistent identity (i.agentID) and the engine's
+		// manifest stay in sync for follow-up turns. CLI symmetry: the
+		// shared swarm.DispatchSwarm service does the same snapshot +
+		// restore around its synchronous Stream call.
+		i.preDispatchManifest = i.engine.Manifest()
 		i.engine.SetSwarmContext(swarmCtx)
 		i.pendingSwarmLeadID = leadID
 		return

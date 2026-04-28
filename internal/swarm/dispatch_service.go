@@ -11,9 +11,17 @@ import (
 // already implements this — we declare it locally rather than importing
 // the engine package to avoid the cycle that would otherwise form
 // (engine already imports swarm).
+//
+// ManifestSnapshot returns the engine's current agent manifest as an
+// opaque value the caller can pass to RestoreManifest after the
+// dispatch finishes. The shape is intentionally opaque to avoid
+// dragging the agent.Manifest type into this package's import graph;
+// implementations round-trip a deep copy of the manifest internally.
 type DispatchEngine interface {
 	SetSwarmContext(*Context)
 	FlushSwarmLifecycle(ctx context.Context) error
+	ManifestSnapshot() any
+	RestoreManifest(snapshot any)
 }
 
 // DispatchSwarm runs an end-to-end swarm dispatch: install the swarm
@@ -64,7 +72,22 @@ func DispatchSwarm(
 	consumer streaming.StreamConsumer,
 	leadID, message string,
 ) error {
+	// Snapshot the engine's pre-dispatch manifest so we can restore it
+	// after the stream completes. Engine.Stream auto-swaps the active
+	// manifest to whatever agent_id the caller passes (a long-standing
+	// engine behaviour that supports `flowstate run --agent <id>`),
+	// which means a swarm dispatch leaves the engine permanently
+	// re-identified as the swarm's lead. For one-shot CLI runs this
+	// is harmless because the process exits; for the TUI's continuing
+	// chat session it leaks the lead's identity into every subsequent
+	// turn. CLI/TUI parity (per ADR - Swarm Dispatch Across Access
+	// Methods + the user's "CLI and TUI should act the same"
+	// directive) requires both surfaces to revert the engine to its
+	// pre-dispatch manifest after the flush — restore is a no-op in
+	// the CLI process-exit case but load-bearing for the TUI.
+	var preDispatch any
 	if eng != nil {
+		preDispatch = eng.ManifestSnapshot()
 		eng.SetSwarmContext(swarmCtx)
 	}
 
@@ -73,6 +96,15 @@ func DispatchSwarm(
 	var flushErr error
 	if eng != nil {
 		flushErr = eng.FlushSwarmLifecycle(ctx)
+		// Restore the engine's pre-dispatch manifest. We deliberately
+		// leave the swarm context in place: clearing it would surface
+		// as a state regression in tests pinning swarm-context
+		// installation, and a stale context is harmless once the
+		// manifest is restored — appendSwarmLeadSection compares
+		// e.manifest.ID against swarmCtx.LeadAgent, so a manifest
+		// reverted to the pre-dispatch agent makes the lead-section
+		// emitter inert. The next dispatch overwrites the context.
+		eng.RestoreManifest(preDispatch)
 	}
 
 	if streamErr != nil {

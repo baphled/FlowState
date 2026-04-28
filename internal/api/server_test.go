@@ -53,10 +53,16 @@ func (m *mockStreamer) Stream(_ context.Context, agentID string, message string)
 // fakeDispatchEngine satisfies swarm.DispatchEngine for the API parity
 // tests. Records every SetSwarmContext + FlushSwarmLifecycle call so
 // the test can assert the swarm dispatch path actually went through
-// the engine — not just the streamer.
+// the engine — not just the streamer. Also captures the snapshot/
+// restore round-trip introduced for CLI/TUI symmetric manifest
+// reverts: snapshotCalls and restoreCalls let the test assert the
+// engine's persistent state is reverted after each dispatch.
 type fakeDispatchEngine struct {
 	installedContext *swarm.Context
 	flushCalls       int
+	snapshotCalls    int
+	restoreCalls     int
+	lastRestored     any
 }
 
 func (f *fakeDispatchEngine) SetSwarmContext(ctx *swarm.Context) {
@@ -66,6 +72,21 @@ func (f *fakeDispatchEngine) SetSwarmContext(ctx *swarm.Context) {
 func (f *fakeDispatchEngine) FlushSwarmLifecycle(_ context.Context) error {
 	f.flushCalls++
 	return nil
+}
+
+// fakeManifestToken is the opaque value the fake hands back through
+// ManifestSnapshot / RestoreManifest so the test can pin the
+// round-trip without depending on the agent.Manifest type.
+type fakeManifestToken struct{ id string }
+
+func (f *fakeDispatchEngine) ManifestSnapshot() any {
+	f.snapshotCalls++
+	return fakeManifestToken{id: "pre-dispatch"}
+}
+
+func (f *fakeDispatchEngine) RestoreManifest(snapshot any) {
+	f.restoreCalls++
+	f.lastRestored = snapshot
 }
 
 var _ = Describe("Server", func() {
