@@ -11,7 +11,6 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
-	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -113,11 +112,12 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		return errors.New("engine not configured")
 	}
 
-	resolvedAgent, swarmCtx, resolveErr := resolveAgentOrSwarm(application, agentName)
-	if resolveErr != nil {
-		return resolveErr
+	// Pre-flight resolve so unknown ids fail before session setup.
+	// Orchestrator re-resolves at dispatch time (single source of
+	// truth per ADR-001 / Session Orchestrator ADR).
+	if _, _, err := resolveAgentOrSwarm(application, agentName); err != nil {
+		return err
 	}
-	agentName = resolvedAgent
 	sessionID := resolveChatSessionID(opts.Session)
 	loadSessionIfRequested(application, opts.Session)
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
@@ -134,7 +134,7 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	}
 
 	chatOpts := chatStreamOptions{outputFormat: opts.Output, verbosity: opts.Verbosity}
-	response, err := streamChatResponse(wrappedStreamer, application.Engine, swarmCtx, agentName, opts.Message, chatOpts, writer)
+	response, err := streamChatResponse(application, wrappedStreamer, agentName, opts.Message, chatOpts, writer)
 	if err != nil {
 		return err
 	}
@@ -246,9 +246,8 @@ type chatStreamOptions struct {
 // Side effects:
 //   - Streams response chunks from the streamer.
 func streamChatResponse(
+	application *app.App,
 	streamer streaming.Streamer,
-	eng swarm.DispatchEngine,
-	swarmCtx *swarm.Context,
 	agentName string,
 	message string,
 	opts chatStreamOptions,
@@ -261,7 +260,20 @@ func streamChatResponse(
 		inner = NewWriterConsumer(writer, true)
 	}
 	consumer := streaming.NewVerbosityFilter(inner, parseCLIVerbosityLevel(opts.verbosity))
-	if err := swarm.DispatchSwarm(context.Background(), eng, swarmCtx, streamer, consumer, agentName, message); err != nil {
+	// Per ADR-001 §"Wrappers not duplicates": dispatch via the
+	// shared SessionOrchestrator so CLI/API/TUI cannot diverge on
+	// resolution + dispatch lifecycle. The session-aware streamer
+	// is threaded through for per-call context tagging.
+	orch := app.NewSessionOrchestrator(
+		application.Engine,
+		application.Registry,
+		application.SwarmRegistry,
+		streamer,
+	)
+	if err := orch.ProcessUserInput(context.Background(), app.UserInput{
+		Message:      message,
+		DefaultAgent: agentName,
+	}, consumer); err != nil {
 		return "", err
 	}
 	if err := getConsumerError(inner); err != nil {
