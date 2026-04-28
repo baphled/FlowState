@@ -3893,16 +3893,28 @@ func runOrphanEventTmpScan(sessionsDir string) {
 
 // createContextStore initialises the context store for managing conversation context.
 //
+// The store is seeded with the configured **embedding** model (not the
+// chat model). This identifier is what the session-store Save path
+// surfaces as `embedding_model` on disk and what the recall pipeline
+// uses when it resolves the embedder via the store. The chat model
+// (cfg.Providers.Ollama.Model) is a different artefact entirely —
+// passing it here causes a dimension mismatch against the Qdrant
+// collection (e.g. llama3.2 is 3072d; nomic-embed-text is 768d) and
+// silent zero-hit recall. Smoke session
+// 97306299-bb99-4686-83b7-089e4b0244d6 reproduced that failure on
+// 2026-04-27.
+//
 // Expected:
-//   - cfg is a non-nil AppConfig with a valid DataDir and Ollama model configuration.
+//   - cfg is a non-nil AppConfig.
 //
 // Returns:
-//   - A FileContextStore for persisting context data.
+//   - A FileContextStore for persisting context data, seeded with
+//     cfg.ResolvedEmbeddingModel() (config.DefaultEmbeddingModel when unset).
 //
 // Side effects:
 //   - None; creates an in-memory context store with no file I/O.
 func createContextStore(cfg *config.AppConfig) *recall.FileContextStore {
-	return recall.NewEmptyContextStore(cfg.Providers.Ollama.Model)
+	return recall.NewEmptyContextStore(cfg.ResolvedEmbeddingModel())
 }
 
 // createChainStore initialises the chain store for conversation context.
