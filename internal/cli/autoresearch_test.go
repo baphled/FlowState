@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
@@ -634,6 +635,152 @@ broken candidate
 			var ring []map[string]any
 			Expect(json.Unmarshal([]byte(val), &ring)).To(Succeed())
 			Expect(len(ring)).To(BeNumerically(">=", 2))
+		})
+
+		// Slice 3 — deterministic spine smoke. Drives the harness for
+		// five trials with a mixed-trajectory fixture that exercises
+		// every § 4.7 termination branch reachable in 5 trials:
+		// improved, regression, fixed-point-skipped,
+		// manifest-validate-failed, and a second improvement to land
+		// on a new best. Pass criteria are loop-correctness only —
+		// trial reasons, ratchet decisions, coord-store records, and
+		// summary line. The fixture scripts live under
+		// internal/cli/testdata/ as the canonical drivers per
+		// plan v3.1 § 5.7.
+		Context("deterministic spine smoke (Slice 3)", func() {
+			testdataScript := func(name string) string {
+				_, thisFile, _, ok := runtime.Caller(0)
+				Expect(ok).To(BeTrue())
+				return filepath.Join(filepath.Dir(thisFile), "testdata", name)
+			}
+
+			brokenManifest := `---
+schema_version: "1"
+id: planner
+name: Planner
+color: not-a-hex
+complexity: standard
+metadata:
+  role: broken
+capabilities:
+  tools: [read]
+---
+broken candidate body
+`
+
+			It("ratchets correctly across a 5-trial mixed trajectory", func() {
+				// Trajectory:
+				//   baseline = 10
+				//   trial 1: candidate-1 (clean v1)  → score 5  → improved (kept)
+				//   trial 2: candidate-2 (clean v2)  → score 8  → regression (reverted)
+				//   trial 3: no candidate file       → no-op    → fixed-point-skipped
+				//                                                  (surface SHA matches kept trial-1 SHA)
+				//   trial 4: candidate-4 (broken)    → manifest gate fails (reverted)
+				//   trial 5: candidate-5 (clean v5)  → score 3  → improved (new best, kept)
+				//
+				// Final state: trials_run=5, kept=2, reverted=3,
+				// best_score=3, termination_reason=max-trials.
+				writeBaselineScore("10")
+				writeCandidate(1, makeManifest("v1"))
+				writeCandidate(2, makeManifest("v2"))
+				// trial 3 deliberately omits candidate-3 to force
+				// the driver no-op → fixed-point branch.
+				writeCandidate(4, brokenManifest)
+				writeCandidate(5, makeManifest("v5"))
+				// score-sequence is consumed only on trials that
+				// reach scoring. Trials 3 (fixed-point) and 4
+				// (manifest gate) short-circuit before scoring, so
+				// the sequence only needs entries for trials 1, 2,
+				// 5 — but it is keyed by trial index, so we pad the
+				// gap entries with sentinels that should never be
+				// observed.
+				writeScoreSequence([]string{"5", "8", "999", "999", "3"})
+
+				const runID = "smoke-3-spine"
+				args := []string{
+					"autoresearch", "run",
+					"--surface", surface,
+					"--run-id", runID,
+					"--max-trials", "5",
+					"--time-budget", "30s",
+					"--metric-direction", "min",
+					"--no-improve-window", "10",
+					"--worktree-base", filepath.Join(dataDir, "wt-"+runID),
+					"--driver-script", testdataScript("autoresearch-driver.sh"),
+					"--evaluator-script", testdataScript("autoresearch-scorer.sh"),
+				}
+				Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
+				DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
+
+				err := runCmd(args...)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				// Five trial records under autoresearch/<runID>/trial-*.
+				trial1 := readTrialRecord(runID, 1)
+				Expect(trial1).To(HaveKeyWithValue("kept", true))
+				Expect(trial1).To(HaveKeyWithValue("reason", "improved"))
+				Expect(trial1["score"]).To(BeNumerically("==", 5))
+
+				trial2 := readTrialRecord(runID, 2)
+				Expect(trial2).To(HaveKeyWithValue("kept", false))
+				Expect(trial2).To(HaveKeyWithValue("reason", "regression"))
+
+				trial3 := readTrialRecord(runID, 3)
+				Expect(trial3).To(HaveKeyWithValue("kept", false))
+				Expect(trial3).To(HaveKeyWithValue("reason", "fixed-point-skipped"))
+
+				trial4 := readTrialRecord(runID, 4)
+				Expect(trial4).To(HaveKeyWithValue("kept", false))
+				Expect(trial4).To(HaveKeyWithValue("reason", "manifest-validate-failed"))
+
+				trial5 := readTrialRecord(runID, 5)
+				Expect(trial5).To(HaveKeyWithValue("kept", true))
+				Expect(trial5).To(HaveKeyWithValue("reason", "improved"))
+				Expect(trial5["score"]).To(BeNumerically("==", 3))
+
+				// Best pointer references trial 5 (score=3 beats
+				// trial 1's score=5 under metric-direction=min).
+				best := readBestRecord(runID)
+				Expect(best["score"]).To(BeNumerically("==", 3))
+				Expect(best).To(HaveKey("commit_sha"))
+				Expect(best["commit_sha"]).NotTo(BeEmpty())
+				// Best's commit SHA should match trial 5's recorded SHA.
+				Expect(best["commit_sha"]).To(Equal(trial5["commit_sha"]))
+
+				// Seen-candidates ring captures all five trial SHAs.
+				raw, readErr := os.ReadFile(coordPath)
+				Expect(readErr).NotTo(HaveOccurred())
+				var entries map[string]string
+				Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+				ringRaw, ok := entries["autoresearch/"+runID+"/seen-candidates"]
+				Expect(ok).To(BeTrue(), "seen-candidates ring expected")
+				var ring []map[string]any
+				Expect(json.Unmarshal([]byte(ringRaw), &ring)).To(Succeed())
+				// Ring carries the baseline (trial_n=0) plus one entry
+				// per trial, so for a 5-trial run we expect 6 entries.
+				Expect(ring).To(HaveLen(6), "ring length: %d", len(ring))
+				// Trial 3's recorded candidate SHA matches trial 1's
+				// — that is the SHA collision that drove the
+				// fixed-point-skipped reason.
+				Expect(ring[1]["candidate_sha"]).To(Equal(ring[3]["candidate_sha"]))
+
+				// Result record summarises the run.
+				resultRaw, ok := entries["autoresearch/"+runID+"/result"]
+				Expect(ok).To(BeTrue(), "result record expected")
+				var result map[string]any
+				Expect(json.Unmarshal([]byte(resultRaw), &result)).To(Succeed())
+				Expect(result).To(HaveKeyWithValue("termination_reason", "max-trials"))
+				Expect(result["total_trials"]).To(BeNumerically("==", 5))
+
+				// Final stdout summary reflects the trajectory.
+				output := out.String()
+				Expect(output).To(ContainSubstring("trials_run=5"))
+				Expect(output).To(ContainSubstring("kept=2"))
+				Expect(output).To(ContainSubstring("reverted=3"))
+				Expect(output).To(ContainSubstring("best_score=3"))
+				Expect(output).To(ContainSubstring("termination_reason=max-trials"))
+				Expect(output).To(ContainSubstring("autoresearch run " + runID + ": summary"))
+			})
 		})
 	})
 })
