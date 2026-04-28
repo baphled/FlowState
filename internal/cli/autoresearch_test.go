@@ -584,6 +584,38 @@ broken candidate
 			Expect(rec["score"]).To(BeNumerically("==", 50))
 		})
 
+		It("prints a final summary block on completion", func() {
+			writeBaselineScore("10")
+			writeCandidate(1, makeManifest("summary-v1"))
+			writeScoreSequence([]string{"5", "5"})
+
+			err := runHarness("sum-1", 1)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			output := out.String()
+			Expect(output).To(ContainSubstring("autoresearch run sum-1: summary"))
+			Expect(output).To(ContainSubstring("trials_run="))
+			Expect(output).To(ContainSubstring("kept="))
+			Expect(output).To(ContainSubstring("reverted="))
+			Expect(output).To(ContainSubstring("best_score="))
+			Expect(output).To(ContainSubstring("termination_reason=max-trials"))
+		})
+
+		It("records baseline_score and baseline_commit in the manifest record", func() {
+			writeBaselineScore("7")
+			writeCandidate(1, makeManifest("with-baseline"))
+			writeScoreSequence([]string{"3"})
+
+			err := runHarness("baseline-1", 1)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			rec := readManifestRecord("baseline-1")
+			Expect(rec).To(HaveKey("baseline_score"))
+			Expect(rec["baseline_score"]).To(BeNumerically("==", 7))
+			Expect(rec).To(HaveKey("baseline_commit"))
+			Expect(rec["baseline_commit"]).NotTo(BeEmpty())
+		})
+
 		It("appends seen-candidates SHAs across trials", func() {
 			writeCandidate(1, makeManifest("seen-1"))
 			writeCandidate(2, makeManifest("seen-2"))
