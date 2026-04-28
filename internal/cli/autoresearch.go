@@ -63,6 +63,7 @@ import (
 //   - program              — operator-supplied skill name or path
 //   - callingAgentManifest — best-effort path to the calling agent's
 //     manifest, used for the N12 de-dup check
+//
 // Resolved-state fields populated during resolveAutoresearchOptions:
 //   - programResolvedPath   — absolute path the program string resolves to
 //   - programIsSkillName    — true when the operator supplied a registry
@@ -89,6 +90,10 @@ type autoresearchRunOptions struct {
 	programResolvedPath  string
 	programIsSkillName   bool
 	programDeduplicated  bool
+	// keepWorktree opts out of the end-of-run worktree removal on a
+	// clean termination (lifecycle plan Slice 2). Default false; the
+	// branch is always preserved regardless of this flag.
+	keepWorktree bool
 	// programBody is the program-of-record skill body, read once at
 	// run start from programResolvedPath. The synthesiser embeds it
 	// verbatim in every per-trial prompt so the off-limits constraints
@@ -206,6 +211,8 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 		"Program-of-record for this run. Either a registry skill name (resolved as `skills/<name>/SKILL.md` under the repo root) or a path (anything containing '/' or ending in '.md', resolved relative to the repo root or absolute). Default: `autoresearch`. Pluggable per Slice 6 of the autoresearch plan v3.1.")
 	flags.StringVar(&opts.callingAgentManifest, "calling-agent", "",
 		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
+	flags.BoolVar(&opts.keepWorktree, "keep-worktree", false,
+		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Lifecycle plan (April 2026) Slice 2.")
 
 	return cmd
 }
@@ -333,6 +340,7 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	}
 
 	printRunSummary(cmd.OutOrStdout(), resolved, state, lastOutcome, terminationReason, worktreePath)
+	cleanupTrialWorktree(cmd.OutOrStdout(), surfaceRepoRoot, worktreePath, terminationReason, resolved.keepWorktree)
 	return nil
 }
 
@@ -790,6 +798,100 @@ func createTrialWorktree(repoRoot, worktreePath, branchName string) error {
 		return fmt.Errorf("git worktree add -b %s: %w (output: %s)", branchName, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// cleanExitTerminationReasons enumerates the termination reasons that
+// trigger end-of-run worktree removal (lifecycle plan Slice 2 § Auto-
+// prune contract). Anything outside this set — signal terminations,
+// gate/contract failures, process death — preserves the worktree so
+// the operator can inspect the in-progress state.
+//
+// The branch (`autoresearch/<run-id-short>`) is preserved on every
+// termination; it is the durable kept-commit anchor.
+var cleanExitTerminationReasons = map[string]struct{}{
+	"max-trials":             {},
+	"time-budget":            {},
+	"converged":              {},
+	"fixed-point-saturated":  {},
+}
+
+// cleanupTrialWorktree removes the run's worktree on a clean
+// termination unless the operator passed --keep-worktree. The branch
+// is never removed by this helper — it is the durable kept-commit
+// anchor and operators remove it via `git branch -d` when they no
+// longer need it.
+//
+// 4-state contract (lifecycle plan § Auto-prune contract):
+//
+//  1. Clean termination (`max-trials`, `time-budget`, `converged`,
+//     `fixed-point-saturated`) → remove worktree (and run
+//     `git worktree prune` to unwedge git's internal view of the
+//     gone worktree).
+//  2. `--keep-worktree` set → preserve worktree even on clean exit.
+//  3. Signal termination (`signal`) → preserve worktree so the
+//     operator can inspect mid-run state.
+//  4. Failure / unknown / empty terminationReason → preserve worktree
+//     for forensic inspection (gate failures, evaluator-contract
+//     failures, process death with no result key).
+//
+// Cleanup failure is non-fatal: the caller has already written the
+// result record and rendered the summary; the run is successful. The
+// branch is the durable artefact. Any cleanup error is reported to
+// stdout so the operator can manually `flowstate autoresearch prune`
+// (Slice 5 in the broader plan) or `git worktree remove --force` the
+// residue.
+//
+// Expected:
+//   - w is the writer the run summary was rendered to.
+//   - repoRoot is the parent repo root (target of `git worktree`).
+//   - worktreePath is the worktree directory to remove.
+//   - terminationReason is the loop's terminationReason ("" if the
+//     loop never started a trial — treated as preserve).
+//   - keepWorktree is the operator's --keep-worktree flag.
+//
+// Side effects:
+//   - On clean exit + !keepWorktree: shells `git worktree remove` and
+//     `git worktree prune` against repoRoot.
+//   - Logs a one-line status message to w describing the action taken.
+func cleanupTrialWorktree(w io.Writer, repoRoot, worktreePath, terminationReason string, keepWorktree bool) {
+	if _, clean := cleanExitTerminationReasons[terminationReason]; !clean {
+		// Non-clean termination — preserve everything for inspection.
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: worktree preserved (termination_reason=%s) at %s\n",
+			terminationReason, worktreePath)
+		return
+	}
+	if keepWorktree {
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: worktree preserved (--keep-worktree) at %s\n",
+			worktreePath)
+		return
+	}
+
+	// `--force` is required to clear the worktree's untracked scratch
+	// files (notably .autoresearch/prompt-* written by the live-driver
+	// synthesiser). The branch is the durable artefact; uncommitted
+	// scratch state inside the worktree is by design ephemeral.
+	removeCmd := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath)
+	if output, err := removeCmd.CombinedOutput(); err != nil {
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: worktree removal failed at %s: %v (output: %s) — branch is preserved\n",
+			worktreePath, err, strings.TrimSpace(string(output)))
+		return
+	}
+	// `git worktree prune` reaps stale administrative records left
+	// behind under .git/worktrees/ when remove succeeds; without it
+	// `git worktree list` continues to mention the removed entry.
+	pruneCmd := exec.Command("git", "-C", repoRoot, "worktree", "prune")
+	if output, err := pruneCmd.CombinedOutput(); err != nil {
+		_, _ = fmt.Fprintf(w,
+			"autoresearch cleanup: worktree removed but prune failed: %v (output: %s)\n",
+			err, strings.TrimSpace(string(output)))
+		return
+	}
+	_, _ = fmt.Fprintf(w,
+		"autoresearch cleanup: worktree removed at %s; branch preserved\n",
+		worktreePath)
 }
 
 // openCoordStore opens (or creates) the coord-store file at
