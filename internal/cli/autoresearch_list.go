@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -250,7 +249,7 @@ type worktreeInfo struct {
 // effort: git failures yield an empty map so the list still renders.
 func parseWorktreeList(repoRoot string) map[string]worktreeInfo {
 	out := map[string]worktreeInfo{}
-	cmd := exec.Command("git", "-C", repoRoot, "worktree", "list", "--porcelain")
+	cmd := observedCommand("git", "-C", repoRoot, "worktree", "list", "--porcelain")
 	raw, err := cmd.Output()
 	if err != nil {
 		return out
@@ -285,7 +284,7 @@ func parseWorktreeList(repoRoot string) map[string]worktreeInfo {
 // an empty map.
 func parseAutoresearchBranches(repoRoot string) map[string]struct{} {
 	out := map[string]struct{}{}
-	cmd := exec.Command("git", "-C", repoRoot, "branch", "--list", "autoresearch/*", "--format=%(refname:short)")
+	cmd := observedCommand("git", "-C", repoRoot, "branch", "--list", "autoresearch/*", "--format=%(refname:short)")
 	raw, err := cmd.Output()
 	if err != nil {
 		return out

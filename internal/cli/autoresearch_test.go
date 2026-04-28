@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,7 +146,7 @@ planner body
 		})
 
 		It("registers the run subcommand with the documented flags", func() {
-			err := runCmd("autoresearch", "run", "--help")
+			err := runCmd("autoresearch", "run", "--commit-trials", "--help")
 			Expect(err).NotTo(HaveOccurred())
 
 			output := out.String()
@@ -166,7 +168,7 @@ planner body
 
 	Describe("flag validation", func() {
 		It("rejects --metric-direction values other than min or max", func() {
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--metric-direction", "sideways",
 				"--max-trials", "1",
@@ -177,7 +179,7 @@ planner body
 		})
 
 		It("requires --surface to point at an existing file", func() {
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", filepath.Join(repoDir, "does", "not", "exist.md"),
 				"--max-trials", "1",
 				"--worktree-base", filepath.Join(dataDir, "wt"),
@@ -211,7 +213,7 @@ planner body
 			driver := writeNoOpDriver()
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "fixture-run-1b",
 				"--max-trials", "0",
@@ -236,7 +238,7 @@ planner body
 			driver := writeNoOpDriver()
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--max-trials", "0",
 				"--time-budget", "30s",
@@ -271,7 +273,7 @@ planner body
 			scorer := writeNoOpScorer()
 
 			worktreeBase := filepath.Join(dataDir, "wt-create")
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "fixture-wt",
 				"--max-trials", "0",
@@ -301,7 +303,7 @@ planner body
 			driver := writeNoOpDriver()
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "fixture-default-base",
 				"--max-trials", "0",
@@ -331,7 +333,7 @@ planner body
 			scorer := writeNoOpScorer()
 
 			explicitBase := filepath.Join(dataDir, "operator-chosen-base")
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "fixture-explicit-base",
 				"--max-trials", "0",
@@ -351,7 +353,7 @@ planner body
 		})
 
 		It("rejects the run when the surface path does not exist", func() {
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", filepath.Join(repoDir, "internal", "app", "agents", "ghost.md"),
 				"--max-trials", "1",
 				"--worktree-base", filepath.Join(dataDir, "wt-ghost"),
@@ -367,7 +369,7 @@ planner body
 			driver := writeNoOpDriver()
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "should-not-start",
 				"--max-trials", "0",
@@ -401,7 +403,7 @@ planner body
 
 				// run-id is chosen so the first 8 chars form a stable
 				// readable suffix the assertions below pin verbatim.
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "fixrunaa-rest-of-id",
 					"--max-trials", "0",
@@ -436,7 +438,7 @@ planner body
 				driver := writeNoOpDriver()
 				scorer := writeNoOpScorer()
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "deadbeefcafef00d-extra-tail",
 					"--max-trials", "0",
@@ -459,7 +461,7 @@ planner body
 				scorer := writeNoOpScorer()
 
 				args := []string{
-					"autoresearch", "run",
+					"autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "clashfix-rest-of-id",
 					"--max-trials", "0",
@@ -510,7 +512,7 @@ planner body
 			}
 
 			It("is a no-op on a clean tree (--allow-dirty does not stash)", func() {
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "alldircl-rest-of-id",
 					"--max-trials", "0",
@@ -529,7 +531,7 @@ planner body
 			It("refuses a dirty tree when --allow-dirty is not set", func() {
 				dirtyParent()
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "alldirno-rest-of-id",
 					"--max-trials", "0",
@@ -549,7 +551,7 @@ planner body
 			It("stashes the dirty tree, runs the loop, restores the stash on clean exit", func() {
 				dirtyParent()
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "alldiryes-rest-of-id",
 					"--max-trials", "1",
@@ -590,7 +592,7 @@ planner body
 
 				dirtyParent()
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "alldirerr-rest-of-id",
 					"--max-trials", "10",
@@ -629,7 +631,7 @@ planner body
 			// produces terminationReason=max-trials (a clean exit).
 			runMaxTrialsOne := func(runID, worktreeBase string, extra ...string) error {
 				args := []string{
-					"autoresearch", "run",
+					"autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", runID,
 					"--max-trials", "1",
@@ -734,7 +736,7 @@ exit 0
 				root.SetOut(out)
 				root.SetErr(out)
 				root.SetArgs([]string{
-					"autoresearch", "run",
+					"autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "signalrn-rest-of-id",
 					"--max-trials", "5",
@@ -777,7 +779,7 @@ exit 0
 
 				worktreeBase := filepath.Join(dataDir, "wt-cleanup-fail")
 				args := []string{
-					"autoresearch", "run",
+					"autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "cleanupf-rest-of-id",
 					"--max-trials", "1",
@@ -807,6 +809,340 @@ exit 0
 					_ = exec.Command("git", "-C", repoDir, "worktree", "unlock", worktreePath).Run()
 					_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", worktreePath).Run()
 				})
+			})
+		})
+
+		// In-memory default substrate (Autoresearch In-Memory Default
+		// plan, April 2026; brief Slice 1). Default `flowstate
+		// autoresearch run` reads the surface once into memory, invokes
+		// the driver via stdin/stdout, pipes the candidate to the
+		// evaluator via stdin (with FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE
+		// as a parallel channel), persists the candidate content + SHA
+		// on the trial record, and keys the best pointer on
+		// candidate_content_sha. No worktree, no branch, no commit, no
+		// `git reset` in the default code path.
+		//
+		// `--commit-trials` (default false) preserves today's git
+		// substrate verbatim. The git-mode-only flags
+		// (--worktree-base, --keep-worktree, --allow-dirty) require
+		// --commit-trials and hard-error otherwise.
+		Context("in-memory default substrate", func() {
+			// writeStdinDriver emits a driver that reads the prompt
+			// from stdin and prints a fixed candidate to stdout. The
+			// candidate is written to <DATA_DIR>/candidate-content so
+			// the spec can compare bytes for hashing assertions. The
+			// driver writes nothing to the surface file — in-memory
+			// mode does not touch the project tree.
+			writeStdinDriver := func(candidatePath string) string {
+				path := filepath.Join(dataDir, "stdin-driver.sh")
+				body := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+# Drain stdin so the harness's pipe-writer side does not block on
+# unconsumed buffers; the prompt body is not used by this fixture.
+cat > /dev/null
+cat %q
+`, candidatePath)
+				Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+				return path
+			}
+
+			// writeStdinScorer emits a scorer that consumes the
+			// candidate from stdin and prints a fixed integer. Also
+			// records what FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE
+			// evaluators see so the spec can pin the dual-channel
+			// contract.
+			writeStdinScorer := func(score string, sentinelPath string) string {
+				path := filepath.Join(dataDir, "stdin-scorer.sh")
+				body := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+candidate=$(cat)
+{
+  echo "CANDIDATE_FILE_ENV=${FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE:-MISSING}"
+  echo "CWD_NOT_WORKTREE=${PWD}"
+  echo "----CANDIDATE-START----"
+  printf '%%s' "$candidate"
+  echo
+  echo "----CANDIDATE-END----"
+  if [ -n "${FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE:-}" ] && [ -f "${FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE}" ]; then
+    echo "----TEMPFILE-CONTENT-START----"
+    cat "${FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE}"
+    echo "----TEMPFILE-CONTENT-END----"
+  fi
+} > %q
+echo %q
+`, sentinelPath, score)
+				Expect(os.WriteFile(path, []byte(body), 0o755)).To(Succeed())
+				return path
+			}
+
+			// makeCandidate builds a structurally-valid manifest body
+			// with a unique marker so each candidate has a distinct
+			// content SHA.
+			makeCandidate := func(marker string) string {
+				return fmt.Sprintf(`---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: in-memory candidate %s
+capabilities:
+  tools: [read, plan]
+---
+in-memory body %s
+`, marker, marker)
+			}
+
+			It("rejects --allow-dirty when --commit-trials is not set", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--max-trials", "1",
+					"--allow-dirty",
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("--allow-dirty"))
+				Expect(err.Error()).To(ContainSubstring("--commit-trials"))
+			})
+
+			It("rejects --keep-worktree when --commit-trials is not set", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--max-trials", "1",
+					"--keep-worktree",
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("--keep-worktree"))
+				Expect(err.Error()).To(ContainSubstring("--commit-trials"))
+			})
+
+			It("rejects --worktree-base when --commit-trials is not set", func() {
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--max-trials", "1",
+					"--worktree-base", filepath.Join(dataDir, "wt-rejected"),
+				)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("--worktree-base"))
+				Expect(err.Error()).To(ContainSubstring("--commit-trials"))
+			})
+
+			It("registers --commit-trials in --help with default false", func() {
+				err := runCmd("autoresearch", "run", "--help")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(out.String()).To(ContainSubstring("--commit-trials"))
+			})
+
+			It("never spawns a `git` subprocess in default in-memory mode", func() {
+				// Spec assertion R1.2: instrument the harness's
+				// command-runner factory so the test observes every
+				// `*exec.Cmd` the harness builds. In default mode
+				// (commit-trials=false), no git subprocess is ever
+				// constructed — the substrate swap removes the worktree
+				// + commit + reset machinery from the default code path.
+				candidatePath := filepath.Join(dataDir, "cand-no-git")
+				Expect(os.WriteFile(candidatePath, []byte(makeCandidate("nogit")), 0o600)).To(Succeed())
+				sentinel := filepath.Join(dataDir, "scorer-no-git.txt")
+				driver := writeStdinDriver(candidatePath)
+				scorer := writeStdinScorer("3", sentinel)
+
+				var observed []string
+				cli.SetCommandRunnerForTest(func(name string, args ...string) {
+					observed = append(observed, name)
+				})
+				DeferCleanup(cli.ResetCommandRunnerForTest)
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "in-mem-nogit",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				for _, name := range observed {
+					Expect(filepath.Base(name)).NotTo(Equal("git"),
+						"default in-memory mode must not spawn git; observed: %v", observed)
+				}
+			})
+
+			It("does not mutate the surface file on disk across an in-memory run", func() {
+				before, readErr := os.ReadFile(surface)
+				Expect(readErr).NotTo(HaveOccurred())
+				beforeSHA := sha256.Sum256(before)
+
+				candidatePath := filepath.Join(dataDir, "cand-immutable")
+				Expect(os.WriteFile(candidatePath, []byte(makeCandidate("imm")), 0o600)).To(Succeed())
+				sentinel := filepath.Join(dataDir, "scorer-immutable.txt")
+				driver := writeStdinDriver(candidatePath)
+				scorer := writeStdinScorer("2", sentinel)
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "in-mem-immutable",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				after, readErr := os.ReadFile(surface)
+				Expect(readErr).NotTo(HaveOccurred())
+				afterSHA := sha256.Sum256(after)
+				Expect(afterSHA).To(Equal(beforeSHA),
+					"surface bytes must be byte-identical before and after an in-memory run")
+			})
+
+			It("persists candidate_content and candidate_content_sha on the trial record and keys best on the content SHA", func() {
+				candidate := makeCandidate("kept")
+				candidatePath := filepath.Join(dataDir, "cand-kept")
+				Expect(os.WriteFile(candidatePath, []byte(candidate), 0o600)).To(Succeed())
+				// Counter-driven scorer: returns 9 on the baseline
+				// invocation (trial counter absent), 1 on trial 1.
+				// Under metric-direction=min, the trial improves on
+				// the baseline so the kept-trial path fires.
+				counterPath := filepath.Join(dataDir, "kept-counter")
+				scorerPath := filepath.Join(dataDir, "kept-scorer.sh")
+				scorerBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+n=$(cat %q 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > %q
+if [ "$n" -le 1 ]; then
+  echo 9
+else
+  echo 1
+fi
+`, counterPath, counterPath)
+				Expect(os.WriteFile(scorerPath, []byte(scorerBody), 0o755)).To(Succeed())
+				driver := writeStdinDriver(candidatePath)
+				scorer := scorerPath
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "in-mem-content",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--metric-direction", "min",
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				raw, readErr := os.ReadFile(coordPath)
+				Expect(readErr).NotTo(HaveOccurred())
+				var entries map[string]string
+				Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+
+				trialRaw, ok := entries["autoresearch/in-mem-content/trial-1"]
+				Expect(ok).To(BeTrue())
+				var trial map[string]any
+				Expect(json.Unmarshal([]byte(trialRaw), &trial)).To(Succeed())
+
+				Expect(trial).To(HaveKeyWithValue("candidate_content", candidate))
+				contentSHA, _ := trial["candidate_content_sha"].(string)
+				Expect(contentSHA).To(MatchRegexp(`^[a-f0-9]{64}$`))
+				expectedSHA := sha256.Sum256([]byte(candidate))
+				Expect(contentSHA).To(Equal(hex.EncodeToString(expectedSHA[:])))
+
+				bestRaw, ok := entries["autoresearch/in-mem-content/best"]
+				Expect(ok).To(BeTrue())
+				var best map[string]any
+				Expect(json.Unmarshal([]byte(bestRaw), &best)).To(Succeed())
+				Expect(best).To(HaveKeyWithValue("candidate_content_sha", contentSHA))
+				if commit, present := best["commit_sha"]; present {
+					Expect(commit).To(Equal(""), "in-memory mode leaves commit_sha empty")
+				}
+			})
+
+			It("pipes the candidate via stdin AND populates FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE for the evaluator", func() {
+				candidate := makeCandidate("eval-channel")
+				candidatePath := filepath.Join(dataDir, "cand-eval-channel")
+				Expect(os.WriteFile(candidatePath, []byte(candidate), 0o600)).To(Succeed())
+				sentinel := filepath.Join(dataDir, "scorer-eval-channel.txt")
+				driver := writeStdinDriver(candidatePath)
+				scorer := writeStdinScorer("4", sentinel)
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "in-mem-eval-ch",
+					"--max-trials", "1",
+					"--time-budget", "30s",
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				body, readErr := os.ReadFile(sentinel)
+				Expect(readErr).NotTo(HaveOccurred())
+				bodyStr := string(body)
+
+				Expect(bodyStr).NotTo(ContainSubstring("CANDIDATE_FILE_ENV=MISSING"))
+				Expect(bodyStr).To(ContainSubstring("----CANDIDATE-START----"))
+				Expect(bodyStr).To(ContainSubstring(strings.TrimRight(candidate, "\n")))
+				Expect(bodyStr).To(ContainSubstring("----TEMPFILE-CONTENT-START----"))
+				Expect(bodyStr).NotTo(ContainSubstring(".flowstate/autoresearch"))
+			})
+
+			It("writes the manifest record without baseline_commit and without a worktree_path on max-trials=0", func() {
+				candidatePath := filepath.Join(dataDir, "cand-setup")
+				Expect(os.WriteFile(candidatePath, []byte(makeCandidate("setup")), 0o600)).To(Succeed())
+				sentinel := filepath.Join(dataDir, "scorer-setup.txt")
+				driver := writeStdinDriver(candidatePath)
+				scorer := writeStdinScorer("0", sentinel)
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "in-mem-setup",
+					"--max-trials", "0",
+					"--driver-script", driver,
+					"--evaluator-script", scorer,
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("in-mem-setup")
+				Expect(record).To(HaveKeyWithValue("surface", surface))
+				if commit, present := record["baseline_commit"]; present {
+					Expect(commit).To(Equal(""), "in-memory mode leaves baseline_commit empty")
+				}
+				if wt, present := record["worktree_path"]; present {
+					Expect(wt).To(Equal(""), "in-memory mode leaves worktree_path empty")
+				}
+				Expect(record).To(HaveKey("commit_trials"))
+				Expect(record["commit_trials"]).To(BeEquivalentTo(false))
+			})
+
+			It("preserves today's git-mode behaviour byte-for-byte under --commit-trials", func() {
+				writeNoOpDriver := func() string {
+					path := filepath.Join(dataDir, "noop-driver-ct.sh")
+					Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755)).To(Succeed())
+					return path
+				}
+				writeNoOpScorer := func() string {
+					path := filepath.Join(dataDir, "noop-scorer-ct.sh")
+					Expect(os.WriteFile(path, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+					return path
+				}
+
+				err := runCmd("autoresearch", "run",
+					"--surface", surface,
+					"--run-id", "git-mode-on",
+					"--max-trials", "0",
+					"--time-budget", "30s",
+					"--worktree-base", filepath.Join(dataDir, "wt-git-mode"),
+					"--driver-script", writeNoOpDriver(),
+					"--evaluator-script", writeNoOpScorer(),
+					"--commit-trials",
+				)
+				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+				record := readManifestRecord("git-mode-on")
+				worktreePath, _ := record["worktree_path"].(string)
+				Expect(worktreePath).NotTo(BeEmpty(),
+					"--commit-trials must restore the git-mode worktree path on the manifest record")
+				Expect(record).To(HaveKeyWithValue("commit_trials", true))
 			})
 		})
 	})
@@ -925,7 +1261,7 @@ planner body %s
 
 		runHarness := func(runID string, maxTrials int, extraArgs ...string) error {
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", runID,
 				"--max-trials", fmt.Sprintf("%d", maxTrials),
@@ -1195,7 +1531,7 @@ broken candidate body
 
 				const runID = "smoke-3-spine"
 				args := []string{
-					"autoresearch", "run",
+					"autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", runID,
 					"--max-trials", "5",
@@ -1334,7 +1670,7 @@ broken candidate body
 
 		runSetup := func(runID, surfacePath string, extraArgs ...string) error {
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surfacePath,
 				"--run-id", runID,
 				"--max-trials", "0",
@@ -1560,7 +1896,7 @@ cp %q "$FLOWSTATE_AUTORESEARCH_SURFACE"
 			Expect(os.WriteFile(brokenPath, []byte(brokenManifestBody), 0o600)).To(Succeed())
 
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surfacePath,
 				"--run-id", "gate-fm",
 				"--max-trials", "1",
@@ -1611,7 +1947,7 @@ fi
 			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
 
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surfacePath,
 				"--run-id", "gate-skill",
 				"--max-trials", "1",
@@ -1660,7 +1996,7 @@ fi
 			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
 
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surfacePath,
 				"--run-id", "gate-source",
 				"--max-trials", "1",
@@ -1706,7 +2042,7 @@ fi
 			DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
 
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surfacePath,
 				"--run-id", "trace-st",
 				"--max-trials", "1",
@@ -1881,7 +2217,7 @@ echo 0
 
 		runWithEvaluator := func(runID string, maxTrials int, evaluator string, extraArgs ...string) error {
 			args := []string{
-				"autoresearch", "run",
+				"autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", runID,
 				"--max-trials", fmt.Sprintf("%d", maxTrials),
@@ -1899,7 +2235,7 @@ echo 0
 		}
 
 		It("exposes --evaluator-timeout in run --help", func() {
-			err := runCmd("autoresearch", "run", "--help")
+			err := runCmd("autoresearch", "run", "--commit-trials", "--help")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(out.String()).To(ContainSubstring("--evaluator-timeout"))
 		})
@@ -2094,7 +2430,7 @@ exec %q
 
 		Context("evaluator validation", func() {
 			It("rejects --evaluator-script when the path does not exist", func() {
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "eval-missing",
 					"--max-trials", "1",
@@ -2111,7 +2447,7 @@ exec %q
 				notExec := filepath.Join(dataDir, "not-exec.sh")
 				Expect(os.WriteFile(notExec, []byte("#!/usr/bin/env bash\necho 0\n"), 0o644)).To(Succeed())
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "eval-not-exec",
 					"--max-trials", "1",
@@ -2207,7 +2543,7 @@ exec %q
 			It("defaults --program to the autoresearch skill when omitted", func() {
 				skillPath := writeProgramSkill("autoresearch", "skill body")
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-default",
 					"--max-trials", "0",
@@ -2225,7 +2561,7 @@ exec %q
 			It("resolves --program <skill-name> via skills/<name>/SKILL.md", func() {
 				skillPath := writeProgramSkill("custom-program", "another skill body")
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-named",
 					"--max-trials", "0",
@@ -2242,7 +2578,7 @@ exec %q
 			})
 
 			It("rejects --program <skill-name> when skills/<name>/SKILL.md does not exist", func() {
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-missing-skill",
 					"--max-trials", "1",
@@ -2268,7 +2604,7 @@ exec %q
 				// be picked up — the path form takes precedence.
 				_ = writeProgramSkill("autoresearch", "ignored-skill-body")
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-abs-path",
 					"--max-trials", "0",
@@ -2285,7 +2621,7 @@ exec %q
 			})
 
 			It("rejects --program <path> when the file does not exist", func() {
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-missing-path",
 					"--max-trials", "1",
@@ -2301,7 +2637,7 @@ exec %q
 			It("treats values containing '/' as paths, not skill names", func() {
 				_ = writeProgramSkill("autoresearch", "default skill body")
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-slash-form",
 					"--max-trials", "1",
@@ -2324,7 +2660,7 @@ exec %q
 				callingAgent := writeCallingAgentManifest("planner-orchestrator",
 					[]string{"pre-action", "autoresearch"})
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-dedup",
 					"--max-trials", "0",
@@ -2352,7 +2688,7 @@ exec %q
 				callingAgent := writeCallingAgentManifest("solo-agent",
 					[]string{"pre-action", "memory-keeper"})
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-no-dedup",
 					"--max-trials", "0",
@@ -2377,7 +2713,7 @@ exec %q
 				adHocPath := filepath.Join(dataDir, "path-program.md")
 				Expect(os.WriteFile(adHocPath, []byte("ad-hoc program"), 0o600)).To(Succeed())
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-path-no-dedup",
 					"--max-trials", "0",
@@ -2397,7 +2733,7 @@ exec %q
 			It("ignores --calling-agent when the manifest cannot be loaded (best-effort de-dup)", func() {
 				skillPath := writeProgramSkill("autoresearch", "skill body")
 
-				err := runCmd("autoresearch", "run",
+				err := runCmd("autoresearch", "run", "--commit-trials",
 					"--surface", surface,
 					"--run-id", "prog-bad-calling-agent",
 					"--max-trials", "0",
@@ -2480,7 +2816,7 @@ exit 0
 			driver := writePromptRecorderDriver(sentinelPath)
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "ld-slice1-prompt",
 				"--max-trials", "1",
@@ -2532,7 +2868,7 @@ exit 0
 			driver := writePromptRecorderDriver(sentinelPath)
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "ld-slice1-sha",
 				"--max-trials", "1",
@@ -2566,7 +2902,7 @@ exit 0
 			driver := writePromptRecorderDriver(sentinelPath)
 			scorer := writeNoOpScorer()
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "ld-slice1-manifest",
 				"--max-trials", "0",
@@ -2662,7 +2998,7 @@ planner body %s
 			Expect(os.Setenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT", responseFile)).To(Succeed())
 			DeferCleanup(func() { _ = os.Unsetenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT") })
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "ld-slice2-applied",
 				"--max-trials", "1",
@@ -2706,7 +3042,7 @@ planner body %s
 			Expect(os.Setenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT", responseFile)).To(Succeed())
 			DeferCleanup(func() { _ = os.Unsetenv("FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT") })
 
-			err := runCmd("autoresearch", "run",
+			err := runCmd("autoresearch", "run", "--commit-trials",
 				"--surface", surface,
 				"--run-id", "ld-slice2-no-block",
 				"--max-trials", "1",
@@ -2856,7 +3192,7 @@ planner body improved
 		Expect(os.Setenv("DATA_DIR", dataDir)).To(Succeed())
 		DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
 
-		Expect(runCmd("autoresearch", "run",
+		Expect(runCmd("autoresearch", "run", "--commit-trials",
 			"--surface", surface,
 			"--run-id", runID,
 			"--max-trials", "1",
@@ -3064,7 +3400,7 @@ updated body
 		DeferCleanup(func() { _ = os.Unsetenv("DATA_DIR") })
 
 		args := []string{
-			"autoresearch", "run",
+			"autoresearch", "run", "--commit-trials",
 			"--surface", surface,
 			"--run-id", runID,
 			"--max-trials", "1",
