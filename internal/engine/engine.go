@@ -1334,6 +1334,47 @@ func (e *Engine) Manifest() agent.Manifest {
 	return e.manifest
 }
 
+// ManifestSnapshot satisfies swarm.DispatchEngine. It returns the
+// current manifest as an opaque value the dispatch service can later
+// hand back to RestoreManifest. The opaque type keeps the swarm
+// package free of an agent-package import.
+//
+// Returns:
+//   - The current agent.Manifest as an `any` value.
+//
+// Side effects:
+//   - None.
+func (e *Engine) ManifestSnapshot() any {
+	return e.Manifest()
+}
+
+// RestoreManifest pairs with ManifestSnapshot to revert the engine's
+// active manifest after a swarm dispatch. The dispatch service calls
+// this after FlushSwarmLifecycle so the engine returns to its
+// pre-dispatch identity — important for the TUI's continuing chat
+// session, no-op for one-shot CLI runs.
+//
+// A nil snapshot or one that does not unwrap to an agent.Manifest is
+// silently ignored so a misconfigured caller cannot wipe the engine's
+// manifest by accident.
+//
+// Expected:
+//   - snapshot is a value previously produced by ManifestSnapshot.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Calls SetManifest with the snapshotted manifest when the value
+//     unwraps cleanly.
+func (e *Engine) RestoreManifest(snapshot any) {
+	m, ok := snapshot.(agent.Manifest)
+	if !ok || m.ID == "" {
+		return
+	}
+	e.SetManifest(m)
+}
+
 // SetSwarmContext installs the T-swarm-2 envelope on the engine. The
 // runner calls this immediately before driving streaming.Run when an
 // `@<swarm-id>` invocation lands, so the lead engine's delegate-tool
