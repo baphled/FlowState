@@ -373,6 +373,16 @@ type Intent struct {
 	// premature-delegation-misfire detector (P7/C2) and any future
 	// routing surface degrade to the historical agent-only behaviour.
 	swarmRegistry       *swarm.Registry
+	// pendingSwarmLeadID carries the swarm lead's agent id for the
+	// current turn when the user typed @<swarm-id>. Set by
+	// maybeBeginSwarmDispatch, consumed by sendMessage to route the
+	// stream to the lead, cleared by the stream-completion handler
+	// after FlushSwarmLifecycle and SetSwarmContext(nil) run. Empty
+	// in normal (non-dispatch) turns. Per ADR - Swarm Dispatch Across
+	// Access Methods, this replaces the legacy maybeSwitchToSwarm
+	// SetManifest swap so the chat keeps its conversational identity
+	// across dispatches.
+	pendingSwarmLeadID  string
 	sessionStore        SessionLister
 	childSessionLister  SessionChildLister
 	view                *chat.View
@@ -1961,6 +1971,17 @@ func (i *Intent) finaliseStreamIfDone(msg StreamChunkMsg) {
 	}
 	contextResult := i.engine.LastContextResult()
 	i.tokenCount = contextResult.TokensUsed
+
+	// Wind down a swarm dispatch: flush post-swarm gates, clear the
+	// engine's swarm context, and reset the per-turn lead override so
+	// the next user turn lands on the chat's persistent agent. Mirrors
+	// the CLI's flow at the end of `flowstate run --agent <swarm>` —
+	// see ADR - Swarm Dispatch Across Access Methods.
+	if i.pendingSwarmLeadID != "" {
+		_ = i.engine.FlushSwarmLifecycle(context.Background())
+		i.engine.SetSwarmContext(nil)
+		i.pendingSwarmLeadID = ""
+	}
 }
 
 // appendThinking accumulates streaming thinking content for later display.
@@ -3178,13 +3199,13 @@ func (i *Intent) sendMessage() tea.Cmd {
 	}
 
 	// @<swarm-id> mention dispatch: when the user's message references a
-	// registered swarm, switch to its lead agent and attach the swarm
-	// context to the engine — same shape as the CLI's resolveAgentOrSwarm
-	// path at internal/cli/run.go. Without this the TUI silently drops
-	// swarm mentions: the model sees "@bug-hunt" as text, calls
-	// suggest_delegate, the consumer doesn't know what to do with the
-	// dispatch_swarm payload, and the user's turn fizzles.
-	i.maybeSwitchToSwarm(userMessage)
+	// registered swarm, install the swarm context and stash the lead's
+	// agent id so this turn's stream routes to the lead. The chat's
+	// persistent agentID is unchanged — swarm dispatch is a one-shot
+	// task, not an identity swap. ADR - Swarm Dispatch Across Access
+	// Methods covers the rationale; same shape as the CLI's
+	// `Engine.Stream(ctx, leadID, message)` per-call dispatch.
+	i.maybeBeginSwarmDispatch(userMessage)
 
 	// P7/C2 + D1: reset all per-turn state via the shared beginTurn helper
 	// so the new stream starts with a clean slate — including a cleared
@@ -3212,10 +3233,19 @@ func (i *Intent) sendMessage() tea.Cmd {
 	return func() tea.Msg {
 		var stream <-chan provider.StreamChunk
 		var err error
-		if i.sessionManager != nil {
+		// Swarm dispatch turns route through the streamer with the
+		// lead's id directly: the session manager binds messages to
+		// the chat's persistent agent (i.agentID) and would tag this
+		// dispatch as continuing the assistant's chat, which is the
+		// wrong association — the dispatch is a discrete task. Plain
+		// turns continue to use the session manager when available.
+		switch {
+		case i.pendingSwarmLeadID != "":
+			stream, err = i.streamer.Stream(ctx, i.pendingSwarmLeadID, userMessage)
+		case i.sessionManager != nil:
 			i.sessionManager.EnsureSession(i.sessionID, i.agentID)
 			stream, err = i.sessionManager.SendMessage(ctx, i.sessionID, userMessage)
-		} else {
+		default:
 			stream, err = i.streamer.Stream(ctx, i.agentID, userMessage)
 		}
 		if err != nil {
@@ -4720,16 +4750,21 @@ func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
 	i.syncViewAgentMeta()
 }
 
-// maybeSwitchToSwarm resolves the first @<swarm-id> mention in message
-// and, when found, swaps the engine's active manifest to the swarm's
-// lead agent and attaches a fresh swarm.Context. Idempotent — re-
-// invoking with the same message after the switch has already landed
-// is a no-op (the swarm context is already set; SetManifest with the
-// already-active lead is a cheap rewrite).
+// maybeBeginSwarmDispatch resolves the first @<swarm-id> mention in
+// message and, when found, prepares a one-shot swarm dispatch for the
+// upcoming turn. The chat's persistent identity (i.agentID) and the
+// engine's active manifest are NOT mutated — only the swarm context
+// is installed and the lead agent id is stashed in pendingSwarmLeadID
+// so sendMessage can route this turn's stream to the lead.
 //
-// Mirrors the CLI's resolveAgentOrSwarm flow so chat-input @<swarm>
-// dispatch behaves identically to `flowstate run --agent <swarm>`.
-func (i *Intent) maybeSwitchToSwarm(message string) {
+// This is the TUI half of the contract pinned by ADR - Swarm Dispatch
+// Across Access Methods: swarm dispatch is a discrete task, not an
+// identity swap. After the dispatched turn streams to completion
+// (handled in handleStreamChunkMsg's Done branch), the swarm context
+// is cleared and the chat returns to whatever agent the user was
+// already talking to. Mirrors the CLI's `Engine.Stream(ctx, leadID,
+// message)` per-call shape rather than a persistent SetManifest swap.
+func (i *Intent) maybeBeginSwarmDispatch(message string) {
 	if i.engine == nil || i.agentRegistry == nil {
 		return
 	}
@@ -4737,17 +4772,12 @@ func (i *Intent) maybeSwitchToSwarm(message string) {
 	if swarmManifest == nil {
 		return
 	}
-	leadManifest, found := i.agentRegistry.Get(leadID)
-	if !found || leadManifest == nil {
+	if _, found := i.agentRegistry.Get(leadID); !found {
 		return
 	}
 	swarmCtx := swarm.NewContext(swarmManifest.ID, swarmManifest)
-	i.engine.SetManifest(*leadManifest)
 	i.engine.SetSwarmContext(&swarmCtx)
-	i.agentID = leadID
-	i.tokenBudget = i.engine.ModelContextLimit()
-	i.syncStatusBar()
-	i.syncViewAgentMeta()
+	i.pendingSwarmLeadID = leadID
 }
 
 // nextAgentInCycle returns the manifest immediately after currentID in
