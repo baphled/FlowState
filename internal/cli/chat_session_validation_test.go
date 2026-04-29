@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -66,6 +67,53 @@ var _ = Describe("resolveChatSessionID", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(id).To(Equal("session.v2"))
+		})
+	})
+
+	Context("when the session ID exceeds the length cap", func() {
+		It("rejects ids longer than maxSessionIDLength", func() {
+			tooLong := strings.Repeat("a", maxSessionIDLength+1)
+
+			id, err := resolveChatSessionID(tooLong)
+
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, errInvalidSessionID)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("max is 256"))
+			Expect(id).To(BeEmpty())
+		})
+
+		It("accepts ids exactly at the length cap", func() {
+			atCap := strings.Repeat("a", maxSessionIDLength)
+
+			id, err := resolveChatSessionID(atCap)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal(atCap))
+		})
+	})
+
+	Context("when the session ID contains control characters", func() {
+		DescribeTable("rejects non-printable characters",
+			func(input string) {
+				id, err := resolveChatSessionID(input)
+
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, errInvalidSessionID)).To(BeTrue())
+				Expect(err.Error()).To(ContainSubstring("non-printable"))
+				Expect(id).To(BeEmpty())
+			},
+			Entry("null byte", "session\x00"),
+			Entry("newline", "session\nid"),
+			Entry("tab", "session\tid"),
+			Entry("escape", "session\x1bid"),
+			Entry("DEL", "session\x7f"),
+		)
+
+		It("accepts unicode letters/digits", func() {
+			id, err := resolveChatSessionID("séssion-Δ-42")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("séssion-Δ-42"))
 		})
 	})
 })
