@@ -1408,17 +1408,19 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 	return nil, errLoadSkillsMustBeArray
 }
 
-// teeToParentStream forwards content chunks from src to the parent engine's
-// outChan (extracted from ctx via streamOutputFromContext) so the TUI shows
-// member output inline rather than only as start/complete notifications.
+// teeToParentStream buffers the full content of each member's stream and
+// forwards it to the parent outChan as a single coherent chunk once the
+// member's stream closes. Forwarding chunk-by-chunk produces interleaved,
+// unreadable output when multiple members run in parallel.
 //
-// Only Content chunks are forwarded; Done and DelegationInfo-only chunks are
-// not forwarded because Done would prematurely terminate the parent stream and
+// The emitted chunk is prefixed with a bold agent label so the reader can
+// tell which member produced each block. Done and DelegationInfo-only chunks
+// are never forwarded: Done would prematurely close the parent stream and
 // DelegationInfo events are emitted separately by executeSync.
 //
-// The forward uses a non-blocking send so a full or missing parent channel
+// The send to parentOut is non-blocking so a full or absent parent channel
 // never stalls the member's own stream pipeline.
-func teeToParentStream(ctx context.Context, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
+func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
 	parentOut, ok := streamOutputFromContext(ctx)
 	if !ok {
 		return src
@@ -1426,14 +1428,19 @@ func teeToParentStream(ctx context.Context, src <-chan provider.StreamChunk) <-c
 	out := make(chan provider.StreamChunk, cap(src)+1)
 	go func() {
 		defer close(out)
+		var buf strings.Builder
 		for chunk := range src {
 			if chunk.Content != "" && !chunk.Done && chunk.DelegationInfo == nil {
-				select {
-				case parentOut <- provider.StreamChunk{Content: chunk.Content}:
-				default:
-				}
+				buf.WriteString(chunk.Content)
 			}
 			out <- chunk
+		}
+		if buf.Len() > 0 {
+			text := "\n\n**[" + agentID + "]**\n\n" + buf.String() + "\n"
+			select {
+			case parentOut <- provider.StreamChunk{Content: text}:
+			default:
+			}
 		}
 	}()
 	return out
@@ -1721,6 +1728,13 @@ func (d *DelegateTool) executeSync(
 	hasOutput bool,
 ) (tool.Result, error) {
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
+	if hasOutput {
+		label := "\n*Delegating to **" + target.agentID + "**…*\n"
+		select {
+		case outChan <- provider.StreamChunk{Content: label}:
+		default:
+		}
+	}
 
 	if gateErr := d.dispatchPreSwarmGatesOnce(ctx); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
@@ -1841,7 +1855,7 @@ func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, t
 		d.circuitBreaker.RecordFailure()
 		return fmt.Errorf("delegation failed: %w", err)
 	}
-	chunks = teeToParentStream(delegateCtx, chunks)
+	chunks = teeToParentStream(delegateCtx, target.agentID, chunks)
 	chunks = d.withHarnessEvents(delegateCtx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(delegateCtx, chunks, sessionIDFromContext(delegateCtx), target.agentID)
 	res, collectErr := d.collectWithProgress(delegateCtx, chunks, time.Now())
@@ -1887,7 +1901,7 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 	if err != nil {
 		return err
 	}
-	chunks = teeToParentStream(ctx, chunks)
+	chunks = teeToParentStream(ctx, target.agentID, chunks)
 	chunks = d.withHarnessEvents(ctx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
 	res, collectErr := d.collectWithProgress(ctx, chunks, time.Now())
