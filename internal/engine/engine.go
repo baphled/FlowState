@@ -2088,57 +2088,69 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 
-		if result.toolCall == nil {
+		if len(result.toolCalls) == 0 {
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
 		}
 
-		// Persist the assistant tool_use intent before any branch that can
-		// exit early (permission denied, ErrToolNotFound, execute failure).
-		// The openaicompat accumulator already surfaced a structured
-		// tool_call event; the transcript must retain the model's intent
-		// even when we never reach executeToolCall. Without this the
-		// persisted session is indistinguishable from the model having
-		// replied with no tool use at all — the exact shape observed in
-		// session-1776623141279480382, where the planner's tool_use
-		// disappeared and the raw function-call JSON leaked into Content.
-		e.storeAssistantToolUse(result.toolCall, result.responseContent)
+		// Persist all tool_use blocks in a single assistant message before any
+		// branch that can exit early (permission denied, ErrToolNotFound,
+		// execute failure). The transcript must retain the model's intent even
+		// when execution is skipped — otherwise the persisted session is
+		// indistinguishable from the model having replied with no tool use at
+		// all (session-1776623141279480382).
+		e.storeAssistantToolUseBatch(result.toolCalls, result.responseContent)
 
-		if denied := e.checkToolPermission(result.toolCall, outChan); denied {
-			return
+		// Permission checks are sequential and fast — run them before launching
+		// any goroutines so a denied call halts the whole batch cleanly.
+		for _, tc := range result.toolCalls {
+			if denied := e.checkToolPermission(tc, outChan); denied {
+				return
+			}
 		}
 
-		toolResult, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, result.toolCall)
-		if err != nil {
-			outChan <- provider.StreamChunk{Error: err, Done: true}
-			return
+		// Execute all tool calls. When the batch has more than one call we fan
+		// out into goroutines so the engine's concurrent dispatch path fires.
+		// Single-call batches use the same path for uniformity.
+		execResults := e.executeToolCallBatch(ctx, sessionID, result.toolCalls, outChan)
+
+		// Emit error and halt on the first failure (preserve original behaviour).
+		for _, er := range execResults {
+			if er.err != nil {
+				outChan <- provider.StreamChunk{Error: er.err, Done: true}
+				return
+			}
 		}
 
-		e.storeToolResult(result.toolCall, toolResult)
+		// Persist results and emit tool_result chunks in deterministic order.
+		for _, er := range execResults {
+			e.storeToolResult(er.toolCall, er.toolResult)
 
-		resultContent := toolResult.Output
-		isError := toolResult.Error != nil
-		if isError {
-			resultContent = "Error: " + toolResult.Error.Error()
-		}
-		// P14: re-resolve the internal id so the tool_result chunk carries
-		// the same InternalToolCallID as the originating tool_call — the
-		// registry is idempotent on a repeat lookup so this is O(1) and
-		// matches the call even when a failover replayed the call under a
-		// different native id.
-		outChan <- provider.StreamChunk{
-			EventType:  "tool_result",
-			ToolCallID: result.toolCall.ID,
-			InternalToolCallID: e.toolCallCorrelator.InternalID(
-				sessionID, result.toolCall.ID, result.toolCall.Name, result.toolCall.Arguments,
-			),
-			ToolResult: &provider.ToolResultInfo{
-				Content: resultContent,
-				IsError: isError,
-			},
+			resultContent := er.toolResult.Output
+			isError := er.toolResult.Error != nil
+			if isError {
+				resultContent = "Error: " + er.toolResult.Error.Error()
+			}
+			// P14: re-resolve the internal id so the tool_result chunk carries
+			// the same InternalToolCallID as the originating tool_call.
+			outChan <- provider.StreamChunk{
+				EventType:  "tool_result",
+				ToolCallID: er.toolCall.ID,
+				InternalToolCallID: e.toolCallCorrelator.InternalID(
+					sessionID, er.toolCall.ID, er.toolCall.Name, er.toolCall.Arguments,
+				),
+				ToolResult: &provider.ToolResultInfo{
+					Content: resultContent,
+					IsError: isError,
+				},
+			}
 		}
 
-		messages = e.appendToolResultToMessages(messages, result.toolCall, toolResult)
+		toolResults := make([]tool.Result, len(execResults))
+		for i, er := range execResults {
+			toolResults[i] = er.toolResult
+		}
+		messages = e.appendToolResultsBatchToMessages(messages, result.toolCalls, toolResults)
 
 		attempt++
 		var streamErr error
@@ -2148,6 +2160,40 @@ func (e *Engine) streamWithToolLoop(
 			return
 		}
 	}
+}
+
+// toolCallExecResult holds the outcome of a single tool call execution.
+type toolCallExecResult struct {
+	toolCall   *provider.ToolCall
+	toolResult tool.Result
+	err        error
+}
+
+// executeToolCallBatch runs all tool calls concurrently and returns results in
+// the same order as the input slice. A single-element batch still goes through
+// this path so the message-assembly code is uniform.
+func (e *Engine) executeToolCallBatch(
+	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
+) []toolCallExecResult {
+	results := make([]toolCallExecResult, len(toolCalls))
+	if len(toolCalls) == 1 {
+		tc := toolCalls[0]
+		tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+		results[0] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
+		return results
+	}
+
+	var wg sync.WaitGroup
+	for i, tc := range toolCalls {
+		wg.Add(1)
+		go func(i int, tc *provider.ToolCall) {
+			defer wg.Done()
+			tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
+		}(i, tc)
+	}
+	wg.Wait()
+	return results
 }
 
 // evictCompletedBackgroundTasks calls EvictCompleted on the delegate tool's background manager
@@ -2210,7 +2256,7 @@ func (e *Engine) retryStreamForToolResult(
 
 // streamChunkResult carries the assembled output from processStreamChunks.
 type streamChunkResult struct {
-	toolCall        *provider.ToolCall
+	toolCalls       []*provider.ToolCall // all tool calls emitted in one assistant turn
 	responseContent string
 	thinkingContent string
 	done            bool
@@ -2258,6 +2304,7 @@ func (e *Engine) processStreamChunks(
 	// artefact-ordering invariant requires at least one such artefact to
 	// precede the first tool_use surfaced to the consumer.
 	var sawTextOrThinking bool
+	var toolCalls []*provider.ToolCall
 
 	for {
 		select {
@@ -2266,7 +2313,11 @@ func (e *Engine) processStreamChunks(
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
-				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String()}
+				return streamChunkResult{
+					toolCalls:       toolCalls,
+					responseContent: responseContent.String(),
+					thinkingContent: thinkingContent.String(),
+				}
 			}
 
 			chunk.ModelID = e.LastModel()
@@ -2280,11 +2331,9 @@ func (e *Engine) processStreamChunks(
 			if chunk.ToolCall != nil {
 				e.publishToolReasoningEvent(sessionID, chunk.ToolCall.Name, responseContent.String())
 				e.forwardToolCallChunk(sessionID, chunk, &thinkingContent, sawTextOrThinking, outChan)
-				return streamChunkResult{
-					toolCall:        chunk.ToolCall,
-					responseContent: responseContent.String(),
-					thinkingContent: thinkingContent.String(),
-				}
+				sawTextOrThinking = true // the tool_call chunk acts as the turn-open marker
+				toolCalls = append(toolCalls, chunk.ToolCall)
+				continue // keep reading — there may be more tool calls in this turn
 			}
 
 			thinkingContent.WriteString(chunk.Thinking)
@@ -2295,7 +2344,12 @@ func (e *Engine) processStreamChunks(
 			outChan <- chunk
 
 			if chunk.Done {
-				return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
+				return streamChunkResult{
+					toolCalls:       toolCalls,
+					responseContent: responseContent.String(),
+					thinkingContent: thinkingContent.String(),
+					done:            len(toolCalls) == 0, // done only when no tool calls pending
+				}
 			}
 		}
 	}
@@ -2569,6 +2623,25 @@ func (e *Engine) storeAssistantToolUse(toolCall *provider.ToolCall, content stri
 	})
 }
 
+// storeAssistantToolUseBatch appends a single assistant message that contains
+// all tool_use blocks from a parallel dispatch turn. Callers with a batch of
+// one call may use this instead of storeAssistantToolUse for uniform handling.
+func (e *Engine) storeAssistantToolUseBatch(toolCalls []*provider.ToolCall, content string) {
+	if e.store == nil || len(toolCalls) == 0 {
+		return
+	}
+	calls := make([]provider.ToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		calls[i] = provider.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+	}
+	e.store.Append(provider.Message{
+		Role:      "assistant",
+		Content:   content,
+		ToolCalls: calls,
+		ModelID:   e.LastModel(),
+	})
+}
+
 // storeToolResult appends a tool result message to the context store.
 //
 // Expected:
@@ -2643,6 +2716,47 @@ func (e *Engine) appendToolResultToMessages(
 	}
 
 	return append(messages, toolResultMsg)
+}
+
+// appendToolResultsBatchToMessages adds a single assistant message (with all
+// tool_calls from a parallel turn) followed by one tool-result message per
+// call, preserving the order of toolCalls/results.
+//
+// The OpenAI-compat protocol requires that tool_result messages follow the
+// assistant message that issued the corresponding tool_calls in the same order.
+func (e *Engine) appendToolResultsBatchToMessages(
+	messages []provider.Message, toolCalls []*provider.ToolCall, results []tool.Result,
+) []provider.Message {
+	if len(toolCalls) == 0 {
+		return messages
+	}
+
+	// One assistant message listing ALL tool calls.
+	calls := make([]provider.ToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		calls[i] = provider.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+	}
+	messages = append(messages, provider.Message{
+		Role:      "assistant",
+		ToolCalls: calls,
+	})
+
+	// One tool-result message per call, in the same order.
+	for i, tc := range toolCalls {
+		content := results[i].Output
+		if results[i].Error != nil {
+			content = "Error: " + results[i].Error.Error()
+		}
+		messages = append(messages, provider.Message{
+			Role:    "tool",
+			Content: content,
+			ToolCalls: []provider.ToolCall{
+				{ID: tc.ID, Name: tc.Name},
+			},
+		})
+	}
+
+	return messages
 }
 
 // buildContextWindow constructs the message window for the provider, including system prompt and history.
