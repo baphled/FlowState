@@ -32,7 +32,8 @@ type AutoresearchOptions struct {
 	CommitTrials    bool
 	// DriverAgent is forwarded to the driver subprocess as
 	// FLOWSTATE_AUTORESEARCH_DRIVER_AGENT. Empty = driver uses its own default.
-	DriverAgent string
+	DriverAgent     string
+	NoImproveWindow int
 }
 
 // AutoresearchResult is the structured summary of a completed run.
@@ -200,6 +201,7 @@ func toPrivateOpts(pub AutoresearchOptions) autoresearchRunOptions {
 		metricDirection: metricDir,
 		commitTrials:    pub.CommitTrials,
 		driverAgent:     pub.DriverAgent,
+		noImproveWindow: pub.NoImproveWindow,
 		// program defaults to the canonical skill name so
 		// resolveAutoresearchOptions can resolve it against the repo root.
 		// Callers of RunAutoresearchWithResult that do not need to
@@ -222,5 +224,6 @@ func toPublicOpts(priv autoresearchRunOptions) AutoresearchOptions {
 		MetricDirection: priv.metricDirection,
 		CommitTrials:    priv.commitTrials,
 		DriverAgent:     priv.driverAgent,
+		NoImproveWindow: priv.noImproveWindow,
 	}
 }

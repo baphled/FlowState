@@ -28,6 +28,7 @@ type AutoresearchOpts struct {
 	TimeBudget      time.Duration
 	MetricDirection string
 	DriverAgent     string // agent ID to pass as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT
+	NoImproveWindow int    // 0 means use the CLI default (5)
 }
 
 // AutoresearchResult is the structured summary of a completed run as
