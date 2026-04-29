@@ -280,6 +280,54 @@ func (c *Component) AddProviderRateLimitedNotification(event *events.ProviderEve
 	})
 }
 
+// AddCategoryModelSwapNotification adds a notification when the
+// CategoryResolver auto-promoted a denied model to a capable
+// alternative (see engine.CategoryModelSwap). Surfaces the upgrade in
+// the activity overlay so the user sees, in the moment a delegation
+// fires, that an agent's configured model was substituted because of
+// the cluster-wide tool-capability allow/deny lists. Without this
+// surface, swaps were only visible in `flowstate serve`'s stderr —
+// invisible to TUI users.
+//
+// Takes primitives rather than an engine.CategoryModelSwap value to
+// keep the notification package free of any internal/engine import,
+// matching the existing helpers' decoupling discipline.
+//
+// Expected:
+//   - category names the routing category (e.g. "quick", "deep").
+//     Empty is allowed; renders as "(uncategorised)".
+//   - original is the model the descriptor strategy first picked.
+//   - chosen is the model the resolver actually returned. Must
+//     differ from original (the resolver only fires the swap event
+//     when it changed the result).
+//   - reason is the human-readable cause from the resolver.
+//
+// Returns:
+//   - Nothing.
+//
+// Side effects:
+//   - Adds a Notification to the manager at LevelWarning. Warning
+//     level rather than Info because the user's configured model was
+//     overridden — they may want to know to update their config.
+func (c *Component) AddCategoryModelSwapNotification(category, original, chosen, reason string) {
+	displayedCategory := category
+	if displayedCategory == "" {
+		displayedCategory = "(uncategorised)"
+	}
+	message := displayedCategory + ": " + original + " → " + chosen
+	if reason != "" {
+		message += " (" + reason + ")"
+	}
+	c.manager.Add(Notification{
+		ID:        "category-model-swap-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		Title:     "Model auto-promoted",
+		Message:   message,
+		Level:     LevelWarning,
+		Duration:  10 * time.Second,
+		CreatedAt: time.Now(),
+	})
+}
+
 // AddToolExecuteErrorNotification adds a notification for a tool execution error event.
 //
 // Expected:

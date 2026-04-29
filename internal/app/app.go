@@ -1420,14 +1420,6 @@ func buildSwarmGateRunner() swarm.GateRunner {
 	return runner
 }
 
-// CategoryModelSwapEventType is the event-bus topic the resolver swap
-// notification publishes under. Subscribed by the TUI activity pane
-// (planned) and the CLI surface so the user sees auto-promotions like
-// "explorer: claude-haiku-4.5 → claude-sonnet-4-6 (haiku denied)".
-// Pulled out as a constant so subscribers and publishers reference the
-// same string.
-const CategoryModelSwapEventType = "category.model_swap"
-
 // buildCategorySwapNotifier returns the SwapNotifier installed on the
 // delegating agent's CategoryResolver. The notifier logs each swap at
 // WARN level (so server-mode operators see auto-promotions in stderr)
@@ -1464,7 +1456,7 @@ func buildCategorySwapNotifier(eng *engine.Engine) engine.SwapNotifier {
 		if bus == nil {
 			return
 		}
-		bus.Publish(CategoryModelSwapEventType, swap)
+		bus.Publish(engine.CategoryModelSwapEventType, swap)
 	}
 }
 

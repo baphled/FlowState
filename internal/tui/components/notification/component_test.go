@@ -58,6 +58,39 @@ var _ = Describe("Component", func() {
 		Expect(view).To(ContainSubstring("second"))
 	})
 
+	Describe("AddCategoryModelSwapNotification", func() {
+		It("renders category, original → chosen, and reason as a warning toast", func() {
+			comp.AddCategoryModelSwapNotification(
+				"quick", "claude-haiku-4.5", "claude-sonnet-4-6",
+				`matches tool-incapable pattern "claude-haiku*"`,
+			)
+
+			active := mgr.Active()
+			Expect(active).To(HaveLen(1))
+			Expect(active[0].Title).To(Equal("Model auto-promoted"))
+			Expect(active[0].Message).To(ContainSubstring("quick:"))
+			Expect(active[0].Message).To(ContainSubstring("claude-haiku-4.5 → claude-sonnet-4-6"))
+			Expect(active[0].Message).To(ContainSubstring(`tool-incapable pattern "claude-haiku*"`))
+			Expect(active[0].Level).To(Equal(notification.LevelWarning))
+		})
+
+		It("renders an empty category as the (uncategorised) placeholder", func() {
+			comp.AddCategoryModelSwapNotification("", "a", "b", "")
+
+			active := mgr.Active()
+			Expect(active).To(HaveLen(1))
+			Expect(active[0].Message).To(ContainSubstring("(uncategorised):"))
+		})
+
+		It("omits the parenthetical reason when none was supplied", func() {
+			comp.AddCategoryModelSwapNotification("quick", "a", "b", "")
+
+			active := mgr.Active()
+			Expect(active).To(HaveLen(1))
+			Expect(active[0].Message).To(Equal("quick: a → b"))
+		})
+	})
+
 	Describe("AddDelegationNotification", func() {
 		It("adds info notification for started status", func() {
 			comp.AddDelegationNotification(&provider.DelegationInfo{

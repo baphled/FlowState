@@ -121,9 +121,10 @@ type BackgroundTaskCompletedMsg struct {
 // carries the event payload safely into Update() for processing on the main
 // goroutine.
 type EventBusNotificationMsg struct {
-	ProviderError *events.ProviderErrorEvent
-	RateLimited   *events.ProviderEvent
-	ToolError     *events.ToolExecuteErrorEvent
+	ProviderError     *events.ProviderErrorEvent
+	RateLimited       *events.ProviderEvent
+	ToolError         *events.ToolExecuteErrorEvent
+	CategoryModelSwap *engine.CategoryModelSwap
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
@@ -921,6 +922,26 @@ func (i *Intent) subscribeToFailoverEvents() {
 		default:
 		}
 	})
+
+	// CategoryModelSwap fires synchronously inside DelegateTool when the
+	// CategoryResolver auto-promotes a denied model to the next-best
+	// capable one (see app.buildCategorySwapNotifier). The swap struct
+	// has no SessionID — the bus is the parent engine's bus and the
+	// resolver runs on the goroutine handling the user's delegation
+	// request, so a swap that lands here is unambiguously for the
+	// active turn. Stale subscriptions from prior Intents (post-session-
+	// switch) push into their now-orphaned channels and drop on the
+	// non-blocking select, matching the existing leak profile.
+	bus.Subscribe(engine.CategoryModelSwapEventType, func(msg any) {
+		swap, ok := msg.(engine.CategoryModelSwap)
+		if !ok {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{CategoryModelSwap: &swap}:
+		default:
+		}
+	})
 }
 
 // waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
@@ -964,6 +985,11 @@ func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd
 		i.notifications.AddProviderRateLimitedNotification(msg.RateLimited)
 	case msg.ToolError != nil:
 		i.notifications.AddToolExecuteErrorNotification(msg.ToolError)
+	case msg.CategoryModelSwap != nil:
+		swap := msg.CategoryModelSwap
+		i.notifications.AddCategoryModelSwapNotification(
+			swap.Category, swap.Original, swap.Chosen, swap.Reason,
+		)
 	}
 	i.refreshViewport()
 	return i.waitForEventBusNotification()
