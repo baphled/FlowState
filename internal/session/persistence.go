@@ -90,6 +90,50 @@ func LoadSessionsFromDirectory(sessionsDir string) ([]*Session, error) {
 	return sessions, nil
 }
 
+// LoadSessionMetadata reads a single session's .meta.json sidecar
+// from sessionsDir and returns the parsed Session. Returns nil and a
+// nil error when the sidecar does not exist (an absence is a normal
+// "this is a fresh session" signal, not an error). Corrupt files
+// surface as an unmarshal error.
+//
+// Expected:
+//   - sessionsDir is the directory containing .meta.json sidecars.
+//   - sessionID is the canonical session id (no path separators).
+//
+// Returns:
+//   - A non-nil *Session and nil error when the sidecar exists and
+//     parses cleanly.
+//   - nil, nil when the sidecar is absent (a fresh session).
+//   - nil and a non-nil error when the file exists but is unreadable
+//     or the JSON is malformed.
+//
+// Side effects:
+//   - Reads at most one file from disk.
+func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
+	if sessionsDir == "" || sessionID == "" {
+		return nil, nil
+	}
+	path := filepath.Join(sessionsDir, sessionID+metaFileSuffix)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var meta Metadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil, err
+	}
+	return &Session{
+		ID:        meta.ID,
+		ParentID:  meta.ParentID,
+		AgentID:   meta.AgentID,
+		Status:    meta.Status,
+		CreatedAt: meta.CreatedAt,
+	}, nil
+}
+
 // loadMetaFile reads and parses a single .meta.json file, returning nil on any error.
 //
 // Expected:

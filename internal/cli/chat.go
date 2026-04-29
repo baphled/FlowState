@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/baphled/flowstate/internal/app"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -134,7 +136,16 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 		// Don't abort: a missing or unreadable session file is recoverable
 		// by starting a fresh session under the same id. But the user
 		// asked to resume one; if that didn't happen, they should know.
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to load session %q: %v\n", opts.Session, loadErr)
+		// Differentiate "session does not exist" (informational —
+		// likely a typo or first-time reference) from "session exists
+		// but cannot be read" (alarming — corruption, permissions, disk
+		// failure). The two failure modes need different responses from
+		// the operator and should look different in the warning.
+		if errors.Is(loadErr, os.ErrNotExist) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: session %q not found; starting fresh\n", opts.Session)
+		} else {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to load session %q: %v\n", opts.Session, loadErr)
+		}
 	}
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
 
@@ -235,26 +246,47 @@ func resolveChatSessionID(sessionParam string) (string, error) {
 	return sessionParam, nil
 }
 
+// maxSessionIDLength caps how long a user-supplied --session can be.
+// 256 is a generous upper bound: longer than any reasonable
+// human-readable id, comfortably above UUID v4's 36 chars, but well
+// below filesystem path-component limits on every supported OS. The
+// cap exists so a pathological caller (test fuzz, malformed scripted
+// input) cannot produce filename components that approach those
+// limits or pessimise directory walks.
+const maxSessionIDLength = 256
+
 // validateSessionID rejects a session id that would escape the
-// sessions directory (contains a path separator) or produce a hidden
-// file (leading dot). Other characters are permitted — UUID v4 (the
-// default) plus operator-supplied alphanumeric ids both pass.
+// sessions directory, produce a hidden file, exceed the length cap,
+// or contain control characters. Allowed characters are limited to
+// printable ASCII plus a generous range of Unicode letters/digits;
+// the test for "printable" delegates to unicode.IsPrint so the
+// allow-list grows naturally with Go's stdlib without reaching for
+// an explicit character class here.
 //
 // Expected:
 //   - id is the user-supplied session string; non-empty.
 //
 // Returns:
 //   - nil when id is safe to use as a filename component.
-//   - errInvalidSessionID wrapped with the offending value otherwise.
+//   - errInvalidSessionID wrapped with the offending value and a
+//     short reason otherwise.
 //
 // Side effects:
 //   - None.
 func validateSessionID(id string) error {
+	if len(id) > maxSessionIDLength {
+		return fmt.Errorf("%w: id is %d chars, max is %d", errInvalidSessionID, len(id), maxSessionIDLength)
+	}
 	if strings.ContainsAny(id, `/\`) {
 		return fmt.Errorf("%w: %q contains a path separator", errInvalidSessionID, id)
 	}
 	if strings.HasPrefix(id, ".") {
 		return fmt.Errorf("%w: %q starts with a dot (would create a hidden file)", errInvalidSessionID, id)
+	}
+	for _, r := range id {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("%w: %q contains a non-printable character (U+%04X)", errInvalidSessionID, id, r)
+		}
 	}
 	return nil
 }
@@ -489,11 +521,24 @@ func persistRootSessionMetadata(sessionsDir, sessionID, agentID string) {
 	if sessionsDir == "" || sessionID == "" {
 		return
 	}
+	createdAt := time.Now()
+	// Preserve CreatedAt across session resumption. A user running
+	// `flowstate chat --session=<id>` to continue a prior session
+	// expects the session's first-seen timestamp to remain stable for
+	// session-list ordering and audit trails. Without this lookup the
+	// metadata write below would clobber CreatedAt with each
+	// resumption — every continuation would look like a brand-new
+	// session in time-ordered listings. A read-error here (corrupt
+	// sidecar, file permissions) falls through to time.Now() so the
+	// happy path doesn't depend on the lookup succeeding.
+	if existing, err := session.LoadSessionMetadata(sessionsDir, sessionID); err == nil && existing != nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
 	sess := &session.Session{
 		ID:        sessionID,
 		AgentID:   agentID,
 		Status:    string(session.StatusActive),
-		CreatedAt: time.Now(),
+		CreatedAt: createdAt,
 	}
 	// Swallow the error: persistence must never block the user-facing
 	// command. Matches DelegateTool.persistSessionMetadata.
