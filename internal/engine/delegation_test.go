@@ -1354,6 +1354,95 @@ var _ = Describe("Delegation", func() {
 				updatedManifest := targetEngine.Manifest()
 				Expect(updatedManifest.Instructions.SystemPrompt).To(ContainSubstring(skillContent))
 			})
+
+			// GLM-4.5/4.6 and other OpenAI-compat models sometimes serialise
+			// array arguments as JSON strings instead of native JSON arrays.
+			// The delegate tool must accept both forms so the model does not
+			// get stuck in a loop re-sending corrected calls that still fail.
+			It("accepts load_skills as a JSON-encoded string (model compliance workaround)", func() {
+				tmpDir := GinkgoT().TempDir()
+				skillDir := filepath.Join(tmpDir, "my-skill")
+				Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("skill body"), 0o600)).To(Succeed())
+
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "done", Done: true},
+					},
+				}
+
+				targetEngine := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest: agent.Manifest{
+						ID: "target-agent",
+						Instructions: agent.Instructions{SystemPrompt: "base"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+
+				skillResolver := engine.NewFileSkillResolver(tmpDir)
+				delegateTool := engine.NewDelegateTool(
+					map[string]*engine.Engine{"target-agent": targetEngine},
+					agent.Delegation{CanDelegate: true},
+					"orchestrator",
+				)
+				delegateTool.WithSkillResolver(skillResolver)
+
+				ctx := context.Background()
+
+				// Pass load_skills as a JSON string — the form a non-compliant model emits.
+				result, err := delegateTool.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "target-agent",
+						"message":       "do work",
+						"load_skills":   `["my-skill"]`,
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("done"))
+			})
+
+			It("accepts load_skills as an empty JSON-encoded string", func() {
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{Content: "done", Done: true},
+					},
+				}
+
+				targetEngine := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest: agent.Manifest{
+						ID: "target-agent",
+						Instructions: agent.Instructions{SystemPrompt: "base"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+
+				delegateTool := engine.NewDelegateTool(
+					map[string]*engine.Engine{"target-agent": targetEngine},
+					agent.Delegation{CanDelegate: true},
+					"orchestrator",
+				)
+
+				ctx := context.Background()
+
+				// "[]" as a string — the empty-array form a non-compliant model emits.
+				result, err := delegateTool.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "target-agent",
+						"message":       "do work",
+						"load_skills":   "[]",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("done"))
+			})
 		})
 	})
 

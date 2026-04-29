@@ -1370,30 +1370,42 @@ func injectVisitedAgents(target *delegationTarget, sourceAgentID string) {
 // parseLoadSkills converts a raw load_skills argument into a slice of skill names.
 //
 // Expected:
-//   - value is a JSON array decoded into []interface{}.
+//   - value is either a JSON array decoded into []interface{}, or a string
+//     containing a JSON-encoded array. The string form is accepted because
+//     some OpenAI-compat models (e.g. GLM-4.5/4.6) serialise array arguments
+//     as JSON strings instead of native JSON arrays.
 //
 // Returns:
 //   - A slice of skill names.
-//   - An error if the value is not an array of strings.
+//   - An error if the value cannot be interpreted as an array of strings.
 //
 // Side effects:
 //   - None.
 func parseLoadSkills(value interface{}) ([]string, error) {
-	items, ok := value.([]interface{})
-	if !ok {
-		return nil, errLoadSkillsMustBeArray
-	}
-
-	loadSkills := make([]string, 0, len(items))
-	for _, item := range items {
-		skill, ok := item.(string)
-		if !ok {
-			return nil, errLoadSkillsMustBeArray
+	// Fast path: provider decoded the array correctly.
+	if items, ok := value.([]interface{}); ok {
+		loadSkills := make([]string, 0, len(items))
+		for _, item := range items {
+			s, ok := item.(string)
+			if !ok {
+				return nil, errLoadSkillsMustBeArray
+			}
+			loadSkills = append(loadSkills, s)
 		}
-		loadSkills = append(loadSkills, skill)
+		return loadSkills, nil
 	}
 
-	return loadSkills, nil
+	// Lenient path: model passed the array as a JSON string (e.g. "[]" or
+	// "[\"skill-a\",\"skill-b\"]"). Try to decode it.
+	if s, ok := value.(string); ok {
+		var items []string
+		if err := json.Unmarshal([]byte(s), &items); err == nil {
+			return items, nil
+		}
+		// String present but not valid JSON array — fall through to error.
+	}
+
+	return nil, errLoadSkillsMustBeArray
 }
 
 // wrapWithAccumulator wraps the raw chunk stream through session.AccumulateStream
