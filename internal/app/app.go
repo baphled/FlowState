@@ -56,8 +56,10 @@ import (
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
+	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
+	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
@@ -145,6 +147,10 @@ type App struct {
 	// kept as an interface so the app package does not import the cli package
 	// (which would create an import cycle: app → cli → app).
 	autoresearchRunner runner.AutoresearchRunner
+	// memoryClient is the native Qdrant-backed MemoryClient used by the
+	// mcp_memory_search_nodes and mcp_memory_open_nodes tools. Nil when
+	// Qdrant is not configured; tools are silently omitted in that case.
+	memoryClient learning.MemoryClient
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -228,6 +234,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	memClient := buildMemoryClient(cfg, ollamaProvider)
 	runOrphanEventTmpScan(filepath.Join(cfg.DataDir, "sessions"))
 	pluginRT := setupPluginRuntime(cfg)
 	wireFailoverManager(pluginRT, providerRegistry)
@@ -242,6 +249,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		skills:             skills,
 		sessionStore:       sessionStore,
 		learningStore:      learningStore,
+		memoryClient:       memClient,
 		failoverHook:       pluginFailoverHook(pluginRT),
 		failoverManager:    pluginFailoverManager(pluginRT),
 		dispatcher:         pluginDispatcher(pluginRT),
@@ -260,6 +268,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		runtime:          runtime,
 		sessionStore:     sessionStore,
 		learningStore:    learningStore,
+		memoryClient:     memClient,
 		providerRegistry: providerRegistry,
 		ollamaProvider:   ollamaProvider,
 		pluginRuntime:    pluginRT,
@@ -414,6 +423,7 @@ type appBuildParams struct {
 	runtime          *runtimeComponents
 	sessionStore     *ctxstore.FileSessionStore
 	learningStore    learning.Store
+	memoryClient     learning.MemoryClient
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
 	pluginRuntime    *pluginRuntime
@@ -467,6 +477,7 @@ func buildApp(params appBuildParams) *App {
 		compression:      runtime.compression,
 		mcpServerTools:   runtime.mcpServerTools,
 		mcpTools:         runtime.mcpTools,
+		memoryClient:     params.memoryClient,
 		gateRunner:       buildSwarmGateRunner(),
 	}
 
@@ -647,13 +658,15 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	broker := buildRecallBrokerFromSetup(params, traced.provider, tp.mcpManager, contextStore, chainStore)
 	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, traced.recorder)
 	eng, setEnsureTools := createEngine(buildEngineParams(engineAssemblyParams{
-		setup:        params,
-		traced:       traced,
-		tools:        tp,
-		contextStore: contextStore,
-		chainStore:   chainStore,
-		broker:       broker,
-		compression:  compression,
+		setup:         params,
+		traced:        traced,
+		tools:         tp,
+		contextStore:  contextStore,
+		chainStore:    chainStore,
+		broker:        broker,
+		compression:   compression,
+		swarmRegistry: params.swarmRegistry,
+		memoryClient:  params.memoryClient,
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
@@ -695,13 +708,15 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 // route to building the engine's configuration. Declared as a struct so
 // buildEngineParams stays under the 5-argument revive gate.
 type engineAssemblyParams struct {
-	setup        setupEngineParams
-	traced       tracedBundle
-	tools        toolPipelineResult
-	contextStore *recall.FileContextStore
-	chainStore   recall.ChainContextStore
-	broker       recall.Broker
-	compression  compressionComponents
+	setup         setupEngineParams
+	traced        tracedBundle
+	tools         toolPipelineResult
+	contextStore  *recall.FileContextStore
+	chainStore    recall.ChainContextStore
+	broker        recall.Broker
+	compression   compressionComponents
+	swarmRegistry *swarm.Registry
+	memoryClient  learning.MemoryClient
 }
 
 // buildEngineParams assembles the engineParams bundle from setupEngine
@@ -720,6 +735,8 @@ type engineAssemblyParams struct {
 //   - None.
 func buildEngineParams(in engineAssemblyParams) engineParams {
 	appTools := appendChainTools(in.tools.tools, in.chainStore)
+	appTools = appendSwarmTools(appTools, in.swarmRegistry)
+	appTools = appendMemoryTools(appTools, in.memoryClient)
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
@@ -766,6 +783,30 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 //
 // Side effects:
 //   - None.
+func appendSwarmTools(base []tool.Tool, reg *swarm.Registry) []tool.Tool {
+	if reg == nil {
+		return base
+	}
+	return append(base,
+		toolswarm.NewSwarmListTool(reg),
+		toolswarm.NewSwarmInfoTool(reg),
+		toolswarm.NewSwarmValidateTool(reg),
+	)
+}
+
+// appendMemoryTools appends the native mcp_memory_search_nodes and
+// mcp_memory_open_nodes tools when a MemoryClient is available.
+// Returns base unchanged when client is nil (Qdrant not configured).
+func appendMemoryTools(base []tool.Tool, client learning.MemoryClient) []tool.Tool {
+	if client == nil {
+		return base
+	}
+	return append(base,
+		toolmemory.NewSearchNodesTool(client),
+		toolmemory.NewOpenNodesTool(client),
+	)
+}
+
 func appendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
 	if cs == nil {
 		return base
@@ -978,6 +1019,7 @@ type setupEngineParams struct {
 	skills             []skill.Skill
 	sessionStore       *ctxstore.FileSessionStore
 	learningStore      learning.Store
+	memoryClient       learning.MemoryClient
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
 	dispatcher         *external.Dispatcher
@@ -1787,6 +1829,8 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	if len(a.mcpTools) > 0 {
 		tools = append(tools, a.mcpTools...)
 	}
+
+	tools = appendMemoryTools(tools, a.memoryClient)
 
 	return tools
 }
@@ -3938,6 +3982,70 @@ func qdrantEnabled(cfg *config.AppConfig) bool {
 //   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
 func qdrantURL(cfg *config.AppConfig) string {
 	return cfg.ResolvedQdrantURL()
+}
+
+// buildMemoryClient constructs a VectorStoreMemoryClient backed by Qdrant
+// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
+// callers treat nil as "memory tools disabled".
+func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) learning.MemoryClient {
+	if cfg == nil || cfg.Qdrant.URL == "" {
+		return nil
+	}
+	col := cfg.Qdrant.Collection
+	if col == "" {
+		col = "flowstate-recall"
+	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
+	adapter := &qdrantClientAdapter{client: client}
+	ensuring := learning.NewEnsuringVectorStore(
+		adapter,
+		client,
+		qdrantrecall.IsCollectionNotFound,
+		defaultQdrantDistance,
+	)
+	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
+}
+
+// qdrantURL returns the resolved Qdrant base URL the broker, distiller,
+// and learning-store paths should connect to. Funnelling every read
+// through this helper keeps the YAML/env precedence consistent across
+// the app's three Qdrant-dependent init sites.
+//
+// Expected:
+//   - cfg may be nil; nil returns "" so callers see "disabled".
+//
+// Returns:
+//   - The resolved URL when one is configured.
+//   - The empty string otherwise.
+//
+// Side effects:
+//   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
+func qdrantURL(cfg *config.AppConfig) string {
+	return cfg.ResolvedQdrantURL()
+=======
+// buildMemoryClient constructs a VectorStoreMemoryClient backed by Qdrant
+// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
+// callers treat nil as "memory tools disabled".
+func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) learning.MemoryClient {
+	if cfg == nil || cfg.Qdrant.URL == "" {
+		return nil
+	}
+	col := cfg.Qdrant.Collection
+	if col == "" {
+		col = "flowstate-recall"
+	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
+	adapter := &qdrantClientAdapter{client: client}
+	ensuring := learning.NewEnsuringVectorStore(
+		adapter,
+		client,
+		qdrantrecall.IsCollectionNotFound,
+		defaultQdrantDistance,
+	)
+	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
+>>>>>>> 53a4f91 (feat(tool): add native mcp_memory_search_nodes and mcp_memory_open_nodes tools)
 }
 
 // defaultQdrantDistance is the metric the auto-create path uses when
