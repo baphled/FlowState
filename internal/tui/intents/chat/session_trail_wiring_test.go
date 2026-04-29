@@ -36,6 +36,10 @@ func (s *stubSessionManager) GetSession(id string) (*session.Session, error) {
 	return sess, nil
 }
 
+func (s *stubSessionManager) UpdateSessionAgent(_ string, _ string) error {
+	return nil
+}
+
 var _ = Describe("Session trail wiring", func() {
 	var intent *chat.Intent
 

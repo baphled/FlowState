@@ -58,6 +58,10 @@ func (s *stubTreeSessionManager) GetSession(id string) (*session.Session, error)
 	return sess, nil
 }
 
+func (s *stubTreeSessionManager) UpdateSessionAgent(_ string, _ string) error {
+	return nil
+}
+
 var _ = Describe("Session tree wiring", func() {
 	var intent *chat.Intent
 

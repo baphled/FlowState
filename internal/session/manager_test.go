@@ -889,6 +889,48 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("UpdateSessionAgent", func() {
+		var (
+			ctx  context.Context
+			sess *session.Session
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			var err error
+			sess, err = mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("when the agent is switched after session creation", func() {
+			It("uses the updated agent, not the original session agent", func() {
+				err := mgr.UpdateSessionAgent(sess.ID, "agent-b")
+				Expect(err).NotTo(HaveOccurred())
+
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err = mgr.SendMessage(ctx, sess.ID, "hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mockStream.lastAgentID).To(Equal("agent-b"),
+					"SendMessage must use the switched-to agent, not the original session agent")
+			})
+
+			It("falls back to the original agent if UpdateSessionAgent was never called", func() {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mockStream.lastAgentID).To(Equal("agent-a"),
+					"SendMessage must use the original session agent when no switch has occurred")
+			})
+
+			It("returns ErrSessionNotFound when the session does not exist", func() {
+				err := mgr.UpdateSessionAgent("nonexistent-id", "agent-b")
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+			})
+		})
+	})
+
 	// MarkEndedFromEvent is the bus-driven counterpart to CloseSession.
 	// Specs cover the four branches: known-session-active, known-session-
 	// already-completed (idempotent), known-session-failed (terminal,
