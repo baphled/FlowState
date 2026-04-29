@@ -40,18 +40,29 @@ func createRealAnthropicProvider() provider.Provider {
 	return p
 }
 
+func goldenHasContent(chunks []provider.StreamChunk) bool {
+	for _, c := range chunks {
+		if c.Content != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureAnthropicE2EData() {
 	anthropicE2EOnce.Do(func() {
 		anthropicE2EGoldenPath = filepath.Join("testdata", anthropicGoldenFileName)
 
-		// Try to load from golden file
+		// Try to load from golden file — only accept it if it has real text content.
+		// A golden recorded during an API outage contains only error chunks and must
+		// not be treated as valid playback data.
 		player := testutils.NewGoldenPlayer(anthropicE2EGoldenPath)
-		if chunks, err := player.Load(); err == nil {
+		if chunks, err := player.Load(); err == nil && goldenHasContent(chunks) {
 			anthropicE2ECached = chunks
 			return
 		}
 
-		// No golden file, try to record from live API
+		// No usable golden file — try to record from live API.
 		p := createRealAnthropicProvider()
 		if p == nil {
 			anthropicE2ESkipped = true
@@ -80,7 +91,7 @@ func ensureAnthropicE2EData() {
 			chunks = append(chunks, chunk)
 		}
 
-		if len(chunks) == 0 {
+		if !goldenHasContent(chunks) {
 			anthropicE2ESkipped = true
 			return
 		}
