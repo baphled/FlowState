@@ -89,7 +89,7 @@ Audits code for vulnerabilities, assesses security posture, recommends defensive
 | Infrastructure or configuration hardening | `DevOps` |
 | Incident response | `SysOp` |
 
-Report findings with: vulnerability type, affected file/component, severity (Critical/High/Medium/Low), and recommended remediation.
+Report findings with: vulnerability type, affected file/component, severity (critical/major/minor/nit), and recommended remediation.
 
 ## Bug-Hunt Swarm Membership Contract
 
