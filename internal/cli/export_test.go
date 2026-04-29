@@ -100,3 +100,17 @@ func SetOllamaProbeForTest(probe func(string) error) func() {
 func RunPromptCtxForTest(ctx context.Context, cmd *cobra.Command, application *app.App, opts *RunOptions) error {
 	return runPromptCtx(ctx, cmd, application, opts)
 }
+
+// NewToolsCmdForTest exposes the unexported tools command constructor so
+// external test packages can drive its wiring without living inside the cli
+// package.
+func NewToolsCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newToolsCmd(getApp)
+}
+
+// NewToolsListCmdForTest exposes the unexported tools list subcommand so
+// external test packages can drive flag wiring and output assertions without
+// living inside the cli package.
+func NewToolsListCmdForTest(getApp func() *app.App) *cobra.Command {
+	return newToolsListCmd(getApp)
+}
