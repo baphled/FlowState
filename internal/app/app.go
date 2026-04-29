@@ -25,10 +25,10 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
-	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	_ "github.com/baphled/flowstate/internal/plugin/builtin/all" // builtin/all is blank-imported so builtin plugin factories register via init.
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -46,8 +46,8 @@ import (
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/skill"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -83,14 +83,14 @@ type App struct {
 	// `~/.config/flowstate/swarms/`. Populated by setupSwarmRegistry
 	// during New(); the T-swarm-2 @-mention resolver queries this
 	// alongside the agent Registry to route `@<id>` invocations.
-	SwarmRegistry          *swarm.Registry
-	Skills                 []skill.Skill
-	Engine                 *engine.Engine
-	Discovery              *discovery.AgentDiscovery
-	Sessions               *ctxstore.FileSessionStore
-	Learning               learning.Store
-	API                    *api.Server
-	Streamer               streaming.Streamer
+	SwarmRegistry *swarm.Registry
+	Skills        []skill.Skill
+	Engine        *engine.Engine
+	Discovery     *discovery.AgentDiscovery
+	Sessions      *ctxstore.FileSessionStore
+	Learning      learning.Store
+	API           *api.Server
+	Streamer      streaming.Streamer
 	// Orchestrator is the canonical user-input → event-stream pipeline
 	// per ADR - Session Orchestrator for Surface Parity. CLI, API, and
 	// TUI all route through Orchestrator.ProcessUserInput; surfaces
@@ -98,7 +98,7 @@ type App struct {
 	// never reimplement the dispatch lifecycle. See ADR-001 (Multi-
 	// Access Method Architecture) §"Wrappers not duplicates" for the
 	// parent rule this finishes applying.
-	Orchestrator *orchestrator.Orchestrator
+	Orchestrator           *orchestrator.Orchestrator
 	TodoStore              todotool.Store
 	mcpClient              mcpclient.Client
 	plugins                *pluginRuntime
@@ -145,6 +145,10 @@ type App struct {
 	// kept as an interface so the app package does not import the cli package
 	// (which would create an import cycle: app → cli → app).
 	autoresearchRunner runner.AutoresearchRunner
+	// autoresearchPruner is the runner.AutoresearchPruner implementation
+	// injected by the CLI layer at startup. When non-nil, wireDelegateToolIfEnabled
+	// registers the AutoresearchPruneTool with the engine.
+	autoresearchPruner runner.AutoresearchPruner
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -440,16 +444,16 @@ func buildApp(params appBuildParams) *App {
 	ollamaProvider := params.ollamaProvider
 	pluginRuntime := params.pluginRuntime
 	app := &App{
-		Config:           cfg,
-		Registry:         agentRegistry,
-		SwarmRegistry:    params.swarmRegistry,
-		Skills:           skills,
-		Engine:           runtime.engine,
-		Discovery:        runtime.discovery,
-		Sessions:         sessionStore,
-		Learning:         learningStore,
-		API:              runtime.apiServer,
-		Streamer:         runtime.streamer,
+		Config:        cfg,
+		Registry:      agentRegistry,
+		SwarmRegistry: params.swarmRegistry,
+		Skills:        skills,
+		Engine:        runtime.engine,
+		Discovery:     runtime.discovery,
+		Sessions:      sessionStore,
+		Learning:      learningStore,
+		API:           runtime.apiServer,
+		Streamer:      runtime.streamer,
 		Orchestrator: orchestrator.New(
 			runtime.engine,
 			agentRegistry,
@@ -1281,6 +1285,10 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 
 	if !eng.HasTool("autoresearch_run") && a.autoresearchRunner != nil {
 		eng.AddTool(engine.NewAutoresearchRunTool(bgManager, a.autoresearchRunner))
+	}
+
+	if !eng.HasTool("autoresearch_prune") && a.autoresearchPruner != nil {
+		eng.AddTool(engine.NewAutoresearchPruneTool(a.autoresearchPruner))
 	}
 
 	a.wireCoordinationToolIfDeclared(eng, manifest, coordinationStore)
@@ -4551,4 +4559,21 @@ func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //   - Stores the runner for later use by wireDelegateToolIfEnabled.
 func (a *App) SetAutoresearchRunner(r runner.AutoresearchRunner) {
 	a.autoresearchRunner = r
+}
+
+// SetAutoresearchPruner injects the AutoresearchPruner implementation used
+// by wireDelegateToolIfEnabled to register the autoresearch_prune engine tool.
+// Called by the CLI layer at startup to break the app→cli import cycle.
+//
+// Expected:
+//   - p implements runner.AutoresearchPruner; may be nil to disable
+//     the autoresearch_prune tool registration.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the pruner for later use by wireDelegateToolIfEnabled.
+func (a *App) SetAutoresearchPruner(p runner.AutoresearchPruner) {
+	a.autoresearchPruner = p
 }
