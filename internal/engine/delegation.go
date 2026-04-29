@@ -122,6 +122,15 @@ type DelegateTool struct {
 	// a swarm.MultiRunner pre-registered with builtin:result-schema.
 	gateRunner swarm.GateRunner
 
+	// ownerEngine is the engine this DelegateTool is installed on —
+	// the LEAD's engine in a swarm dispatch. activeSwarmContext reads
+	// the swarm context from here directly because the lead is by
+	// design excluded from d.engines (the targets map only carries
+	// agents the lead can delegate TO, not the lead itself), so the
+	// targets-map lookup always misses for lead-installed tools and
+	// gates would never fire without this reference.
+	ownerEngine *Engine
+
 	// swarmRegistry is the lookup the dispatch path consults to find
 	// the manifest backing the active swarm.Context. Init-time only:
 	// set once via WithSwarmRegistry at app boot, never mutated
@@ -302,6 +311,27 @@ func (d *DelegateTool) WithToolCapability(allow, deny []string) *DelegateTool {
 //   - Replaces the previously installed gate runner.
 func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
 	d.gateRunner = runner
+	return d
+}
+
+// WithOwnerEngine pins the engine this DelegateTool is installed on.
+// activeSwarmContext consults this reference first when looking up
+// the active swarm.Context — necessary because the lead's id is
+// excluded from d.engines (the targets-only map) by buildDelegateMaps.
+// Production wiring (App.configureDelegateTool) calls this with the
+// engine that just received eng.AddTool(delegateTool).
+//
+// Expected:
+//   - eng may be nil (the activeSwarmContext fallback to d.engines
+//     applies for older test wiring that pre-dates this method).
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously stored owner engine.
+func (d *DelegateTool) WithOwnerEngine(eng *Engine) *DelegateTool {
+	d.ownerEngine = eng
 	return d
 }
 
@@ -2278,6 +2308,25 @@ func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 // Side effects:
 //   - None.
 func (d *DelegateTool) activeSwarmContext() (*swarm.Context, bool) {
+	// Owner-engine path is the canonical lookup: the DelegateTool is
+	// installed on the lead's engine via eng.AddTool, and the lead's
+	// engine is exactly where DispatchSwarm sets the swarm context.
+	// Reading from d.engines[d.sourceAgentID] doesn't work here because
+	// buildDelegateMaps explicitly EXCLUDES the lead from the targets
+	// map (see app.go's `if agentManifest.ID == excludeID { continue }`)
+	// — the lead can never delegate to itself, so its engine is absent
+	// from that map by design. Without WithOwnerEngine wiring we'd
+	// silently fall through and gates would never fire.
+	if d.ownerEngine != nil {
+		if swarmCtx := d.ownerEngine.SwarmContext(); swarmCtx != nil {
+			return swarmCtx, true
+		}
+	}
+	// Backwards-compatible fallback for tests that wired d.engines
+	// without WithOwnerEngine: try the targets map. This path stays
+	// inert for lead-style DelegateTools (their id is the excluded
+	// one) but covers the historical "sub-DelegateTool inside a target
+	// engine" case where the target's id IS in the map.
 	if d.engines == nil {
 		return nil, false
 	}
