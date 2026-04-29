@@ -5,17 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	ctxstore "github.com/baphled/flowstate/internal/context"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
+
+// errInvalidSessionID is returned when a user-supplied --session flag
+// contains characters that would escape the sessions directory or
+// produce a hidden file. The flag docstring already promises this
+// rule; this sentinel makes the rejection explicit + easy to test.
+var errInvalidSessionID = errors.New("invalid session ID")
 
 // ChatOptions holds configuration for the chat command.
 type ChatOptions struct {
@@ -117,10 +124,18 @@ func runSingleMessageChat(cmd *cobra.Command, application *app.App, opts *ChatOp
 	// Orchestrator re-resolves at dispatch time (single source of
 	// truth per ADR-001 / Session Orchestrator ADR).
 	if _, _, err := resolveAgentOrSwarm(application, agentName); err != nil {
+		return fmt.Errorf("pre-flight agent resolution failed for %q: %w", agentName, err)
+	}
+	sessionID, err := resolveChatSessionID(opts.Session)
+	if err != nil {
 		return err
 	}
-	sessionID := resolveChatSessionID(opts.Session)
-	loadSessionIfRequested(application, opts.Session)
+	if loadErr := loadSessionIfRequested(application, opts.Session); loadErr != nil {
+		// Don't abort: a missing or unreadable session file is recoverable
+		// by starting a fresh session under the same id. But the user
+		// asked to resume one; if that didn't happen, they should know.
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to load session %q: %v\n", opts.Session, loadErr)
+	}
 	persistRootSessionMetadata(application.SessionsDir(), sessionID, agentName)
 
 	wrappedStreamer := streaming.NewSessionContextStreamer(
@@ -166,7 +181,10 @@ func runInteractiveChat(application *app.App, opts *ChatOptions) error {
 	}
 
 	agentName := resolveChatAgentName(opts.Agent, application.Config.DefaultAgent)
-	sessionID := resolveChatSessionID(opts.Session)
+	sessionID, err := resolveChatSessionID(opts.Session)
+	if err != nil {
+		return err
+	}
 
 	return tui.Run(application, agentName, sessionID)
 }
@@ -189,41 +207,97 @@ func resolveChatAgentName(agent, defaultAgent string) string {
 	return agent
 }
 
-// resolveChatSessionID returns the session ID, generating a new one if empty.
+// resolveChatSessionID returns the session ID, generating a new one
+// when the user-supplied parameter is empty. When non-empty, the
+// parameter is validated against the rules the --session flag
+// docstring promises ("must not contain path separators or a leading
+// dot") so a hostile or careless caller cannot escape the sessions
+// directory via path traversal — sessionID flows directly into
+// filepath.Join(sessionsDir, sessionID+".json") downstream.
 //
 // Expected:
-//   - session is a string (may be empty).
+//   - sessionParam is a string (may be empty).
 //
 // Returns:
-//   - The session ID, or a newly generated one if session is empty.
+//   - A canonical UUID v4 when sessionParam is empty.
+//   - The original sessionParam when validation passes.
+//   - errInvalidSessionID wrapped with the offending value otherwise.
 //
 // Side effects:
 //   - None.
-func resolveChatSessionID(sessionParam string) string {
+func resolveChatSessionID(sessionParam string) (string, error) {
 	if sessionParam == "" {
-		return generateSessionID()
+		return generateSessionID(), nil
 	}
-	return sessionParam
+	if err := validateSessionID(sessionParam); err != nil {
+		return "", err
+	}
+	return sessionParam, nil
 }
 
-// loadSessionIfRequested loads a session into the engine if a session ID is provided.
+// validateSessionID rejects a session id that would escape the
+// sessions directory (contains a path separator) or produce a hidden
+// file (leading dot). Other characters are permitted — UUID v4 (the
+// default) plus operator-supplied alphanumeric ids both pass.
+//
+// Expected:
+//   - id is the user-supplied session string; non-empty.
+//
+// Returns:
+//   - nil when id is safe to use as a filename component.
+//   - errInvalidSessionID wrapped with the offending value otherwise.
+//
+// Side effects:
+//   - None.
+func validateSessionID(id string) error {
+	if strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("%w: %q contains a path separator", errInvalidSessionID, id)
+	}
+	if strings.HasPrefix(id, ".") {
+		return fmt.Errorf("%w: %q starts with a dot (would create a hidden file)", errInvalidSessionID, id)
+	}
+	return nil
+}
+
+// loadSessionIfRequested loads a session into the engine if a session
+// ID is provided. Returns the underlying error so the caller can
+// surface a warning — silently dropping the error (the previous
+// behaviour) hid resume failures from the user, who would then write
+// fresh content into a freshly-created session under the same id.
+//
+// Note on partial restore: Sessions.Load returns a
+// *recall.FileContextStore (messages + embeddings) but NOT the full
+// session metadata struct (AgentID, ParentID, Status, …). The session
+// manager rebuilds metadata at app boot from the .meta.json sidecars
+// via App.restorePersistedSessions, so the manager-side view stays
+// coherent. The engine's view, by contrast, is reseeded from --agent
+// on every CLI invocation, which is the intended behaviour for
+// single-message CLI use (the user picks the agent freshly each
+// run). A future refactor might consolidate the two views; for now
+// the gap is observable here so reviewers don't have to re-derive
+// the contract.
 //
 // Expected:
 //   - application is a non-nil App instance.
-//   - session is a string (may be empty).
+//   - sessionParam is a string (may be empty).
 //
 // Returns:
-//   - Nothing.
+//   - nil when sessionParam is empty, when the sessions store is
+//     unavailable, or when the load succeeded.
+//   - The underlying error from Sessions.Load on failure.
 //
 // Side effects:
-//   - Loads session into the engine if session is non-empty and sessions store is available.
-func loadSessionIfRequested(application *app.App, sessionParam string) {
-	if sessionParam != "" && application.Sessions != nil {
-		store, loadErr := application.Sessions.Load(sessionParam)
-		if loadErr == nil {
-			application.Engine.SetContextStore(store, sessionParam)
-		}
+//   - Loads session into the engine on success.
+func loadSessionIfRequested(application *app.App, sessionParam string) error {
+	if sessionParam == "" || application.Sessions == nil {
+		return nil
 	}
+	store, loadErr := application.Sessions.Load(sessionParam)
+	if loadErr != nil {
+		return loadErr
+	}
+	application.Engine.SetContextStore(store, sessionParam)
+	return nil
 }
 
 // chatStreamOptions holds options for streamChatResponse.
