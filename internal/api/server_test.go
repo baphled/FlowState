@@ -30,10 +30,10 @@ import (
 )
 
 type mockStreamer struct {
-	chunks            []provider.StreamChunk
-	err               error
-	capturedAgentID   string
-	capturedMessage   string
+	chunks          []provider.StreamChunk
+	err             error
+	capturedAgentID string
+	capturedMessage string
 }
 
 func (m *mockStreamer) Stream(_ context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
