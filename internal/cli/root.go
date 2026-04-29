@@ -44,6 +44,12 @@ func SetVersion(cmd *cobra.Command, version, commit, date string) {
 func NewRootCmd(application *app.App) *cobra.Command {
 	var appPtr = application
 
+	// Inject the autoresearch runner so wireDelegateToolIfEnabled can
+	// register the autoresearch_run engine tool. This breaks the
+	// app→cli import cycle: app holds the runner as an interface;
+	// cli (which already imports app) provides the concrete implementation.
+	application.SetAutoresearchRunner(NewAutoresearchAppRunner(application))
+
 	cfg := application.Config
 
 	cmd := &cobra.Command{
@@ -52,7 +58,13 @@ func NewRootCmd(application *app.App) *cobra.Command {
 		Long:  "FlowState provides an AI assistant TUI plus CLI entry points for chat, serving, discovery, and session management.",
 		Args:  cobra.NoArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return initApp(cmd, cfg, &appPtr)
+			if err := initApp(cmd, cfg, &appPtr); err != nil {
+				return err
+			}
+			// Re-inject after a potential app reinitialisation so the
+			// runner's app pointer stays in sync.
+			appPtr.SetAutoresearchRunner(NewAutoresearchAppRunner(appPtr))
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRoot(cmd, appPtr)
