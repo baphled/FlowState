@@ -51,8 +51,8 @@ seed_coord_store_fixture() {
 }
 
 validate_one() {
-  local agent="$1" prompt="$2"
-  local manifest="$AGENTS_DIR/$agent.md"
+  local agent="$1" prompt="$2" manifest_override="${3:-}"
+  local manifest="${manifest_override:-$AGENTS_DIR/$agent.md}"
   local session_id="validate-$agent-$(date +%s)"
 
   echo "== harness-validate: $agent =="
@@ -183,6 +183,24 @@ resolve_prompt_file() {
 }
 
 main() {
+  # --agent-file <path>: override the manifest read by H1/H2/H3 checks for
+  # the planner agent (or whichever agent matches). The live flowstate run
+  # in validate_one still uses the real agent name; only the scoring checks
+  # read the candidate file. Designed for use by autoresearch evaluators
+  # that score candidate manifests without touching the live file.
+  local agent_file_override=""
+  while [[ $# -gt 0 ]]; do
+    case "${1:-}" in
+      --agent-file)
+        [[ $# -ge 2 ]] || die "--agent-file requires a path argument"
+        agent_file_override="$2"
+        [[ -f "$agent_file_override" ]] || die "--agent-file path not found: $agent_file_override"
+        shift 2
+        ;;
+      *) break ;;
+    esac
+  done
+
   # --score: emit a single integer scalar (sum of WARNING: lines across
   # the resolved agents) on stdout, nothing else. Designed for use as
   # the autoresearch evaluator's metric source — see plan § 5.4.
@@ -198,7 +216,9 @@ main() {
   seed_coord_store_fixture "$FIXTURE_DIR/validate-harness-001.json"
 
   local agents=()
+  local all_mode=0
   if [[ "${1:-}" == "--all" ]]; then
+    all_mode=1
     for a in planner plan-writer plan-reviewer executor tech-lead; do
       if [[ -f "$AGENTS_DIR/$a.md" ]]; then agents+=("$a")
       else
@@ -211,7 +231,7 @@ main() {
       fi
     done
   else
-    [[ $# -ge 1 ]] || die "usage: $0 [--score] <agent> [prompt] | [--score] --all"
+    [[ $# -ge 1 ]] || die "usage: $0 [--agent-file <path>] [--score] <agent> [prompt] | [--agent-file <path>] [--score] --all"
     local resolved
     resolved="$(resolve_agent_name "$1")" \
       || die "manifest not found for agent '$1' (looked under $AGENTS_DIR with literal, PascalCase, and lowercase variants)"
@@ -238,18 +258,30 @@ main() {
       prompt="$(<"$pf")"
     fi
 
+    # Resolve manifest override: apply only to the planner agent in --all
+    # mode (the candidate file represents the planner surface); always apply
+    # in single-agent mode so a caller can score any agent's candidate.
+    local this_override=""
+    if [[ -n "$agent_file_override" ]]; then
+      if [[ "${all_mode:-0}" == "1" ]]; then
+        [[ "$agent" == "planner" ]] && this_override="$agent_file_override"
+      else
+        this_override="$agent_file_override"
+      fi
+    fi
+
     if [[ "$score_mode" == "1" ]]; then
       # Capture validate_one stdout, route human-readable noise to stderr,
       # count WARNING: lines, accumulate. validate_one's own non-zero
       # exit propagates so CLI/session I/O failures still trip the rc.
       local captured
-      captured="$(validate_one "$agent" "$prompt")" || rc=$?
+      captured="$(validate_one "$agent" "$prompt" "$this_override")" || rc=$?
       local n
       n="$(printf '%s\n' "$captured" | grep -c '^WARNING:' || true)"
       total_warnings=$((total_warnings + n))
       printf '%s\n' "$captured" >&2
     else
-      validate_one "$agent" "$prompt" || rc=$?
+      validate_one "$agent" "$prompt" "$this_override" || rc=$?
     fi
   done
 
