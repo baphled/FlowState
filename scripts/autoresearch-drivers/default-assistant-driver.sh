@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reference autoresearch live driver — IN-MEMORY shape.
+# Reference autoresearch live driver — CONTENT shape.
 #
 # Per the April 2026 In-Memory Default plan (Slice 3), the canonical
 # `default-assistant-driver.sh` reads the synthesised per-trial prompt
@@ -27,23 +27,22 @@
 #
 # Stdout: the candidate, verbatim. The full string emitted to stdout
 #   is the candidate the harness scores. No fenced-block wrapping on
-#   the way out — the harness applies it verbatim as the new in-
-#   memory candidate.
+#   the way out — the harness applies it verbatim as the new content
+#   candidate.
 #
 # Stderr: free for diagnostics; the harness routes captured stderr
 #   to its log.
 #
 # Env vars consumed (set by the autoresearch harness — see
-# runDriverInMemory in internal/cli/autoresearch_loop.go):
+# runDriverContent in internal/cli/autoresearch_loop.go):
 #   FLOWSTATE_AUTORESEARCH_PROMPT_FILE — path to the same prompt body
 #       piped on stdin. Either channel is fine.
 #   FLOWSTATE_AUTORESEARCH_RUN_ID      — run identifier; combined with
 #       FLOWSTATE_AUTORESEARCH_TRIAL to produce a unique session id.
 #   FLOWSTATE_AUTORESEARCH_TRIAL       — 1-based trial counter.
 #   FLOWSTATE_AUTORESEARCH_SURFACE     — surface path RELATIVE to the
-#       operator's invocation cwd. Read-only by contract; the in-
-#       memory substrate intentionally does not enforce this at the
-#       seam.
+#       operator's invocation cwd. Read-only by contract; the content
+#       substrate intentionally does not enforce this at the seam.
 #   FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS — soft cap on agent turns.
 #       Default 10 if unset.
 #
@@ -81,7 +80,7 @@
 #   3  — fenced-block parse failure (driver-no-edit-produced).
 #
 # Working directory: the operator's invocation cwd (the harness no
-# longer creates a worktree in default mode); FLOWSTATE_AUTORESEARCH_
+# longer creates a worktree in default content mode); FLOWSTATE_AUTORESEARCH_
 # SURFACE is relative to that.
 #
 # Per-trial session lifecycle: the script names the session
@@ -197,8 +196,8 @@ fi
 # ------------------------------------------------------------
 # Fenced-block parser — same shape as the legacy commit-mode driver
 # (see default-assistant-driver-commit.sh). The output convention is
-# identical; only the destination differs (stdout in default mode,
-# surface file in commit mode).
+# identical; only the destination differs (stdout in default content
+# mode, surface file in commit mode).
 # ------------------------------------------------------------
 
 extract_surface_block() {

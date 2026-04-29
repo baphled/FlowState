@@ -72,7 +72,7 @@ import (
 // `omitempty` so older readers parsing pre-Slice-5 records continue
 // to work unchanged.
 //
-// Autoresearch In-Memory Default (April 2026): default in-memory mode
+// Autoresearch content mode (April 2026): default content mode
 // adds CandidateContent + CandidateContentSHA so the trial record
 // carries the candidate string directly (the substrate, no longer git
 // commits). Both fields are `omitempty` so git-mode (`--commit-trials`)
@@ -97,7 +97,7 @@ type trialOutcome struct {
 	PromptSHA       string `json:"prompt_sha,omitempty"`
 	DriverSessionID string `json:"driver_session_id,omitempty"`
 	DriverTurns     int    `json:"driver_turns,omitempty"`
-	// In-memory default substrate (Autoresearch In-Memory Default,
+	// Content default substrate (Autoresearch In-Memory Default,
 	// April 2026). CandidateContent is the full candidate string
 	// produced by the driver (capped at maxCandidateBytes; truncation
 	// flagged via CandidateContentTruncated). CandidateContentSHA is
@@ -121,19 +121,19 @@ const (
 	reasonEvaluatorContractFail = "evaluator-contract-violation"
 
 	// Termination reasons (plan § 4.7).
-	terminationConverged                  = "converged"
-	terminationMaxTrials                  = "max-trials"
-	terminationTimeBudget                 = "time-budget"
-	terminationFixedPointSaturated        = "fixed-point-saturated"
-	terminationManifestGateFailureRate    = "manifest-gate-failure-rate"
-	terminationEvaluatorContractFailure   = "evaluator-contract-failure-rate"
-	terminationSignal                     = "signal"
+	terminationConverged                = "converged"
+	terminationMaxTrials                = "max-trials"
+	terminationTimeBudget               = "time-budget"
+	terminationFixedPointSaturated      = "fixed-point-saturated"
+	terminationManifestGateFailureRate  = "manifest-gate-failure-rate"
+	terminationEvaluatorContractFailure = "evaluator-contract-failure-rate"
+	terminationSignal                   = "signal"
 
 	// Threshold constants from plan § 4.7.
-	fixedPointSaturationLimit       = 10
-	manifestGateFailureLimit        = 3
-	evaluatorContractFailureLimit   = 3
-	seenCandidatesRingCapacity      = 20
+	fixedPointSaturationLimit     = 10
+	manifestGateFailureLimit      = 3
+	evaluatorContractFailureLimit = 3
+	seenCandidatesRingCapacity    = 20
 
 	// evaluatorTermGracePeriod is the wall-clock granted between
 	// SIGTERM and SIGKILL when --evaluator-timeout fires (plan § 4.6).
@@ -168,7 +168,7 @@ type trialLoopState struct {
 	// promptHistoryWindow; bounded by the number of trials actually
 	// run so the slice never exceeds maxTrials.
 	recentOutcomes []trialOutcome
-	// In-memory default substrate (April 2026). The current surface
+	// Content default substrate (April 2026). The current surface
 	// bytes (read once at run start in default mode) are the immutable
 	// task the driver trains against. Empty in --commit-trials mode
 	// where the substrate is the worktree's surface file.
@@ -193,8 +193,8 @@ var (
 
 // SetCommandRunnerForTest installs an observer the harness calls
 // every time it builds an `*exec.Cmd`. The observer receives (binary
-// name, args) and MUST NOT mutate them. Used by the in-memory default
-// spec to assert the harness never spawns `git` in default mode.
+// name, args) and MUST NOT mutate them. Used by the content mode spec
+// to assert the harness never spawns `git` in default mode.
 //
 // Reset via ResetCommandRunnerForTest in a DeferCleanup so adjacent
 // tests are not affected.
@@ -255,7 +255,7 @@ type resultRecord struct {
 
 // bestRecord is the shape persisted at autoresearch/<runID>/best.
 //
-// In-memory default (Autoresearch In-Memory Default, April 2026):
+// Content default (Autoresearch In-Memory Default, April 2026):
 // CandidateContentSHA identifies the best candidate by content rather
 // than by commit. In `--commit-trials` mode CommitSHA is populated
 // alongside (today's behaviour preserved verbatim); in default mode
@@ -287,6 +287,7 @@ type bestRecord struct {
 //     and the final result record to the coord-store.
 //   - Mutates the worktree's git history (kept commits stay; reverts
 //     restore HEAD~1 inside the worktree only).
+//
 // runTrialLoop is invoked by runAutoresearch with a pre-seeded state
 // (baseline score + seen-candidates ring + best). The caller owns
 // baseline scoring and manifest-record persistence; the loop owns
@@ -308,7 +309,7 @@ func runTrialLoop(
 	worktreeSurface := ""
 	if resolved.commitTrials {
 		// In git-mode the worktree-anchored path is the substrate the
-		// driver writes to; the in-memory branch never touches disk.
+		// driver writes to; the content mode branch never touches disk.
 		worktreeSurface = filepath.Join(worktreePath, relSurface)
 	}
 
@@ -340,7 +341,7 @@ func runTrialLoop(
 		if resolved.commitTrials {
 			outcome, err = runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state)
 		} else {
-			outcome, err = runOneTrialInMemory(ctx, n, resolved, relSurface, state)
+			outcome, err = runOneTrialContent(ctx, n, resolved, relSurface, state)
 		}
 		if err != nil {
 			return "", lastOutcome, fmt.Errorf("trial %d: %w", n, err)
@@ -377,7 +378,7 @@ func runTrialLoop(
 
 		// Termination checks (post-trial). The
 		// manifest-gate-failure-rate exit is git-mode-only per the
-		// April 2026 In-Memory Default plan — in-memory mode still
+		// April 2026 In-Memory Default plan — content mode still
 		// fires the per-trial manifest gate (records
 		// `manifest-validate-failed` reasons) but does not abort the
 		// run on a streak of them.
@@ -649,8 +650,8 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 	o.DurationS = end.Sub(startedAt).Seconds()
 }
 
-// runOneTrialInMemory drives a single trial under the in-memory
-// substrate (April 2026 In-Memory Default plan):
+// runOneTrialContent drives a single trial under the content substrate
+// (April 2026 In-Memory Default plan):
 //
 //  1. Synthesise the per-trial prompt against state.surfaceBytes.
 //  2. Pipe the prompt to the driver via stdin; capture the candidate
@@ -666,7 +667,7 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 //     candidate_content_sha, score, kept, reason} on the outcome.
 //
 // The function never spawns `git` and never writes to the surface.
-// runEvaluatorInMemory and runDriverInMemory enforce that contract at
+// runEvaluatorContent and runDriverContent enforce that contract at
 // the seam.
 //
 // Expected:
@@ -678,7 +679,7 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 //     root — passed to the synthesiser verbatim.
 //   - state.surfaceBytes carries the immutable surface content read
 //     once at run start.
-func runOneTrialInMemory(
+func runOneTrialContent(
 	ctx context.Context,
 	n int,
 	resolved autoresearchRunOptions,
@@ -708,7 +709,7 @@ func runOneTrialInMemory(
 	}
 	outcome.PromptSHA = driverPromptSHA(promptBytes)
 
-	candidateBytes, timedOut, dErr := runDriverInMemory(ctx, driverInvocation{
+	candidateBytes, timedOut, dErr := runDriverContent(ctx, driverInvocation{
 		driverPath:     resolved.driverScript,
 		runID:          resolved.runID,
 		trialN:         n,
@@ -754,7 +755,7 @@ func runOneTrialInMemory(
 	// Manifest gate (per-trial). Write the candidate to a tempfile
 	// purely for the validator's path-based API; no surface mutation.
 	if resolved.surfaceType == SurfaceTypeManifest {
-		if err := validateManifestCandidateInMemory(candidateBytes, relSurface); err != nil {
+		if err := validateManifestCandidateContent(candidateBytes, relSurface); err != nil {
 			outcome.Kept = false
 			outcome.Reason = reasonManifestValidateFail
 			state.consecutiveManifestFails++
@@ -767,7 +768,7 @@ func runOneTrialInMemory(
 		}
 	}
 
-	evalRes, err := runEvaluatorInMemory(ctx, resolved.evaluatorScript, resolved.runID, candidateBytes, resolved.evaluatorTimeout)
+	evalRes, err := runEvaluatorContent(ctx, resolved.evaluatorScript, resolved.runID, candidateBytes, resolved.evaluatorTimeout)
 	if err != nil {
 		return outcome, fmt.Errorf("evaluator harness failure: %w", err)
 	}
@@ -797,7 +798,7 @@ func runOneTrialInMemory(
 		state.bestScore = score
 		state.bestScoreSet = true
 		state.bestContentSHA = candidateSHA
-		state.bestCommitSHA = "" // in-memory mode never sets a commit
+		state.bestCommitSHA = "" // content mode never sets a commit
 		state.bestTrialN = n
 		state.consecutiveNoImprove = 0
 	} else {
@@ -817,7 +818,7 @@ func runOneTrialInMemory(
 }
 
 // contentSHA returns the lowercase hex SHA-256 of the supplied bytes.
-// Shared by the in-memory baseline seeding and the per-trial candidate
+// Shared by the content baseline seeding and the per-trial candidate
 // hashing — the SHA is the canonical content identifier under the
 // April 2026 substrate swap.
 func contentSHA(b []byte) string {
@@ -839,7 +840,7 @@ func truncateCandidate(content []byte, maxBytes int) ([]byte, bool) {
 	return content[:maxBytes], true
 }
 
-// validateManifestCandidateInMemory writes the candidate bytes to a
+// validateManifestCandidateContent writes the candidate bytes to a
 // tempfile and runs the agent.LoadAndValidateManifest gate against
 // it. The tempfile is removed on every exit path; the surface file
 // on disk is never touched.
@@ -848,7 +849,7 @@ func truncateCandidate(content []byte, maxBytes int) ([]byte, bool) {
 // the surface basename, so any error message the validator emits
 // references the operator's mental model rather than an opaque
 // generated path.
-func validateManifestCandidateInMemory(candidate []byte, relSurface string) error {
+func validateManifestCandidateContent(candidate []byte, relSurface string) error {
 	base := filepath.Base(relSurface)
 	if base == "" {
 		base = "candidate.md"
@@ -872,7 +873,7 @@ func validateManifestCandidateInMemory(candidate []byte, relSurface string) erro
 	return nil
 }
 
-// runDriverInMemory invokes the driver subprocess with the prompt
+// runDriverContent invokes the driver subprocess with the prompt
 // bytes piped to stdin and captures the candidate from stdout. A
 // parallel FLOWSTATE_AUTORESEARCH_PROMPT_FILE tempfile is populated
 // for drivers that prefer a path-based input channel; both shapes are
@@ -885,7 +886,7 @@ func validateManifestCandidateInMemory(candidate []byte, relSurface string) erro
 // Expected:
 //   - inv.driverPath is the executable. Empty falls back to a no-op
 //     driver (returns the surface bytes unchanged) so fixture-driven
-//     tests can exercise the in-memory loop without authoring a
+//     tests can exercise the content loop without authoring a
 //     fixture script. The surface bytes are not available here so
 //     the empty-driverPath path returns an empty candidate; callers
 //     in production always supply a driver.
@@ -896,15 +897,15 @@ func validateManifestCandidateInMemory(candidate []byte, relSurface string) erro
 //   - timedOut flag when the driver wall-clock cap fired.
 //   - non-nil error on non-zero exit, timeout, or harness-side I/O
 //     failure.
-func runDriverInMemory(ctx context.Context, inv driverInvocation, prompt []byte) (candidate []byte, timedOut bool, err error) {
+func runDriverContent(ctx context.Context, inv driverInvocation, prompt []byte) (candidate []byte, timedOut bool, err error) {
 	if inv.driverPath == "" {
 		// Empty driver path is treated as a configuration error in
-		// the in-memory substrate: the caller cannot infer a "no
+		// the content substrate: the caller cannot infer a "no
 		// edit" candidate without a substrate file to copy from.
 		// Surface a clean error so the operator gets the failure
 		// mode pinned at the seam rather than a downstream
 		// hash-empty surprise.
-		return nil, false, errors.New("driver script path is empty (in-memory mode requires a driver)")
+		return nil, false, errors.New("driver script path is empty (content mode requires a driver)")
 	}
 	driverCtx := ctx
 	var cancel context.CancelFunc
@@ -1008,7 +1009,7 @@ func runDriverInMemory(ctx context.Context, inv driverInvocation, prompt []byte)
 	return stdout, false, nil
 }
 
-// runEvaluatorInMemory invokes the evaluator subprocess with the
+// runEvaluatorContent invokes the evaluator subprocess with the
 // candidate bytes piped to stdin. A parallel FLOWSTATE_AUTORESEARCH_
 // CANDIDATE_FILE tempfile carries the same bytes for evaluators that
 // prefer a path-based channel; both shapes are always available.
@@ -1020,7 +1021,7 @@ func runDriverInMemory(ctx context.Context, inv driverInvocation, prompt []byte)
 // § 4.6): one non-negative integer to stdout, exit 0, SIGTERM-then-
 // SIGKILL on timeout. The shared parseEvaluatorStdout enforces the
 // stdout shape.
-func runEvaluatorInMemory(ctx context.Context, evaluatorPath, runID string, candidate []byte, timeout time.Duration) (evaluatorResult, error) {
+func runEvaluatorContent(ctx context.Context, evaluatorPath, runID string, candidate []byte, timeout time.Duration) (evaluatorResult, error) {
 	if evaluatorPath == "" {
 		evaluatorPath = "scripts/validate-harness.sh"
 	}
@@ -1549,7 +1550,7 @@ func writeTrialRecord(store coordination.Store, runID string, outcome trialOutco
 
 // writeBestRecord persists the best-so-far pointer to the coord-store.
 //
-// In-memory mode (April 2026 In-Memory Default): CommitSHA is empty
+// Content mode (April 2026 In-Memory Default): CommitSHA is empty
 // and CandidateContentSHA carries the load-bearing content identifier.
 // In --commit-trials mode the legacy CommitSHA stays populated.
 func writeBestRecord(store coordination.Store, runID string, state *trialLoopState) error {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reference autoresearch evaluator — IN-MEMORY shape (Go benchmark
+# Reference autoresearch evaluator — CONTENT shape (Go benchmark
 # wrapper).
 #
 # Per the April 2026 In-Memory Default plan (Slice 3), the canonical
