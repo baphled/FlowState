@@ -11,11 +11,11 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
@@ -77,7 +77,6 @@ func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
 func WithDispatchEngine(eng swarm.DispatchEngine) ServerOption {
 	return func(s *Server) { s.dispatchEngine = eng }
 }
-
 
 // WithSessionBroker sets the session broker for live event streaming.
 //

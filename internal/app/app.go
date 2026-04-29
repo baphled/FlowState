@@ -1758,6 +1758,11 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		web.New(),
 	}
 
+	if a.Config != nil {
+		skillLoader := skill.NewFileSkillLoader(a.Config.SkillDir)
+		tools = append(tools, skilltool.New(skillLoader))
+	}
+
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		tools = append(tools, coordinationtool.New(store))
 	}

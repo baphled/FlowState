@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/skill"
@@ -577,6 +579,113 @@ var _ = Describe("Tool wiring integration", func() {
 				toolNames = append(toolNames, t.Name)
 			}
 			Expect(toolNames).To(ContainElement("coordination_store"))
+		})
+	})
+
+	// Regression guard for "thinking a skill was a tool" runtime error.
+	// When a delegate agent declares skill_load in capabilities.tools but
+	// buildToolsForManifestWithStore omits the tool implementation, the engine
+	// allowlist includes "skill_load" but no handler is registered. The
+	// SkillAutoLoaderHook still injects "Use skill_load(name) only when relevant"
+	// into the system prompt; the model tries to call skill_load, gets
+	// ErrToolNotFound, and falls back to calling the skill name directly as if it
+	// were a tool — which is never registered either.
+	Context("when a delegate agent declares skill_load in capabilities.tools", func() {
+		var skillDir string
+
+		BeforeEach(func() {
+			var err error
+			skillDir, err = os.MkdirTemp("", "skills-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(skillDir) })
+		})
+
+		It("registers skill_load in the delegate engine's tools", func() {
+			delegateManifest := agent.Manifest{
+				ID:   "code-reviewer",
+				Name: "Code Reviewer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"file", "coordination_store", "skill_load"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&delegateManifest)
+			application.Config = &config.AppConfig{SkillDir: skillDir}
+
+			tools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+
+			names := make([]string, 0, len(tools))
+			for _, t := range tools {
+				names = append(names, t.Name())
+			}
+			Expect(names).To(ContainElement("skill_load"),
+				"delegate engine must register skill_load when the manifest declares it; "+
+					"without it the SkillAutoLoaderHook injection causes ErrToolNotFound "+
+					"and the model calls skill names directly as tools")
+		})
+
+		It("surfaces skill_load in the provider request for a delegate agent", func() {
+			delegateManifest := agent.Manifest{
+				ID:   "code-reviewer",
+				Name: "Code Reviewer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"file", "coordination_store", "skill_load"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&delegateManifest)
+			application.Config = &config.AppConfig{SkillDir: skillDir}
+
+			twc := &toolWiringCallbacks{
+				hasTool: func(name string) bool {
+					if eng == nil {
+						return false
+					}
+					return eng.HasTool(name)
+				},
+				ensureTools: func(m agent.Manifest) {
+					if ensureToolsFn != nil {
+						ensureToolsFn(m)
+					}
+				},
+				schemaRebuilder: func() []provider.Tool {
+					if eng == nil {
+						return nil
+					}
+					return eng.ToolSchemas()
+				},
+			}
+
+			hookChain := buildHookChain(hookChainConfig{
+				manifestGetter: func() agent.Manifest { return delegateManifest },
+				twc:            twc,
+			})
+
+			delegateTools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+			eng = engine.New(engine.Config{
+				Manifest:      delegateManifest,
+				AgentRegistry: agentReg,
+				Registry:      providerReg,
+				ChatProvider:  spy,
+				HookChain:     hookChain,
+				Tools:         delegateTools,
+			})
+			ensureToolsFn = func(m agent.Manifest) {
+				application.wireDelegateToolIfEnabled(eng, m)
+			}
+			application.wireDelegateToolIfEnabled(eng, delegateManifest)
+
+			_, err := eng.Stream(context.Background(), "code-reviewer", "review this code")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			names := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, t := range spy.capturedRequest.Tools {
+				names = append(names, t.Name)
+			}
+			Expect(names).To(ContainElement("skill_load"),
+				"skill_load must reach the provider for a delegate agent that declares it; "+
+					"a missing entry causes ErrToolNotFound and skill-as-tool fallback errors")
 		})
 	})
 
