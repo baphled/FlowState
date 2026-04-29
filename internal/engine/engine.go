@@ -1700,6 +1700,10 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 			allowed["background_output"] = true
 			allowed["background_cancel"] = true
 			allowed["autoresearch_run"] = true
+		case "autoresearch_run":
+			allowed["autoresearch_run"] = true
+			allowed["background_output"] = true
+			allowed["background_cancel"] = true
 		default:
 			allowed[mt] = true
 		}
