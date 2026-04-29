@@ -43,18 +43,29 @@ func createRealOpenZenProvider() *openaiAPI.Client {
 	return &client
 }
 
+func openzenGoldenHasContent(chunks []provider.StreamChunk) bool {
+	for _, c := range chunks {
+		if c.Content != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func ensureOpenZenE2EData() {
 	openzenE2EOnce.Do(func() {
 		openzenE2EGoldenPath = filepath.Join("testdata", openzenGoldenFileName)
 
-		// Try to load from golden file
+		// Try to load from golden file — only accept it if it has real text content.
+		// A golden recorded during an API outage contains only error chunks and must
+		// not be treated as valid playback data.
 		player := testutils.NewGoldenPlayer(openzenE2EGoldenPath)
-		if chunks, err := player.Load(); err == nil {
+		if chunks, err := player.Load(); err == nil && openzenGoldenHasContent(chunks) {
 			openzenE2ECached = chunks
 			return
 		}
 
-		// No golden file, try to record from live API
+		// No usable golden file — try to record from live API.
 		client := createRealOpenZenProvider()
 		if client == nil {
 			openzenE2ESkipped = true
@@ -79,7 +90,7 @@ func ensureOpenZenE2EData() {
 			chunks = append(chunks, chunk)
 		}
 
-		if len(chunks) == 0 {
+		if !openzenGoldenHasContent(chunks) {
 			openzenE2ESkipped = true
 			return
 		}
