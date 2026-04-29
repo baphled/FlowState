@@ -4038,6 +4038,32 @@ var _ = Describe("tools list command", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("nonexistent-agent"))
 	})
+
+	It("includes delegation tools for an agent with can_delegate:true", func() {
+		// The delegating manifest must carry "delegate" in Capabilities.Tools
+		// so that buildAllowedToolSet admits the delegation family
+		// (delegate / background_output / background_cancel) to ToolSchemas.
+		// Delegation.CanDelegate:true causes ConfigureEngineForAgent to call
+		// wireDelegateToolIfEnabled, which registers the tools; the
+		// Capabilities.Tools filter is what makes them visible in the output.
+		delegatingManifest := agent.Manifest{
+			ID:   "delegating",
+			Name: "Delegating",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"alpha_tool", "delegate"},
+			},
+			Delegation: agent.Delegation{
+				CanDelegate: true,
+			},
+		}
+		testApp.Registry.Register(&delegatingManifest)
+
+		Expect(runCmd("tools", "list", "--agent", "delegating")).To(Succeed())
+		output := out.String()
+		Expect(output).To(ContainSubstring("delegate"))
+		Expect(output).To(ContainSubstring("background_output"))
+		Expect(output).To(ContainSubstring("background_cancel"))
+	})
 })
 
 // toolsListStubTool implements tool.Tool for the tools-list test fixtures.

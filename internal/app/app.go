@@ -1975,6 +1975,24 @@ func (a *App) ConfigPath() string {
 	return filepath.Join(config.Dir(), "config.yaml")
 }
 
+// ConfigureEngineForAgent switches the engine to the named agent's manifest
+// and wires any manifest-gated tools (delegation, autoresearch) for that
+// agent. Safe to call multiple times; wireDelegateToolIfEnabled uses
+// HasTool idempotency guards internally.
+//
+// Expected:
+//   - manifest is a valid agent.Manifest from the registry.
+//
+// Side effects:
+//   - Calls engine.SetManifest, updating the active tool filter.
+//   - Calls wireDelegateToolIfEnabled, adding or removing delegation tools
+//     (delegate, background_output, background_cancel) based on the
+//     manifest's delegation.can_delegate flag.
+func (a *App) ConfigureEngineForAgent(manifest agent.Manifest) {
+	a.Engine.SetManifest(manifest)
+	a.wireDelegateToolIfEnabled(a.Engine, manifest)
+}
+
 // ListModels returns all available models from registered providers.
 //
 // Returns:
