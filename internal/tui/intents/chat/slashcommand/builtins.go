@@ -31,6 +31,7 @@ func RegisterBuiltins(reg *Registry) {
 	reg.Register(newAgentsCommand())
 	reg.Register(newModelCommand())
 	reg.Register(newSwarmCommand())
+	reg.Register(newAutoresearchCommand())
 }
 
 // newClearCommand builds the /clear command which wipes the chat
@@ -491,6 +492,25 @@ func newSwarmCommand() Command {
 		Description: "Create a new swarm manifest interactively",
 		OpenWizard: func(ctx CommandContext) Wizard {
 			return NewSwarmBuilder(ctx.AgentRegistry, ctx.SchemaNames, ctx.SwarmsDir)
+		},
+		Handler: func(_ CommandContext, _ *widgets.Item) tea.Cmd { return nil },
+	}
+}
+
+// newAutoresearchCommand builds /autoresearch which opens the 8-step
+// wizard for assembling and launching a flowstate autoresearch run command.
+//
+// Returns:
+//   - The /autoresearch Command wired to OpenWizard.
+//
+// Side effects:
+//   - None (pure constructor).
+func newAutoresearchCommand() Command {
+	return Command{
+		Name:        "autoresearch",
+		Description: "Launch an autoresearch optimisation run interactively",
+		OpenWizard: func(ctx CommandContext) Wizard {
+			return NewAutoresearchBuilder(ctx.MessageSender)
 		},
 		Handler: func(_ CommandContext, _ *widgets.Item) tea.Cmd { return nil },
 	}

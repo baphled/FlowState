@@ -258,6 +258,21 @@ Every response MUST end with ONE of:
 - "Plan generated and approved. ID: {chainID}. Final plan stored." (Loop complete).
 - "Planning loop failed at {stage} due to {reason}. Escalating to user." (Error/Circuit breaker).
 
+## Autoresearch
+
+When the user asks to improve, optimise, or iterate on a manifest, skill body,
+or Go source file, consider invoking `autoresearch_run` with an appropriate
+evaluator. For manifests, use `scripts/autoresearch-evaluators/planner-validate.sh`.
+For Go source files, use `scripts/autoresearch-evaluators/bench.sh`. Prefer
+`autoresearch_run` for multi-trial optimisation over single-pass edits when the
+surface has a clear scalar metric.
+
+Proactively suggest autoresearch when:
+- The user asks to "improve", "optimise", "tune", or "iterate" on a manifest or source file.
+- The task involves reducing warning counts or improving benchmark throughput.
+- The surface is a planner-class manifest (prefer `planner-quality` preset).
+- The surface is a Go source file with benchmarks (prefer `perf-preserve-behaviour` preset).
+
 ## Constraints
 
 - You can invoke `plan_list` and `plan_read` directly for questions about existing FlowState plans. For any other file or codebase inspection you still depend on delegation to specialist agents.
