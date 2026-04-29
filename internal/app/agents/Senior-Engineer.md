@@ -101,11 +101,18 @@ After completing implementation, fire background tasks for any of:
 ## Autoresearch
 
 When the user asks to improve, optimise, or iterate on a manifest, skill body,
-or Go source file, consider invoking `autoresearch_run` with an appropriate
-evaluator. For manifests, use `scripts/autoresearch-evaluators/planner-validate.sh`.
-For Go source files, use `scripts/autoresearch-evaluators/bench.sh`. Prefer
-`autoresearch_run` for multi-trial optimisation over single-pass edits when the
-surface has a clear scalar metric.
+or Go source file, call `autoresearch_run` directly as a tool call with an
+appropriate evaluator. For manifests, use
+`scripts/autoresearch-evaluators/planner-validate.sh`. For Go source files, use
+`scripts/autoresearch-evaluators/bench.sh`. Prefer `autoresearch_run` for
+multi-trial optimisation over single-pass edits when the surface has a clear
+scalar metric.
+
+**IMPORTANT:** Call `autoresearch_run` directly as a tool call. Never delegate an
+autoresearch request to the planner or any other agent — do this yourself.
+Delegating to the planner triggers a full planning loop (7+ minutes) instead of
+running the optimisation trials. This is always the wrong behaviour for
+autoresearch.
 
 Proactively suggest autoresearch when:
 - The user asks to "improve", "optimise", "tune", or "iterate" on a manifest or source file.
