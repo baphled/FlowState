@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
 	"github.com/baphled/flowstate/internal/engine"
@@ -3959,6 +3960,100 @@ updated body
 		Expect(out.String()).To(ContainSubstring("legacy-detached"))
 	})
 })
+
+// toolsListSuite exercises `flowstate tools list [--agent <name>]`.
+//
+// Tests use an in-process engine seeded with two named stub tools so
+// assertions are deterministic without any provider or network
+// dependency.
+var _ = Describe("tools list command", func() {
+	var (
+		out     *bytes.Buffer
+		testApp *app.App
+		runCmd  func(args ...string) error
+	)
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		dataDir := GinkgoT().TempDir()
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{DataDir: dataDir})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Wire two named stub tools into the engine and two manifests that
+		// permit subsets of those tools.
+		alphaManifest := agent.Manifest{
+			ID:   "alpha",
+			Name: "Alpha",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"alpha_tool", "beta_tool"},
+			},
+		}
+		testApp.Registry = agent.NewRegistry()
+		testApp.Registry.Register(&alphaManifest)
+
+		betaManifest := agent.Manifest{
+			ID:   "beta",
+			Name: "Beta",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"beta_tool"},
+			},
+		}
+		testApp.Registry.Register(&betaManifest)
+
+		testApp.Engine = engine.New(engine.Config{
+			Manifest: alphaManifest,
+			Tools: []tool.Tool{
+				&toolsListStubTool{name: "alpha_tool", description: "Alpha tool description."},
+				&toolsListStubTool{name: "beta_tool", description: "Beta tool description."},
+			},
+		})
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	It("lists registered tools for the default agent", func() {
+		Expect(runCmd("tools", "list")).To(Succeed())
+		output := out.String()
+		Expect(output).To(ContainSubstring("alpha_tool"))
+		Expect(output).To(ContainSubstring("Alpha tool description."))
+	})
+
+	It("lists tools for a named agent with --agent flag", func() {
+		Expect(runCmd("tools", "list", "--agent", "beta")).To(Succeed())
+		output := out.String()
+		Expect(output).To(ContainSubstring("beta_tool"))
+		Expect(output).NotTo(BeEmpty())
+	})
+
+	It("returns an error for an unknown agent name", func() {
+		err := runCmd("tools", "list", "--agent", "nonexistent-agent")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("nonexistent-agent"))
+	})
+})
+
+// toolsListStubTool implements tool.Tool for the tools-list test fixtures.
+// Named with a unique prefix to avoid collisions with other test files in the
+// package.
+type toolsListStubTool struct {
+	name        string
+	description string
+}
+
+func (s *toolsListStubTool) Name() string        { return s.name }
+func (s *toolsListStubTool) Description() string { return s.description }
+func (s *toolsListStubTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
+func (s *toolsListStubTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{Output: "stub"}, nil
+}
 
 // jsonStringSlice renders a Go []string as a JSON array literal for
 // inline manifest fixtures.

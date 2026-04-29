@@ -97,6 +97,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 		newModelsCmd(getApp),
 		NewPlanCommand(getApp),
 		newConfigCmd(getApp),
+		newToolsCmd(getApp),
 	)
 
 	return cmd
