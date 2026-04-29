@@ -1,5 +1,5 @@
 // Package cli's autoresearch_runner.go provides autoresearchAppRunner —
-// the engine.AutoresearchRunner implementation that bridges the engine
+// the runner.AutoresearchRunner implementation that bridges the engine
 // tool layer to RunAutoresearchWithResult in this package.
 //
 // The runner is injected into internal/app at CLI startup via
@@ -12,16 +12,16 @@ import (
 	"io"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/runner"
 )
 
-// autoresearchAppRunner implements engine.AutoresearchRunner by delegating
+// autoresearchAppRunner implements runner.AutoresearchRunner by delegating
 // to RunAutoresearchWithResult in this package.
 type autoresearchAppRunner struct {
 	application *app.App
 }
 
-// RunAutoresearch converts engine.AutoresearchOpts to cli.AutoresearchOptions,
+// RunAutoresearch converts runner.AutoresearchOpts to cli.AutoresearchOptions,
 // calls RunAutoresearchWithResult, and converts the result back.
 //
 // Expected:
@@ -30,16 +30,16 @@ type autoresearchAppRunner struct {
 //   - out receives human-readable progress lines.
 //
 // Returns:
-//   - A populated engine.AutoresearchResult on success.
+//   - A populated runner.AutoresearchResult on success.
 //   - An error if the run fails.
 //
 // Side effects:
 //   - Same as RunAutoresearchWithResult.
 func (r *autoresearchAppRunner) RunAutoresearch(
 	ctx context.Context,
-	opts engine.AutoresearchOpts,
+	opts runner.AutoresearchOpts,
 	out io.Writer,
-) (engine.AutoresearchResult, error) {
+) (runner.AutoresearchResult, error) {
 	cliOpts := AutoresearchOptions{
 		Surface:         opts.Surface,
 		DriverScript:    opts.DriverScript,
@@ -51,9 +51,9 @@ func (r *autoresearchAppRunner) RunAutoresearch(
 	}
 	res, err := RunAutoresearchWithResult(ctx, cliOpts, r.application, out)
 	if err != nil {
-		return engine.AutoresearchResult{}, err
+		return runner.AutoresearchResult{}, err
 	}
-	return engine.AutoresearchResult{
+	return runner.AutoresearchResult{
 		RunID:             res.RunID,
 		TerminationReason: res.TerminationReason,
 		TotalTrials:       res.TotalTrials,
@@ -64,9 +64,9 @@ func (r *autoresearchAppRunner) RunAutoresearch(
 	}, nil
 }
 
-// NewAutoresearchAppRunner creates an engine.AutoresearchRunner backed by
+// NewAutoresearchAppRunner creates a runner.AutoresearchRunner backed by
 // the given App. The CLI root command calls this and passes the result to
 // app.SetAutoresearchRunner to wire the autoresearch_run engine tool.
-func NewAutoresearchAppRunner(application *app.App) engine.AutoresearchRunner {
+func NewAutoresearchAppRunner(application *app.App) runner.AutoresearchRunner {
 	return &autoresearchAppRunner{application: application}
 }

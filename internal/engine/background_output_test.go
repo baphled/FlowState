@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/tool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -302,17 +303,17 @@ var _ = Describe("BackgroundOutputTool", func() {
 	})
 })
 
-// stubAutoresearchRunner is a test double for engine.AutoresearchRunner.
+// stubAutoresearchRunner is a test double for runner.AutoresearchRunner.
 type stubAutoresearchRunner struct {
-	result engine.AutoresearchResult
+	result runner.AutoresearchResult
 	err    error
 }
 
 func (s *stubAutoresearchRunner) RunAutoresearch(
 	ctx context.Context,
-	opts engine.AutoresearchOpts,
+	opts runner.AutoresearchOpts,
 	out io.Writer,
-) (engine.AutoresearchResult, error) {
+) (runner.AutoresearchResult, error) {
 	return s.result, s.err
 }
 
@@ -327,7 +328,7 @@ var _ = Describe("AutoresearchRunTool", func() {
 	BeforeEach(func() {
 		manager = engine.NewBackgroundTaskManager()
 		stub = &stubAutoresearchRunner{
-			result: engine.AutoresearchResult{
+			result: runner.AutoresearchResult{
 				RunID:             "stub-run",
 				TerminationReason: "max-trials",
 				TotalTrials:       1,
