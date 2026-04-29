@@ -23,13 +23,13 @@ import (
 	"github.com/baphled/flowstate/internal/config"
 	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/swarm"
 	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
 	"github.com/baphled/flowstate/internal/tui/components/notification"
@@ -282,6 +282,9 @@ type SessionManager interface {
 	SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error)
 	// GetSession retrieves a session by ID for ancestry traversal.
 	GetSession(id string) (*session.Session, error)
+	// UpdateSessionAgent updates the active agent for the given session so
+	// subsequent SendMessage calls route to the switched-to agent.
+	UpdateSessionAgent(sessionID string, agentID string) error
 }
 
 // IntentConfig holds the configuration for creating a new chat Intent.
@@ -383,7 +386,7 @@ type Intent struct {
 	// Access Methods, this replaces the legacy maybeSwitchToSwarm
 	// SetManifest swap so the chat keeps its conversational identity
 	// across dispatches.
-	pendingSwarmLeadID  string
+	pendingSwarmLeadID string
 	// preDispatchManifest is the engine's manifest captured at the
 	// moment a swarm dispatch begins. The engine's Stream method
 	// auto-swaps its persistent manifest to whatever agent_id the
@@ -501,6 +504,11 @@ type Intent struct {
 	// manifest writes. The chat intent's constructor populates it from
 	// the user-config root; tests override via SetSwarmsDirForTest.
 	swarmsDir string
+	// agentExplicitlySelected is true when the user has deliberately
+	// chosen an agent via the TUI picker, /agent slash command, or CLI
+	// flag. When set, keyword-detection-based auto-switching is
+	// suppressed so an explicit choice is never silently overridden.
+	agentExplicitlySelected bool
 }
 
 var runningInTests bool
@@ -3167,10 +3175,12 @@ func (i *Intent) sendMessage() tea.Cmd {
 		return i.handleSlashCommand(userMessage)
 	}
 
-	if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
-		if i.agentRegistry != nil {
-			if manifest, found := i.agentRegistry.Get(detected); found {
-				i.applyAgentSwitch(manifest)
+	if !i.agentExplicitlySelected {
+		if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
+			if i.agentRegistry != nil {
+				if manifest, found := i.agentRegistry.Get(detected); found {
+					i.applyAgentSwitch(manifest)
+				}
 			}
 		}
 	}
@@ -3736,6 +3746,7 @@ func (i *Intent) handleAgentCommand(args string) string {
 	if !found {
 		return "Unknown agent: " + agentID
 	}
+	i.agentExplicitlySelected = true
 	i.applyAgentSwitch(manifest)
 	return "Switched to agent: " + agentID
 }
@@ -3896,6 +3907,7 @@ func (i *Intent) openAgentPicker() tea.Cmd {
 				if !found {
 					return
 				}
+				i.agentExplicitlySelected = true
 				i.applyAgentSwitch(manifest)
 			},
 		})
@@ -4749,6 +4761,9 @@ func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
 	i.tokenBudget = i.engine.ModelContextLimit()
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
+	if i.sessionManager != nil && i.sessionID != "" {
+		_ = i.sessionManager.UpdateSessionAgent(i.sessionID, manifest.ID)
+	}
 }
 
 // maybeBeginSwarmDispatch resolves the first @<swarm-id> mention in

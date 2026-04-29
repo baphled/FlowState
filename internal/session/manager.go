@@ -44,6 +44,7 @@ type Message struct {
 type Session struct {
 	ID                string                    `json:"id"`
 	AgentID           string                    `json:"agent_id"`
+	CurrentAgentID    string                    `json:"current_agent_id,omitempty"` // actively selected agent; overrides AgentID when set
 	Status            string                    `json:"status"`
 	ParentID          string                    `json:"parent_id"`
 	ParentSessionID   string                    `json:"parent_session_id"`
@@ -512,6 +513,9 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	})
 	sess.UpdatedAt = time.Now()
 	agentID := sess.AgentID
+	if sess.CurrentAgentID != "" {
+		agentID = sess.CurrentAgentID
+	}
 	m.mu.Unlock()
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
@@ -535,6 +539,32 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	}
 
 	return accumCh, nil
+}
+
+// UpdateSessionAgent updates the active agent for the given session.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - agentID is the ID of the agent to switch to.
+//
+// Returns:
+//   - nil when the agent is updated successfully.
+//   - ErrSessionNotFound when no session matches the identifier.
+//
+// Side effects:
+//   - Sets CurrentAgentID on the session so subsequent SendMessage calls
+//     stream through the new agent rather than the original session agent.
+func (m *Manager) UpdateSessionAgent(sessionID, agentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	sess.CurrentAgentID = agentID
+	return nil
 }
 
 // CloseSession marks a session as completed.
