@@ -167,12 +167,20 @@ After every member has run (and the post-member gates have passed —
 the runner halts on a gate failure so if you're reading members'
 output, the gates passed), READ each member's coord-store key,
 synthesise findings into a single `bug-hunt-report-v1` payload, and
-write it to `bug-hunt/lead/report` (the post-swarm gate validates this
-key under `output_key: report`).
+write it to **`bug-hunt/report`** — note: NO `lead` segment.
+
+The post-swarm gate (`when: post`, no target) resolves its expected
+key to `<chain_prefix>/<output_key>` = `bug-hunt/report` — two
+segments, not three. Members use a three-segment key shape
+(`bug-hunt/<member-id>/<output_key>`) because their gates have a
+`target`; swarm-level gates do not. Writing to `bug-hunt/lead/report`
+or `bug-hunt/Senior-Engineer/report` will fail the gate with
+"no member output found at [bug-hunt/report]" and halt the dispatch
+with EXIT=1.
 
 Use `coordination_store` action `get` to read each member's payload.
 Aggregate the `findings` arrays, dedupe by file+line+description, and
-write the merged report.
+write the merged report to **`bug-hunt/report`**.
 
 **`bug-hunt-report-v1` shape — top-level fields:**
 
