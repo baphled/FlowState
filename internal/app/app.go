@@ -60,6 +60,8 @@ import (
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
+	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
+	"github.com/baphled/flowstate/internal/vaultindex"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
@@ -151,6 +153,9 @@ type App struct {
 	// mcp_memory_search_nodes and mcp_memory_open_nodes tools. Nil when
 	// Qdrant is not configured; tools are silently omitted in that case.
 	memoryClient learning.MemoryClient
+	// vaultHandler backs the mcp_vault-rag_query_vault tool. Nil when
+	// Qdrant is not configured; the tool is silently omitted in that case.
+	vaultHandler toolsvault.Handler
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -235,6 +240,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		return nil, err
 	}
 	memClient := buildMemoryClient(cfg, ollamaProvider)
+	vaultHandler := buildVaultQueryHandler(cfg, ollamaProvider)
 	runOrphanEventTmpScan(filepath.Join(cfg.DataDir, "sessions"))
 	pluginRT := setupPluginRuntime(cfg)
 	wireFailoverManager(pluginRT, providerRegistry)
@@ -250,6 +256,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		sessionStore:       sessionStore,
 		learningStore:      learningStore,
 		memoryClient:       memClient,
+		vaultHandler:       vaultHandler,
 		failoverHook:       pluginFailoverHook(pluginRT),
 		failoverManager:    pluginFailoverManager(pluginRT),
 		dispatcher:         pluginDispatcher(pluginRT),
@@ -269,6 +276,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		sessionStore:     sessionStore,
 		learningStore:    learningStore,
 		memoryClient:     memClient,
+		vaultHandler:     vaultHandler,
 		providerRegistry: providerRegistry,
 		ollamaProvider:   ollamaProvider,
 		pluginRuntime:    pluginRT,
@@ -424,6 +432,7 @@ type appBuildParams struct {
 	sessionStore     *ctxstore.FileSessionStore
 	learningStore    learning.Store
 	memoryClient     learning.MemoryClient
+	vaultHandler     toolsvault.Handler
 	providerRegistry *provider.Registry
 	ollamaProvider   *ollama.Provider
 	pluginRuntime    *pluginRuntime
@@ -478,6 +487,7 @@ func buildApp(params appBuildParams) *App {
 		mcpServerTools:   runtime.mcpServerTools,
 		mcpTools:         runtime.mcpTools,
 		memoryClient:     params.memoryClient,
+		vaultHandler:     params.vaultHandler,
 		gateRunner:       buildSwarmGateRunner(),
 	}
 
@@ -667,6 +677,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		compression:   compression,
 		swarmRegistry: params.swarmRegistry,
 		memoryClient:  params.memoryClient,
+		vaultHandler:  params.vaultHandler,
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
@@ -717,6 +728,7 @@ type engineAssemblyParams struct {
 	compression   compressionComponents
 	swarmRegistry *swarm.Registry
 	memoryClient  learning.MemoryClient
+	vaultHandler  toolsvault.Handler
 }
 
 // buildEngineParams assembles the engineParams bundle from setupEngine
@@ -737,6 +749,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 	appTools := appendChainTools(in.tools.tools, in.chainStore)
 	appTools = appendSwarmTools(appTools, in.swarmRegistry)
 	appTools = appendMemoryTools(appTools, in.memoryClient)
+	appTools = appendVaultTools(appTools, in.vaultHandler)
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
@@ -805,6 +818,16 @@ func appendMemoryTools(base []tool.Tool, client learning.MemoryClient) []tool.To
 		toolmemory.NewSearchNodesTool(client),
 		toolmemory.NewOpenNodesTool(client),
 	)
+}
+
+// appendVaultTools appends the native mcp_vault-rag_query_vault tool when a
+// vault Handler is available. Returns base unchanged when handler is nil
+// (Qdrant not configured or vault collection unavailable).
+func appendVaultTools(base []tool.Tool, handler toolsvault.Handler) []tool.Tool {
+	if handler == nil {
+		return base
+	}
+	return append(base, toolsvault.NewQueryVaultTool(handler))
 }
 
 func appendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
@@ -1020,6 +1043,7 @@ type setupEngineParams struct {
 	sessionStore       *ctxstore.FileSessionStore
 	learningStore      learning.Store
 	memoryClient       learning.MemoryClient
+	vaultHandler       toolsvault.Handler
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
 	dispatcher         *external.Dispatcher
@@ -1831,6 +1855,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	}
 
 	tools = appendMemoryTools(tools, a.memoryClient)
+	tools = appendVaultTools(tools, a.vaultHandler)
 
 	return tools
 }
@@ -4023,14 +4048,23 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 //   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
 func qdrantURL(cfg *config.AppConfig) string {
 	return cfg.ResolvedQdrantURL()
-=======
-// buildMemoryClient constructs a VectorStoreMemoryClient backed by Qdrant
+}
+
+// defaultVaultCollection is the Qdrant collection used by flowstate-vault-server.
+// Must stay in sync with cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
+const defaultVaultCollection = "flowstate-vault"
+
+// buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by Qdrant
 // when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
-// callers treat nil as "memory tools disabled".
-func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) learning.MemoryClient {
+// callers treat nil as "vault RAG tool disabled".
+func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
 	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
+	return vaultindex.NewQueryHandler(embedder, client, defaultVaultCollection)
+}
 	col := cfg.Qdrant.Collection
 	if col == "" {
 		col = "flowstate-recall"
@@ -4046,6 +4080,22 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 	)
 	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
 >>>>>>> 53a4f91 (feat(tool): add native mcp_memory_search_nodes and mcp_memory_open_nodes tools)
+=======
+// defaultVaultCollection is the Qdrant collection used by flowstate-vault-server.
+// Must stay in sync with cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
+const defaultVaultCollection = "flowstate-vault"
+
+// buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by Qdrant
+// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
+// callers treat nil as "vault RAG tool disabled".
+func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
+	if cfg == nil || cfg.Qdrant.URL == "" {
+		return nil
+	}
+	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
+	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
+	return vaultindex.NewQueryHandler(embedder, client, defaultVaultCollection)
+>>>>>>> 853b322 (feat(tool): add native mcp_vault-rag_query_vault tool backed by local Qdrant)
 }
 
 // defaultQdrantDistance is the metric the auto-create path uses when
