@@ -2341,16 +2341,29 @@ func (e *Engine) processStreamChunks(
 			if chunk.Content != "" || chunk.Thinking != "" {
 				sawTextOrThinking = true
 			}
-			outChan <- chunk
 
 			if chunk.Done {
+				// Do NOT forward the Done chunk when tool calls are pending.
+				// Emitting Done while the tool loop is still running would
+				// cause every consumer (TUI, CLI, SSE) to treat the stream
+				// as complete before tool results are appended, ending the
+				// turn prematurely. The tool loop emits its own terminal
+				// events after all results are collected.
+				if len(toolCalls) > 0 {
+					return streamChunkResult{
+						toolCalls:       toolCalls,
+						responseContent: responseContent.String(),
+						thinkingContent: thinkingContent.String(),
+					}
+				}
+				outChan <- chunk
 				return streamChunkResult{
-					toolCalls:       toolCalls,
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
-					done:            len(toolCalls) == 0, // done only when no tool calls pending
+					done:            true,
 				}
 			}
+			outChan <- chunk
 		}
 	}
 }
