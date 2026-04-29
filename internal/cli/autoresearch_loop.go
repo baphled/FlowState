@@ -710,12 +710,12 @@ func runOneTrialContent(
 	outcome.PromptSHA = driverPromptSHA(promptBytes)
 
 	candidateBytes, timedOut, dErr := runDriverContent(ctx, driverInvocation{
-		driverPath:     resolved.driverScript,
-		runID:          resolved.runID,
-		trialN:         n,
-		relSurface:     relSurface,
-		timeout:        resolved.driverTimeout,
-		maxTurns:       resolved.driverMaxTurns,
+		driverPath: resolved.driverScript,
+		runID:      resolved.runID,
+		trialN:     n,
+		relSurface: relSurface,
+		timeout:    resolved.driverTimeout,
+		maxTurns:   resolved.driverMaxTurns,
 	}, promptBytes)
 	if dErr != nil {
 		// Driver failure (non-zero exit, timeout) collapses onto

@@ -1126,10 +1126,10 @@ func createTrialWorktree(repoRoot, worktreePath, branchName string) error {
 // The branch (`autoresearch/<run-id-short>`) is preserved on every
 // termination; it is the durable kept-commit anchor.
 var cleanExitTerminationReasons = map[string]struct{}{
-	"max-trials":             {},
-	"time-budget":            {},
-	"converged":              {},
-	"fixed-point-saturated":  {},
+	"max-trials":            {},
+	"time-budget":           {},
+	"converged":             {},
+	"fixed-point-saturated": {},
 }
 
 // cleanupTrialWorktree removes the run's worktree on a clean

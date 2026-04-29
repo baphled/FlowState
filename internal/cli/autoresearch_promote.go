@@ -242,4 +242,3 @@ func checkoutBranch(parentRepoRoot, target string) error {
 	}
 	return nil
 }
-

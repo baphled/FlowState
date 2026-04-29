@@ -35,8 +35,8 @@ import (
 // autoresearchApplyOptions holds the parsed flag values for one apply
 // invocation.
 type autoresearchApplyOptions struct {
-	writePath        string
-	forceInsideRepo  bool
+	writePath       string
+	forceInsideRepo bool
 }
 
 // newAutoresearchApplyCmd creates the `autoresearch apply` subcommand.

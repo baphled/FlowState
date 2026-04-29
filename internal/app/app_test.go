@@ -1342,7 +1342,7 @@ var _ = Describe("MaterialiseMemoryToolsOnStartup", func() {
 
 			info, err := os.Stat(filepath.Join(destDir, "mcp-mem0-server"))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Mode().Perm() & 0o111).NotTo(BeZero(),
+			Expect(info.Mode().Perm()&0o111).NotTo(BeZero(),
 				"wrapper must be executable so the auto-discovered command is invokable")
 		})
 	})

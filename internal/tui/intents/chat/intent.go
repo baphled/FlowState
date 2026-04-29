@@ -373,7 +373,7 @@ type Intent struct {
 	// registry misses; nil disables the swarm fallthrough so the
 	// premature-delegation-misfire detector (P7/C2) and any future
 	// routing surface degrade to the historical agent-only behaviour.
-	swarmRegistry       *swarm.Registry
+	swarmRegistry *swarm.Registry
 	// pendingSwarmLeadID carries the swarm lead's agent id for the
 	// current turn when the user typed @<swarm-id>. Set by
 	// maybeBeginSwarmDispatch, consumed by sendMessage to route the

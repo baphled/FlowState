@@ -32,8 +32,8 @@ import (
 var _ = Describe("createContextStore embedding-model routing", func() {
 	It("uses cfg.ResolvedEmbeddingModel(), not the chat model identifier", func() {
 		cfg := &config.AppConfig{}
-		cfg.Providers.Ollama.Model = "llama3.2"           // chat model — 3072d, would corrupt 768d collection.
-		cfg.EmbeddingModel = "nomic-embed-text"           // embedding model — 768d, matches collection.
+		cfg.Providers.Ollama.Model = "llama3.2" // chat model — 3072d, would corrupt 768d collection.
+		cfg.EmbeddingModel = "nomic-embed-text" // embedding model — 768d, matches collection.
 
 		store := createContextStore(cfg)
 		Expect(store).NotTo(BeNil())

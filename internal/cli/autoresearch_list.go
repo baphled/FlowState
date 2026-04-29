@@ -37,25 +37,25 @@ import (
 // runListEntry is one row in the list output, joined from coord-store
 // keys and the surface repo's `git worktree list`.
 type runListEntry struct {
-	RunIDShort  string
-	Surface     string
-	StartedAt   string
-	LastTrialN  int
-	KeptCount   int
-	BestScore   float64
-	BestSet     bool
-	Status      string
-	WorktreeAt  string
-	BranchName  string
-	RawRunID    string
+	RunIDShort string
+	Surface    string
+	StartedAt  string
+	LastTrialN int
+	KeptCount  int
+	BestScore  float64
+	BestSet    bool
+	Status     string
+	WorktreeAt string
+	BranchName string
+	RawRunID   string
 }
 
 // Worktree-status enum values per R1.5.
 const (
-	worktreeStatusAbsent          = "absent"
-	worktreeStatusPresent         = "present"
-	worktreeStatusMissingBranch   = "missing-branch"
-	worktreeStatusLegacyDetached  = "legacy-detached"
+	worktreeStatusAbsent         = "absent"
+	worktreeStatusPresent        = "present"
+	worktreeStatusMissingBranch  = "missing-branch"
+	worktreeStatusLegacyDetached = "legacy-detached"
 )
 
 // newAutoresearchListCmd creates the `autoresearch list` subcommand.

@@ -62,7 +62,7 @@ var _ = Describe("memory-tools install command", func() {
 				// the bit but inherits it harmlessly because `node` is
 				// invoked with the file as an argument.
 				mode := info.Mode().Perm()
-				Expect(mode & 0o100).NotTo(BeZero(), "owner exec bit missing on %s (mode=%o)", name, mode)
+				Expect(mode&0o100).NotTo(BeZero(), "owner exec bit missing on %s (mode=%o)", name, mode)
 
 				// Content must match the embedded payload byte-for-byte
 				// — verbatim copy is the v1 contract; templating is a
