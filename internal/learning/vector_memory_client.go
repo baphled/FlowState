@@ -223,16 +223,7 @@ func (v *VectorStoreMemoryClient) SearchNodes(ctx context.Context, query string)
 	}
 	entities := make([]Entity, 0, len(points))
 	for _, p := range points {
-		name := p.ID
-		var entityType string
-		var obs []string
-		if et, ok := p.Payload["entityType"].(string); ok {
-			entityType = et
-		}
-		if o, ok := p.Payload["observations"].([]string); ok {
-			obs = o
-		}
-		entities = append(entities, Entity{Name: name, EntityType: entityType, Observations: obs})
+		entities = append(entities, entityFromPoint(p))
 	}
 	return entities, nil
 }
@@ -259,18 +250,40 @@ func (v *VectorStoreMemoryClient) OpenNodes(ctx context.Context, names []string)
 		if err != nil || len(points) == 0 {
 			continue
 		}
-		p := points[0]
-		var entityType string
-		var obs []string
-		if et, ok := p.Payload["entityType"].(string); ok {
-			entityType = et
-		}
-		if o, ok := p.Payload["observations"].([]string); ok {
-			obs = o
-		}
-		entities = append(entities, Entity{Name: name, EntityType: entityType, Observations: obs})
+		entities = append(entities, entityFromPoint(points[0]))
 	}
 	return KnowledgeGraph{Entities: entities, Relations: nil}, nil
+}
+
+// entityFromPoint converts a ScoredVectorPoint to an Entity, preferring source_id over the
+// UUID point ID as the entity name, and handling both entity-style payloads
+// (entityType + observations) and learning-record payloads (agent_id + content/response/outcome).
+func entityFromPoint(p ScoredVectorPoint) Entity {
+	name, _ := p.Payload["source_id"].(string)
+	if name == "" {
+		name = p.ID
+	}
+	var entityType string
+	if et, ok := p.Payload["entityType"].(string); ok {
+		entityType = et
+	} else if at, ok := p.Payload["agent_id"].(string); ok {
+		entityType = at
+	}
+	var obs []string
+	if o, ok := p.Payload["observations"].([]string); ok {
+		obs = o
+	} else {
+		if content, ok := p.Payload["content"].(string); ok && content != "" {
+			obs = append(obs, "Content: "+content)
+		}
+		if response, ok := p.Payload["response"].(string); ok && response != "" {
+			obs = append(obs, "Response: "+response)
+		}
+		if outcome, ok := p.Payload["outcome"].(string); ok && outcome != "" {
+			obs = append(obs, "Outcome: "+outcome)
+		}
+	}
+	return Entity{Name: name, EntityType: entityType, Observations: obs}
 }
 
 // WriteLearningRecord persists a learning record to storage.

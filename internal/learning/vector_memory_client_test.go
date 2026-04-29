@@ -103,4 +103,85 @@ var _ = Describe("VectorStoreMemoryClient Qdrant point ID contract", func() {
 			Expect(vs.upsertPoints[0].Payload).To(HaveKeyWithValue("source_id", "session-1"))
 		})
 	})
+
+	Describe("SearchNodes", func() {
+		It("uses source_id from payload as entity name, not the UUID point ID", func() {
+			vs.searchResult = []learning.ScoredVectorPoint{
+				{ID: "88ae915d-f474-5c13-b6cd-da740c11d313", Score: 0.9, Payload: map[string]any{
+					"source_id":  "golang-concurrency",
+					"entityType": "concept",
+					"observations": []string{"channels enable goroutine communication"},
+				}},
+			}
+			entities, err := client.SearchNodes(context.Background(), "goroutine channels")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entities).To(HaveLen(1))
+			Expect(entities[0].Name).To(Equal("golang-concurrency"))
+			Expect(entities[0].EntityType).To(Equal("concept"))
+			Expect(entities[0].Observations).To(ContainElement("channels enable goroutine communication"))
+		})
+
+		It("falls back to UUID point ID when source_id is absent", func() {
+			vs.searchResult = []learning.ScoredVectorPoint{
+				{ID: "deadbeef-0000-5000-8000-000000000001", Score: 0.8, Payload: map[string]any{}},
+			}
+			entities, err := client.SearchNodes(context.Background(), "anything")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entities[0].Name).To(Equal("deadbeef-0000-5000-8000-000000000001"))
+		})
+
+		It("builds observations from learning-record payload shape (content/response/outcome)", func() {
+			vs.searchResult = []learning.ScoredVectorPoint{
+				{ID: "some-uuid", Score: 0.7, Payload: map[string]any{
+					"source_id": "1714389234000000000",
+					"agent_id":  "default-assistant",
+					"content":   "fix the nil pointer bug",
+					"response":  "added nil guard in handler",
+					"outcome":   "success",
+				}},
+			}
+			entities, err := client.SearchNodes(context.Background(), "nil pointer bug")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entities[0].Name).To(Equal("1714389234000000000"))
+			Expect(entities[0].EntityType).To(Equal("default-assistant"))
+			obs := entities[0].Observations
+			Expect(obs).To(ContainElement(ContainSubstring("fix the nil pointer bug")))
+			Expect(obs).To(ContainElement(ContainSubstring("added nil guard in handler")))
+			Expect(obs).To(ContainElement(ContainSubstring("success")))
+		})
+	})
+
+	Describe("OpenNodes", func() {
+		It("builds observations from entity-style payload", func() {
+			vs.searchResult = []learning.ScoredVectorPoint{
+				{ID: "some-uuid", Score: 0.9, Payload: map[string]any{
+					"source_id":    "goroutine",
+					"entityType":   "concept",
+					"observations": []string{"lightweight thread"},
+				}},
+			}
+			graph, err := client.OpenNodes(context.Background(), []string{"goroutine"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(graph.Entities).To(HaveLen(1))
+			Expect(graph.Entities[0].Observations).To(ContainElement("lightweight thread"))
+		})
+
+		It("builds observations from learning-record payload shape", func() {
+			vs.searchResult = []learning.ScoredVectorPoint{
+				{ID: "some-uuid", Score: 0.9, Payload: map[string]any{
+					"source_id": "1714389234000000000",
+					"agent_id":  "analyst",
+					"content":   "what caused the nil panic",
+					"response":  "missing guard on line 42",
+					"outcome":   "resolved",
+				}},
+			}
+			graph, err := client.OpenNodes(context.Background(), []string{"nil-panic"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(graph.Entities).To(HaveLen(1))
+			obs := graph.Entities[0].Observations
+			Expect(obs).To(ContainElement(ContainSubstring("what caused the nil panic")))
+			Expect(obs).To(ContainElement(ContainSubstring("missing guard on line 42")))
+		})
+	})
 })
