@@ -199,7 +199,7 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 		return string(out), nil
 	}
 
-	t.manager.Launch(ctx, taskID, "autoresearch", "autoresearch: "+surface, fn)
+	t.manager.Launch(context.WithoutCancel(ctx), taskID, "autoresearch", "autoresearch: "+surface, fn)
 
 	resp, err := json.Marshal(map[string]string{
 		"task_id": taskID,
