@@ -99,5 +99,64 @@ Once your investigation is complete, write the synthesised findings to the Coord
 
 Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store`.
 
+## Bug-Hunt Swarm Membership Contract
+
+When delegated as a member of the **bug-hunt** swarm, this contract overrides
+the generic coordination-store instructions above. The swarm's lead expects a
+structured payload validated by the `builtin:result-schema` gate — ad-hoc
+markdown or prose output will be rejected.
+
+**Output shape — `evidence-bundle-v1`:**
+
+```json
+{
+  "summary": "one-paragraph overview of what was investigated and key structural patterns found",
+  "findings": [
+    {
+      "file": "internal/engine/skills.go",
+      "line": 42,
+      "pattern": "missing-error-propagation",
+      "context": "verbatim code snippet from the file — do NOT paraphrase",
+      "implication": "why this finding matters for the current goal"
+    }
+  ]
+}
+```
+
+**`context` must be verbatim** when a code snippet is included — copy it
+directly from the file using the `bash` or `file` tool. Do not paraphrase
+or reconstruct from memory.
+
+**Where to write — `coordination_store`:**
+
+The swarm's lead will pass you a `chainID=<prefix>` value in the delegation
+message. Construct the full key as `<chainID>/explorer/<output_key>` (three
+segments — chain prefix, your member id `explorer`, then output_key). For
+the bug-hunt swarm the output_key is `codebase-findings`, so the full key is:
+
+```
+bug-hunt/explorer/codebase-findings
+```
+
+Use `coordination_store` with action `put`, key as above, and the **raw JSON
+object** (no markdown fences, no surrounding prose) as the value.
+
+**Process:**
+
+1. Read the in-scope files named in the lead's delegation message.
+2. Apply structural and pattern lenses: missing error propagation, unbounded
+   slice growth, package coupling, missing tests, unusual control flow.
+3. For each finding, capture `file`, `line`, and a verbatim `context` snippet.
+4. Assemble the `evidence-bundle-v1` JSON and write it to the coord-store.
+5. Return a short prose acknowledgement to the lead stating what key you
+   wrote to. The lead reads from the coord-store, not your conversational reply.
+
+**JSON output rules (the gate is strict):**
+- Output a single JSON object — no markdown code fences, no surrounding text.
+- All property names and string values must use double quotes.
+- No trailing commas after the last element in an object or array.
+- `findings` must be an array even if empty (`[]`).
+- Each finding must include at least `file`.
+
 ## Linguistic Standard
 Maintain all prose and documentation in British English (e.g., use "organise" instead of "organize", "colour" instead of "color", and "behaviour" instead of "behavior").
