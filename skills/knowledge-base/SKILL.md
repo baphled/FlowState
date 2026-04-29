@@ -10,8 +10,15 @@ related_skills:
 ---
 # Knowledge-Base Skill
 
-Query the knowledge graph and vault-rag before investigating the codebase. Use the lookup order: memory → skill → vault → codebase. Never duplicate knowledge that's already been captured.
+**Always query memory and vault before reading files or running shell commands.** Use this fixed lookup order on every task:
 
-This skill teaches the retrieval patterns: search memory by topic, query vault-rag for KB docs, read specific KB files if you know the path, and only investigate the codebase if none of the above answer your question.
+1. **Memory** — `mcp_memory_search_nodes` with a topic query. If results cover the question, use them.
+2. **Vault** — `mcp_vault-rag_query_vault` for KB docs, notes, and architecture context.
+3. **Skill** — `skill_load` for domain-specific procedural guidance.
+4. **Codebase** — filesystem reads and grep only if the above didn't answer the question.
 
-By searching first, you avoid re-discovering what's already known, accelerate problem-solving, and build on institutional knowledge. Store all discoveries immediately so the next person benefits from your work.
+Never skip steps 1 and 2. Even a partial memory hit prevents re-discovering what's already known.
+
+After finding an answer, use `mcp_memory_open_nodes` to pull the full entity when you need exact observations.
+
+Store all new discoveries immediately with the `memory-keeper` skill so the next agent (or next session) benefits from your work.
