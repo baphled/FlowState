@@ -361,6 +361,12 @@ var _ = Describe("AutoresearchRunTool", func() {
 			Expect(schema.Properties).To(HaveKey("metric_direction"))
 			Expect(schema.Properties).To(HaveKey("run_id"))
 		})
+
+		It("includes optional driver_agent for overriding the agent inside the driver script", func() {
+			schema := artTool.Schema()
+			Expect(schema.Properties).To(HaveKey("driver_agent"),
+				"schema must expose driver_agent so agents can select a more capable model without editing the driver script")
+		})
 	})
 
 	Context("AutoresearchRunTool", func() {

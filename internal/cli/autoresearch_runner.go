@@ -48,6 +48,7 @@ func (r *autoresearchAppRunner) RunAutoresearch(
 		MaxTrials:       opts.MaxTrials,
 		TimeBudget:      opts.TimeBudget,
 		MetricDirection: opts.MetricDirection,
+		DriverAgent:     opts.DriverAgent,
 	}
 	res, err := RunAutoresearchWithResult(ctx, cliOpts, r.application, out)
 	if err != nil {

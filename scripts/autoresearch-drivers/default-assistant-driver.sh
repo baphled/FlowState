@@ -109,6 +109,9 @@ require_env FLOWSTATE_AUTORESEARCH_TRIAL
 RUN_ID="$FLOWSTATE_AUTORESEARCH_RUN_ID"
 TRIAL="$FLOWSTATE_AUTORESEARCH_TRIAL"
 
+# Use FLOWSTATE_AUTORESEARCH_DRIVER_AGENT if set, otherwise default-assistant.
+DRIVER_AGENT="${FLOWSTATE_AUTORESEARCH_DRIVER_AGENT:-default-assistant}"
+
 # ------------------------------------------------------------
 # Prompt acquisition — stdin OR FLOWSTATE_AUTORESEARCH_PROMPT_FILE.
 # Both channels are populated by the harness; the script prefers
@@ -178,7 +181,7 @@ else
   SESSION_ID="autoresearch-${RUN_ID}-trial-${TRIAL}"
   if ! RESPONSE="$(
     "$FLOWSTATE_BIN_PATH" run \
-      --agent default-assistant \
+      --agent "$DRIVER_AGENT" \
       --prompt "$PROMPT_BODY" \
       --session "$SESSION_ID" \
       2>/dev/null

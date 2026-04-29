@@ -2946,6 +2946,42 @@ exit 0
 			Expect(strings.Index(body, "# SURFACE")).To(BeNumerically("<", strings.Index(body, "# HISTORY")))
 			Expect(strings.Index(body, "# HISTORY")).To(BeNumerically("<", strings.Index(body, "# INSTRUCTION")))
 		})
+
+		It("propagates --driver-agent as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT to the driver subprocess", func() {
+			// writeAgentEnvRecorderDriver returns a fixture driver script
+			// that records the value of FLOWSTATE_AUTORESEARCH_DRIVER_AGENT
+			// (or MISSING if unset) into a sentinel file so the spec can
+			// assert on it without a real provider.
+			sentinelPath := filepath.Join(dataDir, "driver-agent-env.txt")
+			driverPath := filepath.Join(dataDir, "agent-env-recorder-driver.sh")
+			body := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+echo "DRIVER_AGENT_ENV=${FLOWSTATE_AUTORESEARCH_DRIVER_AGENT:-MISSING}" > %q
+exit 0
+`, sentinelPath)
+			Expect(os.WriteFile(driverPath, []byte(body), 0o755)).To(Succeed())
+
+			scorer := filepath.Join(dataDir, "noop-scorer-agent.sh")
+			Expect(os.WriteFile(scorer, []byte("#!/usr/bin/env bash\necho 0\n"), 0o755)).To(Succeed())
+
+			err := runCmd("autoresearch", "run", "--commit-trials",
+				"--surface", surface,
+				"--run-id", "driver-agent-env-test",
+				"--max-trials", "1",
+				"--time-budget", "30s",
+				"--metric-direction", "min",
+				"--worktree-base", filepath.Join(dataDir, "wt-driver-agent"),
+				"--driver-script", driverPath,
+				"--evaluator-script", scorer,
+				"--driver-agent", "claude-sonnet-4-6",
+			)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
+
+			recorded, readErr := os.ReadFile(sentinelPath)
+			Expect(readErr).NotTo(HaveOccurred(), "driver should have written sentinel file")
+			Expect(string(recorded)).To(ContainSubstring("DRIVER_AGENT_ENV=claude-sonnet-4-6"),
+				"FLOWSTATE_AUTORESEARCH_DRIVER_AGENT must reach the driver subprocess")
+		})
 	})
 
 	Describe("default-assistant driver script (Slice 2)", func() {
