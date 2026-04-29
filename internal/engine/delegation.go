@@ -1582,38 +1582,49 @@ func (d *DelegateTool) AgentHasToolPermission(agentID, toolName string) bool {
 	return d.agentHasToolPermission(agentID, toolName)
 }
 
-// formatDelegationOutput produces the OpenCode-compatible output format for delegation results.
-// The output includes a resumable task_id header followed by the agent response in a task_result block.
+// formatDelegationOutput wraps the delegated agent's aggregated
+// response in a `<task_result>` block. The block is the LLM-visible
+// signal that this content is the sub-agent's response (not a
+// continuation of the lead's own thinking) so callers downstream of
+// the model — log filters, transcript renderers — can scan for the
+// boundary tags without false positives.
+//
+// Notably absent: the historical "task_id: <sessionID> (for resuming
+// to continue this task if needed)" header. That header was
+// LLM-misleading: synchronous delegations returned a *child session*
+// id under the same `task_id:` label that asynchronous delegations
+// used for *background-task* ids. The lead would see the header,
+// reflexively call `background_output` against the value, and get
+// "task not found" because the sync session id was never registered
+// with the BackgroundTaskManager. The session id is still surfaced
+// to engine consumers via the tool result's Metadata["sessionId"]
+// field — the model just never sees it.
 //
 // Expected:
-//   - sessionID is the child session identifier for resumption.
 //   - text is the aggregated response from the delegated agent.
 //
 // Returns:
-//   - A formatted string with the session ID and response wrapped in a task_result block.
+//   - A formatted string with the response wrapped in a task_result
+//     block.
 //
 // Side effects:
 //   - None.
-func formatDelegationOutput(sessionID, text string) string {
-	return fmt.Sprintf(
-		"task_id: %s (for resuming to continue this task if needed)\n\n<task_result>\n%s\n</task_result>",
-		sessionID, text,
-	)
+func formatDelegationOutput(text string) string {
+	return fmt.Sprintf("<task_result>\n%s\n</task_result>", text)
 }
 
 // FormatDelegationOutput is the exported form of formatDelegationOutput for testing.
 //
 // Expected:
-//   - sessionID is the child session identifier for resumption.
 //   - text is the aggregated response from the delegated agent.
 //
 // Returns:
-//   - A formatted string with the session ID and response wrapped in a task_result block.
+//   - A formatted string with the response wrapped in a task_result block.
 //
 // Side effects:
 //   - None.
-func FormatDelegationOutput(sessionID, text string) string {
-	return formatDelegationOutput(sessionID, text)
+func FormatDelegationOutput(text string) string {
+	return formatDelegationOutput(text)
 }
 
 // executeSync runs delegation synchronously, blocking until complete.
@@ -1681,7 +1692,7 @@ func (d *DelegateTool) executeSync(
 	}
 
 	return tool.Result{
-		Output: formatDelegationOutput(delegateSessionID, result.response),
+		Output: formatDelegationOutput(result.response),
 		Title:  target.message,
 		Metadata: map[string]interface{}{
 			"sessionId": delegateSessionID,

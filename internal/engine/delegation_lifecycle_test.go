@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -215,29 +214,26 @@ var _ = Describe("DelegateTool lifecycle", func() {
 
 	Describe("Gap 4: formatDelegationOutput and enriched Result", func() {
 		Describe("formatDelegationOutput", func() {
-			It("produces task_id header and task_result wrapper", func() {
-				output := engine.FormatDelegationOutput("ses_abc123", "the agent response")
+			It("wraps the response in a task_result block", func() {
+				output := engine.FormatDelegationOutput("the agent response")
 
-				Expect(output).To(ContainSubstring("task_id: ses_abc123"))
 				Expect(output).To(ContainSubstring("<task_result>"))
 				Expect(output).To(ContainSubstring("the agent response"))
 				Expect(output).To(ContainSubstring("</task_result>"))
-				Expect(output).To(ContainSubstring("for resuming to continue this task if needed"))
 			})
 
-			It("places the session ID before the task_result block", func() {
-				output := engine.FormatDelegationOutput("ses_abc123", "response text")
+			It("does not include the misleading task_id header that the lead used to misread as a background-task id", func() {
+				output := engine.FormatDelegationOutput("response text")
 
-				taskIDPos := strings.Index(output, "task_id:")
-				taskResultPos := strings.Index(output, "<task_result>")
-				Expect(taskIDPos).To(BeNumerically("<", taskResultPos))
+				Expect(output).NotTo(ContainSubstring("task_id:"),
+					"sync delegate output must not advertise a task_id; the lead conflated it with background_output's id namespace and produced 'task not found' cascades")
+				Expect(output).NotTo(ContainSubstring("for resuming to continue this task if needed"))
 			})
 
-			It("wraps the response text inside the task_result block", func() {
-				output := engine.FormatDelegationOutput("ses_xyz", "my response")
+			It("emits exactly the task_result block and nothing else", func() {
+				output := engine.FormatDelegationOutput("my response")
 
-				expected := "task_id: ses_xyz (for resuming to continue this task if needed)\n\n<task_result>\nmy response\n</task_result>"
-				Expect(output).To(Equal(expected))
+				Expect(output).To(Equal("<task_result>\nmy response\n</task_result>"))
 			})
 		})
 
@@ -279,7 +275,7 @@ var _ = Describe("DelegateTool lifecycle", func() {
 				Expect(result.Metadata).To(HaveKey("provider"))
 			})
 
-			It("formats the output with task_id and task_result wrapper", func() {
+			It("wraps the output in a task_result block without a misleading task_id header", func() {
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
 
 				ctx := context.Background()
@@ -293,7 +289,8 @@ var _ = Describe("DelegateTool lifecycle", func() {
 
 				result, err := delegateTool.Execute(ctx, input)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Output).To(ContainSubstring("task_id:"))
+				Expect(result.Output).NotTo(ContainSubstring("task_id:"),
+					"sync delegate output must not include task_id (lead misread it as a background-task id)")
 				Expect(result.Output).To(ContainSubstring("<task_result>"))
 				Expect(result.Output).To(ContainSubstring("lifecycle response"))
 				Expect(result.Output).To(ContainSubstring("</task_result>"))
