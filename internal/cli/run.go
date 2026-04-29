@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -513,9 +513,12 @@ func streamResponse(
 		application.SwarmRegistry,
 		streamer,
 	)
+	// ScanMentions=true so an `@<swarm-id>` prompt actually dispatches
+	// the swarm. Mirrors the chat-side fix; same parity rationale.
 	err := orch.ProcessUserInput(ctx, orchestrator.UserInput{
 		Message:      opts.Prompt,
 		DefaultAgent: agentName,
+		ScanMentions: true,
 	}, consumer)
 	if err != nil {
 		return "", err

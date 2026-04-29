@@ -345,9 +345,19 @@ func streamChatResponse(
 		application.SwarmRegistry,
 		streamer,
 	)
+	// ScanMentions=true so a CLI single-message that starts with
+	// `@<swarm-id>` (the documented swarm-dispatch syntax) actually
+	// resolves to the swarm. Without this the orchestrator would skip
+	// @-mention scanning entirely, treat the message as literal text,
+	// and fall through to the --agent default — sending the user's
+	// "@bug-hunt internal/cli/chat.go" intent into a normal chat with
+	// the default agent instead of dispatching the bug-hunt swarm. The
+	// TUI chat intent already sets ScanMentions=true; this brings the
+	// CLI surface into parity per ADR-001 §"Wrappers not duplicates".
 	if err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 		Message:      message,
 		DefaultAgent: agentName,
+		ScanMentions: true,
 	}, consumer); err != nil {
 		return "", err
 	}
