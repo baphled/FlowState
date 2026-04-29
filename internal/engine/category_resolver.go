@@ -9,6 +9,14 @@ import (
 
 var errUnknownCategory = errors.New("unknown category")
 
+// CategoryModelSwapEventType is the event-bus topic the resolver swap
+// notification publishes under. The TUI's chat intent subscribes to
+// this topic to render an auto-promotion toast in the activity
+// overlay; CLI surfaces can subscribe similarly. Pulled out as an
+// exported constant so publishers (App.buildCategorySwapNotifier) and
+// subscribers reference the same string.
+const CategoryModelSwapEventType = "category.model_swap"
+
 // CategoryModelSwap describes the resolver's decision to substitute a
 // different model for an abstract descriptor's first-choice pick when
 // the first choice fell foul of the tool-capability allow/deny lists.
