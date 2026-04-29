@@ -613,6 +613,121 @@ flowstate autoresearch promote <run-id> --apply
 
 The legacy substrate manages worktree isolation under `<surfaceRepoRoot>/.flowstate/autoresearch/<runID>/worktree`, named-branch ratchet (`autoresearch/<run-id-short>`), and per-trial commits with `--no-verify` (the broken `make check` exception is documented separately).
 
+### Using autoresearch from chat
+
+`autoresearch` is FlowState's ratcheting optimisation harness. It drives a
+single file — a manifest, a skill body, or a Go source file — towards a scalar
+metric over a configurable number of trials, using an evaluator script to score
+each candidate and a driver script to generate the next one. It is not a
+one-shot edit: it iterates, scores, ratchets, and surfaces the best result.
+
+**When to reach for it:**
+- You want to reduce validation warnings on an agent manifest (not just fix one — minimise the count).
+- You want to reduce `ns/op` on a Go benchmark while preserving behaviour.
+- Any time the goal is "make this file better by a scalar measure" and a single-pass edit is unlikely to find the optimum.
+
+#### Triggering from chat
+
+**Option A — `/autoresearch` slash command (recommended)**
+
+Type `/autoresearch` in the chat input. An 8-step wizard opens:
+
+1. Choose a preset or start from scratch:
+   - **Planner quality** — minimises validation warnings on a manifest using `planner-validate.sh`.
+   - **Performance** — minimises `ns/op` on a Go source file using `bench.sh`.
+   - **Custom** — fill every field manually.
+2. Enter the surface file path (relative to the repo root).
+3. Confirm or override the evaluator script path.
+4. Confirm or override the driver script path.
+5. Choose the metric direction (`min` or `max`).
+6. Set max trials (default: 10).
+7. Set the time budget (default: 5m).
+8. Review the assembled command and confirm.
+
+On confirmation the wizard injects the command into the chat as a user message.
+The active agent (if it has `autoresearch_run` in its tool list) can then invoke
+it directly. Otherwise you can copy the command and run it from the terminal.
+
+**Option B — ask a delegating agent**
+
+Ask the planner or senior engineer directly:
+
+> "Optimise internal/app/agents/planner.md to reduce validation warnings."
+
+If the agent has `autoresearch_run` in its tool list it will invoke the tool
+with the appropriate preset. If the agent does not have the tool, use Option A
+or run the command directly from the terminal.
+
+#### Worked example — planner manifest
+
+```
+/autoresearch
+→ Select: Planner quality (min warnings)
+→ Surface: internal/app/agents/planner.md
+→ Evaluator: [accept default: scripts/autoresearch-evaluators/planner-validate.sh]
+→ Driver: [accept default: scripts/autoresearch-drivers/default-assistant-driver.sh]
+→ Direction: min
+→ Max trials: [accept default: 10]
+→ Time budget: [accept default: 5m]
+→ Confirm
+```
+
+The wizard emits:
+
+```bash
+flowstate autoresearch run \
+  --surface internal/app/agents/planner.md \
+  --evaluator-script scripts/autoresearch-evaluators/planner-validate.sh \
+  --driver-script scripts/autoresearch-drivers/default-assistant-driver.sh \
+  --metric-direction min
+```
+
+#### Worked example — Go benchmark
+
+```
+/autoresearch
+→ Select: Performance (min ns/op)
+→ Surface: internal/engine/engine.go
+→ Evaluator: [accept default: scripts/autoresearch-evaluators/bench.sh]
+→ Driver: [accept default: scripts/autoresearch-drivers/default-assistant-driver.sh]
+→ Direction: min
+→ Max trials: 15
+→ Time budget: 15m
+→ Confirm
+```
+
+The wizard emits:
+
+```bash
+flowstate autoresearch run \
+  --surface internal/engine/engine.go \
+  --evaluator-script scripts/autoresearch-evaluators/bench.sh \
+  --driver-script scripts/autoresearch-drivers/default-assistant-driver.sh \
+  --program skills/autoresearch-presets/perf-preserve-behaviour.md \
+  --metric-direction min \
+  --max-trials 15 \
+  --time-budget 15m
+```
+
+#### Retrieving results
+
+Once a run completes:
+
+```bash
+# List all runs with their best scores
+flowstate autoresearch list
+
+# Print the best candidate to stdout
+flowstate autoresearch apply <run-id>
+
+# Write the best candidate to a file of your choosing
+flowstate autoresearch apply <run-id> --write /tmp/best-planner.md
+```
+
+The `apply` subcommand never writes inside the source repo by default. Pass
+`--force-inside-repo` if you want to materialise the candidate directly over
+the surface file.
+
 ### Further reading
 
 - Vault: `[[Autoresearch Loop]]` (Documentation/Architecture) — engine seams, evaluator contract, coord-store schema, manifest gate.

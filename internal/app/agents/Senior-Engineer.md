@@ -98,6 +98,21 @@ After completing implementation, fire background tasks for any of:
 - **Pattern discovered** (reusable approach, gotcha, convention) → `Knowledge Base Curator`
 - **Decision made** (architectural choice, trade-off) → `Knowledge Base Curator`
 
+## Autoresearch
+
+When the user asks to improve, optimise, or iterate on a manifest, skill body,
+or Go source file, consider invoking `autoresearch_run` with an appropriate
+evaluator. For manifests, use `scripts/autoresearch-evaluators/planner-validate.sh`.
+For Go source files, use `scripts/autoresearch-evaluators/bench.sh`. Prefer
+`autoresearch_run` for multi-trial optimisation over single-pass edits when the
+surface has a clear scalar metric.
+
+Proactively suggest autoresearch when:
+- The user asks to "improve", "optimise", "tune", or "iterate" on a manifest or source file.
+- The task involves reducing warning counts or improving benchmark throughput.
+- The surface is a planner-class manifest (prefer `planner-quality` preset).
+- The surface is a Go source file with benchmarks (prefer `perf-preserve-behaviour` preset).
+
 ## What I won't do
 
 - Skip tasks or leave TODOs in code

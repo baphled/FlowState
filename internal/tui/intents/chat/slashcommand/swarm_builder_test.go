@@ -157,6 +157,163 @@ var _ = Describe("SwarmBuilder", func() {
 	})
 })
 
+var _ = Describe("autoresearch wizard", func() {
+	Describe("happy path — planner-quality preset", func() {
+		It("walks all 8 steps and produces an assembled command", func() {
+			sender := &fakeSender{}
+			wizard := slashcommand.NewAutoresearchBuilder(sender)
+
+			expectStep(wizard, slashcommand.StepPicker)
+			Expect(wizard.SubmitItem(itemFor("planner-quality"))).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepInput)
+			Expect(wizard.SubmitText("internal/app/agents/planner.md")).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepInput)
+			Expect(wizard.SubmitText("")).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepInput)
+			Expect(wizard.SubmitText("")).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepPicker)
+			Expect(wizard.SubmitItem(itemFor("min"))).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepInput)
+			Expect(wizard.SubmitText("")).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepInput)
+			Expect(wizard.SubmitText("")).To(Succeed())
+
+			expectStep(wizard, slashcommand.StepConfirm)
+			Expect(wizard.SubmitItem(itemFor("yes"))).To(Succeed())
+
+			Expect(wizard.Current().Kind).To(Equal(slashcommand.StepDone))
+
+			msg := wizard.CompleteMessage()
+			Expect(msg).To(ContainSubstring("flowstate autoresearch run"))
+			Expect(msg).To(ContainSubstring("--surface internal/app/agents/planner.md"))
+			Expect(msg).To(ContainSubstring("--evaluator-script scripts/autoresearch-evaluators/planner-validate.sh"))
+			Expect(msg).To(ContainSubstring("--driver-script scripts/autoresearch-drivers/default-assistant-driver.sh"))
+			Expect(msg).To(ContainSubstring("--metric-direction min"))
+			Expect(msg).To(ContainSubstring("--program planner-quality"))
+
+			Expect(sender.received).To(Equal(msg))
+		})
+	})
+
+	Describe("preset pre-fill", func() {
+		It("planner-quality pre-fills evaluator prompt with planner-validate.sh", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			Expect(wizard.SubmitItem(itemFor("planner-quality"))).To(Succeed())
+			Expect(wizard.SubmitText("internal/app/agents/planner.md")).To(Succeed())
+
+			step := wizard.Current()
+			Expect(step.Prompt).To(ContainSubstring("planner-validate.sh"))
+		})
+
+		It("perf-preserve-behaviour pre-fills evaluator prompt with bench.sh", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			Expect(wizard.SubmitItem(itemFor("perf-preserve-behaviour"))).To(Succeed())
+			Expect(wizard.SubmitText("internal/engine/hot_path.go")).To(Succeed())
+
+			step := wizard.Current()
+			Expect(step.Prompt).To(ContainSubstring("bench.sh"))
+		})
+
+		It("custom preset leaves evaluator default empty in prompt", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			Expect(wizard.SubmitItem(itemFor("custom"))).To(Succeed())
+
+			Expect(wizard.SubmitText("my-surface.go")).To(Succeed())
+			step := wizard.Current()
+			Expect(step.Prompt).To(ContainSubstring("Evaluator script path"))
+		})
+	})
+
+	Describe("input validation", func() {
+		It("rejects empty surface", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			Expect(wizard.SubmitItem(itemFor("planner-quality"))).To(Succeed())
+
+			err := wizard.SubmitText("   ")
+			Expect(err).To(HaveOccurred())
+			expectStep(wizard, slashcommand.StepInput)
+		})
+
+		It("rejects non-numeric max trials", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			driveToMaxTrials(wizard)
+
+			err := wizard.SubmitText("not-a-number")
+			Expect(err).To(HaveOccurred())
+			expectStep(wizard, slashcommand.StepInput)
+		})
+
+		It("rejects zero max trials", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			driveToMaxTrials(wizard)
+
+			err := wizard.SubmitText("0")
+			Expect(err).To(HaveOccurred())
+			expectStep(wizard, slashcommand.StepInput)
+		})
+	})
+
+	Describe("cancel / decline", func() {
+		It("CompleteMessage is empty after Cancel()", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			Expect(wizard.SubmitItem(itemFor("planner-quality"))).To(Succeed())
+			Expect(wizard.SubmitText("some/surface.md")).To(Succeed())
+
+			wizard.Cancel()
+			Expect(wizard.CompleteMessage()).To(BeEmpty())
+		})
+
+		It("CompleteMessage is empty when user declines confirm", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			driveToConfirm(wizard)
+
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			Expect(wizard.Current().Kind).To(Equal(slashcommand.StepDone))
+			Expect(wizard.CompleteMessage()).To(BeEmpty())
+		})
+
+		It("nil sender does not panic on confirm", func() {
+			wizard := slashcommand.NewAutoresearchBuilder(nil)
+			driveToConfirm(wizard)
+
+			Expect(wizard.SubmitItem(itemFor("yes"))).To(Succeed())
+			Expect(wizard.CompleteMessage()).NotTo(BeEmpty())
+		})
+	})
+})
+
+// fakeSender captures the last SendUserMessage call for assertion.
+type fakeSender struct {
+	received string
+}
+
+func (f *fakeSender) SendUserMessage(text string) {
+	f.received = text
+}
+
+// driveToMaxTrials advances an autoresearch wizard to the max-trials step
+// using the planner-quality preset and a fixed surface.
+func driveToMaxTrials(wizard slashcommand.Wizard) {
+	Expect(wizard.SubmitItem(itemFor("planner-quality"))).To(Succeed())
+	Expect(wizard.SubmitText("internal/app/agents/planner.md")).To(Succeed())
+	Expect(wizard.SubmitText("")).To(Succeed())
+	Expect(wizard.SubmitText("")).To(Succeed())
+	Expect(wizard.SubmitItem(itemFor("min"))).To(Succeed())
+}
+
+// driveToConfirm drives an autoresearch wizard to the confirm step.
+func driveToConfirm(wizard slashcommand.Wizard) {
+	driveToMaxTrials(wizard)
+	Expect(wizard.SubmitText("")).To(Succeed())
+	Expect(wizard.SubmitText("")).To(Succeed())
+}
+
 func newSwarmAgentRegistry() *agent.Registry {
 	reg := agent.NewRegistry()
 	reg.Register(&agent.Manifest{ID: "planner", Name: "Planner", Mode: "plan"})
