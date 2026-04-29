@@ -166,6 +166,9 @@ planner body
 			Expect(output).To(ContainSubstring("--driver-timeout"))
 			Expect(output).To(ContainSubstring("--driver-max-turns"))
 			Expect(output).To(ContainSubstring("--prompt-history-window"))
+			// --driver-agent flag for overriding the agent used inside the
+			// driver script without editing the script.
+			Expect(output).To(ContainSubstring("--driver-agent"))
 		})
 	})
 
@@ -3763,6 +3766,63 @@ if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
 		err := runCmd("autoresearch", "apply", "no-such-apply-run")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("no-such-apply-run"))
+	})
+
+	// Short-ID prefix resolution — the 8-char IDs shown by `autoresearch
+	// list` must work as arguments to `autoresearch apply`.
+
+	It("resolves an 8-char prefix run-id to the full UUID and applies successfully", func() {
+		// Use a well-known UUID so the 8-char prefix is deterministic.
+		fullRunID := "ab1234ef-0000-0000-0000-000000000001"
+		candidate := runContentImprovingTrial(fullRunID)
+		out.Reset()
+
+		// Supply only the first 8 characters (what `list` shows).
+		shortID := fullRunID[:8]
+		err := runCmd("autoresearch", "apply", shortID)
+		Expect(err).NotTo(HaveOccurred(), "short-ID apply failed; out: %s", out.String())
+		Expect(out.String()).To(Equal(candidate),
+			"apply with short prefix must emit the same candidate as apply with full ID")
+	})
+
+	It("resolves an 8-char prefix run-id when writing to --write <path>", func() {
+		fullRunID := "ab1234ef-0000-0000-0000-000000000002"
+		candidate := runContentImprovingTrial(fullRunID)
+		out.Reset()
+
+		outPath := filepath.Join(dataDir, "short-id-applied.md")
+		shortID := fullRunID[:8]
+		err := runCmd("autoresearch", "apply", shortID, "--write", outPath)
+		Expect(err).NotTo(HaveOccurred(), "short-ID --write apply failed; out: %s", out.String())
+
+		body, readErr := os.ReadFile(outPath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(body)).To(Equal(candidate))
+	})
+
+	It("returns an error when the short prefix matches multiple runs", func() {
+		// Two runs share the prefix "ab1234ef"; the command must refuse
+		// and name both matches so the operator can disambiguate.
+		fullRunID1 := "ab1234ef-0000-0000-0000-000000000003"
+		fullRunID2 := "ab1234ef-0000-0000-0000-000000000004"
+		runContentImprovingTrial(fullRunID1)
+		runContentImprovingTrial(fullRunID2)
+		out.Reset()
+
+		err := runCmd("autoresearch", "apply", "ab1234ef")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("ab1234ef"),
+			"error must mention the supplied prefix")
+		Expect(err.Error()).To(ContainSubstring("disambiguate"),
+			"error must instruct the user to supply a longer prefix")
+	})
+
+	It("returns an error with the short prefix in the message when no run matches", func() {
+		// A prefix that resolves to nothing should surface the supplied
+		// value so the operator can correct it.
+		err := runCmd("autoresearch", "apply", "deadb00f")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("deadb00f"))
 	})
 })
 

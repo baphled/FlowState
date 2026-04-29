@@ -90,7 +90,8 @@ func newAutoresearchApplyCmd(getApp func() *app.App) *cobra.Command {
 // Expected:
 //   - cmd is a non-nil cobra.Command with an initialised output writer.
 //   - application is a non-nil App with Config.DataDir resolved.
-//   - runID is the operator-supplied run identifier.
+//   - runID is the operator-supplied run identifier (full UUID or 8-char
+//     prefix as shown by `autoresearch list`).
 //
 // Returns:
 //   - nil on a successful materialisation (stdout or file).
@@ -114,10 +115,14 @@ func runAutoresearchApply(cmd *cobra.Command, application *app.App, runID string
 		return fmt.Errorf("opening coord-store: %w", err)
 	}
 
-	manifest, err := readApplyManifestRecord(store, runID)
+	manifest, resolvedRunID, err := readApplyManifestRecord(store, runID)
 	if err != nil {
 		return err
 	}
+	// Use the resolved full run ID for all subsequent store lookups so
+	// that short-prefix IDs (e.g. the 8-char form shown by `list`)
+	// work correctly throughout the apply flow.
+	runID = resolvedRunID
 
 	if manifest.CommitTrials {
 		return fmt.Errorf(
@@ -183,20 +188,85 @@ func readApplyBestPointer(store coordination.Store, runID string) (bestRecord, e
 // `commit_trials` flag and resolve the surface repo for the
 // inside-repo guard. Wraps the missing-record error in operator-
 // facing prose.
-func readApplyManifestRecord(store coordination.Store, runID string) (manifestRecord, error) {
+//
+// runID may be a full UUID or a short prefix (≥1 character). When the
+// exact key is not found, a prefix scan is performed: if exactly one
+// run-id in the store starts with runID the match is used; if multiple
+// match the caller must supply a longer prefix. The second return value
+// is the resolved full run ID (equal to runID when the exact key was
+// found).
+func readApplyManifestRecord(store coordination.Store, runID string) (manifestRecord, string, error) {
 	raw, err := store.Get(manifestKey(runID))
-	if err != nil {
-		if errors.Is(err, coordination.ErrKeyNotFound) {
-			return manifestRecord{}, fmt.Errorf(
-				"no manifest record for run %s — run id may be wrong or the record was pruned", runID)
+	if err == nil {
+		var rec manifestRecord
+		if jsonErr := json.Unmarshal(raw, &rec); jsonErr != nil {
+			return manifestRecord{}, runID, fmt.Errorf("decoding %s: %w", manifestKey(runID), jsonErr)
 		}
-		return manifestRecord{}, fmt.Errorf("reading %s: %w", manifestKey(runID), err)
+		return rec, runID, nil
+	}
+	if !errors.Is(err, coordination.ErrKeyNotFound) {
+		return manifestRecord{}, runID, fmt.Errorf("reading %s: %w", manifestKey(runID), err)
+	}
+
+	// Exact key not found — attempt prefix scan so that the 8-char
+	// short form shown by `autoresearch list` resolves to the full ID.
+	resolvedID, scanErr := resolveRunIDByPrefix(store, runID)
+	if scanErr != nil {
+		return manifestRecord{}, runID, scanErr
+	}
+
+	raw, err = store.Get(manifestKey(resolvedID))
+	if err != nil {
+		return manifestRecord{}, resolvedID, fmt.Errorf("reading %s: %w", manifestKey(resolvedID), err)
 	}
 	var rec manifestRecord
-	if err := json.Unmarshal(raw, &rec); err != nil {
-		return manifestRecord{}, fmt.Errorf("decoding %s: %w", manifestKey(runID), err)
+	if jsonErr := json.Unmarshal(raw, &rec); jsonErr != nil {
+		return manifestRecord{}, resolvedID, fmt.Errorf("decoding %s: %w", manifestKey(resolvedID), jsonErr)
 	}
-	return rec, nil
+	return rec, resolvedID, nil
+}
+
+// resolveRunIDByPrefix scans all autoresearch keys in the coord-store
+// and returns the unique full run ID whose prefix matches the supplied
+// prefix string. Returns an operator-facing error when zero or multiple
+// run IDs match.
+func resolveRunIDByPrefix(store coordination.Store, prefix string) (string, error) {
+	keys, err := store.List("autoresearch/")
+	if err != nil {
+		return "", fmt.Errorf("scanning coord-store for prefix %q: %w", prefix, err)
+	}
+
+	seen := map[string]struct{}{}
+	for _, k := range keys {
+		rest := strings.TrimPrefix(k, "autoresearch/")
+		idx := strings.Index(rest, "/")
+		if idx <= 0 {
+			continue
+		}
+		candidateID := rest[:idx]
+		if strings.HasPrefix(candidateID, prefix) {
+			seen[candidateID] = struct{}{}
+		}
+	}
+
+	switch len(seen) {
+	case 0:
+		return "", fmt.Errorf(
+			"no manifest record for run %s — run id may be wrong or the record was pruned", prefix)
+	case 1:
+		for id := range seen {
+			return id, nil
+		}
+	}
+
+	// Multiple matches — collect and ask the user to be more specific.
+	matches := make([]string, 0, len(seen))
+	for id := range seen {
+		matches = append(matches, id)
+	}
+	return "", fmt.Errorf(
+		"run id prefix %q matches %d runs (%s) — supply a longer prefix to disambiguate",
+		prefix, len(matches), strings.Join(matches, ", "))
 }
 
 // readCandidateContentFromTrial walks the trial records under the run
