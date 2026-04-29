@@ -83,6 +83,33 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 			Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer"))
 		})
 
+		// Parallel dispatch: the lead must be instructed to emit all member
+		// delegate calls in a single assistant message so the engine's
+		// concurrent dispatch path fires. Without this instruction the model
+		// defaults to sequential one-at-a-time dispatch, burning 3–5× more
+		// wall-clock time and tokens on wait overhead between members.
+		It("instructs the lead to dispatch all members in a single parallel message", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			lowerPrompt := strings.ToLower(prompt)
+			Expect(lowerPrompt).To(
+				SatisfyAny(
+					ContainSubstring("single message"),
+					ContainSubstring("simultaneously"),
+					ContainSubstring("parallel"),
+					ContainSubstring("at once"),
+				),
+				"swarm lead prompt must instruct the model to dispatch all members "+
+					"in one message with multiple tool calls; without this the model "+
+					"dispatches sequentially and blocks on each result before starting the next",
+			)
+		})
+
 		It("resolves member names and roles from the agent registry", func() {
 			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
 			ctx := newBugHuntContext()

@@ -1583,7 +1583,7 @@ func (e *Engine) appendSwarmLeadSection(base string) string {
 	}
 
 	b.WriteString("\n## Delegation\n\n")
-	b.WriteString("When a task matches a member's specialty, call the `delegate` tool with `subagent_type: <member-id>` (one of the ids above). After all relevant members have contributed, synthesise their findings into a final report for the user.\n")
+	b.WriteString("Dispatch all relevant members in a **single message** by emitting multiple `delegate` tool calls simultaneously — do NOT wait for one member to finish before dispatching the next. The engine runs them in parallel; sequential dispatch wastes wall-clock time and burns unnecessary tokens on wait overhead. After all member results are returned, synthesise their findings into a final report for the user.\n")
 
 	chainPrefix := swarmCtx.ChainPrefix
 	if chainPrefix == "" {
