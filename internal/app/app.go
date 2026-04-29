@@ -1241,7 +1241,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		delegateTool := engine.NewDelegateToolWithBackground(
 			engines, manifest.Delegation, manifest.ID, bgManager, coordinationStore,
 		).WithStreamers(streamers)
-		a.configureDelegateTool(delegateTool)
+		a.configureDelegateTool(delegateTool, eng)
 		eng.AddTool(delegateTool)
 	} else if dt, ok := eng.GetDelegateTool(); ok {
 		// The engine already has a DelegateTool — likely wired at startup
@@ -1252,7 +1252,7 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		dt.SetDelegation(manifest.Delegation)
 		dt.SetSourceAgentID(manifest.ID)
 		dt.WithStreamers(streamers)
-		a.configureDelegateTool(dt)
+		a.configureDelegateTool(dt, eng)
 	}
 
 	if !eng.HasTool("background_output") {
@@ -1314,10 +1314,16 @@ func (a *App) wireCoordinationToolIfDeclared(
 // Expected:
 //   - dt is a non-nil DelegateTool that has already been constructed with a
 //     valid engines map, manifest and background-task manager.
+//   - eng is the engine that owns dt (the delegating agent's engine).
+//     Used as the publish target for the category-resolver swap event
+//     so the activity pane / CLI surface picks up auto-promotions.
 //
 // Side effects:
 //   - Mutates dt's injected dependencies in place.
-func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
+//   - Subscribes a notifier callback that publishes onto eng's event
+//     bus when the resolver promotes an agent's model for capability
+//     reasons.
+func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine) {
 	dt.WithRegistry(a.Registry)
 
 	if embedder := a.resolveEmbedder(); embedder != nil {
@@ -1331,6 +1337,10 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool) {
 	}
 	resolver := engine.NewCategoryResolver(categoryRouting).
 		WithModelLister(a.ListModels)
+	if a.Config != nil {
+		resolver.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
+	}
+	resolver.WithSwapNotifier(buildCategorySwapNotifier(eng))
 	dt.WithCategoryResolver(resolver)
 
 	if a.sessionManager != nil {
@@ -1388,6 +1398,54 @@ func buildSwarmGateRunner() swarm.GateRunner {
 	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
 	runner.Register(swarm.EvidenceGroundingGateKind, swarm.NewEvidenceGroundingRunner(""))
 	return runner
+}
+
+// CategoryModelSwapEventType is the event-bus topic the resolver swap
+// notification publishes under. Subscribed by the TUI activity pane
+// (planned) and the CLI surface so the user sees auto-promotions like
+// "explorer: claude-haiku-4.5 → claude-sonnet-4-6 (haiku denied)".
+// Pulled out as a constant so subscribers and publishers reference the
+// same string.
+const CategoryModelSwapEventType = "category.model_swap"
+
+// buildCategorySwapNotifier returns the SwapNotifier installed on the
+// delegating agent's CategoryResolver. The notifier logs each swap at
+// WARN level (so server-mode operators see auto-promotions in stderr)
+// and publishes the event on the parent engine's bus so subscribed
+// surfaces (TUI activity pane, CLI failure printer) can render the
+// notification without scraping logs.
+//
+// A nil engine yields a logger-only notifier — useful when tests or
+// pre-engine wiring construct a DelegateTool before any bus exists.
+//
+// Expected:
+//   - eng may be nil. When non-nil, eng.EventBus() may also be nil (the
+//     constructor allows it); both nil paths short-circuit the publish
+//     branch.
+//
+// Returns:
+//   - A SwapNotifier ready for WithSwapNotifier.
+//
+// Side effects:
+//   - The returned notifier writes to slog and (when wired) the engine
+//     bus on every fire.
+func buildCategorySwapNotifier(eng *engine.Engine) engine.SwapNotifier {
+	return func(swap engine.CategoryModelSwap) {
+		slog.Warn("category model auto-promoted",
+			"category", swap.Category,
+			"original", swap.Original,
+			"chosen", swap.Chosen,
+			"reason", swap.Reason,
+		)
+		if eng == nil {
+			return
+		}
+		bus := eng.EventBus()
+		if bus == nil {
+			return
+		}
+		bus.Publish(CategoryModelSwapEventType, swap)
+	}
 }
 
 // swarmRunnerFactory returns the per-swarm Runner the engine
