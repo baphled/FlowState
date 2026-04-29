@@ -83,12 +83,14 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 			Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer"))
 		})
 
-		// Parallel dispatch: the lead must be instructed to emit all member
-		// delegate calls in a single assistant message so the engine's
+		// Parallel dispatch: the lead must be instructed to emit independent
+		// member delegate calls in a single assistant message so the engine's
 		// concurrent dispatch path fires. Without this instruction the model
 		// defaults to sequential one-at-a-time dispatch, burning 3–5× more
 		// wall-clock time and tokens on wait overhead between members.
-		It("instructs the lead to dispatch all members in a single parallel message", func() {
+		// Wave-dependent members (e.g. reviewers that read explorer output)
+		// must still be dispatched after their upstream members complete.
+		It("instructs the lead to dispatch independent members in a single parallel message", func() {
 			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
 			ctx := newBugHuntContext()
 
