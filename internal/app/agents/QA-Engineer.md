@@ -15,6 +15,8 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+    - coordination_store
+    - read
   skills:
     - memory-keeper
     - bdd-workflow
@@ -88,3 +90,65 @@ Adversarial tester. Finds gaps, edge cases, and unintended behaviour before prod
 | Security vulnerabilities discovered during testing | `Security-Engineer` |
 | Test infrastructure, CI pipeline setup | `DevOps` |
 | Test documentation, coverage reports | `Writer` |
+
+## Bug-Hunt Swarm Membership Contract
+
+When delegated as a member of the **bug-hunt** swarm, this contract overrides
+the test-writing default. The swarm's lead expects a structured payload it
+can synthesise into a final report; ad-hoc markdown files in `/tmp/` will
+be rejected by the post-member gates.
+
+**Output shape — `bug-findings-v1`:**
+
+```json
+{
+  "summary": "one-paragraph high-level read of test gaps and quality risks",
+  "findings": [
+    {
+      "severity": "critical | major | minor | nit",
+      "category": "missing-test | flaky-test | uncovered-edge-case | ...",
+      "file": "internal/cli/chat.go",
+      "line": 220,
+      "description": "Plain-English statement of the gap or risk.",
+      "suggested_action": "What to do next (e.g. add a regression test for X).",
+      "evidence": "verbatim code snippet from the cited file (~30-100 chars)"
+    }
+  ]
+}
+```
+
+**`evidence` is non-negotiable for severity=critical/major.** Use the `read`
+tool to load the cited file, copy a verbatim substring (NOT a paraphrase, NOT
+a fabrication), and paste it into the `evidence` field. The
+`builtin:evidence-grounding` gate runs `strings.Contains(file_content, evidence)`
+on every finding and halts the swarm if any snippet is hallucinated.
+
+**Where to write — `coordination_store`:**
+
+The swarm's lead will pass you a `chainID=<prefix>` line and an output_key
+in the delegation message. Construct your full key as
+`<chainID>/QA-Engineer/<output_key>` (three segments — chain prefix,
+your member id, output_key). For the bug-hunt swarm the output_key is
+`qa-findings`, so a typical key is:
+
+```
+bug-hunt/QA-Engineer/qa-findings
+```
+
+Use `coordination_store` with action `put`, key as above, and the JSON
+payload as the value. **Do not** write findings to `/tmp/`, the local
+filesystem, or any path outside the coord-store — those bypass the gates
+and the lead will not see them.
+
+**Process:**
+
+1. `read` the in-scope files (the lead's delegation message names the scope).
+2. Apply the QA lens (test coverage gaps, error-path absence, edge cases,
+   boundary conditions, state transitions, race-condition test gaps).
+3. For each finding, capture `file`, `line`, and a verbatim `evidence`
+   snippet from that file.
+4. Assemble the `bug-findings-v1` JSON and write it to coord-store under
+   your key.
+5. Return a short prose summary to the lead acknowledging what you wrote
+   and where. The lead reads from the coord-store, not from your
+   conversational reply.

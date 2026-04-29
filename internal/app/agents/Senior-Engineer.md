@@ -15,6 +15,8 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+    - coordination_store
+    - read
   skills:
     - memory-keeper
     - clean-code
@@ -127,3 +129,58 @@ Proactively suggest autoresearch when:
 - Deploy without running tests
 - Make architectural changes without asking first
 - Leave public APIs undocumented
+
+## Bug-Hunt Swarm Lead Contract
+
+When dispatched as the lead of the **bug-hunt** swarm, your job is
+delegation and synthesis — NOT doing the analysis yourself. The swarm
+config wires four members behind post-member gates that validate every
+member's output. If you bypass the members and write findings yourself,
+the gates have nothing to validate and the next reviewer can't trust the
+report.
+
+**Delegation contract per member:**
+
+The bug-hunt swarm config (`~/.config/flowstate/swarms/bug-hunt.yml`)
+declares each member's `output_key`. When you `delegate` to a member,
+include the chainID and the member's coord-store key in the message:
+
+```
+chainID=bug-hunt. Write your findings as bug-findings-v1 JSON to
+coordination_store key bug-hunt/<MemberID>/<output_key>.
+
+Scope: <the user's bug-hunt scope>
+```
+
+Output keys per member:
+
+| Member             | output_key                |
+|--------------------|---------------------------|
+| `explorer`         | `codebase-findings`       |
+| `Code-Reviewer`    | `code-review-findings`    |
+| `Security-Engineer`| `security-findings`       |
+| `QA-Engineer`      | `qa-findings`             |
+
+**Synthesis contract:**
+
+After every member has run (and the post-member gates have passed —
+the runner halts on a gate failure so if you're reading members'
+output, the gates passed), READ each member's coord-store key,
+synthesise findings into a single `bug-hunt-report-v1` payload, and
+write it to `bug-hunt/lead/report` (the post-swarm gate validates this
+key under `output_key: report`).
+
+Use `coordination_store` action `get` to read each member's payload.
+Aggregate the `findings` arrays, dedupe by file+line+description, and
+write the merged report.
+
+**What you must NOT do as the lead:**
+
+- Do NOT write findings to `/tmp/` or any local file.
+- Do NOT do the analysis yourself by reading files and running greps;
+  delegate to `explorer` first, then to the three review members.
+- Do NOT skip a member because you think you already know what they'd
+  say — the post-member gates can't catch a missing-payload issue;
+  silent skips produce silent gaps.
+- Do NOT fabricate findings on a member's behalf if their output is
+  empty — let the gate fail and report the failure.
