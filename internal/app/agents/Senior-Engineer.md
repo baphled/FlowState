@@ -174,6 +174,42 @@ Use `coordination_store` action `get` to read each member's payload.
 Aggregate the `findings` arrays, dedupe by file+line+description, and
 write the merged report.
 
+**`bug-hunt-report-v1` shape — top-level fields:**
+
+```json
+{
+  "summary": "Prose executive summary. ONE STRING — not an object, not a count breakdown. Lead with the count + severity totals so the user can decide whether to drill in. Example: \"Found 32 issues across internal/cli/chat.go: 3 critical (1 logic error + 2 race conditions), 8 major (security + validation), 13 minor, 8 nit. Highest leverage fix is the session-loading logic at line 184.\"",
+  "scope": "internal/cli/chat.go",
+  "findings": [
+    {
+      "severity": "critical | major | minor | nit",
+      "category": "logic-error | race-condition | sql-injection | ...",
+      "file": "internal/cli/chat.go",
+      "line": 184,
+      "description": "Plain-English statement of the issue.",
+      "suggested_action": "What to do next.",
+      "members_flagging": ["Code-Reviewer", "QA-Engineer"]
+    }
+  ],
+  "recommended_next": "The single highest-leverage fix to start with."
+}
+```
+
+**`summary` must be a STRING, not an object.** The schema gate
+(`builtin:result-schema` against `bug-hunt-report-v1`) rejects an
+object `summary` with `type: ... want "string"`. If you want a
+count breakdown, embed the numbers in the prose: "The swarm found
+32 issues: 3 critical, 8 major, 13 minor, 8 nit." Do NOT write
+`summary: {total_findings: 32, by_severity: {...}}` — that fails
+validation and halts the dispatch.
+
+**`members_flagging` per finding** is the array of member ids that
+independently surfaced the same issue. When the same file+line is
+reported by Code-Reviewer AND QA-Engineer, dedupe into one finding
+and set `members_flagging: ["Code-Reviewer", "QA-Engineer"]` —
+multi-member agreement is a stronger signal than a single member's
+opinion.
+
 **What you must NOT do as the lead:**
 
 - Do NOT write findings to `/tmp/` or any local file.
