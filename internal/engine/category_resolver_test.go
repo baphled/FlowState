@@ -66,5 +66,21 @@ var _ = Describe("CategoryResolver", func() {
 			Expect(cfg.Temperature).To(Equal(0.2))
 			Expect(cfg.MaxTokens).To(Equal(2048))
 		})
+
+		It("resolves standard category to balanced descriptor", func() {
+			resolver := engine.NewCategoryResolver(nil)
+			cfg, err := resolver.Resolve("standard")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Model).To(Equal("balanced"))
+		})
+
+		It("resolves deep category to reasoning descriptor", func() {
+			resolver := engine.NewCategoryResolver(nil)
+			cfg, err := resolver.Resolve("deep")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.Model).To(Equal("reasoning"))
+		})
 	})
 })

@@ -1174,16 +1174,65 @@ func (a *App) buildDelegateMaps(
 	allAgents := a.Registry.List()
 	engines := make(map[string]*engine.Engine, len(allAgents))
 	streamers := make(map[string]streaming.Streamer, len(allAgents))
+	resolver := a.buildComplexityResolver()
 	for _, agentManifest := range allAgents {
 		if agentManifest.ID == excludeID {
 			continue
 		}
 		targetEngine, str := a.createDelegateEngine(*agentManifest, store, src.EventBus())
-		targetEngine.SetModelPreference(src.LastProvider(), src.LastModel())
+		a.applyModelPreference(resolver, targetEngine, agentManifest, src)
 		engines[agentManifest.ID] = targetEngine
 		streamers[agentManifest.ID] = str
 	}
 	return engines, streamers
+}
+
+// buildComplexityResolver constructs a CategoryResolver for chat-model
+// routing in buildDelegateMaps. It attaches the default provider's model
+// lister (so abstract descriptors resolve to real model IDs) and the
+// cluster-wide tool-capability allow/deny lists (so tool-incapable models
+// are never assigned to a delegate engine).
+func (a *App) buildComplexityResolver() *engine.CategoryResolver {
+	var overrides map[string]engine.CategoryConfig
+	var capableModels, incapableModels []string
+	if a.Config != nil {
+		overrides = a.Config.CategoryRouting
+		capableModels = a.Config.ToolCapableModels
+		incapableModels = a.Config.ToolIncapableModels
+	}
+	r := engine.NewCategoryResolver(overrides).
+		WithToolCapability(capableModels, incapableModels)
+	if a.defaultProvider != nil {
+		r.WithModelLister(a.defaultProvider.Models)
+	}
+	return r
+}
+
+// applyModelPreference sets the model preference on a delegate engine.
+// When the manifest declares a complexity and the resolver can map it to
+// a real (non-abstract) model ID, that model is used — honouring the
+// agent's intended capability tier and tool-capability requirements.
+// Falls back to inheriting the lead's model when complexity is unset or
+// resolution produces an abstract descriptor (e.g. no model lister
+// available).
+func (a *App) applyModelPreference(
+	resolver *engine.CategoryResolver,
+	eng *engine.Engine,
+	manifest *agent.Manifest,
+	src *engine.Engine,
+) {
+	if manifest.Complexity != "" {
+		if cfg, err := resolver.Resolve(manifest.Complexity); err == nil &&
+			cfg.Model != "" && !engine.IsAbstractModelDescriptor(cfg.Model) {
+			prov := cfg.Provider
+			if prov == "" {
+				prov = src.LastProvider()
+			}
+			eng.SetModelPreference(prov, cfg.Model)
+			return
+		}
+	}
+	eng.SetModelPreference(src.LastProvider(), src.LastModel())
 }
 
 // wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
