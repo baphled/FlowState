@@ -12,53 +12,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 	"time"
 
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/google/uuid"
 )
-
-// AutoresearchRunner is satisfied by the autoresearchAppRunner in
-// internal/app, which bridges the engine tool layer to the cli package.
-type AutoresearchRunner interface {
-	RunAutoresearch(ctx context.Context, opts AutoresearchOpts, out io.Writer) (AutoresearchResult, error)
-}
-
-// AutoresearchOpts carries the operator-settable inputs for a programmatic
-// autoresearch run. Fields map 1:1 to the public AutoresearchOptions in
-// internal/cli so the bridge in internal/app is a straight field copy.
-type AutoresearchOpts struct {
-	Surface         string
-	DriverScript    string
-	EvaluatorScript string
-	RunID           string
-	MaxTrials       int
-	TimeBudget      time.Duration
-	MetricDirection string
-}
-
-// AutoresearchResult is the structured summary of a completed run as
-// returned from AutoresearchRunner.RunAutoresearch. Fields are a strict
-// subset of the cli.AutoresearchResult struct so the bridge in
-// internal/app can copy them without import cycles.
-type AutoresearchResult struct {
-	RunID             string
-	TerminationReason string
-	TotalTrials       int
-	Converged         bool
-	BestScore         float64
-	BestCandidateSHA  string
-	BestCommitSHA     string
-}
 
 // AutoresearchRunTool implements tool.Tool. It launches an autoresearch
 // run as a background task and returns the task_id immediately so the
 // calling agent can poll for results via background_output.
 type AutoresearchRunTool struct {
 	manager *BackgroundTaskManager
-	runner  AutoresearchRunner
+	runner  runner.AutoresearchRunner
 }
 
 // NewAutoresearchRunTool creates a new AutoresearchRunTool.
@@ -72,8 +39,8 @@ type AutoresearchRunTool struct {
 //
 // Side effects:
 //   - None.
-func NewAutoresearchRunTool(mgr *BackgroundTaskManager, runner AutoresearchRunner) *AutoresearchRunTool {
-	return &AutoresearchRunTool{manager: mgr, runner: runner}
+func NewAutoresearchRunTool(mgr *BackgroundTaskManager, r runner.AutoresearchRunner) *AutoresearchRunTool {
+	return &AutoresearchRunTool{manager: mgr, runner: r}
 }
 
 // Name returns the tool name.
@@ -180,7 +147,7 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 		return tool.Result{}, errors.New("autoresearch_run: evaluator_script is required")
 	}
 
-	opts := AutoresearchOpts{
+	opts := runner.AutoresearchOpts{
 		Surface:         surface,
 		DriverScript:    driverScript,
 		EvaluatorScript: evaluatorScript,

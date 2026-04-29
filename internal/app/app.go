@@ -25,6 +25,7 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
@@ -138,12 +139,12 @@ type App struct {
 	// engine's tool slice; the engine then gates them through
 	// buildAllowedToolSet by the delegate manifest's MCPServers list.
 	mcpTools []tool.Tool
-	// autoresearchRunner is the engine.AutoresearchRunner implementation
+	// autoresearchRunner is the runner.AutoresearchRunner implementation
 	// injected by the CLI layer at startup. When non-nil, wireDelegateToolIfEnabled
 	// registers the AutoresearchRunTool with the engine. The field is
 	// kept as an interface so the app package does not import the cli package
 	// (which would create an import cycle: app → cli → app).
-	autoresearchRunner engine.AutoresearchRunner
+	autoresearchRunner runner.AutoresearchRunner
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -4522,7 +4523,7 @@ func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 // Called by the CLI layer at startup to break the app→cli import cycle.
 //
 // Expected:
-//   - runner implements engine.AutoresearchRunner; may be nil to disable
+//   - r implements runner.AutoresearchRunner; may be nil to disable
 //     the autoresearch_run tool registration.
 //
 // Returns:
@@ -4530,6 +4531,6 @@ func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //
 // Side effects:
 //   - Stores the runner for later use by wireDelegateToolIfEnabled.
-func (a *App) SetAutoresearchRunner(runner engine.AutoresearchRunner) {
-	a.autoresearchRunner = runner
+func (a *App) SetAutoresearchRunner(r runner.AutoresearchRunner) {
+	a.autoresearchRunner = r
 }
