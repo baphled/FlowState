@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/coordination"
+
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
@@ -37,6 +38,25 @@ func (m *mockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]floa
 	return nil, errMockNotImplemented
 }
 func (m *mockProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// modelsProvider is a mock provider that returns a configurable model list,
+// used to test complexity-based model routing in buildDelegateMaps.
+type modelsProvider struct {
+	name   string
+	models []provider.Model
+}
+
+func (m *modelsProvider) Name() string { return m.name }
+func (m *modelsProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return nil, errMockNotImplemented
+}
+func (m *modelsProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (m *modelsProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, errMockNotImplemented
+}
+func (m *modelsProvider) Models() ([]provider.Model, error) { return m.models, nil }
 
 // mockTool is a simple mock tool for testing.
 type mockTool struct {
@@ -507,6 +527,179 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 				}
 				Expect(names).To(ContainElement("memory-keeper"))
 			})
+		})
+	})
+
+	Describe("complexity-based model routing", func() {
+		var (
+			smallModel   = provider.Model{ID: "fast-model", Provider: "test", ContextLength: 4096}
+			mediumModel  = provider.Model{ID: "balanced-model", Provider: "test", ContextLength: 32768}
+			largeModel   = provider.Model{ID: "reasoning-model", Provider: "test", ContextLength: 200000}
+			threeModels  = []provider.Model{smallModel, mediumModel, largeModel}
+			coordManifest = agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+		)
+
+		buildApp := func(models []provider.Model) (*App, *provider.Registry) {
+			p := &modelsProvider{name: "test", models: models}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			return &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+			}, reg
+		}
+
+		It("routes a deep-complexity agent to the largest tool-capable model", func() {
+			deepManifest := agent.Manifest{
+				ID:         "security-eng",
+				Name:       "Security Engineer",
+				Complexity: "deep",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "fast-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			secEng := dt.Engines()["security-eng"]
+			Expect(secEng).NotTo(BeNil())
+			Expect(secEng.LastModel()).To(Equal("reasoning-model"))
+		})
+
+		It("routes a low-complexity agent to the smallest tool-capable model", func() {
+			explorerManifest := agent.Manifest{
+				ID:         "explorer",
+				Name:       "Explorer",
+				Complexity: "low",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&explorerManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "reasoning-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			expEng := dt.Engines()["explorer"]
+			Expect(expEng).NotTo(BeNil())
+			Expect(expEng.LastModel()).To(Equal("fast-model"))
+		})
+
+		It("routes a standard-complexity agent to the median tool-capable model", func() {
+			reviewerManifest := agent.Manifest{
+				ID:         "code-reviewer",
+				Name:       "Code Reviewer",
+				Complexity: "standard",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&reviewerManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "fast-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			revEng := dt.Engines()["code-reviewer"]
+			Expect(revEng).NotTo(BeNil())
+			Expect(revEng.LastModel()).To(Equal("balanced-model"))
+		})
+
+		It("falls back to the lead's model when the agent has no complexity set", func() {
+			noComplexityManifest := agent.Manifest{
+				ID:   "generic-agent",
+				Name: "Generic Agent",
+			}
+
+			app, reg := buildApp(threeModels)
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&noComplexityManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "reasoning-model")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			genEng := dt.Engines()["generic-agent"]
+			Expect(genEng).NotTo(BeNil())
+			Expect(genEng.LastModel()).To(Equal("reasoning-model"))
+		})
+
+		It("skips tool-incapable models when routing by complexity", func() {
+			capableSmall := provider.Model{ID: "capable-small", Provider: "test", ContextLength: 8192}
+			incapableLarge := provider.Model{ID: "haiku-large", Provider: "test", ContextLength: 500000}
+
+			p := &modelsProvider{name: "test", models: []provider.Model{capableSmall, incapableLarge}}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			app := &App{
+				Registry:        agent.NewRegistry(),
+				defaultProvider: p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"capable-*"},
+					ToolIncapableModels: []string{"haiku-*"},
+				},
+			}
+
+			deepManifest := agent.Manifest{
+				ID:         "deep-agent",
+				Name:       "Deep Agent",
+				Complexity: "deep",
+			}
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("test", "capable-small")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			deepEng := dt.Engines()["deep-agent"]
+			Expect(deepEng).NotTo(BeNil())
+			Expect(deepEng.LastModel()).NotTo(Equal("haiku-large"))
+			Expect(deepEng.LastModel()).To(Equal("capable-small"))
 		})
 	})
 

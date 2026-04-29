@@ -77,6 +77,16 @@ func isAbstractDescriptor(model string) bool {
 	return abstractDescriptors[model]
 }
 
+// IsAbstractModelDescriptor reports whether model is a routing alias
+// (fast, balanced, reasoning, vision) rather than a real model ID.
+// Exported so App-level wiring can guard before passing the result of
+// CategoryResolver.Resolve to SetModelPreference — an unresolved alias
+// passed to the failover manager would silently fail to match any real
+// model at request time.
+func IsAbstractModelDescriptor(model string) bool {
+	return isAbstractDescriptor(model)
+}
+
 // CategoryResolver maps category names to model routing configuration.
 type CategoryResolver struct {
 	overrides   map[string]CategoryConfig
