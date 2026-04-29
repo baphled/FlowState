@@ -27,6 +27,7 @@ type AutoresearchOpts struct {
 	MaxTrials       int
 	TimeBudget      time.Duration
 	MetricDirection string
+	DriverAgent     string // agent ID to pass as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT
 }
 
 // AutoresearchResult is the structured summary of a completed run as

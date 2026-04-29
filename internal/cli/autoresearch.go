@@ -125,6 +125,11 @@ type autoresearchRunOptions struct {
 	// reach the live driver without an extra disk read per trial.
 	// Live-driver Slice 1.
 	programBody string
+	// driverAgent is the agent ID forwarded to the driver subprocess
+	// as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT. When non-empty the driver
+	// script uses this agent instead of its own default. Empty means the
+	// driver script falls back to its built-in default (default-assistant).
+	driverAgent string
 }
 
 // metric direction enumeration.
@@ -247,6 +252,9 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 		"Opt in to the legacy git-mediated substrate: trial worktree, named branches, per-trial commits with --no-verify, ratchet via `git reset --hard HEAD~1`, promote/list/--allow-dirty/--keep-worktree. Default off — the harness runs the content loop (read surface once, drive via stdin, score candidates as strings) per the April 2026 In-Memory Default plan.")
 	flags.IntVar(&opts.maxCandidateBytes, "max-candidate-bytes", 256*1024,
 		"Cap on the candidate-content bytes persisted per trial in the content default substrate. Larger candidates are recorded with `candidate_content_truncated=true` and the content SHA is preserved. Ignored under --commit-trials.")
+	flags.StringVar(&opts.driverAgent, "driver-agent", "",
+		"Agent to use inside the driver script. Sets FLOWSTATE_AUTORESEARCH_DRIVER_AGENT env var. "+
+			"Empty = driver script uses its own default (default-assistant).")
 
 	return cmd
 }

@@ -113,6 +113,10 @@ func (t *AutoresearchRunTool) Schema() tool.Schema {
 				Description: "Score direction: 'min' (lower is better) or 'max' (higher is better).",
 				Enum:        []string{"min", "max"},
 			},
+			"driver_agent": {
+				Type:        "string",
+				Description: "Agent ID for the driver to use. Sets FLOWSTATE_AUTORESEARCH_DRIVER_AGENT. Empty = driver default.",
+			},
 		},
 		Required: []string{"surface", "driver_script", "evaluator_script"},
 	}
@@ -182,6 +186,10 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 
 	if dir, ok := input.Arguments["metric_direction"].(string); ok && dir != "" {
 		opts.MetricDirection = dir
+	}
+
+	if driverAgent, ok := input.Arguments["driver_agent"].(string); ok && driverAgent != "" {
+		opts.DriverAgent = driverAgent
 	}
 
 	taskID := opts.RunID

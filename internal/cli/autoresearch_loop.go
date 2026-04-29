@@ -490,6 +490,7 @@ func runOneTrial(
 		promptFilePath: promptFilePath,
 		timeout:        resolved.driverTimeout,
 		maxTurns:       resolved.driverMaxTurns,
+		driverAgent:    resolved.driverAgent,
 	})
 	if dErr != nil {
 		// Live-driver Slice 1 — driver failures (non-zero exit or
@@ -710,12 +711,13 @@ func runOneTrialContent(
 	outcome.PromptSHA = driverPromptSHA(promptBytes)
 
 	candidateBytes, timedOut, dErr := runDriverContent(ctx, driverInvocation{
-		driverPath: resolved.driverScript,
-		runID:      resolved.runID,
-		trialN:     n,
-		relSurface: relSurface,
-		timeout:    resolved.driverTimeout,
-		maxTurns:   resolved.driverMaxTurns,
+		driverPath:  resolved.driverScript,
+		runID:       resolved.runID,
+		trialN:      n,
+		relSurface:  relSurface,
+		timeout:     resolved.driverTimeout,
+		maxTurns:    resolved.driverMaxTurns,
+		driverAgent: resolved.driverAgent,
 	}, promptBytes)
 	if dErr != nil {
 		// Driver failure (non-zero exit, timeout) collapses onto
@@ -952,6 +954,9 @@ func runDriverContent(ctx context.Context, inv driverInvocation, prompt []byte) 
 	if inv.maxTurns > 0 {
 		env = append(env, fmt.Sprintf("FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS=%d", inv.maxTurns))
 	}
+	if inv.driverAgent != "" {
+		env = append(env, "FLOWSTATE_AUTORESEARCH_DRIVER_AGENT="+inv.driverAgent)
+	}
 	cmd.Env = env
 
 	stdin, pipeErr := cmd.StdinPipe()
@@ -1116,6 +1121,9 @@ type driverInvocation struct {
 	promptFilePath string
 	timeout        time.Duration
 	maxTurns       int
+	// driverAgent is forwarded as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT.
+	// Empty means the driver script falls back to its own default.
+	driverAgent string
 }
 
 // runDriverScript invokes the driver script with the worktree as cwd
@@ -1186,6 +1194,9 @@ func runDriverScript(inv driverInvocation) (timedOut bool, err error) {
 	}
 	if inv.maxTurns > 0 {
 		env = append(env, fmt.Sprintf("FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS=%d", inv.maxTurns))
+	}
+	if inv.driverAgent != "" {
+		env = append(env, "FLOWSTATE_AUTORESEARCH_DRIVER_AGENT="+inv.driverAgent)
 	}
 	cmd.Env = env
 
