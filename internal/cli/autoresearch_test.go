@@ -17,6 +17,8 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/tool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -3209,6 +3211,89 @@ echo 1
 			_, err := cli.RunAutoresearchWithResult(ctx, opts, testApp, &buf)
 			Expect(err).NotTo(HaveOccurred(), "out: %s", buf.String())
 			Expect(buf.String()).To(ContainSubstring("trial 1:"))
+		})
+
+		It("runs via AutoresearchRunTool, launches in background, and result is retrievable", func() {
+			// Fake driver: reads the candidate content file and writes it to
+			// stdout (content-mode pipe). The scorer always emits 1.
+			candidatePath := filepath.Join(dataDir, "eng-cand.txt")
+			Expect(os.WriteFile(candidatePath, []byte(`---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: content candidate engine path
+capabilities:
+  tools: [read, plan]
+---
+content body engine
+`), 0o600)).To(Succeed())
+
+			driverPath := filepath.Join(dataDir, "eng-driver.sh")
+			driverBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+cat %q
+`, candidatePath)
+			Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+			scorerPath := filepath.Join(dataDir, "eng-scorer.sh")
+			Expect(os.WriteFile(scorerPath, []byte(`#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+echo 1
+`), 0o755)).To(Succeed())
+
+			// Wire the engine tool path: BackgroundTaskManager + autoresearchAppRunner.
+			mgr := engine.NewBackgroundTaskManager()
+			appRunner := cli.NewAutoresearchAppRunner(testApp)
+			artTool := engine.NewAutoresearchRunTool(mgr, appRunner)
+
+			// Execute with max_trials=1 to keep the run fast.
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          surface,
+					"driver_script":    driverPath,
+					"evaluator_script": scorerPath,
+					"run_id":           "eng-integration-test",
+					"max_trials":       float64(1),
+					"time_budget":      "30s",
+					"metric_direction": "min",
+				},
+			}
+			execResult, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var launchOutput map[string]string
+			Expect(json.Unmarshal([]byte(execResult.Output), &launchOutput)).To(Succeed())
+			taskID := launchOutput["task_id"]
+			Expect(taskID).To(Equal("eng-integration-test"))
+			Expect(launchOutput["status"]).To(Equal("running"))
+
+			// Poll until completed (max_trials=1 should finish quickly).
+			deadline := time.Now().Add(30 * time.Second)
+			var task engine.BackgroundTask
+			var found bool
+			for time.Now().Before(deadline) {
+				task, found = mgr.Get(taskID)
+				if found && (task.Status.Load() == "completed" || task.Status.Load() == "failed") {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			Expect(found).To(BeTrue(), "task should be registered in manager")
+			Expect(task.Status.Load()).To(Equal("completed"), "task should complete successfully; result: %s", task.Result)
+
+			// Unmarshal the AutoresearchResult stored by the background function.
+			var resultData map[string]any
+			Expect(json.Unmarshal([]byte(task.Result), &resultData)).To(Succeed(),
+				"task result should be valid JSON; got: %s", task.Result)
+			Expect(resultData["TotalTrials"]).To(BeNumerically(">=", 1),
+				"at least one trial must have run")
+			Expect(resultData["TerminationReason"]).NotTo(BeEmpty(),
+				"termination_reason must be populated")
 		})
 	})
 })

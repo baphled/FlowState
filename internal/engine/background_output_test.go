@@ -439,6 +439,49 @@ var _ = Describe("AutoresearchRunTool", func() {
 			Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
 			Expect(output["task_id"]).To(Equal("explicit-run-id"))
 		})
+
+		It("completes the background task and exposes result JSON via background_output", func() {
+			// Execute returns immediately with task_id; the stub runner
+			// returns a fixed AutoresearchResult with no blocking.
+			input := tool.Input{
+				Name: "autoresearch_run",
+				Arguments: map[string]any{
+					"surface":          "/some/surface.md",
+					"driver_script":    "/some/driver.sh",
+					"evaluator_script": "/some/scorer.sh",
+					"run_id":           "bg-integration-test",
+				},
+			}
+			result, err := artTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			var launchOutput map[string]string
+			Expect(json.Unmarshal([]byte(result.Output), &launchOutput)).To(Succeed())
+			taskID := launchOutput["task_id"]
+			Expect(taskID).To(Equal("bg-integration-test"))
+
+			// Poll until the background task reaches completed (the stub
+			// runner returns instantly so this should be near-immediate).
+			deadline := time.Now().Add(2 * time.Second)
+			var task engine.BackgroundTask
+			var found bool
+			for time.Now().Before(deadline) {
+				task, found = manager.Get(taskID)
+				if found && task.Status.Load() == "completed" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			Expect(found).To(BeTrue(), "task should be found in manager")
+			Expect(task.Status.Load()).To(Equal("completed"), "task should have completed")
+
+			// Unmarshal the result JSON stored by the background function.
+			var resultData map[string]any
+			Expect(json.Unmarshal([]byte(task.Result), &resultData)).To(Succeed())
+			Expect(resultData["RunID"]).To(Equal("stub-run"))
+			Expect(resultData["TerminationReason"]).To(Equal("max-trials"))
+			Expect(resultData["TotalTrials"]).To(BeNumerically("==", 1))
+		})
 	})
 
 	Describe("CanDelegate", func() {
