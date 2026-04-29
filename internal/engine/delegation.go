@@ -1047,7 +1047,14 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	// RejectionTracker observe the planner-allocated namespace, not
 	// the fallback.
 	if target.chainIDFromCaller {
-		target.message = autoInjectChainIDPreamble(target.message, target.agentID, chainID)
+		marker := "chainID=" + chainID
+		if strings.Contains(target.message, marker) {
+			// idempotent — marker already present, leave message unchanged
+		} else if preamble := d.buildMemberSwarmPreamble(target.agentID, chainID); preamble != "" {
+			target.message = injectPreamble(preamble, target.message)
+		} else {
+			target.message = autoInjectChainIDPreamble(target.message, target.agentID, chainID)
+		}
 		if target.handoff == nil {
 			target.handoff = &delegation.Handoff{}
 		}
@@ -2867,6 +2874,15 @@ func coordStoreKeyConvention(agentID string) string {
 	}
 }
 
+// injectPreamble prepends preamble to message, separated by a blank line.
+// When message is empty the preamble is returned as-is.
+func injectPreamble(preamble, message string) string {
+	if message == "" {
+		return preamble
+	}
+	return preamble + "\n\n" + message
+}
+
 // autoInjectChainIDPreamble prepends a structured chainID preamble to
 // the message when chainID is non-empty AND the message does not
 // already contain `chainID=<value>`. For specialists in the
@@ -2907,6 +2923,75 @@ func autoInjectChainIDPreamble(message, agentID, chainID string) string {
 		return preamble
 	}
 	return preamble + "\n\n" + message
+}
+
+// buildMemberSwarmPreamble derives a rich membership contract from the active
+// swarm manifest's gate definitions. When a swarm is running, every member
+// has exactly one post-member builtin:result-schema gate that names the
+// output_key and schema it must write. This function builds a preamble that
+// tells the member its chainID, the exact coord-store key it must write, and
+// the schema it must conform to — so the member's system prompt need carry
+// none of that swarm-specific boilerplate.
+//
+// Expected:
+//   - agentID is the target member's manifest ID.
+//   - chainID is the authoritative chain identifier for this swarm run.
+//
+// Returns:
+//   - A formatted preamble string ready to prepend to the delegation message.
+//   - "" when no swarm is active, the member has no post-member gate, or the
+//     gate lacks both output_key and schema_ref (nothing to inject).
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) buildMemberSwarmPreamble(agentID, chainID string) string {
+	if chainID == "" {
+		return ""
+	}
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok {
+		return ""
+	}
+	manifest := d.manifestForSwarm(swarmCtx.SwarmID)
+	if manifest == nil {
+		return ""
+	}
+
+	chainPrefix := swarmCtx.ChainPrefix
+	if chainPrefix == "" {
+		chainPrefix = swarmCtx.SwarmID
+	}
+
+	// Find the primary post-member result-schema gate for this member.
+	// That gate names output_key and schema_ref — the two fields that
+	// constitute the member's output contract.
+	var outputKey, schemaRef string
+	for _, g := range manifest.Harness.Gates {
+		if g.When == swarm.LifecyclePostMember && g.Target == agentID && g.Kind == "builtin:result-schema" {
+			outputKey = g.OutputKey
+			schemaRef = g.SchemaRef
+			break
+		}
+	}
+	if outputKey == "" && schemaRef == "" {
+		// Member has no schema gate — fall back to basic chain injection.
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("chainID=" + chainID + ".")
+	b.WriteString(" You are a member of the **" + swarmCtx.SwarmID + "** swarm.")
+
+	if outputKey != "" {
+		fullKey := chainPrefix + "/" + agentID + "/" + outputKey
+		b.WriteString(" Write your result to coordination_store key=**" + fullKey + "**.")
+	}
+	if schemaRef != "" {
+		b.WriteString(" Your output MUST conform to the **" + schemaRef + "** JSON schema.")
+		b.WriteString(" Produce only valid JSON matching that schema — no markdown fences, no extra keys.")
+	}
+
+	return b.String()
 }
 
 // emitDelegationEvent sends a DelegationInfo chunk to the output channel when available.
