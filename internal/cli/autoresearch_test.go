@@ -826,12 +826,12 @@ exit 0
 		// substrate verbatim. The git-mode-only flags
 		// (--worktree-base, --keep-worktree, --allow-dirty) require
 		// --commit-trials and hard-error otherwise.
-		Context("in-memory default substrate", func() {
+		Context("content default substrate", func() {
 			// writeStdinDriver emits a driver that reads the prompt
 			// from stdin and prints a fixed candidate to stdout. The
 			// candidate is written to <DATA_DIR>/candidate-content so
 			// the spec can compare bytes for hashing assertions. The
-			// driver writes nothing to the surface file — in-memory
+			// driver writes nothing to the surface file — content
 			// mode does not touch the project tree.
 			writeStdinDriver := func(candidatePath string) string {
 				path := filepath.Join(dataDir, "stdin-driver.sh")
@@ -885,11 +885,11 @@ id: planner
 name: Planner
 complexity: standard
 metadata:
-  role: in-memory candidate %s
+  role: content candidate %s
 capabilities:
   tools: [read, plan]
 ---
-in-memory body %s
+content body %s
 `, marker, marker)
 			}
 
@@ -932,7 +932,7 @@ in-memory body %s
 				Expect(out.String()).To(ContainSubstring("--commit-trials"))
 			})
 
-			It("never spawns a `git` subprocess in default in-memory mode", func() {
+			It("never spawns a `git` subprocess in default content mode", func() {
 				// Spec assertion R1.2: instrument the harness's
 				// command-runner factory so the test observes every
 				// `*exec.Cmd` the harness builds. In default mode
@@ -963,11 +963,11 @@ in-memory body %s
 
 				for _, name := range observed {
 					Expect(filepath.Base(name)).NotTo(Equal("git"),
-						"default in-memory mode must not spawn git; observed: %v", observed)
+						"default content mode must not spawn git; observed: %v", observed)
 				}
 			})
 
-			It("does not mutate the surface file on disk across an in-memory run", func() {
+			It("does not mutate the surface file on disk across a content mode run", func() {
 				before, readErr := os.ReadFile(surface)
 				Expect(readErr).NotTo(HaveOccurred())
 				beforeSHA := sha256.Sum256(before)
@@ -992,7 +992,7 @@ in-memory body %s
 				Expect(readErr).NotTo(HaveOccurred())
 				afterSHA := sha256.Sum256(after)
 				Expect(afterSHA).To(Equal(beforeSHA),
-					"surface bytes must be byte-identical before and after an in-memory run")
+					"surface bytes must be byte-identical before and after a content mode run")
 			})
 
 			It("persists candidate_content and candidate_content_sha on the trial record and keys best on the content SHA", func() {
@@ -1053,7 +1053,7 @@ fi
 				Expect(json.Unmarshal([]byte(bestRaw), &best)).To(Succeed())
 				Expect(best).To(HaveKeyWithValue("candidate_content_sha", contentSHA))
 				if commit, present := best["commit_sha"]; present {
-					Expect(commit).To(Equal(""), "in-memory mode leaves commit_sha empty")
+					Expect(commit).To(Equal(""), "content mode leaves commit_sha empty")
 				}
 			})
 
@@ -1105,10 +1105,10 @@ fi
 				record := readManifestRecord("in-mem-setup")
 				Expect(record).To(HaveKeyWithValue("surface", surface))
 				if commit, present := record["baseline_commit"]; present {
-					Expect(commit).To(Equal(""), "in-memory mode leaves baseline_commit empty")
+					Expect(commit).To(Equal(""), "content mode leaves baseline_commit empty")
 				}
 				if wt, present := record["worktree_path"]; present {
-					Expect(wt).To(Equal(""), "in-memory mode leaves worktree_path empty")
+					Expect(wt).To(Equal(""), "content mode leaves worktree_path empty")
 				}
 				Expect(record).To(HaveKey("commit_trials"))
 				Expect(record["commit_trials"]).To(BeEquivalentTo(false))
@@ -2948,7 +2948,7 @@ exit 0
 		// scripts/autoresearch-drivers/default-assistant-driver-commit.sh.
 		// The April 2026 In-Memory Default plan, Slice 3, renamed the
 		// previous canonical driver to the `-commit.sh` form because
-		// the in-memory shape now claims the canonical name; this
+		// the content shape now claims the canonical name; this
 		// Describe pins the legacy fenced-block-back-to-surface
 		// behaviour.
 		repoDriverPath := func() string {
@@ -3075,16 +3075,16 @@ planner body %s
 		})
 
 		// April 2026 In-Memory Default plan, Slice 3 — the canonical
-		// `default-assistant-driver.sh` now hosts the in-memory shape:
+		// `default-assistant-driver.sh` now hosts the content shape:
 		// reads the synthesised prompt from stdin (or
 		// FLOWSTATE_AUTORESEARCH_PROMPT_FILE), invokes the agent, parses
 		// the fenced ```surface block, writes the candidate to stdout.
-		// This Context pins the syntactic shape of the in-memory script
+		// This Context pins the syntactic shape of the content script
 		// (executable, parseable, contract docstring); the live agent
 		// invocation is exercised by the Slice 1 substrate specs above
 		// via the FLOWSTATE_AUTORESEARCH_DRIVER_OUTPUT escape hatch.
-		Context("in-memory canonical default-assistant-driver.sh (Slice 3)", func() {
-			repoInMemoryDriverPath := func() string {
+		Context("content canonical default-assistant-driver.sh (Slice 3)", func() {
+			repoContentDriverPath := func() string {
 				_, thisFile, _, ok := runtime.Caller(0)
 				Expect(ok).To(BeTrue())
 				path := filepath.Join(filepath.Dir(thisFile), "..", "..",
@@ -3095,24 +3095,24 @@ planner body %s
 			}
 
 			It("ships at the canonical path, executable", func() {
-				abs := repoInMemoryDriverPath()
+				abs := repoContentDriverPath()
 				info, statErr := os.Stat(abs)
 				Expect(statErr).NotTo(HaveOccurred(),
-					"in-memory canonical driver must exist at %s", abs)
+					"content canonical driver must exist at %s", abs)
 				Expect(info.Mode()&0o100).NotTo(BeZero(),
 					"driver must be executable")
 			})
 
 			It("parses with `bash -n` (no syntax errors)", func() {
-				abs := repoInMemoryDriverPath()
+				abs := repoContentDriverPath()
 				cmd := exec.Command("bash", "-n", abs)
 				output, runErr := cmd.CombinedOutput()
 				Expect(runErr).NotTo(HaveOccurred(),
-					"bash -n must accept the in-memory driver: %s", string(output))
+					"bash -n must accept the content driver: %s", string(output))
 			})
 
-			It("documents the in-memory contract (stdin prompt, stdout candidate)", func() {
-				abs := repoInMemoryDriverPath()
+			It("documents the content contract (stdin prompt, stdout candidate)", func() {
+				abs := repoContentDriverPath()
 				body, readErr := os.ReadFile(abs)
 				Expect(readErr).NotTo(HaveOccurred())
 				bodyStr := string(body)
@@ -3130,9 +3130,9 @@ planner body %s
 				// escape hatch lets us feed a canned agent response and
 				// assert the driver writes the parsed surface block to
 				// stdout. No flowstate binary, no provider auth.
-				abs := repoInMemoryDriverPath()
+				abs := repoContentDriverPath()
 				responsePath := filepath.Join(dataDir, "stdin-canned-response.txt")
-				canned := "Reasoning prelude.\n\n```surface\nin-memory candidate body\n```\n"
+				canned := "Reasoning prelude.\n\n```surface\ncontent candidate body\n```\n"
 				Expect(os.WriteFile(responsePath, []byte(canned), 0o600)).To(Succeed())
 
 				promptPath := filepath.Join(dataDir, "stdin-canned-prompt.txt")
@@ -3148,8 +3148,8 @@ planner body %s
 				)
 				cmd.Stdin = strings.NewReader("synthesised prompt body via stdin")
 				stdout, runErr := cmd.Output()
-				Expect(runErr).NotTo(HaveOccurred(), "in-memory driver must exit 0")
-				Expect(strings.TrimRight(string(stdout), "\n")).To(Equal("in-memory candidate body"))
+				Expect(runErr).NotTo(HaveOccurred(), "content driver must exit 0")
+				Expect(strings.TrimRight(string(stdout), "\n")).To(Equal("content candidate body"))
 			})
 		})
 	})
@@ -3374,10 +3374,10 @@ planner body improved
 
 // April 2026 In-Memory Default plan, Slice 2 — `flowstate
 // autoresearch apply <run-id>` materialises the best candidate
-// from an in-memory run. Default: print to stdout. --write <path>
+// from an content run. Default: print to stdout. --write <path>
 // writes to an operator-chosen destination; refuses inside-repo
 // without --force-inside-repo. Hard refusal when the run used
-// --commit-trials (no in-memory candidate to dump; redirect to
+// --commit-trials (no content candidate to dump; redirect to
 // `flowstate autoresearch promote --apply`).
 var _ = Describe("autoresearch apply command", func() {
 	var (
@@ -3453,22 +3453,22 @@ planner body
 		}
 	})
 
-	// runInMemoryImprovingTrial produces an in-memory run whose
+	// runContentImprovingTrial produces a content mode run whose
 	// trial 1 improves on the baseline and is therefore kept; the
 	// spec asserts on apply's view of the kept candidate. The
 	// driver and scorer follow the brief's stdin/stdout contract.
-	runInMemoryImprovingTrial := func(runID string) string {
+	runContentImprovingTrial := func(runID string) string {
 		candidate := `---
 schema_version: "1"
 id: planner
-name: Planner-Improved-InMem
+name: Planner-Improved-Content
 complexity: standard
 metadata:
-  role: in-memory improved
+  role: content improved
 capabilities:
   tools: [read, plan]
 ---
-in-memory improved body
+content improved body
 `
 		candidatePath := filepath.Join(dataDir, "apply-cand-"+runID)
 		Expect(os.WriteFile(candidatePath, []byte(candidate), 0o600)).To(Succeed())
@@ -3500,12 +3500,12 @@ if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
 			"--metric-direction", "min",
 			"--driver-script", driverPath,
 			"--evaluator-script", scorerPath,
-		)).To(Succeed(), "in-memory run setup failed; out: %s", out.String())
+		)).To(Succeed(), "content run setup failed; out: %s", out.String())
 		return candidate
 	}
 
 	It("prints the best candidate content to stdout by default", func() {
-		candidate := runInMemoryImprovingTrial("apply-stdout-id")
+		candidate := runContentImprovingTrial("apply-stdout-id")
 		out.Reset()
 
 		err := runCmd("autoresearch", "apply", "apply-stdout-id")
@@ -3514,7 +3514,7 @@ if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
 	})
 
 	It("writes the best candidate to --write <path> outside the repo", func() {
-		candidate := runInMemoryImprovingTrial("apply-write-id")
+		candidate := runContentImprovingTrial("apply-write-id")
 		out.Reset()
 
 		outPath := filepath.Join(dataDir, "applied.md")
@@ -3530,7 +3530,7 @@ if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
 	})
 
 	It("refuses --write to a path inside the surface repo without --force-inside-repo", func() {
-		runInMemoryImprovingTrial("apply-inside-id")
+		runContentImprovingTrial("apply-inside-id")
 		out.Reset()
 
 		insidePath := filepath.Join(repoDir, "applied-inside.md")
@@ -3546,7 +3546,7 @@ if [ "$n" -le 1 ]; then echo 9; else echo 1; fi
 	})
 
 	It("honours --force-inside-repo on an in-repo destination", func() {
-		candidate := runInMemoryImprovingTrial("apply-force-id")
+		candidate := runContentImprovingTrial("apply-force-id")
 		out.Reset()
 
 		insidePath := filepath.Join(repoDir, "applied-forced.md")

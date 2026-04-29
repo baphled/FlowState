@@ -61,13 +61,13 @@ The off-limits derivation runs in my head before every edit. Skipping it because
 
 ## Trial protocol
 
-The harness reads the surface once at run start (April 2026 In-Memory Default — the default substrate) and the candidate flows as a STRING per trial. Each trial follows the same six steps:
+The harness reads the surface once at run start (April 2026 In-Memory Default — the default content substrate) and the candidate flows as a STRING per trial. Each trial follows the same six steps:
 
 1. **Read history.** The synthesised prompt's `# HISTORY` section carries the last N trial outcomes (score, kept flag, reason, candidate SHA). I do not query the coord-store directly; the harness has already rendered everything I need.
-2. **Read the current substrate.** The synthesised prompt's `# SURFACE` section embeds the surface bytes verbatim. In default (in-memory) mode this is the immutable surface read at run start; in `--commit-trials` mode it is the worktree's mirror at trial start. Either way, the prompt is canonical.
+2. **Read the current substrate.** The synthesised prompt's `# SURFACE` section embeds the surface bytes verbatim. In default (content) mode this is the immutable surface read at run start; in `--commit-trials` mode it is the worktree's mirror at trial start. Either way, the prompt is canonical.
 3. **Derive off-limits.** Per §4, build the off-limits set from the current frontmatter.
 4. **Edit.** Produce one candidate edit. The edit may be small or large; what matters is that it does not violate §3 or §4 and has a plausible argument for moving the scalar in the favoured direction.
-5. **Signal harness.** Reply with the full updated surface contents in a single fenced ` ```surface ` block. The harness extracts the block body, scores it, and ratchets. In default mode the candidate is held entirely in memory; the surface file on disk is never touched. In `--commit-trials` mode the harness writes the candidate to the worktree's surface file, commits, and reverts on regression.
+5. **Signal harness.** Reply with the full updated surface contents in a single fenced ` ```surface ` block. The harness extracts the block body, scores it, and ratchets. In default (content) mode the candidate is held entirely in memory; the surface file on disk is never touched. In `--commit-trials` mode the harness writes the candidate to the worktree's surface file, commits, and reverts on regression.
 6. **Repeat.** The harness invokes me again with a fresh synthesised prompt; my history grows by one record.
 
 I never invoke `git`, the evaluator, or the coordination store directly. The harness owns those operations.
@@ -104,9 +104,9 @@ A single restatement, in priority order:
 3. This skill body. The program of record is the prose the harness already loaded; I do not edit it during a run.
 4. Anything outside the file at `--surface`. The worktree contains many tempting files; none are mine to touch.
 
-## Writing a driver (default — in-memory)
+## Writing a driver (default — content)
 
-The harness invokes the driver script once per trial. The April 2026 In-Memory Default substrate exchanges candidate strings via stdin/stdout; the driver does not write to the surface file on disk.
+The harness invokes the driver script once per trial. The April 2026 In-Memory Default content substrate exchanges candidate strings via stdin/stdout; the driver does not write to the surface file on disk.
 
 **Contract:**
 
@@ -114,13 +114,13 @@ The harness invokes the driver script once per trial. The April 2026 In-Memory D
 2. **Stdout** — the candidate, verbatim. The full string emitted to stdout is the candidate the harness scores. No fenced-block wrapping on the way out.
 3. **Stderr** — free for diagnostics; captured by the harness for its log.
 4. **Exit 0** — candidate produced. Non-zero is mapped to `validator-io-error` per plan § 4.5.
-5. **Working directory** — the operator's invocation cwd. The harness no longer creates a worktree in default mode; the surface env var is read-only by contract.
+5. **Working directory** — the operator's invocation cwd. The harness no longer creates a worktree in default content mode; the surface env var is read-only by contract.
 6. **Environment** — `FLOWSTATE_AUTORESEARCH_RUN_ID`, `FLOWSTATE_AUTORESEARCH_TRIAL`, `FLOWSTATE_AUTORESEARCH_SURFACE` (relative path; read-only), `FLOWSTATE_AUTORESEARCH_DRIVER_MAX_TURNS`, `FLOWSTATE_AUTORESEARCH_PROMPT_FILE`.
 7. **Time budget** — `--driver-timeout` (default 3m) caps wall-clock. A timeout collapses onto `validator-io-error`.
 
 **Reference example.** `scripts/autoresearch-drivers/default-assistant-driver.sh` wraps `flowstate run --agent default-assistant`, parses the agent's fenced ` ```surface ` block, and writes the candidate to stdout. Operators wanting a different driver shape (a research model, a local llama, a scripted heuristic edit) copy this script and edit the body — the env-var contract and the stdin/stdout convention are the only load-bearing parts.
 
-## Writing an evaluator (default — in-memory)
+## Writing an evaluator (default — content)
 
 The harness invokes the evaluator script once per trial (and once at run start to score the baseline). Operators wire one in via `--evaluator-script <path>`. The contract is small but strict; deviations are recorded as `evaluator-contract-violation` and three consecutive violations terminate the run with `evaluator-contract-failure-rate`.
 
@@ -130,8 +130,8 @@ The harness invokes the evaluator script once per trial (and once at run start t
 2. **Stdout** — exactly one line, a non-negative integer in decimal. Trailing newline allowed; nothing else on stdout. Multi-line, empty, non-integer, or negative scalars are contract violations. Comparison logic for `--metric-direction max` is inverted by the harness (kept when `score > baseline`); the evaluator does NOT emit negative scalars to signal max-direction.
 3. **Exit code** — `0` on successful scoring. Non-zero is a contract violation.
 4. **Stderr** — free for diagnostic output. Captured but not parsed.
-5. **Working directory** — the operator's invocation cwd (no worktree in default mode).
-6. **Environment** — `FLOWSTATE_AUTORESEARCH_RUN_ID`, `FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE`. **No** `FLOWSTATE_AUTORESEARCH_SURFACE` in default mode (the surface IS the candidate; reading the on-disk surface would defeat the substrate swap). Evaluator-specific env vars are fair game alongside the documented set.
+5. **Working directory** — the operator's invocation cwd (no worktree in default content mode).
+6. **Environment** — `FLOWSTATE_AUTORESEARCH_RUN_ID`, `FLOWSTATE_AUTORESEARCH_CANDIDATE_FILE`. **No** `FLOWSTATE_AUTORESEARCH_SURFACE` in default content mode (the surface IS the candidate; reading the on-disk surface would defeat the substrate swap). Evaluator-specific env vars are fair game alongside the documented set.
 7. **Time budget** — `--evaluator-timeout` (default 5m) caps wall-clock. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` on the trial outcome.
 
 **Validation up front.** The harness checks `--evaluator-script` exists, is a regular file, and is executable before any work begins. Mis-typed paths fail fast.

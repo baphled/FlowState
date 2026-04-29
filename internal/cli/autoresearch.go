@@ -92,17 +92,17 @@ type autoresearchRunOptions struct {
 	// keepWorktree opts out of the end-of-run worktree removal on a
 	// clean termination (lifecycle plan Slice 2). Default false; the
 	// branch is always preserved regardless of this flag. Requires
-	// --commit-trials in the in-memory default substrate (April 2026).
+	// --commit-trials in the content default substrate (April 2026).
 	keepWorktree bool
 	// allowDirty opts out of the clean-tree precondition (lifecycle
 	// plan Slice 3). When set, the harness stashes the parent's
 	// uncommitted state at run start and restores it on exit so the
 	// trial loop runs against an effectively-clean tree without
 	// forcing the operator to commit unrelated edits. Requires
-	// --commit-trials in the in-memory default substrate.
+	// --commit-trials in the content default substrate.
 	allowDirty bool
 	// commitTrials toggles the trial substrate. Default false enables
-	// the in-memory loop (April 2026 In-Memory Default plan): the
+	// the content loop (April 2026 In-Memory Default plan): the
 	// harness reads the surface once, drives the driver via stdin,
 	// captures the candidate string from stdout, pipes it to the
 	// evaluator, and persists `{candidate_content, candidate_content_sha,
@@ -224,7 +224,7 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.IntVar(&opts.noImproveWindow, "no-improve-window", 5,
 		"Consecutive non-improving trials before terminating with reason=converged")
 	flags.StringVar(&opts.driverScript, "driver-script", "",
-		"Driver script path. In default in-memory mode (April 2026 In-Memory Default plan) the harness pipes the synthesised prompt to the driver via stdin and captures the candidate string from stdout; FLOWSTATE_AUTORESEARCH_PROMPT_FILE is populated as a parallel channel. Under --commit-trials the driver is invoked inside the worktree and edits the surface in place. See scripts/autoresearch-drivers/default-assistant-driver.sh for the canonical reference driver (in-memory shape) or default-assistant-driver-commit.sh for the legacy shape.")
+		"Driver script path. In default content mode (April 2026 In-Memory Default plan) the harness pipes the synthesised prompt to the driver via stdin and captures the candidate string from stdout; FLOWSTATE_AUTORESEARCH_PROMPT_FILE is populated as a parallel channel. Under --commit-trials the driver is invoked inside the worktree and edits the surface in place. See scripts/autoresearch-drivers/default-assistant-driver.sh for the canonical reference driver (content mode shape) or default-assistant-driver-commit.sh for the legacy shape.")
 	flags.DurationVar(&opts.driverTimeout, "driver-timeout", 3*time.Minute,
 		"Per-invocation driver wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `validator-io-error` with a timeout marker and does NOT count toward no-improve-window. Live-driver plan § 4.6 (R1.1).")
 	flags.IntVar(&opts.driverMaxTurns, "driver-max-turns", 10,
@@ -240,20 +240,20 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.callingAgentManifest, "calling-agent", "",
 		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
 	flags.BoolVar(&opts.keepWorktree, "keep-worktree", false,
-		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Requires --commit-trials in the in-memory default substrate (April 2026); hard-error otherwise. Lifecycle plan (April 2026) Slice 2.")
+		"Preserve the trial worktree directory on a clean termination (default: remove). The branch autoresearch/<run-id-short> is always preserved regardless of this flag — it is the durable kept-commit anchor. Requires --commit-trials in the content default substrate (April 2026); hard-error otherwise. Lifecycle plan (April 2026) Slice 2.")
 	flags.BoolVar(&opts.allowDirty, "allow-dirty", false,
-		"Bypass the clean-tree precondition by stashing the parent's uncommitted state at run start and restoring it on exit. The trial worktree itself is unaffected — autoresearch always works in an isolated branch. Requires --commit-trials in the in-memory default substrate; hard-error otherwise. Lifecycle plan (April 2026) Slice 3.")
+		"Bypass the clean-tree precondition by stashing the parent's uncommitted state at run start and restoring it on exit. The trial worktree itself is unaffected — autoresearch always works in an isolated branch. Requires --commit-trials in the content default substrate; hard-error otherwise. Lifecycle plan (April 2026) Slice 3.")
 	flags.BoolVar(&opts.commitTrials, "commit-trials", false,
-		"Opt in to the legacy git-mediated substrate: trial worktree, named branches, per-trial commits with --no-verify, ratchet via `git reset --hard HEAD~1`, promote/list/--allow-dirty/--keep-worktree. Default off — the harness runs the in-memory loop (read surface once, drive via stdin, score candidates as strings) per the April 2026 In-Memory Default plan.")
+		"Opt in to the legacy git-mediated substrate: trial worktree, named branches, per-trial commits with --no-verify, ratchet via `git reset --hard HEAD~1`, promote/list/--allow-dirty/--keep-worktree. Default off — the harness runs the content loop (read surface once, drive via stdin, score candidates as strings) per the April 2026 In-Memory Default plan.")
 	flags.IntVar(&opts.maxCandidateBytes, "max-candidate-bytes", 256*1024,
-		"Cap on the candidate-content bytes persisted per trial in the in-memory default substrate. Larger candidates are recorded with `candidate_content_truncated=true` and the content SHA is preserved. Ignored under --commit-trials.")
+		"Cap on the candidate-content bytes persisted per trial in the content default substrate. Larger candidates are recorded with `candidate_content_truncated=true` and the content SHA is preserved. Ignored under --commit-trials.")
 
 	return cmd
 }
 
 // runAutoresearch drives one autoresearch run end-to-end.
 //
-// April 2026 In-Memory Default substrate: the default code path
+// April 2026 content substrate: the default code path
 // (commit-trials=false) reads the surface once, runs the trial loop
 // in memory (driver/evaluator exchange candidate strings via
 // stdin/stdout), and never spawns a `git` subprocess. The legacy
@@ -297,13 +297,13 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 	resolved.programDeduplicated = applyCallingAgentDeDup(resolved, cmd.OutOrStdout())
 
 	if !resolved.commitTrials {
-		return runAutoresearchInMemory(ctx, cmd, application, resolved)
+		return runAutoresearchContent(ctx, cmd, application, resolved)
 	}
 	return runAutoresearchCommitTrials(ctx, cmd, application, resolved)
 }
 
-// rejectGitModeFlagsWithoutCommitTrials enforces the In-Memory Default
-// plan's hard-error contract on git-mode-only flags. --allow-dirty,
+// rejectGitModeFlagsWithoutCommitTrials enforces the content default
+// substrate's hard-error contract on git-mode-only flags. --allow-dirty,
 // --keep-worktree, and --worktree-base are meaningful only under the
 // legacy substrate; passing them without --commit-trials is a
 // configuration error the operator must resolve before any side
@@ -323,33 +323,33 @@ func rejectGitModeFlagsWithoutCommitTrials(cmd *cobra.Command, opts autoresearch
 		}
 		if flags.Changed(name) {
 			return fmt.Errorf(
-				"--%s is meaningful only with --commit-trials; default in-memory mode does not touch the parent tree",
+				"--%s is meaningful only with --commit-trials; default content mode does not touch the parent tree",
 				name)
 		}
 	}
 	return nil
 }
 
-// runAutoresearchInMemory implements the default substrate (April 2026
-// In-Memory Default plan). The surface bytes are read once, the trial
+// runAutoresearchContent implements the default substrate (April 2026
+// content mode). The surface bytes are read once, the trial
 // loop drives the driver via stdin/stdout, and candidates flow as
 // strings — no worktree, no commits, no `git` subprocesses in this
 // code path.
-func runAutoresearchInMemory(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
+func runAutoresearchContent(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
 	store, err := openCoordStore(application)
 	if err != nil {
 		return err
 	}
 
 	// max-trials=0 is the smoke path — write a manifest record with
-	// no baseline data and return cleanly. The in-memory record
+	// no baseline data and return cleanly. The content record
 	// leaves baseline_commit and worktree_path empty.
 	if resolved.maxTrials == 0 {
 		if err := writeManifestRecord(store, resolved, "", 0, ""); err != nil {
 			return fmt.Errorf("writing manifest record: %w", err)
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-			"autoresearch run %s: setup complete (max-trials=0; no trials run; mode=in-memory) surface_type=%s\n",
+			"autoresearch run %s: setup complete (max-trials=0; no trials run; mode=content) surface_type=%s\n",
 			resolved.runID, string(resolved.surfaceType))
 		return nil
 	}
@@ -366,11 +366,11 @@ func runAutoresearchInMemory(ctx context.Context, cmd *cobra.Command, applicatio
 		return fmt.Errorf("resolving surface relative path: %w", err)
 	}
 
-	// Baseline-score the unmodified surface bytes via the in-memory
+	// Baseline-score the unmodified surface bytes via the content
 	// evaluator channel. The harness still treats a baseline contract
 	// violation as a hard fail so a broken evaluator is surfaced
 	// before any trial runs.
-	baseline, err := runEvaluatorInMemory(ctx, resolved.evaluatorScript, resolved.runID, surfaceBytes, resolved.evaluatorTimeout)
+	baseline, err := runEvaluatorContent(ctx, resolved.evaluatorScript, resolved.runID, surfaceBytes, resolved.evaluatorTimeout)
 	if err != nil {
 		return fmt.Errorf("baseline evaluator: %w", err)
 	}
@@ -497,7 +497,7 @@ func runAutoresearchCommitTrials(ctx context.Context, cmd *cobra.Command, applic
 }
 
 // surfaceRelativeToRepo returns the surface path relative to its
-// enclosing git repository. Used by the in-memory substrate to give
+// enclosing git repository. Used by the content substrate to give
 // the synthesiser a stable relSurface anchor without requiring a
 // worktree.
 func surfaceRelativeToRepo(surface string) (string, error) {
@@ -1279,7 +1279,7 @@ type manifestRecord struct {
 	// April 2026 In-Memory Default plan Slice 1. The field is keyed
 	// on the explicit name rather than `omitempty` so consumers
 	// reading older records reliably observe the absence as the
-	// default-mode (in-memory) substrate.
+	// default-mode (content) substrate.
 	CommitTrials bool `json:"commit_trials"`
 }
 

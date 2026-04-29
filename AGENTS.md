@@ -534,7 +534,7 @@ OpenAI-compatible providers (OpenAI, Z.AI, OpenZen) handle streaming tool calls 
 
 `flowstate autoresearch run` is a generic, pluggable ratcheting harness. Any agent can invoke it to drive a single artefact (a manifest, a Go source file, a skill body) towards a scalar metric under the constraints of a plain-English program skill, using a fixed budget.
 
-**Default substrate is in-memory** (April 2026 In-Memory Default plan). The harness reads the surface once, drives the driver via stdin, captures the candidate string from stdout, pipes it to the evaluator, and persists `{candidate_content, candidate_content_sha, score, kept, reason}` per trial — no worktree, no branch, no commit, no `git reset` in the default code path. The legacy git-mediated substrate (worktree, named branches, per-trial commits with `--no-verify`, ratchet via reset, `promote` cherry-pick) is preserved verbatim behind opt-in `--commit-trials`.
+**Default substrate is content** (April 2026 In-Memory Default plan). The harness reads the surface once, drives the driver via stdin, captures the candidate string from stdout, pipes it to the evaluator, and persists `{candidate_content, candidate_content_sha, score, kept, reason}` per trial — no worktree, no branch, no commit, no `git reset` in the default code path. The legacy git-mediated substrate (worktree, named branches, per-trial commits with `--no-verify`, ratchet via reset, `promote` cherry-pick) is preserved verbatim behind opt-in `--commit-trials`.
 
 The harness is **agnostic to what is being optimised**. Three primitives are operator-controlled:
 
@@ -544,7 +544,7 @@ The harness is **agnostic to what is being optimised**. Three primitives are ope
 | Evaluator | `--evaluator-script <path>` | Script that consumes the candidate via stdin and prints one non-negative integer to stdout, exit 0. |
 | Program | `--program <skill-name \| path>` | Plain-English skill body describing the run's goal and off-limits set. Defaults to the canonical `autoresearch` registry skill. |
 
-Other useful flags: `--metric-direction min|max` (default `min`), `--max-trials <int>` (default 10), `--time-budget <duration>` (default 5m), `--calling-agent <manifest-path>` (enables the N12 always-active de-dup check when `--program` is a registry name), `--max-candidate-bytes <int>` (default 256 KiB; caps in-memory candidate persistence), `--commit-trials` (opt in to legacy git substrate).
+Other useful flags: `--metric-direction min|max` (default `min`), `--max-trials <int>` (default 10), `--time-budget <duration>` (default 5m), `--calling-agent <manifest-path>` (enables the N12 always-active de-dup check when `--program` is a registry name), `--max-candidate-bytes <int>` (default 256 KiB; caps content candidate persistence), `--commit-trials` (opt in to legacy git substrate).
 
 `--allow-dirty`, `--keep-worktree`, and `--worktree-base` are git-mode-only; passing them without `--commit-trials` is a hard error.
 
@@ -556,16 +556,16 @@ State for a run lives under `autoresearch/<runID>/...` in the coord-store (manif
 - **Presets:**
   - `skills/autoresearch-presets/planner-quality.md` — minimises the harness validate warning count against a planner-class manifest without weakening `always_active_skills`, the coord-store wiring, or canonical chain-id resolution.
   - `skills/autoresearch-presets/perf-preserve-behaviour.md` — drives `ns/op` down on a Go source file under `--metric-direction min` while preserving exported signatures and `go test ./...` greenness.
-- **Reference driver (default — in-memory):** `scripts/autoresearch-drivers/default-assistant-driver.sh` — reads the synthesised prompt from stdin, invokes `flowstate run --agent default-assistant`, parses the fenced ` ```surface ` block, writes the candidate to stdout.
-- **Reference evaluators (default — in-memory):**
+- **Reference driver (default — content):** `scripts/autoresearch-drivers/default-assistant-driver.sh` — reads the synthesised prompt from stdin, invokes `flowstate run --agent default-assistant`, parses the fenced ` ```surface ` block, writes the candidate to stdout.
+- **Reference evaluators (default — content):**
   - `scripts/autoresearch-evaluators/planner-validate.sh` — reads the candidate from stdin, stages it in a tempfile, runs `validate-harness.sh --score --all`, returns the integer warning count.
   - `scripts/autoresearch-evaluators/bench.sh` — Go benchmark wrapper. Reads the candidate from stdin (drains; bench keys off compiled binaries), parses `ns/op` from `go test -bench`, emits `1_000_000_000 / ns_per_op`. Pairs with `--metric-direction max`.
 - **Legacy `-commit.sh` siblings:** the pre-pivot scripts are preserved at `default-assistant-driver-commit.sh`, `bench-commit.sh`, `planner-validate-commit.sh` for operators using `--commit-trials`.
-- **Apply subcommand (default — in-memory):** `flowstate autoresearch apply <run-id>` materialises the best candidate. Default prints to stdout; `--write <path>` writes to an operator-chosen destination outside the surface repo (`--force-inside-repo` overrides). Refuses runs that used `--commit-trials` and redirects to `flowstate autoresearch promote`.
+- **Apply subcommand (default — content):** `flowstate autoresearch apply <run-id>` materialises the best candidate. Default prints to stdout; `--write <path>` writes to an operator-chosen destination outside the surface repo (`--force-inside-repo` overrides). Refuses runs that used `--commit-trials` and redirects to `flowstate autoresearch promote`.
 
 ### Invocation examples
 
-Planner manifest ratchet (default in-memory mode):
+Planner manifest ratchet (default content mode):
 
 ```bash
 flowstate autoresearch run \
@@ -585,7 +585,7 @@ flowstate autoresearch apply <run-id>          # prints to stdout
 flowstate autoresearch apply <run-id> --write /tmp/best.md
 ```
 
-Function performance ratchet (default in-memory mode):
+Function performance ratchet (default content mode):
 
 ```bash
 flowstate autoresearch run \

@@ -2,15 +2,15 @@
 // autoresearch apply <run-id>` subcommand — Slice 2 of the April 2026
 // In-Memory Default plan.
 //
-// apply materialises the best in-memory candidate from a finished run.
+// apply materialises the best content candidate from a finished run.
 // Default behaviour: print the candidate content to stdout. With
 // --write <path>: write the candidate to an operator-chosen
 // destination, refusing inside-repo paths unless --force-inside-repo
-// overrides. The architectural intent of the in-memory substrate is
+// overrides. The architectural intent of the content substrate is
 // to leave the project tree untouched; the inside-repo guard makes
 // that intent operator-visible rather than implicit.
 //
-// Runs that used --commit-trials carry no in-memory candidate body —
+// Runs that used --commit-trials carry no content candidate body —
 // the candidate lives as a git commit on the run's branch. apply
 // refuses such runs and redirects to `flowstate autoresearch promote`,
 // which is the right tool for the cherry-pick workflow those runs
@@ -55,19 +55,19 @@ func newAutoresearchApplyCmd(getApp func() *app.App) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "apply <run-id>",
-		Short: "Materialise the best in-memory candidate from a finished run",
+		Short: "Materialise the best content candidate from a finished run",
 		Long: "Read the run's `best` pointer from the coord-store and " +
-			"emit the in-memory candidate content. With no flags, " +
+			"emit the content candidate. With no flags, " +
 			"the candidate is written to stdout — pipe / redirect / " +
 			"inspect as you would any text. With --write <path>, the " +
 			"candidate is written to a file at <path>.\n\n" +
 			"--write paths inside the surface repo are refused unless " +
-			"--force-inside-repo is set; the in-memory substrate is " +
+			"--force-inside-repo is set; the content substrate is " +
 			"intentionally non-mutating, and a forced inside-repo write " +
 			"is the explicit override for the rare case where you want " +
 			"the candidate landed alongside the surface.\n\n" +
 			"Runs created with --commit-trials carry the kept commit on " +
-			"their branch, not as in-memory bytes; apply refuses such " +
+			"their branch, not as content bytes; apply refuses such " +
 			"runs and redirects to `flowstate autoresearch promote " +
 			"<run-id> --apply`.\n\n" +
 			"April 2026 In-Memory Default plan, Slice 2.",
@@ -95,7 +95,7 @@ func newAutoresearchApplyCmd(getApp func() *app.App) *cobra.Command {
 // Returns:
 //   - nil on a successful materialisation (stdout or file).
 //   - non-nil error if the coord-store cannot be opened, the best
-//     pointer is missing, the run was --commit-trials (no in-memory
+//     pointer is missing, the run was --commit-trials (no content
 //     candidate), or the inside-repo guard refused the destination.
 //
 // Side effects:
@@ -121,7 +121,7 @@ func runAutoresearchApply(cmd *cobra.Command, application *app.App, runID string
 
 	if manifest.CommitTrials {
 		return fmt.Errorf(
-			"run %s was created with --commit-trials; the kept candidate is a git commit, not an in-memory body — use `flowstate autoresearch promote %s --apply` instead",
+			"run %s was created with --commit-trials; the kept candidate is a git commit, not a content body — use `flowstate autoresearch promote %s --apply` instead",
 			runID, runID)
 	}
 
@@ -131,7 +131,7 @@ func runAutoresearchApply(cmd *cobra.Command, application *app.App, runID string
 	}
 	if best.CandidateContentSHA == "" {
 		return fmt.Errorf(
-			"best pointer for run %s has empty candidate_content_sha — the run produced no kept in-memory candidate", runID)
+			"best pointer for run %s has empty candidate_content_sha — the run produced no kept content candidate", runID)
 	}
 
 	candidate, err := readCandidateContentFromTrial(store, runID, best)
@@ -248,7 +248,7 @@ func readCandidateContentFromTrial(store coordination.Store, runID string, best 
 // marker; if any parent matches the surface's repo root the
 // destination is "inside-repo".
 //
-// This is the architectural guard for the in-memory substrate's
+// This is the architectural guard for the content substrate's
 // non-mutating contract — without it, the operator's first instinct
 // (pipe `apply` to a path next to the surface) silently re-engages
 // the disk-write workflow `--commit-trials` exists to handle.
@@ -268,7 +268,7 @@ func guardInsideRepo(writePath, surfacePath string, force bool) error {
 	}
 	if pathContains(surfaceRepo, absDest) {
 		return fmt.Errorf(
-			"--write %q is inside the surface repo at %s; pass --force-inside-repo to override (the in-memory substrate keeps the project tree untouched by default)",
+			"--write %q is inside the surface repo at %s; pass --force-inside-repo to override (the content substrate keeps the project tree untouched by default)",
 			writePath, surfaceRepo)
 	}
 	return nil

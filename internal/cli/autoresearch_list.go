@@ -199,7 +199,7 @@ func buildRunListEntry(store coordination.Store, runID string) (runListEntry, bo
 	}
 
 	// best — set whenever either pointer (commit SHA in --commit-trials
-	// mode or content SHA in default in-memory mode) is populated.
+	// mode or content SHA in default content mode) is populated.
 	if bestRaw, err := store.Get(fmt.Sprintf("autoresearch/%s/best", runID)); err == nil {
 		var best bestRecord
 		if json.Unmarshal(bestRaw, &best) == nil {
