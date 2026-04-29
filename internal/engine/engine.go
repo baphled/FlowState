@@ -1583,7 +1583,8 @@ func (e *Engine) appendSwarmLeadSection(base string) string {
 	}
 
 	b.WriteString("\n## Delegation\n\n")
-	b.WriteString("Dispatch all relevant members in a **single message** by emitting multiple `delegate` tool calls simultaneously — do NOT wait for one member to finish before dispatching the next. The engine runs them in parallel; sequential dispatch wastes wall-clock time and burns unnecessary tokens on wait overhead. After all member results are returned, synthesise their findings into a final report for the user.\n")
+	b.WriteString("Dispatch **independent** members in a **single message** by emitting multiple `delegate` tool calls simultaneously — do NOT wait for one independent member to finish before dispatching the next independent member. The engine runs concurrent tool calls in parallel; sequential dispatch of independent work wastes wall-clock time and burns unnecessary tokens on wait overhead.\n\n")
+	b.WriteString("If some members depend on the output of earlier members (e.g. a codebase explorer that writes findings the review members will read), use sequential waves: dispatch the upstream members first, wait for their results, then dispatch the downstream members together in a single parallel message. After all member results are returned, synthesise their findings into a final report for the user.\n")
 
 	chainPrefix := swarmCtx.ChainPrefix
 	if chainPrefix == "" {
