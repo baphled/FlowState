@@ -11,6 +11,7 @@ import (
 	delegationpkg "github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -294,4 +295,171 @@ var _ = Describe("DelegateTool chainID auto-injection", func() {
 	// Compile-time touch on the delegationpkg import so the spec block
 	// stays self-documenting about the handoff package the helper reads.
 	var _ = delegationpkg.Handoff{}
+})
+
+// swarmPreambleFixture wires a DelegateTool inside an active swarm so that
+// buildMemberSwarmPreamble can resolve the gate definitions from the registry.
+func swarmPreambleFixture(agentID string, gates []swarm.GateSpec) (*engine.DelegateTool, *mockProvider) {
+	mp := &mockProvider{
+		name:         agentID + "-provider",
+		streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+	}
+	manifest := agent.Manifest{
+		ID:                agentID,
+		Name:              agentID,
+		Instructions:      agent.Instructions{SystemPrompt: "spec"},
+		ContextManagement: agent.DefaultContextManagement(),
+	}
+	eng := engine.New(engine.Config{
+		ChatProvider: mp,
+		Manifest:     manifest,
+	})
+
+	swarmManifest := &swarm.Manifest{}
+	swarmManifest.ID = "dev-feature"
+	swarmManifest.Context.ChainPrefix = "dev-feature"
+	swarmManifest.Harness.Gates = gates
+
+	reg := swarm.NewRegistry()
+	reg.Register(swarmManifest)
+
+	ctx := swarm.NewContext("dev-feature", swarmManifest)
+	eng.SetSwarmContext(&ctx)
+
+	dt := engine.NewDelegateTool(
+		map[string]*engine.Engine{agentID: eng},
+		agent.Delegation{CanDelegate: true},
+		"Tech-Lead",
+	).WithOwnerEngine(eng).WithSwarmRegistry(reg)
+
+	return dt, mp
+}
+
+var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
+	lastUserMsg := func(mp *mockProvider) string {
+		Expect(mp.capturedRequest).NotTo(BeNil())
+		for i := len(mp.capturedRequest.Messages) - 1; i >= 0; i-- {
+			msg := mp.capturedRequest.Messages[i]
+			if msg.Role == "user" {
+				return msg.Content
+			}
+		}
+		Fail("no user message captured")
+		return ""
+	}
+
+	Describe("when a swarm is active and the member has a post-member schema gate", func() {
+		It("injects the swarm ID, coord-store key, and schema name into the delegation message", func() {
+			gates := []swarm.GateSpec{
+				{
+					Name:      "post-explorer-codebase",
+					Kind:      "builtin:result-schema",
+					When:      swarm.LifecyclePostMember,
+					Target:    "explorer",
+					OutputKey: "codebase-findings",
+					SchemaRef: "evidence-bundle-v1",
+				},
+			}
+			dt, mp := swarmPreambleFixture("explorer", gates)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "explorer",
+					"chainID":       "dev-feature",
+					"message":       "Survey the codebase.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			Expect(body).To(ContainSubstring("**dev-feature** swarm"),
+				"member must know which swarm it belongs to")
+			Expect(body).To(ContainSubstring("dev-feature/explorer/codebase-findings"),
+				"member must know the exact coord-store key it must write")
+			Expect(body).To(ContainSubstring("evidence-bundle-v1"),
+				"member must know the schema it must conform to")
+			Expect(body).To(ContainSubstring("Survey the codebase."),
+				"original message must be preserved after the preamble")
+		})
+
+		It("uses the swarm chain_prefix in the coord-store key, not the swarm ID", func() {
+			gates := []swarm.GateSpec{
+				{
+					Name:      "post-analyst-requirements",
+					Kind:      "builtin:result-schema",
+					When:      swarm.LifecyclePostMember,
+					Target:    "analyst",
+					OutputKey: "requirements",
+					SchemaRef: "feature-requirements-v1",
+				},
+			}
+			dt, mp := swarmPreambleFixture("analyst", gates)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "analyst",
+					"chainID":       "dev-feature",
+					"message":       "Analyse the feature.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			// chain_prefix is "dev-feature" so the key must be dev-feature/analyst/requirements
+			Expect(body).To(ContainSubstring("dev-feature/analyst/requirements"))
+		})
+
+		It("is idempotent when the message already contains chainID=", func() {
+			gates := []swarm.GateSpec{
+				{
+					Name:      "post-explorer-codebase",
+					Kind:      "builtin:result-schema",
+					When:      swarm.LifecyclePostMember,
+					Target:    "explorer",
+					OutputKey: "codebase-findings",
+					SchemaRef: "evidence-bundle-v1",
+				},
+			}
+			dt, mp := swarmPreambleFixture("explorer", gates)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "explorer",
+					"chainID":       "dev-feature",
+					"message":       "chainID=dev-feature. Survey the repo.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			Expect(strings.Count(body, "chainID=dev-feature")).To(Equal(1),
+				"preamble must not be injected when message already contains the marker")
+		})
+	})
+
+	Describe("when the member has no post-member schema gate", func() {
+		It("falls back to the basic chainID preamble (no swarm-specific content)", func() {
+			// No gates defined for this member.
+			dt, mp := swarmPreambleFixture("custom-helper", []swarm.GateSpec{})
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "custom-helper",
+					"chainID":       "dev-feature",
+					"message":       "Do something custom.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			Expect(body).To(ContainSubstring("chainID=dev-feature"),
+				"basic chainID preamble must still be injected as fallback")
+			Expect(body).NotTo(ContainSubstring("swarm"),
+				"no swarm-specific language when the member has no gate")
+		})
+	})
 })
