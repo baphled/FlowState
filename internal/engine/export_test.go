@@ -8,6 +8,7 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // CollectWithProgressForTest exposes collectWithProgress for white-box testing of goroutine lifecycle.
@@ -93,6 +94,15 @@ func (d *DelegateTool) CheckSpawnLimitsForTest(handoff *delegation.Handoff) erro
 // reaches the registered ExtGateFunc.
 func (d *DelegateTool) DispatchPostMemberGatesForTest(ctx context.Context, memberID string) error {
 	return d.dispatchPostMemberGates(ctx, memberID)
+}
+
+// ExecuteToolCallForTest exposes executeToolCall so the gate-error
+// halt test can pin the contract that *swarm.GateError surfaces as
+// a hard outer error (terminating the stream) while non-gate tool
+// errors stay attached to result.Error (soft fail, re-enters the
+// agent's tool loop).
+func (e *Engine) ExecuteToolCallForTest(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
+	return e.executeToolCall(ctx, sessionID, toolCall)
 }
 
 // SetEnginesForTest installs the engines map on a DelegateTool after

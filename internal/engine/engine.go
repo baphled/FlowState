@@ -2452,6 +2452,23 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		}
 		result.Error = err
 		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err)
+		// A *swarm.GateError signals that a post-member or post-swarm
+		// gate refused this tool call's output (or its preconditions).
+		// Returning nil here would let the parent agent's tool loop
+		// silently absorb the failure as a tool_result/IsError chunk
+		// and continue dispatching to the next member — the failure
+		// mode that motivated this branch. Promote the gate error to
+		// the outer return so streamWithTools terminates the stream
+		// (engine.go around line 2110: `if err != nil { outChan <-
+		// {Error, Done: true}; return }`), aborting the swarm
+		// dispatch as the bug-hunt manifest's `failurePolicy: halt`
+		// (default) intends. Non-gate tool errors keep the historical
+		// soft-fail behaviour so a transient bash failure or a tool
+		// timeout doesn't take the whole conversation down.
+		var gateErr *swarm.GateError
+		if errors.As(err, &gateErr) {
+			return result, gateErr
+		}
 		return result, nil
 	}
 	return tool.Result{}, fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name)
