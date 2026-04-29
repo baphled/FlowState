@@ -74,8 +74,9 @@ func newToolsListCmd(getApp func() *app.App) *cobra.Command {
 //   - non-nil error when the named agent cannot be found or output fails.
 //
 // Side effects:
-//   - Calls engine.SetManifest when agentName is non-empty, updating the engine
-//     tool filter for the duration of this command.
+//   - Calls ConfigureEngineForAgent when agentName is non-empty, which updates
+//     the engine manifest filter and wires manifest-gated tools (delegation,
+//     autoresearch) for the duration of this command.
 //   - Writes the tool list to cmd.OutOrStdout().
 func runToolsList(cmd *cobra.Command, application *app.App, agentName string) error {
 	if agentName != "" {
@@ -83,7 +84,7 @@ func runToolsList(cmd *cobra.Command, application *app.App, agentName string) er
 		if !ok {
 			return fmt.Errorf("agent %q not found in registry", agentName)
 		}
-		application.Engine.SetManifest(*manifest)
+		application.ConfigureEngineForAgent(*manifest)
 	}
 
 	tools := application.Engine.ToolSchemas()
