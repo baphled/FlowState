@@ -3153,6 +3153,64 @@ planner body %s
 			})
 		})
 	})
+
+	Context("RunAutoresearch library function", func() {
+		var ctx context.Context
+
+		BeforeEach(func() {
+			ctx = context.Background()
+		})
+
+		It("returns an error when surface is empty", func() {
+			_, err := cli.RunAutoresearchWithResult(ctx, cli.AutoresearchOptions{}, testApp, &bytes.Buffer{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("writes progress lines to the provided writer", func() {
+			candidatePath := filepath.Join(dataDir, "lib-cand.txt")
+			Expect(os.WriteFile(candidatePath, []byte(`---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: content candidate lib
+capabilities:
+  tools: [read, plan]
+---
+content body lib
+`), 0o600)).To(Succeed())
+
+			driverPath := filepath.Join(dataDir, "lib-driver.sh")
+			driverBody := fmt.Sprintf(`#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+cat %q
+`, candidatePath)
+			Expect(os.WriteFile(driverPath, []byte(driverBody), 0o755)).To(Succeed())
+
+			scorerPath := filepath.Join(dataDir, "lib-scorer.sh")
+			Expect(os.WriteFile(scorerPath, []byte(`#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+echo 1
+`), 0o755)).To(Succeed())
+
+			var buf bytes.Buffer
+			opts := cli.AutoresearchOptions{
+				Surface:         surface,
+				DriverScript:    driverPath,
+				EvaluatorScript: scorerPath,
+				MaxTrials:       1,
+				MetricDirection: "min",
+				TimeBudget:      30 * time.Second,
+				RunID:           "lib-func-run-1",
+			}
+			_, err := cli.RunAutoresearchWithResult(ctx, opts, testApp, &buf)
+			Expect(err).NotTo(HaveOccurred(), "out: %s", buf.String())
+			Expect(buf.String()).To(ContainSubstring("trial 1:"))
+		})
+	})
 })
 
 // Lifecycle plan Slice 4 — `flowstate autoresearch promote <run-id>`
