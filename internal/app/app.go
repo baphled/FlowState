@@ -29,6 +29,7 @@ import (
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	_ "github.com/baphled/flowstate/internal/plugin/builtin/all" // builtin/all is blank-imported so builtin plugin factories register via init.
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -47,7 +48,6 @@ import (
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
 	"github.com/baphled/flowstate/internal/skill"
-	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -83,14 +83,14 @@ type App struct {
 	// `~/.config/flowstate/swarms/`. Populated by setupSwarmRegistry
 	// during New(); the T-swarm-2 @-mention resolver queries this
 	// alongside the agent Registry to route `@<id>` invocations.
-	SwarmRegistry          *swarm.Registry
-	Skills                 []skill.Skill
-	Engine                 *engine.Engine
-	Discovery              *discovery.AgentDiscovery
-	Sessions               *ctxstore.FileSessionStore
-	Learning               learning.Store
-	API                    *api.Server
-	Streamer               streaming.Streamer
+	SwarmRegistry *swarm.Registry
+	Skills        []skill.Skill
+	Engine        *engine.Engine
+	Discovery     *discovery.AgentDiscovery
+	Sessions      *ctxstore.FileSessionStore
+	Learning      learning.Store
+	API           *api.Server
+	Streamer      streaming.Streamer
 	// Orchestrator is the canonical user-input → event-stream pipeline
 	// per ADR - Session Orchestrator for Surface Parity. CLI, API, and
 	// TUI all route through Orchestrator.ProcessUserInput; surfaces
@@ -98,7 +98,7 @@ type App struct {
 	// never reimplement the dispatch lifecycle. See ADR-001 (Multi-
 	// Access Method Architecture) §"Wrappers not duplicates" for the
 	// parent rule this finishes applying.
-	Orchestrator *orchestrator.Orchestrator
+	Orchestrator           *orchestrator.Orchestrator
 	TodoStore              todotool.Store
 	mcpClient              mcpclient.Client
 	plugins                *pluginRuntime
@@ -440,16 +440,16 @@ func buildApp(params appBuildParams) *App {
 	ollamaProvider := params.ollamaProvider
 	pluginRuntime := params.pluginRuntime
 	app := &App{
-		Config:           cfg,
-		Registry:         agentRegistry,
-		SwarmRegistry:    params.swarmRegistry,
-		Skills:           skills,
-		Engine:           runtime.engine,
-		Discovery:        runtime.discovery,
-		Sessions:         sessionStore,
-		Learning:         learningStore,
-		API:              runtime.apiServer,
-		Streamer:         runtime.streamer,
+		Config:        cfg,
+		Registry:      agentRegistry,
+		SwarmRegistry: params.swarmRegistry,
+		Skills:        skills,
+		Engine:        runtime.engine,
+		Discovery:     runtime.discovery,
+		Sessions:      sessionStore,
+		Learning:      learningStore,
+		API:           runtime.apiServer,
+		Streamer:      runtime.streamer,
 		Orchestrator: orchestrator.New(
 			runtime.engine,
 			agentRegistry,
@@ -1383,6 +1383,16 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 	if a.gateRunner != nil {
 		dt.WithGateRunner(a.gateRunner)
 	}
+
+	// Pin the engine this DelegateTool is installed on so
+	// activeSwarmContext can read the swarm context from the right
+	// place during a swarm dispatch. Without this the gate dispatch
+	// path silently fails — buildDelegateMaps excludes the lead from
+	// the targets map, so d.engines[d.sourceAgentID] always misses for
+	// lead-installed tools and gates never fire (verified by stderr
+	// diagnostic during swarm-test verification: every dispatchMemberGates
+	// call short-circuited at "no active swarm context" pre-fix).
+	dt.WithOwnerEngine(eng)
 }
 
 // buildSwarmGateRunner constructs the production swarm gate dispatcher
