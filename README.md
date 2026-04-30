@@ -6,6 +6,8 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 
 ## Features
 
+- **Multi-agent swarms** — Orchestrate coordinated teams of specialist agents with dependency graphs, retry policies, and external gates.
+- **Specialist agents** — 30+ pre-built agents for planning, research, code review, and domain-specific tasks.
 - **Ollama-first** - Local models as first-class citizens.
 - **Provider-agnostic** - Plug in any model provider (OpenAI, Anthropic, etc.).
 - **MCP integration** - Connect to external memory, RAG, and tools via Model Context Protocol. The mem0 memory server is bundled and materialised on first run; no separate clone or install is required.
@@ -282,6 +284,57 @@ go run ./tools/smoke/ext_gate_subprocess
 
 The smoke runs a fixture gate end-to-end and prints the response shape.
 
+## Swarms
+
+Swarms are coordinated teams of specialist agents that work together to solve complex tasks. A swarm manifest defines members, their dependencies, retry policies, and optional external gates for quality control.
+
+### Triggering a swarm
+
+- **CLI:** `flowstate run --agent <swarm-id>` (accepts both agent and swarm IDs)
+- **TUI chat:** Type `@<swarm-id>` in the chat input to trigger a swarm from an active conversation
+- **Agent picker:** Press `Ctrl+A` in the TUI to select a swarm from the picker
+
+### Key concepts
+
+- **Manifest registry** — Swarms are discovered from YAML or Markdown frontmatter files in `~/.config/flowstate/swarms/` and `~/.local/share/flowstate/swarms/`.
+- **Dependency graph** — Members declare `depends_on` to control execution order; cycle detection is automatic.
+- **Retry policies** — Per-member retry with configurable attempts, backoff, and jitter.
+- **External gates** — Author gates in any language (Bash, Python, etc.) and dispatch them during swarm execution for validation, fact-checking, or policy enforcement.
+- **Failure policies** — Control behaviour when gates or members fail: fail-fast, skip-and-continue, or retry-and-fallback.
+
+### Further reading
+
+- [Swarms Overview](docs/swarms/overview.md) — Architecture, concepts, and registry flow.
+- [Manifest Reference](docs/swarms/manifest-reference.md) — Complete schema, validation rules, and examples.
+- [Getting Started](docs/swarms/getting-started.md) — Setup, install, and run your first swarm.
+- [Gates](docs/swarms/gates.md) — External gate lifecycle, built-in gates, and authoring guide.
+- [Testing & Debugging](docs/swarms/testing.md) — Validation, isolation testing, and failure modes.
+
+## Agents
+
+Agents are individual AI assistants with specific roles, capabilities, and instructions. FlowState ships with 30+ specialist agents covering planning, research, code review, writing, and domain-specific tasks.
+
+### Discovery
+
+Agents are discovered at startup from:
+1. `~/.config/flowstate/agents/` (primary — operator-owned)
+2. `~/.local/share/flowstate/agents/` (legacy, migrated on first run)
+3. Embedded binary defaults (used as fallback when no on-disk manifest exists)
+
+### Running an agent
+
+- **CLI:** `flowstate run --agent <id>` — starts the TUI with the specified agent
+- **TUI:** Press `Ctrl+A` in the chat to open the agent picker and switch agents mid-conversation
+
+### Custom agents
+
+Drop a YAML or Markdown frontmatter manifest into `~/.config/flowstate/agents/<id>.yaml` (or `.md`) and restart FlowState. No refresh command is needed — agents are re-discovered on every startup.
+
+### Further reading
+
+- [Agent Manifest Reference](docs/agents/manifest-reference.md) — Complete schema including metadata, capabilities, delegation, hooks, and harness config.
+- [Getting Started with Agents](docs/agents/getting-started.md) — Discovery, built-in agents, custom agent creation, and troubleshooting.
+
 ## MCP Integration
 
 FlowState natively supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). This allows the AI to use external tools, access resources, and interact with your filesystem or other services.
@@ -300,17 +353,36 @@ entry is required to use it.
 | `Enter` | Send message |
 | `↑/↓`, `PgUp/PgDn` | Scroll through chat history |
 | `Ctrl+C` | Quit |
+| `Ctrl+T` | Toggle swarm activity pane |
+| `Ctrl+A` | Open agent picker |
+| `@<swarm-id>` | Trigger a swarm from chat |
 
 ## Commands
 
+### Core
+
 | Command | Description |
 |---------|-------------|
-| `flowstate analyze` | Systems thinking analysis |
-| `flowstate challenge` | Devil's advocate evaluation |
-| `flowstate research` | Systematic investigation |
-| `flowstate decide` | Structured decision making |
+| `flowstate run [--agent <id>]` | Run the TUI with an optional agent or swarm |
+| `flowstate chat` | Launch the chat TUI |
 | `flowstate models` | List available models from all configured providers |
 | `flowstate help` | Show all available commands |
+
+### Agents
+
+| Command | Description |
+|---------|-------------|
+| `flowstate agents list` | List all discovered agents |
+| `flowstate agents info <id>` | Show details for a specific agent |
+| `flowstate agents refresh` | Force-refresh from the embedded binary set |
+| `flowstate agents validate [<id>]` | Validate agent manifest(s) |
+
+### Swarms
+
+| Command | Description |
+|---------|-------------|
+| `flowstate swarm list` | List all discovered swarms |
+| `flowstate swarm validate [<id>]` | Validate swarm manifest(s) |
 
 ## Development
 
@@ -356,6 +428,15 @@ See [AGENTS.md](AGENTS.md) for AI development instructions.
 - [Architecture Overview](docs/architecture/OVERVIEW.md)
 - [Demo Walkthrough](docs/DEMO.md)
 - [Development Rules](rules/)
+- **Swarms**
+  - [Overview](docs/swarms/overview.md)
+  - [Manifest Reference](docs/swarms/manifest-reference.md)
+  - [Getting Started](docs/swarms/getting-started.md)
+  - [Gates](docs/swarms/gates.md)
+  - [Testing & Debugging](docs/swarms/testing.md)
+- **Agents**
+  - [Manifest Reference](docs/agents/manifest-reference.md)
+  - [Getting Started](docs/agents/getting-started.md)
 
 ## License
 
