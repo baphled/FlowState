@@ -2314,10 +2314,14 @@ func (e *Engine) processStreamChunks(
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
+				if len(toolCalls) == 0 {
+					outChan <- provider.StreamChunk{Done: true, ModelID: e.LastModel()}
+				}
 				return streamChunkResult{
 					toolCalls:       toolCalls,
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
+					done:            len(toolCalls) == 0,
 				}
 			}
 
