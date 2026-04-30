@@ -520,7 +520,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // resolveDispatchTarget classifies req.AgentID into a (lead-or-agent,
 // swarmCtx) pair using the same shared swarm.ResolveTarget the CLI's
-// resolveAgentOrSwarm and the TUI's maybeBeginSwarmDispatch use. When
+// resolveAgentOrSwarm uses (the TUI chat intent reaches the same
+// resolver via orchestrator.Stream). When
 // the swarm registry is not installed (test surface, or a build that
 // omitted the loader), passes the input id through verbatim with a nil
 // swarmCtx — matching the CLI's bare-engine pass-through contract.

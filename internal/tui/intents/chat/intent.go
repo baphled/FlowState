@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -120,13 +121,10 @@ type BackgroundTaskCompletedMsg struct {
 // carries the event payload safely into Update() for processing on the main
 // goroutine.
 type EventBusNotificationMsg struct {
-	ProviderError       *events.ProviderErrorEvent
-	RateLimited         *events.ProviderEvent
-	ToolError           *events.ToolExecuteErrorEvent
-	CategoryModelSwap   *engine.CategoryModelSwap
-	DelegationStarted   *events.DelegationStartedEvent
-	DelegationCompleted *events.DelegationCompletedEvent
-	DelegationFailed    *events.DelegationFailedEvent
+	ProviderError     *events.ProviderErrorEvent
+	RateLimited       *events.ProviderEvent
+	ToolError         *events.ToolExecuteErrorEvent
+	CategoryModelSwap *engine.CategoryModelSwap
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
@@ -375,34 +373,11 @@ type Intent struct {
 	// makes the heuristic safe on a fresh session.
 	lastUserScrollAt time.Time
 	agentRegistry    *agent.Registry
-	// swarmRegistry is consulted by the shared swarm.ResolveTarget after
-	// the agent registry misses; nil disables the swarm fallthrough so
-	// the premature-delegation-misfire detector (P7/C2) and any future
+	// swarmRegistry is consulted by resolveAtMention after the agent
+	// registry misses; nil disables the swarm fallthrough so the
+	// premature-delegation-misfire detector (P7/C2) and any future
 	// routing surface degrade to the historical agent-only behaviour.
-	swarmRegistry *swarm.Registry
-	// pendingSwarmLeadID carries the swarm lead's agent id for the
-	// current turn when the user typed @<swarm-id>. Set by
-	// maybeBeginSwarmDispatch, consumed by sendMessage to route the
-	// stream to the lead, cleared by the stream-completion handler
-	// after FlushSwarmLifecycle and SetSwarmContext(nil) run. Empty
-	// in normal (non-dispatch) turns. Per ADR - Swarm Dispatch Across
-	// Access Methods, this replaces the legacy maybeSwitchToSwarm
-	// SetManifest swap so the chat keeps its conversational identity
-	// across dispatches.
-	pendingSwarmLeadID string
-	// preDispatchManifest is the engine's manifest captured at the
-	// moment a swarm dispatch begins. The engine's Stream method
-	// auto-swaps its persistent manifest to whatever agent_id the
-	// caller passes — long-standing behaviour to support
-	// `flowstate run --agent <id>` — which means a swarm dispatch
-	// permanently re-identifies the engine as the lead unless we
-	// explicitly revert. Stashed by maybeBeginSwarmDispatch and
-	// restored by finaliseStreamIfDone so the chat returns to its
-	// pre-dispatch persistent agent. Same shape as the CLI's
-	// snapshot/restore inside swarm.DispatchSwarm — keeps CLI/TUI
-	// behaviour symmetric per ADR - Swarm Dispatch Across Access
-	// Methods.
-	preDispatchManifest agent.Manifest
+	swarmRegistry       *swarm.Registry
 	sessionStore        SessionLister
 	childSessionLister  SessionChildLister
 	view                *chat.View
@@ -944,44 +919,6 @@ func (i *Intent) subscribeToFailoverEvents() {
 		default:
 		}
 	})
-
-	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"TUI
-	// consumer migration". The chat intent ends as a bus subscriber;
-	// the chunk-driven `DelegationInfo` branch in swarmEventFromChunk
-	// is deleted in the same commit. Events are filtered by
-	// ParentSessionID so siblings' events do not bleed across activity
-	// panes — the engine fires on the lead's bus and every subscriber
-	// observes every event, so this is the canonical filter site.
-	bus.Subscribe(events.EventDelegationStarted, func(msg any) {
-		evt, ok := msg.(*events.DelegationStartedEvent)
-		if !ok || evt.Data.ParentSessionID != i.sessionID {
-			return
-		}
-		select {
-		case i.eventNotifChan <- EventBusNotificationMsg{DelegationStarted: evt}:
-		default:
-		}
-	})
-	bus.Subscribe(events.EventDelegationCompleted, func(msg any) {
-		evt, ok := msg.(*events.DelegationCompletedEvent)
-		if !ok || evt.Data.ParentSessionID != i.sessionID {
-			return
-		}
-		select {
-		case i.eventNotifChan <- EventBusNotificationMsg{DelegationCompleted: evt}:
-		default:
-		}
-	})
-	bus.Subscribe(events.EventDelegationFailed, func(msg any) {
-		evt, ok := msg.(*events.DelegationFailedEvent)
-		if !ok || evt.Data.ParentSessionID != i.sessionID {
-			return
-		}
-		select {
-		case i.eventNotifChan <- EventBusNotificationMsg{DelegationFailed: evt}:
-		default:
-		}
-	})
 }
 
 // waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
@@ -1030,69 +967,9 @@ func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd
 		i.notifications.AddCategoryModelSwapNotification(
 			swap.Category, swap.Original, swap.Chosen, swap.Reason,
 		)
-	case msg.DelegationStarted != nil:
-		i.appendDelegationSwarmEvent(msg.DelegationStarted.Data, "started", msg.DelegationStarted.Timestamp())
-	case msg.DelegationCompleted != nil:
-		i.appendDelegationSwarmEvent(msg.DelegationCompleted.Data, "completed", msg.DelegationCompleted.Timestamp())
-	case msg.DelegationFailed != nil:
-		i.appendDelegationSwarmEvent(msg.DelegationFailed.Data, "failed", msg.DelegationFailed.Timestamp())
 	}
 	i.refreshViewport()
 	return i.waitForEventBusNotification()
-}
-
-// appendDelegationSwarmEvent projects an `events.DelegationEventData` payload
-// onto the activity-pane SwarmEvent shape and writes it to the per-intent
-// store. Mirrors the projection the chunk-driven `delegationSwarmEvent`
-// helper used to perform — the migration is which subscriber populates the
-// store, not the SwarmEvent shape downstream surfaces consume.
-//
-// Expected:
-//   - data carries the bus payload from the engine.
-//   - status is one of "started", "completed", "failed".
-//   - ts is the bus event's timestamp; preserved on the SwarmEvent so the
-//     activity row's wall-clock matches the engine-side firing order.
-//
-// Side effects:
-//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
-func (i *Intent) appendDelegationSwarmEvent(data events.DelegationEventData, status string, ts time.Time) {
-	if i.swarmStore == nil {
-		return
-	}
-	agentID := data.TargetAgent
-	if agentID == "" {
-		agentID = i.agentID
-	}
-	metadata := map[string]interface{}{
-		"source_agent":      data.SourceAgent,
-		"description":       data.Description,
-		"child_session_id":  data.ChildSessionID,
-		"parent_session_id": data.ParentSessionID,
-	}
-	if data.ModelName != "" {
-		metadata["model_name"] = data.ModelName
-	}
-	if data.ProviderName != "" {
-		metadata["provider_name"] = data.ProviderName
-	}
-	if data.ToolCalls > 0 {
-		metadata["tool_calls"] = data.ToolCalls
-	}
-	if data.LastTool != "" {
-		metadata["last_tool"] = data.LastTool
-	}
-	if data.Error != "" {
-		metadata["error"] = data.Error
-	}
-	i.swarmStore.Append(streaming.SwarmEvent{
-		ID:            ensureEventID(data.ChainID),
-		Type:          streaming.EventDelegation,
-		Status:        status,
-		Timestamp:     ts.UTC(),
-		AgentID:       agentID,
-		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata:      metadata,
-	})
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -2603,16 +2480,9 @@ func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) tea.Cmd {
 // Side effects:
 //   - None.
 func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
-	// Delegation events no longer flow through the chunk-driven path.
-	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) lifted
-	// delegation event production into the engine; the chat intent
-	// subscribes to `delegation.{started,completed,failed}` on the
-	// engine's `*eventbus.EventBus` (see subscribeToFailoverEvents)
-	// and projects bus events to the SwarmEvent shape via
-	// appendDelegationSwarmEvent. The chunk-side DelegationInfo is
-	// preserved for transcript rendering and accumulator correlation
-	// — see engine/delegation.go::emitDelegationEvent — but no longer
-	// populates the activity pane.
+	if msg.DelegationInfo != nil {
+		return delegationSwarmEvent(msg, fallbackAgent), true
+	}
 	if msg.ToolCallName != "" || msg.ToolStatus != "" {
 		return toolCallSwarmEvent(msg, fallbackAgent), true
 	}
@@ -2626,6 +2496,39 @@ func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.Sw
 		return planOrReviewSwarmEvent(streaming.EventReview, msg, fallbackAgent), true
 	}
 	return streaming.SwarmEvent{}, false
+}
+
+// delegationSwarmEvent constructs an EventDelegation SwarmEvent from a chunk
+// carrying DelegationInfo.
+//
+// Expected:
+//   - msg.DelegationInfo is non-nil.
+//   - fallbackAgent is the chat intent's agent ID used when DelegationInfo
+//     carries no TargetAgent.
+//
+// Returns:
+//   - A populated SwarmEvent with EventDelegation type and the DelegationInfo
+//     ChainID as its ID (generated UUID when ChainID is empty).
+//
+// Side effects:
+//   - None.
+func delegationSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
+	agentID := msg.DelegationInfo.TargetAgent
+	if agentID == "" {
+		agentID = fallbackAgent
+	}
+	return streaming.SwarmEvent{
+		ID:            ensureEventID(msg.DelegationInfo.ChainID),
+		Type:          streaming.EventDelegation,
+		Status:        msg.DelegationInfo.Status,
+		Timestamp:     time.Now().UTC(),
+		AgentID:       agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata: map[string]interface{}{
+			"source_agent": msg.DelegationInfo.SourceAgent,
+			"description":  msg.DelegationInfo.Description,
+		},
+	}
 }
 
 // toolCallSwarmEvent constructs an EventToolCall SwarmEvent from a chunk
@@ -2972,6 +2875,82 @@ func (i *Intent) applyEndOfStreamScrollHeuristic() {
 	})
 }
 
+// atMentionPattern matches @-mentions for agent names in a user message.
+// It captures the name token immediately after "@", allowing letters,
+// digits, underscores, and hyphens (the character set used in agent IDs
+// and aliases across the manifest corpus). The leading boundary is
+// enforced with a non-alphanumeric preceding character OR start-of-line so
+// "email@example.com" does not match.
+var atMentionPattern = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_-])@([a-zA-Z0-9_][a-zA-Z0-9_-]*)`)
+
+// resolveAtMention is the T-swarm-2 entry point that turns a bare id
+// (the token after `@`, with the leading `@` already stripped) into
+// a routing decision. Per spec §2 the agent registry is consulted
+// first, then the swarm registry; misses on both surface a
+// *swarm.NotFoundError so callers can render the canonical "no agent
+// or swarm named '<id>'" error. Spec §1 guarantees global uniqueness
+// across the two registries — the precedence order is defensive
+// only.
+//
+// Expected:
+//   - id is the bare token (no leading `@`); empty yields KindNone +
+//     a NotFoundError so callers get a single error path.
+//   - agentReg may be nil; the resolver treats it as empty.
+//   - swarmReg may be nil; the resolver treats it as empty.
+//
+// Returns:
+//   - kind classifies the resolved registry (KindAgent / KindSwarm /
+//     KindNone).
+//   - manifest is the swarm Manifest when kind == KindSwarm; nil
+//     otherwise.
+//   - err is *swarm.NotFoundError on KindNone, nil on a hit.
+//
+// Side effects:
+//   - None.
+func resolveAtMention(id string, agentReg *agent.Registry, swarmReg *swarm.Registry) (swarm.Kind, *swarm.Manifest, error) {
+	hasAgent := func(name string) bool {
+		if agentReg == nil {
+			return false
+		}
+		if _, ok := agentReg.Get(name); ok {
+			return true
+		}
+		_, ok := agentReg.GetByNameOrAlias(name)
+		return ok
+	}
+	kind, manifest := swarm.Resolve(id, hasAgent, swarmReg)
+	if kind == swarm.KindNone {
+		return kind, nil, &swarm.NotFoundError{ID: id}
+	}
+	return kind, manifest, nil
+}
+
+// extractAtMentions returns the set of @-mentioned names found in the
+// given message, preserving their original casing. The names are filtered
+// downstream via the agent registry's GetByNameOrAlias helper.
+//
+// Expected:
+//   - message is the raw user prompt.
+//
+// Returns:
+//   - A slice of mention tokens without the leading "@"; empty if none.
+//
+// Side effects:
+//   - None.
+func extractAtMentions(message string) []string {
+	matches := atMentionPattern.FindAllStringSubmatch(message, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 && m[1] != "" {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
 // detectPrematureDelegationMisfire returns a user-facing warning message
 // when the P7/C2 signature is detected: an agent whose manifest sets
 // can_delegate:false emits a bare tool_use as the very first content of
@@ -3016,43 +2995,18 @@ func detectPrematureDelegationMisfire(
 		return ""
 	}
 	// Signal 3: user message must reference a known agent OR swarm via @-mention.
-	// Resolution flows through the shared swarm.ResolveTarget — the same
-	// resolver every other access method (CLI, API server, TUI swarm
-	// dispatch) consults — so all surfaces agree on what an @<id> means.
-	// See ADR - Swarm Dispatch Across Access Methods §"Resolver
-	// consolidation". Either kind of hit means the user wanted to route
-	// the turn elsewhere; the warning fires identically because the
-	// user-visible fix is the same: switch to a delegating agent so the
-	// mentioned target is reachable.
-	//
-	// Nil-swarmReg degradation: ResolveTarget short-circuits to a pass-
-	// through (id, nil, nil) when swarmReg is nil to preserve the CLI's
-	// bare-engine contract — that pass-through is unsafe here because it
-	// would falsely classify any token as a hit. We therefore fall back
-	// to a direct hasAgent check when the swarm registry is unavailable,
-	// which matches the historical agent-only detector behaviour pinned
-	// by the P7/C2 spec corpus.
-	mentions := swarm.ExtractAtMentions(userMsg)
+	// T-swarm-2 (spec §2): the resolver consults the agent registry first, then
+	// the swarm registry. Either kind of hit means the user wanted to route the
+	// turn elsewhere — the warning fires identically because the user-visible
+	// fix is the same: switch to a delegating agent so the mentioned target is
+	// reachable.
+	mentions := extractAtMentions(userMsg)
 	if len(mentions) == 0 {
 		return ""
 	}
-	hasAgent := func(name string) bool {
-		if _, ok := reg.Get(name); ok {
-			return true
-		}
-		_, ok := reg.GetByNameOrAlias(name)
-		return ok
-	}
 	var target string
 	for _, name := range mentions {
-		if swarmReg == nil {
-			if hasAgent(name) {
-				target = name
-				break
-			}
-			continue
-		}
-		if _, _, err := swarm.ResolveTarget(hasAgent, swarmReg, name); err == nil {
+		if kind, _, err := resolveAtMention(name, reg, swarmReg); err == nil && kind != swarm.KindNone {
 			target = name
 			break
 		}
@@ -4812,55 +4766,6 @@ func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
 	i.syncViewAgentMeta()
 	if i.sessionManager != nil && i.sessionID != "" {
 		_ = i.sessionManager.UpdateSessionAgent(i.sessionID, manifest.ID)
-	}
-}
-
-// maybeBeginSwarmDispatch resolves the first @<swarm-id> mention in
-// message and, when found, prepares a one-shot swarm dispatch for the
-// upcoming turn. The chat's persistent identity (i.agentID) and the
-// engine's active manifest are NOT mutated — only the swarm context
-// is installed and the lead agent id is stashed in pendingSwarmLeadID
-// so sendMessage can route this turn's stream to the lead.
-//
-// This is the TUI half of the contract pinned by ADR - Swarm Dispatch
-// Across Access Methods: swarm dispatch is a discrete task, not an
-// identity swap. After the dispatched turn streams to completion
-// (handled in handleStreamChunkMsg's Done branch), the swarm context
-// is cleared and the chat returns to whatever agent the user was
-// already talking to. Mirrors the CLI's `Engine.Stream(ctx, leadID,
-// message)` per-call shape rather than a persistent SetManifest swap.
-//
-// Resolution goes through swarm.ResolveTarget — the same shared
-// resolver the CLI's resolveAgentOrSwarm calls — so both surfaces
-// agree on what an @<id> means.
-func (i *Intent) maybeBeginSwarmDispatch(message string) {
-	if i.engine == nil || i.agentRegistry == nil || i.swarmRegistry == nil {
-		return
-	}
-	hasAgent := func(name string) bool {
-		if _, ok := i.agentRegistry.Get(name); ok {
-			return true
-		}
-		_, ok := i.agentRegistry.GetByNameOrAlias(name)
-		return ok
-	}
-	for _, mention := range swarm.ExtractAtMentions(message) {
-		leadID, swarmCtx, err := swarm.ResolveTarget(hasAgent, i.swarmRegistry, mention)
-		if err != nil || swarmCtx == nil {
-			continue
-		}
-		// Snapshot the engine's pre-dispatch manifest BEFORE installing
-		// the swarm context. Engine.Stream will auto-swap to the lead's
-		// manifest on the upcoming Stream call; finaliseStreamIfDone
-		// restores this snapshot once the dispatched turn completes so
-		// the chat's persistent identity (i.agentID) and the engine's
-		// manifest stay in sync for follow-up turns. CLI symmetry: the
-		// shared swarm.DispatchSwarm service does the same snapshot +
-		// restore around its synchronous Stream call.
-		i.preDispatchManifest = i.engine.Manifest()
-		i.engine.SetSwarmContext(swarmCtx)
-		i.pendingSwarmLeadID = leadID
-		return
 	}
 }
 

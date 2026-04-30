@@ -28,7 +28,7 @@ const (
 	defaultEmbedModel    = "text-embedding-3-small"
 )
 
-var errAPIKeyRequired = errors.New("Ollama Cloud API key is required")
+var errAPIKeyRequired = errors.New("ollama Cloud API key is required")
 
 // Provider implements the provider.Provider interface for Ollama Cloud.
 type Provider struct {
