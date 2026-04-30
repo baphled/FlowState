@@ -1,0 +1,43 @@
+schema_version: "1.0.0"
+id: adulting
+description: >
+  Life-admin triage swarm. Dump your pile of avoided tasks — bills, appointments,
+  renewals, council letters, tax deadlines — and the swarm will prioritise them,
+  track bills and deadlines, and draft formal correspondence ready to send.
+
+# life-admin-lead triages the incoming task dump and orchestrates the
+# three specialist agents sequentially via delegation.
+lead: life-admin-lead
+
+members:
+  - bill-tracker
+  - deadline-scanner
+  - letter-drafter
+
+harness:
+  # Sequential: letter-drafter depends on bills + deadlines from the two
+  # preceding agents, so parallel dispatch would race the coordination_store.
+  parallel: false
+
+  gates:
+    # admin-item-validator fires after life-admin-lead completes its triage.
+    # It checks every task in adulting/{chainID}/tasks has a non-empty
+    # deadline and an integer priority (1–4). If any task is incomplete,
+    # the gate returns pass:false and the swarm halts before the specialists
+    # run, preventing downstream agents from operating on malformed data.
+    - name: admin-item-validator
+      kind: ext:admin-item-validator
+      when: post-member
+      target: life-admin-lead
+      output_key: output
+
+    # personal-data-security fires post on the swarm's final output.
+    # Strip mode removes PII from the response before it leaves the swarm.
+    - name: personal-data-security
+      kind: ext:personal-data-security
+      when: post
+      policy:
+        mode: strip
+
+context:
+  chain_prefix: adulting
