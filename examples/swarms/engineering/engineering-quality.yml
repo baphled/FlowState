@@ -1,0 +1,14 @@
+schema_version: "1.0.0"
+id: engineering-quality
+description: >
+  Quality assurance sub-swarm. QA-Engineer leads a structured review with
+  Code-Reviewer checking correctness and style, and Security-Engineer auditing
+  for vulnerabilities.
+lead: QA-Engineer
+members:
+  - Code-Reviewer
+  - Security-Engineer
+harness:
+  parallel: false
+context:
+  chain_prefix: engineering/quality

@@ -1,0 +1,8 @@
+name: integration-gate
+description: Runs integration tests and optionally checks for breaking API changes
+version: "0.1.0"
+exec: ./gate.py
+timeout: 300s
+policy:
+  integration_cmd: "make test-integration"
+  breaking_cmd: ""

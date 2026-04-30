@@ -1,0 +1,7 @@
+name: ci-gate
+description: Runs the project's unit test suite and fails the pipeline if any test fails
+version: "0.1.0"
+exec: ./gate.py
+timeout: 120s
+policy:
+  test_cmd: "make test"
