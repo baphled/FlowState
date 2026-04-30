@@ -2551,10 +2551,6 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, err
 	}
 
-	// Precedence: top-level chainID > handoff.chain_id > fresh fallback.
-	// chainIDFromCaller distinguishes a planner-supplied value (which
-	// drives preamble injection) from the auto-generated fallback (which
-	// stays internal for backwards compatibility).
 	var chainID string
 	chainIDFromCaller := false
 	switch {
@@ -2565,7 +2561,12 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		chainID = params.handoff.ChainID
 		chainIDFromCaller = true
 	default:
-		chainID = newDelegationChainID()
+		if swarmCtx, ok := d.activeSwarmContext(); ok && swarmCtx.ChainPrefix != "" {
+			chainID = swarmCtx.ChainPrefix
+			chainIDFromCaller = true
+		} else {
+			chainID = newDelegationChainID()
+		}
 	}
 
 	targetEngine, ok := d.engines[targetAgentID]
