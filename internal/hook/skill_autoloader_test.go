@@ -64,10 +64,10 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(HavePrefix("Your load_skills: ["))
+			Expect(systemContent).To(HavePrefix("Your load_skills:"))
 			Expect(systemContent).To(ContainSubstring("pre-action"))
 			Expect(systemContent).To(ContainSubstring("memory-keeper"))
-			Expect(systemContent).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
+			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."))
 			Expect(systemContent).To(ContainSubstring("You are a helpful assistant."))
 		})
 
@@ -139,8 +139,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			Expect(capturedRequest.Messages).To(HaveLen(2))
 			Expect(capturedRequest.Messages[0].Role).To(Equal("system"))
-			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("Your load_skills: ["))
-			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
+			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("Your load_skills:"))
+			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("Use skill_load(name) to invoke."))
 		})
 	})
 
@@ -199,8 +199,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
-			Expect(systemContent).To(ContainSubstring("]. Use skill_load(name) only when relevant to the current task."))
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."))
 			for _, skill := range config.BaselineSkills {
 				Expect(systemContent).To(ContainSubstring(skill))
 			}
@@ -212,7 +212,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery, clean-code]. Use skill_load(name) only when relevant to the current task.\n\nYou are a helpful assistant."},
+					{Role: "system", Content: "Your load_skills: session start — invoke before first response: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery]; load when relevant: [clean-code]. Use skill_load(name) to invoke.\n\nYou are a helpful assistant."},
 					{Role: "user", Content: "follow-up after tool call"},
 				},
 			}
@@ -402,7 +402,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["),
+			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."),
 				"dynamic injection should replace static placeholder")
 		})
 	})
@@ -434,7 +434,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
 			for _, skill := range config.BaselineSkills {
 				Expect(systemContent).To(ContainSubstring(skill))
 			}
@@ -530,7 +530,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
 			Expect(systemContent).NotTo(ContainSubstring(`<skill name=`))
 		})
 	})
@@ -700,10 +700,10 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
 			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
 
-			leanIdx := strings.Index(systemContent, "Your load_skills: [")
+			leanIdx := strings.Index(systemContent, "Your load_skills:")
 			blockIdx := strings.Index(systemContent, `<skill name="skill-a">`)
 			Expect(leanIdx).To(BeNumerically("<", blockIdx))
 		})
@@ -733,7 +733,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("strips every skill from the lean injection and leaves the system prompt untouched", func() {
+		It("still injects session-start for baseline skills even when all are baked", func() {
 			baked := []string{"pre-action", "memory-keeper", "token-cost-estimation"}
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
 			wrapped := autoloader(passthrough)
@@ -742,8 +742,10 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(Equal("You are a helpful assistant."))
-			Expect(systemContent).NotTo(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("session start"))
+			Expect(systemContent).To(ContainSubstring("pre-action"))
+			Expect(systemContent).To(ContainSubstring("memory-keeper"))
+			Expect(systemContent).NotTo(ContainSubstring("load when relevant"))
 		})
 	})
 
@@ -773,7 +775,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("strips baked skills and keeps unbaked skills in the lean injection", func() {
+		It("keeps baseline in session-start and strips baked contextual skills from load-when-relevant", func() {
 			baked := []string{"pre-action", "token-cost-estimation"}
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
 			wrapped := autoloader(passthrough)
@@ -782,16 +784,12 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			// Baseline skills always appear in session-start even when baked
+			Expect(systemContent).To(ContainSubstring("session start"))
+			Expect(systemContent).To(ContainSubstring("pre-action"))
+			Expect(systemContent).To(ContainSubstring("token-cost-estimation"))
+			// Contextual (keyword-matched) skill still injected under load-when-relevant
 			Expect(systemContent).To(ContainSubstring("golang-testing"))
-
-			loadSkillsIdx := strings.Index(systemContent, "Your load_skills: [")
-			Expect(loadSkillsIdx).NotTo(Equal(-1))
-			closeBracketIdx := strings.Index(systemContent[loadSkillsIdx:], "]")
-			Expect(closeBracketIdx).NotTo(Equal(-1))
-			skillList := systemContent[loadSkillsIdx+len("Your load_skills: [") : loadSkillsIdx+closeBracketIdx]
-			Expect(skillList).NotTo(ContainSubstring("pre-action"))
-			Expect(skillList).NotTo(ContainSubstring("token-cost-estimation"))
 		})
 	})
 
@@ -827,7 +825,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills: ["))
+			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
 			Expect(systemContent).To(ContainSubstring("pre-action"))
 			Expect(systemContent).To(ContainSubstring("memory-keeper"))
 		})

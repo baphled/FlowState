@@ -54,7 +54,7 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		systemPromptTokens := counter.Count(systemPrompt)
 
 		autoloadCfg := hook.DefaultSkillAutoLoaderConfig()
-		leanHeader := "Your load_skills: [" + strings.Join(autoloadCfg.BaselineSkills, ", ") + "]. Use skill_load(name) only when relevant to the current task."
+		leanHeader := "Your load_skills: session start — invoke before first response: [" + strings.Join(autoloadCfg.BaselineSkills, ", ") + "]. Use skill_load(name) to invoke."
 		skillHeaderTokens := counter.Count(leanHeader)
 
 		request := &provider.ChatRequest{
@@ -78,7 +78,7 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		_, err = wrapped(context.Background(), request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(captured.Messages).To(HaveLen(2))
-		Expect(captured.Messages[0].Content).To(ContainSubstring("Your load_skills: ["))
+		Expect(captured.Messages[0].Content).To(ContainSubstring("Your load_skills:"))
 
 		skillCount, totalSkillBytes, err := countSkillFiles(appCfg.SkillDir)
 		Expect(err).NotTo(HaveOccurred())

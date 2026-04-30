@@ -114,13 +114,21 @@ func injectSelectedSkills(
 	cache *SkillContentCache,
 	bakedSkillNames []string,
 ) {
-	if cache != nil {
-		baselineSet := make(map[string]bool, len(config.BaselineSkills))
-		for _, s := range config.BaselineSkills {
-			baselineSet[s] = true
+	baselineSet := make(map[string]bool, len(config.BaselineSkills))
+	for _, s := range config.BaselineSkills {
+		baselineSet[s] = true
+	}
+	var baseline, contextual []string
+	for _, s := range skills {
+		if baselineSet[s] {
+			baseline = append(baseline, s)
+		} else {
+			contextual = append(contextual, s)
 		}
+	}
+	if cache != nil {
 		blocks, _ := buildSkillContentBlocks(skills, cache, config.MaxAutoSkillsBytes, baselineSet)
-		lean := buildLeanInjection(skills)
+		lean := buildLeanInjection(baseline, contextual)
 		if blocks != "" {
 			injectLeanSkills(req, lean+"\n\n"+blocks)
 		} else {
@@ -128,11 +136,13 @@ func injectSelectedSkills(
 		}
 		return
 	}
-	remaining := stripBakedSkills(skills, bakedSkillNames)
-	if len(remaining) == 0 {
+	// Baseline skills are always injected as session-start mandatory; only strip baked skills
+	// from the contextual (non-baseline) list.
+	contextual = stripBakedSkills(contextual, bakedSkillNames)
+	if len(baseline) == 0 && len(contextual) == 0 {
 		return
 	}
-	lean := buildLeanInjection(remaining)
+	lean := buildLeanInjection(baseline, contextual)
 	injectLeanSkills(req, lean)
 }
 
@@ -155,7 +165,7 @@ func injectBaselineOnly(req *provider.ChatRequest, baselineSkills []string, bake
 	if len(remaining) == 0 {
 		return
 	}
-	lean := buildLeanInjection(remaining)
+	lean := buildLeanInjection(remaining, nil)
 	injectLeanSkills(req, lean)
 }
 
@@ -245,18 +255,33 @@ func containsAssistantMessage(messages []provider.Message) bool {
 	return false
 }
 
-// buildLeanInjection formats a slice of skill names into the lean injection string.
+// buildLeanInjection formats a two-tier skill injection string.
+// sessionStartSkills are mandatory and must be invoked before the first response.
+// contextualSkills are optional and should be loaded when relevant.
 //
 // Expected:
-//   - skills is a slice of skill names (may be empty).
+//   - sessionStartSkills is the baseline (always-active) skill list; may be empty.
+//   - contextualSkills is the agent/keyword skill list; may be empty.
 //
 // Returns:
-//   - A formatted string: "Your load_skills: [X, Y]. Use skill_load(name) only when relevant to the current task."
+//   - A formatted string with mandatory session-start and/or optional contextual tiers.
 //
 // Side effects:
 //   - None.
-func buildLeanInjection(skills []string) string {
-	return fmt.Sprintf("Your load_skills: [%s]. Use skill_load(name) only when relevant to the current task.", strings.Join(skills, ", "))
+func buildLeanInjection(sessionStartSkills, contextualSkills []string) string {
+	var sb strings.Builder
+	sb.WriteString("Your load_skills:")
+	if len(sessionStartSkills) > 0 {
+		fmt.Fprintf(&sb, " session start — invoke before first response: [%s]", strings.Join(sessionStartSkills, ", "))
+	}
+	if len(contextualSkills) > 0 {
+		if len(sessionStartSkills) > 0 {
+			sb.WriteString(";")
+		}
+		fmt.Fprintf(&sb, " load when relevant: [%s]", strings.Join(contextualSkills, ", "))
+	}
+	sb.WriteString(". Use skill_load(name) to invoke.")
+	return sb.String()
 }
 
 // injectLeanSkills prepends a lean skill string to the system message in a chat request.
@@ -272,7 +297,7 @@ func buildLeanInjection(skills []string) string {
 //   - Mutates the first system message, or prepends a new system message if none exists.
 //   - No-ops when the system message already contains a load_skills directive.
 func injectLeanSkills(req *provider.ChatRequest, lean string) {
-	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Your load_skills: [") {
+	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Use skill_load(name) to invoke.") {
 		return
 	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {

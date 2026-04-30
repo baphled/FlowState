@@ -78,7 +78,7 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 		It("injects lean format with load_skills directive", func() {
 			req := runHook("Hello")
 			Expect(req.Messages[0].Content).To(ContainSubstring("Your load_skills:"))
-			Expect(req.Messages[0].Content).To(ContainSubstring("Use skill_load(name) only when relevant to the current task."))
+			Expect(req.Messages[0].Content).To(ContainSubstring("Use skill_load(name) to invoke."))
 		})
 	})
 
@@ -99,24 +99,18 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			req := runHook("golang database testing")
 			content := req.Messages[0].Content
 
-			loadSkillsIdx := strings.Index(content, "Your load_skills: [")
-			Expect(loadSkillsIdx).NotTo(Equal(-1))
-
-			closeBracketIdx := strings.Index(content[loadSkillsIdx:], "]")
-			skillList := content[loadSkillsIdx+len("Your load_skills: [") : loadSkillsIdx+closeBracketIdx]
+			// Non-baseline skills appear in the "load when relevant: [...]" tier.
+			const marker = "load when relevant: ["
+			idx := strings.Index(content, marker)
+			if idx == -1 {
+				// No contextual skills injected — cap is trivially respected.
+				return
+			}
+			closeIdx := strings.Index(content[idx:], "]")
+			Expect(closeIdx).NotTo(Equal(-1))
+			skillList := content[idx+len(marker) : idx+closeIdx]
 			skills := strings.Split(skillList, ", ")
-
-			baselineSet := make(map[string]bool)
-			for _, b := range cfg.BaselineSkills {
-				baselineSet[b] = true
-			}
-			baselineCount := 0
-			for _, s := range skills {
-				if baselineSet[s] {
-					baselineCount++
-				}
-			}
-			nonBaselineCount := len(skills) - baselineCount
+			nonBaselineCount := len(skills)
 			Expect(nonBaselineCount).To(BeNumerically("<=", cfg.MaxAutoSkills))
 		})
 	})
