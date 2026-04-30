@@ -6,7 +6,7 @@ test.describe('Chat view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ models: ['claude-3-5-sonnet', 'gpt-4o'] }),
+        body: JSON.stringify(['claude-3-5-sonnet', 'gpt-4o']),
       })
     })
 
@@ -14,7 +14,7 @@ test.describe('Chat view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ message: 'Hello from the mock assistant!' }),
+        body: JSON.stringify({ content: 'Hello from the mock assistant!' }),
       })
     })
 
@@ -22,7 +22,7 @@ test.describe('Chat view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ events: [] }),
+        body: JSON.stringify([]),
       })
     })
 
@@ -50,7 +50,7 @@ test.describe('Chat view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ message: 'Slow response' }),
+        body: JSON.stringify({ content: 'Slow response' }),
       })
     })
 
