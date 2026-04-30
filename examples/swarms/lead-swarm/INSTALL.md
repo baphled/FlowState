@@ -13,28 +13,95 @@ The **Lead Swarm** is a flexible orchestrator that:
 
 ## Quick Start
 
-### 1. Copy Agent Manifest
+The `lead-swarm` references three sub-swarms (`a-team`, `board-room`,
+`engineering-review`) and the `lead-coordinator` agent. You must install all
+sub-swarm manifests, their member agents, and any supporting skills/gates
+before the swarm registry will validate cleanly. The agents the engineering
+sub-swarms reference (`planner`, `executor`, `Senior-Engineer`,
+`plan-reviewer`, `QA-Engineer`, `Code-Reviewer`, `Security-Engineer`,
+`explorer`, `librarian`, `analyst`, `plan-writer`) are bundled with FlowState
+as embedded agents and require no copying.
+
+### 1. Copy the lead coordinator agent
 
 ```bash
 cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/lead-swarm/lead-coordinator.md \
    ~/.config/flowstate/agents/lead-coordinator.md
 ```
 
-### 2. Copy Swarm Manifest
+### 2. Copy the a-team sub-swarm
+
+```bash
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/a-team/swarms/a-team.yml \
+   ~/.config/flowstate/swarms/a-team.yml
+
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/a-team/agents/*.md \
+   ~/.config/flowstate/agents/
+
+mkdir -p ~/.config/flowstate/skills
+cp -R /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/a-team/skills/* \
+   ~/.config/flowstate/skills/
+```
+
+The a-team manifest declares members `coordinator`, `researcher`, `strategist`,
+`critic`, `writer`, plus the embedded `executor` agent.
+
+### 3. Copy the board-room sub-swarm
+
+```bash
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/board-room/swarms/board-room.yml \
+   ~/.config/flowstate/swarms/board-room.yml
+
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/board-room/agents/*.md \
+   ~/.config/flowstate/agents/
+
+cp -R /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/board-room/skills/* \
+   ~/.config/flowstate/skills/
+
+mkdir -p ~/.config/flowstate/gates/board-room
+cp -R /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/board-room/gates/* \
+   ~/.config/flowstate/gates/board-room/
+chmod +x ~/.config/flowstate/gates/board-room/*
+```
+
+The board-room manifest declares members `chair`, `bull-analyst`, `bear-analyst`,
+`market-analyst`, `financial-analyst`, `technical-analyst`.
+
+### 4. Copy the engineering sub-swarms
+
+`engineering-review` composes three nested sub-swarms — `engineering-planning`,
+`engineering-implementation`, `engineering-quality` — so all five engineering
+manifests must be installed together. (`engineering.yml` is an alternative
+top-level alias that composes the same three nested swarms.)
+
+```bash
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/engineering/engineering-planning.yml \
+   ~/.config/flowstate/swarms/engineering-planning.yml
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/engineering/engineering-implementation.yml \
+   ~/.config/flowstate/swarms/engineering-implementation.yml
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/engineering/engineering-quality.yml \
+   ~/.config/flowstate/swarms/engineering-quality.yml
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/engineering/engineering-review.yml \
+   ~/.config/flowstate/swarms/engineering-review.yml
+cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/engineering/engineering.yml \
+   ~/.config/flowstate/swarms/engineering.yml
+```
+
+### 5. Copy the lead swarm manifest
 
 ```bash
 cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/lead-swarm/lead-swarm.yml \
    ~/.config/flowstate/swarms/lead-swarm.yml
 ```
 
-### 3. Register Schemas
+### 6. Register schemas
 
 ```bash
 cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/lead-swarm/schemas/*.json \
    ~/.config/flowstate/schemas/
 ```
 
-### 4. Install Gates (Optional)
+### 7. Install lead-swarm gates (optional)
 
 ```bash
 mkdir -p ~/.config/flowstate/gates/lead-swarm
@@ -43,15 +110,14 @@ cp /home/baphled/Projects/FlowState.git/agent-platform/examples/swarms/lead-swar
 chmod +x ~/.config/flowstate/gates/lead-swarm/*
 ```
 
-### 5. Refresh FlowState
+### 8. Refresh FlowState
 
 ```bash
-# Reload agent and swarm registries
 flowstate agents refresh
 flowstate swarms refresh
 ```
 
-### 6. Test It
+### 9. Test it
 
 ```bash
 # Simple task
