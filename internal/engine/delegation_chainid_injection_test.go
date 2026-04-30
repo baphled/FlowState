@@ -440,6 +440,81 @@ var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
 		})
 	})
 
+	Describe("when a swarm is active but the lead omits chainID", func() {
+		It("force-injects the rich swarm preamble using swarmCtx.ChainPrefix as the chainID", func() {
+			gates := []swarm.GateSpec{
+				{
+					Name:      "post-explorer-codebase",
+					Kind:      "builtin:result-schema",
+					When:      swarm.LifecyclePostMember,
+					Target:    "explorer",
+					OutputKey: "findings",
+					SchemaRef: "evidence-bundle-v1",
+				},
+			}
+			dt, mp := swarmPreambleFixture("explorer", gates)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "explorer",
+					"message":       "Survey the codebase.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			Expect(body).To(ContainSubstring("**dev-feature** swarm"),
+				"member must learn its swarm membership even when the lead omits chainID — "+
+					"the runner derives chainID from swarmCtx.ChainPrefix")
+			Expect(body).To(ContainSubstring("dev-feature/explorer/findings"),
+				"member must receive the canonical coord-store key derived from "+
+					"swarmCtx.ChainPrefix, not whatever its manifest body hardcoded as an example")
+			Expect(body).To(ContainSubstring("evidence-bundle-v1"),
+				"schema reference must be injected so the member knows its output contract")
+			Expect(body).To(ContainSubstring("Survey the codebase."),
+				"original message must be preserved after the preamble")
+		})
+	})
+
+	Describe("when no swarm context is active and chainID is omitted", func() {
+		It("does not inject any swarm preamble (backwards compatibility)", func() {
+			specialistProvider := &mockProvider{
+				name:         "explorer-provider",
+				streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+			}
+			specialistEngine := engine.New(engine.Config{
+				ChatProvider: specialistProvider,
+				Manifest: agent.Manifest{
+					ID:                "explorer",
+					Name:              "explorer",
+					Instructions:      agent.Instructions{SystemPrompt: "spec"},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			dt := engine.NewDelegateTool(
+				map[string]*engine.Engine{"explorer": specialistEngine},
+				agent.Delegation{CanDelegate: true},
+				"planner",
+			)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "explorer",
+					"message":       "Plain task.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(specialistProvider)
+			Expect(body).NotTo(ContainSubstring("chainID="),
+				"no swarm context, no caller chainID — auto-generated fallback must stay internal")
+			Expect(body).To(Equal("Plain task."),
+				"the message must be passed through verbatim")
+		})
+	})
+
 	Describe("when the member has no post-member schema gate", func() {
 		It("falls back to the basic chainID preamble (no swarm-specific content)", func() {
 			// No gates defined for this member.
