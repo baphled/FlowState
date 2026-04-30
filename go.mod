@@ -1,6 +1,6 @@
 module github.com/baphled/flowstate
 
-go 1.25.7
+go 1.26.0
 
 require (
 	filippo.io/age v1.3.1
