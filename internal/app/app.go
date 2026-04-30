@@ -4032,24 +4032,6 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
 }
 
-// qdrantURL returns the resolved Qdrant base URL the broker, distiller,
-// and learning-store paths should connect to. Funnelling every read
-// through this helper keeps the YAML/env precedence consistent across
-// the app's three Qdrant-dependent init sites.
-//
-// Expected:
-//   - cfg may be nil; nil returns "" so callers see "disabled".
-//
-// Returns:
-//   - The resolved URL when one is configured.
-//   - The empty string otherwise.
-//
-// Side effects:
-//   - Reads the QDRANT_URL environment variable (delegated to ResolvedQdrantURL).
-func qdrantURL(cfg *config.AppConfig) string {
-	return cfg.ResolvedQdrantURL()
-}
-
 // defaultVaultCollection is the Qdrant collection used by flowstate-vault-server.
 // Must stay in sync with cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
 const defaultVaultCollection = "flowstate-vault"
@@ -4064,38 +4046,6 @@ func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
 	return vaultindex.NewQueryHandler(embedder, client, defaultVaultCollection)
-}
-	col := cfg.Qdrant.Collection
-	if col == "" {
-		col = "flowstate-recall"
-	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
-	adapter := &qdrantClientAdapter{client: client}
-	ensuring := learning.NewEnsuringVectorStore(
-		adapter,
-		client,
-		qdrantrecall.IsCollectionNotFound,
-		defaultQdrantDistance,
-	)
-	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
->>>>>>> 53a4f91 (feat(tool): add native mcp_memory_search_nodes and mcp_memory_open_nodes tools)
-=======
-// defaultVaultCollection is the Qdrant collection used by flowstate-vault-server.
-// Must stay in sync with cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
-const defaultVaultCollection = "flowstate-vault"
-
-// buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by Qdrant
-// when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
-// callers treat nil as "vault RAG tool disabled".
-func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
-	if cfg == nil || cfg.Qdrant.URL == "" {
-		return nil
-	}
-	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
-	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
-	return vaultindex.NewQueryHandler(embedder, client, defaultVaultCollection)
->>>>>>> 853b322 (feat(tool): add native mcp_vault-rag_query_vault tool backed by local Qdrant)
 }
 
 // defaultQdrantDistance is the metric the auto-create path uses when
