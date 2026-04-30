@@ -1,0 +1,9 @@
+name: quality-gate
+description: Checks test coverage meets threshold and linter is clean
+version: "0.1.0"
+exec: ./gate.py
+timeout: 60s
+policy:
+  coverage_threshold: 80
+  coverage_cmd: "make coverage-pct"
+  lint_cmd: "make lint"

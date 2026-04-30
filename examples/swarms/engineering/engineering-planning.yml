@@ -1,0 +1,16 @@
+schema_version: "1.0.0"
+id: engineering-planning
+description: >
+  Research and planning sub-swarm. Investigates the codebase and external
+  references, then synthesises findings into a structured implementation plan
+  that is stored in the coordination store for downstream swarms.
+lead: planner
+members:
+  - explorer
+  - librarian
+  - analyst
+  - plan-writer
+harness:
+  parallel: false
+context:
+  chain_prefix: engineering/planning

@@ -1,0 +1,31 @@
+schema_version: "1.0.0"
+id: engineering
+description: >
+  Top-level engineering orchestrator. Coordinates planning, implementation, and
+  quality assurance as three sequential sub-swarms. Demonstrates pure swarm
+  composition using only built-in FlowState agents.
+lead: planner
+members:
+  - engineering-planning
+  - engineering-implementation
+  - engineering-quality
+harness:
+  parallel: false
+  gates:
+    - name: ci-gate
+      kind: ext:ci-gate
+      when: post-member
+      target: engineering-implementation
+      output_key: output
+    - name: integration-gate
+      kind: ext:integration-gate
+      when: post-member
+      target: engineering-implementation
+      output_key: output
+    - name: quality-gate
+      kind: ext:quality-gate
+      when: post-member
+      target: engineering-quality
+      output_key: output
+context:
+  chain_prefix: engineering
