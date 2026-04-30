@@ -8,14 +8,15 @@ import "fmt"
 // id verbatim for agent targets) plus the *Context to install on the
 // engine when the target is a swarm.
 //
-// This is the consolidated "what does @<id> mean" resolver. The two
-// callers were previously duplicating the wrapping logic — CLI's
-// resolveAgentOrSwarm at internal/cli/run.go and the TUI chat intent's
-// firstSwarmMention/maybeBeginSwarmDispatch pair. Per ADR - Swarm
-// Dispatch Across Access Methods (KB), one shared resolver drives
-// every access method; surfaces just adapt their input shape (a flag
-// value for the CLI, an extracted @-mention for the TUI) and call
-// here.
+// This is the consolidated "what does @<id> mean" resolver. The CLI
+// calls it via resolveAgentOrSwarm at internal/cli/run.go; the TUI
+// chat intent currently routes swarm dispatches through
+// orchestrator.Stream rather than calling ResolveTarget directly (the
+// previous firstSwarmMention/maybeBeginSwarmDispatch pair was removed
+// pending Phase 2 re-wiring). Per ADR - Swarm Dispatch Across Access
+// Methods (KB), one shared resolver drives every access method;
+// surfaces just adapt their input shape (a flag value for the CLI, an
+// extracted @-mention for the TUI orchestrator) and call here.
 //
 // Expected:
 //   - hasAgent reports whether an id is registered as an agent. nil

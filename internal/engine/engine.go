@@ -1518,9 +1518,10 @@ func (e *Engine) BuildSystemPrompt() string {
 // the prompt body used to be load-bearing — when the TUI persistently
 // re-identified the chat as the swarm lead, the lead's LLM saw a
 // chat surface and hedged with "Action Required: confirm dispatch"
-// preambles. With Phase 2 (one-shot dispatch via pendingSwarmLeadID)
-// and Phase 3 (resolver consolidation) landed, the lead is invoked
-// the same way the CLI invokes it — as a one-shot per-call Stream.
+// preambles. With the orchestrator-driven dispatch path landed (the
+// TUI now invokes the lead via orchestrator.Stream rather than a
+// persistent SetManifest swap) the lead is invoked the same way the
+// CLI invokes it — as a one-shot per-call Stream.
 // The directive is retained as belt-and-braces so a future surface
 // that re-introduces a chat-style intake by accident still gets the
 // signal pushed through to the model. Same goes for the
@@ -2619,31 +2620,8 @@ func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<-
 	return false
 }
 
-// storeAssistantToolUse appends the assistant message containing a tool_use block to the context store.
-//
-// Expected:
-//   - toolCall contains the tool call identifier, name, and arguments.
-//   - content is the assistant's text content accumulated before the tool call (may be empty).
-//
-// Side effects:
-//   - Appends an assistant message with ToolCalls to the context store if configured.
-func (e *Engine) storeAssistantToolUse(toolCall *provider.ToolCall, content string) {
-	if e.store == nil {
-		return
-	}
-	e.store.Append(provider.Message{
-		Role:    "assistant",
-		Content: content,
-		ToolCalls: []provider.ToolCall{
-			{ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
-		},
-		ModelID: e.LastModel(),
-	})
-}
-
 // storeAssistantToolUseBatch appends a single assistant message that contains
-// all tool_use blocks from a parallel dispatch turn. Callers with a batch of
-// one call may use this instead of storeAssistantToolUse for uniform handling.
+// all tool_use blocks from a parallel dispatch turn.
 func (e *Engine) storeAssistantToolUseBatch(toolCalls []*provider.ToolCall, content string) {
 	if e.store == nil || len(toolCalls) == 0 {
 		return
@@ -2695,45 +2673,6 @@ func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result
 			{ID: toolCall.ID, Name: toolCall.Name},
 		},
 	})
-}
-
-// appendToolResultToMessages adds a tool result message to the message history.
-//
-// Expected:
-//   - messages is the current conversation history.
-//   - toolCall contains the tool call identifier and name.
-//   - result contains the tool's output or error.
-//
-// Returns:
-//   - A new message slice with the tool result appended.
-//
-// Side effects:
-//   - None.
-func (e *Engine) appendToolResultToMessages(
-	messages []provider.Message, toolCall *provider.ToolCall, result tool.Result,
-) []provider.Message {
-	assistantMsg := provider.Message{
-		Role: "assistant",
-		ToolCalls: []provider.ToolCall{
-			{ID: toolCall.ID, Name: toolCall.Name, Arguments: toolCall.Arguments},
-		},
-	}
-	messages = append(messages, assistantMsg)
-
-	content := result.Output
-	if result.Error != nil {
-		content = "Error: " + result.Error.Error()
-	}
-
-	toolResultMsg := provider.Message{
-		Role:    "tool",
-		Content: content,
-		ToolCalls: []provider.ToolCall{
-			{ID: toolCall.ID, Name: toolCall.Name},
-		},
-	}
-
-	return append(messages, toolResultMsg)
 }
 
 // appendToolResultsBatchToMessages adds a single assistant message (with all

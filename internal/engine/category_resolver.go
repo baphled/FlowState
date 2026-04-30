@@ -262,27 +262,6 @@ func (r *CategoryResolver) resolveModelWithCapability(descriptor string, models 
 	}
 }
 
-// resolveModel preserves the pre-capability behaviour for callers that
-// pre-date WithToolCapability/WithSwapNotifier (currently only the
-// engine-internal call path that hits Resolve, but kept for symmetry
-// with the rest of the resolver API). Equivalent to
-// resolveModelWithCapability when no allow/deny lists are configured.
-//
-// Expected:
-//   - descriptor is one of the abstract descriptors or a non-abstract
-//     model ID.
-//   - models is a non-empty slice.
-//
-// Returns:
-//   - A real model ID selected according to the descriptor's strategy.
-//
-// Side effects:
-//   - None.
-func (r *CategoryResolver) resolveModel(descriptor string, models []provider.Model) string {
-	chosen, _ := r.resolveModelWithCapability(descriptor, models)
-	return chosen
-}
-
 // pickByDescriptor applies the abstract descriptor's strategy to the
 // model slice. Pulled out of resolveModel so the capability filter can
 // run the same strategy over the filtered subset without re-encoding

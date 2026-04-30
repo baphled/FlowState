@@ -1127,8 +1127,8 @@ var _ = Describe("ChatIntent", func() {
 				// Per ADR - Swarm Dispatch Across Access Methods: the
 				// chat's active agent is unchanged across a swarm
 				// dispatch. The lead receives this turn's stream via
-				// pendingSwarmLeadID; the next user turn lands back on
-				// the original agent.
+				// the orchestrator dispatch path; the next user turn
+				// lands back on the original agent.
 				Expect(swarmIntent.AgentIDForTest()).To(Equal("executor"))
 			})
 
