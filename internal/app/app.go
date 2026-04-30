@@ -3786,25 +3786,30 @@ type swarmAgentRegistryAdapter struct {
 	inner *agent.Registry
 }
 
-// Get returns whether the wrapped agent registry has an agent with id.
+// Get returns whether the wrapped agent registry has an agent that
+// resolves from id, treating id as either an exact ID, a
+// case-insensitive ID, or a declared alias on any registered manifest.
 // The any payload is unused by the swarm validator — only the boolean
 // matters — so the adapter returns nil to keep allocation noise out of
-// the hot path.
+// the hot path. Delegating to GetByNameOrAlias lets swarm manifests
+// reference leads or members by any alias the agent declares, matching
+// the resolution semantics the rest of FlowState already relies on.
 //
 // Expected:
-//   - id is a candidate agent identifier.
+//   - id is a candidate agent identifier or alias.
 //
 // Returns:
-//   - nil and true when the wrapped registry has an agent with id.
+//   - nil and true when the wrapped registry resolves id to an agent
+//     by exact ID, case-insensitive ID, or alias.
 //   - nil and false when the wrapped registry is nil or has no match.
 //
 // Side effects:
-//   - None (read-only access via the wrapped registry's Get).
+//   - None (read-only access via the wrapped registry's GetByNameOrAlias).
 func (a swarmAgentRegistryAdapter) Get(id string) (any, bool) {
 	if a.inner == nil {
 		return nil, false
 	}
-	_, ok := a.inner.Get(id)
+	_, ok := a.inner.GetByNameOrAlias(id)
 	return nil, ok
 }
 
