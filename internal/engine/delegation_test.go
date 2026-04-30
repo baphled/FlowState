@@ -1375,8 +1375,8 @@ var _ = Describe("Delegation", func() {
 				targetEngine := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest: agent.Manifest{
-						ID: "target-agent",
-						Instructions: agent.Instructions{SystemPrompt: "base"},
+						ID:                "target-agent",
+						Instructions:      agent.Instructions{SystemPrompt: "base"},
 						ContextManagement: agent.DefaultContextManagement(),
 					},
 				})
@@ -1416,8 +1416,8 @@ var _ = Describe("Delegation", func() {
 				targetEngine := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest: agent.Manifest{
-						ID: "target-agent",
-						Instructions: agent.Instructions{SystemPrompt: "base"},
+						ID:                "target-agent",
+						Instructions:      agent.Instructions{SystemPrompt: "base"},
 						ContextManagement: agent.DefaultContextManagement(),
 					},
 				})

@@ -488,13 +488,14 @@ func (c *AppConfig) ResolvedQdrantURL() string {
 
 // ProvidersConfig configures all available LLM providers.
 type ProvidersConfig struct {
-	Anthropic ProviderConfig `json:"anthropic" yaml:"anthropic"`
-	Default   string         `json:"default" yaml:"default"`
-	GitHub    ProviderConfig `json:"github" yaml:"github"`
-	Ollama    ProviderConfig `json:"ollama" yaml:"ollama"`
-	OpenAI    ProviderConfig `json:"openai" yaml:"openai"`
-	OpenZen   ProviderConfig `json:"openzen" yaml:"openzen"`
-	ZAI       ProviderConfig `json:"zai" yaml:"zai"`
+	Anthropic   ProviderConfig `json:"anthropic" yaml:"anthropic"`
+	Default     string         `json:"default" yaml:"default"`
+	GitHub      ProviderConfig `json:"github" yaml:"github"`
+	Ollama      ProviderConfig `json:"ollama" yaml:"ollama"`
+	OllamaCloud ProviderConfig `json:"ollamacloud" yaml:"ollamacloud"`
+	OpenAI      ProviderConfig `json:"openai" yaml:"openai"`
+	OpenZen     ProviderConfig `json:"openzen" yaml:"openzen"`
+	ZAI         ProviderConfig `json:"zai" yaml:"zai"`
 }
 
 // ProviderConfig holds configuration for a single LLM provider.
@@ -673,6 +674,9 @@ func DefaultConfig() *AppConfig {
 			},
 			Anthropic: ProviderConfig{
 				Model: "claude-sonnet-4-20250514",
+			},
+			OllamaCloud: ProviderConfig{
+				Model: "llama3.3:70b",
 			},
 		},
 		AgentDir:        filepath.Join(Dir(), "agents"),

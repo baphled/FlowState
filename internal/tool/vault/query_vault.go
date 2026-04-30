@@ -26,8 +26,10 @@ func NewQueryVaultTool(handler Handler) *QueryVaultTool {
 	return &QueryVaultTool{handler: handler}
 }
 
-func (t *QueryVaultTool) Name() string        { return "mcp_vault-rag_query_vault" }
-func (t *QueryVaultTool) Description() string { return "Search the indexed Obsidian vault for relevant knowledge" }
+func (t *QueryVaultTool) Name() string { return "mcp_vault-rag_query_vault" }
+func (t *QueryVaultTool) Description() string {
+	return "Search the indexed Obsidian vault for relevant knowledge"
+}
 
 func (t *QueryVaultTool) Schema() tool.Schema {
 	return tool.Schema{

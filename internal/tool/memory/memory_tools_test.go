@@ -8,8 +8,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/learning"
-	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	"github.com/baphled/flowstate/internal/tool"
+	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 )
 
 // stubMemoryClient satisfies learning.MemoryClient for tests.

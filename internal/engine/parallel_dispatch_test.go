@@ -17,8 +17,8 @@ import (
 
 // blockingMockTool records execution timing to verify concurrency.
 type blockingMockTool struct {
-	name      string
-	delay     time.Duration
+	name       string
+	delay      time.Duration
 	execCalled atomic.Bool
 	startedAt  atomic.Int64 // UnixNano
 	finishedAt atomic.Int64 // UnixNano

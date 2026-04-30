@@ -52,7 +52,10 @@ providers:
     model: "gpt-4o"
   anthropic:
     api_key: "your-api-key"
-    model: "claude-3-5-sonnet-20240620"
+    model: "claude-sonnet-4-20250514"
+  ollamacloud:
+    api_key: "your-ollama-cloud-api-key"
+    model: "llama3.3:70b"
 
 mcp_servers:
   - name: "filesystem"
