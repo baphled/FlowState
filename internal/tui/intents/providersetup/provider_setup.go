@@ -162,6 +162,12 @@ func loadProviderStatuses(cfg *config.AppConfig) []ProviderStatus {
 			Model:   cfg.Providers.OpenZen.Model,
 			Enabled: cfg.Providers.OpenZen.APIKey != "",
 		},
+		{
+			Name:    "ollamacloud",
+			APIKey:  cfg.Providers.OllamaCloud.APIKey,
+			Model:   cfg.Providers.OllamaCloud.Model,
+			Enabled: cfg.Providers.OllamaCloud.APIKey != "",
+		},
 	}
 }
 
@@ -403,6 +409,8 @@ func isValidCredential(providerName, credential string) bool {
 		return len(credential) >= 3 && credential[:3] == "sk-"
 	case "openai":
 		return len(credential) >= 3 && credential[:3] == "sk-"
+	case "ollamacloud":
+		return len(credential) >= 3 && credential[:3] == "sk-"
 	default:
 		return false
 	}
@@ -432,6 +440,8 @@ func (i *Intent) saveAPIKey() {
 				i.config.Providers.ZAI.APIKey = i.apiKeyInput
 			case "openzen":
 				i.config.Providers.OpenZen.APIKey = i.apiKeyInput
+			case "ollamacloud":
+				i.config.Providers.OllamaCloud.APIKey = i.apiKeyInput
 			}
 			break
 		}
@@ -459,6 +469,8 @@ func (i *Intent) saveAndReturn() tea.Cmd {
 			i.config.Providers.ZAI.APIKey = p.APIKey
 		case "openzen":
 			i.config.Providers.OpenZen.APIKey = p.APIKey
+		case "ollamacloud":
+			i.config.Providers.OllamaCloud.APIKey = p.APIKey
 		}
 	}
 	i.config.MCPServers = i.mcpServers

@@ -6,9 +6,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
 )
 
 // stubRegistry backs tests without touching the filesystem.

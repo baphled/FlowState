@@ -15,7 +15,7 @@ import (
 
 var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 	var (
-		leadEng     *engine.Engine
+		leadEng      *engine.Engine
 		delegateTool *engine.DelegateTool
 	)
 

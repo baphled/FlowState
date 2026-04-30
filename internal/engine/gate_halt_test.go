@@ -21,9 +21,9 @@ type gateHaltFakeTool struct {
 	err  error
 }
 
-func (f *gateHaltFakeTool) Name() string             { return f.name }
-func (f *gateHaltFakeTool) Description() string      { return "fake" }
-func (f *gateHaltFakeTool) Schema() tool.Schema      { return tool.Schema{Type: "object"} }
+func (f *gateHaltFakeTool) Name() string        { return f.name }
+func (f *gateHaltFakeTool) Description() string { return "fake" }
+func (f *gateHaltFakeTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
 func (f *gateHaltFakeTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
 	return tool.Result{Output: "fake output"}, f.err
 }

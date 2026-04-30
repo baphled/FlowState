@@ -22,8 +22,10 @@ func NewSearchNodesTool(client learning.MemoryClient) *SearchNodesTool {
 	return &SearchNodesTool{client: client}
 }
 
-func (t *SearchNodesTool) Name() string        { return "mcp_memory_search_nodes" }
-func (t *SearchNodesTool) Description() string { return "Search the memory store for entities matching a query" }
+func (t *SearchNodesTool) Name() string { return "mcp_memory_search_nodes" }
+func (t *SearchNodesTool) Description() string {
+	return "Search the memory store for entities matching a query"
+}
 
 func (t *SearchNodesTool) Schema() tool.Schema {
 	return tool.Schema{

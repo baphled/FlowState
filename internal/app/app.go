@@ -25,7 +25,6 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
-	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
@@ -41,12 +40,14 @@ import (
 	"github.com/baphled/flowstate/internal/provider/anthropic"
 	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/provider/ollamacloud"
 	"github.com/baphled/flowstate/internal/provider/openai"
 	"github.com/baphled/flowstate/internal/provider/openzen"
 	"github.com/baphled/flowstate/internal/provider/zai"
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -54,18 +55,18 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
-	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
-	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
-	"github.com/baphled/flowstate/internal/vaultindex"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
+	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
 	"github.com/baphled/flowstate/internal/tracer"
+	"github.com/baphled/flowstate/internal/vaultindex"
 
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/session"
@@ -3274,6 +3275,10 @@ func setupProvidersWithFailures(
 	ollamaProvider, ollamaErr := ollama.New(cfg.Providers.Ollama.Host)
 	recordProvider(providerRegistry, failures, "ollama", ollamaProvider, ollamaErr)
 
+	ollamaCloudKey := resolveProviderKey("OLLAMA_CLOUD_API_KEY", cfg.Providers.OllamaCloud.APIKey)
+	ollamaCloudProvider, ollamaCloudErr := ollamacloud.NewFromConfig(ollamaCloudKey, cfg.Providers.OllamaCloud.Host)
+	recordProvider(providerRegistry, failures, "ollamacloud", ollamaCloudProvider, ollamaCloudErr)
+
 	openaiProvider, openaiErr := buildOpenAIProvider(cfg)
 	recordProvider(providerRegistry, failures, "openai", openaiProvider, openaiErr)
 
@@ -3597,6 +3602,7 @@ func buildConfigProviderPreferences(cfg *config.AppConfig) []provider.ModelPrefe
 
 	allProviders := []namedProvider{
 		{"ollama", cfg.Providers.Ollama.Model},
+		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
 		{"anthropic", cfg.Providers.Anthropic.Model},
 		{"openai", cfg.Providers.OpenAI.Model},
 		{"github", cfg.Providers.GitHub.Model},

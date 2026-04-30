@@ -108,8 +108,8 @@ var _ = Describe("VectorStoreMemoryClient Qdrant point ID contract", func() {
 		It("uses source_id from payload as entity name, not the UUID point ID", func() {
 			vs.searchResult = []learning.ScoredVectorPoint{
 				{ID: "88ae915d-f474-5c13-b6cd-da740c11d313", Score: 0.9, Payload: map[string]any{
-					"source_id":  "golang-concurrency",
-					"entityType": "concept",
+					"source_id":    "golang-concurrency",
+					"entityType":   "concept",
 					"observations": []string{"channels enable goroutine communication"},
 				}},
 			}

@@ -39,6 +39,7 @@ func newAuthCmd(getApp func() *app.App) *cobra.Command {
 		newAuthZAICmd(getApp),
 		newAuthOpenZenCmd(getApp),
 		newAuthOllamaCmd(getApp),
+		newAuthOllamaCloudCmd(getApp),
 	)
 
 	return cmd

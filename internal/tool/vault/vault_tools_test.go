@@ -7,8 +7,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
 	"github.com/baphled/flowstate/internal/tool"
+	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
 	"github.com/baphled/flowstate/internal/vaultindex"
 )
 

@@ -532,13 +532,13 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 
 	Describe("complexity-based model routing", func() {
 		var (
-			smallModel   = provider.Model{ID: "fast-model", Provider: "test", ContextLength: 4096}
-			mediumModel  = provider.Model{ID: "balanced-model", Provider: "test", ContextLength: 32768}
-			largeModel   = provider.Model{ID: "reasoning-model", Provider: "test", ContextLength: 200000}
-			threeModels  = []provider.Model{smallModel, mediumModel, largeModel}
+			smallModel    = provider.Model{ID: "fast-model", Provider: "test", ContextLength: 4096}
+			mediumModel   = provider.Model{ID: "balanced-model", Provider: "test", ContextLength: 32768}
+			largeModel    = provider.Model{ID: "reasoning-model", Provider: "test", ContextLength: 200000}
+			threeModels   = []provider.Model{smallModel, mediumModel, largeModel}
 			coordManifest = agent.Manifest{
-				ID:   "coordinator",
-				Name: "Coordinator",
+				ID:         "coordinator",
+				Name:       "Coordinator",
 				Delegation: agent.Delegation{CanDelegate: true},
 			}
 		)
@@ -548,8 +548,8 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			reg := provider.NewRegistry()
 			reg.Register(p)
 			return &App{
-				Registry:        agent.NewRegistry(),
-				defaultProvider: p,
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
 				providerRegistry: reg,
 				Config: &config.AppConfig{
 					ToolCapableModels:   []string{"*"},
@@ -669,8 +669,8 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			reg := provider.NewRegistry()
 			reg.Register(p)
 			app := &App{
-				Registry:        agent.NewRegistry(),
-				defaultProvider: p,
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
 				providerRegistry: reg,
 				Config: &config.AppConfig{
 					ToolCapableModels:   []string{"capable-*"},
