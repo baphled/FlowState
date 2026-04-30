@@ -66,7 +66,7 @@ var _ = Describe("SkillAutoLoaderHook session integration", Label("integration")
 			captured, called := runSessionHook(context.Background(), req)
 
 			Expect(called).To(BeTrue())
-			Expect(captured.Messages[0].Content).To(ContainSubstring("Your load_skills: [golang, testing]"))
+			Expect(captured.Messages[0].Content).To(ContainSubstring("load when relevant: [golang, testing]"))
 		})
 	})
 
@@ -162,7 +162,7 @@ var _ = Describe("SkillAutoLoaderHook session resumption", Label("integration"),
 		It("does not double-inject", func() {
 			req := &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: [golang]. Use skill_load(name) only when relevant to the current task.\n\nYou are helpful."},
+					{Role: "system", Content: "Your load_skills: load when relevant: [golang]. Use skill_load(name) to invoke.\n\nYou are helpful."},
 					{Role: "user", Content: "Continue working"},
 				},
 			}

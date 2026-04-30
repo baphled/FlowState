@@ -74,10 +74,26 @@ func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 		},
 	}
 
-	lean := fmt.Sprintf(
-		"Your load_skills: [%s]. Use skill_load(name) only when relevant to the current task.",
-		strings.Join(s.selection.Skills, ", "),
-	)
+	baselineSet := make(map[string]bool, len(s.cfg.BaselineSkills))
+	for _, b := range s.cfg.BaselineSkills {
+		baselineSet[b] = true
+	}
+	var sessionStart, contextual []string
+	for _, sk := range s.selection.Skills {
+		if baselineSet[sk] {
+			sessionStart = append(sessionStart, sk)
+		} else {
+			contextual = append(contextual, sk)
+		}
+	}
+	var leanParts []string
+	if len(sessionStart) > 0 {
+		leanParts = append(leanParts, fmt.Sprintf("session start — invoke before first response: [%s]", strings.Join(sessionStart, ", ")))
+	}
+	if len(contextual) > 0 {
+		leanParts = append(leanParts, fmt.Sprintf("load when relevant: [%s]", strings.Join(contextual, ", ")))
+	}
+	lean := "Your load_skills: " + strings.Join(leanParts, "; ") + ". Use skill_load(name) to invoke."
 
 	s.capturedReq.Messages[0].Content = lean + "\n\n" + s.capturedReq.Messages[0].Content
 }
