@@ -208,19 +208,3 @@ func toPrivateOpts(pub AutoresearchOptions) autoresearchRunOptions {
 		program: "autoresearch",
 	}
 }
-
-// toPublicOpts converts an internal autoresearchRunOptions into the
-// public AutoresearchOptions shape.
-func toPublicOpts(priv autoresearchRunOptions) AutoresearchOptions {
-	return AutoresearchOptions{
-		Surface:         priv.surface,
-		DriverScript:    priv.driverScript,
-		EvaluatorScript: priv.evaluatorScript,
-		RunID:           priv.runID,
-		MaxTrials:       priv.maxTrials,
-		TimeBudget:      priv.timeBudget,
-		MetricDirection: priv.metricDirection,
-		CommitTrials:    priv.commitTrials,
-		DriverAgent:     priv.driverAgent,
-	}
-}
