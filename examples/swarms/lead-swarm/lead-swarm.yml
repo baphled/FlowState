@@ -1,0 +1,51 @@
+schema_version: "1.0.0"
+id: lead-swarm
+description: >
+  Adaptive orchestrator that accepts any goal, deconstructs it, identifies
+  optimal agent/sub-swarm compositions, coordinates parallel execution, and
+  synthesizes results. Unlike rigid task-specific swarms, lead-swarm adapts
+  dynamically to the user's request.
+lead: coordinator
+members:
+  - a-team
+  - board-room
+  - engineering-review
+harness:
+  parallel: true
+  max_parallel: 3
+  gates:
+    # Swarm-level gates
+    - name: goal-validation
+      kind: builtin:no-op
+      when: pre
+      precedence: CRITICAL
+
+    - name: synthesis-quality
+      kind: builtin:no-op
+      when: post
+      precedence: HIGH
+
+    # Member-level gates
+    - name: a-team-implementation-quality
+      kind: ext:implementation-quality-gate
+      when: post-member
+      target: a-team
+      output_key: output
+      precedence: HIGH
+
+    - name: board-room-strategic-alignment
+      kind: ext:strategic-alignment-gate
+      when: post-member
+      target: board-room
+      output_key: output
+      precedence: MEDIUM
+
+    - name: engineering-review-ci-gate
+      kind: ext:ci-gate
+      when: post-member
+      target: engineering-review
+      output_key: output
+      precedence: HIGH
+
+context:
+  chain_prefix: lead-swarm

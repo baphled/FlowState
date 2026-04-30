@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lead Synthesis v1",
+  "description": "Final synthesis output from lead-coordinator after all sub-swarms complete",
+  "type": "object",
+  "required": ["chain_id", "summary", "next_steps"],
+  "properties": {
+    "chain_id": {
+      "type": "string",
+      "description": "Unique identifier for this orchestration session"
+    },
+    "sub_swarms_executed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of sub-swarms that were actually executed"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Executive summary of what was accomplished. One paragraph, high-level."
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Which sub-swarm provided this recommendation"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "The recommendation text"
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"],
+            "description": "Priority level"
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why this recommendation is being made"
+          }
+        },
+        "required": ["source", "recommendation", "priority"]
+      },
+      "description": "Prioritised list of recommendations from all sub-swarms"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "conflict": {
+            "type": "string",
+            "description": "Description of the conflict"
+          },
+          "parties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which sub-swarms disagree"
+          },
+          "resolution": {
+            "type": "string",
+            "description": "How the coordinator resolved this conflict and why"
+          }
+        },
+        "required": ["conflict", "parties", "resolution"]
+      },
+      "description": "Any conflicts between sub-swarm outputs and how they were resolved"
+    },
+    "concerns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Which sub-swarm raised this concern"
+          },
+          "concern": {
+            "type": "string",
+            "description": "The concern text"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor"],
+            "description": "Severity level"
+          }
+        },
+        "required": ["source", "concern", "severity"]
+      },
+      "description": "Blocking or non-blocking concerns raised by sub-swarms"
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "description": "Clear, actionable next steps for the user"
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "pros": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["description"]
+      },
+      "description": "Alternative approaches if sub-swarms disagreed significantly"
+    }
+  }
+}
