@@ -4,16 +4,16 @@ const mockEvents = [
   {
     id: 'evt-1',
     type: 'delegation',
+    agentName: 'planner',
+    payload: { to: 'hephaestus', task: 'scaffold web/' },
     timestamp: new Date().toISOString(),
-    summary: 'Delegated to hephaestus',
-    metadata: {},
   },
   {
     id: 'evt-2',
     type: 'tool_call',
+    agentName: 'hephaestus',
+    payload: { tool: 'bash', args: 'ls -la' },
     timestamp: new Date().toISOString(),
-    summary: 'Called bash tool',
-    metadata: {},
   },
 ]
 
@@ -23,7 +23,7 @@ test.describe('Swarm view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ events: mockEvents }),
+        body: JSON.stringify(mockEvents),
       })
     })
 
@@ -58,7 +58,7 @@ test.describe('Swarm view', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ events: [] }),
+        body: JSON.stringify([]),
       })
     })
     await page.reload()

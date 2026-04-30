@@ -6,14 +6,14 @@ test.describe('Chat layout — swarm pane toggle', () => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ models: ['claude-3-5-sonnet'] }),
+        body: JSON.stringify(['claude-3-5-sonnet']),
       })
     })
     await page.route('**/api/swarm/events', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ events: [] }),
+        body: JSON.stringify([]),
       })
     })
     await page.goto('/chat')

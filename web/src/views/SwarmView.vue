@@ -19,7 +19,7 @@
       {{ swarmStore.error }}
     </div>
 
-    <div v-if="events.length === 0 && !swarmStore.isPolling" class="swarm-empty" data-testid="swarm-empty">
+    <div v-if="events.length === 0" class="swarm-empty" data-testid="swarm-empty">
       No swarm events yet. Start polling to see live activity.
     </div>
 
