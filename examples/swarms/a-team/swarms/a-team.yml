@@ -1,0 +1,25 @@
+schema_version: "1.0.0"
+id: a-team
+description: >
+  A versatile generalist swarm for tasks that don't fit a fixed workflow.
+  The coordinator reads the task, decides which agents to engage (not every
+  task needs every agent), and routes dynamically. The critic plays a
+  mandatory adversarial role on any non-trivial run.
+
+lead: coordinator
+
+members:
+  - researcher
+  - strategist
+  - critic
+  - writer
+  - executor
+
+harness:
+  gates:
+    - kind: ext:relevance-gate
+      when: post-member
+      target: researcher
+
+context:
+  chain_prefix: a-team
