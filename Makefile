@@ -378,6 +378,13 @@ web-test-ui: ## Run Playwright tests with interactive UI
 web-server: ## Start the Go web API server (cmd/flowstate-web)
 	go run ./cmd/flowstate-web
 
+web-start: ## Start both the Go API server and Vite dev server concurrently
+	@echo "Starting FlowState web stack (Go API on :8080, Vite on :5173)…"
+	@trap 'kill 0' INT; \
+	  go run ./cmd/flowstate-web & \
+	  cd $(WEB_DIR) && npm run dev; \
+	  wait
+
 web-check: web-build web-test ## Build and test web frontend
 
 #

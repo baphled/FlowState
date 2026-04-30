@@ -1,10 +1,25 @@
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import NavBar from '@/components/layout/NavBar.vue'
+
+const apiOnline = ref(true)
+
+onMounted(async () => {
+  try {
+    const res = await fetch('/api/health')
+    apiOnline.value = res.ok
+  } catch {
+    apiOnline.value = false
+  }
+})
 </script>
 
 <template>
   <div class="app-shell">
     <NavBar />
+    <div v-if="!apiOnline" class="api-offline-banner" data-testid="api-offline-banner">
+      ⚠ FlowState API server is offline. Run <code>make web-server</code> in another terminal.
+    </div>
     <main class="app-main">
       <RouterView />
     </main>
@@ -20,6 +35,22 @@ import NavBar from '@/components/layout/NavBar.vue'
   background: var(--bg-primary);
 }
 
+.api-offline-banner {
+  background: #7c2d12;
+  color: #fde8d0;
+  font-size: 0.82rem;
+  padding: 0.35rem 1rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.api-offline-banner code {
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
 .app-main {
   flex: 1;
   overflow: hidden;
@@ -27,3 +58,4 @@ import NavBar from '@/components/layout/NavBar.vue'
   flex-direction: column;
 }
 </style>
+
