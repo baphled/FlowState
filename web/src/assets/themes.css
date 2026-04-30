@@ -1,0 +1,95 @@
+/* FlowState themes — applied via data-theme on <html> */
+
+:root,
+[data-theme="dark"] {
+  --bg-primary: #1a1b26;
+  --bg-secondary: #16161e;
+  --bg-elevated: #24283b;
+  --border: #2a2d3e;
+  --text-primary: #c0caf5;
+  --text-secondary: #7aa2f7;
+  --text-muted: #565f89;
+  --accent: #7aa2f7;
+  --accent-hover: #8db4ff;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --error: #f7768e;
+  --user-bubble: #2a2d3e;
+  --assistant-bubble: #1f2335;
+  --event-delegation: #7aa2f7;
+  --event-tool-call: #9ece6a;
+  --event-plan: #e0af68;
+  --event-review: #bb9af7;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] {
+  --bg-primary: #f8f8f8;
+  --bg-secondary: #efefef;
+  --bg-elevated: #ffffff;
+  --border: #d0d0d0;
+  --text-primary: #2c2c2c;
+  --text-secondary: #3d6fd4;
+  --text-muted: #888888;
+  --accent: #3d6fd4;
+  --accent-hover: #2d5bbf;
+  --success: #5a8a2a;
+  --warning: #b07020;
+  --error: #c0303a;
+  --user-bubble: #e8edf8;
+  --assistant-bubble: #ffffff;
+  --event-delegation: #3d6fd4;
+  --event-tool-call: #5a8a2a;
+  --event-plan: #b07020;
+  --event-review: #7b4fbf;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="terminal"] {
+  --bg-primary: #0d0d0d;
+  --bg-secondary: #0a0a0a;
+  --bg-elevated: #111111;
+  --border: #2a2a2a;
+  --text-primary: #ffb000;
+  --text-secondary: #ffc840;
+  --text-muted: #665500;
+  --accent: #ffb000;
+  --accent-hover: #ffc840;
+  --success: #00ff41;
+  --warning: #ffb000;
+  --error: #ff3333;
+  --user-bubble: #1a1500;
+  --assistant-bubble: #0d0d0d;
+  --event-delegation: #ffb000;
+  --event-tool-call: #00ff41;
+  --event-plan: #ffc840;
+  --event-review: #ff00ff;
+  --font-mono: 'VT323', 'Courier New', monospace;
+  --font-sans: 'VT323', 'Courier New', monospace;
+  --radius: 0px;
+  --shadow: none;
+}
+
+/* Base reset */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app {
+  height: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Utility */
+.mono { font-family: var(--font-mono); }

@@ -355,6 +355,32 @@ qdrant-status: ## Show Qdrant health and list collections
 		|| echo "(curl/jq failed — is Qdrant up?)"
 
 #
+# Web Frontend (Vue 3 + TypeScript)
+#
+
+WEB_DIR := web
+
+web-install: ## Install web frontend dependencies
+	cd $(WEB_DIR) && npm install
+
+web-dev: ## Start Vite dev server (proxies /api → :8080)
+	cd $(WEB_DIR) && npm run dev
+
+web-build: ## Build web frontend for production
+	cd $(WEB_DIR) && npm run build
+
+web-test: ## Run Playwright E2E tests
+	cd $(WEB_DIR) && npx playwright test
+
+web-test-ui: ## Run Playwright tests with interactive UI
+	cd $(WEB_DIR) && npx playwright test --ui
+
+web-server: ## Start the Go web API server (cmd/flowstate-web)
+	go run ./cmd/flowstate-web
+
+web-check: web-build web-test ## Build and test web frontend
+
+#
 # Help
 #
 
