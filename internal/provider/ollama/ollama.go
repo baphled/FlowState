@@ -90,20 +90,27 @@ const (
 // windows), wire an optional /api/show lookup around this lookup table
 // rather than replacing it.
 var knownModelContextLengths = map[string]int{
-	"llama3.2":  131072,
-	"llama3.1":  131072,
-	"llama3":    8192,
-	"qwen3":     32768,
-	"qwen2.5":   32768,
-	"qwen2":     32768,
-	"granite4":  131072,
-	"granite3":  131072,
-	"mistral":   32768,
-	"mixtral":   32768,
-	"phi3":      131072,
-	"gemma2":    8192,
-	"codellama": 16384,
-	"deepseek":  16384,
+	"llama3.3":              131072,
+	"llama3.2":              131072,
+	"llama3.1":              131072,
+	"llama3":                8192,
+	"qwen3":                 32768,
+	"qwen2.5":               32768,
+	"qwen2":                 32768,
+	"granite4":              131072,
+	"granite3":              131072,
+	"mistral":               32768,
+	"mixtral":               32768,
+	"nous-hermes2-mixtral":  32768,
+	"phi3":                  131072,
+	"gemma4":                131072,
+	"gemma3n":               32768,
+	"gemma3":                131072,
+	"gemma2":                8192,
+	"codegemma":             8192,
+	"codellama":             16384,
+	"devstral":              131072,
+	"deepseek":              16384,
 }
 
 // resolveOllamaContextLength returns the context length for an Ollama
@@ -112,9 +119,13 @@ var knownModelContextLengths = map[string]int{
 // caller still receives a usable value and the failover manager's own
 // fallback is never reached on a known family.
 //
+// Namespaced model IDs (e.g. "username/model:tag") have their namespace
+// prefix stripped before matching so that community fine-tunes resolve
+// against their base family.
+//
 // Expected:
 //   - modelID is a concrete Ollama model identifier such as
-//     "llama3.2:latest" or "qwen2.5:7b-instruct".
+//     "llama3.2:latest", "qwen2.5:7b-instruct", or "user/llama3.1:8b".
 //
 // Returns:
 //   - The longest-prefix matched context length in tokens, or
@@ -125,6 +136,10 @@ var knownModelContextLengths = map[string]int{
 func resolveOllamaContextLength(modelID string) int {
 	if modelID == "" {
 		return defaultMaxTokens
+	}
+	// Strip optional namespace ("username/model:tag" → "model:tag").
+	if idx := strings.Index(modelID, "/"); idx >= 0 {
+		modelID = modelID[idx+1:]
 	}
 	lower := strings.ToLower(modelID)
 	var bestPrefix string
