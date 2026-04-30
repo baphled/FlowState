@@ -1,0 +1,25 @@
+schema_version: "1.0.0"
+id: board-room
+description: >
+  Pitch committee swarm. Five analysts evaluate a business idea or investment
+  proposal through three rounds: independent analysis, anonymous peer review,
+  and Chair-led synthesis into an investment memo. Demonstrates custom agents,
+  custom skills, coordination_store message bus, and a quorum gate enforcing
+  adversarial divergence.
+lead: chair
+members:
+  - bull-analyst
+  - bear-analyst
+  - market-analyst
+  - financial-analyst
+  - technical-analyst
+harness:
+  parallel: false
+  gates:
+    - name: quorum-gate
+      kind: ext:quorum-gate
+      when: post-member
+      target: technical-analyst
+      output_key: output
+context:
+  chain_prefix: board-room
