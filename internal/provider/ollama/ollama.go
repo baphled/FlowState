@@ -93,6 +93,7 @@ var knownModelContextLengths = map[string]int{
 	"llama3.2":  131072,
 	"llama3.1":  131072,
 	"llama3":    8192,
+	"qwen3":     32768,
 	"qwen2.5":   32768,
 	"qwen2":     32768,
 	"granite4":  131072,
