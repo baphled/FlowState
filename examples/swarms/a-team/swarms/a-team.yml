@@ -17,7 +17,8 @@ members:
 
 harness:
   gates:
-    - kind: ext:relevance-gate
+    - name: post-researcher-relevance
+      kind: ext:relevance-gate
       when: post-member
       target: researcher
 
