@@ -1,0 +1,11 @@
+name: relevance-gate
+description: >
+  Validates that the researcher's output is substantively on-topic for the
+  original task. Compares keywords from the task-plan against the research
+  content using word overlap scoring. Rejects research that scores below
+  0.4 (40% keyword overlap) and provides a redirect signal.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 10s
+policy:
+  threshold: 0.4
