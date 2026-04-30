@@ -19,3 +19,23 @@ import (
 func SetupAgentRegistryForTest(cfg *config.AppConfig) *agent.Registry {
 	return setupAgentRegistry(cfg)
 }
+
+// NewSwarmAgentRegistryAdapterForTest constructs the unexported
+// swarmAgentRegistryAdapter for tests outside this package so they can
+// exercise the alias-aware presence check the swarm validator depends on.
+//
+// Expected:
+//   - inner is the agent.Registry the adapter should wrap. nil is allowed
+//     and produces an adapter whose Get always returns false.
+//
+// Returns:
+//   - A swarm.AgentRegistry-compatible value that delegates Get to
+//     agent.Registry.GetByNameOrAlias.
+//
+// Side effects:
+//   - None.
+func NewSwarmAgentRegistryAdapterForTest(inner *agent.Registry) interface {
+	Get(id string) (any, bool)
+} {
+	return swarmAgentRegistryAdapter{inner: inner}
+}
