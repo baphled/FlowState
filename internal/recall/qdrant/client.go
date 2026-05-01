@@ -201,8 +201,9 @@ func (c *Client) Upsert(ctx context.Context, collection string, points []Point, 
 //   - None.
 func (c *Client) Search(ctx context.Context, collection string, vector []float64, limit int) ([]ScoredPoint, error) {
 	payload := map[string]any{
-		"vector": vector,
-		"limit":  limit,
+		"vector":      vector,
+		"limit":       limit,
+		"with_payload": true,
 	}
 	body, status, err := c.do(ctx, http.MethodPost, collectionsPath+collection+"/points/search", payload)
 	if err != nil {

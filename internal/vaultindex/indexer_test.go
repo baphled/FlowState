@@ -210,14 +210,16 @@ var _ = Describe("Indexer", func() {
 			Expect(embedder2.calls).To(BeNumerically(">", 0))
 		})
 
-		It("propagates embedder failures", func() {
+		It("skips chunks that fail to embed and continues indexing", func() {
 			root := GinkgoT().TempDir()
 			writeFile(filepath.Join(root, "note.md"), "alpha beta gamma")
 
 			indexer, _, embedder, _ := newIndexerFixture(root, false)
 			embedder.err = errors.New("embed-broken")
-			_, err := indexer.IndexAll(context.Background())
-			Expect(err).To(MatchError(ContainSubstring("embed-broken")))
+			summary, err := indexer.IndexAll(context.Background())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(summary.Indexed).To(Equal(1))
+			Expect(summary.Chunks).To(Equal(0))
 		})
 	})
 })

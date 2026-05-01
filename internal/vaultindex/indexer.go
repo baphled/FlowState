@@ -188,6 +188,10 @@ func (i *Indexer) indexFile(ctx context.Context, f MarkdownFile) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(points) == 0 {
+		i.cfg.Logger.Printf("skipping upsert for %s: all chunks failed to embed", f.RelPath)
+		return 0, nil
+	}
 	if err := i.cfg.Store.Upsert(ctx, i.cfg.Collection, points, true); err != nil {
 		return 0, fmt.Errorf("upserting %s: %w", f.RelPath, err)
 	}
@@ -206,7 +210,8 @@ func (i *Indexer) embedBatches(ctx context.Context, f MarkdownFile, chunks []str
 		for idx := start; idx < end; idx++ {
 			vec, err := i.cfg.Embedder.Embed(ctx, chunks[idx])
 			if err != nil {
-				return nil, fmt.Errorf("embedding %s chunk %d: %w", f.RelPath, idx, err)
+				i.cfg.Logger.Printf("skipping %s chunk %d: %v", f.RelPath, idx, err)
+				continue
 			}
 			points = append(points, qdrant.Point{
 				ID:     pointID(f.RelPath, idx),
