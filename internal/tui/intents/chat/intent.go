@@ -3179,6 +3179,24 @@ func (i *Intent) sendMessage() tea.Cmd {
 	}
 
 	if !i.agentExplicitlySelected {
+		if i.swarmRegistry != nil && len(extractAtMentions(userMessage)) > 0 {
+			hasAgent := func(name string) bool {
+				if i.agentRegistry == nil {
+					return false
+				}
+				if _, ok := i.agentRegistry.Get(name); ok {
+					return true
+				}
+				_, ok := i.agentRegistry.GetByNameOrAlias(name)
+				return ok
+			}
+			for _, mention := range extractAtMentions(userMessage) {
+				kind, _ := swarm.Resolve(mention, hasAgent, i.swarmRegistry)
+				if kind == swarm.KindSwarm {
+					goto skipAgentDetect
+				}
+			}
+		}
 		if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
 			if i.agentRegistry != nil {
 				if manifest, found := i.agentRegistry.Get(detected); found {
@@ -3187,6 +3205,7 @@ func (i *Intent) sendMessage() tea.Cmd {
 			}
 		}
 	}
+skipAgentDetect:
 
 	// Note: swarm @-mention dispatch used to set up state here via
 	// maybeBeginSwarmDispatch; per ADR - Session Orchestrator for
