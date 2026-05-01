@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -205,7 +206,7 @@ func indexOnStartup(ctx context.Context, cfg runtimeConfig, embedder vaultindex.
 
 // buildEmbedder constructs an Embedder backed by the Ollama HTTP client.
 func buildEmbedder(cfg runtimeConfig) (vaultindex.Embedder, error) {
-	prov, err := ollama.NewWithClient(cfg.OllamaHost, nil)
+	prov, err := ollama.NewWithClient(cfg.OllamaHost, &http.Client{})
 	if err != nil {
 		return nil, fmt.Errorf("creating ollama client: %w", err)
 	}

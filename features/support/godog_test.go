@@ -92,4 +92,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterMultiAgentChatUXE2ESteps(ctx)
 	RegisterRecallLearningSteps(ctx)
 	RegisterStreamingErrorSteps(ctx)
+	RegisterAdultingMemorySteps(ctx)
+	RegisterVaultIndexSyncSteps(ctx)
 }

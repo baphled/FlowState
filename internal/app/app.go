@@ -751,6 +751,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 	appTools = appendSwarmTools(appTools, in.swarmRegistry)
 	appTools = appendMemoryTools(appTools, in.memoryClient)
 	appTools = appendVaultTools(appTools, in.vaultHandler)
+	appTools = appendVaultIndexTools(appTools, in.setup.cfg)
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
@@ -829,6 +830,34 @@ func appendVaultTools(base []tool.Tool, handler toolsvault.Handler) []tool.Tool 
 		return base
 	}
 	return append(base, toolsvault.NewQueryVaultTool(handler))
+}
+
+// appendVaultIndexTools appends the vault_index and vault_sync tools when
+// the app config has both a vault path and a Qdrant URL configured.
+// Returns base unchanged when either is absent.
+func appendVaultIndexTools(base []tool.Tool, cfg *config.AppConfig) []tool.Tool {
+	if cfg == nil || cfg.VaultPath == "" || cfg.Qdrant.URL == "" {
+		return base
+	}
+	collection := cfg.VaultCollection
+	if collection == "" {
+		collection = defaultVaultCollection
+	}
+	ollamaHost := cfg.Providers.Ollama.Host
+	if ollamaHost == "" {
+		ollamaHost = "http://localhost:11434"
+	}
+	idxCfg := toolsvault.IndexerConfig{
+		VaultRoot:      cfg.VaultPath,
+		Collection:     collection,
+		QdrantURL:      cfg.Qdrant.URL,
+		OllamaHost:     ollamaHost,
+		EmbeddingModel: cfg.ResolvedEmbeddingModel(),
+	}
+	return append(base,
+		toolsvault.NewIndexVaultTool(idxCfg),
+		toolsvault.NewSyncVaultTool(idxCfg),
+	)
 }
 
 func appendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
@@ -1857,6 +1886,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 
 	tools = appendMemoryTools(tools, a.memoryClient)
 	tools = appendVaultTools(tools, a.vaultHandler)
+	tools = appendVaultIndexTools(tools, a.Config)
 
 	return tools
 }
@@ -4054,9 +4084,13 @@ func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
 	}
+	collection := cfg.VaultCollection
+	if collection == "" {
+		collection = defaultVaultCollection
+	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())
-	return vaultindex.NewQueryHandler(embedder, client, defaultVaultCollection)
+	return vaultindex.NewQueryHandler(embedder, client, collection)
 }
 
 // defaultQdrantDistance is the metric the auto-create path uses when
