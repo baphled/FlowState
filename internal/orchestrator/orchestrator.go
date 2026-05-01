@@ -197,17 +197,19 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 	}
 
 	var snapshot any
+	var prevSkipFiles bool
 	if o.engine != nil {
 		snapshot = o.engine.ManifestSnapshot()
+		prevSkipFiles = o.engine.SkipAgentFiles()
 		o.engine.SetSwarmContext(swarmCtx)
+		o.engine.SetSkipAgentFiles(true)
 	}
 
 	src, err := o.streamer.Stream(ctx, leadID, req.Message)
 	if err != nil {
-		// Roll back snapshot/install on initial-stream failure so
-		// the engine doesn't end up in a half-installed state.
 		if o.engine != nil {
 			o.engine.RestoreManifest(snapshot)
+			o.engine.SetSkipAgentFiles(prevSkipFiles)
 		}
 		return nil, err
 	}
@@ -236,6 +238,7 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 		if o.engine != nil {
 			_ = o.engine.FlushSwarmLifecycle(ctx)
 			o.engine.RestoreManifest(snapshot)
+			o.engine.SetSkipAgentFiles(prevSkipFiles)
 		}
 	}()
 	return out, nil

@@ -4,19 +4,24 @@ id: life-admin-lead
 name: Life Admin Lead
 aliases: []
 complexity: deep
-uses_recall: false
+uses_recall: true
 capabilities:
   tools:
     - coordination_store
     - skill_load
     - delegate
     - todowrite
+    - mcp_memory_search_nodes
+    - mcp_memory_open_nodes
+    - mcp_vault-rag_query_vault
   skills:
     - admin-triage
   always_active_skills:
     - pre-action
     - discipline
     - admin-triage
+    - memory-keeper
+    - knowledge-base
   mcp_servers: []
   capability_description: "Triages a raw life-admin task dump into a prioritised, deadline-annotated task list, then delegates to bill-tracker, deadline-scanner, and letter-drafter"
 context_management:
@@ -53,6 +58,13 @@ Your always-active skills are injected automatically. Before you begin work, cal
 - `skill_load("pre-action")`
 - `skill_load("discipline")`
 - `skill_load("admin-triage")`
+- `skill_load("memory-keeper")`
+- `skill_load("knowledge-base")`
+
+Before triaging, query memory and vault for any historical context on the user's tasks:
+1. `mcp_memory_search_nodes` — look for past bill payments, deadline patterns, or correspondence.
+2. `mcp_vault-rag_query_vault` — check the knowledge base for relevant notes or documents.
+3. Only proceed to triage if memory and vault returned nothing useful.
 
 ## Your Responsibilities
 

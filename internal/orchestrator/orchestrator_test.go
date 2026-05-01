@@ -50,6 +50,7 @@ type fakeOrchestratorEngine struct {
 	flushCalls    int
 	snapshotCalls int
 	restoreCalls  int
+	skipFiles     bool
 }
 
 func (f *fakeOrchestratorEngine) SetSwarmContext(ctx *swarm.Context) {
@@ -69,6 +70,9 @@ func (f *fakeOrchestratorEngine) ManifestSnapshot() any {
 func (f *fakeOrchestratorEngine) RestoreManifest(_ any) {
 	f.restoreCalls++
 }
+
+func (f *fakeOrchestratorEngine) SkipAgentFiles() bool        { return f.skipFiles }
+func (f *fakeOrchestratorEngine) SetSkipAgentFiles(skip bool) { f.skipFiles = skip }
 
 // fakeStreamConsumer implements streaming.StreamConsumer minimally.
 type fakeStreamConsumer struct {

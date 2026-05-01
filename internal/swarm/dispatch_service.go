@@ -22,6 +22,8 @@ type DispatchEngine interface {
 	FlushSwarmLifecycle(ctx context.Context) error
 	ManifestSnapshot() any
 	RestoreManifest(snapshot any)
+	SkipAgentFiles() bool
+	SetSkipAgentFiles(skip bool)
 }
 
 // DispatchSwarm runs an end-to-end swarm dispatch: install the swarm

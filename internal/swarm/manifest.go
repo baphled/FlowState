@@ -80,6 +80,10 @@ const (
 	// FailurePolicyWarn behaves like continue but tags the failure
 	// as a warning so downstream surfaces can render it differently.
 	FailurePolicyWarn FailurePolicy = "warn"
+	// FailurePolicyDefer polls the gate at DeferInterval until it
+	// passes or DeferTimeout expires. Used for pre-member gates
+	// that depend on prior wave outputs that may not exist yet.
+	FailurePolicyDefer FailurePolicy = "defer"
 )
 
 // DefaultFailurePolicy is applied when a gate omits the field. Halt
@@ -93,6 +97,7 @@ var legalFailurePolicies = map[FailurePolicy]struct{}{
 	FailurePolicyHalt:     {},
 	FailurePolicyContinue: {},
 	FailurePolicyWarn:     {},
+	FailurePolicyDefer:    {},
 }
 
 // Manifest is the in-memory representation of a swarm manifest YAML
@@ -314,6 +319,16 @@ type GateSpec struct {
 	// scalars like "5s" / "30s" via the time.Duration unmarshaller
 	// installed below.
 	Timeout time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+
+	// DeferInterval controls how frequently a defer-policy gate polls
+	// when the gate returns "not ready". Zero defaults to 1 second.
+	DeferInterval time.Duration `json:"defer_interval,omitempty" yaml:"defer_interval,omitempty"`
+
+	// DeferTimeout is the maximum duration a defer-policy gate polls
+	// before giving up and treating the gate as failed. Zero means no
+	// timeout — the gate polls indefinitely until it passes or the
+	// parent context is cancelled.
+	DeferTimeout time.Duration `json:"defer_timeout,omitempty" yaml:"defer_timeout,omitempty"`
 }
 
 // UnmarshalYAML parses a GateSpec from YAML and translates the
@@ -343,6 +358,8 @@ func (g *GateSpec) UnmarshalYAML(value *yaml.Node) error {
 		Precedence    Precedence    `yaml:"precedence"`
 		FailurePolicy FailurePolicy `yaml:"failurePolicy"`
 		Timeout       string        `yaml:"timeout"`
+		DeferInterval string        `yaml:"defer_interval"`
+		DeferTimeout  string        `yaml:"defer_timeout"`
 	}
 	var raw rawGateSpec
 	if err := value.Decode(&raw); err != nil {
@@ -362,6 +379,20 @@ func (g *GateSpec) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("gate %q: parsing timeout %q: %w", raw.Name, raw.Timeout, err)
 		}
 		g.Timeout = d
+	}
+	if raw.DeferInterval != "" {
+		d, err := time.ParseDuration(raw.DeferInterval)
+		if err != nil {
+			return fmt.Errorf("gate %q: parsing defer_interval %q: %w", raw.Name, raw.DeferInterval, err)
+		}
+		g.DeferInterval = d
+	}
+	if raw.DeferTimeout != "" {
+		d, err := time.ParseDuration(raw.DeferTimeout)
+		if err != nil {
+			return fmt.Errorf("gate %q: parsing defer_timeout %q: %w", raw.Name, raw.DeferTimeout, err)
+		}
+		g.DeferTimeout = d
 	}
 	return nil
 }
@@ -779,7 +810,28 @@ func validateGateScalars(i int, gate GateSpec) error {
 	if err := validateGateFailurePolicy(i, gate); err != nil {
 		return err
 	}
+	if err := validateDeferFields(i, gate); err != nil {
+		return err
+	}
 	return validateGateTimeout(i, gate)
+}
+
+// validateDeferFields rejects negative DeferInterval or DeferTimeout
+// values and warns when defer fields are set on a non-defer gate.
+func validateDeferFields(i int, gate GateSpec) error {
+	if gate.DeferInterval < 0 {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].defer_interval", i),
+			Message: fmt.Sprintf("negative defer_interval %q on gate %q", gate.DeferInterval, gate.Name),
+		}
+	}
+	if gate.DeferTimeout < 0 {
+		return &ValidationError{
+			Field:   fmt.Sprintf("harness.gates[%d].defer_timeout", i),
+			Message: fmt.Sprintf("negative defer_timeout %q on gate %q", gate.DeferTimeout, gate.Name),
+		}
+	}
+	return nil
 }
 
 // validateGatePrecedence rejects any precedence string that is neither
