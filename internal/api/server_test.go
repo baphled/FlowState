@@ -89,6 +89,9 @@ func (f *fakeDispatchEngine) RestoreManifest(snapshot any) {
 	f.lastRestored = snapshot
 }
 
+func (f *fakeDispatchEngine) SkipAgentFiles() bool     { return false }
+func (f *fakeDispatchEngine) SetSkipAgentFiles(_ bool) {}
+
 var _ = Describe("Server", func() {
 	var (
 		server          *api.Server

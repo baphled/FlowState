@@ -156,6 +156,25 @@ type DispatchReport struct {
 	// FailurePolicyWarn. Held in its own slice so UI surfaces can
 	// render warn vs continue with different glyphs.
 	Warnings []GateFailure
+	// Deferred is the ordered list of gates that used FailurePolicyDefer
+	// and eventually passed after polling. Each entry records the number
+	// of polling attempts and elapsed wall time.
+	Deferred []DeferredEntry
+}
+
+// DeferredEntry records the resolution of a defer-policy gate that
+// polled until it passed (or timed out / was cancelled).
+type DeferredEntry struct {
+	// GateName is the manifest-supplied name of the deferred gate.
+	GateName string
+	// GateKind is the kind string for log filtering.
+	GateKind string
+	// Attempts is the total number of times the gate runner was invoked,
+	// including the final passing invocation.
+	Attempts int
+	// Elapsed is the wall time spent polling, measured from the first
+	// invocation to the final pass (or timeout).
+	Elapsed time.Duration
 }
 
 // Dispatch runs every gate in gates against runner with the spec'd
@@ -192,6 +211,14 @@ func Dispatch(ctx context.Context, runner GateRunner, gates []GateSpec, args Gat
 	for _, gate := range ordered {
 		err := runGateWithTimeout(ctx, runner, gate, args)
 		if err == nil {
+			if EffectiveFailurePolicy(gate) == FailurePolicyDefer {
+				report.Deferred = append(report.Deferred, DeferredEntry{
+					GateName: gate.Name,
+					GateKind: gate.Kind,
+					Attempts: 1,
+					Elapsed:  0,
+				})
+			}
 			continue
 		}
 		switch EffectiveFailurePolicy(gate) {
@@ -209,6 +236,15 @@ func Dispatch(ctx context.Context, runner GateRunner, gates []GateSpec, args Gat
 				Policy:   FailurePolicyWarn,
 				Err:      err,
 			})
+		case FailurePolicyDefer:
+			entry := pollUntilPass(ctx, runner, gate, args, err)
+			if entry.Attempts < 0 {
+				report.Halted = true
+				report.HaltedBy = gate.Name
+				report.Err = err
+				return report
+			}
+			report.Deferred = append(report.Deferred, entry)
 		default:
 			report.Halted = true
 			report.HaltedBy = gate.Name
@@ -281,4 +317,67 @@ func runGateWithTimeout(ctx context.Context, runner GateRunner, gate GateSpec, a
 //   - None.
 func gateTimeoutReason(timeout time.Duration) string {
 	return "gate timed out after " + timeout.String()
+}
+
+// defaultDeferInterval is used when DeferInterval is zero.
+const defaultDeferInterval = 1 * time.Second
+
+// pollUntilPass re-runs a defer-policy gate at DeferInterval until it
+// passes, the parent context is cancelled, or DeferTimeout expires.
+//
+// Expected:
+//   - ctx is the parent dispatch context (may carry a deadline).
+//   - runner is the gate runner.
+//   - gate has FailurePolicyDefer set.
+//   - args is the per-gate envelope.
+//   - initialErr is the error from the first failed evaluation.
+//
+// Returns:
+//   - A DeferredEntry with Attempts >= 1 and Elapsed > 0 on pass.
+//   - A DeferredEntry with Attempts < 0 on timeout/cancellation
+//     (caller treats this as a halt).
+//
+// Side effects:
+//   - Sleeps between polling attempts.
+//   - Calls runner.Run on each attempt.
+func pollUntilPass(ctx context.Context, runner GateRunner, gate GateSpec, args GateArgs, _ error) DeferredEntry {
+	interval := gate.DeferInterval
+	if interval <= 0 {
+		interval = defaultDeferInterval
+	}
+
+	var deadline time.Time
+	if gate.DeferTimeout > 0 {
+		deadline = time.Now().Add(gate.DeferTimeout)
+	}
+
+	start := time.Now()
+	attempts := 1
+
+	for {
+		if ctx.Err() != nil {
+			return DeferredEntry{Attempts: -1}
+		}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return DeferredEntry{Attempts: -1}
+		}
+
+		select {
+		case <-ctx.Done():
+			return DeferredEntry{Attempts: -1}
+		case <-time.After(interval):
+		}
+
+		attempts++
+		err := runGateWithTimeout(ctx, runner, gate, args)
+		if err == nil {
+			return DeferredEntry{
+				GateName: gate.Name,
+				GateKind: gate.Kind,
+				Attempts: attempts,
+				Elapsed:  time.Since(start),
+			}
+		}
+		_ = err
+	}
 }

@@ -180,6 +180,34 @@ harness:
 			Expect(m.Harness.Gates[0].FailurePolicy).To(Equal(swarm.FailurePolicyWarn))
 			Expect(m.Harness.Gates[0].Timeout).To(Equal(5 * time.Second))
 		})
+
+		It("parses failurePolicy=defer with defer_interval and defer_timeout", func() {
+			body := []byte(`schema_version: "1.0.0"
+id: policy
+lead: planner
+members:
+  - reviewer
+harness:
+  gates:
+    - name: wait-for-plan
+      kind: ext:dev/plan-approved
+      when: pre-member
+      target: Senior-Engineer
+      output_key: plan-review
+      failurePolicy: defer
+      defer_interval: 2s
+      defer_timeout: 5m
+`)
+
+			m, err := swarm.UnmarshalManifest(body)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(m.Harness.Gates).To(HaveLen(1))
+			Expect(m.Harness.Gates[0].FailurePolicy).To(Equal(swarm.FailurePolicyDefer))
+			Expect(m.Harness.Gates[0].DeferInterval).To(Equal(2 * time.Second))
+			Expect(m.Harness.Gates[0].DeferTimeout).To(Equal(5 * time.Minute))
+			Expect(swarm.EffectiveFailurePolicy(m.Harness.Gates[0])).To(Equal(swarm.FailurePolicyDefer))
+		})
 	})
 
 	Describe("SortGatesByPrecedence", func() {
@@ -440,6 +468,128 @@ harness:
 			Expect(report.Warnings).To(HaveLen(1))
 			Expect(report.Warnings[0].GateName).To(Equal("warn-on-slow"))
 			Expect(next.Calls()).To(ContainElement("after"))
+		})
+	})
+
+	Describe("Dispatch honours failurePolicy=defer", func() {
+		It("polls until the gate passes, then continues to the next gate", func() {
+			attempt := atomic.Int32{}
+			runner := &recordingRunner{
+				respond: func(gate swarm.GateSpec) error {
+					if gate.Name == "waiting" && attempt.Add(1) < 3 {
+						return errors.New("not ready")
+					}
+					return nil
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "waiting", FailurePolicy: swarm.FailurePolicyDefer, DeferInterval: 10 * time.Millisecond, DeferTimeout: 2 * time.Second},
+				{Name: "after"},
+			}
+
+			report := swarm.Dispatch(context.Background(), runner, gates, emptyArgs())
+
+			Expect(report.Halted).To(BeFalse())
+			Expect(report.Err).To(BeNil())
+			Expect(report.Deferred).To(HaveLen(1))
+			Expect(report.Deferred[0].GateName).To(Equal("waiting"))
+			Expect(report.Deferred[0].Attempts).To(BeNumerically(">=", 3))
+			Expect(runner.Calls()).To(ContainElement("after"))
+		})
+
+		It("halts when the gate does not pass before DeferTimeout", func() {
+			runner := &recordingRunner{
+				respond: func(gate swarm.GateSpec) error {
+					return errors.New("never ready")
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "stuck", FailurePolicy: swarm.FailurePolicyDefer, DeferInterval: 10 * time.Millisecond, DeferTimeout: 50 * time.Millisecond},
+			}
+
+			start := time.Now()
+			report := swarm.Dispatch(context.Background(), runner, gates, emptyArgs())
+			elapsed := time.Since(start)
+
+			Expect(report.Halted).To(BeTrue())
+			Expect(report.HaltedBy).To(Equal("stuck"))
+			Expect(report.Err).To(HaveOccurred())
+			Expect(elapsed).To(BeNumerically(">=", 40*time.Millisecond))
+			Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond))
+		})
+
+		It("stops polling when the context is cancelled", func() {
+			runner := &recordingRunner{
+				respond: func(gate swarm.GateSpec) error {
+					return errors.New("not ready")
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "ctx-cancel", FailurePolicy: swarm.FailurePolicyDefer, DeferInterval: 10 * time.Millisecond, DeferTimeout: 5 * time.Second},
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+
+			start := time.Now()
+			report := swarm.Dispatch(ctx, runner, gates, emptyArgs())
+			elapsed := time.Since(start)
+
+			Expect(report.Halted).To(BeTrue())
+			Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond))
+		})
+
+		It("passes immediately on the first attempt when the gate returns nil", func() {
+			runner := &recordingRunner{}
+			gates := []swarm.GateSpec{
+				{Name: "instant", FailurePolicy: swarm.FailurePolicyDefer, DeferInterval: 10 * time.Millisecond, DeferTimeout: 1 * time.Second},
+			}
+
+			report := swarm.Dispatch(context.Background(), runner, gates, emptyArgs())
+
+			Expect(report.Halted).To(BeFalse())
+			Expect(report.Deferred).To(HaveLen(1))
+			Expect(report.Deferred[0].Attempts).To(Equal(1))
+		})
+
+		It("records attempts and final elapsed duration on Deferred entry", func() {
+			attempt := atomic.Int32{}
+			runner := &recordingRunner{
+				respond: func(gate swarm.GateSpec) error {
+					if attempt.Add(1) < 2 {
+						return errors.New("not ready")
+					}
+					return nil
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "metrics", FailurePolicy: swarm.FailurePolicyDefer, DeferInterval: 10 * time.Millisecond, DeferTimeout: 1 * time.Second},
+			}
+
+			report := swarm.Dispatch(context.Background(), runner, gates, emptyArgs())
+
+			Expect(report.Deferred).To(HaveLen(1))
+			Expect(report.Deferred[0].GateName).To(Equal("metrics"))
+			Expect(report.Deferred[0].Attempts).To(BeNumerically(">=", 2))
+			Expect(report.Deferred[0].Elapsed).To(BeNumerically(">", 0))
+		})
+
+		It("uses a default DeferInterval when zero", func() {
+			runner := &recordingRunner{
+				respond: func(gate swarm.GateSpec) error {
+					return errors.New("not ready")
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "no-interval", FailurePolicy: swarm.FailurePolicyDefer, DeferTimeout: 200 * time.Millisecond},
+			}
+
+			start := time.Now()
+			report := swarm.Dispatch(context.Background(), runner, gates, emptyArgs())
+			elapsed := time.Since(start)
+
+			Expect(report.Halted).To(BeTrue())
+			Expect(elapsed).To(BeNumerically(">=", 100*time.Millisecond))
 		})
 	})
 })

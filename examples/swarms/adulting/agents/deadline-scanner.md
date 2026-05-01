@@ -4,15 +4,20 @@ id: deadline-scanner
 name: Deadline Scanner
 aliases: []
 complexity: low
-uses_recall: false
+uses_recall: true
 capabilities:
   tools:
     - coordination_store
     - skill_load
+    - mcp_memory_search_nodes
+    - mcp_memory_open_nodes
+    - mcp_vault-rag_query_vault
   skills: []
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
   mcp_servers: []
   capability_description: "Maps all commitments from the prioritised task list to a timeline and flags items on the critical path"
 context_management:
@@ -45,6 +50,12 @@ You are the Deadline Scanner for the FlowState adulting swarm. You read the prio
 Call `skill_load(name)` for each before beginning:
 - `skill_load("pre-action")`
 - `skill_load("discipline")`
+- `skill_load("memory-keeper")`
+- `skill_load("knowledge-base")`
+
+Before classifying deadlines, query memory and vault for historical deadline data:
+1. `mcp_memory_search_nodes` — look for past deadlines, recurring obligations, missed dates.
+2. `mcp_vault-rag_query_vault` — check the knowledge base for calendar notes or deadline history.
 
 ## Your Task
 
