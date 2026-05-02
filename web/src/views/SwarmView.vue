@@ -3,14 +3,14 @@
     <header class="swarm-header">
       <h1>Swarm Activity</h1>
       <div class="swarm-controls">
-        <span class="event-count" data-testid="event-count">{{ events.length }} events</span>
-          <button
+        <span class="event-count" data-testid="event-count">{{ swarmStore.eventCount }} events</span>
+        <button
           class="btn-primary"
-          data-testid="refresh-btn"
-          :disabled="swarmStore.isPolling"
-          @click="swarmStore.startPolling()"
+          data-testid="live-toggle-btn"
+          :disabled="swarmStore.isLive"
+          @click="swarmStore.connect()"
         >
-          {{ swarmStore.isPolling ? 'Polling…' : 'Refresh' }}
+          {{ swarmStore.isLive ? 'Connected...' : 'Go Live' }}
         </button>
       </div>
     </header>
@@ -19,8 +19,8 @@
       {{ swarmStore.error }}
     </div>
 
-    <div v-if="events.length === 0" class="swarm-empty" data-testid="swarm-empty">
-      No swarm events yet. Start polling to see live activity.
+    <div v-if="events.length === 0 && !swarmStore.isLive" class="swarm-empty" data-testid="swarm-empty">
+      No swarm events yet. Click "Go Live" to see real-time activity.
     </div>
 
     <ul v-else class="event-list" data-testid="swarm-event-list">
@@ -39,8 +39,15 @@ import EventCard from '@/components/swarm/EventCard.vue'
 const swarmStore = useSwarmStore()
 const events = computed(() => swarmStore.events)
 
-onMounted(() => swarmStore.startPolling())
-onUnmounted(() => swarmStore.stopPolling())
+onMounted(() => {
+  // Auto-connect on mount
+  swarmStore.connect()
+})
+
+onUnmounted(() => {
+  // Clean up on unmount
+  swarmStore.disconnect()
+})
 </script>
 
 <style scoped>
