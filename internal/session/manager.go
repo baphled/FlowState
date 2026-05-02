@@ -57,11 +57,11 @@ type Session struct {
 
 // Summary provides a lightweight view of a session for listing.
 type Summary struct {
-	ID           string    `json:"id"`
-	AgentID      string    `json:"agent_id"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"created_at"`
-	MessageCount int       `json:"message_count"`
+	Id           string    `json:"id"`
+	AgentId      string    `json:"agentId"`
+	Title        string    `json:"title"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	MessageCount int       `json:"messageCount"`
 }
 
 // Recorder captures stream chunks for session recording.
@@ -334,10 +334,10 @@ func (m *Manager) ListSessions() []*Summary {
 	summaries := make([]*Summary, 0, len(m.sessions))
 	for _, sess := range m.sessions {
 		summaries = append(summaries, &Summary{
-			ID:           sess.ID,
-			AgentID:      sess.AgentID,
-			Status:       sess.Status,
-			CreatedAt:    sess.CreatedAt,
+			Id:           sess.ID,
+			AgentId:      sess.AgentID,
+			Title:        "",  // TODO: populate from session metadata
+			UpdatedAt:    sess.UpdatedAt,
 			MessageCount: len(sess.Messages),
 		})
 	}
