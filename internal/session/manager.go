@@ -61,6 +61,8 @@ type Summary struct {
 	AgentID      string    `json:"agent_id"`
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Title        string    `json:"title"`
 	MessageCount int       `json:"message_count"`
 }
 

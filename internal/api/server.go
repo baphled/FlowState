@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
@@ -321,6 +322,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions", s.handleListV1Sessions)
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
@@ -331,6 +333,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/swarm/events", s.handleSwarmEvents)
 	if s.metricsHandler != nil {
 		s.mux.Handle("GET /metrics", s.metricsHandler)
 	}
@@ -733,20 +736,18 @@ func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, sessions)
 }
 
-// handleIndex writes the embedded HTML chat interface to the response.
+// handleIndex redirects requests to the Vue SPA /chat route.
 //
 // Expected:
 //   - None.
 //
+// Returns:
+//   - 302 redirect to /chat for SPA routing.
+//
 // Side effects:
-//   - Writes HTTP 200 with Content-Type text/html; charset=utf-8.
-//   - Writes embedded HTML content to response body.
-func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(embeddedHTML)); err != nil {
-		return
-	}
+//   - Writes redirect response.
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/chat", http.StatusFound)
 }
 
 // handleSessionChildren returns the direct child sessions of the given session.
@@ -939,6 +940,161 @@ type healthResponse struct {
 //   - None.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, healthResponse{Status: "ok"})
+}
+
+// handleSwarmEvents streams swarm activity events as SSE using the same projection
+// logic as the TUI chat intent.
+//
+// This handler subscribes to the EventBus and projects tool execute,
+// delegation, and background task events into the SwarmEvent format that the
+// frontend expects.
+func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusNotImplemented)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if s.eventBus == nil {
+		writeSSE(w, flusher, `{"error":"event bus not configured"}`)
+		flusher.Flush()
+		return
+	}
+
+	eventCh := make(chan interface{}, 64)
+	stopCh := make(chan struct{})
+
+	handlers := map[string]eventbus.EventHandler{
+		"tool.execute.before":       func(msg any) { eventCh <- msg },
+		"tool.execute.result":       func(msg any) { eventCh <- msg },
+		"tool.execute.error":        func(msg any) { eventCh <- msg },
+		"background.task.started":   func(msg any) { eventCh <- msg },
+		"background.task.completed": func(msg any) { eventCh <- msg },
+		"background.task.failed":    func(msg any) { eventCh <- msg },
+	}
+
+	for topic, handler := range handlers {
+		s.eventBus.Subscribe(topic, handler)
+	}
+
+	defer func() {
+		close(stopCh)
+		for topic, handler := range handlers {
+			s.eventBus.Unsubscribe(topic, handler)
+		}
+	}()
+
+	writeSSE(w, flusher, `{"type":"connected"}`)
+	flusher.Flush()
+
+	for {
+		select {
+		case <-stopCh:
+			writeSSE(w, flusher, `{"type":"done"}`)
+			flusher.Flush()
+			return
+		case ev := <-eventCh:
+			swarmEv := projectSwarmEvent(ev)
+			if swarmEv.ID == "" {
+				continue
+			}
+			jsonData, err := json.Marshal(swarmEv)
+			if err != nil {
+				continue
+			}
+			writeSSE(w, flusher, string(jsonData))
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// projectSwarmEvent converts an EventBus event into a SwarmEvent for the frontend.
+func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
+	switch e := ev.(type) {
+	case *events.ToolExecuteResultEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
+			Type:      streaming.EventToolResult,
+			Status:    "completed",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"tool_name": e.Data.ToolName,
+				"ok":        true,
+			},
+		}
+	case *events.ToolExecuteErrorEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
+			Type:      streaming.EventToolResult,
+			Status:    "error",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"tool_name": e.Data.ToolName,
+				"ok":        false,
+				"error":     e.Data.Error,
+			},
+		}
+	case *events.ToolEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
+			Type:      streaming.EventToolCall,
+			Status:    "started",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"tool_name": e.Data.ToolName,
+			},
+		}
+	case *events.BackgroundTaskStartedEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.TaskID,
+			Type:      streaming.EventPlan,
+			Status:    "started",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"name": e.Data.Name,
+			},
+		}
+	case *events.BackgroundTaskCompletedEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.TaskID,
+			Type:      streaming.EventPlan,
+			Status:    "completed",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"name": e.Data.Name,
+			},
+		}
+	case *events.BackgroundTaskFailedEvent:
+		return streaming.SwarmEvent{
+			ID:        e.Data.TaskID,
+			Type:      streaming.EventPlan,
+			Status:    "failed",
+			AgentID:   e.Data.SessionID,
+			Timestamp: time.Now(),
+			Metadata: map[string]interface{}{
+				"name":  e.Data.Name,
+				"error": e.Data.Error,
+			},
+		}
+	}
+	return streaming.SwarmEvent{}
 }
 
 // writeJSON encodes data as JSON and writes it to the response with HTTP 200.
@@ -1230,125 +1386,23 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, data string) {
 	flusher.Flush()
 }
 
-var embeddedHTML = strings.Join([]string{
-	`<!DOCTYPE html>`,
-	`<html lang="en">`,
-	`<head>`,
-	`    <meta charset="UTF-8">`,
-	`    <meta name="viewport" content="width=device-width, initial-scale=1.0">`,
-	`    <title>FlowState Chat</title>`,
-	`    <style>`,
-	`        * { box-sizing: border-box; margin: 0; padding: 0; }`,
-	`        body {`,
-	`            font-family: system-ui, -apple-system, sans-serif;`,
-	`            background: #1a1a2e; color: #eee;`,
-	`            height: 100vh; display: flex; flex-direction: column;`,
-	`        }`,
-	`        .header { padding: 1rem; background: #16213e; border-bottom: 1px solid #0f3460; }`,
-	`        .header h1 { font-size: 1.5rem; color: #e94560; }`,
-	`        .messages { flex: 1; overflow-y: auto; padding: 1rem; }`,
-	`        .message {`,
-	`            margin-bottom: 1rem; padding: 0.75rem 1rem;`,
-	`            border-radius: 8px; max-width: 80%;`,
-	`        }`,
-	`        .message.user { background: #0f3460; margin-left: auto; }`,
-	`        .message.assistant { background: #16213e; border: 1px solid #0f3460; }`,
-	`        .input-area {`,
-	`            padding: 1rem; background: #16213e;`,
-	`            border-top: 1px solid #0f3460; display: flex; gap: 0.5rem;`,
-	`        }`,
-	`        textarea {`,
-	`            flex: 1; background: #1a1a2e; border: 1px solid #0f3460;`,
-	`            color: #eee; padding: 0.75rem; border-radius: 8px;`,
-	`            resize: none; font-family: inherit; font-size: 1rem;`,
-	`        }`,
-	`        textarea:focus { outline: none; border-color: #e94560; }`,
-	`        button {`,
-	`            background: #e94560; color: white; border: none;`,
-	`            padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; font-size: 1rem;`,
-	`        }`,
-	`        button:hover { background: #ff6b6b; }`,
-	`        button:disabled { background: #444; cursor: not-allowed; }`,
-	`    </style>`,
-	`</head>`,
-	`<body>`,
-	`    <div class="header"><h1>FlowState Chat</h1></div>`,
-	`    <div class="messages" id="messages"></div>`,
-	`    <div class="input-area">`,
-	`        <textarea id="input" rows="2" placeholder="Type your message..."></textarea>`,
-	`        <button id="send">Send</button>`,
-	`    </div>`,
-	`    <script>`,
-	`        const messagesDiv = document.getElementById('messages');`,
-	`        const input = document.getElementById('input');`,
-	`        const sendBtn = document.getElementById('send');`,
-	``,
-	`        function addMessage(content, role) {`,
-	`            const div = document.createElement('div');`,
-	`            div.className = 'message ' + role;`,
-	`            div.textContent = content;`,
-	`            messagesDiv.appendChild(div);`,
-	`            messagesDiv.scrollTop = messagesDiv.scrollHeight;`,
-	`            return div;`,
-	`        }`,
-	``,
-	`        async function sendMessage() {`,
-	`            const message = input.value.trim();`,
-	`            if (!message) return;`,
-	``,
-	`            input.value = '';`,
-	`            sendBtn.disabled = true;`,
-	`            addMessage(message, 'user');`,
-	``,
-	`            const assistantDiv = addMessage('', 'assistant');`,
-	``,
-	`            try {`,
-	`                const response = await fetch('/api/chat', {`,
-	`                    method: 'POST',`,
-	`                    headers: { 'Content-Type': 'application/json' },`,
-	`                    body: JSON.stringify({ agent_id: 'default', message: message })`,
-	`                });`,
-	``,
-	`                const reader = response.body.getReader();`,
-	`                const decoder = new TextDecoder();`,
-	`                let buffer = '';`,
-	``,
-	`                while (true) {`,
-	`                    const { done, value } = await reader.read();`,
-	`                    if (done) break;`,
-	``,
-	`                    buffer += decoder.decode(value, { stream: true });`,
-	`                    const lines = buffer.split('\\n');`,
-	`                    buffer = lines.pop() || '';`,
-	``,
-	`                    for (const line of lines) {`,
-	`                        if (line.startsWith('data: ')) {`,
-	`                            const data = line.slice(6);`,
-	`                            if (data === '[DONE]') continue;`,
-	`                            try {`,
-	`                                const parsed = JSON.parse(data);`,
-	`                                if (parsed.content) {`,
-	`                                    assistantDiv.textContent += parsed.content;`,
-	`                                }`,
-	`                            } catch (e) {}`,
-	`                        }`,
-	`                    }`,
-	`                }`,
-	`            } catch (error) {`,
-	`                assistantDiv.textContent = 'Error: ' + error.message;`,
-	`            }`,
-	``,
-	`            sendBtn.disabled = false;`,
-	`        }`,
-	``,
-	`        sendBtn.addEventListener('click', sendMessage);`,
-	`        input.addEventListener('keydown', (e) => {`,
-	`            if (e.key === 'Enter' && !e.shiftKey) {`,
-	`                e.preventDefault();`,
-	`                sendMessage();`,
-	`            }`,
-	`        });`,
-	`    </script>`,
-	`</body>`,
-	`</html>`,
-}, "\n")
+// handleSessionMessages returns the messages for the given session as JSON.
+//
+// Expected:
+//   - Request path parameter "id" contains the session identifier.
+//
+// Side effects:
+//   - Writes HTTP 200 with JSON-encoded messages.
+func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	sess, err := s.sessionManager.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, sess.Messages)
+}
