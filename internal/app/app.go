@@ -55,6 +55,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
@@ -1850,10 +1851,11 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 // Side effects:
 //   - None.
 func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coordination.Store) []tool.Tool {
+	guard := a.buildPathGuard()
 	tools := []tool.Tool{
-		bash.New(),
-		read.New(),
-		write.New(),
+		bash.NewWithGuard(guard),
+		read.NewWithGuard(guard),
+		write.NewWithGuard(guard),
 		web.New(),
 	}
 
@@ -2307,6 +2309,16 @@ func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, pl
 		plantool.NewList(plansDir),
 		plantool.NewRead(plansDir),
 	}
+}
+
+// buildPathGuard constructs a pathguard.Guard that blocks access to the
+// configured vault directory. Returns a no-op guard when no vault path is set.
+func (a *App) buildPathGuard() *pathguard.Guard {
+	var denied []string
+	if a.Config != nil && a.Config.VaultPath != "" {
+		denied = append(denied, a.Config.VaultPath)
+	}
+	return pathguard.New(denied)
 }
 
 // buildToolsSetup creates a tool registry and permission handler for the engine.
