@@ -1,51 +1,191 @@
-import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { postChat, fetchModels } from '@/api'
-import type { Message } from '@/types'
+import type { Agent, Message, SessionSummary } from '@/types'
+import {
+  createSession,
+  fetchAgents,
+  fetchSessionMessages,
+  fetchSessions,
+  sendSessionMessage,
+} from '@/api'
 
-export const useChatStore = defineStore('chat', () => {
-  const messages = ref<Message[]>([])
-  const isLoading = ref(false)
-  const error = ref<string | null>(null)
-  const model = ref('claude-sonnet-4.6')
-  const availableModels = ref<string[]>([])
+const activeSessionStorageKey = 'chat.currentSessionId'
+const activeAgentStorageKey = 'chat.agentId'
 
-  const messageCount = computed(() => messages.value.length)
+function getPersistedSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
 
-  async function loadModels(): Promise<void> {
-    try {
-      availableModels.value = await fetchModels()
-      if (availableModels.value.length > 0 && !availableModels.value.includes(model.value)) {
-        model.value = availableModels.value[0] ?? model.value
+  return window.localStorage.getItem(activeSessionStorageKey)
+}
+
+function persistSessionId(sessionId: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (sessionId) {
+    window.localStorage.setItem(activeSessionStorageKey, sessionId)
+    return
+  }
+
+  window.localStorage.removeItem(activeSessionStorageKey)
+}
+
+function getPersistedAgentId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return window.localStorage.getItem(activeAgentStorageKey)
+}
+
+function persistAgentId(agentId: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (agentId) {
+    window.localStorage.setItem(activeAgentStorageKey, agentId)
+    return
+  }
+
+  window.localStorage.removeItem(activeAgentStorageKey)
+}
+
+
+export const useChatStore = defineStore('chat', {
+  state: () => ({
+    availableAgentDetails: [] as Agent[],
+    availableAgents: [] as string[],
+    agentId: '',
+    currentSessionId: null as string | null,
+    sessions: [] as SessionSummary[],
+    messages: [] as Message[],
+    isLoading: false,
+    isLoadingSessions: false,
+    error: null as string | null,
+  }),
+
+  actions: {
+    async restoreStateFromBackend(): Promise<void> {
+      await this.loadAgents()
+      await this.loadSessions()
+
+      const persistedAgentId = getPersistedAgentId()
+      const persistedSessionId = getPersistedSessionId()
+      const session = this.sessions.find((item) => item.id === persistedSessionId)
+      const agentId = session?.agentId ?? persistedAgentId ?? this.availableAgents[0] ?? ''
+
+      this.agentId = agentId
+      persistAgentId(agentId || null)
+
+      if (!session || session.agentId !== agentId) {
+        const sessionForAgent = this.sessions.find((item) => item.agentId === agentId)
+
+        if (!sessionForAgent) {
+          this.currentSessionId = null
+          this.messages = []
+          persistSessionId(null)
+          return
+        }
+
+        this.currentSessionId = sessionForAgent.id
+        persistSessionId(sessionForAgent.id)
+        this.messages = await fetchSessionMessages(sessionForAgent.id)
+        return
       }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load models'
-    }
-  }
 
-  async function sendMessage(content: string): Promise<void> {
-    if (!content.trim()) return
+      this.currentSessionId = session.id
+      persistSessionId(session.id)
+      this.messages = await fetchSessionMessages(session.id)
+    },
 
-    const userMessage: Message = { role: 'user', content: content.trim() }
-    messages.value.push(userMessage)
-    isLoading.value = true
-    error.value = null
+    async loadAgents(): Promise<void> {
+      const agents = await fetchAgents()
+      this.availableAgentDetails = agents
+      this.availableAgents = agents.map((agent) => agent.id)
 
-    try {
-      const response = await postChat({ messages: messages.value, model: model.value })
-      messages.value.push({ role: 'assistant', content: response.content })
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Chat request failed'
-      messages.value.pop()
-    } finally {
-      isLoading.value = false
-    }
-  }
+      if (!this.agentId && agents.length > 0) {
+        this.setAgent(agents[0].id)
+        return
+      }
 
-  function clearMessages(): void {
-    messages.value = []
-    error.value = null
-  }
+      if (this.agentId && !this.availableAgents.includes(this.agentId) && agents.length > 0) {
+        this.setAgent(agents[0].id)
+      }
+    },
 
-  return { messages, isLoading, error, model, availableModels, messageCount, loadModels, sendMessage, clearMessages }
+    setAgent(agentId: string): void {
+      this.agentId = agentId
+      persistAgentId(agentId)
+    },
+
+    getSelectedAgent(): Agent | undefined {
+      return this.availableAgentDetails.find((agent) => agent.id === this.agentId)
+    },
+
+    clearMessages(): void {
+      this.messages = []
+      this.error = null
+    },
+
+    async loadSessions(): Promise<void> {
+      this.isLoadingSessions = true
+      try {
+        this.sessions = await fetchSessions()
+      } finally {
+        this.isLoadingSessions = false
+      }
+    },
+
+    async newSession(): Promise<void> {
+      const session = await createSession(this.agentId)
+      this.currentSessionId = session.id
+      persistSessionId(session.id)
+    },
+
+    async loadSessionMessages(sessionId: string): Promise<void> {
+      this.isLoading = true
+      this.error = null
+      try {
+        const session = this.sessions.find((item) => item.id === sessionId)
+        if (session && session.agentId !== this.agentId) {
+          this.setAgent(session.agentId)
+        }
+
+        this.messages = await fetchSessionMessages(sessionId)
+        this.currentSessionId = sessionId
+        persistSessionId(sessionId)
+      } finally {
+        this.isLoading = false
+      }
+    },
+
+    async sendMessage(content: string): Promise<void> {
+      const text = content.trim()
+      if (!text || this.isLoading) {
+        return
+      }
+
+      this.error = null
+      this.isLoading = true
+      try {
+        let sessionId = this.currentSessionId
+        if (!sessionId) {
+          const session = await createSession(this.agentId)
+          sessionId = session.id
+          this.currentSessionId = sessionId
+          persistSessionId(sessionId)
+        }
+        await sendSessionMessage(sessionId, text)
+        // After sending, always fetch canonical messages from backend
+        this.messages = await fetchSessionMessages(sessionId)
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : 'Failed to send message'
+      } finally {
+        this.isLoading = false
+      }
+    },
+  },
 })
