@@ -338,6 +338,7 @@ func (m *Manager) ListSessions() []*Summary {
 		summaries = append(summaries, &Summary{
 			ID:           sess.ID,
 			AgentID:      sess.AgentID,
+			UpdatedAt:    sess.UpdatedAt,
 			Status:       sess.Status,
 			CreatedAt:    sess.CreatedAt,
 			MessageCount: len(sess.Messages),
