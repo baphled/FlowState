@@ -9,8 +9,9 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString()
 }
 
-function payloadSummary(payload: Record<string, unknown>): string {
-  const entries = Object.entries(payload).slice(0, 2)
+function payloadSummary(metadata?: Record<string, unknown>): string {
+  if (!metadata) return '—'
+  const entries = Object.entries(metadata).slice(0, 2)
   return entries.map(([k, v]) => `${k}: ${String(v)}`).join(' · ')
 }
 </script>
@@ -24,10 +25,10 @@ function payloadSummary(payload: Record<string, unknown>): string {
   >
     <div class="event-header">
       <span class="event-type-badge">{{ props.event.type.replace('_', ' ') }}</span>
-      <span class="event-agent">{{ props.event.agentName }}</span>
+      <span class="event-agent">{{ props.event.agent_id }}</span>
       <span class="event-time">{{ formatTime(props.event.timestamp) }}</span>
     </div>
-    <p class="event-payload">{{ payloadSummary(props.event.payload) }}</p>
+    <p class="event-payload">{{ payloadSummary(props.event.metadata) }}</p>
   </div>
 </template>
 
