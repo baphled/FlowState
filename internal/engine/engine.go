@@ -60,6 +60,7 @@ type Engine struct {
 	permissionHandler    tool.PermissionHandler
 	providerRegistry     *provider.Registry
 	agentRegistry        *agent.Registry
+	swarmRegistry        *swarm.Registry
 	agentsFileLoader     *agent.AgentsFileLoader
 	lastContextResult    ctxstore.BuildResult
 	agentOverrides       map[string]string
@@ -237,6 +238,7 @@ type Config struct {
 	EmbeddingProvider provider.Provider
 	Registry          *provider.Registry
 	AgentRegistry     *agent.Registry
+	SwarmRegistry     *swarm.Registry
 	FailoverManager   *failover.Manager
 	Manifest          agent.Manifest
 	Tools             []tool.Tool
@@ -539,6 +541,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		permissionHandler:         cfg.PermissionHandler,
 		providerRegistry:          cfg.Registry,
 		agentRegistry:             cfg.AgentRegistry,
+		swarmRegistry:             cfg.SwarmRegistry,
 		agentsFileLoader:          cfg.AgentsFileLoader,
 		agentOverrides:            make(map[string]string),
 		bus:                       deps.bus,
@@ -1673,6 +1676,14 @@ func (e *Engine) appendDelegationSections(base string) string {
 	if delegation != "" {
 		base = base + "\n\n" + delegation
 	}
+
+	if e.swarmRegistry != nil {
+		swarmSection := buildSwarmSection(e.swarmRegistry)
+		if swarmSection != "" {
+			base = base + "\n\n" + swarmSection
+		}
+	}
+
 	return base
 }
 

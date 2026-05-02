@@ -623,6 +623,7 @@ type engineParams struct {
 	// per-session cold storage lands at <sessionsDir>/<sid>/compacted/.
 	compaction         compactionpkg.Config
 	compactionStoreDir string
+	swarmRegistry      *swarm.Registry
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -797,6 +798,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 		compaction:              in.setup.cfg.Compaction,
 		compactionStoreDir:      sessionsDirFromCfg(in.setup.cfg),
+		swarmRegistry:           in.swarmRegistry,
 	}
 }
 
@@ -1177,6 +1179,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		SystemPromptBudget:        params.systemPromptBudget,
 		CompactionConfig:          params.compaction,
 		CompactionStoreDir:        params.compactionStoreDir,
+		SwarmRegistry:             params.swarmRegistry,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
