@@ -2791,10 +2791,17 @@ func (i *Intent) saveSession() tea.Cmd {
 // Side effects:
 //   - Updates the StatusBar with provider, model, and combined token information.
 func (i *Intent) syncStatusBar() {
+	agentName := ""
+	if i.agentRegistry != nil && i.agentID != "" {
+		if m, found := i.agentRegistry.Get(i.agentID); found {
+			agentName = m.Name
+		}
+	}
 	i.statusBar.Update(layout.StatusBarMsg{
 		Provider:    i.providerName,
 		Model:       i.modelName,
 		AgentID:     i.agentID,
+		AgentName:   agentName,
 		TokensUsed:  i.tokenCount + i.responseTokenCount,
 		TokenBudget: i.tokenBudget,
 	})
@@ -3058,6 +3065,111 @@ func detectAgentFromInput(message string) string {
 	return ""
 }
 
+// detectAgentFromRegistry searches the agent registry for an agent whose
+// metadata (role, goal, when_to_use, triggers, key_trigger, use_when)
+// overlaps with the user message. Returns the agent ID of the best match
+// or an empty string when no agent scores above the threshold.
+//
+// The scoring algorithm:
+//  1. Tokenise the lowercased message into words.
+//  2. For each agent (excluding the current one), check how many
+//     distinct tokens appear in the agent's metadata fields.
+//  3. The agent with the highest distinct-token hit count wins,
+//     provided it exceeds minRegistryMatchTokens.
+//
+// Expected:
+//   - message is the raw user input.
+//   - reg is the agent registry (may be nil).
+//   - currentID is the currently active agent ID (excluded from scoring).
+//
+// Returns:
+//   - The best-matching agent ID, or "".
+//
+// Side effects:
+//   - None.
+func detectAgentFromRegistry(message string, reg *agent.Registry, currentID string) string {
+	if reg == nil || message == "" {
+		return ""
+	}
+
+	tokens := tokeniseForMatch(message)
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	bestID := ""
+	bestScore := 0
+
+	for _, m := range reg.List() {
+		if m == nil || m.ID == currentID {
+			continue
+		}
+		score := scoreAgentMatch(tokens, m)
+		if score > bestScore {
+			bestScore = score
+			bestID = m.ID
+		}
+	}
+
+	if bestScore >= minRegistryMatchTokens {
+		return bestID
+	}
+	return ""
+}
+
+const minRegistryMatchTokens = 4
+
+// tokeniseForMatch splits a message into lowercased word tokens for
+// matching against agent metadata. Tokens shorter than 3 characters
+// are discarded to avoid noise from common words.
+func tokeniseForMatch(message string) map[string]struct{} {
+	words := strings.Fields(strings.ToLower(message))
+	tokens := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		w = strings.Trim(w, ".,!?;:'\"()")
+		if len(w) >= 3 {
+			tokens[w] = struct{}{}
+		}
+	}
+	return tokens
+}
+
+// scoreAgentMatch counts how many distinct tokens from the user message
+// appear in the agent's metadata text corpus (role, goal, when_to_use,
+// triggers, key_trigger, use_when).
+func scoreAgentMatch(tokens map[string]struct{}, m *agent.Manifest) int {
+	var corpus []string
+	collectWords := func(s string) { corpus = append(corpus, strings.Fields(strings.ToLower(s))...) }
+
+	collectWords(m.Metadata.Role)
+	collectWords(m.Metadata.Goal)
+	collectWords(m.Metadata.WhenToUse)
+	collectWords(m.OrchestratorMeta.KeyTrigger)
+	for _, t := range m.OrchestratorMeta.Triggers {
+		collectWords(t.Domain)
+		collectWords(t.Trigger)
+	}
+	for _, u := range m.OrchestratorMeta.UseWhen {
+		collectWords(u)
+	}
+
+	corpusSet := make(map[string]struct{}, len(corpus))
+	for _, w := range corpus {
+		w = strings.Trim(w, ".,!?;:'\"()")
+		if len(w) >= 3 {
+			corpusSet[w] = struct{}{}
+		}
+	}
+
+	hits := 0
+	for token := range tokens {
+		if _, ok := corpusSet[token]; ok {
+			hits++
+		}
+	}
+	return hits
+}
+
 // cancelActiveStream cancels the context of the current streaming producer, if any.
 //
 // Side effects:
@@ -3199,6 +3311,12 @@ func (i *Intent) sendMessage() tea.Cmd {
 		}
 		if detected := detectAgentFromInput(userMessage); detected != "" && detected != i.agentID {
 			if i.agentRegistry != nil {
+				if manifest, found := i.agentRegistry.Get(detected); found {
+					i.applyAgentSwitch(manifest)
+				}
+			}
+		} else if i.agentRegistry != nil {
+			if detected := detectAgentFromRegistry(userMessage, i.agentRegistry, i.agentID); detected != "" {
 				if manifest, found := i.agentRegistry.Get(detected); found {
 					i.applyAgentSwitch(manifest)
 				}
