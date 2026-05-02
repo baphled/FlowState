@@ -9,20 +9,22 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
 // Tool implements file read operations with path validation.
-type Tool struct{}
+type Tool struct {
+	guard *pathguard.Guard
+}
 
 // New creates a new read tool instance.
-//
-// Returns:
-//   - A configured read Tool instance.
-//
-// Side effects:
-//   - None.
 func New() *Tool {
 	return &Tool{}
+}
+
+// NewWithGuard creates a read tool that denies access to protected paths.
+func NewWithGuard(g *pathguard.Guard) *Tool {
+	return &Tool{guard: g}
 }
 
 // Name returns the tool identifier.
@@ -87,6 +89,12 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	cleaned := filepath.Clean(path)
 	if strings.Contains(cleaned, "..") {
 		return tool.Result{Error: errors.New("path traversal not allowed")}, nil
+	}
+
+	if t.guard != nil {
+		if err := t.guard.Check(cleaned); err != nil {
+			return tool.Result{Error: err}, nil
+		}
 	}
 
 	data, err := os.ReadFile(cleaned)
