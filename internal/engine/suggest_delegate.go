@@ -31,7 +31,7 @@ type SuggestDelegateTool struct {
 // preferredRouterAliases lists agent IDs that indicate a natural delegating
 // entrypoint when multiple can_delegate agents are configured. The first match
 // wins, so "router" takes precedence over "orchestrator" when both exist.
-var preferredRouterAliases = []string{"router", "orchestrator"}
+var preferredRouterAliases = []string{"router", "lead-coordinator", "coordinator", "orchestrator"}
 
 var (
 	errSuggestDelegateTargetRequired    = errors.New("target_agent is required and must be a string")

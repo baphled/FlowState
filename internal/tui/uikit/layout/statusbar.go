@@ -14,6 +14,7 @@ type StatusBarMsg struct {
 	Provider    string
 	Model       string
 	AgentID     string
+	AgentName   string
 	TokensUsed  int
 	TokenBudget int
 }
@@ -26,6 +27,7 @@ type StatusBar struct {
 	provider     string
 	model        string
 	agentID      string
+	agentName    string
 	tokensUsed   int
 	tokenBudget  int
 	width        int
@@ -82,6 +84,9 @@ func (s *StatusBar) Update(msg StatusBarMsg) {
 	}
 	if msg.AgentID != "" {
 		s.agentID = msg.AgentID
+	}
+	if msg.AgentName != "" {
+		s.agentName = msg.AgentName
 	}
 	s.tokensUsed = msg.TokensUsed
 	s.tokenBudget = msg.TokenBudget
@@ -223,7 +228,13 @@ func (s *StatusBar) renderProviderLine(width int, th theme.Theme) string {
 		}
 		parts = append(parts, primitives.NewText(modelStr, th).Render())
 	}
-	if s.agentID != "" {
+	if s.agentName != "" {
+		badgeStyle := lipgloss.NewStyle().
+			Foreground(th.BackgroundColor()).
+			Background(th.PrimaryColor()).
+			Padding(0, 1)
+		parts = append(parts, badgeStyle.Render(s.agentName))
+	} else if s.agentID != "" {
 		parts = append(parts, mutedStyle.Render(s.agentID))
 	}
 

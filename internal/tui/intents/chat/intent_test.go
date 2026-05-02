@@ -1076,7 +1076,7 @@ var _ = Describe("ChatIntent", func() {
 		It("updates status bar with new agent on toggle", func() {
 			toggleIntent.Update(tea.KeyMsg{Type: tea.KeyTab})
 			view := toggleIntent.View()
-			Expect(view).To(ContainSubstring("planner"))
+			Expect(view).To(ContainSubstring("Planner Agent"))
 		})
 
 		It("preserves message history when toggling agents", func() {
@@ -1576,7 +1576,7 @@ var _ = Describe("ChatIntent", func() {
 		It("updates status bar after agent selection via picker", func() {
 			pickerIntent.SimulateAgentPickerSelectionForTest(1)
 			view := pickerIntent.View()
-			Expect(view).To(ContainSubstring("planner"))
+			Expect(view).To(ContainSubstring("Planner Agent"))
 		})
 
 		It("preserves input text when opening agent picker", func() {
@@ -3673,6 +3673,6 @@ var _ = Describe("applyAgentSwitch helper", func() {
 
 	It("renders the new agent in the view after the switch", func() {
 		switchIntent.ApplyAgentSwitchForTest(&betaA)
-		Expect(switchIntent.View()).To(ContainSubstring("beta"))
+		Expect(switchIntent.View()).To(ContainSubstring("Beta"))
 	})
 })

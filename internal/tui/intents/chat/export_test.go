@@ -108,6 +108,26 @@ func DetectAgentFromInputForTest(message string) string {
 	return detectAgentFromInput(message)
 }
 
+// DetectAgentFromRegistryForTest exposes detectAgentFromRegistry for test assertions.
+func DetectAgentFromRegistryForTest(message string, reg *agent.Registry, currentID string) string {
+	return detectAgentFromRegistry(message, reg, currentID)
+}
+
+// ResolveAtMentionForTest exposes resolveAtMention so the T-swarm-2
+// specs in intent_test.go can pin the agent → swarm → not-found
+// precedence without reaching through the full intent lifecycle.
+// The kind is returned as the swarm.Kind value (KindAgent=1,
+// KindSwarm=2, KindNone=0) so callers can match without a separate
+// re-export of the constants.
+func ResolveAtMentionForTest(
+	id string,
+	reg *agent.Registry,
+	swarmReg *swarm.Registry,
+) (swarm.Kind, error) {
+	k, _, err := resolveAtMention(id, reg, swarmReg)
+	return k, err
+}
+
 // SimulateModalModelSelectionForTest calls openModelSelector, executes the Cmd
 // to get the models.Intent, then simulates selecting the first model in the
 // first group by pressing Enter twice (expand group, then select model).
