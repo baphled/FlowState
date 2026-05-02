@@ -1,58 +1,103 @@
-import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { Theme } from '@/types'
 
-const STORAGE_KEY = 'flowstate-settings'
+const THEME_STORAGE_KEY = 'flowstate-theme'
+const API_HOST_STORAGE_KEY = 'flowstate-api-host'
+const SWARM_PANE_STORAGE_KEY = 'flowstate-swarm-pane-visible'
+const CHAT_SIDEBAR_WIDTH_STORAGE_KEY = 'flowstate-chat-sidebar-width'
 
-interface PersistedSettings {
-  theme: Theme
-  apiHost: string
-  swarmPaneVisible: boolean
-}
+const DEFAULT_API_HOST = '/api'
+const DEFAULT_CHAT_SIDEBAR_WIDTH = 360
+const MIN_CHAT_SIDEBAR_WIDTH = 280
+const MAX_CHAT_SIDEBAR_WIDTH = 520
 
-function loadFromStorage(): PersistedSettings {
+function readLocalStorage(key: string): string | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as PersistedSettings
+    return localStorage.getItem(key)
   } catch {
-    // ignore parse errors
+    return null
   }
-  return { theme: 'dark', apiHost: 'http://localhost:8080', swarmPaneVisible: true }
 }
 
-export const useSettingsStore = defineStore('settings', () => {
-  const saved = loadFromStorage()
-  const theme = ref<Theme>(saved.theme)
-  const apiHost = ref(saved.apiHost)
-  const swarmPaneVisible = ref(saved.swarmPaneVisible)
+function writeLocalStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    return
+  }
+}
 
-  function applyTheme(t: Theme): void {
-    document.documentElement.setAttribute('data-theme', t)
+function readTheme(): Theme {
+  const value = readLocalStorage(THEME_STORAGE_KEY)
+  if (value === 'light' || value === 'terminal') {
+    return value
+  }
+  return 'dark'
+}
+
+function applyTheme(theme: Theme): void {
+  if (typeof document === 'undefined') {
+    return
   }
 
-  applyTheme(theme.value)
+  document.documentElement.setAttribute('data-theme', theme)
+}
 
-  watch(theme, (t) => applyTheme(t))
+function readApiHost(): string {
+  return readLocalStorage(API_HOST_STORAGE_KEY) ?? DEFAULT_API_HOST
+}
 
-  watch([theme, apiHost, swarmPaneVisible], () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      theme: theme.value,
-      apiHost: apiHost.value,
-      swarmPaneVisible: swarmPaneVisible.value,
-    }))
-  })
+function readSwarmPaneVisible(): boolean {
+  return readLocalStorage(SWARM_PANE_STORAGE_KEY) !== 'false'
+}
 
-  function toggleSwarmPane(): void {
-    swarmPaneVisible.value = !swarmPaneVisible.value
+function clampChatSidebarWidth(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CHAT_SIDEBAR_WIDTH
   }
 
-  function setTheme(t: Theme): void {
-    theme.value = t
-  }
+  return Math.min(MAX_CHAT_SIDEBAR_WIDTH, Math.max(MIN_CHAT_SIDEBAR_WIDTH, value))
+}
 
-  function setApiHost(host: string): void {
-    apiHost.value = host
-  }
+function readChatSidebarWidth(): number {
+  return clampChatSidebarWidth(Number(readLocalStorage(CHAT_SIDEBAR_WIDTH_STORAGE_KEY) ?? DEFAULT_CHAT_SIDEBAR_WIDTH))
+}
 
-  return { theme, apiHost, swarmPaneVisible, toggleSwarmPane, setTheme, setApiHost }
+export const useSettingsStore = defineStore('settings', {
+  state: () => ({
+    theme: readTheme(),
+    apiHost: readApiHost(),
+    swarmPaneVisible: readSwarmPaneVisible(),
+    chatSidebarWidth: readChatSidebarWidth(),
+  }),
+
+  actions: {
+    setTheme(theme: Theme): void {
+      this.theme = theme
+      writeLocalStorage(THEME_STORAGE_KEY, theme)
+      applyTheme(theme)
+    },
+
+    setApiHost(apiHost: string): void {
+      this.apiHost = apiHost
+      writeLocalStorage(API_HOST_STORAGE_KEY, apiHost)
+    },
+
+    toggleSwarmPane(): void {
+      this.swarmPaneVisible = !this.swarmPaneVisible
+      writeLocalStorage(SWARM_PANE_STORAGE_KEY, String(this.swarmPaneVisible))
+    },
+
+    setSwarmPaneVisible(visible: boolean): void {
+      this.swarmPaneVisible = visible
+      writeLocalStorage(SWARM_PANE_STORAGE_KEY, String(visible))
+    },
+
+    setChatSidebarWidth(width: number): void {
+      this.chatSidebarWidth = clampChatSidebarWidth(width)
+      writeLocalStorage(CHAT_SIDEBAR_WIDTH_STORAGE_KEY, String(this.chatSidebarWidth))
+    },
+  },
 })
+
+applyTheme(readTheme())
