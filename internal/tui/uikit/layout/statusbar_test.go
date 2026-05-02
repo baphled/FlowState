@@ -108,6 +108,11 @@ var _ = Describe("StatusBar", func() {
 			sb.Update(layout.StatusBarMsg{AgentID: "test-agent"})
 			Expect(sb.RenderContent(80)).To(ContainSubstring("test-agent"))
 		})
+		It("prefers agent name over ID when set", func() {
+			sb.Update(layout.StatusBarMsg{AgentID: "lead-coordinator", AgentName: "Lead Coordinator"})
+			rendered := sb.RenderContent(80)
+			Expect(rendered).To(ContainSubstring("Lead Coordinator"))
+		})
 	})
 
 })

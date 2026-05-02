@@ -108,6 +108,11 @@ func DetectAgentFromInputForTest(message string) string {
 	return detectAgentFromInput(message)
 }
 
+// DetectAgentFromRegistryForTest exposes detectAgentFromRegistry for test assertions.
+func DetectAgentFromRegistryForTest(message string, reg *agent.Registry, currentID string) string {
+	return detectAgentFromRegistry(message, reg, currentID)
+}
+
 // ResolveAtMentionForTest exposes resolveAtMention so the T-swarm-2
 // specs in intent_test.go can pin the agent → swarm → not-found
 // precedence without reaching through the full intent lifecycle.
