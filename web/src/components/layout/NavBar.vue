@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
+import AgentSwitcher from '@/components/agent-switcher/AgentSwitcher.vue'
+import SessionSwitcher from '@/components/session-switcher/SessionSwitcher.vue'
 
 defineOptions({ name: 'NavBar' })
 
@@ -16,6 +18,10 @@ const navItems = [
 <template>
   <nav class="nav-bar" data-testid="nav-bar">
     <span class="nav-logo">FlowState</span>
+    <div class="nav-switchers">
+      <AgentSwitcher />
+      <SessionSwitcher />
+    </div>
     <ul class="nav-items">
       <li
         v-for="item in navItems"
@@ -48,6 +54,11 @@ const navItems = [
   color: var(--accent);
   font-size: 1.1rem;
   letter-spacing: 0.05em;
+}
+
+.nav-switchers {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .nav-items {

@@ -1,119 +1,204 @@
 <script setup lang="ts">
-import { onMounted, nextTick, watch, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useSwarmStore } from '@/stores/swarmStore'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
-import EventCard from '@/components/swarm/EventCard.vue'
-import { useSwarmStore } from '@/stores/swarmStore'
+import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
+import DelegationPanel from '@/components/swarm/DelegationPanel.vue'
+import PlanPanel from '@/components/swarm/PlanPanel.vue'
 
 defineOptions({ name: 'ChatView' })
 
 const chatStore = useChatStore()
-const swarmStore = useSwarmStore()
 const settingsStore = useSettingsStore()
-const messageList = ref<HTMLElement | null>(null)
+const swarmStore = useSwarmStore()
 
-onMounted(async () => {
-  await chatStore.loadModels()
-  swarmStore.startPolling()
-})
+const shellRef = ref<HTMLElement | null>(null)
+const isDraggingSidebar = ref(false)
+const showToolPanel = ref(true)
+const showDelegationPanel = ref(true)
+const showPlanPanel = ref(true)
+const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 
-async function scrollToBottom(): Promise<void> {
-  await nextTick()
-  if (messageList.value) {
-    messageList.value.scrollTop = messageList.value.scrollHeight
-  }
+const messages = computed(() => chatStore.messages)
+const hasSidebar = computed(() => settingsStore.swarmPaneVisible)
+
+function clampSidebarWidth(width: number, containerWidth = 0): number {
+  const minWidth = 280
+  const maxWidth = 520
+  const usableMax = containerWidth > 0 ? Math.min(maxWidth, containerWidth - 360) : maxWidth
+  return Math.min(Math.max(width, minWidth), Math.max(minWidth, usableMax))
 }
 
-watch(() => chatStore.messages.length, scrollToBottom)
+function updateSidebarWidthFromPointer(clientX: number): void {
+  const rect = shellRef.value?.getBoundingClientRect()
+  if (!rect) {
+    return
+  }
+
+  const containerWidth = rect.width
+  const width = rect.right - clientX
+  settingsStore.setChatSidebarWidth(clampSidebarWidth(width, containerWidth))
+}
+
+function handleResizeMove(event: MouseEvent): void {
+  if (!isDraggingSidebar.value) {
+    return
+  }
+
+  updateSidebarWidthFromPointer(event.clientX)
+}
+
+function stopDragging(): void {
+  if (!isDraggingSidebar.value) {
+    return
+  }
+
+  isDraggingSidebar.value = false
+  window.removeEventListener('mousemove', handleResizeMove)
+  window.removeEventListener('mouseup', stopDragging)
+}
+
+function startDraggingSidebar(event: MouseEvent): void {
+  event.preventDefault()
+  isDraggingSidebar.value = true
+  window.addEventListener('mousemove', handleResizeMove)
+  window.addEventListener('mouseup', stopDragging)
+}
+
+function toggleToolPanel(): void {
+  showToolPanel.value = !showToolPanel.value
+}
+
+function toggleDelegationPanel(): void {
+  showDelegationPanel.value = !showDelegationPanel.value
+}
+
+function togglePlanPanel(): void {
+  showPlanPanel.value = !showPlanPanel.value
+}
+
+function toggleSwarmPane(): void {
+  settingsStore.setSwarmPaneVisible(false)
+}
+
+function showSwarmPaneAgain(): void {
+  settingsStore.setSwarmPaneVisible(true)
+}
+
+onMounted(() => {
+  void chatStore.restoreStateFromBackend()
+  void swarmStore.connect()
+})
+
+onBeforeUnmount(() => {
+  stopDragging()
+  swarmStore.disconnect()
+})
 </script>
 
 <template>
-  <div class="chat-view">
-    <div class="primary-pane">
-      <div
-        ref="messageList"
-        class="message-list"
-        data-testid="message-list"
-      >
-        <div v-if="chatStore.messages.length === 0" class="empty-state">
-          <p>Start a conversation with FlowState</p>
-        </div>
-
-        <MessageBubble
-          v-for="(msg, idx) in chatStore.messages"
-          :key="idx"
-          :message="msg"
-        />
-
-        <div v-if="chatStore.isLoading" class="loading-indicator" data-testid="loading-indicator">
-          <span class="dot" />
-          <span class="dot" />
-          <span class="dot" />
-        </div>
+  <div class="chat-view" data-testid="chat-view" ref="shellRef">
+    <div class="chat-main">
+      <div class="swarm-controls">
+        <button v-if="showSwarmPane" class="swarm-toggle-btn" data-testid="toggle-swarm-btn" @click="toggleSwarmPane">
+          Hide swarm pane
+        </button>
+        <button v-else class="swarm-toggle-btn" data-testid="show-swarm-btn" @click="showSwarmPaneAgain">
+          Show swarm pane
+        </button>
       </div>
+
+      <section class="message-pane" data-testid="chat-message-pane">
+        <div v-if="messages.length === 0" class="empty-state" data-testid="chat-empty-state">
+          Start a conversation with the selected agent.
+        </div>
+        <div v-else class="message-list" data-testid="message-list">
+          <MessageBubble
+            v-for="(message, index) in messages"
+            :key="`${message.role}-${index}`"
+            :message="message"
+          />
+        </div>
+      </section>
 
       <MessageInput />
     </div>
 
-    <transition name="pane-slide">
-      <aside
-        v-show="settingsStore.swarmPaneVisible"
-        class="swarm-pane"
-        data-testid="swarm-pane"
-      >
-        <div class="swarm-header">
-          <span>Swarm Activity</span>
-          <button
-            class="toggle-btn"
-            data-testid="toggle-swarm-btn"
-            @click="settingsStore.toggleSwarmPane()"
-          >
-            ✕
-          </button>
-        </div>
-        <div class="swarm-events" data-testid="swarm-events">
-          <EventCard
-            v-for="event in swarmStore.events"
-            :key="event.id"
-            :event="event"
-          />
-          <p v-if="swarmStore.events.length === 0" class="swarm-empty">
-            No events yet
-          </p>
-        </div>
-      </aside>
-    </transition>
+    <aside v-if="hasSidebar && showSwarmPane" class="chat-sidebar" :style="{ width: `${settingsStore.chatSidebarWidth}px` }" data-testid="swarm-pane">
+      <div class="sidebar-toolbar" data-testid="sidebar-toolbar">
+        <button class="sidebar-toggle" :class="{ active: showToolPanel }" data-testid="toggle-tool-panel" @click="toggleToolPanel">
+          Tools
+        </button>
+        <button class="sidebar-toggle" :class="{ active: showDelegationPanel }" data-testid="toggle-delegation-panel" @click="toggleDelegationPanel">
+          Delegation
+        </button>
+        <button class="sidebar-toggle" :class="{ active: showPlanPanel }" data-testid="toggle-plan-panel" @click="togglePlanPanel">
+          Plan
+        </button>
+      </div>
 
-    <button
-      v-if="!settingsStore.swarmPaneVisible"
-      class="show-swarm-btn"
-      data-testid="show-swarm-btn"
-      @click="settingsStore.toggleSwarmPane()"
-    >
-      Swarm
-    </button>
+      <div class="sidebar-panels">
+        <ToolCallPanel v-if="showToolPanel" class="sidebar-panel" />
+        <DelegationPanel v-if="showDelegationPanel" class="sidebar-panel" @close="showDelegationPanel = false" />
+        <PlanPanel v-if="showPlanPanel" class="sidebar-panel" @close="showPlanPanel = false" />
+        <p v-if="!showToolPanel && !showDelegationPanel && !showPlanPanel" class="sidebar-empty" data-testid="sidebar-empty">
+          All sidebar panels are hidden.
+        </p>
+      </div>
+
+      <button
+        class="sidebar-resize-handle"
+        data-testid="chat-sidebar-resize-handle"
+        type="button"
+        aria-label="Resize chat sidebar"
+        @mousedown="startDraggingSidebar"
+      >
+        <span class="resize-grip" />
+      </button>
+    </aside>
   </div>
 </template>
 
 <style scoped>
 .chat-view {
   display: flex;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
+  background: var(--bg-primary);
 }
 
-.primary-pane {
+.chat-main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-width: 0;
 }
 
-.message-list {
+.swarm-controls {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.5rem 1rem 0;
+  flex-shrink: 0;
+}
+
+.swarm-toggle-btn {
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.message-pane {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 1rem;
   display: flex;
@@ -121,111 +206,107 @@ watch(() => chatStore.messages.length, scrollToBottom)
   gap: 0.75rem;
 }
 
-.empty-state {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.loading-indicator {
-  display: flex;
-  gap: 0.3rem;
-  padding: 0.5rem;
-  align-self: flex-start;
-}
-
-.dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  animation: bounce 1s infinite;
-}
-
-.dot:nth-child(2) { animation-delay: 0.15s; }
-.dot:nth-child(3) { animation-delay: 0.3s; }
-
-@keyframes bounce {
-  0%, 80%, 100% { transform: scale(1); opacity: 0.4; }
-  40% { transform: scale(1.2); opacity: 1; }
-}
-
-.swarm-pane {
-  width: 30%;
-  min-width: 220px;
-  max-width: 360px;
-  border-left: 1px solid var(--border);
+.message-list {
   display: flex;
   flex-direction: column;
+  gap: 0.75rem;
+}
+
+.empty-state {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.chat-sidebar {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 280px;
+  max-width: 520px;
+  border-left: 1px solid var(--border);
   background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-toolbar {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
-.swarm-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.toggle-btn, .show-swarm-btn {
-  background: none;
+.sidebar-toggle {
+  padding: 0.25rem 0.55rem;
   border: 1px solid var(--border);
-  color: var(--text-muted);
-  cursor: pointer;
   border-radius: var(--radius);
-  padding: 0.15rem 0.5rem;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
   font-size: 0.75rem;
-  transition: color 0.15s, border-color 0.15s;
+  cursor: pointer;
 }
 
-.toggle-btn:hover, .show-swarm-btn:hover {
+.sidebar-toggle.active {
   color: var(--text-primary);
   border-color: var(--accent);
 }
 
-.show-swarm-btn {
-  position: absolute;
-  right: 0.75rem;
-  bottom: 5.5rem;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-}
-
-.swarm-events {
+.sidebar-panels {
   flex: 1;
-  overflow-y: auto;
-  padding: 0.5rem;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.swarm-empty {
+.sidebar-panel {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.sidebar-empty {
+  margin: 0;
+  padding: 1rem;
   color: var(--text-muted);
-  font-size: 0.8rem;
-  text-align: center;
-  padding: 1rem 0;
+  font-size: 0.85rem;
 }
 
-.pane-slide-enter-active,
-.pane-slide-leave-active {
-  transition: width 0.25s ease, opacity 0.2s ease;
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
 }
 
-.pane-slide-enter-from,
-.pane-slide-leave-to {
-  width: 0;
-  opacity: 0;
+.sidebar-resize-handle:hover .resize-grip,
+.sidebar-resize-handle:active .resize-grip {
+  background: var(--accent);
 }
 
-@media (max-width: 768px) {
-  .swarm-pane { display: none; }
+.resize-grip {
+  width: 2px;
+  height: 48px;
+  border-radius: 999px;
+  background: var(--border);
+  box-shadow: -3px 0 0 var(--border), 3px 0 0 var(--border);
+}
+
+.chat-sidebar,
+.sidebar-panels,
+.message-pane {
+  min-height: 0;
 }
 </style>
