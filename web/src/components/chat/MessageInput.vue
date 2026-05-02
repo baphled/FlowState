@@ -25,21 +25,6 @@ async function submit(): Promise<void> {
 <template>
   <div class="message-input-wrap" data-testid="message-input-wrap">
     <div class="input-row">
-      <select
-        v-model="store.model"
-        class="model-select"
-        data-testid="model-select"
-        :disabled="store.isLoading"
-      >
-        <option
-          v-for="m in store.availableModels"
-          :key="m"
-          :value="m"
-        >
-          {{ m }}
-        </option>
-      </select>
-
       <textarea
         v-model="inputText"
         class="message-input"
@@ -80,18 +65,6 @@ async function submit(): Promise<void> {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
-}
-
-.model-select {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.3rem 0.5rem;
-  font-size: 0.8rem;
-  font-family: var(--font-mono);
-  cursor: pointer;
-  flex-shrink: 0;
 }
 
 .message-input {
