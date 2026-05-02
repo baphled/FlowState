@@ -2,13 +2,6 @@ import { test, expect } from '@playwright/test'
 
 test.describe('Chat layout — swarm pane toggle', () => {
   test.beforeEach(async ({ page }) => {
-    await page.route('**/api/models', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(['claude-3-5-sonnet']),
-      })
-    })
     await page.route('**/api/swarm/events', async (route) => {
       await route.fulfill({
         status: 200,

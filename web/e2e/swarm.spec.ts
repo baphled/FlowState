@@ -4,26 +4,30 @@ const mockEvents = [
   {
     id: 'evt-1',
     type: 'delegation',
-    agentName: 'planner',
-    payload: { to: 'hephaestus', task: 'scaffold web/' },
+    status: 'started',
+    agent_id: 'planner',
     timestamp: new Date().toISOString(),
+    metadata: { to: 'hephaestus', task: 'scaffold web/' },
   },
   {
     id: 'evt-2',
     type: 'tool_call',
-    agentName: 'hephaestus',
-    payload: { tool: 'bash', args: 'ls -la' },
+    status: 'running',
+    agent_id: 'hephaestus',
     timestamp: new Date().toISOString(),
+    metadata: { tool: 'bash', args: 'ls -la' },
   },
 ]
 
 test.describe('Swarm view', () => {
   test.beforeEach(async ({ page }) => {
+    // Mock SSE endpoint - returns event stream with mock data
     await page.route('**/api/swarm/events', async (route) => {
+      const sseData = mockEvents.map((ev) => `data: ${JSON.stringify(ev)}`).join('\n')
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(mockEvents),
+        contentType: 'text/event-stream',
+        body: sseData,
       })
     })
 
@@ -57,8 +61,8 @@ test.describe('Swarm view', () => {
     await page.route('**/api/swarm/events', async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify([]),
+        contentType: 'text/event-stream',
+        body: '',
       })
     })
     await page.reload()
