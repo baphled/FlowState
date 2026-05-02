@@ -10,12 +10,15 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
 const timeout = 30 * time.Second
 
 // Tool executes bash commands with a configurable timeout.
-type Tool struct{}
+type Tool struct {
+	guard *pathguard.Guard
+}
 
 // New creates a new bash execution tool.
 //
@@ -26,6 +29,11 @@ type Tool struct{}
 //   - None.
 func New() *Tool {
 	return &Tool{}
+}
+
+// NewWithGuard creates a bash tool that denies commands referencing protected paths.
+func NewWithGuard(g *pathguard.Guard) *Tool {
+	return &Tool{guard: g}
 }
 
 // Name returns the tool identifier.
@@ -86,6 +94,12 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	command, ok := input.Arguments["command"].(string)
 	if !ok || command == "" {
 		return tool.Result{}, errors.New("command argument is required")
+	}
+
+	if t.guard != nil {
+		if err := t.guard.CheckCommand(command); err != nil {
+			return tool.Result{Error: err}, nil
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
