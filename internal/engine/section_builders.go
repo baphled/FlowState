@@ -1,10 +1,12 @@
 package engine
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // buildDelegationSection builds a delegation table from registry agent metadata.
@@ -190,4 +192,54 @@ func filterByAllowlist(agents []*agent.Manifest, allowlist []string) []*agent.Ma
 	}
 
 	return filtered
+}
+
+// buildSwarmSection builds a table of all registered swarms so delegating
+// agents discover swarms automatically without manual manifest updates.
+// Each row shows the swarm ID, lead agent, member count, and description.
+//
+// Expected:
+//   - reg is a non-nil swarm registry.
+//
+// Returns:
+//   - A markdown-formatted swarms section, or empty string if no swarms exist.
+//
+// Side effects:
+//   - None.
+func buildSwarmSection(reg *swarm.Registry) string {
+	manifests := reg.List()
+	if len(manifests) == 0 {
+		return ""
+	}
+
+	slices.SortFunc(manifests, func(a, b *swarm.Manifest) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+
+	var sb strings.Builder
+	sb.WriteString("## Available Swarms\n\n")
+	sb.WriteString("Delegate to a swarm using `delegate(subagent_type=\"<swarm-id>\", ...)`. ")
+	sb.WriteString("The swarm's lead agent orchestrates the members automatically.\n\n")
+	sb.WriteString("| Swarm | Lead | Members | Description |\n")
+	sb.WriteString("|---|---|---|---|\n")
+
+	for _, m := range manifests {
+		sb.WriteString("| ")
+		sb.WriteString(m.ID)
+		sb.WriteString(" | ")
+		sb.WriteString(m.Lead)
+		sb.WriteString(" | ")
+		desc := m.Description
+		if len(desc) > 80 {
+			desc = desc[:77] + "..."
+		}
+		desc = strings.ReplaceAll(desc, "\n", " ")
+		desc = strings.TrimSpace(desc)
+		sb.WriteString(fmt.Sprintf("%d", len(m.Members)))
+		sb.WriteString(" | ")
+		sb.WriteString(desc)
+		sb.WriteString(" |\n")
+	}
+
+	return sb.String()
 }
