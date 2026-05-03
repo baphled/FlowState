@@ -324,6 +324,77 @@ var _ = Describe("AccumulateStream", func() {
 		})
 	})
 
+	Context("when an event chunk arrives (EventType is set)", func() {
+		It("does not accumulate Content from event chunks into the assistant message", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				EventType: "harness_attempt_start",
+				Content:   `{"attempt":1,"maxRetries":1}`,
+			}
+			rawCh <- provider.StreamChunk{Content: "Hello! "}
+			rawCh <- provider.StreamChunk{Content: "I'm the assistant."}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].Content).To(Equal("Hello! I'm the assistant."))
+			Expect(assistantMsgs[0].Content).NotTo(ContainSubstring("attempt"))
+			Expect(assistantMsgs[0].Content).NotTo(ContainSubstring("maxRetries"))
+		})
+
+		It("forwards event chunks to the returned channel even though they are not accumulated", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				EventType: "harness_attempt_start",
+				Content:   `{"attempt":1,"maxRetries":1}`,
+			}
+			rawCh <- provider.StreamChunk{Content: "ok"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+
+			var forwarded []provider.StreamChunk
+			for chunk := range out {
+				forwarded = append(forwarded, chunk)
+			}
+			Expect(forwarded).To(HaveLen(3))
+			Expect(forwarded[0].EventType).To(Equal("harness_attempt_start"))
+		})
+
+		It("does not accumulate Thinking from event chunks", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				EventType: "some_event",
+				Thinking:  "noise that should not become a thinking message",
+			}
+			rawCh <- provider.StreamChunk{Thinking: "real thought"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "thinking" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(HaveLen(1))
+			Expect(thinkingMsgs[0].Content).To(Equal("real thought"))
+		})
+	})
+
 	Context("when the raw channel closes without a terminal Done chunk", func() {
 		It("flushes accumulated assistant content on channel close", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
