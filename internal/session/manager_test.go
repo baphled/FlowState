@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sync"
 	"time"
@@ -280,14 +281,13 @@ var _ = Describe("Manager", func() {
 				Expect(summaries).To(HaveLen(2))
 			})
 
-			It("includes agent ID and status in summaries", func() {
+			It("includes agent ID in summaries", func() {
 				_, err := mgr.CreateSession("my-agent")
 				Expect(err).NotTo(HaveOccurred())
 
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
-				Expect(summaries[0].AgentID).To(Equal("my-agent"))
-				Expect(summaries[0].Status).To(Equal("active"))
+				Expect(summaries[0].AgentId).To(Equal("my-agent"))
 			})
 
 			It("includes message count in summaries", func() {
@@ -302,6 +302,47 @@ var _ = Describe("Manager", func() {
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
 				Expect(summaries[0].MessageCount).To(Equal(1))
+			})
+		})
+
+		Context("frontend SessionSummary contract gaps", func() {
+			It("populates UpdatedAt with a non-zero timestamp when sessions exist", func() {
+				before := time.Now().Add(-time.Second)
+				_, err := mgr.CreateSession("agent-x")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].UpdatedAt.IsZero()).To(BeFalse(),
+					"UpdatedAt should be populated, not the zero time 0001-01-01T00:00:00Z")
+				Expect(summaries[0].UpdatedAt).To(BeTemporally(">=", before),
+					"UpdatedAt should reflect a real session timestamp")
+			})
+
+			It("emits a createdAt key in the JSON summary so the Vue SessionSummary contract is satisfied", func() {
+				_, err := mgr.CreateSession("agent-with-createdAt")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+
+				data, err := json.Marshal(summaries[0])
+				Expect(err).NotTo(HaveOccurred())
+
+				var decoded map[string]interface{}
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).To(HaveKey("createdAt"),
+					"frontend SessionSummary expects a createdAt field; backend Summary does not currently emit one")
+			})
+
+			It("populates Title from session metadata rather than always returning an empty string", func() {
+				_, err := mgr.CreateSession("agent-with-title")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].Title).NotTo(BeEmpty(),
+					"Title is hard-coded to empty in ListSessions; frontend SessionSummary expects a meaningful title")
 			})
 		})
 	})

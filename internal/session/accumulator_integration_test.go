@@ -82,7 +82,7 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		summaries := mgr.ListSessions()
 		count := 0
 		for _, s := range summaries {
-			if s.ID == "idem-1" {
+			if s.Id == "idem-1" {
 				count++
 			}
 		}
