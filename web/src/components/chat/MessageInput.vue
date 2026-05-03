@@ -31,14 +31,13 @@ async function submit(): Promise<void> {
         data-testid="message-input"
         placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
         rows="3"
-        :disabled="store.isLoading"
         @keydown="handleKeydown"
       />
 
       <button
         class="send-button"
         data-testid="send-button"
-        :disabled="store.isLoading || !inputText.trim()"
+        :disabled="!inputText.trim()"
         @click="submit"
       >
         {{ store.isLoading ? '…' : 'Send' }}
