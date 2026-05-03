@@ -138,6 +138,9 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		flushThinking(appender, s)
 		flushContent(appender, s)
 	default:
+		if chunk.EventType != "" {
+			return
+		}
 		if chunk.Thinking != "" {
 			s.thinkingBuf.WriteString(chunk.Thinking)
 		}
