@@ -8,6 +8,12 @@ export interface Message {
   toolName?: string
   toolInput?: string
   timestamp: string
+  targetAgent?: string
+  chainId?: string
+  toolCalls?: number
+  lastTool?: string
+  status?: string
+  modelName?: string
 }
 
 export interface ChatRequest {

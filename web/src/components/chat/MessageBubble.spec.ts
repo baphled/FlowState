@@ -1,7 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { createRouter, createMemoryHistory } from 'vue-router'
+import { defineComponent, h } from 'vue'
 import MessageBubble from './MessageBubble.vue'
 import type { Message } from '@/types'
+
+function makeRouter() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', name: 'home', component: defineComponent({ render: () => h('div') }) },
+      {
+        path: '/agents/:id',
+        name: 'agent-info',
+        component: defineComponent({ render: () => h('div') }),
+      },
+    ],
+  })
+}
+
+function mountWithRouter(message: Message) {
+  const router = makeRouter()
+  return mount(MessageBubble, {
+    props: { message },
+    global: { plugins: [router] },
+  })
+}
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
@@ -88,32 +112,81 @@ describe('MessageBubble', () => {
 
   describe('delegation roles', () => {
     it('renders delegation_started with a waiting indicator', () => {
-      const wrapper = mount(MessageBubble, {
-        props: {
-          message: makeMessage({
-            role: 'delegation_started',
-            content: '│ planner [started]',
-          }),
-        },
-      })
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation_started',
+          content: '│ planner [started]',
+        }),
+      )
 
       expect(wrapper.attributes('data-role')).toBe('delegation_started')
       expect(wrapper.find('[data-testid="delegation-spinner"]').exists()).toBe(true)
     })
 
     it('renders a terminal delegation message without a spinner', () => {
-      const wrapper = mount(MessageBubble, {
-        props: {
-          message: makeMessage({
-            role: 'delegation',
-            content: '│ planner [completed]',
-          }),
-        },
-      })
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation',
+          content: '│ planner [completed]',
+        }),
+      )
 
       expect(wrapper.attributes('data-role')).toBe('delegation')
       expect(wrapper.find('[data-testid="delegation-spinner"]').exists()).toBe(false)
       expect(wrapper.text()).toContain('planner')
+    })
+
+    it('renders the target agent name as a router link to /agents/:id when targetAgent is set', () => {
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation_started',
+          content: 'delegating to planner',
+          targetAgent: 'planner',
+          chainId: 'chain-1',
+          status: 'running',
+        }),
+      )
+
+      const link = wrapper.find('[data-testid="delegation-agent-link"]')
+      expect(link.exists()).toBe(true)
+      expect(link.text()).toContain('planner')
+      expect(link.attributes('href')).toBe('/agents/planner')
+    })
+
+    it('shows live progress (tool count, current tool, elapsed time) for in-flight delegations', () => {
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation_started',
+          content: 'working',
+          targetAgent: 'planner',
+          chainId: 'chain-1',
+          status: 'running',
+          toolCalls: 4,
+          lastTool: 'read',
+        }),
+      )
+
+      const progress = wrapper.find('[data-testid="delegation-progress"]')
+      expect(progress.exists()).toBe(true)
+      expect(progress.text()).toContain('4')
+      expect(progress.text()).toContain('read')
+      expect(wrapper.find('[data-testid="delegation-elapsed"]').exists()).toBe(true)
+    })
+
+    it('does not show the live progress block on terminal delegation messages', () => {
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation',
+          content: 'done',
+          targetAgent: 'planner',
+          chainId: 'chain-1',
+          status: 'completed',
+          toolCalls: 4,
+          lastTool: 'read',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="delegation-progress"]').exists()).toBe(false)
     })
   })
 
