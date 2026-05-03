@@ -445,6 +445,35 @@ var _ = Describe("Manager", func() {
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		Context("session model/provider overrides", func() {
+			It("injects CurrentModelID and CurrentProviderID into the stream context when both are set", func() {
+				Expect(mgr.UpdateSessionModel(sess.ID, "anthropic", "claude-opus-4.7")).To(Succeed())
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mockStream.lastProviderOverride).To(Equal("anthropic"))
+				Expect(mockStream.lastModelOverride).To(Equal("claude-opus-4.7"))
+			})
+
+			It("injects only CurrentProviderID when CurrentModelID is empty", func() {
+				Expect(mgr.UpdateSessionModel(sess.ID, "openai", "")).To(Succeed())
+
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mockStream.lastProviderOverride).To(Equal("openai"))
+				Expect(mockStream.lastModelOverride).To(BeEmpty())
+			})
+
+			It("passes empty overrides when no session model/provider is configured", func() {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "test")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mockStream.lastProviderOverride).To(BeEmpty())
+				Expect(mockStream.lastModelOverride).To(BeEmpty())
+			})
+		})
 	})
 
 	Describe("CloseSession", func() {
@@ -1127,10 +1156,12 @@ var _ = Describe("Manager", func() {
 })
 
 type mockStreamer struct {
-	mu          sync.Mutex
-	chunks      []provider.StreamChunk
-	lastAgentID string
-	lastMessage string
+	mu                   sync.Mutex
+	chunks               []provider.StreamChunk
+	lastAgentID          string
+	lastMessage          string
+	lastModelOverride    string
+	lastProviderOverride string
 }
 
 func newMockStreamer() *mockStreamer {
@@ -1149,6 +1180,8 @@ func (m *mockStreamer) Stream(ctx context.Context, agentID string, message strin
 	m.mu.Lock()
 	m.lastAgentID = agentID
 	m.lastMessage = message
+	m.lastModelOverride = session.ModelOverrideFromContext(ctx)
+	m.lastProviderOverride = session.ProviderOverrideFromContext(ctx)
 	chunks := make([]provider.StreamChunk, len(m.chunks))
 	copy(chunks, m.chunks)
 	m.chunks = nil
