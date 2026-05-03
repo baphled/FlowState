@@ -1272,3 +1272,78 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 		assertAssistantInResponse(true)
 	})
 })
+
+var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		streamer *mockStreamer
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+		mgr = session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			streamer,
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("updates the session's current agent", func() {
+		sess, err := mgr.CreateSession("agent-original")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"agentId":"plan-writer"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/agent", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		updated, err := mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.CurrentAgentID).To(Equal("plan-writer"), "agent switch must persist on the session so SendMessage routes through the new agent")
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out).To(HaveKey("agentId"))
+		Expect(out).NotTo(HaveKey("agent_id"))
+	})
+
+	It("routes subsequent messages through the new agent", func() {
+		sess, err := mgr.CreateSession("agent-original")
+		Expect(err).NotTo(HaveOccurred())
+
+		patchBody := `{"agentId":"plan-writer"}`
+		patchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/agent", strings.NewReader(patchBody))
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), patchReq)
+
+		msgBody := `{"content":"hello"}`
+		msgReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(msgBody))
+		srv.Handler().ServeHTTP(httptest.NewRecorder(), msgReq)
+
+		Expect(streamer.capturedAgentID).To(Equal("plan-writer"), "the streamer must be invoked with the agent the user selected, not the original session agent")
+	})
+
+	It("returns 404 when the session does not exist", func() {
+		body := `{"agentId":"plan-writer"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/nonexistent/agent", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("returns 400 when agentId is missing", func() {
+		sess, err := mgr.CreateSession("agent-original")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"agentId":""}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/agent", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+})

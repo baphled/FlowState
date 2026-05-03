@@ -328,6 +328,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
+	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
 	s.mux.HandleFunc("GET /api/v1/tasks", s.handleListTasks)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
@@ -1414,4 +1415,44 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []session.Message{}
 	}
 	writeJSON(w, messages)
+}
+
+// handleUpdateSessionAgent switches the active agent for an existing session.
+//
+// Expected:
+//   - Request path parameter "id" identifies an existing session.
+//   - Request body is JSON of the form {"agentId":"<id>"} with a non-empty agentId.
+//
+// Side effects:
+//   - Sets the session's CurrentAgentID so subsequent SendMessage calls stream
+//     through the new agent rather than the agent the session was created with.
+//   - Writes the updated session as JSON.
+func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	id := r.PathValue("id")
+	var req struct {
+		AgentID string `json:"agentId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.AgentID == "" {
+		http.Error(w, "agentId is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.sessionManager.UpdateSessionAgent(id, req.AgentID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	sess, err := s.sessionManager.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, NewSessionResponse(sess))
 }
