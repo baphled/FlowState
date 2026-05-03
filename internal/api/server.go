@@ -621,8 +621,13 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	if s.sessionBroker != nil && chunks != nil {
-		go s.sessionBroker.Publish(id, chunks)
+	if chunks != nil {
+		if s.sessionBroker != nil {
+			s.sessionBroker.Publish(id, chunks)
+		} else {
+			for range chunks {
+			}
+		}
 	}
 	sess, err := s.sessionManager.GetSession(id)
 	if err != nil {

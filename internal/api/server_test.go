@@ -1225,3 +1225,50 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages JSON contract", func() {
 		Expect(count).To(BeNumerically(">=", 1), "messageCount should reflect at least the user message that was just appended")
 	})
 })
+
+var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract", func() {
+	assertAssistantInResponse := func(withBroker bool) {
+		recorder := httptest.NewRecorder()
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+		mgr := session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		opts := []api.ServerOption{api.WithSessionManager(mgr)}
+		if withBroker {
+			opts = append(opts, api.WithSessionBroker(api.NewSessionBroker()))
+		}
+		srv := api.NewServer(streamer, registry, disc, nil, opts...)
+
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"content":"hello"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		var out struct {
+			MessageCount int               `json:"messageCount"`
+			Messages     []session.Message `json:"messages"`
+		}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out.MessageCount).To(BeNumerically(">=", 2), "response must include both user and assistant messages before returning")
+
+		var assistantContent string
+		for _, m := range out.Messages {
+			if m.Role == "assistant" {
+				assistantContent = m.Content
+				break
+			}
+		}
+		Expect(assistantContent).To(Equal("ok"), "assistant reply must be appended to the session before the HTTP response is written so the frontend renders it without polling")
+	}
+
+	It("includes the assistant reply when no broker is configured", func() {
+		assertAssistantInResponse(false)
+	})
+
+	It("includes the assistant reply when a broker is configured", func() {
+		assertAssistantInResponse(true)
+	})
+})
