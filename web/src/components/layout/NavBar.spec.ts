@@ -30,21 +30,17 @@ describe('NavBar', () => {
     })
   })
 
-  it('mounts both AgentSwitcher and ModelSwitcher in the navigation bar', async () => {
+  it('does not render AgentSwitcher in the navigation bar', async () => {
     const wrapper = mount(NavBar)
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="agent-switcher"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="model-switcher"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="agent-switcher"]').exists()).toBe(false)
   })
 
-  it('places ModelSwitcher in a distinct wrapper from AgentSwitcher', async () => {
+  it('does not render ModelSwitcher in the navigation bar', async () => {
     const wrapper = mount(NavBar)
     await flushPromises()
 
-    const agentEl = wrapper.find('[data-testid="agent-switcher"]').element.parentElement
-    const modelEl = wrapper.find('[data-testid="model-switcher"]').element.parentElement
-
-    expect(agentEl).not.toBe(modelEl)
+    expect(wrapper.find('[data-testid="model-switcher"]').exists()).toBe(false)
   })
 })
