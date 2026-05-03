@@ -1860,6 +1860,13 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		Tools:    e.buildToolSchemas(),
 	}
 
+	if override := session.ProviderOverrideFromContext(ctx); override != "" {
+		req.Provider = override
+	}
+	if override := session.ModelOverrideFromContext(ctx); override != "" {
+		req.Model = override
+	}
+
 	providerChunks, err := e.streamFromProvider(ctx, &req)
 	e.publishProviderRequestEvent(sessionID, req)
 	if err != nil {

@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -659,6 +660,70 @@ var _ = Describe("Engine", func() {
 			})
 		})
 
+		Context("session model/provider overrides via context", func() {
+			It("uses context model and provider overrides when both are set", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				ctx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "anthropic")
+				ctx = context.WithValue(ctx, session.ModelOverrideKey{}, "claude-opus-4.7")
+
+				_, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				Expect(chatProvider.capturedRequest.Provider).To(Equal("anthropic"))
+				Expect(chatProvider.capturedRequest.Model).To(Equal("claude-opus-4.7"))
+			})
+
+			It("uses only the provider override when model override is empty", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				ctx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "openai")
+
+				_, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				Expect(chatProvider.capturedRequest.Provider).To(Equal("openai"))
+				Expect(chatProvider.capturedRequest.Model).To(BeEmpty())
+			})
+
+			It("falls back to engine defaults when no context overrides are set", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				_, err := eng.Stream(context.Background(), "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				Expect(chatProvider.capturedRequest.Provider).To(Equal("test-chat-provider"))
+				Expect(chatProvider.capturedRequest.Model).To(BeEmpty())
+			})
+
+			It("uses only the model override when provider override is empty", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+				})
+
+				ctx := context.WithValue(context.Background(), session.ModelOverrideKey{}, "gpt-4o")
+
+				_, err := eng.Stream(ctx, "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				Expect(chatProvider.capturedRequest.Model).To(Equal("gpt-4o"))
+				Expect(chatProvider.capturedRequest.Provider).To(Equal("test-chat-provider"))
+			})
+		})
 	})
 
 	Describe("embedding fallback", func() {

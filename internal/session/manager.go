@@ -596,10 +596,18 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	if sess.CurrentAgentID != "" {
 		agentID = sess.CurrentAgentID
 	}
+	modelOverride := sess.CurrentModelID
+	providerOverride := sess.CurrentProviderID
 	m.persistLocked(sess)
 	m.mu.Unlock()
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
+	if providerOverride != "" {
+		ctx = context.WithValue(ctx, ProviderOverrideKey{}, providerOverride)
+	}
+	if modelOverride != "" {
+		ctx = context.WithValue(ctx, ModelOverrideKey{}, modelOverride)
+	}
 	rawCh, err := m.streamer.Stream(ctx, agentID, message)
 	if err != nil {
 		return nil, err
