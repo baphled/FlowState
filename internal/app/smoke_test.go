@@ -296,7 +296,10 @@ var _ = Describe("Planning Delegation Smoke Test", Label("smoke", "integration")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(createResp.StatusCode).To(Equal(http.StatusOK))
 
-			var sess session.Session
+			var sess struct {
+				ID      string `json:"id"`
+				AgentID string `json:"agentId"`
+			}
 			err = json.NewDecoder(createResp.Body).Decode(&sess)
 			createResp.Body.Close()
 			Expect(err).NotTo(HaveOccurred())

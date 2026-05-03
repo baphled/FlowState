@@ -33,14 +33,14 @@ var _ = Describe("Message accumulation", func() {
 			typ := reflect.TypeOf(session.Message{})
 			field, ok := typ.FieldByName("ToolName")
 			Expect(ok).To(BeTrue())
-			Expect(field.Tag.Get("json")).To(Equal("tool_name,omitempty"))
+			Expect(field.Tag.Get("json")).To(Equal("toolName,omitempty"))
 		})
 
 		It("has ToolInput field with omitempty JSON tag", func() {
 			typ := reflect.TypeOf(session.Message{})
 			field, ok := typ.FieldByName("ToolInput")
 			Expect(ok).To(BeTrue())
-			Expect(field.Tag.Get("json")).To(Equal("tool_input,omitempty"))
+			Expect(field.Tag.Get("json")).To(Equal("toolInput,omitempty"))
 		})
 	})
 
