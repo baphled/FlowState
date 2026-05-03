@@ -162,4 +162,89 @@ var _ = Describe("RecallBroker", func() {
 		Eventually(resultCh).Should(Receive(HaveLen(4)))
 		Consistently(errCh).ShouldNot(Receive())
 	})
+
+	Describe("date-range filtering", func() {
+		It("filters observations to only those within the specified range", func() {
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{results: []recall.Observation{
+					observation("old", "session", "agent-a", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)),
+					observation("recent", "session", "agent-a", time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)),
+					observation("future", "session", "agent-a", time.Date(2026, 12, 1, 10, 0, 0, 0, time.UTC)),
+				}},
+				nil, nil, nil,
+			)
+
+			ctx := recall.WithDateRange(
+				context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"),
+				recall.DateRange{
+					From: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+					To:   time.Date(2026, 4, 30, 23, 59, 59, 0, time.UTC),
+				},
+			)
+
+			results, err := broker.Query(ctx, "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].ID).To(Equal("recent"))
+		})
+
+		It("returns all observations when no date range is set", func() {
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{results: []recall.Observation{
+					observation("old", "session", "agent-a", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)),
+					observation("recent", "session", "agent-a", time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)),
+				}},
+				nil, nil, nil,
+			)
+
+			ctx := context.WithValue(context.Background(), learning.AgentIDKey, "agent-a")
+			results, err := broker.Query(ctx, "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+		})
+
+		It("supports open-ended From filter", func() {
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{results: []recall.Observation{
+					observation("old", "session", "agent-a", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)),
+					observation("recent", "session", "agent-a", time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)),
+				}},
+				nil, nil, nil,
+			)
+
+			ctx := recall.WithDateRange(
+				context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"),
+				recall.DateRange{From: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+			)
+
+			results, err := broker.Query(ctx, "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].ID).To(Equal("recent"))
+		})
+
+		It("supports open-ended To filter", func() {
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{results: []recall.Observation{
+					observation("old", "session", "agent-a", time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)),
+					observation("recent", "session", "agent-a", time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)),
+				}},
+				nil, nil, nil,
+			)
+
+			ctx := recall.WithDateRange(
+				context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"),
+				recall.DateRange{To: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)},
+			)
+
+			results, err := broker.Query(ctx, "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].ID).To(Equal("old"))
+		})
+	})
 })

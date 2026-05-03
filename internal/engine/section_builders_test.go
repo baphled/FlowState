@@ -2,6 +2,7 @@ package engine
 
 import (
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -136,6 +137,45 @@ var _ = Describe("Section Builders", func() {
 				result := buildDelegationSection(agents)
 
 				Expect(result).To(ContainSubstring("Minimal Agent (minimal)"))
+			})
+		})
+	})
+
+	Describe("buildTemporalSection", func() {
+		Context("with a fixed nowFunc", func() {
+			It("includes the current date in ISO format", func() {
+				fixed := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
+				result := buildTemporalSection(func() time.Time { return fixed })
+
+				Expect(result).To(ContainSubstring("2026-05-02"))
+			})
+
+			It("includes the day of week", func() {
+				fixed := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
+				result := buildTemporalSection(func() time.Time { return fixed })
+
+				Expect(result).To(ContainSubstring("Saturday"))
+			})
+
+			It("includes UTC timezone indicator", func() {
+				fixed := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
+				result := buildTemporalSection(func() time.Time { return fixed })
+
+				Expect(result).To(ContainSubstring("UTC"))
+			})
+
+			It("renders as a markdown section header", func() {
+				fixed := time.Date(2026, 5, 2, 14, 30, 0, 0, time.UTC)
+				result := buildTemporalSection(func() time.Time { return fixed })
+
+				Expect(result).To(ContainSubstring("## Temporal Context"))
+			})
+
+			It("produces a single-line body with date, weekday, and timezone", func() {
+				fixed := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+				result := buildTemporalSection(func() time.Time { return fixed })
+
+				Expect(result).To(ContainSubstring("Today is 2026-05-02 (Saturday, UTC)"))
 			})
 		})
 	})

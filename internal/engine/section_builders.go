@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -242,4 +243,23 @@ func buildSwarmSection(reg *swarm.Registry) string {
 	}
 
 	return sb.String()
+}
+
+// buildTemporalSection returns a markdown section containing the current date
+// so agents can reason about deadlines, schedules, and relative time. Without
+// this block, agents like deadline-scanner cannot compute "within 7 days"
+// because they have no reliable source for "today".
+//
+// Expected:
+//   - nowFunc returns the current time. Tests inject a fixed value; production
+//     passes time.Now.
+//
+// Returns:
+//   - A markdown-formatted temporal context section.
+//
+// Side effects:
+//   - None.
+func buildTemporalSection(nowFunc func() time.Time) string {
+	now := nowFunc().UTC()
+	return "## Temporal Context\n\nToday is " + now.Format("2006-01-02") + " (" + now.Format("Monday") + ", UTC)"
 }

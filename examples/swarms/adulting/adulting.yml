@@ -3,7 +3,8 @@ id: adulting
 description: >
   Life-admin triage swarm. Dump your pile of avoided tasks — bills, appointments,
   renewals, council letters, tax deadlines — and the swarm will prioritise them,
-  track bills and deadlines, and draft formal correspondence ready to send.
+  track bills and deadlines. Letter drafting is opt-in — only triggered when the
+  user explicitly asks for correspondence.
 
 # life-admin-lead triages the incoming task dump and orchestrates the
 # three specialist agents sequentially via delegation.

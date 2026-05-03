@@ -10,6 +10,30 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 )
 
+type dateRangeKey struct{}
+
+// DateRange specifies an optional time window for filtering recall results.
+// Both From and To are inclusive. Zero values mean "no bound" on that end.
+type DateRange struct {
+	From time.Time
+	To   time.Time
+}
+
+// WithDateRange returns a context carrying the given DateRange for recall queries.
+func WithDateRange(ctx context.Context, dr DateRange) context.Context {
+	return context.WithValue(ctx, dateRangeKey{}, dr)
+}
+
+// dateRangeFromContext extracts any DateRange attached to the context.
+func dateRangeFromContext(ctx context.Context) (DateRange, bool) {
+	v := ctx.Value(dateRangeKey{})
+	if v == nil {
+		return DateRange{}, false
+	}
+	dr, ok := v.(DateRange)
+	return dr, ok
+}
+
 // Observation represents a normalised recall result.
 type Observation struct {
 	ID        string    `json:"id"`
@@ -68,6 +92,9 @@ func (b *broker) Query(ctx context.Context, query string, limit int) ([]Observat
 	agentID := b.agentIDFromContext(ctx)
 	results := b.collect(ctx, query, limit)
 	merged := b.merge(results, agentID)
+	if dr, ok := dateRangeFromContext(ctx); ok {
+		merged = b.filterByDateRange(merged, dr)
+	}
 	b.sortByFreshness(merged)
 	return b.limitResults(merged, limit), nil
 }
@@ -144,6 +171,20 @@ func (b *broker) limitResults(merged []Observation, limit int) []Observation {
 		return merged[:limit]
 	}
 	return merged
+}
+
+func (b *broker) filterByDateRange(merged []Observation, dr DateRange) []Observation {
+	filtered := make([]Observation, 0, len(merged))
+	for _, obs := range merged {
+		if !dr.From.IsZero() && obs.Timestamp.Before(dr.From) {
+			continue
+		}
+		if !dr.To.IsZero() && obs.Timestamp.After(dr.To) {
+			continue
+		}
+		filtered = append(filtered, obs)
+	}
+	return filtered
 }
 
 // agentIDFromContext extracts the active agent identifier from the query context.
