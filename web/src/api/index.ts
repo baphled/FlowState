@@ -140,6 +140,10 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
   return data ?? []
 }
 
+export function subscribeSessionStream(sessionId: string): EventSource {
+  return new EventSource(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`))
+}
+
 export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
   const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/agent`), {
     method: 'PATCH',
