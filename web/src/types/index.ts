@@ -64,6 +64,8 @@ export interface Session {
   id: string
   agentId: string
   currentAgentId?: string
+  currentModelId?: string
+  currentProviderId?: string
   messages: Message[]
   messageCount: number
   createdAt: string
@@ -74,10 +76,32 @@ export interface SessionSummary {
   id: string
   agentId: string
   currentAgentId?: string
+  currentModelId?: string
+  currentProviderId?: string
   title: string
   createdAt: string
   updatedAt: string
   messageCount: number
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+}
+
+export interface ProviderInfo {
+  id: string
+  models: ModelInfo[]
+}
+
+export interface ModelsResponse {
+  providers: ProviderInfo[]
+}
+
+export interface Model {
+  id: string
+  name: string
+  providerId: string
 }
 
 export interface SessionMessageRequest {

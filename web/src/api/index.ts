@@ -1,4 +1,13 @@
-import type { ChatRequest, SSEChunk, Agent, Session, SessionSummary, Message } from '@/types'
+import type {
+  ChatRequest,
+  SSEChunk,
+  Agent,
+  Session,
+  SessionSummary,
+  Message,
+  Model,
+  ModelsResponse,
+} from '@/types'
 
 const BASE = '/api'
 const API_HOST_STORAGE_KEY = 'flowstate-api-host'
@@ -155,4 +164,37 @@ export async function updateSessionAgent(sessionId: string, agentId: string): Pr
     throw new Error(err.error ?? `HTTP ${res.status}`)
   }
   return (await res.json()) as Session
+}
+
+export async function updateSessionModel(
+  sessionId: string,
+  modelId: string,
+  providerId: string,
+): Promise<Session> {
+  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/model`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelId, providerId }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+    throw new Error(err.error ?? `HTTP ${res.status}`)
+  }
+  return (await res.json()) as Session
+}
+
+export async function fetchModels(): Promise<Model[]> {
+  const res = await fetch(joinBaseURL('/v1/models'))
+  if (!res.ok) {
+    throw new Error(`Failed to fetch models: ${res.statusText}`)
+  }
+  const data = (await res.json()) as ModelsResponse | null
+  const providers = data?.providers ?? []
+  const models: Model[] = []
+  for (const provider of providers) {
+    for (const model of provider.models ?? []) {
+      models.push({ id: model.id, name: model.name, providerId: provider.id })
+    }
+  }
+  return models
 }
