@@ -205,6 +205,8 @@ type Engine struct {
 	// race-cleanly with reads from the streaming hot path.
 	swarmContext *swarm.Context
 
+	nowFunc func() time.Time
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -360,6 +362,8 @@ type Config struct {
 	// construction via SetSwarmContext when the CLI run path resolves
 	// `--agent <swarm-id>` after the engine is already up.
 	SwarmContext *swarm.Context
+
+	NowFunc func() time.Time
 
 	// SystemPromptBudget overrides the model-context fallback the engine
 	// returns from ModelContextLimit / ResolveContextLength when the
@@ -557,6 +561,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		microCompactor:            resolveMicroCompactor(cfg),
 		compactionConfig:          cfg.CompactionConfig,
 		factService:               resolveFactService(cfg),
+		nowFunc:                   resolveNowFunc(cfg),
 	}
 }
 
@@ -580,6 +585,13 @@ func resolveFactService(cfg Config) *factstore.Service {
 		return nil
 	}
 	return cfg.FactService
+}
+
+func resolveNowFunc(cfg Config) func() time.Time {
+	if cfg.NowFunc != nil {
+		return cfg.NowFunc
+	}
+	return time.Now
 }
 
 // resolveMicroCompactor returns the RLM Phase A compactor the engine
@@ -1461,6 +1473,8 @@ func (e *Engine) BuildSystemPrompt() string {
 	}
 
 	base := e.manifest.Instructions.SystemPrompt
+
+	base = base + "\n\n" + buildTemporalSection(e.nowFunc)
 
 	if e.agentsFileLoader != nil && !e.skipAgentFiles {
 		if !e.agentFilesCached {

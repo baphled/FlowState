@@ -179,7 +179,7 @@ var _ = Describe("Agent Registry Resolution", Label("integration"), func() {
 		})
 
 		original := eng.BuildSystemPrompt()
-		Expect(original).To(Equal("Original prompt."))
+		Expect(original).To(HavePrefix("Original prompt."))
 
 		eng.SetManifest(agent.Manifest{
 			ID:   "updated-agent",
@@ -190,7 +190,7 @@ var _ = Describe("Agent Registry Resolution", Label("integration"), func() {
 		})
 
 		updated := eng.BuildSystemPrompt()
-		Expect(updated).To(Equal("Updated prompt."))
+		Expect(updated).To(HavePrefix("Updated prompt."))
 		Expect(updated).NotTo(Equal(original))
 	})
 })

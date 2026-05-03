@@ -1,0 +1,108 @@
+{
+  "meta": {
+    "today": "2026-05-02T00:00:00Z",
+    "description": "Deterministic adulting test dataset anchored to 2026-05-02 (Saturday). All deadlines are expressed relative to this anchor so deadline classification is fully predictable."
+  },
+  "tasks": [
+    {
+      "title": "Pay council tax arrears",
+      "deadline": "2026-04-25",
+      "priority": 1,
+      "urgency": "high",
+      "impact": "high",
+      "rationale": "Council tax arrears trigger enforcement within 7 days."
+    },
+    {
+      "title": "Submit self-assessment tax return",
+      "deadline": "2026-05-05",
+      "priority": 1,
+      "urgency": "high",
+      "impact": "high",
+      "rationale": "3 days remaining — HMRC late filing penalty after deadline."
+    },
+    {
+      "title": "Pay electricity bill",
+      "deadline": "2026-05-08",
+      "priority": 2,
+      "urgency": "high",
+      "impact": "medium",
+      "rationale": "6 days remaining — utility disconnection warning after 14 days overdue."
+    },
+    {
+      "title": "Renew driving licence",
+      "deadline": "2026-05-10",
+      "priority": 2,
+      "urgency": "medium",
+      "impact": "high",
+      "rationale": "8 days remaining — driving without valid licence is an offence."
+    },
+    {
+      "title": "Book dentist appointment",
+      "deadline": "2026-05-16",
+      "priority": 3,
+      "urgency": "low",
+      "impact": "medium",
+      "rationale": "14 days remaining — routine check-up, not urgent."
+    },
+    {
+      "title": "Pay car insurance",
+      "deadline": "2026-05-30",
+      "priority": 2,
+      "urgency": "medium",
+      "impact": "high",
+      "rationale": "28 days remaining — must maintain continuous cover."
+    },
+    {
+      "title": "Renew passport",
+      "deadline": "2026-07-15",
+      "priority": 3,
+      "urgency": "low",
+      "impact": "medium",
+      "rationale": "74 days remaining — standard renewal takes 3 weeks."
+    },
+    {
+      "title": "File annual accounts",
+      "deadline": "2026-09-30",
+      "priority": 2,
+      "urgency": "low",
+      "impact": "high",
+      "rationale": "151 days remaining — Companies House filing deadline."
+    },
+    {
+      "title": "Organise garage",
+      "deadline": null,
+      "priority": 4,
+      "urgency": "low",
+      "impact": "low",
+      "rationale": "No deadline — aspirational task."
+    }
+  ],
+  "expected_deadline_classes": {
+    "Pay council tax arrears": "overdue",
+    "Submit self-assessment tax return": "critical",
+    "Pay electricity bill": "critical",
+    "Renew driving licence": "imminent",
+    "Book dentist appointment": "imminent",
+    "Pay car insurance": "approaching",
+    "Renew passport": "scheduled",
+    "File annual accounts": "scheduled",
+    "Organise garage": "unspecified"
+  },
+  "expected_bill_items": [
+    "Pay council tax arrears",
+    "Submit self-assessment tax return",
+    "Pay electricity bill",
+    "Pay car insurance"
+  ],
+  "expected_bill_statuses": {
+    "Pay council tax arrears": "overdue",
+    "Submit self-assessment tax return": "due-soon",
+    "Pay electricity bill": "due-soon",
+    "Pay car insurance": "upcoming"
+  },
+  "expected_critical_path": [
+    "Pay council tax arrears",
+    "Submit self-assessment tax return",
+    "Pay electricity bill"
+  ]
+}
