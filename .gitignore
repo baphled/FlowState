@@ -1,7 +1,11 @@
 # Binaries
 /flowstate
+/flowstate-new
+/flowstate-test
 /docblocks
 /bin/
+node_modules/
+web/.tmp/
 *.exe
 *.exe~
 *.dll
