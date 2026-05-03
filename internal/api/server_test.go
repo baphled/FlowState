@@ -986,3 +986,95 @@ var _ = Describe("GET /metrics", func() {
 		Expect(w.Header().Get("Content-Type")).NotTo(ContainSubstring("text/plain"))
 	})
 })
+
+var _ = Describe("GET /api/v1/sessions JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	Context("with one created session", func() {
+		var sess *session.Session
+
+		BeforeEach(func() {
+			var err error
+			sess, err = mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns HTTP 200 with a JSON array body", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(recorder.Header().Get("Content-Type")).To(ContainSubstring("application/json"))
+		})
+
+		It("emits a non-empty title for the listed session", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]["id"]).To(Equal(sess.ID))
+			title, ok := rows[0]["title"].(string)
+			Expect(ok).To(BeTrue(), "title should be a string in the JSON payload")
+			Expect(title).NotTo(BeEmpty(), "Title should be populated from session metadata, not hardcoded empty")
+		})
+
+		It("emits a createdAt key in the JSON summary", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]).To(HaveKey("createdAt"), "frontend SessionSummary contract requires createdAt")
+			createdAt, ok := rows[0]["createdAt"].(string)
+			Expect(ok).To(BeTrue(), "createdAt should be a string in the JSON payload")
+			Expect(createdAt).NotTo(BeEmpty())
+			Expect(createdAt).NotTo(Equal("0001-01-01T00:00:00Z"), "createdAt should be a real timestamp, not the zero value")
+		})
+
+		It("emits a non-zero updatedAt timestamp", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			updatedAt, ok := rows[0]["updatedAt"].(string)
+			Expect(ok).To(BeTrue(), "updatedAt should be a string in the JSON payload")
+			Expect(updatedAt).NotTo(Equal("0001-01-01T00:00:00Z"), "updatedAt should be populated, not the zero time")
+		})
+	})
+
+	Context("when no session manager is configured", func() {
+		It("returns HTTP 501", func() {
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			bare := api.NewServer(&mockStreamer{}, registry, disc, nil)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			bare.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+})
