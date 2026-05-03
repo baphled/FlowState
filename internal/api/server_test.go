@@ -1129,3 +1129,99 @@ var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
 		Expect(recorder.Code).To(Equal(http.StatusNotFound))
 	})
 })
+
+var _ = Describe("POST /api/v1/sessions JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	postCreate := func() map[string]interface{} {
+		body := `{"agent_id":"agent-x"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		return out
+	}
+
+	It("returns a body with camelCase agentId, not snake_case agent_id", func() {
+		out := postCreate()
+		Expect(out).To(HaveKey("agentId"), "create response must use camelCase agentId to match SessionSummary contract")
+		Expect(out).NotTo(HaveKey("agent_id"), "create response must not leak snake_case agent_id")
+		Expect(out["agentId"]).To(Equal("agent-x"))
+	})
+
+	It("returns a body with camelCase createdAt and updatedAt", func() {
+		out := postCreate()
+		Expect(out).To(HaveKey("createdAt"))
+		Expect(out).To(HaveKey("updatedAt"))
+		Expect(out).NotTo(HaveKey("created_at"))
+		Expect(out).NotTo(HaveKey("updated_at"))
+	})
+
+	It("returns a body that includes messageCount: 0 for a freshly created session", func() {
+		out := postCreate()
+		Expect(out).To(HaveKey("messageCount"), "create response must include messageCount so the frontend doesn't read undefined")
+		count, ok := out["messageCount"].(float64)
+		Expect(ok).To(BeTrue(), "messageCount should be a number in the JSON payload")
+		Expect(count).To(Equal(float64(0)))
+	})
+})
+
+var _ = Describe("POST /api/v1/sessions/{id}/messages JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("returns a response with messageCount reflecting the appended message", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"content":"hello"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out).To(HaveKey("messageCount"), "send-message response must include messageCount")
+		Expect(out).To(HaveKey("agentId"))
+		Expect(out).NotTo(HaveKey("agent_id"))
+		count, ok := out["messageCount"].(float64)
+		Expect(ok).To(BeTrue())
+		Expect(count).To(BeNumerically(">=", 1), "messageCount should reflect at least the user message that was just appended")
+	})
+})

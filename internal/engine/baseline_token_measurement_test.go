@@ -32,6 +32,10 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		appCfg, err := config.LoadConfig()
 		Expect(err).NotTo(HaveOccurred())
 
+		if _, statErr := os.Stat(appCfg.SkillDir); os.IsNotExist(statErr) {
+			Skip("skill dir not present on this host: " + appCfg.SkillDir)
+		}
+
 		manifest := agent.Manifest{
 			ID:   "baseline-token-measurement",
 			Name: "Baseline Token Measurement",

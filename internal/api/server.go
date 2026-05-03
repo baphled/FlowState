@@ -566,7 +566,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, sess)
+	writeJSON(w, NewSessionResponse(sess))
 }
 
 // handleListV1Sessions lists all sessions as summaries.
@@ -629,7 +629,7 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, sess)
+	writeJSON(w, NewSessionResponse(sess))
 }
 
 // handleSessionTodos returns the todo list for the given session as JSON.

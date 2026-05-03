@@ -34,9 +34,9 @@ type Message struct {
 	ID        string    `json:"id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
-	AgentID   string    `json:"agent_id"`
-	ToolName  string    `json:"tool_name,omitempty"`
-	ToolInput string    `json:"tool_input,omitempty"`
+	AgentID   string    `json:"agentId,omitempty"`
+	ToolName  string    `json:"toolName,omitempty"`
+	ToolInput string    `json:"toolInput,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -58,8 +58,8 @@ type Session struct {
 
 // Summary provides a lightweight view of a session for listing.
 type Summary struct {
-	Id           string    `json:"id"`
-	AgentId      string    `json:"agentId"`
+	ID           string    `json:"id"`
+	AgentID      string    `json:"agentId"`
 	Title        string    `json:"title"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
@@ -340,8 +340,8 @@ func (m *Manager) ListSessions() []*Summary {
 			updatedAt = sess.CreatedAt
 		}
 		summaries = append(summaries, &Summary{
-			Id:           sess.ID,
-			AgentId:      sess.AgentID,
+			ID:           sess.ID,
+			AgentID:      sess.AgentID,
 			Title:        deriveSummaryTitle(sess),
 			CreatedAt:    sess.CreatedAt,
 			UpdatedAt:    updatedAt,

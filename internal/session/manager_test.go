@@ -287,7 +287,7 @@ var _ = Describe("Manager", func() {
 
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
-				Expect(summaries[0].AgentId).To(Equal("my-agent"))
+				Expect(summaries[0].AgentID).To(Equal("my-agent"))
 			})
 
 			It("includes message count in summaries", func() {
@@ -356,7 +356,7 @@ var _ = Describe("Manager", func() {
 
 				summaries := mgr.ListSessions()
 				Expect(summaries).To(HaveLen(1))
-				Expect(summaries[0].Id).To(Equal("restored-1"))
+				Expect(summaries[0].ID).To(Equal("restored-1"))
 				Expect(summaries[0].UpdatedAt.IsZero()).To(BeFalse(),
 					"restored sessions with zero UpdatedAt expose 0001-01-01T00:00:00Z to the frontend; manager should backfill from CreatedAt")
 			})
