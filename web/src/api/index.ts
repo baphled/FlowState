@@ -77,13 +77,17 @@ export async function postChat(
 }
 
 export async function fetchSwarmEvents(): Promise<unknown[]> {
-  return []
+  const res = await fetch(joinBaseURL('/swarm/events'))
+  if (!res.ok) {
+    throw new Error(`Failed to fetch swarm events: ${res.statusText}`)
+  }
+  return res.json()
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
   const res = await fetch(joinBaseURL('/v1/sessions'))
   if (!res.ok) {
-    return []
+    throw new Error(`Failed to fetch sessions: ${res.statusText}`)
   }
   return res.json()
 }
