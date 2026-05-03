@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,7 @@ type Summary struct {
 	Id           string    `json:"id"`
 	AgentId      string    `json:"agentId"`
 	Title        string    `json:"title"`
+	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	MessageCount int       `json:"messageCount"`
 }
@@ -333,16 +335,50 @@ func (m *Manager) ListSessions() []*Summary {
 
 	summaries := make([]*Summary, 0, len(m.sessions))
 	for _, sess := range m.sessions {
+		updatedAt := sess.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = sess.CreatedAt
+		}
 		summaries = append(summaries, &Summary{
 			Id:           sess.ID,
 			AgentId:      sess.AgentID,
-			Title:        "",  // TODO: populate from session metadata
-			UpdatedAt:    sess.UpdatedAt,
+			Title:        deriveSummaryTitle(sess),
+			CreatedAt:    sess.CreatedAt,
+			UpdatedAt:    updatedAt,
 			MessageCount: len(sess.Messages),
 		})
 	}
 
 	return summaries
+}
+
+// deriveSummaryTitle returns a non-empty human-readable title for a session.
+// It prefers the first user message content (truncated) and falls back to a
+// short identifier derived from the session ID so the frontend never sees an
+// empty title.
+func deriveSummaryTitle(sess *Session) string {
+	const maxTitleLen = 60
+	for _, msg := range sess.Messages {
+		if msg.Role != "user" {
+			continue
+		}
+		trimmed := strings.TrimSpace(msg.Content)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > maxTitleLen {
+			return trimmed[:maxTitleLen] + "…"
+		}
+		return trimmed
+	}
+	short := sess.ID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	if short == "" {
+		return "Untitled session"
+	}
+	return "Session " + short
 }
 
 // RestoreSessions registers persisted sessions into the manager.
@@ -361,6 +397,9 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 	defer m.mu.Unlock()
 	for _, sess := range sessions {
 		if _, ok := m.sessions[sess.ID]; !ok {
+			if sess.UpdatedAt.IsZero() {
+				sess.UpdatedAt = sess.CreatedAt
+			}
 			m.sessions[sess.ID] = sess
 		}
 	}
