@@ -198,3 +198,14 @@ export async function fetchModels(): Promise<Model[]> {
   }
   return models
 }
+
+export async function listModels(): Promise<ModelsResponse> {
+  const res = await fetch(joinBaseURL('/v1/models'))
+  if (!res.ok) {
+    throw new Error(`Failed to list models: ${res.statusText}`)
+  }
+  const data = (await res.json()) as ModelsResponse | null
+  return { providers: data?.providers ?? [] }
+}
+
+
