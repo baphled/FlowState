@@ -128,5 +128,6 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
   if (!res.ok) {
     throw new Error(`Failed to fetch session messages: ${res.statusText}`)
   }
-  return res.json()
+  const data = (await res.json()) as Message[] | null
+  return data ?? []
 }
