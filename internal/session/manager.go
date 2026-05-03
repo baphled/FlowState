@@ -31,13 +31,19 @@ const (
 
 // Message represents a single message in a session's conversation history.
 type Message struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	AgentID   string    `json:"agentId,omitempty"`
-	ToolName  string    `json:"toolName,omitempty"`
-	ToolInput string    `json:"toolInput,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	ID          string    `json:"id"`
+	Role        string    `json:"role"`
+	Content     string    `json:"content"`
+	AgentID     string    `json:"agentId,omitempty"`
+	ToolName    string    `json:"toolName,omitempty"`
+	ToolInput   string    `json:"toolInput,omitempty"`
+	TargetAgent string    `json:"targetAgent,omitempty"`
+	ChainID     string    `json:"chainId,omitempty"`
+	ToolCalls   int       `json:"toolCalls,omitempty"`
+	LastTool    string    `json:"lastTool,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	ModelName   string    `json:"modelName,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 // Session represents a planning session with conversation history,

@@ -392,6 +392,91 @@ var _ = Describe("AccumulateStream", func() {
 				Expect(m.Role).NotTo(Equal("delegation"))
 			}
 		})
+
+		It("populates structured delegation fields on the appended message", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "build-agent",
+					Status:      "started",
+					ChainID:     "chain-X",
+					ModelName:   "claude-3-5-sonnet",
+					ToolCalls:   2,
+					LastTool:    "bash",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			m := appender.messages[0]
+			Expect(m.Role).To(Equal("delegation_started"))
+			Expect(m.TargetAgent).To(Equal("build-agent"))
+			Expect(m.ChainID).To(Equal("chain-X"))
+			Expect(m.ModelName).To(Equal("claude-3-5-sonnet"))
+			Expect(m.ToolCalls).To(Equal(2))
+			Expect(m.LastTool).To(Equal("bash"))
+			Expect(m.Status).To(Equal("started"))
+		})
+
+		It("updates the in-flight delegation message in place when running chunks arrive", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "w", Status: "started", ChainID: "c-up",
+					ToolCalls: 1, LastTool: "read",
+				},
+			}
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "w", Status: "running", ChainID: "c-up",
+					ToolCalls: 5, LastTool: "edit",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.updates).To(HaveLen(1))
+			Expect(appender.updates[0].chainID).To(Equal("c-up"))
+			updated := appender.lastUpdatedFor("c-up")
+			Expect(updated.ToolCalls).To(Equal(5))
+			Expect(updated.LastTool).To(Equal("edit"))
+			Expect(updated.Status).To(Equal("running"))
+		})
+
+		It("flips role to delegation and updates fields on terminal status for an in-flight chain", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "w", Status: "started", ChainID: "c-term",
+				},
+			}
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "w", Status: "completed", ChainID: "c-term",
+					ToolCalls: 7, LastTool: "bash",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.updates).NotTo(BeEmpty())
+			updated := appender.lastUpdatedFor("c-term")
+			Expect(updated.Role).To(Equal("delegation"))
+			Expect(updated.Status).To(Equal("completed"))
+			Expect(updated.ToolCalls).To(Equal(7))
+		})
 	})
 
 	Context("when an event chunk arrives (EventType is set)", func() {
@@ -536,9 +621,39 @@ var _ = Describe("MessageAppender interface", func() {
 type fakeAppender struct {
 	messages   []session.Message
 	sessionIDs []string
+	updates    []fakeDelegationUpdate
+}
+
+type fakeDelegationUpdate struct {
+	sessionID string
+	chainID   string
+	result    session.Message
 }
 
 func (f *fakeAppender) AppendMessage(sessionID string, msg session.Message) {
 	f.sessionIDs = append(f.sessionIDs, sessionID)
 	f.messages = append(f.messages, msg)
+}
+
+func (f *fakeAppender) UpdateDelegation(sessionID, chainID string, mutate func(*session.Message)) {
+	for i := range f.messages {
+		if f.messages[i].ChainID == chainID {
+			mutate(&f.messages[i])
+			f.updates = append(f.updates, fakeDelegationUpdate{
+				sessionID: sessionID,
+				chainID:   chainID,
+				result:    f.messages[i],
+			})
+			return
+		}
+	}
+}
+
+func (f *fakeAppender) lastUpdatedFor(chainID string) session.Message {
+	for i := len(f.updates) - 1; i >= 0; i-- {
+		if f.updates[i].chainID == chainID {
+			return f.updates[i].result
+		}
+	}
+	return session.Message{}
 }

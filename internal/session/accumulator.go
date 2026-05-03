@@ -20,6 +20,10 @@ import (
 type MessageAppender interface {
 	// AppendMessage persists msg to the session identified by sessionID.
 	AppendMessage(sessionID string, msg Message)
+	// UpdateDelegation locates the most recent message in the session matching
+	// chainID and applies mutate to it. Implementations must be a no-op when no
+	// matching message is found.
+	UpdateDelegation(sessionID, chainID string, mutate func(*Message))
 }
 
 // AppendMessage appends a message to the session identified by sessionID.
@@ -36,6 +40,34 @@ type MessageAppender interface {
 //   - Does nothing when sessionID is not found.
 func (m *Manager) AppendMessage(sessionID string, msg Message) {
 	m.appendSessionMessage(sessionID, msg)
+}
+
+// UpdateDelegation locates the most recent message in the named session whose
+// ChainID matches chainID and applies mutate to it under the Manager lock,
+// re-persisting the session afterwards.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - chainID matches the ChainID of an existing in-flight delegation message.
+//   - mutate is non-nil and applies the desired changes to the matched message.
+//
+// Side effects:
+//   - Acquires the Manager lock, mutates the message in place, and re-persists
+//     the session. No-op when the session or matching message is absent.
+func (m *Manager) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return
+	}
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		if sess.Messages[i].ChainID == chainID {
+			mutate(&sess.Messages[i])
+			m.persistLocked(sess)
+			return
+		}
+	}
 }
 
 // streamAccumState holds mutable accumulation state within AccumulateStream.
@@ -199,7 +231,7 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 	})
 }
 
-// applyDelegation stores a delegation message reflecting the delegation lifecycle.
+// applyDelegation stores or updates a delegation message reflecting the lifecycle.
 //
 // Expected:
 //   - appender is the message sink.
@@ -207,11 +239,16 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 //   - info is the non-nil delegation info chunk to evaluate.
 //
 // Side effects:
-//   - Appends a "delegation_started" message via appender.AppendMessage when info.Status
-//     indicates an in-flight delegation ("started", "running", "in_progress"), deduplicated
-//     per ChainID (falling back to TargetAgent when ChainID is empty) so repeated
-//     in-flight events for the same delegation emit at most once.
-//   - Appends a terminal "delegation" message when info.Status is "completed" or "failed".
+//   - On the first in-flight ("started", "running", "in_progress") chunk for a
+//     given ChainID, appends a "delegation_started" message carrying the
+//     structured target/model/tool fields.
+//   - On subsequent in-flight chunks for the same ChainID, mutates the existing
+//     message in place to refresh ToolCalls, LastTool, Status, ModelName, and
+//     the rendered Content summary.
+//   - On terminal status ("completed" or "failed") for an in-flight ChainID,
+//     mutates the existing message in place flipping Role to "delegation".
+//   - On terminal status with no prior in-flight message, appends a fresh
+//     "delegation" message.
 //   - Does nothing for any other status value.
 func applyDelegation(appender MessageAppender, s *streamAccumState, info *provider.DelegationInfo) {
 	switch info.Status {
@@ -224,21 +261,55 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 			key = info.TargetAgent
 		}
 		if _, seen := s.seenStartedChains[key]; seen {
+			appender.UpdateDelegation(s.sessionID, key, func(m *Message) {
+				applyDelegationFields(m, info)
+			})
 			return
 		}
 		s.seenStartedChains[key] = struct{}{}
-		appender.AppendMessage(s.sessionID, Message{
+		msg := Message{
 			Role:    "delegation_started",
 			Content: formatDelegationSummary(info),
 			AgentID: s.agentID,
-		})
+			ChainID: key,
+		}
+		applyDelegationFields(&msg, info)
+		appender.AppendMessage(s.sessionID, msg)
 	case "completed", "failed":
-		appender.AppendMessage(s.sessionID, Message{
+		key := info.ChainID
+		if key == "" {
+			key = info.TargetAgent
+		}
+		if s.seenStartedChains != nil {
+			if _, seen := s.seenStartedChains[key]; seen {
+				appender.UpdateDelegation(s.sessionID, key, func(m *Message) {
+					m.Role = "delegation"
+					applyDelegationFields(m, info)
+				})
+				delete(s.seenStartedChains, key)
+				return
+			}
+		}
+		msg := Message{
 			Role:    "delegation",
 			Content: formatDelegationSummary(info),
 			AgentID: s.agentID,
-		})
+			ChainID: key,
+		}
+		applyDelegationFields(&msg, info)
+		appender.AppendMessage(s.sessionID, msg)
 	}
+}
+
+// applyDelegationFields copies structured progress fields from info onto m and
+// refreshes the human-readable Content summary.
+func applyDelegationFields(m *Message, info *provider.DelegationInfo) {
+	m.TargetAgent = info.TargetAgent
+	m.Status = info.Status
+	m.ModelName = info.ModelName
+	m.ToolCalls = info.ToolCalls
+	m.LastTool = info.LastTool
+	m.Content = formatDelegationSummary(info)
 }
 
 // flushThinking writes accumulated thinking content as a thinking message and resets the buffer.
