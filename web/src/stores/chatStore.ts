@@ -228,6 +228,15 @@ export const useChatStore = defineStore('chat', {
 
       this.error = null
       this.isLoading = true
+
+      const optimisticMessage: Message = {
+        id: `temp-${Date.now()}`,
+        role: 'user',
+        content: text,
+        timestamp: new Date().toISOString(),
+      }
+      this.messages.push(optimisticMessage)
+
       let eventSource: EventSource | null = null
       try {
         let sessionId = this.currentSessionId
