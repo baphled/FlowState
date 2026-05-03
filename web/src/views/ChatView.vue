@@ -239,8 +239,8 @@ onBeforeUnmount(() => {
 .input-selector-bar {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 1rem;
+  gap: 0.6rem;
+  padding: 0.3rem 1rem;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
