@@ -120,6 +120,46 @@ describe('chatStore - sendMessage', () => {
     expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-new', 'Hi')
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
   })
+
+  it('polls fetchSessionMessages while the send is in-flight to surface live delegation progress', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+
+    let resolveSend: (value: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend = resolve
+        }),
+    )
+
+    const sendPromise = store.sendMessage('long task that delegates')
+
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(1500)
+    await vi.advanceTimersByTimeAsync(1500)
+
+    const pollCount = vi.mocked(fetchSessionMessages).mock.calls.length
+    expect(pollCount).toBeGreaterThanOrEqual(3)
+
+    resolveSend({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [],
+      messageCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    })
+    await sendPromise
+
+    const finalCount = vi.mocked(fetchSessionMessages).mock.calls.length
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(vi.mocked(fetchSessionMessages).mock.calls.length).toBe(finalCount)
+
+    vi.useRealTimers()
+  })
 })
 
 describe('chatStore - setAgent', () => {

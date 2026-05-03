@@ -182,6 +182,7 @@ export const useChatStore = defineStore('chat', {
 
       this.error = null
       this.isLoading = true
+      let pollHandle: ReturnType<typeof setInterval> | null = null
       try {
         let sessionId = this.currentSessionId
         if (!sessionId) {
@@ -190,12 +191,35 @@ export const useChatStore = defineStore('chat', {
           this.currentSessionId = sessionId
           persistSessionId(sessionId)
         }
+
+        const pollSessionId = sessionId
+        let pollInFlight = false
+        pollHandle = setInterval(() => {
+          if (pollInFlight) {
+            return
+          }
+          pollInFlight = true
+          fetchSessionMessages(pollSessionId)
+            .then((messages) => {
+              if (this.currentSessionId === pollSessionId && this.isLoading) {
+                this.messages = messages
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              pollInFlight = false
+            })
+        }, 1500)
+
         await sendSessionMessage(sessionId, text)
         this.messages = await fetchSessionMessages(sessionId)
         await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
       } finally {
+        if (pollHandle !== null) {
+          clearInterval(pollHandle)
+        }
         this.isLoading = false
       }
     },
