@@ -4,9 +4,9 @@ export interface Message {
   id: string
   role: string
   content: string
-  agent_id: string
-  tool_name?: string
-  tool_input?: string
+  agentId?: string
+  toolName?: string
+  toolInput?: string
   timestamp: string
 }
 
