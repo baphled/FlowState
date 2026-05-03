@@ -6,6 +6,7 @@ import {
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
+  updateSessionAgent,
 } from '@/api'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -107,18 +108,29 @@ export const useChatStore = defineStore('chat', {
       this.availableAgents = agents.map((agent) => agent.id)
 
       if (!this.agentId && agents.length > 0) {
-        this.setAgent(agents[0].id)
+        await this.setAgent(agents[0].id)
         return
       }
 
       if (this.agentId && !this.availableAgents.includes(this.agentId) && agents.length > 0) {
-        this.setAgent(agents[0].id)
+        await this.setAgent(agents[0].id)
       }
     },
 
-    setAgent(agentId: string): void {
+    async setAgent(agentId: string): Promise<void> {
+      const previousAgentId = this.agentId
       this.agentId = agentId
       persistAgentId(agentId)
+
+      if (!agentId || !this.currentSessionId || agentId === previousAgentId) {
+        return
+      }
+
+      try {
+        await updateSessionAgent(this.currentSessionId, agentId)
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : 'Failed to update session agent'
+      }
     },
 
     getSelectedAgent(): Agent | undefined {
@@ -151,7 +163,7 @@ export const useChatStore = defineStore('chat', {
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         if (session && session.agentId !== this.agentId) {
-          this.setAgent(session.agentId)
+          await this.setAgent(session.agentId)
         }
 
         this.messages = await fetchSessionMessages(sessionId)
