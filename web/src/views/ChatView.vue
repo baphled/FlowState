@@ -7,8 +7,8 @@ import { resolveAgentName, collapseToolPairs } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
-import AgentSwitcher from '@/components/agent-switcher/AgentSwitcher.vue'
-import ModelSwitcher from '@/components/model-switcher/ModelSwitcher.vue'
+import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
+import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
 import DelegationPanel from '@/components/swarm/DelegationPanel.vue'
 import PlanPanel from '@/components/swarm/PlanPanel.vue'
@@ -134,8 +134,8 @@ onBeforeUnmount(() => {
       </section>
 
       <div class="input-selector-bar" data-testid="input-selector-bar">
-        <AgentSwitcher />
-        <ModelSwitcher />
+        <AgentPicker />
+        <ModelPicker />
       </div>
 
       <div v-if="chatStore.isLoading" class="loading-pulse" data-testid="loading-pulse" aria-hidden="true" />
