@@ -80,6 +80,7 @@ type Manager struct {
 	notifications map[string][]streaming.CompletionNotificationEvent
 	notifMu       sync.Mutex
 	recorder      Recorder
+	sessionsDir   string
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -149,6 +150,32 @@ func (m *Manager) MarkEndedFromEvent(sessionID string) {
 // Side effects: updates the recorder reference.
 func (m *Manager) SetRecorder(r Recorder) {
 	m.recorder = r
+}
+
+// SetSessionsDir enables on-write persistence of session metadata and
+// messages to the given directory. An empty dir disables persistence,
+// which is the default for tests and ephemeral runs.
+//
+// Expected:
+//   - dir is an absolute path to a writable directory, or empty to disable.
+//
+// Side effects:
+//   - Subsequent message appends will write the session's *.meta.json
+//     file under dir so chat history survives a restart.
+func (m *Manager) SetSessionsDir(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionsDir = dir
+}
+
+// persistLocked writes the session to disk when sessionsDir is set.
+// The caller MUST hold m.mu (read or write). Errors are swallowed to
+// avoid blocking the message hot path; persistence is best-effort.
+func (m *Manager) persistLocked(sess *Session) {
+	if m.sessionsDir == "" || sess == nil {
+		return
+	}
+	_ = PersistSession(m.sessionsDir, sess)
 }
 
 // EnsureSession is an alias for RegisterSession that matches the interface name
@@ -521,6 +548,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	msg.ID = uuid.New().String()
 	msg.Timestamp = time.Now()
 	sess.Messages = append(sess.Messages, msg)
+	m.persistLocked(sess)
 }
 
 // SendMessage sends a message to the session and streams the response.
@@ -558,6 +586,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	if sess.CurrentAgentID != "" {
 		agentID = sess.CurrentAgentID
 	}
+	m.persistLocked(sess)
 	m.mu.Unlock()
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
