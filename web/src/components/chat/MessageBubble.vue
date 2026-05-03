@@ -1,10 +1,46 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
 
 defineOptions({ name: 'MessageBubble' })
 
 const props = defineProps<{ message: Message }>()
+
+const now = ref(Date.now())
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  elapsedTimer = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+})
+
+const elapsedLabel = computed(() => {
+  const startedAt = Date.parse(props.message.timestamp)
+  if (Number.isNaN(startedAt)) {
+    return '0s'
+  }
+  const seconds = Math.max(0, Math.floor((now.value - startedAt) / 1000))
+  if (seconds < 60) {
+    return `${seconds}s`
+  }
+  const minutes = Math.floor(seconds / 60)
+  const remaining = seconds % 60
+  return `${minutes}m ${remaining}s`
+})
+
+const hasProgress = computed(
+  () =>
+    typeof props.message.toolCalls === 'number' ||
+    typeof props.message.lastTool === 'string',
+)
 
 const isToolRole = computed(() =>
   ['tool_call', 'tool_result', 'tool_error'].includes(props.message.role),
@@ -44,11 +80,41 @@ const toolSummary = computed(() => {
 
     <div v-else-if="isDelegationStarted" class="delegation-card delegation-card--inflight">
       <span data-testid="delegation-spinner" class="delegation-spinner" aria-hidden="true">⋯</span>
-      <pre class="delegation-content">{{ props.message.content }}</pre>
+      <div class="delegation-body">
+        <div v-if="props.message.targetAgent" class="delegation-header">
+          <router-link
+            :to="`/agents/${props.message.targetAgent}`"
+            data-testid="delegation-agent-link"
+            class="delegation-agent-link"
+          >
+            {{ props.message.targetAgent }}
+          </router-link>
+          <span data-testid="delegation-elapsed" class="delegation-elapsed">{{ elapsedLabel }}</span>
+        </div>
+        <pre class="delegation-content">{{ props.message.content }}</pre>
+        <div
+          v-if="hasProgress"
+          data-testid="delegation-progress"
+          class="delegation-progress"
+        >
+          <span class="delegation-progress-count">{{ props.message.toolCalls ?? 0 }} tool calls</span>
+          <span v-if="props.message.lastTool" class="delegation-progress-tool">· {{ props.message.lastTool }}</span>
+        </div>
+      </div>
     </div>
 
     <div v-else-if="isDelegation" class="delegation-card delegation-card--done">
-      <pre class="delegation-content">{{ props.message.content }}</pre>
+      <div class="delegation-body">
+        <router-link
+          v-if="props.message.targetAgent"
+          :to="`/agents/${props.message.targetAgent}`"
+          data-testid="delegation-agent-link"
+          class="delegation-agent-link"
+        >
+          {{ props.message.targetAgent }}
+        </router-link>
+        <pre class="delegation-content">{{ props.message.content }}</pre>
+      </div>
     </div>
 
     <p v-else-if="isThinking" class="thinking">{{ props.message.content }}</p>
@@ -219,6 +285,50 @@ const toolSummary = computed(() => {
   color: var(--accent, #7aa2f7);
   font-weight: 700;
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+.delegation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.delegation-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.delegation-agent-link {
+  color: var(--accent, #7aa2f7);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent, #7aa2f7);
+}
+
+.delegation-agent-link:hover {
+  border-bottom-style: solid;
+}
+
+.delegation-elapsed {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.delegation-progress {
+  display: flex;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.delegation-progress-tool {
+  color: var(--event-tool-call, var(--text-secondary));
 }
 
 @keyframes pulse {

@@ -22,6 +22,14 @@ export async function fetchAgents(): Promise<Agent[]> {
   return res.json()
 }
 
+export async function fetchAgent(id: string): Promise<Agent> {
+  const res = await fetch(joinBaseURL(`/agents/${encodeURIComponent(id)}`))
+  if (!res.ok) {
+    throw new Error(`Failed to fetch agent ${id}: ${res.statusText}`)
+  }
+  return res.json()
+}
+
 export async function postChat(
   agentId: string,
   message: string,
