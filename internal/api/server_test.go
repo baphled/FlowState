@@ -1410,3 +1410,143 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
 	})
 })
+
+var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		streamer *mockStreamer
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		mgr = session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			streamer,
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("updates the session's current model and provider and returns camelCase JSON", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"modelId":"claude-opus-4.7","providerId":"anthropic"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/model", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		updated, err := mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.CurrentModelID).To(Equal("claude-opus-4.7"),
+			"model switch must persist on the session so subsequent turns route through the new model")
+		Expect(updated.CurrentProviderID).To(Equal("anthropic"),
+			"provider switch must persist on the session so subsequent turns route through the new provider")
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("currentModelId", "claude-opus-4.7"))
+		Expect(out).To(HaveKeyWithValue("currentProviderId", "anthropic"))
+		Expect(out).NotTo(HaveKey("current_model_id"))
+		Expect(out).NotTo(HaveKey("current_provider_id"))
+	})
+
+	It("returns 404 when the session does not exist", func() {
+		body := `{"modelId":"claude-opus-4.7","providerId":"anthropic"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/nonexistent/model", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("returns 400 when modelId is missing", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"modelId":"","providerId":"anthropic"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/model", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 400 when providerId is missing", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"modelId":"claude-opus-4.7","providerId":""}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/model", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+})
+
+var _ = Describe("GET /api/v1/models", func() {
+	It("returns providers grouped from the injected ModelLister, sorted alphabetically by provider", func() {
+		lister := func() ([]provider.Model, error) {
+			return []provider.Model{
+				{ID: "gpt-4o", Provider: "openai"},
+				{ID: "claude-opus-4.7", Provider: "anthropic"},
+				{ID: "gpt-4o-mini", Provider: "openai"},
+				{ID: "claude-sonnet-4", Provider: "anthropic"},
+			}, nil
+		}
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv := api.NewServer(
+			&mockStreamer{},
+			registry,
+			disc,
+			nil,
+			api.WithModelLister(lister),
+		)
+
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/models", nil)
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		var out struct {
+			Providers []struct {
+				ID     string `json:"id"`
+				Models []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"models"`
+			} `json:"providers"`
+		}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out.Providers).To(HaveLen(2))
+		Expect(out.Providers[0].ID).To(Equal("anthropic"),
+			"providers must be sorted alphabetically so the Vue picker renders deterministically")
+		Expect(out.Providers[1].ID).To(Equal("openai"))
+
+		Expect(out.Providers[0].Models).To(HaveLen(2))
+		anthropicIDs := []string{out.Providers[0].Models[0].ID, out.Providers[0].Models[1].ID}
+		Expect(anthropicIDs).To(ConsistOf("claude-opus-4.7", "claude-sonnet-4"))
+
+		Expect(out.Providers[1].Models).To(HaveLen(2))
+		openaiIDs := []string{out.Providers[1].Models[0].ID, out.Providers[1].Models[1].ID}
+		Expect(openaiIDs).To(ConsistOf("gpt-4o", "gpt-4o-mini"))
+
+		Expect(out.Providers[0].Models[0].Name).NotTo(BeEmpty(),
+			"each model must carry a non-empty display name so the Vue picker has something to render")
+	})
+
+	It("returns 501 when no ModelLister is configured", func() {
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv := api.NewServer(&mockStreamer{}, registry, disc, nil)
+
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/models", nil)
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotImplemented),
+			"absent a ModelLister the endpoint must signal not-implemented rather than 200 with an empty list")
+	})
+})

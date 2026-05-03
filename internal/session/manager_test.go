@@ -1018,6 +1018,43 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("UpdateSessionModel", func() {
+		var sess *session.Session
+
+		BeforeEach(func() {
+			var err error
+			sess, err = mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("sets CurrentModelID and CurrentProviderID on the session", func() {
+			Expect(mgr.UpdateSessionModel(sess.ID, "anthropic", "claude-opus-4.7")).To(Succeed())
+
+			updated, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.CurrentProviderID).To(Equal("anthropic"))
+			Expect(updated.CurrentModelID).To(Equal("claude-opus-4.7"))
+		})
+
+		It("returns ErrSessionNotFound when the session does not exist", func() {
+			err := mgr.UpdateSessionModel("nonexistent-id", "anthropic", "claude-opus-4.7")
+			Expect(err).To(MatchError(session.ErrSessionNotFound))
+		})
+
+		It("persists CurrentModelID and CurrentProviderID to disk so the choice survives a backend restart", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+			Expect(mgr.UpdateSessionModel(sess.ID, "anthropic", "claude-opus-4.7")).To(Succeed())
+
+			loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil(),
+				"UpdateSessionModel must write the .meta.json sidecar so a fresh process can restore the user's last-selected model + provider")
+			Expect(loaded.CurrentProviderID).To(Equal("anthropic"))
+			Expect(loaded.CurrentModelID).To(Equal("claude-opus-4.7"))
+		})
+	})
+
 	// MarkEndedFromEvent is the bus-driven counterpart to CloseSession.
 	// Specs cover the four branches: known-session-active, known-session-
 	// already-completed (idempotent), known-session-failed (terminal,

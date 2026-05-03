@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -49,6 +50,7 @@ type Server struct {
 	completionOrchestrator *engine.CompletionOrchestrator
 	eventBus               *eventbus.EventBus
 	metricsHandler         http.Handler
+	modelLister            ModelLister
 	mux                    *http.ServeMux
 }
 
@@ -175,6 +177,20 @@ func WithEventBus(bus *eventbus.EventBus) ServerOption {
 //   - None.
 func WithMetricsHandler(h http.Handler) ServerOption {
 	return func(s *Server) { s.metricsHandler = h }
+}
+
+// ModelLister enumerates the providers and models the engine knows about.
+//
+// The function-adapter shape mirrors engine.CategoryResolver.WithModelLister
+// so production wires api.WithModelLister(app.ListModels) without an
+// api->app import edge, and tests pass closures that return canned data.
+type ModelLister func() ([]provider.Model, error)
+
+// WithModelLister installs the model enumeration source used by
+// GET /api/v1/models. Without this option the endpoint returns 501 so
+// callers can distinguish "no model lister wired" from "no models found".
+func WithModelLister(l ModelLister) ServerOption {
+	return func(s *Server) { s.modelLister = l }
 }
 
 // SetBackgroundManager sets the background manager after server construction.
@@ -329,6 +345,8 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
 	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
+	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
+	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
 	s.mux.HandleFunc("GET /api/v1/tasks", s.handleListTasks)
 	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
@@ -1477,4 +1495,103 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, NewSessionResponse(sess))
+}
+
+// handleUpdateSessionModel switches the active provider+model pairing for a session.
+//
+// Expected:
+//   - Request path parameter "id" identifies an existing session.
+//   - Request body is JSON of the form {"modelId":"<id>","providerId":"<id>"}.
+//
+// Side effects:
+//   - Sets the session's CurrentProviderID and CurrentModelID so subsequent
+//     SendMessage calls stream through the selected provider/model.
+//   - Writes the updated session as JSON via NewSessionResponse.
+func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	id := r.PathValue("id")
+	var req struct {
+		ModelID    string `json:"modelId"`
+		ProviderID string `json:"providerId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ModelID == "" {
+		http.Error(w, "modelId is required", http.StatusBadRequest)
+		return
+	}
+	if req.ProviderID == "" {
+		http.Error(w, "providerId is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.sessionManager.UpdateSessionModel(id, req.ProviderID, req.ModelID); err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	sess, err := s.sessionManager.GetSession(id)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, NewSessionResponse(sess))
+}
+
+// modelDescriptor is the wire shape for a single model entry in the
+// GET /api/v1/models response.
+type modelDescriptor struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// providerDescriptor groups models under their provider id.
+type providerDescriptor struct {
+	ID     string            `json:"id"`
+	Models []modelDescriptor `json:"models"`
+}
+
+// modelsResponse is the wire shape returned by GET /api/v1/models.
+type modelsResponse struct {
+	Providers []providerDescriptor `json:"providers"`
+}
+
+// handleListModels returns the providers and models the engine knows about,
+// reusing the same enumeration the `flowstate models` cobra command uses.
+//
+// Expected:
+//   - A ModelLister has been installed via WithModelLister.
+//
+// Side effects:
+//   - Writes the providers list as JSON.
+//   - Returns 501 when no ModelLister is configured so callers can
+//     distinguish "not wired" from "wired but empty".
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if s.modelLister == nil {
+		http.Error(w, `{"error":"model lister not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	models, err := s.modelLister()
+	if err != nil {
+		http.Error(w, "failed to list models", http.StatusInternalServerError)
+		return
+	}
+	grouped := make(map[string][]modelDescriptor)
+	for _, m := range models {
+		grouped[m.Provider] = append(grouped[m.Provider], modelDescriptor{ID: m.ID, Name: m.ID})
+	}
+	providerIDs := make([]string, 0, len(grouped))
+	for id := range grouped {
+		providerIDs = append(providerIDs, id)
+	}
+	sort.Strings(providerIDs)
+	resp := modelsResponse{Providers: make([]providerDescriptor, 0, len(providerIDs))}
+	for _, id := range providerIDs {
+		resp.Providers = append(resp.Providers, providerDescriptor{ID: id, Models: grouped[id]})
+	}
+	writeJSON(w, resp)
 }

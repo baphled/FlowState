@@ -698,6 +698,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithTodoStore(tp.todoStore),
 		api.WithMetricsHandler(promhttp.HandlerFor(traced.metrics, promhttp.HandlerOpts{})),
 		api.WithEventBus(eng.EventBus()),
+		api.WithModelLister(modelListerFromRegistry(params.providerRegistry)),
 	)
 	return &runtimeComponents{
 		engine:          eng,
@@ -2118,6 +2119,30 @@ func (a *App) ConfigPath() string {
 func (a *App) ConfigureEngineForAgent(manifest agent.Manifest) {
 	a.Engine.SetManifest(manifest)
 	a.wireDelegateToolIfEnabled(a.Engine, manifest)
+}
+
+// modelListerFromRegistry returns an api.ModelLister-compatible closure that
+// enumerates models across every provider registered with reg, mirroring
+// App.ListModels so the HTTP and CLI surfaces share a single source of truth.
+func modelListerFromRegistry(reg *provider.Registry) api.ModelLister {
+	return func() ([]provider.Model, error) {
+		if reg == nil {
+			return []provider.Model{}, nil
+		}
+		var allModels []provider.Model
+		for _, name := range reg.List() {
+			p, err := reg.Get(name)
+			if err != nil {
+				return nil, fmt.Errorf("getting provider %q: %w", name, err)
+			}
+			models, err := p.Models()
+			if err != nil {
+				return nil, fmt.Errorf("listing models from provider %q: %w", name, err)
+			}
+			allModels = append(allModels, models...)
+		}
+		return allModels, nil
+	}
 }
 
 // ListModels returns all available models from registered providers.
