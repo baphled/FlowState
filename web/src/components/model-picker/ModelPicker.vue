@@ -68,16 +68,35 @@ onMounted(() => {
 
 <style scoped>
 .model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   font-size: 0.8rem;
+  font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0.15rem 0.4rem;
-  border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  max-width: 240px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
   user-select: none;
 }
+
+.model-picker::after {
+  content: '\25BE';
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
 .model-picker:hover {
   color: var(--accent);
+  border-color: var(--accent);
   background: var(--accent-bg);
 }
 </style>
