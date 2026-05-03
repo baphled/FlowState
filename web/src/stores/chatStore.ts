@@ -77,13 +77,16 @@ export const useChatStore = defineStore('chat', {
       const persistedAgentId = getPersistedAgentId()
       const persistedSessionId = getPersistedSessionId()
       const session = this.sessions.find((item) => item.id === persistedSessionId)
-      const agentId = session?.agentId ?? persistedAgentId ?? this.availableAgents[0] ?? ''
+      const sessionAgentId = session?.currentAgentId ?? session?.agentId
+      const agentId = sessionAgentId ?? persistedAgentId ?? this.availableAgents[0] ?? ''
 
       this.agentId = agentId
       persistAgentId(agentId || null)
 
-      if (!session || session.agentId !== agentId) {
-        const sessionForAgent = this.sessions.find((item) => item.agentId === agentId)
+      if (!session || sessionAgentId !== agentId) {
+        const sessionForAgent = this.sessions.find(
+          (item) => (item.currentAgentId ?? item.agentId) === agentId,
+        )
 
         if (!sessionForAgent) {
           this.currentSessionId = null
@@ -163,8 +166,9 @@ export const useChatStore = defineStore('chat', {
       this.error = null
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
-        if (session && session.agentId !== this.agentId) {
-          await this.setAgent(session.agentId)
+        const sessionAgentId = session?.currentAgentId ?? session?.agentId
+        if (sessionAgentId && sessionAgentId !== this.agentId) {
+          await this.setAgent(sessionAgentId)
         }
 
         this.messages = await fetchSessionMessages(sessionId)

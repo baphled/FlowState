@@ -19,12 +19,13 @@ const metaFileSuffix = ".meta.json"
 // disk after `flowstate serve` reboots, and an empty Messages slice
 // would render an apparently empty conversation.
 type Metadata struct {
-	ID        string    `json:"id"`
-	ParentID  string    `json:"parent_id"`
-	AgentID   string    `json:"agent_id"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	Messages  []Message `json:"messages,omitempty"`
+	ID             string    `json:"id"`
+	ParentID       string    `json:"parent_id"`
+	AgentID        string    `json:"agent_id"`
+	CurrentAgentID string    `json:"current_agent_id,omitempty"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	Messages       []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -41,12 +42,13 @@ type Metadata struct {
 //   - Writes <sessionsDir>/<sess.ID>.meta.json to disk.
 func PersistSession(sessionsDir string, sess *Session) error {
 	meta := Metadata{
-		ID:        sess.ID,
-		ParentID:  sess.ParentID,
-		AgentID:   sess.AgentID,
-		Status:    sess.Status,
-		CreatedAt: sess.CreatedAt,
-		Messages:  sess.Messages,
+		ID:             sess.ID,
+		ParentID:       sess.ParentID,
+		AgentID:        sess.AgentID,
+		CurrentAgentID: sess.CurrentAgentID,
+		Status:         sess.Status,
+		CreatedAt:      sess.CreatedAt,
+		Messages:       sess.Messages,
 	}
 
 	data, err := json.Marshal(meta)
@@ -133,12 +135,13 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		return nil, err
 	}
 	return &Session{
-		ID:        meta.ID,
-		ParentID:  meta.ParentID,
-		AgentID:   meta.AgentID,
-		Status:    meta.Status,
-		CreatedAt: meta.CreatedAt,
-		Messages:  meta.Messages,
+		ID:             meta.ID,
+		ParentID:       meta.ParentID,
+		AgentID:        meta.AgentID,
+		CurrentAgentID: meta.CurrentAgentID,
+		Status:         meta.Status,
+		CreatedAt:      meta.CreatedAt,
+		Messages:       meta.Messages,
 	}, nil
 }
 
@@ -164,12 +167,13 @@ func loadMetaFile(path string) *Session {
 	}
 
 	return &Session{
-		ID:        meta.ID,
-		ParentID:  meta.ParentID,
-		AgentID:   meta.AgentID,
-		Status:    meta.Status,
-		CreatedAt: meta.CreatedAt,
-		Messages:  meta.Messages,
+		ID:             meta.ID,
+		ParentID:       meta.ParentID,
+		AgentID:        meta.AgentID,
+		CurrentAgentID: meta.CurrentAgentID,
+		Status:         meta.Status,
+		CreatedAt:      meta.CreatedAt,
+		Messages:       meta.Messages,
 	}
 }
 

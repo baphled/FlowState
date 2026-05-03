@@ -345,6 +345,24 @@ var _ = Describe("Manager", func() {
 					"Title is hard-coded to empty in ListSessions; frontend SessionSummary expects a meaningful title")
 			})
 
+			It("populates CurrentAgentID in the summary so the frontend can restore the user's last-selected agent", func() {
+				sess, err := mgr.CreateSession("agent-original")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(mgr.UpdateSessionAgent(sess.ID, "agent-switched")).To(Succeed())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].CurrentAgentID).To(Equal("agent-switched"),
+					"Summary must expose CurrentAgentID so the Vue UI restores the last-selected agent on session-list load")
+
+				data, err := json.Marshal(summaries[0])
+				Expect(err).NotTo(HaveOccurred())
+				var decoded map[string]interface{}
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).To(HaveKey("currentAgentId"),
+					"frontend SessionSummary expects camelCase currentAgentId in JSON")
+			})
+
 			It("backfills a non-zero UpdatedAt for restored sessions that were persisted with the zero time", func() {
 				restored := &session.Session{
 					ID:        "restored-1",
@@ -984,6 +1002,18 @@ var _ = Describe("Manager", func() {
 			It("returns ErrSessionNotFound when the session does not exist", func() {
 				err := mgr.UpdateSessionAgent("nonexistent-id", "agent-b")
 				Expect(err).To(MatchError(session.ErrSessionNotFound))
+			})
+
+			It("persists CurrentAgentID to disk so the choice survives a backend restart", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+				Expect(mgr.UpdateSessionAgent(sess.ID, "agent-persisted")).To(Succeed())
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil(),
+					"UpdateSessionAgent must write the .meta.json sidecar so a fresh process can restore the user's last-selected agent")
+				Expect(loaded.CurrentAgentID).To(Equal("agent-persisted"))
 			})
 		})
 	})

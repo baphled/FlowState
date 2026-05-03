@@ -63,6 +63,35 @@ var _ = Describe("Session persistence", func() {
 				Expect(session.PersistSession(nestedDir, sess)).To(Succeed())
 				Expect(filepath.Join(nestedDir, "new-sess.meta.json")).To(BeAnExistingFile())
 			})
+
+			It("persists CurrentAgentID so the user's last-selected agent survives restart", func() {
+				sess := &session.Session{
+					ID:             "agent-switch-sess",
+					AgentID:        "default-assistant",
+					CurrentAgentID: "code-reviewer",
+					Status:         "active",
+				}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "agent-switch-sess.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"current_agent_id":"code-reviewer"`))
+			})
+
+			It("omits current_agent_id when the field is empty (backwards-compat with legacy on-disk files)", func() {
+				sess := &session.Session{
+					ID:      "no-current-agent",
+					AgentID: "default-assistant",
+					Status:  "active",
+				}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "no-current-agent.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).NotTo(ContainSubstring("current_agent_id"))
+			})
 		})
 	})
 
@@ -214,6 +243,47 @@ var _ = Describe("Session persistence", func() {
 				Expect(restored).NotTo(BeNil())
 				Expect(restored.Messages).To(HaveLen(1))
 				Expect(restored.Messages[0].Content).To(Equal("ping"))
+			})
+
+			It("restores CurrentAgentID via LoadSessionMetadata so a single-session read sees the last-selected agent", func() {
+				original := &session.Session{
+					ID:             "current-agent-single-load",
+					AgentID:        "default-assistant",
+					CurrentAgentID: "code-reviewer",
+					Status:         "active",
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "current-agent-single-load")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.CurrentAgentID).To(Equal("code-reviewer"))
+			})
+
+			It("restores CurrentAgentID via LoadSessionsFromDirectory for a directory scan", func() {
+				original := &session.Session{
+					ID:             "current-agent-dir-load",
+					AgentID:        "default-assistant",
+					CurrentAgentID: "writer",
+					Status:         "active",
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				sessions, err := session.LoadSessionsFromDirectory(sessionsDir)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sessions).To(HaveLen(1))
+				Expect(sessions[0].CurrentAgentID).To(Equal("writer"))
+			})
+
+			It("returns an empty CurrentAgentID for legacy on-disk files that predate the field", func() {
+				legacyJSON := `{"id":"legacy-sess","agent_id":"default-assistant","status":"active","created_at":"2026-04-01T12:00:00Z"}`
+				Expect(os.WriteFile(filepath.Join(sessionsDir, "legacy-sess.meta.json"), []byte(legacyJSON), 0o600)).To(Succeed())
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "legacy-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.CurrentAgentID).To(BeEmpty())
+				Expect(restored.AgentID).To(Equal("default-assistant"))
 			})
 		})
 	})
