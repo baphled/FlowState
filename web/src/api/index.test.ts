@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchSessions, fetchSwarmEvents } from './index'
+import { fetchSessionMessages, fetchSessions, fetchSwarmEvents } from './index'
 
 function installLocalStorageStub() {
   const store = new Map<string, string>()
@@ -87,5 +87,53 @@ describe('fetchSessions', () => {
     const sessions = await fetchSessions()
     expect(sessions).toHaveLength(1)
     expect(sessions[0].id).toBe('sess-1')
+  })
+})
+
+describe('fetchSessionMessages', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('returns the parsed array when the backend responds with []', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const messages = await fetchSessionMessages('sess-1')
+    expect(messages).toEqual([])
+  })
+
+  it('coerces a null body to [] so callers never see null', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response('null', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const messages = await fetchSessionMessages('sess-1')
+    expect(messages).not.toBeNull()
+    expect(messages).toEqual([])
+  })
+
+  it('throws when the backend responds with a non-OK status', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response('boom', { status: 500, statusText: 'Internal Server Error' })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchSessionMessages('sess-1')).rejects.toThrow(/messages/i)
   })
 })
