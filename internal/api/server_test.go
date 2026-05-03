@@ -600,6 +600,69 @@ var _ = Describe("Session stream live events", func() {
 		Expect(events).To(ContainElement(ContainSubstring("live-chunk")))
 		Expect(events).To(ContainElement("[DONE]"))
 	})
+
+	It("emits named delegation SSE events when chunk carries DelegationInfo", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+			SourceAgent: "orchestrator",
+			TargetAgent: "hephaestus",
+			ToolCalls:   3,
+			LastTool:    "write",
+			Status:      "running",
+		}}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		bodyCh := make(chan string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var sb strings.Builder
+			for {
+				line, readErr := reader.ReadString('\n')
+				sb.WriteString(line)
+				if strings.Contains(sb.String(), "[DONE]") {
+					break
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			bodyCh <- sb.String()
+		}()
+
+		var body string
+		Eventually(bodyCh, 4*time.Second).Should(Receive(&body))
+
+		Expect(body).To(ContainSubstring("event: delegation"))
+		Expect(body).To(ContainSubstring(`"target_agent":"hephaestus"`))
+		Expect(body).To(ContainSubstring(`"tool_calls":3`))
+		Expect(body).To(ContainSubstring(`"last_tool":"write"`))
+	})
 })
 
 func parseSSEEvents(body *bytes.Buffer) []string {

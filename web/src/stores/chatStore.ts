@@ -6,6 +6,7 @@ import {
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
+  subscribeSessionStream,
   updateSessionAgent,
 } from '@/api'
 
@@ -182,7 +183,7 @@ export const useChatStore = defineStore('chat', {
 
       this.error = null
       this.isLoading = true
-      let pollHandle: ReturnType<typeof setInterval> | null = null
+      let eventSource: EventSource | null = null
       try {
         let sessionId = this.currentSessionId
         if (!sessionId) {
@@ -192,24 +193,10 @@ export const useChatStore = defineStore('chat', {
           persistSessionId(sessionId)
         }
 
-        const pollSessionId = sessionId
-        let pollInFlight = false
-        pollHandle = setInterval(() => {
-          if (pollInFlight) {
-            return
-          }
-          pollInFlight = true
-          fetchSessionMessages(pollSessionId)
-            .then((messages) => {
-              if (this.currentSessionId === pollSessionId && this.isLoading) {
-                this.messages = messages
-              }
-            })
-            .catch(() => {})
-            .finally(() => {
-              pollInFlight = false
-            })
-        }, 1500)
+        eventSource = subscribeSessionStream(sessionId)
+        eventSource.addEventListener('delegation', (event) => {
+          this.applyDelegationEvent((event as MessageEvent).data as string)
+        })
 
         await sendSessionMessage(sessionId, text)
         this.messages = await fetchSessionMessages(sessionId)
@@ -217,10 +204,60 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
       } finally {
-        if (pollHandle !== null) {
-          clearInterval(pollHandle)
+        if (eventSource) {
+          eventSource.close()
         }
         this.isLoading = false
+      }
+    },
+
+    applyDelegationEvent(payload: string): void {
+      let info: {
+        chain_id?: string
+        target_agent?: string
+        tool_calls?: number
+        last_tool?: string
+        status?: string
+      }
+      try {
+        info = JSON.parse(payload)
+      } catch {
+        return
+      }
+
+      const target =
+        this.messages.find(
+          (message) =>
+            message.status !== 'completed' &&
+            info.chain_id !== undefined &&
+            message.chainId === info.chain_id,
+        ) ??
+        this.messages.find(
+          (message) =>
+            message.status !== 'completed' &&
+            info.target_agent !== undefined &&
+            message.targetAgent === info.target_agent,
+        ) ??
+        this.messages.find((message) => message.status !== 'completed' && message.role === 'assistant')
+
+      if (!target) {
+        return
+      }
+
+      if (info.target_agent !== undefined) {
+        target.targetAgent = info.target_agent
+      }
+      if (info.chain_id !== undefined) {
+        target.chainId = info.chain_id
+      }
+      if (info.tool_calls !== undefined) {
+        target.toolCalls = info.tool_calls
+      }
+      if (info.last_tool !== undefined) {
+        target.lastTool = info.last_tool
+      }
+      if (info.status !== undefined) {
+        target.status = info.status
       }
     },
   },

@@ -25,9 +25,41 @@ import {
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
+  subscribeSessionStream,
   updateSessionAgent,
 } from '../api'
 import { useChatStore } from './chatStore'
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = []
+  url: string
+  listeners: Record<string, (event: MessageEvent) => void> = {}
+  closed = false
+
+  constructor(url: string) {
+    this.url = url
+    FakeEventSource.instances.push(this)
+  }
+
+  addEventListener(type: string, fn: (event: MessageEvent) => void): void {
+    this.listeners[type] = fn
+  }
+
+  removeEventListener(type: string): void {
+    delete this.listeners[type]
+  }
+
+  close(): void {
+    this.closed = true
+  }
+
+  fire(type: string, data: unknown): void {
+    const fn = this.listeners[type]
+    if (fn) {
+      fn({ data: JSON.stringify(data) } as MessageEvent)
+    }
+  }
+}
 
 vi.mock('../api', () => ({
   fetchAgents: vi.fn(() => Promise.resolve([
@@ -66,6 +98,7 @@ vi.mock('../api', () => ({
     createdAt: '',
     updatedAt: '',
   })),
+  subscribeSessionStream: vi.fn((sessionId: string) => new FakeEventSource(`/api/v1/sessions/${sessionId}/stream`)),
 }))
 
 describe('chatStore - restoreStateFromBackend', () => {
@@ -121,11 +154,15 @@ describe('chatStore - sendMessage', () => {
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
   })
 
-  it('polls fetchSessionMessages while the send is in-flight to surface live delegation progress', async () => {
-    vi.useFakeTimers()
+  it('subscribes to the session SSE stream and applies delegation events in-place to the in-flight assistant message', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-pending', role: 'assistant', content: '', timestamp: '', status: 'pending' },
+    ]
+
+    FakeEventSource.instances.length = 0
 
     let resolveSend: (value: any) => void = () => {}
     vi.mocked(sendSessionMessage).mockImplementationOnce(
@@ -137,12 +174,27 @@ describe('chatStore - sendMessage', () => {
 
     const sendPromise = store.sendMessage('long task that delegates')
 
-    await vi.advanceTimersByTimeAsync(1500)
-    await vi.advanceTimersByTimeAsync(1500)
-    await vi.advanceTimersByTimeAsync(1500)
+    await Promise.resolve()
+    await Promise.resolve()
 
-    const pollCount = vi.mocked(fetchSessionMessages).mock.calls.length
-    expect(pollCount).toBeGreaterThanOrEqual(3)
+    expect(vi.mocked(subscribeSessionStream)).toHaveBeenCalledWith('session-1')
+    expect(FakeEventSource.instances.length).toBe(1)
+
+    const es = FakeEventSource.instances[0]
+    es.fire('delegation', {
+      chain_id: 'chain-xyz',
+      target_agent: 'researcher',
+      tool_calls: 4,
+      last_tool: 'web_search',
+      status: 'in_progress',
+    })
+
+    const updated = store.messages.find((m) => m.status !== 'completed')
+    expect(updated?.targetAgent).toBe('researcher')
+    expect(updated?.chainId).toBe('chain-xyz')
+    expect(updated?.toolCalls).toBe(4)
+    expect(updated?.lastTool).toBe('web_search')
+    expect(updated?.status).toBe('in_progress')
 
     resolveSend({
       id: 'session-1',
@@ -154,11 +206,7 @@ describe('chatStore - sendMessage', () => {
     })
     await sendPromise
 
-    const finalCount = vi.mocked(fetchSessionMessages).mock.calls.length
-    await vi.advanceTimersByTimeAsync(3000)
-    expect(vi.mocked(fetchSessionMessages).mock.calls.length).toBe(finalCount)
-
-    vi.useRealTimers()
+    expect(es.closed).toBe(true)
   })
 })
 

@@ -717,7 +717,12 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				writeSSEDone(w, flusher)
 				return
 			}
-			writeSSEContent(w, flusher, chunk.Content)
+			if chunk.DelegationInfo != nil {
+				writeSSEDelegationInfo(w, flusher, chunk.DelegationInfo)
+			}
+			if chunk.Content != "" {
+				writeSSEContent(w, flusher, chunk.Content)
+			}
 		}
 	}
 }
@@ -1374,6 +1379,23 @@ func writeSSEDelegation(w http.ResponseWriter, flusher http.Flusher, event strea
 		return
 	}
 	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEDelegationInfo emits a named "delegation" SSE event carrying the JSON-encoded
+// provider DelegationInfo payload. Subscribers can route on the event name to update
+// in-flight delegation progress without polling.
+func writeSSEDelegationInfo(w http.ResponseWriter, flusher http.Flusher, info *provider.DelegationInfo) {
+	if info == nil {
+		return
+	}
+	jsonData, err := json.Marshal(info)
+	if err != nil {
+		return
+	}
+	if _, err := w.Write([]byte("event: delegation\ndata: " + string(jsonData) + "\n\n")); err != nil {
+		return
+	}
+	flusher.Flush()
 }
 
 // writeSSE writes a server-sent event data line and flushes the response buffer.
