@@ -304,6 +304,76 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(delegationMsgs[0].Content).To(ContainSubstring("worker-agent"))
 		})
 
+		It("stores a delegation_started message when status is started", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "build-agent",
+					Status:      "started",
+					ModelName:   "claude-3-5-sonnet",
+					ChainID:     "chain-1",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var startedMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "delegation_started" {
+					startedMsgs = append(startedMsgs, m)
+				}
+			}
+			Expect(startedMsgs).To(HaveLen(1))
+			Expect(startedMsgs[0].Content).To(ContainSubstring("build-agent"))
+			Expect(startedMsgs[0].AgentID).To(Equal("agent-1"))
+		})
+
+		It("stores a delegation_started message when status is running", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "worker", Status: "running", ChainID: "c-2",
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var started []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "delegation_started" {
+					started = append(started, m)
+				}
+			}
+			Expect(started).To(HaveLen(1))
+		})
+
+		It("only emits a single delegation_started per chain even when running fires repeatedly", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			info := &provider.DelegationInfo{TargetAgent: "w", Status: "running", ChainID: "c-3"}
+			rawCh <- provider.StreamChunk{DelegationInfo: info}
+			rawCh <- provider.StreamChunk{DelegationInfo: info}
+			rawCh <- provider.StreamChunk{DelegationInfo: info}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			count := 0
+			for _, m := range appender.messages {
+				if m.Role == "delegation_started" {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1))
+		})
+
 		It("does not store a delegation message when status is pending", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
 			rawCh <- provider.StreamChunk{
