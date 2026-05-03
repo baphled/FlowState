@@ -649,6 +649,36 @@ func (m *Manager) UpdateSessionAgent(sessionID, agentID string) error {
 	return nil
 }
 
+// UpdateSessionModel sets the active provider and model identifiers on a session.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - providerID identifies the active provider for subsequent turns.
+//   - modelID identifies the active model for subsequent turns.
+//
+// Returns:
+//   - nil when the session is updated successfully.
+//   - ErrSessionNotFound when no session matches the identifier.
+//
+// Side effects:
+//   - Sets CurrentProviderID and CurrentModelID on the session so subsequent
+//     SendMessage calls stream through the new provider/model pairing.
+//   - Persists the change to the session sidecar via persistLocked.
+func (m *Manager) UpdateSessionModel(sessionID, providerID, modelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	sess.CurrentProviderID = providerID
+	sess.CurrentModelID = modelID
+	m.persistLocked(sess)
+	return nil
+}
+
 // CloseSession marks a session as completed.
 // Expected:
 //   - sessionID identifies an existing session.
