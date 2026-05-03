@@ -344,6 +344,22 @@ var _ = Describe("Manager", func() {
 				Expect(summaries[0].Title).NotTo(BeEmpty(),
 					"Title is hard-coded to empty in ListSessions; frontend SessionSummary expects a meaningful title")
 			})
+
+			It("backfills a non-zero UpdatedAt for restored sessions that were persisted with the zero time", func() {
+				restored := &session.Session{
+					ID:        "restored-1",
+					AgentID:   "agent-restored",
+					Messages:  nil,
+					CreatedAt: time.Now().Add(-time.Hour),
+				}
+				mgr.RestoreSessions([]*session.Session{restored})
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(1))
+				Expect(summaries[0].Id).To(Equal("restored-1"))
+				Expect(summaries[0].UpdatedAt.IsZero()).To(BeFalse(),
+					"restored sessions with zero UpdatedAt expose 0001-01-01T00:00:00Z to the frontend; manager should backfill from CreatedAt")
+			})
 		})
 	})
 
