@@ -40,12 +40,13 @@ func (m *Manager) AppendMessage(sessionID string, msg Message) {
 
 // streamAccumState holds mutable accumulation state within AccumulateStream.
 type streamAccumState struct {
-	sessionID     string
-	agentID       string
-	contentBuf    strings.Builder
-	thinkingBuf   strings.Builder
-	lastToolName  string
-	lastToolInput string
+	sessionID         string
+	agentID           string
+	contentBuf        strings.Builder
+	thinkingBuf       strings.Builder
+	lastToolName      string
+	lastToolInput     string
+	seenStartedChains map[string]struct{}
 }
 
 // AccumulateStream wraps rawCh with a goroutine that records assistant and tool
@@ -198,7 +199,7 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 	})
 }
 
-// applyDelegation stores a delegation message when status is completed or failed.
+// applyDelegation stores a delegation message reflecting the delegation lifecycle.
 //
 // Expected:
 //   - appender is the message sink.
@@ -206,17 +207,38 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 //   - info is the non-nil delegation info chunk to evaluate.
 //
 // Side effects:
-//   - Appends a delegation message via appender.AppendMessage when info.Status is "completed" or "failed".
+//   - Appends a "delegation_started" message via appender.AppendMessage when info.Status
+//     indicates an in-flight delegation ("started", "running", "in_progress"), deduplicated
+//     per ChainID (falling back to TargetAgent when ChainID is empty) so repeated
+//     in-flight events for the same delegation emit at most once.
+//   - Appends a terminal "delegation" message when info.Status is "completed" or "failed".
 //   - Does nothing for any other status value.
 func applyDelegation(appender MessageAppender, s *streamAccumState, info *provider.DelegationInfo) {
-	if info.Status != "completed" && info.Status != "failed" {
-		return
+	switch info.Status {
+	case "started", "running", "in_progress":
+		if s.seenStartedChains == nil {
+			s.seenStartedChains = make(map[string]struct{})
+		}
+		key := info.ChainID
+		if key == "" {
+			key = info.TargetAgent
+		}
+		if _, seen := s.seenStartedChains[key]; seen {
+			return
+		}
+		s.seenStartedChains[key] = struct{}{}
+		appender.AppendMessage(s.sessionID, Message{
+			Role:    "delegation_started",
+			Content: formatDelegationSummary(info),
+			AgentID: s.agentID,
+		})
+	case "completed", "failed":
+		appender.AppendMessage(s.sessionID, Message{
+			Role:    "delegation",
+			Content: formatDelegationSummary(info),
+			AgentID: s.agentID,
+		})
 	}
-	appender.AppendMessage(s.sessionID, Message{
-		Role:    "delegation",
-		Content: formatDelegationSummary(info),
-		AgentID: s.agentID,
-	})
 }
 
 // flushThinking writes accumulated thinking content as a thinking message and resets the buffer.
