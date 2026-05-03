@@ -417,14 +417,12 @@ var _ = Describe("Server", func() {
 	})
 
 	Describe("GET /", func() {
-		It("returns HTML response", func() {
+		It("redirects to the Vue SPA /chat route", func() {
 			req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 			server.Handler().ServeHTTP(recorder, req)
 
-			Expect(recorder.Code).To(Equal(http.StatusOK))
-			Expect(recorder.Header().Get("Content-Type")).To(Equal("text/html; charset=utf-8"))
-			Expect(recorder.Body.String()).To(ContainSubstring("<!DOCTYPE html>"))
-			Expect(recorder.Body.String()).To(ContainSubstring("<textarea"))
+			Expect(recorder.Code).To(Equal(http.StatusFound))
+			Expect(recorder.Header().Get("Location")).To(Equal("/chat"))
 		})
 	})
 })
