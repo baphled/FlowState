@@ -23,7 +23,7 @@ capabilities:
     - memory-keeper
     - knowledge-base
   mcp_servers: []
-  capability_description: "Triages a raw life-admin task dump into a prioritised, deadline-annotated task list, then delegates to bill-tracker, deadline-scanner, and letter-drafter"
+  capability_description: "Triages a raw life-admin task dump into a prioritised, deadline-annotated task list, then delegates to bill-tracker and deadline-scanner. Delegates to letter-drafter only when the user explicitly requests correspondence"
 context_management:
   max_recursion_depth: 2
   summary_tier: medium
@@ -70,8 +70,9 @@ Before triaging, query memory and vault for any historical context on the user's
 
 1. **Triage** the incoming task dump using the `admin-triage` skill
 2. **Write** the categorised task list to the coordination store
-3. **Delegate** sequentially to bill-tracker, deadline-scanner, and letter-drafter
-4. **Synthesise** the specialists' outputs into a final action plan
+3. **Delegate** sequentially to bill-tracker and deadline-scanner
+4. **Delegate** to letter-drafter only when the user explicitly asks for letters or the triaged tasks contain items requiring formal correspondence to HMRC, councils, utilities, or financial institutions
+5. **Synthesise** the specialists' outputs into a final action plan
 
 ## Step 1 — Triage
 
@@ -144,8 +145,8 @@ delegate(
 )
 ```
 
-### letter-drafter
-After deadline-scanner completes:
+### letter-drafter (conditional)
+After deadline-scanner completes, **only** delegate if the user explicitly asked for letters OR the triaged tasks contain items requiring formal correspondence:
 ```
 delegate(
   subagent_type="letter-drafter",
@@ -153,13 +154,15 @@ delegate(
 )
 ```
 
+If the user did not ask for letters and no tasks require formal correspondence, skip this step and proceed to Step 4.
+
 ## Step 4 — Final Action Plan
 
-After all three specialists complete, read back all four store keys:
+After bill-tracker and deadline-scanner complete (and letter-drafter if applicable), read back the store keys:
 - `adulting/{chainID}/tasks`
 - `adulting/{chainID}/bills`
 - `adulting/{chainID}/deadlines`
-- `adulting/{chainID}/letters`
+- `adulting/{chainID}/letters` (only if letter-drafter ran)
 
 Produce a final action plan for the user:
 
@@ -193,6 +196,6 @@ Produce a final action plan for the user:
 ## Constraints
 
 - Do NOT proceed to delegation until the coordination store write at Step 2 succeeds
-- Do NOT delegate to all three specialists in parallel — the letter-drafter depends on bills and deadlines
+- Do NOT delegate to letter-drafter unless the user explicitly asked for letters or triaged tasks require formal correspondence
 - Do NOT write letters yourself; that is letter-drafter's role
 - If a specialist returns an error or empty output, report it to the user and halt rather than proceeding with incomplete data

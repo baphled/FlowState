@@ -360,7 +360,7 @@ var _ = Describe("Engine", func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(Equal("You are a helpful assistant."))
+				Expect(prompt).To(HavePrefix("You are a helpful assistant."))
 			})
 		})
 
@@ -461,6 +461,36 @@ var _ = Describe("Engine", func() {
 				Expect(prompt).To(ContainSubstring("Always remember context."))
 				Expect(prompt).To(ContainSubstring("This is an agent-level skill."))
 				Expect(prompt).To(ContainSubstring("# Skill: agent-skill"))
+			})
+		})
+
+		Context("temporal context", func() {
+			It("includes the current date in the system prompt", func() {
+				fixed := time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC)
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       skills,
+					NowFunc:      func() time.Time { return fixed },
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("## Temporal Context"))
+				Expect(prompt).To(ContainSubstring("Today is 2026-05-02 (Saturday, UTC)"))
+			})
+
+			It("uses real time when NowFunc is not set", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Skills:       skills,
+				})
+
+				prompt := eng.BuildSystemPrompt()
+
+				Expect(prompt).To(ContainSubstring("## Temporal Context"))
+				Expect(prompt).To(ContainSubstring("Today is"))
 			})
 		})
 	})

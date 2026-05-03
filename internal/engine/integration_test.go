@@ -323,7 +323,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 
 				prompt := eng.BuildSystemPrompt()
 
-				Expect(prompt).To(Equal("You are a helpful fallback assistant."))
+				Expect(prompt).To(HavePrefix("You are a helpful fallback assistant."))
 			})
 		})
 	})
