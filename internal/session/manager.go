@@ -400,6 +400,9 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 			if sess.UpdatedAt.IsZero() {
 				sess.UpdatedAt = sess.CreatedAt
 			}
+			if sess.Messages == nil {
+				sess.Messages = make([]Message, 0)
+			}
 			m.sessions[sess.ID] = sess
 		}
 	}

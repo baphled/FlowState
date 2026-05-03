@@ -1404,5 +1404,9 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, sess.Messages)
+	messages := sess.Messages
+	if messages == nil {
+		messages = []session.Message{}
+	}
+	writeJSON(w, messages)
 }
