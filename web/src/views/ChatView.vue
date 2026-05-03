@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSwarmStore } from '@/stores/swarmStore'
+import { resolveAgentName } from '@/views/chatViewHelpers'
+import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
 import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
@@ -24,6 +26,10 @@ const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 
 const messages = computed(() => chatStore.messages)
 const hasSidebar = computed(() => settingsStore.swarmPaneVisible)
+
+function agentNameFor(message: Message): string | undefined {
+  return resolveAgentName(message, chatStore.availableAgentDetails, chatStore.agentId)
+}
 
 function clampSidebarWidth(width: number, containerWidth = 0): number {
   const minWidth = 280
@@ -120,6 +126,7 @@ onBeforeUnmount(() => {
             v-for="(message, index) in messages"
             :key="`${message.role}-${index}`"
             :message="message"
+            :agent-name="agentNameFor(message)"
           />
         </div>
       </section>
