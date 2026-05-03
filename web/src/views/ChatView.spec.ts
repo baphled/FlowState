@@ -51,20 +51,20 @@ describe('ChatView selector bar', () => {
     setActivePinia(createPinia())
   })
 
-  it('renders AgentSwitcher in the input selector bar', async () => {
+  it('renders AgentPicker in the input selector bar', async () => {
     const wrapper = mount(ChatView)
     await flushPromises()
 
     expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="input-selector-bar"] [data-testid="agent-switcher"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="input-selector-bar"] [data-testid="agent-picker"]').exists()).toBe(true)
   })
 
-  it('renders ModelSwitcher in the input selector bar', async () => {
+  it('renders ModelPicker in the input selector bar', async () => {
     const wrapper = mount(ChatView)
     await flushPromises()
 
     expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="input-selector-bar"] [data-testid="model-switcher"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="input-selector-bar"] [data-testid="model-picker"]').exists()).toBe(true)
   })
 
   it('places the selector bar between the message pane and MessageInput', async () => {
