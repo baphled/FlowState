@@ -179,8 +179,8 @@ export const useChatStore = defineStore('chat', {
           persistSessionId(sessionId)
         }
         await sendSessionMessage(sessionId, text)
-        // After sending, always fetch canonical messages from backend
         this.messages = await fetchSessionMessages(sessionId)
+        await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
       } finally {

@@ -58,6 +58,7 @@ export interface Session {
   id: string
   agentId: string
   messages: Message[]
+  messageCount: number
   createdAt: string
   updatedAt: string
 }

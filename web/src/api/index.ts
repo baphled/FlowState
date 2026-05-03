@@ -92,7 +92,7 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   return res.json()
 }
 
-export async function createSession(agentId: string): Promise<{ id: string }> {
+export async function createSession(agentId: string): Promise<Session> {
   const res = await fetch(joinBaseURL('/v1/sessions'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
