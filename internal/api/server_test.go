@@ -1076,3 +1076,56 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 		})
 	})
 })
+
+var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("returns [] not null for a freshly created session with no messages", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sess.ID+"/messages", http.NoBody)
+		srv.Handler().ServeHTTP(recorder, req)
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		body := strings.TrimSpace(recorder.Body.String())
+		Expect(body).To(Equal("[]"), "empty messages slice must serialise to [] not null")
+		Expect(body).NotTo(Equal("null"))
+	})
+
+	It("returns [] not null for a restored session whose Messages field is nil", func() {
+		mgr.RestoreSessions([]*session.Session{{ID: "restored-1", AgentID: "agent-y"}})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/restored-1/messages", http.NoBody)
+		srv.Handler().ServeHTTP(recorder, req)
+
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		body := strings.TrimSpace(recorder.Body.String())
+		Expect(body).To(Equal("[]"), "restored session with nil Messages must serialise to [] not null")
+	})
+
+	It("returns 404 for an unknown session id", func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/does-not-exist/messages", http.NoBody)
+		srv.Handler().ServeHTTP(recorder, req)
+
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+})
