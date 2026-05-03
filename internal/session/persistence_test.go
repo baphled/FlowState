@@ -285,6 +285,60 @@ var _ = Describe("Session persistence", func() {
 				Expect(restored.CurrentAgentID).To(BeEmpty())
 				Expect(restored.AgentID).To(Equal("default-assistant"))
 			})
+
+			It("round-trips CurrentModelID and CurrentProviderID via LoadSessionMetadata", func() {
+				original := &session.Session{
+					ID:                "model-provider-round-trip",
+					AgentID:           "default-assistant",
+					CurrentModelID:    "claude-opus-4.7",
+					CurrentProviderID: "anthropic",
+					Status:            "active",
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "model-provider-round-trip.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"current_model_id":"claude-opus-4.7"`))
+				Expect(string(data)).To(ContainSubstring(`"current_provider_id":"anthropic"`))
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "model-provider-round-trip")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.CurrentModelID).To(Equal("claude-opus-4.7"))
+				Expect(restored.CurrentProviderID).To(Equal("anthropic"))
+			})
+
+			It("returns empty CurrentModelID and CurrentProviderID for legacy on-disk files that predate the fields", func() {
+				legacyJSON := `{"id":"legacy-model-sess","agent_id":"default-assistant","status":"active","created_at":"2026-04-01T12:00:00Z"}`
+				Expect(os.WriteFile(filepath.Join(sessionsDir, "legacy-model-sess.meta.json"), []byte(legacyJSON), 0o600)).To(Succeed())
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "legacy-model-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.CurrentModelID).To(BeEmpty())
+				Expect(restored.CurrentProviderID).To(BeEmpty())
+			})
+
+			It("round-trips when only CurrentModelID is set, leaving CurrentProviderID empty and omitted from JSON", func() {
+				original := &session.Session{
+					ID:             "model-only-sess",
+					AgentID:        "default-assistant",
+					CurrentModelID: "claude-opus-4.7",
+					Status:         "active",
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "model-only-sess.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"current_model_id":"claude-opus-4.7"`))
+				Expect(string(data)).NotTo(ContainSubstring("current_provider_id"))
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "model-only-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.CurrentModelID).To(Equal("claude-opus-4.7"))
+				Expect(restored.CurrentProviderID).To(BeEmpty())
+			})
 		})
 	})
 
