@@ -197,6 +197,9 @@ export const useChatStore = defineStore('chat', {
         eventSource.addEventListener('delegation', (event) => {
           this.applyDelegationEvent((event as MessageEvent).data as string)
         })
+        eventSource.addEventListener('message', (event) => {
+          this.applyContentEvent((event as MessageEvent).data as string)
+        })
 
         await sendSessionMessage(sessionId, text)
         this.messages = await fetchSessionMessages(sessionId)
@@ -259,6 +262,29 @@ export const useChatStore = defineStore('chat', {
       if (info.status !== undefined) {
         target.status = info.status
       }
+    },
+
+    applyContentEvent(payload: string): void {
+      let info: { content?: string }
+      try {
+        info = JSON.parse(payload)
+      } catch {
+        return
+      }
+
+      if (info.content === undefined || info.content === '') {
+        return
+      }
+
+      const target = this.messages.find(
+        (message) => message.status !== 'completed' && message.role === 'assistant',
+      )
+
+      if (!target) {
+        return
+      }
+
+      target.content = (target.content ?? '') + info.content
     },
   },
 })

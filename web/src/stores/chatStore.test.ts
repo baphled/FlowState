@@ -208,6 +208,50 @@ describe('chatStore - sendMessage', () => {
 
     expect(es.closed).toBe(true)
   })
+
+  it('appends progressive content chunks from default SSE message events to the in-flight assistant message', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-pending', role: 'assistant', content: '', timestamp: '', status: 'pending' },
+    ]
+
+    FakeEventSource.instances.length = 0
+
+    let resolveSend: (value: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend = resolve
+        }),
+    )
+
+    const sendPromise = store.sendMessage('stream me')
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(FakeEventSource.instances.length).toBe(1)
+    const es = FakeEventSource.instances[0]
+
+    es.fire('message', { content: 'hel' })
+    es.fire('message', { content: 'lo ' })
+    es.fire('message', { content: 'world' })
+
+    const target = store.messages.find((m) => m.status !== 'completed')
+    expect(target?.content).toBe('hello world')
+
+    resolveSend({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [],
+      messageCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    })
+    await sendPromise
+  })
 })
 
 describe('chatStore - setAgent', () => {
