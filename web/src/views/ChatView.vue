@@ -7,6 +7,8 @@ import { resolveAgentName, collapseToolPairs } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
+import AgentSwitcher from '@/components/agent-switcher/AgentSwitcher.vue'
+import ModelSwitcher from '@/components/model-switcher/ModelSwitcher.vue'
 import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
 import DelegationPanel from '@/components/swarm/DelegationPanel.vue'
 import PlanPanel from '@/components/swarm/PlanPanel.vue'
@@ -131,6 +133,11 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <div class="input-selector-bar" data-testid="input-selector-bar">
+        <AgentSwitcher />
+        <ModelSwitcher />
+      </div>
+
       <MessageInput />
     </div>
 
@@ -225,6 +232,16 @@ onBeforeUnmount(() => {
   place-items: center;
   color: var(--text-muted);
   font-size: 0.95rem;
+}
+
+.input-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .chat-sidebar {

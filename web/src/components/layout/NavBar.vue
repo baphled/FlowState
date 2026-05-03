@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import AgentSwitcher from '@/components/agent-switcher/AgentSwitcher.vue'
-import ModelSwitcher from '@/components/model-switcher/ModelSwitcher.vue'
 import SessionSwitcher from '@/components/session-switcher/SessionSwitcher.vue'
 
 defineOptions({ name: 'NavBar' })
@@ -20,7 +18,6 @@ const navItems = [
   <nav class="nav-bar" data-testid="nav-bar">
     <span class="nav-logo">FlowState</span>
     <div class="nav-switchers">
-      <AgentSwitcher />
       <SessionSwitcher />
     </div>
     <ul class="nav-items">
@@ -35,9 +32,6 @@ const navItems = [
         {{ item.label }}
       </li>
     </ul>
-    <div class="nav-model-switcher">
-      <ModelSwitcher />
-    </div>
   </nav>
 </template>
 
@@ -84,10 +78,6 @@ const navItems = [
 .nav-item.active {
   color: var(--text-primary);
   background: var(--bg-elevated);
-}
-
-.nav-model-switcher {
-  margin-left: auto;
 }
 
 .nav-item.active {
