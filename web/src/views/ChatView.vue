@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSwarmStore } from '@/stores/swarmStore'
-import { resolveAgentName } from '@/views/chatViewHelpers'
+import { resolveAgentName, collapseToolPairs } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -24,7 +24,7 @@ const showDelegationPanel = ref(true)
 const showPlanPanel = ref(true)
 const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 
-const messages = computed(() => chatStore.messages)
+const messages = computed(() => collapseToolPairs(chatStore.messages))
 const hasSidebar = computed(() => settingsStore.swarmPaneVisible)
 
 function agentNameFor(message: Message): string | undefined {
