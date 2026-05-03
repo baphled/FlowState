@@ -64,12 +64,13 @@ type Session struct {
 
 // Summary provides a lightweight view of a session for listing.
 type Summary struct {
-	ID           string    `json:"id"`
-	AgentID      string    `json:"agentId"`
-	Title        string    `json:"title"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	MessageCount int       `json:"messageCount"`
+	ID             string    `json:"id"`
+	AgentID        string    `json:"agentId"`
+	CurrentAgentID string    `json:"currentAgentId,omitempty"`
+	Title          string    `json:"title"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	MessageCount   int       `json:"messageCount"`
 }
 
 // Recorder captures stream chunks for session recording.
@@ -373,12 +374,13 @@ func (m *Manager) ListSessions() []*Summary {
 			updatedAt = sess.CreatedAt
 		}
 		summaries = append(summaries, &Summary{
-			ID:           sess.ID,
-			AgentID:      sess.AgentID,
-			Title:        deriveSummaryTitle(sess),
-			CreatedAt:    sess.CreatedAt,
-			UpdatedAt:    updatedAt,
-			MessageCount: len(sess.Messages),
+			ID:             sess.ID,
+			AgentID:        sess.AgentID,
+			CurrentAgentID: sess.CurrentAgentID,
+			Title:          deriveSummaryTitle(sess),
+			CreatedAt:      sess.CreatedAt,
+			UpdatedAt:      updatedAt,
+			MessageCount:   len(sess.Messages),
 		})
 	}
 
@@ -641,6 +643,7 @@ func (m *Manager) UpdateSessionAgent(sessionID, agentID string) error {
 	}
 
 	sess.CurrentAgentID = agentID
+	m.persistLocked(sess)
 	return nil
 }
 

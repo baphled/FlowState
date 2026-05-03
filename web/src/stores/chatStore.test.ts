@@ -120,6 +120,68 @@ describe('chatStore - restoreStateFromBackend', () => {
     expect(store.agentId).toBe(store.sessions[0].agentId)
     expect(store.messages.map((message) => message.content)).toEqual(['Hello', 'Hi'])
   })
+
+  it('prefers currentAgentId from the backend so the user\'s last-selected agent is restored', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-2',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.currentSessionId).toBe('session-1')
+    expect(store.agentId).toBe('agent-2')
+  })
+
+  it('falls back to agentId when currentAgentId is absent', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.agentId).toBe('agent-1')
+  })
+})
+
+describe('chatStore - loadSessionMessages', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('switches to currentAgentId when loading a session whose last-selected agent differs from the active one', async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-2',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'other'
+
+    await store.loadSessionMessages('session-1')
+
+    expect(store.agentId).toBe('agent-2')
+    expect(vi.mocked(updateSessionAgent)).toHaveBeenCalledWith('other', 'agent-2')
+  })
 })
 
 describe('chatStore - sendMessage', () => {
