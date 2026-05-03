@@ -25,6 +25,7 @@ import {
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
+  updateSessionAgent,
 } from '../api'
 import { useChatStore } from './chatStore'
 
@@ -54,6 +55,14 @@ vi.mock('../api', () => ({
     agentId: 'agent-1',
     messages: [{ id: 'msg-x', sessionId, content, sender: 'user' }],
     messageCount: 1,
+    createdAt: '',
+    updatedAt: '',
+  })),
+  updateSessionAgent: vi.fn((sessionId: string, agentId: string) => Promise.resolve({
+    id: sessionId,
+    agentId,
+    messages: [],
+    messageCount: 0,
     createdAt: '',
     updatedAt: '',
   })),
@@ -110,5 +119,45 @@ describe('chatStore - sendMessage', () => {
     expect(store.currentSessionId).toBe('session-new')
     expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-new', 'Hi')
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
+  })
+})
+
+describe('chatStore - setAgent', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('PATCHes the backend when an active session exists and the agent changes', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+
+    await store.setAgent('agent-2')
+
+    expect(vi.mocked(updateSessionAgent)).toHaveBeenCalledWith('session-1', 'agent-2')
+    expect(store.agentId).toBe('agent-2')
+  })
+
+  it('does not PATCH when no session is active', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = null
+
+    await store.setAgent('agent-2')
+
+    expect(vi.mocked(updateSessionAgent)).not.toHaveBeenCalled()
+    expect(store.agentId).toBe('agent-2')
+  })
+
+  it('does not PATCH when the agent is unchanged', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+
+    await store.setAgent('agent-1')
+
+    expect(vi.mocked(updateSessionAgent)).not.toHaveBeenCalled()
   })
 })

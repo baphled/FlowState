@@ -131,3 +131,16 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
   const data = (await res.json()) as Message[] | null
   return data ?? []
 }
+
+export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
+  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/agent`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agentId }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+    throw new Error(err.error ?? `HTTP ${res.status}`)
+  }
+  return (await res.json()) as Session
+}
