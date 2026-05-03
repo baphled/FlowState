@@ -13,12 +13,18 @@ import (
 const metaFileSuffix = ".meta.json"
 
 // Metadata holds the subset of Session fields needed for persistence.
+//
+// Messages is persisted alongside the structural fields so that chat
+// history survives a process restart: the Vue UI loads sessions from
+// disk after `flowstate serve` reboots, and an empty Messages slice
+// would render an apparently empty conversation.
 type Metadata struct {
 	ID        string    `json:"id"`
 	ParentID  string    `json:"parent_id"`
 	AgentID   string    `json:"agent_id"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
+	Messages  []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -40,6 +46,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		AgentID:   sess.AgentID,
 		Status:    sess.Status,
 		CreatedAt: sess.CreatedAt,
+		Messages:  sess.Messages,
 	}
 
 	data, err := json.Marshal(meta)
@@ -131,6 +138,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		AgentID:   meta.AgentID,
 		Status:    meta.Status,
 		CreatedAt: meta.CreatedAt,
+		Messages:  meta.Messages,
 	}, nil
 }
 
@@ -161,6 +169,7 @@ func loadMetaFile(path string) *Session {
 		AgentID:   meta.AgentID,
 		Status:    meta.Status,
 		CreatedAt: meta.CreatedAt,
+		Messages:  meta.Messages,
 	}
 }
 

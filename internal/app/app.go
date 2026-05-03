@@ -684,6 +684,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
 	sessionMgr := session.NewManager(streamer)
+	sessionMgr.SetSessionsDir(sessionsDirFromCfg(params.cfg))
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
 		streamer,

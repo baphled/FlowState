@@ -145,6 +145,76 @@ var _ = Describe("Session persistence", func() {
 				Expect(restored.Status).To(Equal(original.Status))
 				Expect(restored.CreatedAt.UTC()).To(BeTemporally("~", original.CreatedAt, time.Second))
 			})
+
+			It("restores persisted Messages so chat history survives a restart", func() {
+				ts := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+				original := &session.Session{
+					ID:        "msg-round-trip",
+					AgentID:   "default-assistant",
+					Status:    "active",
+					CreatedAt: ts,
+					Messages: []session.Message{
+						{
+							ID:        "msg-1",
+							Role:      "user",
+							Content:   "Hello there",
+							Timestamp: ts,
+						},
+						{
+							ID:        "msg-2",
+							Role:      "assistant",
+							Content:   "Hi! How can I help?",
+							AgentID:   "default-assistant",
+							Timestamp: ts.Add(time.Second),
+						},
+						{
+							ID:        "msg-3",
+							Role:      "tool",
+							Content:   "result body",
+							ToolName:  "read",
+							ToolInput: `{"path":"foo"}`,
+							Timestamp: ts.Add(2 * time.Second),
+						},
+					},
+				}
+
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				sessions, err := session.LoadSessionsFromDirectory(sessionsDir)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sessions).To(HaveLen(1))
+
+				restored := sessions[0]
+				Expect(restored.Messages).To(HaveLen(3))
+				Expect(restored.Messages[0].ID).To(Equal("msg-1"))
+				Expect(restored.Messages[0].Role).To(Equal("user"))
+				Expect(restored.Messages[0].Content).To(Equal("Hello there"))
+				Expect(restored.Messages[1].AgentID).To(Equal("default-assistant"))
+				Expect(restored.Messages[1].Content).To(Equal("Hi! How can I help?"))
+				Expect(restored.Messages[2].ToolName).To(Equal("read"))
+				Expect(restored.Messages[2].ToolInput).To(Equal(`{"path":"foo"}`))
+				Expect(restored.Messages[2].Timestamp.UTC()).To(BeTemporally("~", ts.Add(2*time.Second), time.Second))
+			})
+
+			It("loads persisted Messages via LoadSessionMetadata for a single session", func() {
+				ts := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+				original := &session.Session{
+					ID:        "single-load",
+					AgentID:   "default-assistant",
+					Status:    "active",
+					CreatedAt: ts,
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "ping", Timestamp: ts},
+					},
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "single-load")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.Messages).To(HaveLen(1))
+				Expect(restored.Messages[0].Content).To(Equal("ping"))
+			})
 		})
 	})
 
