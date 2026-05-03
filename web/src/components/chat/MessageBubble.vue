@@ -4,7 +4,7 @@ import type { Message } from '@/types'
 
 defineOptions({ name: 'MessageBubble' })
 
-const props = defineProps<{ message: Message }>()
+const props = defineProps<{ message: Message; agentName?: string }>()
 
 const now = ref(Date.now())
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
@@ -61,6 +61,12 @@ const toolSummary = computed(() => {
   const input = props.message.toolInput
   return input ? `${name} ${input}` : name
 })
+
+const displayRole = computed(() =>
+  props.message.role === 'assistant' && props.agentName
+    ? props.agentName
+    : props.message.role,
+)
 </script>
 
 <template>
@@ -120,7 +126,7 @@ const toolSummary = computed(() => {
     <p v-else-if="isThinking" class="thinking">{{ props.message.content }}</p>
 
     <template v-else-if="isPlain">
-      <span class="message-role">{{ props.message.role }}</span>
+      <span class="message-role">{{ displayRole }}</span>
       <p class="message-content">{{ props.message.content }}</p>
     </template>
   </div>

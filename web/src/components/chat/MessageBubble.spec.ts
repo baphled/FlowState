@@ -56,6 +56,28 @@ describe('MessageBubble', () => {
       expect(wrapper.attributes('data-role')).toBe('user')
       expect(wrapper.text()).toContain('ping')
     })
+
+    it('renders the agent display name instead of the raw role for assistant messages', () => {
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({ role: 'assistant', agentId: 'planner', content: 'hi' }),
+          agentName: 'Planner',
+        },
+      })
+
+      const role = wrapper.find('.message-role')
+      expect(role.exists()).toBe(true)
+      expect(role.text()).toBe('Planner')
+      expect(role.text()).not.toBe('assistant')
+    })
+
+    it('falls back to the raw role when no agentName prop is supplied', () => {
+      const wrapper = mount(MessageBubble, {
+        props: { message: makeMessage({ role: 'assistant', content: 'hi' }) },
+      })
+
+      expect(wrapper.find('.message-role').text()).toBe('assistant')
+    })
   })
 
   describe('tool roles', () => {
