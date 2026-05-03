@@ -52,6 +52,8 @@ type Session struct {
 	ID                string                    `json:"id"`
 	AgentID           string                    `json:"agent_id"`
 	CurrentAgentID    string                    `json:"current_agent_id,omitempty"` // actively selected agent; overrides AgentID when set
+	CurrentModelID    string                    `json:"current_model_id,omitempty"`
+	CurrentProviderID string                    `json:"current_provider_id,omitempty"`
 	Status            string                    `json:"status"`
 	ParentID          string                    `json:"parent_id"`
 	ParentSessionID   string                    `json:"parent_session_id"`
