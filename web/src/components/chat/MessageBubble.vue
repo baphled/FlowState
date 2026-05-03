@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
+import MarkdownRenderer from './MarkdownRenderer.vue'
 
 defineOptions({ name: 'MessageBubble' })
 
@@ -127,7 +128,11 @@ const displayRole = computed(() =>
 
     <template v-else-if="isPlain">
       <span class="message-role">{{ displayRole }}</span>
-      <p class="message-content">{{ props.message.content }}</p>
+      <MarkdownRenderer
+        v-if="props.message.role === 'assistant'"
+        :content="props.message.content"
+      />
+      <p v-else class="message-content">{{ props.message.content }}</p>
     </template>
   </div>
 </template>
