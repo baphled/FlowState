@@ -22,11 +22,13 @@ function installLocalStorageStub(): void {
 import {
   createSession,
   fetchAgents,
+  fetchModels,
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
   subscribeSessionStream,
   updateSessionAgent,
+  updateSessionModel,
 } from '../api'
 import { useChatStore } from './chatStore'
 
@@ -98,6 +100,20 @@ vi.mock('../api', () => ({
     createdAt: '',
     updatedAt: '',
   })),
+  updateSessionModel: vi.fn((sessionId: string, modelId: string, providerId: string) => Promise.resolve({
+    id: sessionId,
+    agentId: 'agent-1',
+    currentModelId: modelId,
+    currentProviderId: providerId,
+    messages: [],
+    messageCount: 0,
+    createdAt: '',
+    updatedAt: '',
+  })),
+  fetchModels: vi.fn(() => Promise.resolve([
+    { id: 'claude-opus', name: 'Claude Opus', providerId: 'anthropic' },
+    { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
+  ])),
   subscribeSessionStream: vi.fn((sessionId: string) => new FakeEventSource(`/api/v1/sessions/${sessionId}/stream`)),
 }))
 
@@ -353,5 +369,132 @@ describe('chatStore - setAgent', () => {
     await store.setAgent('agent-1')
 
     expect(vi.mocked(updateSessionAgent)).not.toHaveBeenCalled()
+  })
+})
+
+describe('chatStore - model restoration on restoreStateFromBackend', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('adopts session.currentModelId and currentProviderId when present on the restored session', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        currentModelId: 'claude-opus',
+        currentProviderId: 'anthropic',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.currentModelId).toBe('claude-opus')
+    expect(store.currentProviderId).toBe('anthropic')
+  })
+})
+
+describe('chatStore - model restoration on loadSessionMessages', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('adopts session.currentModelId and currentProviderId when loading a session', async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        currentModelId: 'gpt-4o',
+        currentProviderId: 'openai',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentModelId = ''
+    store.currentProviderId = ''
+
+    await store.loadSessionMessages('session-1')
+
+    expect(store.currentModelId).toBe('gpt-4o')
+    expect(store.currentProviderId).toBe('openai')
+  })
+})
+
+describe('chatStore - setModel', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('PATCHes the backend with modelId and providerId when an active session exists and the model changes', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.currentModelId = 'claude-opus'
+    store.currentProviderId = 'anthropic'
+
+    await store.setModel('gpt-4o', 'openai')
+
+    expect(vi.mocked(updateSessionModel)).toHaveBeenCalledWith('session-1', 'gpt-4o', 'openai')
+    expect(store.currentModelId).toBe('gpt-4o')
+    expect(store.currentProviderId).toBe('openai')
+  })
+
+  it('does not PATCH when no session is active', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setModel('gpt-4o', 'openai')
+
+    expect(vi.mocked(updateSessionModel)).not.toHaveBeenCalled()
+    expect(store.currentModelId).toBe('gpt-4o')
+    expect(store.currentProviderId).toBe('openai')
+  })
+
+  it('does not PATCH when the model and provider are unchanged', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.currentModelId = 'claude-opus'
+    store.currentProviderId = 'anthropic'
+
+    await store.setModel('claude-opus', 'anthropic')
+
+    expect(vi.mocked(updateSessionModel)).not.toHaveBeenCalled()
+  })
+})
+
+describe('chatStore - loadModels', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('populates availableModels via fetchModels', async () => {
+    const store = useChatStore()
+
+    await store.loadModels()
+
+    expect(vi.mocked(fetchModels)).toHaveBeenCalledTimes(1)
+    expect(store.availableModels).toEqual([
+      { id: 'claude-opus', name: 'Claude Opus', providerId: 'anthropic' },
+      { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
+    ])
   })
 })

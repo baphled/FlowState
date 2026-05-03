@@ -1,13 +1,15 @@
 import { defineStore } from 'pinia'
-import type { Agent, Message, SessionSummary } from '@/types'
+import type { Agent, Message, Model, SessionSummary } from '@/types'
 import {
   createSession,
   fetchAgents,
+  fetchModels,
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
   subscribeSessionStream,
   updateSessionAgent,
+  updateSessionModel,
 } from '@/api'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -60,7 +62,10 @@ export const useChatStore = defineStore('chat', {
   state: () => ({
     availableAgentDetails: [] as Agent[],
     availableAgents: [] as string[],
+    availableModels: [] as Model[],
     agentId: '',
+    currentModelId: '',
+    currentProviderId: '',
     currentSessionId: null as string | null,
     sessions: [] as SessionSummary[],
     messages: [] as Message[],
@@ -91,17 +96,23 @@ export const useChatStore = defineStore('chat', {
         if (!sessionForAgent) {
           this.currentSessionId = null
           this.messages = []
+          this.currentModelId = ''
+          this.currentProviderId = ''
           persistSessionId(null)
           return
         }
 
         this.currentSessionId = sessionForAgent.id
+        this.currentModelId = sessionForAgent.currentModelId ?? ''
+        this.currentProviderId = sessionForAgent.currentProviderId ?? ''
         persistSessionId(sessionForAgent.id)
         this.messages = await fetchSessionMessages(sessionForAgent.id)
         return
       }
 
       this.currentSessionId = session.id
+      this.currentModelId = session.currentModelId ?? ''
+      this.currentProviderId = session.currentProviderId ?? ''
       persistSessionId(session.id)
       this.messages = await fetchSessionMessages(session.id)
     },
@@ -137,6 +148,31 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    async setModel(modelId: string, providerId: string): Promise<void> {
+      const previousModelId = this.currentModelId
+      const previousProviderId = this.currentProviderId
+      this.currentModelId = modelId
+      this.currentProviderId = providerId
+
+      if (!this.currentSessionId) {
+        return
+      }
+
+      if (modelId === previousModelId && providerId === previousProviderId) {
+        return
+      }
+
+      try {
+        await updateSessionModel(this.currentSessionId, modelId, providerId)
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : 'Failed to update session model'
+      }
+    },
+
+    async loadModels(): Promise<void> {
+      this.availableModels = await fetchModels()
+    },
+
     getSelectedAgent(): Agent | undefined {
       return this.availableAgentDetails.find((agent) => agent.id === this.agentId)
     },
@@ -169,6 +205,11 @@ export const useChatStore = defineStore('chat', {
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
         if (sessionAgentId && sessionAgentId !== this.agentId) {
           await this.setAgent(sessionAgentId)
+        }
+
+        if (session) {
+          this.currentModelId = session.currentModelId ?? ''
+          this.currentProviderId = session.currentProviderId ?? ''
         }
 
         this.messages = await fetchSessionMessages(sessionId)
