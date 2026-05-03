@@ -287,6 +287,42 @@ describe('chatStore - sendMessage', () => {
     expect(es.closed).toBe(true)
   })
 
+  it('pushes an optimistic user message to messages before the API responds', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    FakeEventSource.instances.length = 0
+
+    let resolveSend: (value: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend = resolve
+        }),
+    )
+
+    const sendPromise = store.sendMessage('hello now')
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const optimistic = store.messages.find((m) => m.role === 'user' && m.content === 'hello now')
+    expect(optimistic).toBeDefined()
+    expect(optimistic!.id).toMatch(/^temp-/)
+
+    resolveSend({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [],
+      messageCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    })
+    await sendPromise
+  })
+
   it('appends progressive content chunks from default SSE message events to the in-flight assistant message', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'

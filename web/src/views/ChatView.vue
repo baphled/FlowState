@@ -138,6 +138,8 @@ onBeforeUnmount(() => {
         <ModelSwitcher />
       </div>
 
+      <div v-if="chatStore.isLoading" class="loading-pulse" data-testid="loading-pulse" aria-hidden="true" />
+
       <MessageInput />
     </div>
 
@@ -242,6 +244,23 @@ onBeforeUnmount(() => {
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.loading-pulse {
+  height: 2px;
+  flex-shrink: 0;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: pulse-shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .chat-sidebar {
