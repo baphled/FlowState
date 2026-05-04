@@ -870,3 +870,107 @@ describe('chatStore - hierarchy getters', () => {
     expect(store.nextSiblingSessionId).toBeNull()
   })
 })
+
+describe('chatStore - todowrite wiring (live SSE)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('routes a todowrite tool_result event into the todoStore for the active session', async () => {
+    // The web frontend already carries tool_call/tool_result over SSE for
+    // every tool (see internal/api/server.go writeSSEToolCall /
+    // writeSSEToolResult). The todowrite tool fires the same pair: a
+    // tool_call with name="todowrite" then a tool_result whose content is
+    // the raw JSON the agent emitted. chatStore must recognise that pair
+    // and feed the JSON to todoStore so the side panel updates live.
+    const { useTodoStore } = await import('./todoStore')
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-live'
+
+    const todoStore = useTodoStore()
+    todoStore.setCurrentSession('session-live')
+
+    chat.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todowrite' }))
+    chat.applyContentEvent(
+      JSON.stringify({
+        type: 'tool_result',
+        content: JSON.stringify([
+          { content: 'live emitted', status: 'pending', priority: 'high' },
+        ]),
+      }),
+    )
+
+    expect(todoStore.todos).toHaveLength(1)
+    expect(todoStore.todos[0].content).toBe('live emitted')
+  })
+
+  it('does not feed non-todowrite tool_result content into the todoStore', async () => {
+    const { useTodoStore } = await import('./todoStore')
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-live'
+
+    const todoStore = useTodoStore()
+    todoStore.setCurrentSession('session-live')
+    todoStore.ingestToolResult(
+      'session-live',
+      JSON.stringify([{ content: 'pre-existing', status: 'pending', priority: 'low' }]),
+    )
+
+    chat.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash' }))
+    chat.applyContentEvent(
+      JSON.stringify({ type: 'tool_result', content: 'ls -la output' }),
+    )
+
+    // Bash tool result must NOT clobber the todo slice. The todoStore still
+    // holds whatever the last todowrite emission set.
+    expect(todoStore.todos).toHaveLength(1)
+    expect(todoStore.todos[0].content).toBe('pre-existing')
+  })
+})
+
+describe('chatStore - todoStore session swap on session switch', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('switches the todoStore active session and hydrates from history when a session is loaded', async () => {
+    const { useTodoStore } = await import('./todoStore')
+
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-with-todos',
+        agentId: 'agent-1',
+        title: 'Session with todos',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 3,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'm1', role: 'user', content: 'kick off', timestamp: '' },
+      { id: 'm2', role: 'tool_call', toolName: 'todowrite', content: 'todowrite', timestamp: '' },
+      {
+        id: 'm3',
+        role: 'tool_result',
+        toolName: 'todowrite',
+        content: JSON.stringify([
+          { content: 'historical todo', status: 'pending', priority: 'low' },
+        ]),
+        timestamp: '',
+      },
+    ])
+
+    const chat = useChatStore()
+    await chat.loadSessions()
+    await chat.loadSessionMessages('session-with-todos')
+
+    const todoStore = useTodoStore()
+    expect(todoStore.currentSessionId).toBe('session-with-todos')
+    expect(todoStore.todos).toHaveLength(1)
+    expect(todoStore.todos[0].content).toBe('historical todo')
+  })
+})

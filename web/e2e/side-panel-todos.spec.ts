@@ -130,16 +130,66 @@ test.describe('Side panel reserved for todos', () => {
     await expect(panel.locator('button')).toHaveCount(0)
   })
 
-  // NOTE: a "switching sessions changes the displayed todos" test is
-  // intentionally absent. The todoStore is currently a global state with no
-  // agent-emit ingestion path — todos do not respond to session changes
-  // because there is no SSE/event stream wiring the `todowrite` tool result
-  // into the web store. The TUI counterpart at
-  // internal/tui/intents/chat/intent.go:4366 ingests via
-  // chat.Message{Role: "todo_update"}; the web frontend lacks an equivalent.
-  // Adding that test before the ingestion exists would either fail or pass
-  // for the wrong reason. Track in the follow-up: agent-emit pipeline +
-  // per-session keying (see bug-fix note "Side-panel todos read-only").
+  test('shows the session-aware empty-state copy when the current session has no todowrite results', async ({ page }) => {
+    const sidebar = page.getByTestId('swarm-pane')
+    const panel = sidebar.getByTestId('todo-list-panel')
+    await expect(panel).toBeVisible()
+
+    // The mocked sessions above carry no todowrite tool_result messages, so
+    // the side panel should explicitly say "No todos in this session yet"
+    // rather than the previous user-CRUD-era "No tasks yet".
+    const empty = panel.getByTestId('todo-empty')
+    await expect(empty).toBeVisible()
+    await expect(empty).toContainText('No todos in this session yet')
+  })
+
+  test('hydrates the side-panel todos from the loaded session\'s history', async ({ page }) => {
+    // Override the messages route so the parent session carries a historical
+    // todowrite tool_result whose content is the raw JSON the agent emitted.
+    await page.route('**/api/v1/sessions/**/messages', async (route) => {
+      const sessionId = getSessionId(route.request().url())
+      if (sessionId === 'session-parent-001') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { id: 'm1', role: 'user', content: 'plan something', timestamp: '' },
+            {
+              id: 'm2',
+              role: 'tool_call',
+              toolName: 'todowrite',
+              content: 'todowrite',
+              timestamp: '',
+            },
+            {
+              id: 'm3',
+              role: 'tool_result',
+              toolName: 'todowrite',
+              content: JSON.stringify([
+                { content: 'historical from parent', status: 'pending', priority: 'high' },
+                { content: 'second one', status: 'completed', priority: 'low' },
+              ]),
+              timestamp: '',
+            },
+          ]),
+        })
+        return
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(messagesBySession[sessionId] ?? []),
+      })
+    })
+
+    await page.reload()
+
+    const sidebar = page.getByTestId('swarm-pane')
+    const panel = sidebar.getByTestId('todo-list-panel')
+    await expect(panel).toBeVisible()
+    await expect(panel.getByText('historical from parent')).toBeVisible()
+    await expect(panel.getByText('second one')).toBeVisible()
+  })
 
   test('delegation events are reachable from the chat thread and switch session on click', async ({ page }) => {
     // The delegation event mocked above must surface inside the chat-main

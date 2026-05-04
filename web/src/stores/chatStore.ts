@@ -11,6 +11,7 @@ import {
   updateSessionAgent,
   updateSessionModel,
 } from '@/api'
+import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
@@ -73,6 +74,13 @@ export const useChatStore = defineStore('chat', {
     isStreaming: false,
     isLoadingSessions: false,
     error: null as string | null,
+    // lastToolName tracks the tool whose result is expected next over the
+    // SSE stream. The server emits `tool_call` then `tool_result` as a pair
+    // (see internal/api/sse_consumer.go WriteToolCall/WriteToolResult), but
+    // tool_result events do not echo the tool name — so we have to remember
+    // the most recent tool_call to know whether the upcoming tool_result is
+    // a todowrite emission and therefore routable into the todoStore.
+    lastToolName: null as string | null,
   }),
 
   getters: {
@@ -174,6 +182,8 @@ export const useChatStore = defineStore('chat', {
           this.currentModelId = ''
           this.currentProviderId = ''
           persistSessionId(null)
+          // Clear the todoStore's active session — there's nothing to show.
+          useTodoStore().setCurrentSession(null)
           return
         }
 
@@ -182,6 +192,9 @@ export const useChatStore = defineStore('chat', {
         this.currentProviderId = sessionForAgent.currentProviderId ?? ''
         persistSessionId(sessionForAgent.id)
         this.messages = await fetchSessionMessages(sessionForAgent.id)
+        const todoStore = useTodoStore()
+        todoStore.setCurrentSession(sessionForAgent.id)
+        todoStore.hydrateFromMessages(sessionForAgent.id, this.messages)
         return
       }
 
@@ -190,6 +203,9 @@ export const useChatStore = defineStore('chat', {
       this.currentProviderId = session.currentProviderId ?? ''
       persistSessionId(session.id)
       this.messages = await fetchSessionMessages(session.id)
+      const todoStore = useTodoStore()
+      todoStore.setCurrentSession(session.id)
+      todoStore.hydrateFromMessages(session.id, this.messages)
     },
 
     async loadAgents(): Promise<void> {
@@ -270,6 +286,12 @@ export const useChatStore = defineStore('chat', {
       const session = await createSession(this.agentId)
       this.currentSessionId = session.id
       persistSessionId(session.id)
+      // A new session has no history yet, so the todoStore slice should be
+      // empty for the panel to render the "No todos in this session yet"
+      // empty state until the agent emits its first todowrite.
+      const todoStore = useTodoStore()
+      todoStore.setCurrentSession(session.id)
+      todoStore.hydrateFromMessages(session.id, [])
     },
 
     async loadSessionMessages(sessionId: string): Promise<void> {
@@ -297,6 +319,14 @@ export const useChatStore = defineStore('chat', {
         }
 
         this.messages = await fetchSessionMessages(sessionId)
+
+        // Sync the todoStore: switch its active session and rebuild the
+        // slice from the freshly-loaded history. The latest todowrite
+        // tool_result message is the canonical state — see todoStore
+        // hydrateFromMessages for the derivation rule.
+        const todoStore = useTodoStore()
+        todoStore.setCurrentSession(sessionId)
+        todoStore.hydrateFromMessages(sessionId, this.messages)
       } finally {
         this.isLoading = false
       }
@@ -492,6 +522,11 @@ export const useChatStore = defineStore('chat', {
     handleToolCallEvent(info: { name?: unknown; status?: unknown; type?: unknown }): void {
       const toolName = String(info.name ?? info.type ?? 'unknown')
       const status = String(info.status ?? 'running')
+      // Remember the tool name so the next tool_result event can be routed
+      // appropriately — the SSE tool_result payload only carries content,
+      // not the tool name. This is the seam the todowrite ingestion hooks
+      // into below.
+      this.lastToolName = toolName
 
       const toolMessage: Message = {
         id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -510,12 +545,23 @@ export const useChatStore = defineStore('chat', {
         (message) => message.role === 'tool_result' && message.status === 'running',
       )
 
-      if (!target) {
-        return
+      const content = String(info.content ?? '')
+
+      if (target) {
+        target.content = content
+        target.status = 'completed'
       }
 
-      target.content = String(info.content ?? '')
-      target.status = 'completed'
+      // Route todowrite results into the todoStore. The agent emits the full
+      // todo array on every todowrite call, so the slice for the active
+      // session is replaced rather than merged — matching the TUI which
+      // re-renders the full list on every todo_update message.
+      if (this.lastToolName === 'todowrite' && this.currentSessionId) {
+        const todoStore = useTodoStore()
+        todoStore.ingestToolResult(this.currentSessionId, content)
+      }
+      // Clear the gate so a stray subsequent tool_result doesn't double-route.
+      this.lastToolName = null
     },
   },
 })
