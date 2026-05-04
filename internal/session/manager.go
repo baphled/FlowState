@@ -102,6 +102,10 @@ type Manager struct {
 	notifMu       sync.Mutex
 	recorder      Recorder
 	sessionsDir   string
+
+	// persistFn overrides the default PersistSession implementation.
+	// Nil means use PersistSession. Only set in tests via export_test.go.
+	persistFn func(dir string, sess *Session) error
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -196,7 +200,11 @@ func (m *Manager) persistLocked(sess *Session) {
 	if m.sessionsDir == "" || sess == nil {
 		return
 	}
-	_ = PersistSession(m.sessionsDir, sess)
+	fn := m.persistFn
+	if fn == nil {
+		fn = PersistSession
+	}
+	_ = fn(m.sessionsDir, sess)
 }
 
 // EnsureSession is an alias for RegisterSession that matches the interface name
@@ -571,18 +579,41 @@ func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
 //   - None.
 //
 // Side effects:
-//   - Acquires the manager lock and appends msg to the session's Messages slice.
+//   - Acquires the manager write lock only for the in-memory append; releases
+//     it before calling persist so that concurrent GetSession readers are not
+//     blocked for the duration of disk I/O.
 func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 	msg.ID = uuid.New().String()
 	msg.Timestamp = time.Now()
 	sess.Messages = append(sess.Messages, msg)
-	m.persistLocked(sess)
+
+	// Snapshot the fields needed for persistence under the lock, then release
+	// before doing I/O so GetSession readers are not blocked by disk writes.
+	sessionsDir := m.sessionsDir
+	persistFn := m.persistFn
+	var snapshot *Session
+	if sessionsDir != "" {
+		snap := *sess
+		msgs := make([]Message, len(sess.Messages))
+		copy(msgs, sess.Messages)
+		snap.Messages = msgs
+		snapshot = &snap
+	}
+	m.mu.Unlock()
+
+	if snapshot != nil {
+		fn := persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		_ = fn(sessionsDir, snapshot)
+	}
 }
 
 // SendMessage sends a message to the session and streams the response.

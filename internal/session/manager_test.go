@@ -1274,6 +1274,121 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// ── Lock contention: GetSession must not block while AppendMessage persists ──
+	//
+	// appendSessionMessage holds m.mu (write lock) while calling persistLocked,
+	// which serialises the full session JSON and writes to disk. During streaming,
+	// AppendMessage is called on every accumulated chunk. Because sync.RWMutex
+	// queues writers before readers, a pending AppendMessage write blocks
+	// GetSession reads for the entire duration of the file I/O.
+	//
+	// The fix: release the write lock BEFORE calling persist so that readers
+	// (handleSessionMessages, GetSession) can proceed immediately.
+
+	Describe("AppendMessage vs GetSession lock contention", func() {
+		var (
+			ctx         context.Context
+			lockMgr     *session.Manager
+			persistGate chan struct{}
+			sess        *session.Session
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			persistGate = make(chan struct{})
+			lockMgr = session.NewManager(newMockStreamer())
+			lockMgr.SetSessionsDir(GinkgoT().TempDir())
+
+			// Install a blocking persistFn: it acquires persistGate and only
+			// returns after the test releases it. This simulates slow disk I/O.
+			lockMgr.SetPersistFnForTest(func(_ string, _ *session.Session) error {
+				<-persistGate
+				return nil
+			})
+
+			var err error
+			sess, err = lockMgr.CreateSession("agent-1")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			// Unblock any goroutine still waiting on persistGate.
+			select {
+			case <-persistGate:
+			default:
+				close(persistGate)
+			}
+		})
+
+		It("allows GetSession to return while AppendMessage is blocked in persist", func() {
+			// Start AppendMessage — it will hold the write lock while waiting
+			// for persistGate (simulating slow disk I/O).
+			appendStarted := make(chan struct{})
+			appendDone := make(chan struct{})
+			go func() {
+				close(appendStarted)
+				lockMgr.AppendMessage(sess.ID, session.Message{Role: "assistant", Content: "streaming chunk"})
+				close(appendDone)
+			}()
+
+			<-appendStarted
+			// Give the goroutine a moment to acquire the write lock and enter persist.
+			time.Sleep(5 * time.Millisecond)
+
+			// GetSession MUST NOT wait for AppendMessage's persist to complete.
+			// With the bug, this call blocks until persistGate is closed (never
+			// in this test, causing a timeout).
+			getSessDone := make(chan error, 1)
+			go func() {
+				_, err := lockMgr.GetSession(sess.ID)
+				getSessDone <- err
+			}()
+
+			select {
+			case err := <-getSessDone:
+				Expect(err).NotTo(HaveOccurred())
+			case <-time.After(200 * time.Millisecond):
+				Fail("GetSession blocked while AppendMessage was holding the write lock during persistence")
+			}
+
+			// Unblock AppendMessage so BeforeEach cleanup works.
+			close(persistGate)
+			Eventually(appendDone, "1s").Should(BeClosed())
+		})
+
+		It("persists the message outside the critical section (write lock released before I/O)", func() {
+			// Concurrent GetSession calls during AppendMessage must complete
+			// without waiting for the persist to finish. This confirms the lock
+			// is NOT held during disk I/O.
+			ctx = context.Background()
+			_ = ctx
+
+			readsDone := make(chan struct{}, 10)
+			for range 5 {
+				go func() {
+					_, _ = lockMgr.GetSession(sess.ID)
+					readsDone <- struct{}{}
+				}()
+			}
+
+			// Trigger the blocking persist.
+			appendDone := make(chan struct{})
+			go func() {
+				lockMgr.AppendMessage(sess.ID, session.Message{Role: "user", Content: "hello"})
+				close(appendDone)
+			}()
+
+			// All reads should complete within 200ms regardless of persist duration.
+			Eventually(func() int {
+				return len(readsDone)
+			}, "200ms", "10ms").Should(Equal(5))
+
+			// Unblock persist.
+			close(persistGate)
+			Eventually(appendDone, "1s").Should(BeClosed())
+		})
+	})
+
 	// ── Context seeding after restart ────────────────────────────────────────
 	//
 	// When a session has prior messages and the streamer implements
