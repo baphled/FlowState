@@ -10,9 +10,15 @@ import (
 //
 // It maintains a map of session ID to subscriber channels. When events are
 // published for a session, they are forwarded to all active subscribers.
+//
+// active tracks sessions that currently have an in-progress Publish call.
+// Consumers call IsPublishing to detect whether a Publish is running before
+// entering the blocking select loop, so they can fast-path a [DONE] when a
+// late subscriber arrives after the stream has already completed.
 type SessionBroker struct {
 	mu          sync.Mutex
 	subscribers map[string][]chan provider.StreamChunk
+	active      map[string]bool
 }
 
 // NewSessionBroker creates a new SessionBroker with an empty subscriber map.
@@ -25,7 +31,22 @@ type SessionBroker struct {
 func NewSessionBroker() *SessionBroker {
 	return &SessionBroker{
 		subscribers: make(map[string][]chan provider.StreamChunk),
+		active:      make(map[string]bool),
 	}
+}
+
+// IsPublishing reports whether a Publish call is currently in progress for
+// the given session. Callers use this to distinguish two cases after
+// subscribing:
+//
+//   - true  → chunks are flowing; the select loop will receive them.
+//   - false → either Publish hasn't started yet (pending message, caller
+//     should wait) or it finished before Subscribe was called (caller
+//     should check session state and fast-path [DONE] if complete).
+func (b *SessionBroker) IsPublishing(sessionID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.active[sessionID]
 }
 
 // Subscribe registers a new subscriber for a session and returns a receive channel and an unsubscribe function.
@@ -75,6 +96,10 @@ func (b *SessionBroker) Subscribe(sessionID string) (<-chan provider.StreamChunk
 //   - Sends each chunk to every active subscriber channel for the session.
 //   - Unsubscribes all subscribers and closes their channels when the source closes.
 func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamChunk) {
+	b.mu.Lock()
+	b.active[sessionID] = true
+	b.mu.Unlock()
+
 	for chunk := range chunks {
 		b.mu.Lock()
 		subs := make([]chan provider.StreamChunk, len(b.subscribers[sessionID]))
@@ -90,6 +115,7 @@ func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamC
 	}
 
 	b.mu.Lock()
+	delete(b.active, sessionID)
 	subs := b.subscribers[sessionID]
 	delete(b.subscribers, sessionID)
 	b.mu.Unlock()

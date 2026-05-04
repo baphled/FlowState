@@ -725,6 +725,31 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	// Historical content is loaded by the client via GET /messages.
 	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
 	defer unsubscribe()
+
+	// Fast-path: if no Publish is currently active AND the session already
+	// has a non-user message as its last entry, the stream completed before
+	// this subscriber arrived. Signal [DONE] immediately rather than blocking
+	// on a channel that Publish will never close again.
+	//
+	// This covers two cases:
+	//   1. Page reload after stream completion — late EventSource GET.
+	//   2. Normal prompting race — POST reaches the server before the SSE
+	//      GET, so Publish runs and finishes before Subscribe is called.
+	//
+	// When IsPublishing returns false but the last message IS a user message,
+	// the session is between turns (Publish hasn't started for the new
+	// message yet) — fall through to the blocking select so the subscriber
+	// can receive the incoming chunks.
+	if !s.sessionBroker.IsPublishing(id) {
+		if freshSess, err := s.sessionManager.GetSession(id); err == nil {
+			msgs := freshSess.Messages
+			if len(msgs) > 0 && msgs[len(msgs)-1].Role != "user" {
+				writeSSEDone(w, flusher)
+				return
+			}
+		}
+	}
+
 	ctx := r.Context()
 	for {
 		select {
