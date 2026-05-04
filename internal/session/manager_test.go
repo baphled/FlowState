@@ -1273,7 +1273,109 @@ var _ = Describe("Manager", func() {
 			Expect(func() { mgr.MarkEndedFromEvent("") }).NotTo(Panic())
 		})
 	})
+
+	// ── Context seeding after restart ────────────────────────────────────────
+	//
+	// When a session has prior messages and the streamer implements
+	// streaming.HistorySeeder, SendMessage must seed the streamer with the
+	// session's historical messages (excluding the current turn) before
+	// calling Stream — so that after a server restart the engine's in-memory
+	// context store is pre-populated and the agent retains conversation context.
+
+	Describe("SendMessage context seeding", func() {
+		var (
+			ctx         context.Context
+			seederMock  *mockHistorySeederStreamer
+			seedManager *session.Manager
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			seederMock = newMockHistorySeederStreamer()
+			seedManager = session.NewManager(seederMock)
+		})
+
+		It("calls SeedHistory with prior messages before streaming when the streamer is a HistorySeeder", func() {
+			// Restore a session that already has two prior messages (simulates
+			// the state after a server restart where session messages were loaded
+			// from disk but the engine's in-memory store is empty).
+			restored := &session.Session{
+				ID:      "sess-restart",
+				AgentID: "planner",
+				Messages: []session.Message{
+					{ID: "m1", Role: "user", Content: "What is the plan?", AgentID: "planner"},
+					{ID: "m2", Role: "assistant", Content: "Here is the plan.", AgentID: "planner"},
+				},
+			}
+			seedManager.RestoreSessions([]*session.Session{restored})
+
+			seederMock.addChunk(provider.StreamChunk{Done: true})
+			_, err := seedManager.SendMessage(ctx, "sess-restart", "Continue the plan.")
+			Expect(err).NotTo(HaveOccurred())
+
+			// The seeder must have been called with the two prior messages
+			// (the current "Continue the plan." is excluded — it is appended by
+			// the engine itself).
+			Expect(seederMock.seededSessionID).To(Equal("sess-restart"))
+			Expect(seederMock.seededMessages).To(HaveLen(2))
+			Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
+			Expect(seederMock.seededMessages[0].Content).To(Equal("What is the plan?"))
+			Expect(seederMock.seededMessages[1].Role).To(Equal("assistant"))
+			Expect(seederMock.seededMessages[1].Content).To(Equal("Here is the plan."))
+		})
+
+		It("does not call SeedHistory when the session has no prior messages", func() {
+			sess, err := seedManager.CreateSession("planner")
+			Expect(err).NotTo(HaveOccurred())
+
+			seederMock.addChunk(provider.StreamChunk{Done: true})
+			_, err = seedManager.SendMessage(ctx, sess.ID, "First message ever.")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(seederMock.seededSessionID).To(BeEmpty())
+		})
+
+		It("does not call SeedHistory when the streamer does not implement HistorySeeder", func() {
+			plainMock := newMockStreamer()
+			plainMgr := session.NewManager(plainMock)
+
+			restored := &session.Session{
+				ID:      "sess-plain",
+				AgentID: "planner",
+				Messages: []session.Message{
+					{ID: "m1", Role: "user", Content: "Hello", AgentID: "planner"},
+				},
+			}
+			plainMgr.RestoreSessions([]*session.Session{restored})
+
+			plainMock.addChunk(provider.StreamChunk{Done: true})
+			_, err := plainMgr.SendMessage(ctx, "sess-plain", "Continue.")
+			Expect(err).NotTo(HaveOccurred())
+			// No panic, no error — graceful no-op for non-seeder streamers.
+		})
+	})
 })
+
+// mockHistorySeederStreamer implements both streaming.Streamer and
+// streaming.HistorySeeder, capturing what was seeded for assertions.
+type mockHistorySeederStreamer struct {
+	mockStreamer
+	seededSessionID string
+	seededMessages  []provider.Message
+}
+
+func newMockHistorySeederStreamer() *mockHistorySeederStreamer {
+	return &mockHistorySeederStreamer{
+		mockStreamer: mockStreamer{chunks: make([]provider.StreamChunk, 0)},
+	}
+}
+
+func (m *mockHistorySeederStreamer) SeedHistory(sessionID string, messages []provider.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.seededSessionID = sessionID
+	m.seededMessages = messages
+}
 
 type mockStreamer struct {
 	mu                   sync.Mutex

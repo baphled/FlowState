@@ -622,8 +622,29 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	}
 	modelOverride := sess.CurrentModelID
 	providerOverride := sess.CurrentProviderID
+	// Capture prior messages before releasing the lock so we can pass them
+	// to SeedHistory outside the critical section.
+	priorMessages := make([]Message, len(sess.Messages)-1)
+	copy(priorMessages, sess.Messages[:len(sess.Messages)-1])
+
 	m.persistLocked(sess)
 	m.mu.Unlock()
+
+	// Pre-populate the engine's in-memory context store with the session's
+	// historical messages so the agent retains context after a server restart.
+	// Only fires when the streamer implements streaming.HistorySeeder and the
+	// session has prior turns; the engine marks the session seeded after the
+	// first call so subsequent turns are not duplicated.
+	if seeder, ok := m.streamer.(streaming.HistorySeeder); ok && len(priorMessages) > 0 {
+		providerMsgs := make([]provider.Message, 0, len(priorMessages))
+		for _, msg := range priorMessages {
+			providerMsgs = append(providerMsgs, provider.Message{
+				Role:    msg.Role,
+				Content: msg.Content,
+			})
+		}
+		seeder.SeedHistory(sessionID, providerMsgs)
+	}
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
 	if providerOverride != "" {
