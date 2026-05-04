@@ -44,10 +44,11 @@ function resolveHeading(toolName: string, args: Record<string, unknown>): string
   if (typeof raw !== 'string' || raw === '') {
     return toolName
   }
-  if (toolName === 'bash' && raw.length > bashTruncateLen) {
-    return raw.slice(0, bashTruncateLen) + '...'
-  }
-  return raw
+  const primaryArg =
+    toolName === 'bash' && raw.length > bashTruncateLen
+      ? raw.slice(0, bashTruncateLen) + '...'
+      : raw
+  return `${toolName} ${primaryArg}`
 }
 
 /**

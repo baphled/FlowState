@@ -83,7 +83,7 @@ func (c *SSEConsumer) WriteToolCall(name string) {
 		writeSSESkillLoad(c.w, c.flusher, strings.TrimPrefix(name, "skill:"))
 		return
 	}
-	writeSSEToolCall(c.w, c.flusher, name)
+	writeSSEToolCall(c.w, c.flusher, name, "")
 }
 
 // WriteToolResult writes a JSON-encoded tool result event as a server-sent event.

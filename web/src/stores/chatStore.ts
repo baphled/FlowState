@@ -801,7 +801,7 @@ export const useChatStore = defineStore('chat', {
       this.isStreaming = true
     },
 
-    handleToolCallEvent(info: { name?: unknown; status?: unknown; type?: unknown }): void {
+    handleToolCallEvent(info: { name?: unknown; status?: unknown; type?: unknown; input?: unknown }): void {
       const toolName = String(info.name ?? info.type ?? 'unknown')
       const status = String(info.status ?? 'running')
       // Remember the tool name so the next tool_result event can be routed
@@ -810,10 +810,16 @@ export const useChatStore = defineStore('chat', {
       // into below.
       this.lastToolName = toolName
 
+      // `input` carries the JSON-encoded arguments string emitted by the
+      // server. Store it as toolInput so toolRenderSpec can build the heading
+      // from the primary argument (e.g. "bash cat /home/user/foobar.md").
+      const toolInput = typeof info.input === 'string' && info.input ? info.input : undefined
+
       const toolMessage: Message = {
         id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: 'tool_result',
         toolName,
+        toolInput,
         content: '',
         timestamp: new Date().toISOString(),
         status,
