@@ -15,6 +15,7 @@ import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
 import { registerTools } from '@/tools/registerTools'
 import { installSessionHierarchyNav } from '@/composables/useSessionHierarchyNav'
+import { showToast } from '@/composables/useToast'
 
 defineOptions({ name: 'ChatView' })
 
@@ -189,7 +190,24 @@ let teardownHierarchyNav: (() => void) | null = null
 onMounted(async () => {
   registerTools()
   teardownHierarchyNav = installSessionHierarchyNav()
-  await chatStore.restoreStateFromBackend()
+  // Principal F7: a network blip during initial hydration must surface a
+  // toast and assign chatStore.error rather than leave the user staring at
+  // a blank screen with no signal. The store's restore action does NOT
+  // catch its own errors (they bubble for callers to decide UX) — this
+  // mount-time call is the only consumer that needs a user-facing
+  // recovery affordance.
+  try {
+    await chatStore.restoreStateFromBackend()
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load sessions'
+    chatStore.error = message
+    showToast({
+      title: 'Could not load chat history',
+      message,
+      variant: 'error',
+      duration: 6000,
+    })
+  }
   scrollMessagePaneToBottom('smooth')
   void swarmStore.connect()
 })
