@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -373,9 +372,9 @@ type Intent struct {
 	// makes the heuristic safe on a fresh session.
 	lastUserScrollAt time.Time
 	agentRegistry    *agent.Registry
-	// swarmRegistry is consulted by resolveAtMention after the agent
-	// registry misses; nil disables the swarm fallthrough so the
-	// premature-delegation-misfire detector (P7/C2) and any future
+	// swarmRegistry is consulted by the shared swarm.ResolveTarget after
+	// the agent registry misses; nil disables the swarm fallthrough so
+	// the premature-delegation-misfire detector (P7/C2) and any future
 	// routing surface degrade to the historical agent-only behaviour.
 	swarmRegistry *swarm.Registry
 	// pendingSwarmLeadID carries the swarm lead's agent id for the
@@ -2898,82 +2897,6 @@ func (i *Intent) applyEndOfStreamScrollHeuristic() {
 	})
 }
 
-// atMentionPattern matches @-mentions for agent names in a user message.
-// It captures the name token immediately after "@", allowing letters,
-// digits, underscores, and hyphens (the character set used in agent IDs
-// and aliases across the manifest corpus). The leading boundary is
-// enforced with a non-alphanumeric preceding character OR start-of-line so
-// "email@example.com" does not match.
-var atMentionPattern = regexp.MustCompile(`(?:^|[^a-zA-Z0-9_-])@([a-zA-Z0-9_][a-zA-Z0-9_-]*)`)
-
-// resolveAtMention is the T-swarm-2 entry point that turns a bare id
-// (the token after `@`, with the leading `@` already stripped) into
-// a routing decision. Per spec §2 the agent registry is consulted
-// first, then the swarm registry; misses on both surface a
-// *swarm.NotFoundError so callers can render the canonical "no agent
-// or swarm named '<id>'" error. Spec §1 guarantees global uniqueness
-// across the two registries — the precedence order is defensive
-// only.
-//
-// Expected:
-//   - id is the bare token (no leading `@`); empty yields KindNone +
-//     a NotFoundError so callers get a single error path.
-//   - agentReg may be nil; the resolver treats it as empty.
-//   - swarmReg may be nil; the resolver treats it as empty.
-//
-// Returns:
-//   - kind classifies the resolved registry (KindAgent / KindSwarm /
-//     KindNone).
-//   - manifest is the swarm Manifest when kind == KindSwarm; nil
-//     otherwise.
-//   - err is *swarm.NotFoundError on KindNone, nil on a hit.
-//
-// Side effects:
-//   - None.
-func resolveAtMention(id string, agentReg *agent.Registry, swarmReg *swarm.Registry) (swarm.Kind, *swarm.Manifest, error) {
-	hasAgent := func(name string) bool {
-		if agentReg == nil {
-			return false
-		}
-		if _, ok := agentReg.Get(name); ok {
-			return true
-		}
-		_, ok := agentReg.GetByNameOrAlias(name)
-		return ok
-	}
-	kind, manifest := swarm.Resolve(id, hasAgent, swarmReg)
-	if kind == swarm.KindNone {
-		return kind, nil, &swarm.NotFoundError{ID: id}
-	}
-	return kind, manifest, nil
-}
-
-// extractAtMentions returns the set of @-mentioned names found in the
-// given message, preserving their original casing. The names are filtered
-// downstream via the agent registry's GetByNameOrAlias helper.
-//
-// Expected:
-//   - message is the raw user prompt.
-//
-// Returns:
-//   - A slice of mention tokens without the leading "@"; empty if none.
-//
-// Side effects:
-//   - None.
-func extractAtMentions(message string) []string {
-	matches := atMentionPattern.FindAllStringSubmatch(message, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		if len(m) > 1 && m[1] != "" {
-			out = append(out, m[1])
-		}
-	}
-	return out
-}
-
 // detectPrematureDelegationMisfire returns a user-facing warning message
 // when the P7/C2 signature is detected: an agent whose manifest sets
 // can_delegate:false emits a bare tool_use as the very first content of
@@ -3018,18 +2941,43 @@ func detectPrematureDelegationMisfire(
 		return ""
 	}
 	// Signal 3: user message must reference a known agent OR swarm via @-mention.
-	// T-swarm-2 (spec §2): the resolver consults the agent registry first, then
-	// the swarm registry. Either kind of hit means the user wanted to route the
-	// turn elsewhere — the warning fires identically because the user-visible
-	// fix is the same: switch to a delegating agent so the mentioned target is
-	// reachable.
-	mentions := extractAtMentions(userMsg)
+	// Resolution flows through the shared swarm.ResolveTarget — the same
+	// resolver every other access method (CLI, API server, TUI swarm
+	// dispatch) consults — so all surfaces agree on what an @<id> means.
+	// See ADR - Swarm Dispatch Across Access Methods §"Resolver
+	// consolidation". Either kind of hit means the user wanted to route
+	// the turn elsewhere; the warning fires identically because the
+	// user-visible fix is the same: switch to a delegating agent so the
+	// mentioned target is reachable.
+	//
+	// Nil-swarmReg degradation: ResolveTarget short-circuits to a pass-
+	// through (id, nil, nil) when swarmReg is nil to preserve the CLI's
+	// bare-engine contract — that pass-through is unsafe here because it
+	// would falsely classify any token as a hit. We therefore fall back
+	// to a direct hasAgent check when the swarm registry is unavailable,
+	// which matches the historical agent-only detector behaviour pinned
+	// by the P7/C2 spec corpus.
+	mentions := swarm.ExtractAtMentions(userMsg)
 	if len(mentions) == 0 {
 		return ""
 	}
+	hasAgent := func(name string) bool {
+		if _, ok := reg.Get(name); ok {
+			return true
+		}
+		_, ok := reg.GetByNameOrAlias(name)
+		return ok
+	}
 	var target string
 	for _, name := range mentions {
-		if kind, _, err := resolveAtMention(name, reg, swarmReg); err == nil && kind != swarm.KindNone {
+		if swarmReg == nil {
+			if hasAgent(name) {
+				target = name
+				break
+			}
+			continue
+		}
+		if _, _, err := swarm.ResolveTarget(hasAgent, swarmReg, name); err == nil {
 			target = name
 			break
 		}
@@ -4821,7 +4769,7 @@ func (i *Intent) maybeBeginSwarmDispatch(message string) {
 		_, ok := i.agentRegistry.GetByNameOrAlias(name)
 		return ok
 	}
-	for _, mention := range extractAtMentions(message) {
+	for _, mention := range swarm.ExtractAtMentions(message) {
 		leadID, swarmCtx, err := swarm.ResolveTarget(hasAgent, i.swarmRegistry, mention)
 		if err != nil || swarmCtx == nil {
 			continue

@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
@@ -159,5 +160,43 @@ var _ = Describe("premature delegation misfire warning (P7/C2)", func() {
 		active := intent.NotificationManagerForTest().Active()
 		Expect(active).To(HaveLen(1),
 			"duplicate warnings on a single turn spam the user")
+	})
+
+	It("warns when the @-mention names a known swarm (resolves through swarm.ResolveTarget)", func() {
+		// Pins the post-consolidation contract: the detector resolves
+		// @-mentions via the shared swarm.ResolveTarget rather than the
+		// previous chat-local resolveAtMention. A swarm-id mention with a
+		// known swarm registered must trigger the warning identically to
+		// an agent-id mention. See ADR - Swarm Dispatch Across Access
+		// Methods §"Resolver consolidation".
+		swarmReg := swarm.NewRegistry()
+		swarmReg.Register(&swarm.Manifest{
+			ID:      "tech-team",
+			Lead:    "team-lead",
+			Members: []string{"team-lead"},
+			Context: swarm.ContextConfig{ChainPrefix: "tech"},
+		})
+		intent.SetSwarmRegistryForTest(swarmReg)
+
+		chat.SetTurnUserMessageForTest(intent, "please ask @tech-team to triage")
+
+		intent.HandleStreamChunkMsgForTest(chat.StreamChunkMsg{
+			ToolCallName: "query_vault",
+			ToolStatus:   "started",
+		})
+
+		active := intent.NotificationManagerForTest().Active()
+		Expect(active).NotTo(BeEmpty(),
+			"a swarm-id mention must trigger the misfire warning via the shared resolver")
+
+		var combined strings.Builder
+		for _, n := range active {
+			combined.WriteString(strings.ToLower(n.Title))
+			combined.WriteString(" | ")
+			combined.WriteString(strings.ToLower(n.Message))
+			combined.WriteString(" || ")
+		}
+		Expect(combined.String()).To(ContainSubstring("tech-team"),
+			"the warning must name the mentioned swarm so the user can act on it")
 	})
 })
