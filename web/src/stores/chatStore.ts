@@ -638,22 +638,12 @@ export const useChatStore = defineStore('chat', {
 
         await sendSessionMessage(sessionId, text)
 
-        // sendSessionMessage blocks until broker.Publish completes, which
-        // means the engine has finished and the accumulator has flushed the
-        // assistant message to the session store. If no streaming assistant
-        // message was built in the UI (race: POST reached the server before
-        // the SSE GET established its subscriber), load the completed
-        // response from the backend now rather than leaving the user message
-        // as the last visible turn.
-        const hasStreamedResponse = this.messages.some(
-          (m) => m.role === 'assistant' && (m.status === 'running' || m.status === 'completed'),
-        )
-        if (!hasStreamedResponse) {
-          const loaded = await fetchSessionMessages(sessionId)
-          this.messages = loaded.map((m) =>
-            m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
-          )
-        }
+        // SSE is the source of truth during a send. Never replace this.messages
+        // with a backend refetch here — that would inject backend-loaded assistant
+        // rows (status === undefined) that handleContentChunk adopts as targets,
+        // causing the prior response to appear to mutate into the new one. The
+        // [DONE] sentinel from SSE, the error handler, and the stall watchdog all
+        // handle the end-of-stream and failure paths.
 
         await this.loadSessions()
       } catch (error) {
@@ -706,7 +696,7 @@ export const useChatStore = defineStore('chat', {
       // assistant — backend-loaded messages have status === undefined and
       // would otherwise spuriously absorb a later turn's delegation
       // metadata. See bug-fix note "Session message upsert collision".
-      const target =
+      let target =
         this.messages.find(
           (message) =>
             message.status !== 'completed' &&
@@ -722,7 +712,20 @@ export const useChatStore = defineStore('chat', {
         this.messages.find((message) => message.status === 'running' && message.role === 'assistant')
 
       if (!target) {
-        return
+        // No existing delegation or running assistant — create a delegation_started
+        // card so in-flight delegations are visible immediately in the message thread
+        // rather than appearing only after the full session history reloads.
+        const newDelegation: Message = {
+          id: `delegation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'delegation_started',
+          content: '',
+          timestamp: new Date().toISOString(),
+          status: 'running',
+          targetAgent: info.target_agent,
+          chainId: info.chain_id,
+        }
+        this.messages.push(newDelegation)
+        target = newDelegation
       }
 
       if (info.target_agent !== undefined) {
@@ -788,6 +791,11 @@ export const useChatStore = defineStore('chat', {
 
       if (info.type === 'skill_load') {
         this.handleToolCallEvent({ ...info, name: info.name, status: 'running' })
+        return
+      }
+
+      if (info.type === 'delegation') {
+        this.applyDelegationEvent(payload)
         return
       }
 

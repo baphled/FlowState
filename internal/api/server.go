@@ -1508,21 +1508,26 @@ func writeSSEDelegation(w http.ResponseWriter, flusher http.Flusher, event strea
 	writeSSE(w, flusher, string(jsonData))
 }
 
-// writeSSEDelegationInfo emits a named "delegation" SSE event carrying the JSON-encoded
-// provider DelegationInfo payload. Subscribers can route on the event name to update
-// in-flight delegation progress without polling.
+// writeSSEDelegationInfo emits a plain SSE data line carrying the JSON-encoded
+// provider DelegationInfo payload. A "type":"delegation" field is injected so
+// the frontend message listener can route by type rather than by SSE event name.
+// Named SSE events (event: delegation) are only delivered to addEventListener
+// listeners registered for that specific name — not to the generic "message"
+// listener the frontend uses — so we must emit a plain data: line instead.
 func writeSSEDelegationInfo(w http.ResponseWriter, flusher http.Flusher, info *provider.DelegationInfo) {
 	if info == nil {
 		return
 	}
-	jsonData, err := json.Marshal(info)
+	type payload struct {
+		Type string `json:"type"`
+		*provider.DelegationInfo
+	}
+	data := payload{Type: "delegation", DelegationInfo: info}
+	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return
 	}
-	if _, err := w.Write([]byte("event: delegation\ndata: " + string(jsonData) + "\n\n")); err != nil {
-		return
-	}
-	flusher.Flush()
+	writeSSE(w, flusher, string(jsonData))
 }
 
 // writeSSE writes a server-sent event data line and flushes the response buffer.
