@@ -194,7 +194,7 @@ watch(
       <button
         class="send-button"
         data-testid="send-button"
-        :disabled="!inputText.trim()"
+        :disabled="!inputText.trim() || store.isLoading"
         @click="submit"
       >
         {{ store.isLoading ? '…' : 'Send' }}

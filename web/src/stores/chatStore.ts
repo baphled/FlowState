@@ -35,10 +35,24 @@ const SSE_STALL_TIMEOUT_MS = 60_000
 // the streaming lifecycle, never read by the UI.
 let stallWatchdog: ReturnType<typeof setTimeout> | null = null
 
+// Module-scoped EventSource handle. Only one SSE connection is valid at a
+// time — opening a second one without closing the first causes the broker
+// to register a duplicate subscriber, producing chunk duplication on the
+// next send. Both sendMessage and maybeReattachStream close any existing
+// connection before opening a new one.
+let activeEventSource: EventSource | null = null
+
 function clearStallWatchdog(): void {
   if (stallWatchdog !== null) {
     clearTimeout(stallWatchdog)
     stallWatchdog = null
+  }
+}
+
+function closeActiveEventSource(): void {
+  if (activeEventSource !== null) {
+    activeEventSource.close()
+    activeEventSource = null
   }
 }
 
@@ -366,22 +380,23 @@ export const useChatStore = defineStore('chat', {
       this.isStreaming = true
       this.armStallWatchdog()
 
-      const eventSource = subscribeSessionStream(sessionId)
+      closeActiveEventSource()
+      activeEventSource = subscribeSessionStream(sessionId)
       const close = (): void => {
-        eventSource.close()
+        closeActiveEventSource()
         clearStallWatchdog()
         this.isLoading = false
         this.isStreaming = false
       }
 
-      eventSource.addEventListener('message', (event) => {
+      activeEventSource.addEventListener('message', (event) => {
         const payload = (event as MessageEvent).data as string
         this.applyContentEvent(payload)
         if (payload === '[DONE]') {
           close()
         }
       })
-      eventSource.addEventListener('error', () => {
+      activeEventSource.addEventListener('error', () => {
         // Backend closed or proxy timed out — stop pretending we're still
         // streaming so the input gate unsticks. The user can fire a new
         // prompt to resume the conversation.
@@ -563,7 +578,6 @@ export const useChatStore = defineStore('chat', {
       }
       this.messages.push(optimisticMessage)
 
-      let eventSource: EventSource | null = null
       try {
         let sessionId = this.currentSessionId
         if (!sessionId) {
@@ -573,9 +587,23 @@ export const useChatStore = defineStore('chat', {
           persistSessionId(sessionId)
         }
 
-        eventSource = subscribeSessionStream(sessionId)
-        eventSource.addEventListener('message', (event) => {
-          this.applyContentEvent((event as MessageEvent).data as string)
+        closeActiveEventSource()
+        activeEventSource = subscribeSessionStream(sessionId)
+        activeEventSource.addEventListener('message', (event) => {
+          const payload = (event as MessageEvent).data as string
+          this.applyContentEvent(payload)
+          if (payload === '[DONE]') {
+            // Close immediately on stream end so the browser cannot
+            // auto-reconnect and register a second broker subscriber
+            // before the finally block runs.
+            closeActiveEventSource()
+          }
+        })
+        activeEventSource.addEventListener('error', () => {
+          // SSE connection dropped (stream ended or network error) —
+          // close immediately to prevent auto-reconnect registering a
+          // duplicate broker subscriber on the next send.
+          closeActiveEventSource()
         })
 
         await sendSessionMessage(sessionId, text)
@@ -589,9 +617,7 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
       } finally {
-        if (eventSource) {
-          eventSource.close()
-        }
+        closeActiveEventSource()
         clearStallWatchdog()
         this.isLoading = false
         this.isStreaming = false
@@ -816,10 +842,15 @@ export const useChatStore = defineStore('chat', {
         return
       }
       const content = this.messages[idx].content
+      // Kill any in-flight stream before truncating — without this, chunks
+      // arriving after the slice would re-insert content that was just removed.
+      closeActiveEventSource()
+      clearStallWatchdog()
+      this.isLoading = false
+      this.isStreaming = false
       await truncateSessionMessages(this.currentSessionId, messageId)
       this.messages = this.messages.slice(0, idx)
       this.composerText = content
-      this.isLoading = false
     },
 
     handleToolResultEvent(info: { content?: unknown }): void {
