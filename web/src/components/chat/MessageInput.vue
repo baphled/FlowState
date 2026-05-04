@@ -6,12 +6,20 @@ defineOptions({ name: 'MessageInput' })
 
 const store = useChatStore()
 const inputText = ref('')
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
     event.preventDefault()
     submit()
   }
+}
+
+function autoResize(): void {
+  const el = textareaRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 200)}px`
 }
 
 async function submit(): Promise<void> {
@@ -27,10 +35,12 @@ async function submit(): Promise<void> {
     <div class="input-row">
       <textarea
         v-model="inputText"
+        ref="textareaRef"
         class="message-input"
         data-testid="message-input"
-        placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+        placeholder="Type a message… (Enter to send, Shift+Enter or Alt+Enter for newline)"
         rows="3"
+        @input="autoResize"
         @keydown="handleKeydown"
       />
 
@@ -48,7 +58,7 @@ async function submit(): Promise<void> {
       {{ store.error }}
     </p>
 
-    <p class="input-hint">Enter to send · Shift+Enter for newline</p>
+    <p class="input-hint">Enter to send · Shift+Enter / Alt+Enter for newline</p>
   </div>
 </template>
 

@@ -6,6 +6,15 @@ import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
 
 defineOptions({ name: 'AgentPicker' })
 
+const props = withDefaults(
+  defineProps<{
+    readonly?: boolean
+  }>(),
+  {
+    readonly: false,
+  },
+)
+
 const chatStore = useChatStore()
 
 const isOpen = ref(false)
@@ -26,6 +35,10 @@ const agentItems = computed<FuzzySearchItem[]>(() =>
 )
 
 function openPicker(): void {
+  if (props.readonly) {
+    return
+  }
+
   isOpen.value = true
 }
 
@@ -48,6 +61,7 @@ onMounted(() => {
 <template>
   <span
     class="agent-picker"
+    :class="{ 'is-readonly': props.readonly }"
     data-testid="agent-picker"
     @click="openPicker"
   >
@@ -69,32 +83,29 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
   cursor: pointer;
-  padding: 0.2rem 0.55rem;
-  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  background: var(--bg-elevated);
-  max-width: 180px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  background: transparent;
+  transition: background 0.15s;
   user-select: none;
-}
-
-.agent-picker::after {
-  content: '\25BE';
-  font-size: 0.65rem;
-  flex-shrink: 0;
-  opacity: 0.6;
+  white-space: nowrap;
 }
 
 .agent-picker:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-bg);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+
+.agent-picker.is-readonly {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.65;
+}
+
+.agent-picker.is-readonly:hover {
+  background: transparent;
 }
 </style>

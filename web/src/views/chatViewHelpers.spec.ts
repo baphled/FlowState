@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collapseToolPairs, resolveAgentName } from './chatViewHelpers'
+import { collapseToolPairs, groupContextTools, resolveAgentName } from './chatViewHelpers'
 import type { Agent, Message } from '@/types'
 
 const agents: Agent[] = [
@@ -126,5 +126,89 @@ describe('collapseToolPairs', () => {
 
   it('returns an empty array for an empty input', () => {
     expect(collapseToolPairs([])).toEqual([])
+  })
+})
+
+describe('groupContextTools', () => {
+  it('returns flat array when no context tools are present', () => {
+    const messages: Message[] = [
+      makeMessage({ id: '1', content: 'hello' }),
+      makeMessage({ id: '2', content: 'world' }),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toEqual([
+      { type: 'message', message: messages[0] },
+      { type: 'message', message: messages[1] },
+    ])
+  })
+
+  it('groups 2+ consecutive context tool_results', () => {
+    const messages: Message[] = [
+      makeToolMessage('1', 'tool_result', 'read'),
+      makeToolMessage('2', 'tool_result', 'grep'),
+      makeToolMessage('3', 'tool_result', 'read'),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual({
+      type: 'context-group',
+      messages: messages,
+      toolCounts: { read: 2, grep: 1 },
+    })
+  })
+
+  it('does not group single context tool_result', () => {
+    const messages: Message[] = [
+      makeMessage({ id: '1', content: 'start' }),
+      makeToolMessage('2', 'tool_result', 'read'),
+      makeMessage({ id: '3', content: 'end' }),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toHaveLength(3)
+    expect(result[1]).toEqual({ type: 'message', message: messages[1] })
+  })
+
+  it('interrupts grouping by non-context tool', () => {
+    const messages: Message[] = [
+      makeToolMessage('1', 'tool_result', 'read'),
+      makeToolMessage('2', 'tool_result', 'read'),
+      makeToolMessage('3', 'tool_result', 'bash'),
+      makeToolMessage('4', 'tool_result', 'read'),
+      makeToolMessage('5', 'tool_result', 'read'),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toHaveLength(3)
+    expect(result[0].type).toBe('context-group')
+    expect(result[1]).toEqual({ type: 'message', message: messages[2] })
+    expect(result[2].type).toBe('context-group')
+  })
+
+  it('interrupts grouping by different role', () => {
+    const messages: Message[] = [
+      makeToolMessage('1', 'tool_result', 'read'),
+      makeToolMessage('2', 'tool_result', 'read'),
+      makeToolMessage('3', 'tool_call', 'read'),
+      makeToolMessage('4', 'tool_result', 'read'),
+      makeToolMessage('5', 'tool_result', 'read'),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toHaveLength(3)
+    expect(result[0].type).toBe('context-group')
+    expect(result[1].type).toBe('message')
+    expect(result[2].type).toBe('context-group')
+  })
+
+  it('handles empty array', () => {
+    expect(groupContextTools([])).toEqual([])
+  })
+
+  it('groups all context tools', () => {
+    const messages: Message[] = [
+      makeToolMessage('1', 'tool_result', 'read'),
+      makeToolMessage('2', 'tool_result', 'glob'),
+    ]
+    const result = groupContextTools(messages)
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('context-group')
   })
 })

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSwarmStore } from '@/stores/swarmStore'
-import { resolveAgentName, collapseToolPairs } from '@/views/chatViewHelpers'
+import { resolveAgentName, collapseToolPairs, groupContextTools } from '@/views/chatViewHelpers'
+import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -12,6 +13,8 @@ import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
 import DelegationPanel from '@/components/swarm/DelegationPanel.vue'
 import PlanPanel from '@/components/swarm/PlanPanel.vue'
+import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
+import { registerTools } from '@/tools/registerTools'
 
 defineOptions({ name: 'ChatView' })
 
@@ -20,14 +23,53 @@ const settingsStore = useSettingsStore()
 const swarmStore = useSwarmStore()
 
 const shellRef = ref<HTMLElement | null>(null)
+const messagePaneRef = ref<HTMLElement | null>(null)
 const isDraggingSidebar = ref(false)
 const showToolPanel = ref(true)
 const showDelegationPanel = ref(true)
 const showPlanPanel = ref(true)
 const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
+const currentSessionSummary = computed(() =>
+  chatStore.sessions.find((session) => session.id === chatStore.currentSessionId) ?? null,
+)
+const isReadonlyPicker = computed(() => Boolean(currentSessionSummary.value?.parentId))
 
-const messages = computed(() => collapseToolPairs(chatStore.messages))
+const groupedMessages = computed<GroupedMessageEntry[]>(() =>
+  groupContextTools(collapseToolPairs(chatStore.messages)),
+)
 const hasSidebar = computed(() => settingsStore.swarmPaneVisible)
+const lastMessage = computed(() => {
+  const messages = chatStore.messages
+  return messages.length > 0 ? messages[messages.length - 1] : null
+})
+const userScrolledUp = ref(false)
+
+async function scrollMessagePaneToBottom(): Promise<void> {
+  if (userScrolledUp.value) {
+    return
+  }
+
+  await nextTick()
+  const el = messagePaneRef.value
+  if (!el) {
+    return
+  }
+
+  el.scrollTo({
+    top: el.scrollHeight,
+    behavior: 'smooth',
+  })
+}
+
+function onMessagePaneScroll(): void {
+  const el = messagePaneRef.value
+  if (!el) {
+    return
+  }
+
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+  userScrolledUp.value = !atBottom
+}
 
 function agentNameFor(message: Message): string | undefined {
   return resolveAgentName(message, chatStore.availableAgentDetails, chatStore.agentId)
@@ -96,8 +138,33 @@ function showSwarmPaneAgain(): void {
   settingsStore.setSwarmPaneVisible(true)
 }
 
-onMounted(() => {
-  void chatStore.restoreStateFromBackend()
+watch(
+  () => chatStore.messages.length,
+  async () => {
+    await scrollMessagePaneToBottom()
+  },
+)
+
+watch(
+  () => lastMessage.value?.content?.length,
+  async () => {
+    await scrollMessagePaneToBottom()
+  },
+)
+
+watch(
+  () => chatStore.currentSessionId,
+  async () => {
+    await nextTick()
+    userScrolledUp.value = false
+    await scrollMessagePaneToBottom()
+  },
+)
+
+onMounted(async () => {
+  registerTools()
+  await chatStore.restoreStateFromBackend()
+  await scrollMessagePaneToBottom()
   void swarmStore.connect()
 })
 
@@ -119,26 +186,37 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <section class="message-pane" data-testid="chat-message-pane">
-        <div v-if="messages.length === 0" class="empty-state" data-testid="chat-empty-state">
+      <section ref="messagePaneRef" class="message-pane" data-testid="chat-message-pane" @scroll="onMessagePaneScroll">
+        <div v-if="groupedMessages.length === 0" class="empty-state" data-testid="chat-empty-state">
           Start a conversation with the selected agent.
         </div>
         <div v-else class="message-list" data-testid="message-list">
-          <MessageBubble
-            v-for="(message, index) in messages"
-            :key="`${message.role}-${index}`"
-            :message="message"
-            :agent-name="agentNameFor(message)"
-          />
+          <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? `${entry.message.role}-${index}` : `context-group-${index}`">
+            <MessageBubble
+              v-if="entry.type === 'message'"
+              :message="entry.message"
+              :agent-name="agentNameFor(entry.message)"
+            />
+            <ContextToolGroup
+              v-else-if="entry.type === 'context-group'"
+              :messages="entry.messages"
+              :tool-counts="entry.toolCounts"
+            />
+          </template>
         </div>
       </section>
 
       <div class="input-selector-bar" data-testid="input-selector-bar">
-        <AgentPicker />
-        <ModelPicker />
+        <AgentPicker :readonly="isReadonlyPicker" />
+        <ModelPicker :readonly="isReadonlyPicker" />
       </div>
 
-      <div v-if="chatStore.isLoading" class="loading-pulse" data-testid="loading-pulse" aria-hidden="true" />
+      <div
+        v-if="chatStore.isLoading && !chatStore.isStreaming"
+        class="loading-pulse"
+        data-testid="loading-pulse"
+        aria-hidden="true"
+      />
 
       <MessageInput />
     </div>

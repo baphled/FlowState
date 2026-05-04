@@ -24,6 +24,10 @@ const currentSessionDisplay = computed(() => {
 
 const hasSessions = computed(() => chatStore.sessions.length > 0)
 
+const parentSessions = computed(() =>
+  chatStore.sessions.filter((session) => !session.parentId)
+)
+
 async function createNewSession(): Promise<void> {
   await chatStore.newSession()
   chatStore.clearMessages()
@@ -81,7 +85,7 @@ async function selectSession(sessionId: string): Promise<void> {
         Recent Sessions
       </li>
       <li
-        v-for="session in chatStore.sessions"
+        v-for="session in parentSessions"
         :key="session.id"
         class="session-option"
         :class="{ active: session.id === chatStore.currentSessionId }"
