@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
@@ -577,6 +579,165 @@ var _ = Describe("DelegateTool delegation lifecycle bus publication", func() {
 				"async delegation.started's ChildSessionID must equal the task id surfaced to the caller")
 			Expect(started[0].Data.ParentSessionID).To(Equal(parent.ID))
 		})
+	})
+})
+
+var _ = Describe("DelegateTool pre-flight candidate check", func() {
+	var delegation agent.Delegation
+
+	BeforeEach(func() {
+		delegation = agent.Delegation{CanDelegate: true}
+	})
+
+	Context("when all failover candidates are rate-limited", func() {
+		It("returns an error before opening a stream", func() {
+			sentinel := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "must not be streamed", Done: true},
+				},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(sentinel)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+			health.MarkRateLimited("anthropic", "claude-sonnet-4-6", time.Now().Add(1*time.Hour))
+
+			targetEngine := engine.New(engine.Config{
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "restricted-agent",
+					Name:              "Restricted Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are restricted."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"restricted-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "restricted-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no available model candidates"))
+			Expect(sentinel.capturedRequest).To(BeNil(),
+				"Stream must never be opened when all candidates are rate-limited")
+		})
+	})
+
+	Context("when at least one candidate is healthy", func() {
+		It("proceeds to stream without error", func() {
+			sentinel := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "response", Done: true},
+				},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(sentinel)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+
+			targetEngine := engine.New(engine.Config{
+				ChatProvider:    sentinel,
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "healthy-agent",
+					Name:              "Healthy Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "You are healthy."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"healthy-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "healthy-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})
+
+var _ = Describe("DelegateTool parent model/provider override isolation", func() {
+	// Regression: when the parent session selects a specific provider/model
+	// (e.g. github-copilot), that selection must NOT propagate into child
+	// delegate engines via context. The delegate must use its own configured
+	// failover preferences.
+	It("does not forward the parent session's ProviderOverrideKey to the child engine", func() {
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest: agent.Manifest{
+				ID:                "explorer",
+				Name:              "Codebase Explorer",
+				Instructions:      agent.Instructions{SystemPrompt: "You explore code."},
+				ContextManagement: agent.DefaultContextManagement(),
+			},
+		})
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"explorer": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		)
+
+		// Simulate a parent session that has github-copilot selected.
+		parentCtx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "github")
+		parentCtx = context.WithValue(parentCtx, session.ModelOverrideKey{}, "copilot-gpt-4o")
+
+		_, err := delegateTool.Execute(parentCtx, tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "explorer",
+				"message":       "Find patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		Expect(childProvider.capturedRequest.Provider).NotTo(Equal("github"),
+			"delegate must not inherit the parent's ProviderOverrideKey")
+		Expect(childProvider.capturedRequest.Model).NotTo(Equal("copilot-gpt-4o"),
+			"delegate must not inherit the parent's ModelOverrideKey")
 	})
 })
 

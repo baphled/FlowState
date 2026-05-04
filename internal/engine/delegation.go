@@ -24,6 +24,24 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+// checkDelegationCandidates returns an error when the target engine has
+// preferences configured but all candidates are currently unavailable.
+// This prevents a delegation attempt certain to fail and surfaces a
+// diagnostic before the stream is opened.
+func checkDelegationCandidates(eng *Engine) error {
+	if eng == nil {
+		return nil
+	}
+	mgr := eng.FailoverManager()
+	if mgr == nil {
+		return nil
+	}
+	if len(mgr.Preferences()) > 0 && len(mgr.Candidates()) == 0 {
+		return errors.New("no available model candidates: all preferred providers are rate-limited or unavailable")
+	}
+	return nil
+}
+
 var (
 	errDelegationNotAllowed     = errors.New("delegation not allowed for this agent")
 	errRoutingFieldRequired     = errors.New("category or subagent_type must be provided")
@@ -1872,6 +1890,11 @@ func (d *DelegateTool) executeSync(
 	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
 	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
+	// The parent session's provider/model selection must not propagate into
+	// the child engine — the delegate uses its own configured failover
+	// preferences. Masking with "" disables the override check in engine.go.
+	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, "")
+	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, "")
 
 	var result delegationResult
 	dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result)
@@ -1976,6 +1999,10 @@ func (d *DelegateTool) runStreamThroughRunner(delegateCtx context.Context, targe
 // Side effects:
 //   - Calls RecordSuccess / RecordFailure on the historical breaker.
 func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, target delegationTarget, result *delegationResult) error {
+	if err := checkDelegationCandidates(target.engine); err != nil {
+		d.circuitBreaker.RecordFailure()
+		return fmt.Errorf("delegation failed: %w", err)
+	}
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(delegateCtx, target.agentID, target.message)
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
@@ -2023,6 +2050,13 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 		}
 	}()
 
+	if err := checkDelegationCandidates(target.engine); err != nil {
+		return &swarm.CategorisedError{
+			Category: swarm.CategoryTerminal,
+			MemberID: target.agentID,
+			Cause:    err,
+		}
+	}
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
 		return err
@@ -2564,6 +2598,8 @@ func (d *DelegateTool) executeAsync(
 
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
+		delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, "")
+		delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, "")
 		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, parentSessionID, outChan, hasOutput)
 		if err != nil {
 			return "", err
