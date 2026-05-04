@@ -246,7 +246,8 @@ describe('ChatView auto-scroll', () => {
     expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
   })
 
-  it('scrolls the message pane when the last streaming message content grows', async () => {
+  it('scrolls the message pane with instant behavior when the last streaming message content grows', async () => {
+    vi.useFakeTimers()
     mount(ChatView, {
       global: {
         stubs: {
@@ -265,8 +266,68 @@ describe('ChatView auto-scroll', () => {
     ]
     chatStore.isStreaming = true
     await nextTick()
+    scrollToSpy.mockClear()
 
     chatStore.messages[0].content = 'hello world'
+    await nextTick()
+    // Flush the requestAnimationFrame scheduled by scheduleInstantScroll
+    vi.runAllTimers()
+    await nextTick()
+
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'instant' })
+    vi.useRealTimers()
+  })
+
+  it('scrolls the message pane with smooth behavior when a new message is added', async () => {
+    mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    scrollToSpy.mockClear()
+    chatStore.messages = [
+      { id: 'user-1', role: 'user', content: 'hello', timestamp: new Date().toISOString() },
+    ]
+
+    await nextTick()
+    await nextTick()
+
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+  })
+
+  it('resets userScrolledUp to false when isLoading becomes true (submit re-engages auto-scroll)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    // Simulate user scrolling up — sets userScrolledUp to true
+    scrollMetrics.scrollTop = 0
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+    scrollToSpy.mockClear()
+
+    // Simulate submit starting — isLoading goes true
+    const chatStore = useChatStore()
+    chatStore.isLoading = true
+    await nextTick()
+
+    // Now a new message arrives; userScrolledUp should be false so scroll fires
+    chatStore.messages = [
+      { id: 'user-1', role: 'user', content: 'new message', timestamp: new Date().toISOString() },
+    ]
     await nextTick()
     await nextTick()
 
