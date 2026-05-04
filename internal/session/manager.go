@@ -74,6 +74,10 @@ type Session struct {
 // `Session.ParentSessionID` so restored or migrated sessions retain a
 // stable hierarchy. The JSON tag is camelCase to match the existing
 // frontend `SessionSummary` contract.
+//
+// IsStreaming is populated by the API layer (not by the manager) when the
+// session broker reports an active Publish for this session. The field
+// defaults to false; callers that have broker context set it after listing.
 type Summary struct {
 	ID                string    `json:"id"`
 	AgentID           string    `json:"agentId"`
@@ -82,6 +86,7 @@ type Summary struct {
 	CurrentProviderID string    `json:"currentProviderId,omitempty"`
 	ParentID          string    `json:"parentId,omitempty"`
 	Title             string    `json:"title"`
+	IsStreaming       bool      `json:"isStreaming"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`
 	MessageCount      int       `json:"messageCount"`

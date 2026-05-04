@@ -104,6 +104,8 @@ export interface SessionSummary {
   createdAt: string
   updatedAt: string
   messageCount: number
+  /** True when the backend broker has an active Publish in progress for this session. */
+  isStreaming?: boolean
 }
 
 export interface ModelInfo {

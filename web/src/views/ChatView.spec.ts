@@ -638,6 +638,70 @@ describe('ChatView read-only toolbar in child sessions', () => {
   })
 })
 
+describe('ChatView agent-activity indicator', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('shows agent-activity-indicator when isStreaming is true', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.isStreaming = true
+    chatStore.agentId = 'planner'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(true)
+  })
+
+  it('hides agent-activity-indicator when isStreaming is false', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.isStreaming = false
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(false)
+  })
+
+  it('shows the agent name in agent-activity-indicator when isStreaming is true', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.isStreaming = true
+    chatStore.agentId = 'planner'
+    await wrapper.vm.$nextTick()
+
+    const indicator = wrapper.find('[data-testid="agent-activity-indicator"]')
+    expect(indicator.exists()).toBe(true)
+    expect(indicator.text()).toContain('planner')
+  })
+})
+
 describe('ChatView message grouping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

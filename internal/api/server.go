@@ -597,6 +597,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 //
 // Side effects:
 //   - Writes a JSON array of session summaries.
+//   - Sets IsStreaming on each summary when a broker is configured and
+//     reports an active publish for that session.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -605,6 +607,11 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	summaries := s.sessionManager.ListSessions()
 	if summaries == nil {
 		summaries = []*session.Summary{}
+	}
+	if s.sessionBroker != nil {
+		for _, sum := range summaries {
+			sum.IsStreaming = s.sessionBroker.IsPublishing(sum.ID)
+		}
 	}
 	writeJSON(w, summaries)
 }

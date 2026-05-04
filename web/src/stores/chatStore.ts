@@ -316,7 +316,7 @@ export const useChatStore = defineStore('chat', {
         const todoStore = useTodoStore()
         todoStore.setCurrentSession(sessionForAgent.id)
         todoStore.hydrateFromMessages(sessionForAgent.id, this.messages)
-        this.maybeReattachStream(sessionForAgent.id)
+        this.maybeReattachStream(sessionForAgent.id, sessionForAgent.isStreaming === true)
         return
       }
 
@@ -349,7 +349,7 @@ export const useChatStore = defineStore('chat', {
       const todoStore = useTodoStore()
       todoStore.setCurrentSession(session.id)
       todoStore.hydrateFromMessages(session.id, this.messages)
-      this.maybeReattachStream(session.id)
+      this.maybeReattachStream(session.id, session.isStreaming === true)
     },
 
     // Re-attach a live SSE consumer when restored history shows the session
@@ -360,26 +360,35 @@ export const useChatStore = defineStore('chat', {
     // the consumer attaches and chunks arrive at the UI; if the backend has
     // already finished the EventSource closes cleanly without ever firing.
     //
-    // Detection heuristic: reattach when the session was in-flight at reload.
-    // Two signals indicate an incomplete response:
-    //   1. last message is the user turn — no assistant reply written yet
-    //      (real backend: accumulator only writes on stream-end)
-    //   2. last message is assistant with status === 'running' — backend has
-    //      a partial result (e.g. streamed incrementally or test mock)
-    // In both cases, the consumer subscribes; if the backend already finished
+    // Detection: two complementary signals are checked in order:
+    //   1. backendStreaming (from session summary isStreaming field) — the
+    //      broker reports an active publish; reconnect regardless of message
+    //      state. Covers the gap where the backend is streaming but the last
+    //      persisted message is an assistant entry with no 'running' status
+    //      (e.g. a partial response written mid-stream by the accumulator).
+    //   2. Message heuristic — last message is the user turn, or is an
+    //      assistant with status 'running'. Covers cases where the session
+    //      summary was fetched without an isStreaming flag (e.g. legacy API).
+    //
+    // In all cases, the consumer subscribes; if the backend already finished
     // (fast-path [DONE] from handleSessionStream), the EventSource closes
     // cleanly and the fallback fetch fills in the completed response.
     //
     // isLoading is set to true so the submit gate keeps blocking new sends
     // until [DONE] (or the watchdog) clears it.
-    maybeReattachStream(sessionId: string): void {
-      if (!sessionId || !this.messages.length) return
+    maybeReattachStream(sessionId: string, backendStreaming = false): void {
+      if (!sessionId) return
 
-      const lastMessage = this.messages[this.messages.length - 1]
-      const needsReattach =
-        lastMessage.role === 'user' ||
-        (lastMessage.role === 'assistant' && lastMessage.status === 'running')
-      if (!needsReattach) return
+      // Prefer the authoritative backend signal: if the broker reports an
+      // active publish, subscribe unconditionally.
+      if (!backendStreaming) {
+        if (!this.messages.length) return
+        const lastMessage = this.messages[this.messages.length - 1]
+        const needsReattach =
+          lastMessage.role === 'user' ||
+          (lastMessage.role === 'assistant' && lastMessage.status === 'running')
+        if (!needsReattach) return
+      }
 
       this.isLoading = true
       this.isStreaming = true

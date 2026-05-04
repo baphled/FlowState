@@ -244,6 +244,17 @@ onBeforeUnmount(() => {
         aria-hidden="true"
       />
 
+      <div
+        v-if="chatStore.isStreaming"
+        class="agent-activity-indicator"
+        data-testid="agent-activity-indicator"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="agent-activity-dot" aria-hidden="true" />
+        <span class="agent-activity-label">{{ chatStore.agentId }} is working…</span>
+      </div>
+
       <MessageInput />
     </div>
 
@@ -347,6 +358,36 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
   background-size: 200% 100%;
   animation: pulse-shimmer 1.5s ease-in-out infinite;
+}
+
+.agent-activity-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+
+.agent-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.agent-activity-label {
+  color: var(--text-muted);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
 }
 
 @keyframes pulse-shimmer {

@@ -1288,6 +1288,64 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 			Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
 		})
 	})
+
+	Context("isStreaming field in session list", func() {
+		It("emits isStreaming: false when no broker is configured for a session", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			srv.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]["id"]).To(Equal(sess.ID))
+			Expect(rows[0]).To(HaveKey("isStreaming"),
+				"frontend needs isStreaming on every summary to detect active sessions on page load")
+			Expect(rows[0]["isStreaming"]).To(BeFalse())
+		})
+
+		It("emits isStreaming: true for a session whose broker is actively publishing", func() {
+			broker := api.NewSessionBroker()
+			srvWithBroker := api.NewServer(
+				&mockStreamer{chunks: []provider.StreamChunk{}},
+				agent.NewRegistry(),
+				discovery.NewAgentDiscovery(nil),
+				nil,
+				api.WithSessionManager(mgr),
+				api.WithSessionBroker(broker),
+			)
+			sess, err := mgr.CreateSession("agent-streaming")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Start publishing in the background so the broker marks the session active.
+			chunks := make(chan provider.StreamChunk)
+			go broker.Publish(sess.ID, chunks)
+
+			// Give the goroutine time to set active before the request.
+			Eventually(func() bool {
+				return broker.IsPublishing(sess.ID)
+			}).Should(BeTrue())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
+			w := httptest.NewRecorder()
+			srvWithBroker.Handler().ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var rows []map[string]interface{}
+			Expect(json.Unmarshal(w.Body.Bytes(), &rows)).To(Succeed())
+			Expect(rows).To(HaveLen(1))
+			Expect(rows[0]["id"]).To(Equal(sess.ID))
+			Expect(rows[0]).To(HaveKey("isStreaming"))
+			Expect(rows[0]["isStreaming"]).To(BeTrue(),
+				"session list must expose isStreaming: true when the broker has an active publish for the session")
+
+			// Clean up: close the channel to end the publish goroutine.
+			close(chunks)
+		})
+	})
 })
 
 var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
