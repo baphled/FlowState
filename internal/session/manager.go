@@ -726,15 +726,32 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 //     stream through the new agent rather than the original session agent.
 func (m *Manager) UpdateSessionAgent(sessionID, agentID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	sess, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return ErrSessionNotFound
 	}
 
 	sess.CurrentAgentID = agentID
-	m.persistLocked(sess)
+	sessionsDir := m.sessionsDir
+	persistFn := m.persistFn
+	var snapshot *Session
+	if sessionsDir != "" {
+		snap := *sess
+		msgs := make([]Message, len(sess.Messages))
+		copy(msgs, sess.Messages)
+		snap.Messages = msgs
+		snapshot = &snap
+	}
+	m.mu.Unlock()
+
+	if snapshot != nil {
+		fn := persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		_ = fn(sessionsDir, snapshot)
+	}
 	return nil
 }
 
@@ -755,16 +772,33 @@ func (m *Manager) UpdateSessionAgent(sessionID, agentID string) error {
 //   - Persists the change to the session sidecar via persistLocked.
 func (m *Manager) UpdateSessionModel(sessionID, providerID, modelID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	sess, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return ErrSessionNotFound
 	}
 
 	sess.CurrentProviderID = providerID
 	sess.CurrentModelID = modelID
-	m.persistLocked(sess)
+	sessionsDir := m.sessionsDir
+	persistFn := m.persistFn
+	var snapshot *Session
+	if sessionsDir != "" {
+		snap := *sess
+		msgs := make([]Message, len(sess.Messages))
+		copy(msgs, sess.Messages)
+		snap.Messages = msgs
+		snapshot = &snap
+	}
+	m.mu.Unlock()
+
+	if snapshot != nil {
+		fn := persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		_ = fn(sessionsDir, snapshot)
+	}
 	return nil
 }
 

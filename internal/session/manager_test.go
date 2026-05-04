@@ -1389,6 +1389,203 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// ── Lock contention: GetSession must not block while UpdateDelegation persists ──
+	//
+	// UpdateDelegation holds m.mu (write lock) while calling persistLocked on
+	// every streaming delegation chunk. Because sync.RWMutex queues writers
+	// before readers, a pending write blocks GetSession reads for the full
+	// duration of file I/O.
+	//
+	// The fix: snapshot state then release the lock BEFORE calling persist.
+
+	Describe("UpdateDelegation vs GetSession lock contention", func() {
+		var (
+			lockMgr     *session.Manager
+			persistGate chan struct{}
+			sess        *session.Session
+		)
+
+		BeforeEach(func() {
+			persistGate = make(chan struct{})
+			lockMgr = session.NewManager(newMockStreamer())
+			lockMgr.SetSessionsDir(GinkgoT().TempDir())
+
+			var err error
+			sess, err = lockMgr.CreateSession("agent-1")
+			Expect(err).NotTo(HaveOccurred())
+			// AppendMessage must complete before the blocking gate is installed.
+			lockMgr.AppendMessage(sess.ID, session.Message{Role: "assistant", Content: "delegating", ChainID: "chain-1"})
+
+			lockMgr.SetPersistFnForTest(func(_ string, _ *session.Session) error {
+				<-persistGate
+				return nil
+			})
+		})
+
+		AfterEach(func() {
+			select {
+			case <-persistGate:
+			default:
+				close(persistGate)
+			}
+		})
+
+		It("allows GetSession to return while UpdateDelegation is blocked in persist", func() {
+			updateStarted := make(chan struct{})
+			updateDone := make(chan struct{})
+			go func() {
+				close(updateStarted)
+				lockMgr.UpdateDelegation(sess.ID, "chain-1", func(m *session.Message) {
+					m.Content = "updated"
+				})
+				close(updateDone)
+			}()
+
+			<-updateStarted
+			time.Sleep(5 * time.Millisecond)
+
+			getSessDone := make(chan error, 1)
+			go func() {
+				_, err := lockMgr.GetSession(sess.ID)
+				getSessDone <- err
+			}()
+
+			select {
+			case err := <-getSessDone:
+				Expect(err).NotTo(HaveOccurred())
+			case <-time.After(200 * time.Millisecond):
+				Fail("GetSession blocked while UpdateDelegation was holding the write lock during persistence")
+			}
+
+			close(persistGate)
+			Eventually(updateDone, "1s").Should(BeClosed())
+		})
+	})
+
+	// ── Lock contention: GetSession must not block while UpdateSessionAgent persists ──
+
+	Describe("UpdateSessionAgent vs GetSession lock contention", func() {
+		var (
+			lockMgr     *session.Manager
+			persistGate chan struct{}
+			sess        *session.Session
+		)
+
+		BeforeEach(func() {
+			persistGate = make(chan struct{})
+			lockMgr = session.NewManager(newMockStreamer())
+			lockMgr.SetSessionsDir(GinkgoT().TempDir())
+
+			lockMgr.SetPersistFnForTest(func(_ string, _ *session.Session) error {
+				<-persistGate
+				return nil
+			})
+
+			var err error
+			sess, err = lockMgr.CreateSession("agent-1")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			select {
+			case <-persistGate:
+			default:
+				close(persistGate)
+			}
+		})
+
+		It("allows GetSession to return while UpdateSessionAgent is blocked in persist", func() {
+			updateStarted := make(chan struct{})
+			updateDone := make(chan struct{})
+			go func() {
+				close(updateStarted)
+				_ = lockMgr.UpdateSessionAgent(sess.ID, "agent-switched")
+				close(updateDone)
+			}()
+
+			<-updateStarted
+			time.Sleep(5 * time.Millisecond)
+
+			getSessDone := make(chan error, 1)
+			go func() {
+				_, err := lockMgr.GetSession(sess.ID)
+				getSessDone <- err
+			}()
+
+			select {
+			case err := <-getSessDone:
+				Expect(err).NotTo(HaveOccurred())
+			case <-time.After(200 * time.Millisecond):
+				Fail("GetSession blocked while UpdateSessionAgent was holding the write lock during persistence")
+			}
+
+			close(persistGate)
+			Eventually(updateDone, "1s").Should(BeClosed())
+		})
+	})
+
+	// ── Lock contention: GetSession must not block while UpdateSessionModel persists ──
+
+	Describe("UpdateSessionModel vs GetSession lock contention", func() {
+		var (
+			lockMgr     *session.Manager
+			persistGate chan struct{}
+			sess        *session.Session
+		)
+
+		BeforeEach(func() {
+			persistGate = make(chan struct{})
+			lockMgr = session.NewManager(newMockStreamer())
+			lockMgr.SetSessionsDir(GinkgoT().TempDir())
+
+			lockMgr.SetPersistFnForTest(func(_ string, _ *session.Session) error {
+				<-persistGate
+				return nil
+			})
+
+			var err error
+			sess, err = lockMgr.CreateSession("agent-1")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			select {
+			case <-persistGate:
+			default:
+				close(persistGate)
+			}
+		})
+
+		It("allows GetSession to return while UpdateSessionModel is blocked in persist", func() {
+			updateStarted := make(chan struct{})
+			updateDone := make(chan struct{})
+			go func() {
+				close(updateStarted)
+				_ = lockMgr.UpdateSessionModel(sess.ID, "anthropic", "claude-opus-4.7")
+				close(updateDone)
+			}()
+
+			<-updateStarted
+			time.Sleep(5 * time.Millisecond)
+
+			getSessDone := make(chan error, 1)
+			go func() {
+				_, err := lockMgr.GetSession(sess.ID)
+				getSessDone <- err
+			}()
+
+			select {
+			case err := <-getSessDone:
+				Expect(err).NotTo(HaveOccurred())
+			case <-time.After(200 * time.Millisecond):
+				Fail("GetSession blocked while UpdateSessionModel was holding the write lock during persistence")
+			}
+
+			close(persistGate)
+			Eventually(updateDone, "1s").Should(BeClosed())
+		})
+	})
+
 	// ── Context seeding after restart ────────────────────────────────────────
 	//
 	// When a session has prior messages and the streamer implements

@@ -56,18 +56,36 @@ func (m *Manager) AppendMessage(sessionID string, msg Message) {
 //     the session. No-op when the session or matching message is absent.
 func (m *Manager) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
+	var snapshot *Session
 	for i := len(sess.Messages) - 1; i >= 0; i-- {
 		if sess.Messages[i].ChainID == chainID {
 			mutate(&sess.Messages[i])
-			m.persistLocked(sess)
+			sessionsDir := m.sessionsDir
+			persistFn := m.persistFn
+			if sessionsDir != "" {
+				snap := *sess
+				msgs := make([]Message, len(sess.Messages))
+				copy(msgs, sess.Messages)
+				snap.Messages = msgs
+				snapshot = &snap
+			}
+			m.mu.Unlock()
+			if snapshot != nil {
+				fn := persistFn
+				if fn == nil {
+					fn = PersistSession
+				}
+				_ = fn(sessionsDir, snapshot)
+			}
 			return
 		}
 	}
+	m.mu.Unlock()
 }
 
 // streamAccumState holds mutable accumulation state within AccumulateStream.
