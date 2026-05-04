@@ -315,8 +315,11 @@ describe('chatStore - sendMessage', () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
+    // The in-flight streaming target is identified by status === 'running'.
+    // Backend-loaded rows (status === undefined) must NOT be matched —
+    // see "Session message upsert collision" bug-fix note.
     store.messages = [
-      { id: 'msg-pending', role: 'assistant', content: '', timestamp: '', status: 'pending' },
+      { id: 'msg-running', role: 'assistant', content: '', timestamp: '', status: 'running' },
     ]
 
     FakeEventSource.instances.length = 0
@@ -406,8 +409,9 @@ describe('chatStore - sendMessage', () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
+    // The streaming target is identified by status === 'running'.
     store.messages = [
-      { id: 'msg-pending', role: 'assistant', content: '', timestamp: '', status: 'pending' },
+      { id: 'msg-running', role: 'assistant', content: '', timestamp: '', status: 'running' },
     ]
 
     FakeEventSource.instances.length = 0
@@ -457,10 +461,20 @@ describe('chatStore - sendMessage', () => {
     expect(store.isStreaming).toBe(true)
   })
 
-  it('appends content chunks to an existing in-flight assistant message', () => {
+  it('appends content chunks to an existing in-flight assistant message (status === running)', () => {
     const store = useChatStore()
+    // The in-flight target is explicitly status === 'running'. A bare
+    // assistant row with no status (e.g. backend-canonical history) must
+    // NOT be a target — see "Session message upsert collision" bug-fix
+    // note for why this matters across multiple turns.
     store.messages = [
-      { id: 'assistant-1', role: 'assistant', content: 'hel', timestamp: new Date().toISOString() },
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'hel',
+        timestamp: new Date().toISOString(),
+        status: 'running',
+      },
     ]
 
     store.applyContentEvent(JSON.stringify({ content: 'lo' }))
@@ -868,6 +882,154 @@ describe('chatStore - hierarchy getters', () => {
 
     expect(store.previousSiblingSessionId).toBeNull()
     expect(store.nextSiblingSessionId).toBeNull()
+  })
+})
+
+describe('chatStore - multi-turn streaming (regression: prior assistant must not absorb next turn\'s chunks)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  // The user-reported symptom: "the session keeps upserting the last agent
+  // response, instead of updating with the new response to the last user
+  // prompt. Reloading the page resolves this."
+  //
+  // Root cause: handleContentChunk treats any assistant message with
+  // status !== 'completed' as the in-flight target. After turn N completes,
+  // sendMessage replaces this.messages with backend-canonical history whose
+  // assistant rows have status === undefined (the backend has no notion of a
+  // streaming "running" state). Turn N+1's first chunk reverse-finds the
+  // previous turn's assistant (undefined !== 'completed' → true) and
+  // overwrites it. The user watches the prior response mutate into the new
+  // one in real time. Reloading the page fetches canonical history afresh,
+  // which restores both messages.
+  //
+  // The contract being pinned: backend-loaded history must NEVER be a
+  // streaming target. Only an assistant message that was created by the
+  // current SSE stream (status === 'running') is a valid target. Once a
+  // chunk stream ends ([DONE] sentinel or sendMessage refetch), the prior
+  // assistant must be sealed so subsequent chunks cannot land on it.
+
+  it('does not append a second turn\'s chunks onto the previous turn\'s assistant message', () => {
+    const store = useChatStore()
+
+    // Simulate state at the start of turn 2: history has been refetched
+    // from the backend after turn 1, so the prior assistant carries no
+    // status (backend canonical shape).
+    store.messages = [
+      { id: 'user-1', role: 'user', content: 'first prompt', timestamp: '2026-05-04T00:00:00Z' },
+      { id: 'assistant-1', role: 'assistant', content: 'first response', timestamp: '2026-05-04T00:00:01Z' },
+      { id: 'user-2-optimistic', role: 'user', content: 'second prompt', timestamp: '2026-05-04T00:00:02Z' },
+    ]
+
+    // Turn 2's first chunk arrives. It must land on a NEW assistant
+    // message, not splice into 'first response'.
+    store.applyContentEvent(JSON.stringify({ content: 'second' }))
+    store.applyContentEvent(JSON.stringify({ content: ' response' }))
+
+    // The first response remains untouched.
+    const first = store.messages.find((m) => m.id === 'assistant-1')
+    expect(first?.content).toBe('first response')
+
+    // A new assistant message exists for turn 2.
+    const assistantMessages = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistantMessages).toHaveLength(2)
+    expect(assistantMessages[1].content).toBe('second response')
+    expect(assistantMessages[1].id).not.toBe('assistant-1')
+  })
+
+  it('seals the in-flight assistant on [DONE] so chunks from a subsequent turn create a new message', () => {
+    const store = useChatStore()
+    store.messages = []
+
+    // Turn 1 streams.
+    store.applyContentEvent(JSON.stringify({ content: 'turn one' }))
+    store.applyContentEvent('[DONE]')
+
+    // Turn 2 streams. First chunk must NOT append onto turn 1's message.
+    store.applyContentEvent(JSON.stringify({ content: 'turn two' }))
+
+    const assistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants).toHaveLength(2)
+    expect(assistants[0].content).toBe('turn one')
+    expect(assistants[1].content).toBe('turn two')
+  })
+
+  it('preserves prior assistant content across two full sendMessage cycles with realistic chunked SSE', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    FakeEventSource.instances.length = 0
+
+    // Turn 1: chunks then refetch returns canonical [user1, assistant1].
+    let resolveSend1: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend1 = resolve
+        }),
+    )
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '2026-05-04T00:00:00Z' },
+      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '2026-05-04T00:00:01Z' },
+    ])
+
+    const send1 = store.sendMessage('first prompt')
+    await Promise.resolve(); await Promise.resolve()
+    const es1 = FakeEventSource.instances[0]
+    es1.fire('message', { content: 'first ' })
+    es1.fire('message', { content: 'response' })
+    es1.fire('message', '[DONE]')
+    resolveSend1({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+    await send1
+
+    // After turn 1, messages reflect backend canonical history.
+    expect(store.messages.map((m) => m.content)).toEqual(['first prompt', 'first response'])
+
+    // Turn 2: chunks for the second response. The bug: these chunks land
+    // on srv-a1 because its status is undefined (passes the
+    // status !== 'completed' guard).
+    let resolveSend2: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend2 = resolve
+        }),
+    )
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '2026-05-04T00:00:00Z' },
+      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '2026-05-04T00:00:01Z' },
+      { id: 'srv-u2', role: 'user', content: 'second prompt', timestamp: '2026-05-04T00:00:02Z' },
+      { id: 'srv-a2', role: 'assistant', content: 'second response', timestamp: '2026-05-04T00:00:03Z' },
+    ])
+
+    const send2 = store.sendMessage('second prompt')
+    await Promise.resolve(); await Promise.resolve()
+    const es2 = FakeEventSource.instances[1]
+
+    // Capture the live mid-stream snapshot — this is what the user sees
+    // before refetch resolves. The bug shows up here.
+    es2.fire('message', { content: 'second ' })
+    es2.fire('message', { content: 'response' })
+
+    // Live snapshot assertions: turn 1's assistant content is still intact
+    // and a new assistant has accumulated turn 2's chunks. Pre-fix, the
+    // first response was being mutated into "first responsesecond response".
+    const firstAssistantLive = store.messages.find((m) => m.id === 'srv-a1')
+    expect(firstAssistantLive?.content).toBe('first response')
+
+    const assistantsLive = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistantsLive).toHaveLength(2)
+    expect(assistantsLive[1].content).toBe('second response')
+    expect(assistantsLive[1].id).not.toBe('srv-a1')
+
+    es2.fire('message', '[DONE]')
+    resolveSend2({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+    await send2
   })
 })
 

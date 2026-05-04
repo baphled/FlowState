@@ -410,6 +410,12 @@ export const useChatStore = defineStore('chat', {
         return
       }
 
+      // Prefer matching by chain_id or target_agent — those identify a
+      // specific in-flight delegation. Fall back to the in-flight
+      // streaming assistant (status === 'running'), NOT any non-completed
+      // assistant — backend-loaded messages have status === undefined and
+      // would otherwise spuriously absorb a later turn's delegation
+      // metadata. See bug-fix note "Session message upsert collision".
       const target =
         this.messages.find(
           (message) =>
@@ -423,7 +429,7 @@ export const useChatStore = defineStore('chat', {
             info.target_agent !== undefined &&
             message.targetAgent === info.target_agent,
         ) ??
-        this.messages.find((message) => message.status !== 'completed' && message.role === 'assistant')
+        this.messages.find((message) => message.status === 'running' && message.role === 'assistant')
 
       if (!target) {
         return
@@ -448,6 +454,18 @@ export const useChatStore = defineStore('chat', {
 
     applyContentEvent(payload: string): void {
       if (payload === '[DONE]') {
+        // Seal any in-flight assistant message so a later turn's chunks
+        // cannot land on it. Without this, chatStore treats backend-loaded
+        // assistant rows (status === undefined) as valid streaming targets
+        // and turn N+1's chunks overwrite turn N's response in-place. See
+        // bug-fix note "Session message upsert collision" — pre-fix the
+        // user observed the previous response mutating into the new one.
+        const inFlight = [...this.messages].reverse().find(
+          (message) => message.role === 'assistant' && message.status === 'running',
+        )
+        if (inFlight) {
+          inFlight.status = 'completed'
+        }
         this.isStreaming = false
         return
       }
@@ -499,13 +517,20 @@ export const useChatStore = defineStore('chat', {
         return
       }
 
+      // Only an assistant message currently being streamed is a valid
+      // target. The previous condition `status !== 'completed'` admitted
+      // backend-loaded rows (status === undefined) and caused turn N+1's
+      // chunks to land on turn N's message. The contract is now: a
+      // chunk-stream target MUST have been created by this store with
+      // status === 'running'. Backend-canonical history can never be a
+      // target. See bug-fix note "Session message upsert collision".
       let target = [...this.messages].reverse().find(
-        (message) => message.role === 'assistant' && message.status !== 'completed',
+        (message) => message.role === 'assistant' && message.status === 'running',
       )
 
       if (!target) {
         target = {
-          id: `streaming-${Date.now()}`,
+          id: `streaming-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'assistant',
           content: '',
           timestamp: new Date().toISOString(),
