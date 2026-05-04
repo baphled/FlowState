@@ -209,4 +209,70 @@ describe('useSessionStream', () => {
       expect(stream.isActive()).toBe(false)
     })
   })
+
+  describe('post-disconnect event flush guard (compounding bug C-9)', () => {
+    // EventSource.close() does not synchronously drain pending message-queued
+    // events. A chunk that was already in flight when the consumer called
+    // disconnect can land on the listener after the finally block executed,
+    // potentially re-setting isStreaming=true with no producer left to clear
+    // it. The composable must drop these stale events.
+
+    it('drops a `message` event that arrives after disconnect', () => {
+      const stream = useSessionStream()
+      const onMessage = vi.fn()
+      const onError = vi.fn()
+      const onStall = vi.fn()
+
+      stream.connect('session-1', { onMessage, onError, onStall })
+      const es = FakeEventSource.instances[0]
+
+      // Verify the listener is wired correctly while the stream is alive.
+      es.fire('message', 'live-chunk')
+      expect(onMessage).toHaveBeenCalledWith('live-chunk')
+
+      stream.disconnect()
+      onMessage.mockClear()
+
+      // A late chunk arrives via the same listener handle (real EventSource
+      // queue would do this if the chunk was already in the read buffer
+      // when close() fired). The composable must NOT forward it.
+      es.fire('message', 'late-chunk')
+      expect(onMessage).not.toHaveBeenCalled()
+    })
+
+    it('drops an `error` event that arrives after disconnect', () => {
+      const stream = useSessionStream()
+      const onMessage = vi.fn()
+      const onError = vi.fn()
+      const onStall = vi.fn()
+
+      stream.connect('session-1', { onMessage, onError, onStall })
+      const es = FakeEventSource.instances[0]
+
+      stream.disconnect()
+      onError.mockClear()
+
+      // A late error event (e.g. network glitch reported after the close
+      // call already returned) must not retrip the consumer's onError.
+      es.fire('error', null)
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('reopens the gate on a fresh connect so new events are forwarded again', () => {
+      const stream = useSessionStream()
+      const onMessage = vi.fn()
+      const callbacks = { onMessage, onError: vi.fn(), onStall: vi.fn() }
+
+      stream.connect('session-1', callbacks)
+      stream.disconnect()
+      onMessage.mockClear()
+
+      // New connection — the new EventSource's events must flow normally.
+      stream.connect('session-2', callbacks)
+      const second = FakeEventSource.instances[1]
+      second.fire('message', 'fresh-chunk')
+
+      expect(onMessage).toHaveBeenCalledWith('fresh-chunk')
+    })
+  })
 })
