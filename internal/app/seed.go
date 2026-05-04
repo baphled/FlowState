@@ -687,3 +687,73 @@ func copySingleFile(srcFS fs.FS, filename, destPath string) error {
 
 	return nil
 }
+
+// SeedSkillsDir copies every embedded skill bundle from srcFS into
+// destDir, preserving the bundle directory layout (one subdirectory
+// per skill, each containing SKILL.md and optional sibling resources).
+//
+// Skills differ from agents (a flat .md tree) and swarms (a flat .yml
+// tree): each skill is its own directory because the pattern allows
+// for sibling references, examples and scripts to ship alongside the
+// SKILL.md. SeedSkillsDir therefore walks srcFS recursively under the
+// "skills" subtree, mirrors directory creation, and copies regular
+// files via copySingleFile so the existing skip-on-existing semantics
+// extend to skill bundles — user edits to SKILL.md (or to a sibling
+// resource) survive a FlowState upgrade exactly the way they do for
+// agent manifests.
+//
+// This seeder is the runtime bridge between the binary's bundled
+// skills (//go:embed skills/*/SKILL.md in embed_skills.go) and the
+// SkillDir that engine.LoadAlwaysActiveSkills walks on every prompt
+// build. Without it, a fresh `flowstate` install resolves
+// cfg.SkillDir to ~/.config/flowstate/skills/ — an empty directory —
+// and FileSkillLoader.LoadAll silently returns the empty slice,
+// stripping the four always-active skills (pre-action, discipline,
+// skill-discovery, agent-discovery) from every agent prompt.
+//
+// Expected:
+//   - srcFS is a valid fs.FS containing a "skills" subdirectory whose
+//     entries are bundle directories with SKILL.md inside.
+//   - destDir is a writable destination directory path (created if
+//     missing).
+//
+// Returns:
+//   - An error if the source has no skills directory, the destination
+//     cannot be created, or any I/O step fails.
+//   - nil on success, including when every bundle file already exists.
+//
+// Side effects:
+//   - Creates destDir if it does not exist.
+//   - Creates per-bundle subdirectories under destDir as needed.
+//   - Copies each bundle file from srcFS to destDir only when the
+//     destination file does not already exist (skip-on-existing).
+func SeedSkillsDir(srcFS fs.FS, destDir string) error {
+	skillsRoot, err := fs.Sub(srcFS, "skills")
+	if err != nil {
+		return fmt.Errorf("skills directory not found in source: %w", err)
+	}
+
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+
+	return fs.WalkDir(skillsRoot, ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walking embedded skills %q: %w", path, walkErr)
+		}
+		if path == "." {
+			return nil
+		}
+		target := filepath.Join(destDir, path)
+		if d.IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("creating bundle subdir %q: %w", target, err)
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return copySingleFile(skillsRoot, path, target)
+	})
+}

@@ -57,7 +57,10 @@ var _ = Describe("autoresearch program-of-record skill", func() {
 		_, thisFile, _, ok := runtime.Caller(0)
 		Expect(ok).To(BeTrue(), "runtime.Caller must resolve test file path")
 		repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
-		skillPath := filepath.Join(repoRoot, "skills", "autoresearch", "SKILL.md")
+		// Skill bundles ship as a go:embed payload from internal/app/skills/
+		// so the binary can seed them into cfg.SkillDir on startup
+		// (mirrors agents/swarms; see internal/app/embed_skills.go).
+		skillPath := filepath.Join(repoRoot, "internal", "app", "skills", "autoresearch", "SKILL.md")
 
 		loader := skill.NewFileSkillLoader(filepath.Dir(filepath.Dir(skillPath)))
 		var err error
