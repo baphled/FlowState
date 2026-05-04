@@ -141,9 +141,29 @@ watch(
   },
 )
 
+// Auto-scroll watcher: track every shape of the last message that can change
+// without the message-list length changing. Pre-fix only `content.length`
+// was tracked — delegation/tool in-place mutations (toolCalls increments,
+// lastTool replacements, targetAgent assignments) updated the bubble in
+// place and the progress card scrolled out of view as new chunks arrived
+// (compounding bug C-8 from the PR-2 plan). Cheap derived-shape watcher
+// over a small object — Vue diffs by value-equality so unrelated stores
+// don't fire it.
 watch(
-  () => lastMessage.value?.content?.length,
+  () => {
+    const m = lastMessage.value
+    if (!m) return null
+    return {
+      contentLength: m.content?.length ?? 0,
+      // toolCalls is a count (number), not an array — track its value.
+      toolCalls: m.toolCalls ?? 0,
+      lastTool: m.lastTool ?? '',
+      targetAgent: m.targetAgent ?? '',
+      status: m.status ?? '',
+    }
+  },
   scheduleInstantScroll,
+  { deep: true },
 )
 
 watch(
