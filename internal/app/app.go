@@ -1511,6 +1511,15 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 	// diagnostic during swarm-test verification: every dispatchMemberGates
 	// call short-circuited at "no active swarm context" pre-fix).
 	dt.WithOwnerEngine(eng)
+
+	// Install the engine's bus so DelegateTool can publish
+	// `delegation.{started,completed,failed}` lifecycle events at the
+	// six seams identified by Plans/Delegation Bus Bridge — Engine to
+	// SSE (May 2026). The same bus the API SSE handler subscribes to
+	// at app.go:700 — see api.WithEventBus(eng.EventBus()).
+	if eng != nil {
+		dt.WithEventBus(eng.EventBus())
+	}
 }
 
 // buildSwarmGateRunner constructs the production swarm gate dispatcher

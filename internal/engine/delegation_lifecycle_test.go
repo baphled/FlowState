@@ -2,12 +2,16 @@ package engine_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
@@ -323,3 +327,318 @@ var _ = Describe("DelegateTool lifecycle", func() {
 		})
 	})
 })
+
+// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"Test
+// Strategy" §"Engine seam". The DelegateTool publishes
+// `delegation.{started,completed,failed}` onto the engine's
+// `*eventbus.EventBus` at the six lifecycle sites identified by the
+// plan. These specs pin those sites end-to-end.
+var _ = Describe("DelegateTool delegation lifecycle bus publication", func() {
+	var (
+		qaProvider *mockProvider
+		qaEngine   *engine.Engine
+		engines    map[string]*engine.Engine
+		delegation agent.Delegation
+		mgr        *session.Manager
+		bus        *eventbus.EventBus
+	)
+
+	BeforeEach(func() {
+		qaProvider = &mockProvider{
+			name: "qa-provider",
+			streamChunks: []provider.StreamChunk{
+				{Content: "lifecycle response", Done: true},
+			},
+		}
+
+		qaManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+
+		qaEngine = engine.New(engine.Config{
+			ChatProvider: qaProvider,
+			Manifest:     qaManifest,
+		})
+
+		engines = map[string]*engine.Engine{
+			"qa-agent": qaEngine,
+		}
+
+		delegation = agent.Delegation{
+			CanDelegate: true,
+		}
+
+		mgr = session.NewManager(nil)
+		bus = eventbus.NewEventBus()
+	})
+
+	Context("executeSync success path", func() {
+		It("publishes delegation.started post-resolve with the populated child session id and parent session id", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run all the tests",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1),
+				"executeSync must publish exactly one delegation.started on the success path")
+			Expect(started[0].Data.ChildSessionID).NotTo(BeEmpty(),
+				"delegation.started must carry a populated ChildSessionID — the load-bearing field for the SSE click-through")
+			Expect(started[0].Data.ParentSessionID).To(Equal(parent.ID))
+			Expect(started[0].Data.TargetAgent).To(Equal("qa-agent"))
+			Expect(started[0].Data.SourceAgent).To(Equal("orchestrator"))
+		})
+
+		It("publishes delegation.completed with model, provider and tool metadata after the stream drains cleanly", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Do the thing",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			completed := captured.completedEvents()
+			Expect(completed).To(HaveLen(1),
+				"executeSync must publish exactly one delegation.completed on the success path")
+			Expect(completed[0].Data.ChildSessionID).To(Equal(result.Metadata["sessionId"]),
+				"completed event must carry the same child session id the result metadata reports")
+			Expect(completed[0].Data.ParentSessionID).To(Equal(parent.ID))
+			Expect(completed[0].Data.CompletedAt).NotTo(BeNil(),
+				"delegation.completed must populate CompletedAt at the success terminator")
+			Expect(captured.failedEvents()).To(BeEmpty(),
+				"delegation.failed must not fire on the success path")
+		})
+	})
+
+	Context("executeSync no-op when the bus is not wired", func() {
+		It("does not panic and behaves identically to today when WithEventBus is unset", func() {
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr)
+
+			ctx := context.Background()
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "no bus path",
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Metadata).To(HaveKey("sessionId"))
+		})
+	})
+
+	Context("executeSync stream failure path", func() {
+		It("publishes exactly one delegation.failed and no delegation.completed when the streamer returns an error", func() {
+			failingProvider := &mockProvider{
+				name:      "failing-provider",
+				streamErr: errors.New("stream init failed"),
+			}
+			failingManifest := agent.Manifest{
+				ID:                "failing-agent",
+				Name:              "Failing Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "fail"},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			failingEngine := engine.New(engine.Config{
+				ChatProvider: failingProvider,
+				Manifest:     failingManifest,
+			})
+			failingEngines := map[string]*engine.Engine{
+				"failing-agent": failingEngine,
+			}
+
+			captured := newDelegationCapture(bus)
+
+			delegateTool := engine.NewDelegateTool(failingEngines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "failing-agent",
+					"message":       "this will fail",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			Expect(captured.failedEvents()).To(HaveLen(1),
+				"a stream error must produce exactly one delegation.failed")
+			Expect(captured.failedEvents()[0].Data.Error).NotTo(BeEmpty(),
+				"delegation.failed must carry the failing path's error message")
+			Expect(captured.completedEvents()).To(BeEmpty(),
+				"delegation.completed must not fire on the failure path")
+		})
+	})
+
+	Context("executeSync delegation-not-allowed path (pre-resolve failure)", func() {
+		It("does not publish a started or failed event when the canDelegate gate refuses up-front", func() {
+			captured := newDelegationCapture(bus)
+
+			disallowed := agent.Delegation{CanDelegate: false}
+			delegateTool := engine.NewDelegateTool(engines, disallowed, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "rejected",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			// CanDelegate refusal happens in resolveTargetWithOptions
+			// before executeSync is reached, so the bus sees nothing.
+			// This pin guards against future refactors that move the
+			// gate into executeSync without updating the publish sites.
+			Expect(captured.startedEvents()).To(BeEmpty())
+			Expect(captured.failedEvents()).To(BeEmpty())
+			Expect(captured.completedEvents()).To(BeEmpty())
+		})
+	})
+
+	Context("executeAsync background mode", func() {
+		It("publishes delegation.started carrying the task id as the child session id before launching the goroutine", func() {
+			captured := newDelegationCapture(bus)
+
+			bgManager := engine.NewBackgroundTaskManager()
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateToolWithBackground(
+				engines, delegation, "orchestrator", bgManager, nil,
+			).
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "qa-agent",
+					"message":           "Background task",
+					"run_in_background": true,
+				},
+			}
+
+			result, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			taskID, ok := result.Metadata["sessionId"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(taskID).NotTo(BeEmpty())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1),
+				"executeAsync must publish exactly one delegation.started immediately after createChildSession")
+			Expect(started[0].Data.ChildSessionID).To(Equal(taskID),
+				"async delegation.started's ChildSessionID must equal the task id surfaced to the caller")
+			Expect(started[0].Data.ParentSessionID).To(Equal(parent.ID))
+		})
+	})
+})
+
+// delegationCapture is a thread-safe sink for delegation lifecycle events
+// published onto an `*eventbus.EventBus`. It subscribes at construction so
+// every event published after `newDelegationCapture` returns lands in the
+// per-status slices. The mutex keeps reads safe against the publisher
+// goroutine (the bus invokes handlers synchronously on the publisher
+// goroutine, but tests may probe state from another goroutine).
+type delegationCapture struct {
+	mu        sync.Mutex
+	started   []*events.DelegationStartedEvent
+	completed []*events.DelegationCompletedEvent
+	failed    []*events.DelegationFailedEvent
+}
+
+func newDelegationCapture(bus *eventbus.EventBus) *delegationCapture {
+	c := &delegationCapture{}
+	bus.Subscribe(events.EventDelegationStarted, func(ev any) {
+		if e, ok := ev.(*events.DelegationStartedEvent); ok {
+			c.mu.Lock()
+			c.started = append(c.started, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventDelegationCompleted, func(ev any) {
+		if e, ok := ev.(*events.DelegationCompletedEvent); ok {
+			c.mu.Lock()
+			c.completed = append(c.completed, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventDelegationFailed, func(ev any) {
+		if e, ok := ev.(*events.DelegationFailedEvent); ok {
+			c.mu.Lock()
+			c.failed = append(c.failed, e)
+			c.mu.Unlock()
+		}
+	})
+	return c
+}
+
+func (c *delegationCapture) startedEvents() []*events.DelegationStartedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationStartedEvent, len(c.started))
+	copy(out, c.started)
+	return out
+}
+
+func (c *delegationCapture) completedEvents() []*events.DelegationCompletedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationCompletedEvent, len(c.completed))
+	copy(out, c.completed)
+	return out
+}
+
+func (c *delegationCapture) failedEvents() []*events.DelegationFailedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.DelegationFailedEvent, len(c.failed))
+	copy(out, c.failed)
+	return out
+}
