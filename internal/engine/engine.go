@@ -2122,9 +2122,25 @@ func (e *Engine) streamWithToolLoop(
 		// Single-call batches use the same path for uniformity.
 		execResults := e.executeToolCallBatch(ctx, sessionID, result.toolCalls, outChan)
 
-		// Emit error and halt on the first failure (preserve original behaviour).
+		// When a tool execution returns a hard error (not a tool-level Result.Error)
+		// persist a synthetic tool_result so the session history has a complete
+		// tool_call + tool_result pair. Without this the agent sees a dangling
+		// tool_call on the next turn and forgets the failed attempt entirely.
 		for _, er := range execResults {
 			if er.err != nil {
+				synthetic := tool.Result{Output: "Error: " + er.err.Error()}
+				e.storeToolResult(er.toolCall, synthetic)
+				outChan <- provider.StreamChunk{
+					EventType:  "tool_result",
+					ToolCallID: er.toolCall.ID,
+					InternalToolCallID: e.toolCallCorrelator.InternalID(
+						sessionID, er.toolCall.ID, er.toolCall.Name, er.toolCall.Arguments,
+					),
+					ToolResult: &provider.ToolResultInfo{
+						Content: synthetic.Output,
+						IsError: true,
+					},
+				}
 				outChan <- provider.StreamChunk{Error: er.err, Done: true}
 				return
 			}

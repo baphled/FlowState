@@ -19,6 +19,10 @@ const activeAgentStorageKey = 'chat.agentId'
 const activeModelStorageKey = 'chat.selectedModel'
 const activeProviderStorageKey = 'chat.selectedProvider'
 
+// team-lead is the lead orchestrator — it can delegate to any agent or swarm
+// and is the correct starting point for open-ended requests.
+const DEFAULT_AGENT_ID = 'team-lead'
+
 // 60s fail-safe — if no SSE activity arrives during a send, the store
 // assumes the stream is dead and clears isLoading. Without this the
 // submit gate stays locked forever after a network hiccup, presenting
@@ -234,7 +238,10 @@ export const useChatStore = defineStore('chat', {
       const persistedSessionId = getPersistedSessionId()
       const session = this.sessions.find((item) => item.id === persistedSessionId)
       const sessionAgentId = session?.currentAgentId ?? session?.agentId
-      const agentId = sessionAgentId ?? persistedAgentId ?? this.availableAgents[0] ?? ''
+      const defaultAgent = this.availableAgents.includes(DEFAULT_AGENT_ID)
+        ? DEFAULT_AGENT_ID
+        : (this.availableAgents[0] ?? '')
+      const agentId = sessionAgentId ?? persistedAgentId ?? defaultAgent
 
       this.agentId = agentId
       persistAgentId(agentId || null)

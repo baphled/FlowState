@@ -75,14 +75,16 @@ type Session struct {
 // stable hierarchy. The JSON tag is camelCase to match the existing
 // frontend `SessionSummary` contract.
 type Summary struct {
-	ID             string    `json:"id"`
-	AgentID        string    `json:"agentId"`
-	CurrentAgentID string    `json:"currentAgentId,omitempty"`
-	ParentID       string    `json:"parentId,omitempty"`
-	Title          string    `json:"title"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	MessageCount   int       `json:"messageCount"`
+	ID                string    `json:"id"`
+	AgentID           string    `json:"agentId"`
+	CurrentAgentID    string    `json:"currentAgentId,omitempty"`
+	CurrentModelID    string    `json:"currentModelId,omitempty"`
+	CurrentProviderID string    `json:"currentProviderId,omitempty"`
+	ParentID          string    `json:"parentId,omitempty"`
+	Title             string    `json:"title"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	MessageCount      int       `json:"messageCount"`
 }
 
 // Recorder captures stream chunks for session recording.
@@ -395,14 +397,16 @@ func (m *Manager) ListSessions() []*Summary {
 			parentID = sess.ParentSessionID
 		}
 		summaries = append(summaries, &Summary{
-			ID:             sess.ID,
-			AgentID:        sess.AgentID,
-			CurrentAgentID: sess.CurrentAgentID,
-			ParentID:       parentID,
-			Title:          deriveSummaryTitle(sess),
-			CreatedAt:      sess.CreatedAt,
-			UpdatedAt:      updatedAt,
-			MessageCount:   len(sess.Messages),
+			ID:                sess.ID,
+			AgentID:           sess.AgentID,
+			CurrentAgentID:    sess.CurrentAgentID,
+			CurrentModelID:    sess.CurrentModelID,
+			CurrentProviderID: sess.CurrentProviderID,
+			ParentID:          parentID,
+			Title:             deriveSummaryTitle(sess),
+			CreatedAt:         sess.CreatedAt,
+			UpdatedAt:         updatedAt,
+			MessageCount:      len(sess.Messages),
 		})
 	}
 
