@@ -120,13 +120,13 @@ type BackgroundTaskCompletedMsg struct {
 // carries the event payload safely into Update() for processing on the main
 // goroutine.
 type EventBusNotificationMsg struct {
-	ProviderError        *events.ProviderErrorEvent
-	RateLimited          *events.ProviderEvent
-	ToolError            *events.ToolExecuteErrorEvent
-	CategoryModelSwap    *engine.CategoryModelSwap
-	DelegationStarted    *events.DelegationStartedEvent
-	DelegationCompleted  *events.DelegationCompletedEvent
-	DelegationFailed     *events.DelegationFailedEvent
+	ProviderError       *events.ProviderErrorEvent
+	RateLimited         *events.ProviderEvent
+	ToolError           *events.ToolExecuteErrorEvent
+	CategoryModelSwap   *engine.CategoryModelSwap
+	DelegationStarted   *events.DelegationStartedEvent
+	DelegationCompleted *events.DelegationCompletedEvent
+	DelegationFailed    *events.DelegationFailedEvent
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
