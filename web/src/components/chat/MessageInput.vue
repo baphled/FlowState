@@ -178,7 +178,7 @@ watch(
         class="message-input"
         data-testid="message-input"
         placeholder="Type a message… (Enter to send, Shift+Enter or Alt+Enter for newline)"
-        rows="3"
+        rows="1"
         @input="handleInput"
         @keyup="recomputeTrigger"
         @click="recomputeTrigger"
@@ -257,6 +257,8 @@ watch(
   resize: none;
   line-height: 1.5;
   transition: border-color 0.15s;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .message-input:focus {
