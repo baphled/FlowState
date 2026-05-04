@@ -147,14 +147,19 @@ test.describe('Delegation card navigation', () => {
     await expect(messageList).toContainText('CHILD SESSION ASSISTANT REPLY (executor).')
     await expect(messageList).toContainText('Run the build please.')
 
-    // The session switcher reflects the freshly-loaded delegated child
-    // session ("Delegated Run"), confirming the chatStore actually swapped
-    // sessions rather than just calling a no-op handler.
-    await expect(page.getByTestId('session-switcher')).toContainText('Delegated Run')
+    // We're now viewing the child session — the SessionSwitcher (and the
+    // entire NavBar) is hidden in child sessions, so the message-list
+    // content is the navigation-target signal we use here. The chat thread
+    // contains the executor's reply, confirming the chatStore actually
+    // swapped sessions rather than calling a no-op handler.
+    await expect(page.getByTestId('nav-bar')).toHaveCount(0)
 
-    // The agent/model selector bar is hidden on child sessions because the
-    // child inherits its agent from the parent — a sanity check that we are
-    // genuinely viewing a child session, not just a re-render.
-    await expect(page.getByTestId('input-selector-bar')).toHaveCount(0)
+    // The agent/model selector bar stays visible on child sessions but the
+    // pickers go into read-only display mode — the user can see *which*
+    // model + provider the delegated agent used but cannot change them.
+    const bar = page.getByTestId('input-selector-bar')
+    await expect(bar).toBeVisible()
+    await expect(bar.getByTestId('agent-picker')).toHaveClass(/is-readonly/)
+    await expect(bar.getByTestId('model-picker')).toHaveClass(/is-readonly/)
   })
 })

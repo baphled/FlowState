@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import NavBar from './NavBar.vue'
 import * as api from '@/api'
+import { useChatStore } from '@/stores/chatStore'
 
 vi.mock('@/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api')>()
@@ -42,5 +43,66 @@ describe('NavBar', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="model-switcher"]').exists()).toBe(false)
+  })
+})
+
+describe('NavBar visibility for child sessions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.mocked(api.listModels).mockResolvedValue({
+      providers: [{ id: 'ollama', models: [{ id: 'llama3.2', name: 'Llama 3.2' }] }],
+    })
+  })
+
+  it('renders the nav-bar when the active session has no parentId (parent session)', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'a',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ]
+    chatStore.currentSessionId = 'parent-1'
+
+    const wrapper = mount(NavBar)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="nav-bar"]').exists()).toBe(true)
+  })
+
+  it('hides the nav-bar entirely in a child session (no chat/swarm/session-selection chrome)', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'a',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+      {
+        id: 'child-a',
+        agentId: 'b',
+        title: 'child',
+        parentId: 'parent-1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ]
+    chatStore.currentSessionId = 'child-a'
+
+    const wrapper = mount(NavBar)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="nav-bar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="session-switcher"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="nav-chat"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="nav-swarm"]').exists()).toBe(false)
   })
 })

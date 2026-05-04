@@ -408,7 +408,7 @@ describe('ChatView side panel reorganisation', () => {
   })
 })
 
-describe('ChatView toolbar visibility for child sessions', () => {
+describe('ChatView toolbar in parent sessions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -442,7 +442,7 @@ describe('ChatView toolbar visibility for child sessions', () => {
     expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(true)
   })
 
-  it('hides the input-selector-bar when the active session has a parentId (child session)', async () => {
+  it('renders the AgentPicker as interactive (not readonly) in a parent session', async () => {
     const wrapper = mount(ChatView, {
       global: {
         stubs: {
@@ -464,20 +464,116 @@ describe('ChatView toolbar visibility for child sessions', () => {
         updatedAt: '',
         messageCount: 0,
       },
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    await wrapper.vm.$nextTick()
+
+    const agentPicker = wrapper.find('[data-testid="agent-picker"]')
+    expect(agentPicker.exists()).toBe(true)
+    expect(agentPicker.classes()).not.toContain('is-readonly')
+
+    const modelPicker = wrapper.find('[data-testid="model-picker"]')
+    expect(modelPicker.exists()).toBe(true)
+    expect(modelPicker.classes()).not.toContain('is-readonly')
+  })
+})
+
+describe('ChatView read-only toolbar in child sessions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  function mountWithChildSession() {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    return wrapper
+  }
+
+  async function activateChildSession() {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'planner',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
       {
         id: 'child-a',
-        agentId: 'b',
+        agentId: 'executor',
         title: 'child',
         parentId: 'parent-1',
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        currentModelId: 'claude-sonnet-4-6',
+        currentProviderId: 'anthropic',
       },
     ]
     chatStore.currentSessionId = 'child-a'
+    chatStore.currentModelId = 'claude-sonnet-4-6'
+    chatStore.currentProviderId = 'anthropic'
+  }
+
+  it('still renders the input-selector-bar in a child session (not hidden)', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(true)
+  })
+
+  it('renders the AgentPicker in readonly mode in a child session', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    const agentPicker = wrapper.find('[data-testid="agent-picker"]')
+    expect(agentPicker.exists()).toBe(true)
+    expect(agentPicker.classes()).toContain('is-readonly')
+  })
+
+  it('renders the ModelPicker in readonly mode in a child session', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    const modelPicker = wrapper.find('[data-testid="model-picker"]')
+    expect(modelPicker.exists()).toBe(true)
+    expect(modelPicker.classes()).toContain('is-readonly')
+  })
+
+  it('renders the provider label populated from the active session', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    const providerLabel = wrapper.find('[data-testid="toolbar-provider-label"]')
+    expect(providerLabel.exists()).toBe(true)
+    expect(providerLabel.text()).toContain('anthropic')
+  })
+
+  it('renders the model label populated from the active session', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    const modelPicker = wrapper.find('[data-testid="model-picker"]')
+    expect(modelPicker.text()).toContain('claude-sonnet-4-6')
   })
 })
 
