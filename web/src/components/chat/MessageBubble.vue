@@ -128,6 +128,15 @@ const showRevertButton = computed(
   () => isPlain.value && props.message.role === 'user',
 )
 
+// Failure marker: when a user-message send rejects (network error, backend
+// rejection), chatStore marks the optimistic bubble status='failed'. We
+// surface that with a small visible affordance so the user can see at a
+// glance which message didn't go through. Toast is the loud surfacing;
+// this is the persistent indicator on the bubble itself.
+const isFailedSend = computed(
+  () => props.message.role === 'user' && props.message.status === 'failed',
+)
+
 async function handleRevert(): Promise<void> {
   await chatStore.revertToMessage(props.message.id)
 }
@@ -136,9 +145,10 @@ async function handleRevert(): Promise<void> {
 <template>
   <div
     class="message-bubble"
-    :class="props.message.role"
+    :class="[props.message.role, { 'message-bubble--failed': isFailedSend }]"
     :data-testid="`message-${props.message.role}`"
     :data-role="props.message.role"
+    :data-status="props.message.status ?? ''"
   >
     <component
       v-if="isToolInvocation"
@@ -210,6 +220,13 @@ async function handleRevert(): Promise<void> {
       />
       <p v-else class="message-content">{{ props.message.content }}</p>
       <div v-if="showCopyButton" class="message-actions">
+        <span
+          v-if="isFailedSend"
+          class="failed-marker"
+          data-testid="message-failed-marker"
+          role="status"
+          title="Message failed to send"
+        >&#x26A0; Failed to send</span>
         <button
           v-if="showRevertButton"
           type="button"
@@ -302,6 +319,25 @@ async function handleRevert(): Promise<void> {
 .revert-button:hover {
   color: var(--accent);
   background: var(--bg-elevated);
+}
+
+/* Failed-send marker: shown when chatStore marks the optimistic user
+ * message status='failed'. Persistent inline indicator paired with the
+ * existing toast — minimum viable surfacing per PR-2 brief. Uses a danger
+ * tint so it's visually distinct from the muted action buttons next to it. */
+.failed-marker {
+  font-size: 0.72rem;
+  color: var(--danger, #f87171);
+  padding: 0.15rem 0.3rem;
+  user-select: none;
+  letter-spacing: 0.02em;
+}
+
+/* Subtle red border on a failed user bubble so the failure is clear even
+ * before the user reads the marker text. Doesn't replace the marker —
+ * complements it. */
+.message-bubble--failed.message-bubble.user {
+  border-color: var(--danger, #f87171);
 }
 
 /* Tool blocks: collapsed by default, expand on click. opencode TUI vibe. */
