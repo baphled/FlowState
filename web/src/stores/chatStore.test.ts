@@ -1174,23 +1174,24 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
   // produced after the reload is dropped — the SSE consumer was never
   // re-attached. The frontend has no way to know the stream resumed.
   //
-  // Contract: when the most recent assistant message in restored history
-  // looks like an in-flight stream (status === 'running'), the store must
-  // re-subscribe to /api/v1/sessions/{id}/stream so any chunks the backend
-  // is still producing arrive at the UI. If the backend has already
-  // finished streaming the SSE connection closes cleanly with no chunks.
+  // Detection heuristic (post a500958 sealing fix): all backend-loaded
+  // assistant messages are sealed to status === 'completed', so searching
+  // for status === 'running' never fires on reload. Instead: when the last
+  // message in restored history has role === 'user', the user sent something
+  // and no assistant reply arrived yet — reattach is needed.
+  //
+  // Contract: when the last message in restored history has role === 'user',
+  // the store must re-subscribe to /api/v1/sessions/{id}/stream so any
+  // chunks the backend is still producing arrive at the UI. If the backend
+  // has already finished streaming the SSE connection closes cleanly.
 
-  it('subscribes to the session stream when restored history shows an in-flight assistant (status === running)', async () => {
+  it('subscribes to the session stream when the last restored message has role === user (in-flight heuristic)', async () => {
+    // The sealing fix (a500958) means backend-loaded assistant rows always
+    // get status === 'completed'. The new in-flight signal is: last message
+    // is a user message with no subsequent assistant reply.
     window.localStorage.setItem('chat.currentSessionId', 'session-1')
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
       { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
-      {
-        id: 'srv-a1',
-        role: 'assistant',
-        content: 'partial response so far',
-        timestamp: '2026-05-04T00:00:01Z',
-        status: 'running',
-      },
     ])
 
     const store = useChatStore()
@@ -1198,9 +1199,13 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
 
     expect(vi.mocked(subscribeSessionStream)).toHaveBeenCalledWith('session-1')
     expect(FakeEventSource.instances.length).toBe(1)
+    expect(store.isLoading).toBe(true)
+    expect(store.isStreaming).toBe(true)
   })
 
-  it('does NOT subscribe when the most recent assistant is already completed', async () => {
+  it('does NOT subscribe when the last restored message has role === assistant (reply already arrived)', async () => {
+    // When the last message is an assistant reply the session completed
+    // before the reload — nothing to reattach.
     window.localStorage.setItem('chat.currentSessionId', 'session-1')
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
       { id: 'srv-u1', role: 'user', content: 'hello', timestamp: '2026-05-04T00:00:00Z' },
@@ -1209,7 +1214,6 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
         role: 'assistant',
         content: 'all done',
         timestamp: '2026-05-04T00:00:01Z',
-        status: 'completed',
       },
     ])
 
@@ -1218,31 +1222,27 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
 
     expect(vi.mocked(subscribeSessionStream)).not.toHaveBeenCalled()
     expect(FakeEventSource.instances.length).toBe(0)
+    expect(store.isLoading).toBe(false)
   })
 
-  it('does NOT subscribe when restored history has no assistant message at all', async () => {
+  it('does NOT subscribe when the messages array is empty', async () => {
     window.localStorage.setItem('chat.currentSessionId', 'session-1')
-    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
-      { id: 'srv-u1', role: 'user', content: 'just sent', timestamp: '2026-05-04T00:00:00Z' },
-    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([])
 
     const store = useChatStore()
     await store.restoreStateFromBackend()
 
     expect(vi.mocked(subscribeSessionStream)).not.toHaveBeenCalled()
+    expect(FakeEventSource.instances.length).toBe(0)
   })
 
-  it('routes chunks from the reconnected SSE stream onto the in-flight assistant message', async () => {
+  it('routes chunks from the reconnected SSE stream onto a new assistant message', async () => {
+    // After reattach, incoming chunks must create a new assistant message
+    // (since the sealed history has no running target). handleContentChunk
+    // creates a fresh placeholder when no status === 'running' row exists.
     window.localStorage.setItem('chat.currentSessionId', 'session-1')
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
       { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
-      {
-        id: 'srv-a1',
-        role: 'assistant',
-        content: 'partial ',
-        timestamp: '2026-05-04T00:00:01Z',
-        status: 'running',
-      },
     ])
 
     const store = useChatStore()
@@ -1254,20 +1254,13 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
     es.fire('message', { content: 'continued' })
 
     const inFlight = store.messages.find((m) => m.role === 'assistant' && m.status === 'running')
-    expect(inFlight?.content).toBe('partial response continued')
+    expect(inFlight?.content).toBe('response continued')
   })
 
-  it('clears isLoading and seals the in-flight assistant when the reconnected stream emits [DONE]', async () => {
+  it('clears isLoading and isStreaming when the reconnected stream emits [DONE]', async () => {
     window.localStorage.setItem('chat.currentSessionId', 'session-1')
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
       { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
-      {
-        id: 'srv-a1',
-        role: 'assistant',
-        content: 'partial',
-        timestamp: '2026-05-04T00:00:01Z',
-        status: 'running',
-      },
     ])
 
     const store = useChatStore()
@@ -1276,10 +1269,27 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
     const es = FakeEventSource.instances[0]
     es.fire('message', '[DONE]')
 
-    const sealed = store.messages.find((m) => m.role === 'assistant')
-    expect(sealed?.status).toBe('completed')
     expect(store.isLoading).toBe(false)
     expect(store.isStreaming).toBe(false)
+    expect(es.closed).toBe(true)
+  })
+
+  it('clears isLoading and isStreaming when the reconnected stream fires an error', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.isLoading).toBe(true)
+    const es = FakeEventSource.instances[0]
+    es.fire('error', null)
+
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
+    expect(es.closed).toBe(true)
   })
 })
 

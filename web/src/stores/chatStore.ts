@@ -240,24 +240,29 @@ export const useChatStore = defineStore('chat', {
       this.maybeReattachStream(session.id)
     },
 
-    // Re-attach a live SSE consumer when restored history shows an
-    // in-flight assistant (status === 'running'). Pre-fix the user could
-    // reload mid-stream and the frontend would never reconnect — every
-    // chunk produced after the reload was dropped silently and the chat
-    // looked frozen. This bridges that gap: if the backend was still
-    // streaming when the reload happened, the consumer attaches and
-    // chunks land on the in-flight bubble; if the backend has already
-    // finished the EventSource closes cleanly without ever firing.
+    // Re-attach a live SSE consumer when restored history shows the session
+    // was in-flight at reload time. Pre-fix the user could reload mid-stream
+    // and the frontend would never reconnect — every chunk produced after the
+    // reload was dropped silently and the chat looked frozen. This bridges
+    // that gap: if the backend was still streaming when the reload happened,
+    // the consumer attaches and chunks arrive at the UI; if the backend has
+    // already finished the EventSource closes cleanly without ever firing.
     //
-    // isLoading is set to true so the submit gate keeps blocking new
-    // sends until [DONE] (or the watchdog) clears it — preventing a
-    // racy interleave where the user fires another prompt before the
-    // resumed stream settles.
+    // Detection heuristic: after sealing all backend-loaded assistant messages
+    // to status === 'completed' (commit a500958), searching for status ===
+    // 'running' never fires on reload. The correct signal is simpler: when the
+    // last message in restored history has role === 'user', the user sent
+    // something and no assistant reply has arrived yet — the session was
+    // waiting for a response when the page was reloaded.
+    //
+    // isLoading is set to true so the submit gate keeps blocking new sends
+    // until [DONE] (or the watchdog) clears it — preventing a racy interleave
+    // where the user fires another prompt before the resumed stream settles.
     maybeReattachStream(sessionId: string): void {
-      const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant')
-      if (!lastAssistant || lastAssistant.status !== 'running') {
-        return
-      }
+      if (!sessionId || !this.messages.length) return
+
+      const lastMessage = this.messages[this.messages.length - 1]
+      if (lastMessage.role !== 'user') return // assistant already replied — nothing to reattach
 
       this.isLoading = true
       this.isStreaming = true
