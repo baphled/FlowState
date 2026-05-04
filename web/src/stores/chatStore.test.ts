@@ -27,6 +27,7 @@ import {
   fetchSessions,
   sendSessionMessage,
   subscribeSessionStream,
+  truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
 } from '../api'
@@ -115,6 +116,7 @@ vi.mock('../api', () => ({
     { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
   ])),
   subscribeSessionStream: vi.fn((sessionId: string) => new FakeEventSource(`/api/v1/sessions/${sessionId}/stream`)),
+  truncateSessionMessages: vi.fn((_sessionId: string, _messageId: string) => Promise.resolve()),
 }))
 
 describe('chatStore - restoreStateFromBackend', () => {
@@ -1383,5 +1385,98 @@ describe('chatStore - todoStore session swap on session switch', () => {
     expect(todoStore.currentSessionId).toBe('session-with-todos')
     expect(todoStore.todos).toHaveLength(1)
     expect(todoStore.todos[0].content).toBe('historical todo')
+  })
+})
+
+describe('chatStore - revertToMessage', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('calls truncateSessionMessages with the session and message IDs', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'msg-2', role: 'assistant', content: 'response one', timestamp: '' },
+      { id: 'msg-3', role: 'user', content: 'second prompt', timestamp: '' },
+      { id: 'msg-4', role: 'assistant', content: 'response two', timestamp: '' },
+    ]
+
+    await store.revertToMessage('msg-3')
+
+    expect(vi.mocked(truncateSessionMessages)).toHaveBeenCalledWith('session-1', 'msg-3')
+  })
+
+  it('truncates local messages at the reverted message index (exclusive)', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'msg-2', role: 'assistant', content: 'response one', timestamp: '' },
+      { id: 'msg-3', role: 'user', content: 'second prompt', timestamp: '' },
+      { id: 'msg-4', role: 'assistant', content: 'response two', timestamp: '' },
+    ]
+
+    await store.revertToMessage('msg-3')
+
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[0].id).toBe('msg-1')
+    expect(store.messages[1].id).toBe('msg-2')
+  })
+
+  it('sets composerText to the reverted message content', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'msg-2', role: 'assistant', content: 'response one', timestamp: '' },
+      { id: 'msg-3', role: 'user', content: 'second prompt', timestamp: '' },
+    ]
+
+    await store.revertToMessage('msg-3')
+
+    expect(store.composerText).toBe('second prompt')
+  })
+
+  it('clears isLoading after reverting', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.isLoading = true
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'prompt', timestamp: '' },
+    ]
+
+    await store.revertToMessage('msg-1')
+
+    expect(store.isLoading).toBe(false)
+  })
+
+  it('does nothing when the message ID is not found', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'prompt', timestamp: '' },
+    ]
+
+    await store.revertToMessage('nonexistent-id')
+
+    expect(vi.mocked(truncateSessionMessages)).not.toHaveBeenCalled()
+    expect(store.messages).toHaveLength(1)
+    expect(store.composerText).toBe('')
+  })
+
+  it('does nothing when there is no active session', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'prompt', timestamp: '' },
+    ]
+
+    await store.revertToMessage('msg-1')
+
+    expect(vi.mocked(truncateSessionMessages)).not.toHaveBeenCalled()
   })
 })

@@ -8,6 +8,7 @@ import {
   fetchSessions,
   sendSessionMessage,
   subscribeSessionStream,
+  truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
 } from '@/api'
@@ -100,6 +101,10 @@ export const useChatStore = defineStore('chat', {
     // the most recent tool_call to know whether the upcoming tool_result is
     // a todowrite emission and therefore routable into the todoStore.
     lastToolName: null as string | null,
+    // composerText is set by revertToMessage to pre-populate the MessageInput
+    // composer with the content of a reverted user message. MessageInput
+    // watches this field and consumes it (resetting to '') on next tick.
+    composerText: '',
   }),
 
   getters: {
@@ -672,6 +677,32 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.messages.push(toolMessage)
+    },
+
+    // revertToMessage truncates the session at the given user message, removes
+    // it and all subsequent messages from the local store, and pre-populates
+    // the composer with the reverted message's content so the user can edit
+    // and re-send without manual copy/paste.
+    //
+    // Expected:
+    //   - messageId identifies a message whose role === 'user'.
+    //   - currentSessionId is set.
+    //
+    // Side effects:
+    //   - Calls DELETE /api/v1/sessions/{id}/messages/from/{messageId}.
+    //   - Slices this.messages at the revert index.
+    //   - Sets this.composerText to the reverted message's content.
+    //   - Clears any in-flight loading state.
+    async revertToMessage(messageId: string): Promise<void> {
+      const idx = this.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0 || !this.currentSessionId) {
+        return
+      }
+      const content = this.messages[idx].content
+      await truncateSessionMessages(this.currentSessionId, messageId)
+      this.messages = this.messages.slice(0, idx)
+      this.composerText = content
+      this.isLoading = false
     },
 
     handleToolResultEvent(info: { content?: unknown }): void {

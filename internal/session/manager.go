@@ -780,6 +780,53 @@ func (m *Manager) GetNotifications(sessionID string) ([]streaming.CompletionNoti
 	return notifications, nil
 }
 
+// ErrMessageNotFound is returned when a message ID is not found in a session.
+var ErrMessageNotFound = errors.New("message not found")
+
+// TruncateMessages removes all messages from (not including) the message
+// with the given ID, then persists the session. The trigger message itself is
+// also removed so the caller can re-populate the composer with its content
+// and re-send.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - afterMessageID is the ID of the message whose content the user wants
+//     to edit. All messages from this message onward (inclusive) are removed
+//     so the caller can re-compose and re-send.
+//
+// Returns:
+//   - nil on success.
+//   - ErrSessionNotFound when no session matches sessionID.
+//   - ErrMessageNotFound when afterMessageID is not present in the session.
+//
+// Side effects:
+//   - Slices sess.Messages and persists the result to disk.
+func (m *Manager) TruncateMessages(sessionID, afterMessageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	index := -1
+	for i, msg := range sess.Messages {
+		if msg.ID == afterMessageID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return ErrMessageNotFound
+	}
+
+	sess.Messages = sess.Messages[:index]
+	sess.UpdatedAt = time.Now()
+	m.persistLocked(sess)
+	return nil
+}
+
 // Depth returns the number of parent links between a session and the root.
 // Expected:
 //   - sessions contains the parent chain for the requested session.

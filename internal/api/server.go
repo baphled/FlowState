@@ -344,6 +344,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
+	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
 	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
 	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
 	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
@@ -1514,6 +1515,36 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []session.Message{}
 	}
 	writeJSON(w, messages)
+}
+
+// handleTruncateMessages truncates a session's message history at (and including)
+// the specified message ID, enabling the frontend to repopulate the composer with
+// the reverted message content for editing and re-sending.
+//
+// Expected:
+//   - Request path parameter "id" contains the session identifier.
+//   - Request path parameter "messageId" contains the ID of the message to truncate from.
+//
+// Returns:
+//   - 204 No Content on success.
+//   - 404 when the session or message is not found.
+//   - 501 when no session manager is configured.
+//
+// Side effects:
+//   - Removes the message and all subsequent messages from the session.
+//   - Persists the truncated session to disk.
+func (s *Server) handleTruncateMessages(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	messageID := r.PathValue("messageId")
+	if err := s.sessionManager.TruncateMessages(id, messageID); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleUpdateSessionAgent switches the active agent for an existing session.
