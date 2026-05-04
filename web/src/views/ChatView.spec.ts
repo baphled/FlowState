@@ -328,6 +328,86 @@ describe('ChatView auto-scroll', () => {
   })
 })
 
+describe('ChatView side panel reorganisation', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('mounts the TodoListPanel inside the swarm pane', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const sidebar = wrapper.find('[data-testid="swarm-pane"]')
+    expect(sidebar.exists()).toBe(true)
+    expect(sidebar.find('[data-testid="todo-list-panel"]').exists()).toBe(true)
+  })
+
+  it('does not render the legacy delegation panel inside the swarm pane', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const sidebar = wrapper.find('[data-testid="swarm-pane"]')
+    expect(sidebar.exists()).toBe(true)
+    expect(sidebar.find('[data-testid="delegation-panel"]').exists()).toBe(false)
+  })
+
+  it('does not render the legacy tool-call panel or plan panel inside the swarm pane', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const sidebar = wrapper.find('[data-testid="swarm-pane"]')
+    expect(sidebar.exists()).toBe(true)
+    // Tool-calls and plan content are no longer surfaced in the side panel —
+    // the side panel is reserved for todos. Their data flow continues through
+    // the chat thread (tool messages) and DelegationStrip (delegation events).
+    expect(sidebar.find('[data-testid="tool-call-panel"]').exists()).toBe(false)
+    expect(sidebar.find('[data-testid="plan-panel"]').exists()).toBe(false)
+  })
+
+  it('mounts the DelegationStrip in the chat-main region (not in the side panel)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const main = wrapper.find('.chat-main')
+    expect(main.find('[data-testid="delegation-strip"]').exists()).toBe(true)
+
+    const sidebar = wrapper.find('[data-testid="swarm-pane"]')
+    expect(sidebar.find('[data-testid="delegation-strip"]').exists()).toBe(false)
+  })
+})
+
 describe('ChatView message grouping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

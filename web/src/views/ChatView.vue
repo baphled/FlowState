@@ -8,11 +8,10 @@ import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
+import TodoListPanel from '@/components/chat/TodoListPanel.vue'
+import DelegationStrip from '@/components/chat/DelegationStrip.vue'
 import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
-import ToolCallPanel from '@/components/tool-calls/ToolCallPanel.vue'
-import DelegationPanel from '@/components/swarm/DelegationPanel.vue'
-import PlanPanel from '@/components/swarm/PlanPanel.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
 import { registerTools } from '@/tools/registerTools'
 
@@ -25,9 +24,6 @@ const swarmStore = useSwarmStore()
 const shellRef = ref<HTMLElement | null>(null)
 const messagePaneRef = ref<HTMLElement | null>(null)
 const isDraggingSidebar = ref(false)
-const showToolPanel = ref(true)
-const showDelegationPanel = ref(true)
-const showPlanPanel = ref(true)
 const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 const currentSessionSummary = computed(() =>
   chatStore.sessions.find((session) => session.id === chatStore.currentSessionId) ?? null,
@@ -118,18 +114,6 @@ function startDraggingSidebar(event: MouseEvent): void {
   window.addEventListener('mouseup', stopDragging)
 }
 
-function toggleToolPanel(): void {
-  showToolPanel.value = !showToolPanel.value
-}
-
-function toggleDelegationPanel(): void {
-  showDelegationPanel.value = !showDelegationPanel.value
-}
-
-function togglePlanPanel(): void {
-  showPlanPanel.value = !showPlanPanel.value
-}
-
 function toggleSwarmPane(): void {
   settingsStore.setSwarmPaneVisible(false)
 }
@@ -206,6 +190,8 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <DelegationStrip />
+
       <div class="input-selector-bar" data-testid="input-selector-bar">
         <AgentPicker :readonly="isReadonlyPicker" />
         <ModelPicker :readonly="isReadonlyPicker" />
@@ -222,25 +208,8 @@ onBeforeUnmount(() => {
     </div>
 
     <aside v-if="hasSidebar && showSwarmPane" class="chat-sidebar" :style="{ width: `${settingsStore.chatSidebarWidth}px` }" data-testid="swarm-pane">
-      <div class="sidebar-toolbar" data-testid="sidebar-toolbar">
-        <button class="sidebar-toggle" :class="{ active: showToolPanel }" data-testid="toggle-tool-panel" @click="toggleToolPanel">
-          Tools
-        </button>
-        <button class="sidebar-toggle" :class="{ active: showDelegationPanel }" data-testid="toggle-delegation-panel" @click="toggleDelegationPanel">
-          Delegation
-        </button>
-        <button class="sidebar-toggle" :class="{ active: showPlanPanel }" data-testid="toggle-plan-panel" @click="togglePlanPanel">
-          Plan
-        </button>
-      </div>
-
       <div class="sidebar-panels">
-        <ToolCallPanel v-if="showToolPanel" class="sidebar-panel" />
-        <DelegationPanel v-if="showDelegationPanel" class="sidebar-panel" @close="showDelegationPanel = false" />
-        <PlanPanel v-if="showPlanPanel" class="sidebar-panel" @close="showPlanPanel = false" />
-        <p v-if="!showToolPanel && !showDelegationPanel && !showPlanPanel" class="sidebar-empty" data-testid="sidebar-empty">
-          All sidebar panels are hidden.
-        </p>
+        <TodoListPanel class="sidebar-panel" />
       </div>
 
       <button
@@ -353,29 +322,6 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-.sidebar-toolbar {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.5rem;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.sidebar-toggle {
-  padding: 0.25rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-
-.sidebar-toggle.active {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-
 .sidebar-panels {
   flex: 1;
   min-height: 0;
@@ -387,13 +333,6 @@ onBeforeUnmount(() => {
 .sidebar-panel {
   flex: 1 1 0;
   min-height: 0;
-}
-
-.sidebar-empty {
-  margin: 0;
-  padding: 1rem;
-  color: var(--text-muted);
-  font-size: 0.85rem;
 }
 
 .sidebar-resize-handle {
