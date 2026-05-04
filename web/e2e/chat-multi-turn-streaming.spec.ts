@@ -193,17 +193,28 @@ test.describe('Multi-turn streaming — second turn must not overwrite first', (
       return (window as unknown as { __sseDriver?: { instances: () => unknown[] } }).__sseDriver?.instances().length === 1
     })
 
-    // Deliver turn 1 chunks while the POST is still pending.
+    // Deliver turn 1 chunks. Release the POST gate BEFORE [DONE] so that
+    // when [DONE] triggers the post-stream reconcile (PR-2 behaviour), the
+    // backend has persisted the canonical history. Real backend timing:
+    // the POST handler publishes the chunk channel to the broker then
+    // returns, while chunks continue flowing over SSE — the chunk-channel
+    // close (which produces [DONE]) and the POST return are asynchronous
+    // events, but the persistence layer is settled by the time both occur.
     await page.evaluate(() => {
       const driver = (window as unknown as { __sseDriver: { instances: () => Array<{ fire: (t: string, d: unknown) => void }> } }).__sseDriver
       const es = driver.instances()[0]
       es.fire('message', JSON.stringify({ content: 'first ' }))
       es.fire('message', JSON.stringify({ content: 'response' }))
+    })
+    gates.turn1.release()
+    // Wait for the POST to land so messagesBySession reflects turn-1's
+    // persisted state before we fire [DONE] and trigger the reconcile.
+    await page.waitForResponse((res) => res.request().method() === 'POST' && /\/messages$/.test(res.url()))
+    await page.evaluate(() => {
+      const driver = (window as unknown as { __sseDriver: { instances: () => Array<{ fire: (t: string, d: unknown) => void }> } }).__sseDriver
+      const es = driver.instances()[0]
       es.fire('message', '[DONE]')
     })
-
-    // Now release the POST so sendMessage can refetch canonical history.
-    gates.turn1.release()
 
     // Turn 1 settled: 1 assistant bubble with the first response.
     await expect(page.getByTestId('message-assistant')).toHaveCount(1)
@@ -239,13 +250,16 @@ test.describe('Multi-turn streaming — second turn must not overwrite first', (
     await expect(page.getByTestId('message-assistant')).toHaveCount(2)
     await expect(page.getByTestId('message-assistant').nth(1)).toContainText(TURN_2_RESPONSE)
 
-    // Now finish turn 2.
+    // Now finish turn 2. Same ordering as turn 1: release the POST first
+    // so the canonical history is settled before [DONE] triggers the
+    // post-stream reconcile.
+    gates.turn2.release()
+    await page.waitForResponse((res) => res.request().method() === 'POST' && /\/messages$/.test(res.url()))
     await page.evaluate(() => {
       const driver = (window as unknown as { __sseDriver: { instances: () => Array<{ fire: (t: string, d: unknown) => void }> } }).__sseDriver
       const es = driver.instances()[1]
       es.fire('message', '[DONE]')
     })
-    gates.turn2.release()
 
     // After settle: still two distinct bubbles.
     await expect(page.getByTestId('message-assistant')).toHaveCount(2)

@@ -84,6 +84,22 @@ async function setupScrollMocks(page: Page): Promise<void> {
     })
   })
 
+  // The chat-scroll tests fire SSE chunks AFTER the page has clicked
+  // send-button. The pre-PR-2 sendMessage didn't tear down the SSE until
+  // the [DONE] sentinel arrived, but post-PR-2 the C-9 flush guard correctly
+  // drops events that arrive after the EventSource has been disconnected.
+  // The unconditional disconnect in sendMessage's finally block fires once
+  // the POST resolves, so we must hold the POST open until the test has
+  // finished firing chunks. Each test must call __releaseScrollPost() once
+  // per send-button click (a fresh per-call gate is created on every
+  // request). The gate is fresh per POST invocation so multi-turn tests
+  // work without coordination.
+  const postReleaseQueue: Array<() => void> = []
+  await page.exposeFunction('__releaseScrollPost', () => {
+    const next = postReleaseQueue.shift()
+    if (next) next()
+  })
+
   let postCount = 0
   await page.route('**/api/v1/sessions', async (route) => {
     if (route.request().method() === 'POST') {
@@ -116,6 +132,14 @@ async function setupScrollMocks(page: Page): Promise<void> {
     const sessionId = url.match(/\/sessions\/([^/]+)\/messages/)?.[1] ?? 'scroll-session-1'
 
     if (route.request().method() === 'POST') {
+      // Hold the POST open until the test calls __releaseScrollPost(). Per
+      // the gate comment above this is required so the C-9 flush guard
+      // doesn't drop SSE chunks fired by the test after the POST settles.
+      // Each test must call __releaseScrollPost() before checking final
+      // assertions that depend on the POST having returned.
+      await new Promise<void>((resolve) => {
+        postReleaseQueue.push(resolve)
+      })
       postCount += 1
       const body = route.request().postDataJSON() as { content?: string }
       const userId = `u${postCount}`
@@ -205,6 +229,9 @@ test.describe('Chat scroll UX', () => {
 
     const atBottom = await isScrolledToBottom(page)
     expect(atBottom).toBe(true)
+
+    // Release the gated POST so the page exits cleanly.
+    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
   })
 
   test('during streaming, the pane follows new content so the bottom stays visible', async ({ page }) => {
@@ -237,6 +264,8 @@ test.describe('Chat scroll UX', () => {
 
     const atBottom = await isScrolledToBottom(page)
     expect(atBottom).toBe(true)
+
+    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
   })
 
   test('if user scrolls up mid-stream, auto-scroll stops and bottom is no longer forced', async ({ page }) => {
@@ -307,6 +336,8 @@ test.describe('Chat scroll UX', () => {
     })
     // Should be near the top (where we scrolled), not at the bottom
     expect(scrollTopAfterChunks).toBeLessThanOrEqual(scrollTopAfterScrollUp + 50)
+
+    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
   })
 
   test('after a new submit, auto-scroll re-engages even if user had scrolled up before', async ({ page }) => {
@@ -330,19 +361,27 @@ test.describe('Chat scroll UX', () => {
     // Simulate the user scrolling up
     await scrollPaneUp(page, 500)
 
-    // Finish the stream
+    // Release the first POST FIRST so canonical history is populated by the
+    // mock before [DONE] triggers the post-stream reconcile (otherwise the
+    // reconcile reads an empty backend and wipes the chunk-assembled
+    // assistant). Real backend timing: the POST handler returns AFTER the
+    // chunk channel is fully drained; the test's release is the analogue.
+    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
+    // Brief wait for the POST to settle into messagesBySession.
+    await page.waitForTimeout(100)
+
+    // Finish the stream — reconcile will read the now-populated history.
     await page.evaluate(() => {
       const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
       const es = driver.latest()
       es.fire('message', '[DONE]')
     })
 
-    // Confirm the user is not at the bottom after scrolling up
-    // (allow some time for stream completion but scroll position should not have changed)
-    await page.waitForTimeout(100)
-
-    // Now submit a second message — this should re-engage auto-scroll
+    // Now submit a second message — this should re-engage auto-scroll.
+    // First fill the input (which alone wouldn't enable the button while
+    // isLoading is true — this also tests that isLoading has cleared).
     await input.fill('second message')
+    await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 3000 })
     await page.getByTestId('send-button').click()
 
     // Wait for the second SSE and send enough content to require scroll
@@ -362,5 +401,8 @@ test.describe('Chat scroll UX', () => {
 
     const atBottom = await isScrolledToBottom(page)
     expect(atBottom).toBe(true)
+
+    // Release the second POST so the page exits cleanly.
+    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
   })
 })
