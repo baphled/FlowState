@@ -2070,6 +2070,134 @@ describe('chatStore - loadSessions detects was-streaming → not-streaming and r
   })
 })
 
+describe('chatStore - optimistic user message reconciliation (C-1, C-2)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The compounding bug C-1: the temp-${Date.now()} optimistic id was never
+  // reconciled with the server-assigned id from the POST response. After
+  // the next backend refetch (now via reconcileFromBackend) the canonical
+  // history landed alongside the still-present optimistic, producing a
+  // duplicate user bubble.
+  //
+  // The compounding bug C-2: when sendSessionMessage rejected (backend
+  // refused, network error), the optimistic bubble stayed in the thread
+  // with no failed/retry indicator. The user couldn't tell their message
+  // had failed; only the toast surfaced anything.
+  //
+  // Contract:
+  //   - On sendSessionMessage resolve, the temp-* id is replaced with the
+  //     server-assigned id taken from the response payload's matching
+  //     user message (matched by content).
+  //   - On sendSessionMessage reject, the optimistic message is marked
+  //     `status: 'failed'` so MessageBubble can render a small marker.
+  //     The bubble stays in place so the user can see what they sent.
+
+  it('replaces the temp-* id with the server-assigned id when sendSessionMessage resolves', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    let resolveSend: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSend = resolve }),
+    )
+    vi.mocked(fetchSessionMessages).mockResolvedValue([
+      { id: 'srv-u-actual', role: 'user', content: 'reconcile me', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'reply', timestamp: '' },
+    ])
+
+    const sendPromise = store.sendMessage('reconcile me')
+    await Promise.resolve(); await Promise.resolve()
+
+    // Optimistic bubble exists with a temp-* id at this point.
+    const optimisticInitial = store.messages.find((m) => m.role === 'user' && m.content === 'reconcile me')
+    expect(optimisticInitial?.id).toMatch(/^temp-/)
+
+    // Backend POST returns the canonical session including the persisted
+    // user message — the response's user-message id is what should land on
+    // the optimistic bubble.
+    resolveSend({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [
+        { id: 'srv-u-actual', role: 'user', content: 'reconcile me', timestamp: '' },
+      ],
+      messageCount: 1,
+      createdAt: '',
+      updatedAt: '',
+    })
+    await sendPromise
+    await Promise.resolve(); await Promise.resolve()
+
+    // Post-resolve: the bubble carries the server-assigned id, not temp-*.
+    // (Either the in-place id swap took effect before reconcile, or the
+    // reconcile picked up the server id and the optimistic was matched and
+    // dropped from the orphans list — either way the user-observable shape
+    // is "exactly one user bubble with content 'reconcile me' and a
+    // non-temp id".)
+    const userBubbles = store.messages.filter((m) => m.role === 'user' && m.content === 'reconcile me')
+    expect(userBubbles).toHaveLength(1)
+    expect(userBubbles[0].id).toBe('srv-u-actual')
+    expect(userBubbles[0].id).not.toMatch(/^temp-/)
+  })
+
+  it('marks the optimistic message status=failed and surfaces an error when sendSessionMessage rejects', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    vi.mocked(sendSessionMessage).mockRejectedValueOnce(new Error('backend rejected'))
+
+    await store.sendMessage('this will fail')
+
+    // The optimistic bubble stays in the thread (so the user can see what
+    // they tried to send) but is marked failed so MessageBubble can render
+    // a visible marker on it.
+    const failed = store.messages.find((m) => m.role === 'user' && m.content === 'this will fail')
+    expect(failed).toBeDefined()
+    expect(failed?.status).toBe('failed')
+    expect(failed?.id).toMatch(/^temp-/)
+
+    // Error string is set so the existing chat-error footer renders the cause.
+    expect(store.error).toContain('backend rejected')
+  })
+
+  it('does NOT mark the optimistic message failed when sendSessionMessage resolves (happy path)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    vi.mocked(sendSessionMessage).mockResolvedValueOnce({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [
+        { id: 'srv-u1', role: 'user', content: 'happy path', timestamp: '' },
+      ],
+      messageCount: 1,
+      createdAt: '',
+      updatedAt: '',
+    })
+    vi.mocked(fetchSessionMessages).mockResolvedValue([
+      { id: 'srv-u1', role: 'user', content: 'happy path', timestamp: '' },
+    ])
+
+    await store.sendMessage('happy path')
+    await Promise.resolve(); await Promise.resolve()
+
+    const userMsg = store.messages.find((m) => m.role === 'user' && m.content === 'happy path')
+    expect(userMsg).toBeDefined()
+    expect(userMsg?.status).not.toBe('failed')
+  })
+})
+
 describe('chatStore - loadSessionMessages clears isStreaming alongside isLoading (C-7)', () => {
   beforeEach(() => {
     installLocalStorageStub()

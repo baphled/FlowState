@@ -515,4 +515,48 @@ describe('MessageBubble', () => {
       expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
     })
   })
+
+  describe('failed-send marker (compounding bug C-2)', () => {
+    // chatStore marks a user-message bubble status='failed' when
+    // sendSessionMessage rejects. The user sees a persistent inline marker
+    // alongside the existing toast surfacing — minimum viable failure
+    // visibility per the PR-2 brief.
+
+    it('renders a visible "Failed to send" marker on a user bubble with status=failed', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'user', content: 'lost message', status: 'failed' }),
+      )
+
+      const marker = wrapper.find('[data-testid="message-failed-marker"]')
+      expect(marker.exists()).toBe(true)
+      expect(marker.text()).toMatch(/failed/i)
+    })
+
+    it('does NOT render the failed marker when the user message has no status', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'user', content: 'normal message' }),
+      )
+
+      expect(wrapper.find('[data-testid="message-failed-marker"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the failed marker on assistant messages even with status=failed', () => {
+      // Assistants don't go through the optimistic-send path; failed-status
+      // on an assistant has different semantics (a separate concern). The
+      // marker is user-message specific.
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'assistant', content: 'a reply', status: 'failed' }),
+      )
+
+      expect(wrapper.find('[data-testid="message-failed-marker"]').exists()).toBe(false)
+    })
+
+    it('exposes the failed status via data-status so e2e specs can assert on it', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'user', content: 'lost', status: 'failed' }),
+      )
+
+      expect(wrapper.attributes('data-status')).toBe('failed')
+    })
+  })
 })

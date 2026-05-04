@@ -676,8 +676,12 @@ export const useChatStore = defineStore('chat', {
       this.isLoading = true
       this.isStreaming = false
 
+      // Optimistic id is `temp-${Date.now()}-${rand}` rather than just
+      // `temp-${Date.now()}` so concurrent sends within the same millisecond
+      // (test harness, fast click) get distinct ids — otherwise the
+      // reconcile-by-id swap below would collide.
       const optimisticMessage: Message = {
-        id: `temp-${Date.now()}`,
+        id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: 'user',
         content: text,
         timestamp: new Date().toISOString(),
@@ -731,7 +735,24 @@ export const useChatStore = defineStore('chat', {
           onStall: () => this.handleStreamStall(capturedSessionId),
         })
 
-        await sendSessionMessage(sessionId, text)
+        const sentSession = await sendSessionMessage(sessionId, text)
+
+        // Reconcile the optimistic temp-* id with the server-assigned id
+        // from the response so subsequent renders carry the canonical id
+        // (compounding bug C-1). Match by content among user messages in
+        // the response — the backend persisted the just-sent message and
+        // returns it in the messages array. We pick the LAST user message
+        // with the matching content to pin the most recent send.
+        const responseMessages = sentSession?.messages ?? []
+        const serverUserMessage = [...responseMessages]
+          .reverse()
+          .find((m) => m.role === 'user' && m.content === text)
+        if (serverUserMessage && serverUserMessage.id) {
+          const local = this.messages.find((m) => m.id === optimisticMessage.id)
+          if (local) {
+            local.id = serverUserMessage.id
+          }
+        }
 
         // SSE is the source of truth during a send. Never replace this.messages
         // with a backend refetch here — that would inject backend-loaded assistant
@@ -743,6 +764,14 @@ export const useChatStore = defineStore('chat', {
         await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
+        // Mark the optimistic bubble as failed so the user sees their
+        // attempt didn't go through (compounding bug C-2). The bubble stays
+        // in place — content is preserved so the user can retry by
+        // reverting and re-sending.
+        const local = this.messages.find((m) => m.id === optimisticMessage.id)
+        if (local) {
+          local.status = 'failed'
+        }
       } finally {
         sessionStream.disconnect()
         this.isLoading = false
