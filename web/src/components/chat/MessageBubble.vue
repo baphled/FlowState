@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
 import { useChatStore } from '@/stores/chatStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import CopyButton from '@/components/tools/CopyButton.vue'
 import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
 import GenericTool from '@/components/tools/GenericTool.vue'
 import { getToolComponent } from '@/tools/toolRegistry'
@@ -95,6 +96,16 @@ const displayRole = computed(() =>
     ? props.agentName
     : props.message.role,
 )
+
+// Copy affordance: surface a clipboard button on the user's own messages
+// and on assistant replies, mirroring the convention already used inside
+// tool-call cards. Tool/delegation/thinking branches each have their own
+// chrome (or are non-content), so they intentionally opt out.
+const showCopyButton = computed(
+  () =>
+    isPlain.value &&
+    (props.message.role === 'assistant' || props.message.role === 'user'),
+)
 </script>
 
 <template>
@@ -173,6 +184,9 @@ const displayRole = computed(() =>
         :content="props.message.content"
       />
       <p v-else class="message-content">{{ props.message.content }}</p>
+      <div v-if="showCopyButton" class="message-actions">
+        <CopyButton data-testid="message-copy-btn" :text="props.message.content" />
+      </div>
     </template>
   </div>
 </template>
@@ -228,6 +242,15 @@ const displayRole = computed(() =>
   line-height: 1.6;
   white-space: pre-wrap;
   font-family: inherit;
+}
+
+/* Copy affordance row, anchored under the message body. Right-aligned to
+ * keep the bubble's reading column clean. Matches the small-toolbar vibe
+ * of the per-tool-card layout. */
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
 }
 
 /* Tool blocks: collapsed by default, expand on click. opencode TUI vibe. */
