@@ -1707,7 +1707,25 @@ func (a *App) createDelegateEngine(
 	var childFailoverMgr *failover.Manager
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
-		if a.plugins.failoverManager != nil {
+		if len(manifest.PreferredModels) > 0 {
+			prefs := agentToProviderPreferences(manifest.PreferredModels)
+			// For permissive/empty policy, append parent preferences as fallback so
+			// delegation survives when all declared preferred models are rate-limited.
+			// Strict-policy agents must only run on their declared models — no fallback.
+			if manifest.ModelPolicy != agent.ModelPolicyStrict && a.plugins.failoverManager != nil {
+				seen := make(map[string]bool, len(prefs))
+				for _, p := range prefs {
+					seen[p.Provider+"/"+p.Model] = true
+				}
+				for _, p := range a.plugins.failoverManager.Preferences() {
+					if !seen[p.Provider+"/"+p.Model] {
+						prefs = append(prefs, p)
+						seen[p.Provider+"/"+p.Model] = true
+					}
+				}
+			}
+			childFailoverMgr.SetBasePreferences(prefs)
+		} else if a.plugins.failoverManager != nil {
 			childFailoverMgr.SetBasePreferences(a.plugins.failoverManager.Preferences())
 		}
 	}
@@ -4769,4 +4787,15 @@ func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //   - Stores the runner for later use by wireDelegateToolIfEnabled.
 func (a *App) SetAutoresearchRunner(r runner.AutoresearchRunner) {
 	a.autoresearchRunner = r
+}
+
+// agentToProviderPreferences converts an agent manifest's preferred model
+// list to the failover manager's wire type, preserving the declared priority
+// order so the first healthy candidate is tried first.
+func agentToProviderPreferences(prefs []agent.ModelPreference) []provider.ModelPreference {
+	out := make([]provider.ModelPreference, len(prefs))
+	for i, p := range prefs {
+		out[i] = provider.ModelPreference{Provider: p.Provider, Model: p.Model}
+	}
+	return out
 }

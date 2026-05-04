@@ -4,8 +4,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/plugin/failover"
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
@@ -157,5 +161,191 @@ var _ = Describe("buildPersistedPlanFile", func() {
 		// fails if buildPersistedPlanFile ever drifts to a different shape.
 		acceptsFile := func(plan.File) {}
 		acceptsFile(buildPersistedPlanFile("chain", md))
+	})
+})
+
+var _ = Describe("agentToProviderPreferences", func() {
+	It("converts an empty slice to an empty slice", func() {
+		result := agentToProviderPreferences(nil)
+		Expect(result).To(BeEmpty())
+	})
+
+	It("preserves provider and model fields from each manifest preference", func() {
+		prefs := []agent.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4"},
+			{Provider: "openai", Model: "gpt-4o"},
+		}
+
+		result := agentToProviderPreferences(prefs)
+
+		Expect(result).To(HaveLen(2))
+		Expect(result[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}))
+		Expect(result[1]).To(Equal(provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}))
+	})
+
+	It("preserves declaration order so failover respects manifest priority", func() {
+		prefs := []agent.ModelPreference{
+			{Provider: "zai", Model: "glm-4.7"},
+			{Provider: "anthropic", Model: "claude-haiku-4"},
+		}
+
+		result := agentToProviderPreferences(prefs)
+
+		Expect(result[0].Provider).To(Equal("zai"),
+			"first manifest preference must remain first — failover uses list order")
+	})
+})
+
+// buildAppWithPlugins returns a minimal App wired with a pluginRuntime
+// that carries both a HealthManager and a failoverManager pre-seeded
+// with parentPrefs. Avoids the full New() constructor so tests stay
+// fast and free of filesystem I/O.
+func buildAppWithPlugins(parentPrefs []provider.ModelPreference) *App {
+	healthMgr := failover.NewHealthManager()
+	reg := provider.NewRegistry()
+
+	parentMgr := failover.NewManager(reg, healthMgr, 0)
+	parentMgr.SetBasePreferences(parentPrefs)
+
+	return &App{
+		Registry:         agent.NewRegistry(),
+		providerRegistry: reg,
+		plugins: &pluginRuntime{
+			healthManager:   healthMgr,
+			failoverManager: parentMgr,
+		},
+	}
+}
+
+var _ = Describe("createDelegateEngine child failover preference building", func() {
+	var (
+		parentPrefs = []provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4"},
+			{Provider: "openai", Model: "gpt-4o"},
+		}
+		manifestPrefs = []agent.ModelPreference{
+			{Provider: "zai", Model: "glm-4.7"},
+		}
+		store = coordination.NewMemoryStore()
+	)
+
+	Context("permissive manifest with preferred models", func() {
+		It("appends parent preferences as deduplicated fallback after manifest models", func() {
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:              "analyst",
+				Name:            "Analyst",
+				ModelPolicy:     agent.ModelPolicyPermissive,
+				PreferredModels: manifestPrefs,
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			prefs := eng.FailoverManager().Preferences()
+			Expect(prefs).To(HaveLen(3),
+				"manifest model + 2 parent models = 3 preferences")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-4.7"}),
+				"manifest model must come first")
+			Expect(prefs[1]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}),
+				"first parent preference appended second")
+			Expect(prefs[2]).To(Equal(provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}),
+				"second parent preference appended last")
+		})
+	})
+
+	Context("empty policy (defaults to permissive) manifest with preferred models", func() {
+		It("appends parent preferences as fallback when ModelPolicy is empty", func() {
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:              "researcher",
+				Name:            "Researcher",
+				ModelPolicy:     "", // empty == permissive
+				PreferredModels: manifestPrefs,
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			prefs := eng.FailoverManager().Preferences()
+			Expect(len(prefs)).To(BeNumerically(">", len(manifestPrefs)),
+				"parent preferences must be appended when policy is empty")
+		})
+	})
+
+	Context("strict manifest with preferred models", func() {
+		It("uses only the manifest's declared models — no parent fallback", func() {
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:              "security-agent",
+				Name:            "Security Agent",
+				ModelPolicy:     agent.ModelPolicyStrict,
+				PreferredModels: manifestPrefs,
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			prefs := eng.FailoverManager().Preferences()
+			Expect(prefs).To(HaveLen(1),
+				"strict policy must not append parent preferences")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-4.7"}))
+		})
+	})
+
+	Context("manifest with no preferred models", func() {
+		It("inherits parent preferences unchanged", func() {
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:   "generic-agent",
+				Name: "Generic Agent",
+				// no PreferredModels
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			prefs := eng.FailoverManager().Preferences()
+			Expect(prefs).To(Equal(parentPrefs),
+				"when the manifest has no preferred models the child must mirror parent preferences")
+		})
+	})
+
+	Context("permissive manifest where a manifest model is also in the parent list", func() {
+		It("does not duplicate the preference that appears in both lists", func() {
+			// Parent list contains anthropic/claude-sonnet-4.
+			// Manifest also declares anthropic/claude-sonnet-4 — dedup must drop the duplicate.
+			sharedPref := agent.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:          "dedup-agent",
+				Name:        "Dedup Agent",
+				ModelPolicy: agent.ModelPolicyPermissive,
+				PreferredModels: []agent.ModelPreference{
+					sharedPref,
+					{Provider: "zai", Model: "glm-4.7"},
+				},
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			prefs := eng.FailoverManager().Preferences()
+
+			// Count occurrences of anthropic/claude-sonnet-4.
+			count := 0
+			for _, p := range prefs {
+				if p.Provider == "anthropic" && p.Model == "claude-sonnet-4" {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1),
+				"anthropic/claude-sonnet-4 appears in both lists but must only appear once")
+		})
 	})
 })
