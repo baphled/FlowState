@@ -70,6 +70,7 @@ export const useChatStore = defineStore('chat', {
     sessions: [] as SessionSummary[],
     messages: [] as Message[],
     isLoading: false,
+    isStreaming: false,
     isLoadingSessions: false,
     error: null as string | null,
   }),
@@ -220,6 +221,16 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    async loadSessionByAgentId(agentId: string): Promise<boolean> {
+      const session = this.sessions.find(
+        (s) => (s.currentAgentId ?? s.agentId) === agentId,
+      )
+      if (!session) return false
+
+      await this.loadSessionMessages(session.id)
+      return true
+    },
+
     async sendMessage(content: string): Promise<void> {
       const text = content.trim()
       if (!text || this.isLoading) {
@@ -228,6 +239,7 @@ export const useChatStore = defineStore('chat', {
 
       this.error = null
       this.isLoading = true
+      this.isStreaming = false
 
       const optimisticMessage: Message = {
         id: `temp-${Date.now()}`,
@@ -248,15 +260,19 @@ export const useChatStore = defineStore('chat', {
         }
 
         eventSource = subscribeSessionStream(sessionId)
-        eventSource.addEventListener('delegation', (event) => {
-          this.applyDelegationEvent((event as MessageEvent).data as string)
-        })
         eventSource.addEventListener('message', (event) => {
           this.applyContentEvent((event as MessageEvent).data as string)
         })
 
         await sendSessionMessage(sessionId, text)
+
         this.messages = await fetchSessionMessages(sessionId)
+        const seen = new Set<string>()
+        this.messages = this.messages.filter((message) => {
+          if (seen.has(message.id)) return false
+          seen.add(message.id)
+          return true
+        })
         await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
@@ -265,6 +281,7 @@ export const useChatStore = defineStore('chat', {
           eventSource.close()
         }
         this.isLoading = false
+        this.isStreaming = false
       }
     },
 
@@ -319,26 +336,105 @@ export const useChatStore = defineStore('chat', {
     },
 
     applyContentEvent(payload: string): void {
-      let info: { content?: string }
+      if (payload === '[DONE]') {
+        this.isStreaming = false
+        return
+      }
+
+      let info: Record<string, unknown>
       try {
         info = JSON.parse(payload)
       } catch {
         return
       }
 
-      if (info.content === undefined || info.content === '') {
+      if (info.type === 'tool_call') {
+        this.handleToolCallEvent(info)
         return
       }
 
-      const target = this.messages.find(
-        (message) => message.status !== 'completed' && message.role === 'assistant',
+      if (info.type === 'tool_result') {
+        this.handleToolResultEvent(info)
+        return
+      }
+
+      if (info.type === 'skill_load') {
+        this.handleToolCallEvent({ ...info, name: info.name, status: 'running' })
+        return
+      }
+
+      if (
+        info.target_agent !== undefined ||
+        info.chain_id !== undefined ||
+        info.tool_calls !== undefined ||
+        info.last_tool !== undefined
+      ) {
+        this.applyDelegationEvent(payload)
+        return
+      }
+
+      if (info.content !== undefined) {
+        this.handleContentChunk(info)
+        return
+      }
+
+      if (info.error !== undefined) {
+        this.error = String(info.error)
+      }
+    },
+
+    handleContentChunk(info: { content?: unknown }): void {
+      if (typeof info.content !== 'string' || info.content.length === 0) {
+        return
+      }
+
+      let target = [...this.messages].reverse().find(
+        (message) => message.role === 'assistant' && message.status !== 'completed',
+      )
+
+      if (!target) {
+        target = {
+          id: `streaming-${Date.now()}`,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          status: 'running',
+        }
+        this.messages.push(target)
+      }
+
+      target.content = (target.content ?? '') + info.content
+      target.status = 'running'
+      this.isStreaming = true
+    },
+
+    handleToolCallEvent(info: { name?: unknown; status?: unknown; type?: unknown }): void {
+      const toolName = String(info.name ?? info.type ?? 'unknown')
+      const status = String(info.status ?? 'running')
+
+      const toolMessage: Message = {
+        id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: 'tool_result',
+        toolName,
+        content: '',
+        timestamp: new Date().toISOString(),
+        status,
+      }
+
+      this.messages.push(toolMessage)
+    },
+
+    handleToolResultEvent(info: { content?: unknown }): void {
+      const target = [...this.messages].reverse().find(
+        (message) => message.role === 'tool_result' && message.status === 'running',
       )
 
       if (!target) {
         return
       }
 
-      target.content = (target.content ?? '') + info.content
+      target.content = String(info.content ?? '')
+      target.status = 'completed'
     },
   },
 })

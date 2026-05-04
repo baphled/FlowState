@@ -1,25 +1,37 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
+import { useChatStore } from '@/stores/chatStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import ToolBubble from '@/components/tools/ToolBubble.vue'
+import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
+import GenericTool from '@/components/tools/GenericTool.vue'
+import { getToolComponent } from '@/tools/toolRegistry'
+import { buildToolRenderSpec } from '@/views/toolRenderSpec'
 
 defineOptions({ name: 'MessageBubble' })
 
 const props = defineProps<{ message: Message; agentName?: string }>()
 
+const chatStore = useChatStore()
 const now = ref(Date.now())
-let elapsedTimer: ReturnType<typeof setInterval> | null = null
+const elapsedTimer = ref<ReturnType<typeof setInterval> | null>(null)
+
+async function loadDelegatedSession(): Promise<void> {
+  if (!props.message.targetAgent) return
+  await chatStore.loadSessionByAgentId(props.message.targetAgent)
+}
 
 onMounted(() => {
-  elapsedTimer = setInterval(() => {
+  elapsedTimer.value = setInterval(() => {
     now.value = Date.now()
   }, 1000)
 })
 
 onBeforeUnmount(() => {
-  if (elapsedTimer !== null) {
-    clearInterval(elapsedTimer)
-    elapsedTimer = null
+  if (elapsedTimer.value !== null) {
+    clearInterval(elapsedTimer.value)
+    elapsedTimer.value = null
   }
 })
 
@@ -43,25 +55,34 @@ const hasProgress = computed(
     typeof props.message.lastTool === 'string',
 )
 
-const isToolRole = computed(() =>
-  ['tool_call', 'tool_result', 'tool_error'].includes(props.message.role),
-)
 const isDelegationStarted = computed(() => props.message.role === 'delegation_started')
 const isDelegation = computed(() => props.message.role === 'delegation')
 const isThinking = computed(() => props.message.role === 'thinking')
+
+const isToolResult = computed(() => props.message.role === 'tool_result')
+const isToolError = computed(() => props.message.role === 'tool_error')
+
+const toolSpec = computed(() => buildToolRenderSpec(props.message))
+
+const toolStatus = computed<'pending' | 'running' | 'completed' | 'error'>(() => {
+  if (props.message.status === 'error') return 'error'
+  if (props.message.status === 'running') return 'running'
+  if (props.message.status === 'pending') return 'pending'
+  return 'completed'
+})
+
+const toolComponent = computed(() => {
+  return getToolComponent(toolSpec.value.toolName) ?? GenericTool
+})
+
 const isPlain = computed(
   () =>
-    !isToolRole.value &&
+    !isToolResult.value &&
+    !isToolError.value &&
     !isDelegationStarted.value &&
     !isDelegation.value &&
     !isThinking.value,
 )
-
-const toolSummary = computed(() => {
-  const name = props.message.toolName || props.message.role
-  const input = props.message.toolInput
-  return input ? `${name} ${input}` : name
-})
 
 const displayRole = computed(() =>
   props.message.role === 'assistant' && props.agentName
@@ -77,13 +98,31 @@ const displayRole = computed(() =>
     :data-testid="`message-${props.message.role}`"
     :data-role="props.message.role"
   >
-    <details v-if="isToolRole" class="tool-block">
-      <summary class="tool-summary">
-        <span class="tool-glyph" aria-hidden="true">▸</span>
-        <span class="tool-name">{{ toolSummary }}</span>
-      </summary>
-      <pre class="tool-content">{{ props.message.content }}</pre>
-    </details>
+    <ToolBubble
+      v-if="isToolResult"
+      :tool-name="toolSpec.toolName"
+      :title="toolSpec.toolName"
+      :subtitle="toolSpec.heading"
+      :status="toolStatus"
+      data-testid="tool-renderer"
+    >
+      <component
+        :is="toolComponent"
+        :tool-name="toolSpec.toolName"
+        :heading="toolSpec.heading"
+        :body="toolSpec.body"
+        :status="toolStatus"
+        :tool-input="props.message.toolInput"
+      />
+    </ToolBubble>
+
+    <ToolErrorCard
+      v-else-if="isToolError"
+      :tool-name="props.message.toolName || 'error'"
+      :heading="props.message.toolName || 'Error'"
+      :body="props.message.content"
+      data-testid="tool-error-renderer"
+    />
 
     <div v-else-if="isDelegationStarted" class="delegation-card delegation-card--inflight">
       <span data-testid="delegation-spinner" class="delegation-spinner" aria-hidden="true">⋯</span>
@@ -93,6 +132,7 @@ const displayRole = computed(() =>
             :to="`/agents/${props.message.targetAgent}`"
             data-testid="delegation-agent-link"
             class="delegation-agent-link"
+            @click.prevent="loadDelegatedSession"
           >
             {{ props.message.targetAgent }}
           </router-link>
@@ -117,6 +157,7 @@ const displayRole = computed(() =>
           :to="`/agents/${props.message.targetAgent}`"
           data-testid="delegation-agent-link"
           class="delegation-agent-link"
+          @click.prevent="loadDelegatedSession"
         >
           {{ props.message.targetAgent }}
         </router-link>
@@ -191,70 +232,13 @@ const displayRole = computed(() =>
 }
 
 /* Tool blocks: collapsed by default, expand on click. opencode TUI vibe. */
-.message-bubble.tool_call,
 .message-bubble.tool_result,
 .message-bubble.tool_error {
   align-self: stretch;
   max-width: 100%;
-  padding: 0.25rem 0.5rem;
+  padding: 0;
   background: transparent;
-  border: 1px solid var(--border);
-  border-left: 2px solid var(--event-tool-call, var(--text-muted));
-}
-
-.message-bubble.tool_error {
-  border-left-color: var(--error, #f7768e);
-}
-
-.tool-block {
-  width: 100%;
-}
-
-.tool-summary {
-  cursor: pointer;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  padding: 0.15rem 0;
-  user-select: none;
-}
-
-.tool-summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool-glyph {
-  display: inline-block;
-  transition: transform 0.15s ease;
-  color: var(--text-muted);
-}
-
-.tool-block[open] .tool-glyph {
-  transform: rotate(90deg);
-}
-
-.tool-name {
-  color: var(--event-tool-call, var(--text-primary));
-  font-weight: 600;
-}
-
-.message-bubble.tool_error .tool-name {
-  color: var(--error, #f7768e);
-}
-
-.tool-content {
-  margin: 0.4rem 0 0.2rem 1rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-elevated, rgba(0, 0, 0, 0.2));
-  border-radius: 4px;
-  font-size: 0.78rem;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  overflow-x: auto;
-  line-height: 1.4;
+  border: none;
 }
 
 /* Delegation cards: inline within main chat. */

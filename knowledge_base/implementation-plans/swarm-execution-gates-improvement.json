@@ -1,0 +1,703 @@
+{
+  "metadata": {
+    "title": "Swarm Execution Gates Improvement",
+    "type": "implementation-plan",
+    "status": "draft",
+    "tags": ["gates", "swarm", "quality-assurance", "tdd", "validation"],
+    "chain_id": "swarm-execution-gates-2026",
+    "created": "2026-01-20",
+    "author": "flowstate-plan-writer",
+    "effort_estimate": "Complex",
+    "total_phases": 5,
+    "total_tasks": 18,
+    "estimated_waves": 10,
+    "critical_path": "T1 → T2 → T3 → T4 → T7 → T10 → T13 → T16",
+    "test_strategy": "BDD-FIRST",
+    "coverage_target": "95%"
+  },
+  "plan": {
+    "tldr": {
+      "summary": "Implement a comprehensive gate architecture for the Development Swarm covering pre-execution, post-execution, and between-wave validation. Extract 7 reusable components from the planning harness into `internal/gate/`. Add Junior Engineer Protection with three-layer TDD enforcement. Define output and behavioural agent gates across four categories (Development, Security, Compliance, Resource).",
+      "deliverables": "Gate infrastructure package (`internal/gate/`), Junior Engineer protection gates, between-wave validators, updated agent manifests, gate examples, full test coverage.",
+      "estimated_effort": "Complex — 5 phases, 18 tasks across 10 execution waves.",
+      "parallel_execution": "Wave 2 tasks (T4, T5, T6) run concurrently; Wave 4 tasks (T11, T12) run concurrently; Wave 7 tasks (T15, T16) run concurrently.",
+      "critical_path": "T1 → T2 → T3 → T4 → T7 → T10 → T13 → T16 (foundation through full integration)."
+    },
+    "context": {
+      "original_request": "Improve gate checks in the Development Swarm and define quality gates for agents with pre-execution, post-execution, and between-wave gate infrastructure. Extract 7 reusable components from the planning harness. Cover four gate categories: Development, Security, Compliance, Resource. Implement Junior Engineer Protection (pre-block, post-validate, TDD redirection). Define output and behavioural agent gates.",
+      "interview_summary": {
+        "gate_timings": ["pre-execution", "post-execution", "between-wave"],
+        "junior_engineer_protection_layers": ["pre-block", "post-validate", "TDD redirection"],
+        "gate_types": ["output", "behavioural"],
+        "infrastructure_extraction": true,
+        "gate_categories": ["Development", "Security", "Compliance", "Resource"],
+        "test_preservation": {
+          "unit_tests": 224,
+          "bdd_tests": 5
+        },
+        "constraints": ["async-only delegation", "agent-delegation-swarm Phase II compatibility"]
+      },
+      "research_findings": {
+        "langgraph_checkpoints": "Persistent state management via state snapshotting and rollback; pattern applicable to gate state persistence across waves",
+        "crewai_monitoring": "Task-level metrics, crew-level coordination gates, real-time feedback loops",
+        "harbor_validator_framework": "Pluggable validator chains, evaluate-retry loops, capability checks — directly maps to our 7-component extraction"
+      },
+      "architectural_decisions": [
+        {
+          "decision": "`internal/gate/` package",
+          "rationale": "Centralised, importable by any agent or orchestrator"
+        },
+        {
+          "decision": "`ValidationResult` as core type",
+          "rationale": "Standardised PASS/FAIL/SKIP verdict across all gates"
+        },
+        {
+          "decision": "`ValidatorChain` for sequencing",
+          "rationale": "Composable validation pipelines for different contexts"
+        },
+        {
+          "decision": "evaluate-retry loop for TDD",
+          "rationale": "Leverages existing `sisyphus-junior` enforcement mechanism"
+        },
+        {
+          "decision": "`CriticResult` for behavioural gates",
+          "rationale": "Existing component adapted for post-execution assessment"
+        },
+        {
+          "decision": "Checkpoint pattern for state",
+          "rationale": "Inspired by LangGraph; enables rollback and audit trails"
+        }
+      ]
+    },
+    "objectives": {
+      "core_objective": "Build a production-quality gate infrastructure that enforces quality standards across the Development Swarm lifecycle — before agents execute, after they produce output, and between execution waves.",
+      "deliverables": [
+        "`internal/gate/` package containing 7 extracted reusable components",
+        "Pre-execution gate implementations (capability, resource, security, TDD discipline)",
+        "Post-execution gate implementations (output quality, behavioural compliance)",
+        "Between-wave gate implementations (wave completion, state consistency, readiness)",
+        "Junior Engineer three-layer protection system",
+        "Agent manifest updates with gate requirements",
+        "Working examples demonstrating gates in action",
+        "BDD test suite with ≥95% coverage"
+      ],
+      "definition_of_done": [
+        "All 7 reusable components extracted and unit-tested in `internal/gate/`",
+        "Junior Engineer Protection gates block invalid execution and redirect to TDD",
+        "Between-wave gates validate wave completion before next wave starts",
+        "All four gate categories have at least one implemented gate",
+        "Agent manifests reference required gates",
+        "Examples demonstrate blocked/passed/redirected scenarios",
+        "BDD test suite covers all gate paths at ≥95% coverage",
+        "Existing 224 unit tests + 5 BDD tests remain green"
+      ],
+      "must_have": [
+        "Pre-execution, post-execution, and between-wave gates",
+        "Junior Engineer pre-block, post-validate, and TDD redirection",
+        "Output gates and behavioural gates",
+        "All four gate categories represented",
+        "7 extracted reusable components",
+        "≥95% test coverage",
+        "Async-only delegation compatibility"
+      ],
+      "must_not_have": [
+        "Synchronous blocking calls that violate async delegation pattern",
+        "Removal or modification of existing passing tests",
+        "External dependencies not already in the project",
+        "Hard-coded gate parameters (must be configurable)"
+      ]
+    },
+    "verification_strategy": {
+      "test_approach": {
+        "unit_tests": "Go `testing` package for all `internal/gate/` components",
+        "bdd_tests": "`godog` for gate scenario coverage (gate-blocked, gate-passed, gate-redirected)",
+        "integration_tests": "End-to-end gate execution within swarm wave simulation",
+        "regression": "All existing 224 unit tests + 5 BDD tests must remain green"
+      },
+      "qa_policy": {
+        "acceptance_criteria": "Every task includes explicit acceptance criteria and QA scenarios",
+        "dedicated_qa": "A dedicated QA pass runs after each phase before the next begins",
+        "performance_overhead": "Gate performance overhead measured and must not exceed 5% of wave execution time",
+        "false_positive_rate": "False-positive rate tracked: target <2% of gate blocks should be overridden"
+      }
+    },
+    "execution_strategy": {
+      "parallel_waves": [
+        {
+          "wave": 1,
+          "tasks": ["T1", "T2", "T3"],
+          "parallel": false,
+          "notes": "Sequential (T1 → T2 → T3 — foundation layering)"
+        },
+        {
+          "wave": 2,
+          "tasks": ["T4", "T5", "T6"],
+          "parallel": true,
+          "notes": "Concurrent (independent gate implementations)"
+        },
+        {
+          "wave": 3,
+          "tasks": ["T7", "T8", "T9"],
+          "parallel": false,
+          "notes": "T7 first, then T8 + T9 concurrent"
+        },
+        {
+          "wave": 4,
+          "tasks": ["T10", "T11", "T12"],
+          "parallel": false,
+          "notes": "T10 first, then T11 + T12 concurrent"
+        },
+        {
+          "wave": 5,
+          "tasks": ["T13", "T14"],
+          "parallel": false,
+          "notes": "T13 first, then T14"
+        },
+        {
+          "wave": 6,
+          "tasks": ["T15"],
+          "parallel": false,
+          "notes": "Sequential"
+        },
+        {
+          "wave": 7,
+          "tasks": ["T16", "T17", "T18"],
+          "parallel": false,
+          "notes": "T16 first, then T17 + T18 concurrent"
+        }
+      ],
+      "agent_dispatch": [
+        {
+          "phase": "Phase 1 (Foundation)",
+          "agent": "Senior-Engineer",
+          "rationale": "Core infrastructure requires deep architectural understanding"
+        },
+        {
+          "phase": "Phase 2 (Jr Eng Protection)",
+          "agent": "Senior-Engineer + QA",
+          "rationale": "Security-sensitive; needs validation expertise"
+        },
+        {
+          "phase": "Phase 3 (Between-Wave)",
+          "agent": "Senior-Engineer",
+          "rationale": "State management complexity"
+        },
+        {
+          "phase": "Phase 4 (Full Integration)",
+          "agent": "Senior-Engineer + QA",
+          "rationale": "Integration points need both implementation and verification"
+        },
+        {
+          "phase": "Phase 5 (Validation)",
+          "agent": "QA-Agent + Technical-Writer",
+          "rationale": "Final quality pass and documentation"
+        }
+      ]
+    },
+    "tasks": [
+      {
+        "id": "task-1",
+        "title": "Extract and implement ValidationResult core type",
+        "phase": 1,
+        "wave": 1,
+        "priority": "P0",
+        "dependencies": [],
+        "description": "Create the `ValidationResult` struct in `internal/gate/` as the standardised verdict structure for all gates. Must support PASS, FAIL, SKIP states with reason, metadata, and timestamp fields.",
+        "file_changes": [
+          "internal/gate/validation_result.go (create)",
+          "internal/gate/validation_result_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`ValidationResult` struct with `Status` (PASS/FAIL/SKIP), `Reason string`, `Metadata map[string]any`, `Timestamp time.Time`",
+          "Constructor functions: `NewPassResult(reason string)`, `NewFailResult(reason string)`, `NewSkipResult(reason string)`",
+          "`IsPass()`, `IsFail()`, `IsSkip()` helper methods",
+          "`String()` method for human-readable output",
+          "Unit tests covering all states and constructors",
+          "No external dependencies beyond standard library"
+        ],
+        "skills": ["golang", "architecture"],
+        "effort": "Simple"
+      },
+      {
+        "id": "task-2",
+        "title": "Implement combineValidationResults multi-validator aggregation",
+        "phase": 1,
+        "wave": 1,
+        "priority": "P0",
+        "dependencies": ["T1"],
+        "description": "Create the `combineValidationResults` function that aggregates multiple `ValidationResult` instances into a single verdict. Implements short-circuit FAIL semantics.",
+        "file_changes": [
+          "internal/gate/combine.go (create)",
+          "internal/gate/combine_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`CombineValidationResults(results ...ValidationResult) ValidationResult` function",
+          "All PASS → combined PASS",
+          "Any FAIL → combined FAIL (short-circuit)",
+          "All SKIP → combined SKIP",
+          "Mixed PASS+SKIP → combined PASS with skip metadata",
+          "Mixed FAIL+anything → combined FAIL with all reasons aggregated"
+        ],
+        "skills": ["golang", "testing"],
+        "effort": "Simple"
+      },
+      {
+        "id": "task-3",
+        "title": "Extract buildFeedback and appendFeedback helpers",
+        "phase": 1,
+        "wave": 1,
+        "priority": "P0",
+        "dependencies": [],
+        "description": "Extract and generalise the `buildFeedback` and `appendFeedback` functions from the planning harness. These construct structured feedback messages when gates fail.",
+        "file_changes": [
+          "internal/gate/feedback.go (create)",
+          "internal/gate/feedback_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`Feedback` struct with `Category` (Error/Warning/Suggestion), `Message string`, `Context map[string]string`, `Timestamp time.Time`",
+          "`BuildFeedback(category, message string) *Feedback` constructor",
+          "`AppendFeedback(existing *Feedback, category, message string) *Feedback` chaining method",
+          "`FeedbackString()` method produces formatted multi-line output"
+        ],
+        "skills": ["golang"],
+        "effort": "Simple"
+      },
+      {
+        "id": "task-4",
+        "title": "Implement ValidatorChain sequential validation pipeline",
+        "phase": 1,
+        "wave": 2,
+        "priority": "P0",
+        "dependencies": ["T1", "T2"],
+        "description": "Create the `ValidatorChain` that executes a sequence of validators in order. Supports both short-circuit and full-execution modes.",
+        "file_changes": [
+          "internal/gate/validator_chain.go (create)",
+          "internal/gate/validator_chain_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`Validator` interface: `Validate(ctx context.Context) ValidationResult`",
+          "`ValidatorChain` struct with `AddValidator(v Validator)`, `SetMode(mode ChainMode)` (ShortCircuit / FullExecution)",
+          "`Execute(ctx context.Context) ValidationResult` runs all validators per mode"
+        ],
+        "skills": ["golang", "architecture"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-5",
+        "title": "Implement CriticResult for behavioural gate assessment",
+        "phase": 1,
+        "wave": 2,
+        "priority": "P1",
+        "dependencies": ["T1"],
+        "description": "Create the `CriticResult` type adapted from existing planning harness patterns. This type captures behavioural assessment of agent output.",
+        "file_changes": [
+          "internal/gate/critic_result.go (create)",
+          "internal/gate/critic_result_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`CriticResult` struct with `Score float64` (0-1), `Issues []string`, `Positives []string`, `Recommendation string`, `Passed bool`",
+          "`NewCriticResult(score float64) *CriticResult` constructor",
+          "`AddIssue(issue string)`, `AddPositive(positive string)` methods",
+          "`ToValidationResult() ValidationResult` conversion method (PASS if score ≥ threshold, default 0.7)"
+        ],
+        "skills": ["golang"],
+        "effort": "Simple"
+      },
+      {
+        "id": "task-6",
+        "title": "Implement Aggregator for cross-wave state analysis",
+        "phase": 1,
+        "wave": 2,
+        "priority": "P1",
+        "dependencies": ["T1", "T2"],
+        "description": "Create the `Aggregator` component that collects and analyses gate results across multiple waves. Supports trend detection and wave comparison.",
+        "file_changes": [
+          "internal/gate/aggregator.go (create)",
+          "internal/gate/aggregator_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`Aggregator` struct with `RecordWave(waveID string, results []ValidationResult)`, `GetWaveResults(waveID string) []ValidationResult`",
+          "`CumulativePassRate() float64` — overall pass rate across all recorded waves",
+          "`Trend() TrendDirection` (Improving / Declining / Stable) — compares last 3 waves"
+        ],
+        "skills": ["golang"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-7",
+        "title": "Implement evaluate-retry quality enforcement loop",
+        "phase": 1,
+        "wave": 2,
+        "priority": "P1",
+        "dependencies": ["T1", "T3"],
+        "description": "Create the `EvaluateRetryLoop` — the core enforcement mechanism that cycles agents back through validation when they fail. Powers the Junior Engineer TDD redirection.",
+        "file_changes": [
+          "internal/gate/evaluate_retry.go (create)",
+          "internal/gate/evaluate_retry_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`EvaluateRetryLoop` struct with `SetMaxRetries(n int)`, `SetValidator(v Validator)`, `SetOnRetry(fn func(attempt int, result ValidationResult))`",
+          "`Execute(ctx context.Context, executor func() error) ValidationResult`",
+          "Runs executor, validates output, retries on FAIL up to max retries",
+          "`RetryCount() int` returns actual retry count",
+          "`History() []ValidationResult` returns all attempt results"
+        ],
+        "skills": ["golang"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-8",
+        "title": "Implement Junior Engineer pre-block capability gate",
+        "phase": 2,
+        "wave": 3,
+        "priority": "P0",
+        "dependencies": ["T1", "T2", "T3", "T4"],
+        "description": "Create the pre-block layer that validates Junior Engineer readiness before task assignment. Checks: capability assessment, TDD discipline verification, resource availability.",
+        "file_changes": [
+          "internal/gate/junior/pre_block.go (create)",
+          "internal/gate/junior/pre_block_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`PreBlockGate` struct implementing `Validator` interface",
+          "Capability check: validates agent has required skills for task",
+          "TDD discipline check: verifies a failing test exists before implementation can proceed",
+          "Resource check: confirms context window, tool availability"
+        ],
+        "skills": ["golang", "tdd"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-9",
+        "title": "Implement TDD execution guard with RED-GREEN-REFACTOR enforcement",
+        "phase": 2,
+        "wave": 3,
+        "priority": "P0",
+        "dependencies": ["T7", "T8"],
+        "description": "Create the runtime TDD enforcement layer that integrates with `sisyphus-junior` prompt enforcement. Monitors execution state (RED → GREEN → REFACTOR).",
+        "file_changes": [
+          "internal/gate/junior/tdd_guard.go (create)",
+          "internal/gate/junior/tdd_guard_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`TDDGuard` struct with `SetPhase(phase TDDPhase)` (RED/GREEN/REFACTOR)",
+          "`ValidateTransition(from, to TDDPhase) ValidationResult` — enforces valid transitions",
+          "RED → GREEN: only minimum implementation allowed",
+          "GREEN → REFACTOR: only under GREEN status",
+          "REFACTOR → GREEN: must maintain all passing tests"
+        ],
+        "skills": ["golang", "tdd"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-10",
+        "title": "Implement Junior Engineer post-validate output assessment",
+        "phase": 2,
+        "wave": 3,
+        "priority": "P1",
+        "dependencies": ["T5", "T8", "T9"],
+        "description": "Create the post-validate layer that assesses Junior Engineer output after execution completes. Validates: output quality, TDD behavioural compliance, generates improvement feedback.",
+        "file_changes": [
+          "internal/gate/junior/post_validate.go (create)",
+          "internal/gate/junior/post_validate_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`PostValidateGate` struct implementing `Validator` interface",
+          "Output quality check: verifies produced code meets test specifications",
+          "TDD compliance check: verifies agent followed RED-GREEN-REFACTOR cycle",
+          "Test coverage check: verifies adequate test coverage (configurable threshold)"
+        ],
+        "skills": ["golang", "testing"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-11",
+        "title": "Implement wave completion validation gate",
+        "phase": 3,
+        "wave": 4,
+        "priority": "P0",
+        "dependencies": ["T4", "T6"],
+        "description": "Create the gate that validates whether a wave's deliverables are complete before the next wave begins. Checks: all tasks have results, all results pass quality threshold.",
+        "file_changes": [
+          "internal/gate/wave/completion.go (create)",
+          "internal/gate/wave/completion_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`WaveCompletionGate` struct implementing `Validator` interface",
+          "`SetWaveSpec(spec WaveSpec)` configures expected tasks and their validators",
+          "Validates all tasks in wave spec have corresponding results",
+          "Validates all task results meet quality threshold",
+          "Detects orphaned tasks (results for tasks not in spec)"
+        ],
+        "skills": ["golang"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-12",
+        "title": "Implement state consistency and readiness gates",
+        "phase": 3,
+        "wave": 4,
+        "priority": "P1",
+        "dependencies": ["T4", "T11"],
+        "description": "Create two related gates: (1) State Consistency Gate — verifies swarm state integrity between waves; (2) Readiness Gate — confirms the swarm has sufficient resources and context to proceed.",
+        "file_changes": [
+          "internal/gate/wave/state_consistency.go (create)",
+          "internal/gate/wave/state_consistency_test.go (create)",
+          "internal/gate/wave/readiness.go (create)",
+          "internal/gate/wave/readiness_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "`StateConsistencyGate` implementing `Validator`: validates checkpoint integrity, state transition log, detects missing/duplicate checkpoints",
+          "`ReadinessGate` implementing `Validator`: checks resource availability, validates required context, checks agent availability"
+        ],
+        "skills": ["golang", "architecture"],
+        "effort": "Complex"
+      },
+      {
+        "id": "task-13",
+        "title": "Implement Development and Security category gates",
+        "phase": 4,
+        "wave": 5,
+        "priority": "P0",
+        "dependencies": ["T4", "T8", "T9", "T10"],
+        "description": "Create concrete gate implementations for the Development and Security categories. Development gates: code quality, test coverage, build success. Security gates: dependency vulnerability scan, secrets detection, permission validation.",
+        "file_changes": [
+          "internal/gate/category/development.go (create)",
+          "internal/gate/category/development_test.go (create)",
+          "internal/gate/category/security.go (create)",
+          "internal/gate/category/security_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Development gates: `CodeQualityGate`, `TestCoverageGate`, `BuildSuccessGate`",
+          "Security gates: `DependencyScanGate`, `SecretsDetectionGate`, `PermissionGate`",
+          "All gates implement `Validator` interface",
+          "Each gate composable into `ValidatorChain` pipelines"
+        ],
+        "skills": ["golang", "security"],
+        "effort": "Complex"
+      },
+      {
+        "id": "task-14",
+        "title": "Implement Compliance and Resource category gates",
+        "phase": 4,
+        "wave": 6,
+        "priority": "P1",
+        "dependencies": ["T4", "T5"],
+        "description": "Create concrete gate implementations for the Compliance and Resource categories. Compliance gates: coding standards adherence, documentation requirements, licensing checks. Resource gates: compute budget, context window, tool availability.",
+        "file_changes": [
+          "internal/gate/category/compliance.go (create)",
+          "internal/gate/category/compliance_test.go (create)",
+          "internal/gate/category/resource.go (create)",
+          "internal/gate/category/resource_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Compliance gates: `CodingStandardsGate`, `DocumentationGate`, `LicensingGate`",
+          "Resource gates: `ComputeBudgetGate`, `ContextWindowGate`, `ToolAvailabilityGate`",
+          "All gates implement `Validator` interface"
+        ],
+        "skills": ["golang"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-15",
+        "title": "Update agent manifests with gate requirements",
+        "phase": 4,
+        "wave": 6,
+        "priority": "P1",
+        "dependencies": ["T13", "T14"],
+        "description": "Update all agent manifest files to reference the gates they must pass. Each manifest specifies pre-execution, post-execution, and behavioural gates appropriate to the agent's role.",
+        "file_changes": [
+          "configs/agents/junior-engineer.yaml (modify)",
+          "configs/agents/senior-engineer.yaml (modify)",
+          "configs/agents/qa-agent.yaml (modify)",
+          "configs/agents/principal-engineer.yaml (modify)",
+          "internal/gate/manifest/loader.go (create)",
+          "internal/gate/manifest/loader_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Each agent manifest has `gates` section with `pre_execution`, `post_execution`, `behavioural` subsections",
+          "Junior Engineer manifest references pre-block, TDD guard, post-validate gates",
+          "Senior Engineer manifest references capability and review gates",
+          "QA manifest references quality threshold and coverage gates",
+          "`GateManifestLoader` reads gate configuration from manifests"
+        ],
+        "skills": ["golang", "yaml"],
+        "effort": "Moderate"
+      },
+      {
+        "id": "task-16",
+        "title": "Integrate gates into swarm orchestrator execution flow",
+        "phase": 4,
+        "wave": 7,
+        "priority": "P0",
+        "dependencies": ["T11", "T12", "T13", "T14", "T15"],
+        "description": "Wire all gates into the swarm orchestrator's execution flow. Pre-execution gates run before each agent starts. Post-execution gates run after each agent completes. Between-wave gates run between wave transitions.",
+        "file_changes": [
+          "internal/swarm/orchestrator.go (modify — add gate hooks)",
+          "internal/swarm/orchestrator_test.go (modify — add gate integration tests)",
+          "internal/swarm/gate_hooks.go (create — pre/post/between-wave hook points)",
+          "internal/swarm/gate_hooks_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Orchestrator calls pre-execution gate chain before dispatching each agent",
+          "Orchestrator calls post-execution gate chain after each agent completes",
+          "Orchestrator calls between-wave gate chain between wave transitions",
+          "Gate failures produce appropriate handling: block execution, redirect agent, or abort wave",
+          "Gate results logged for audit trail",
+          "Async-only: all gate checks are non-blocking from the orchestrator's perspective"
+        ],
+        "skills": ["golang", "architecture", "swarm"],
+        "effort": "Complex"
+      },
+      {
+        "id": "task-17",
+        "title": "Create BDD test suite achieving ≥95% coverage",
+        "phase": 5,
+        "wave": 7,
+        "priority": "P0",
+        "dependencies": ["T16"],
+        "description": "Write a comprehensive BDD test suite using `godog` that covers all gate scenarios. Target ≥95% coverage across `internal/gate/`. Verify all existing 224 unit tests + 5 BDD tests remain green.",
+        "file_changes": [
+          "test/bdd/gate_features/junior_engineer_protection.feature (create)",
+          "test/bdd/gate_features/wave_gates.feature (create)",
+          "test/bdd/gate_features/category_gates.feature (create)",
+          "test/bdd/gate_features/output_gates.feature (create)",
+          "test/bdd/gate_features/behavioural_gates.feature (create)",
+          "test/bdd/gate_steps/gate_steps.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Feature files covering all 5 gate domains",
+          "Each feature has ≥3 scenarios (happy path, failure, edge case)",
+          "Step definitions for all Given/When/Then patterns",
+          "`go test ./internal/gate/... -cover` shows ≥95% coverage",
+          "All existing tests (`go test ./...`) pass without modification"
+        ],
+        "skills": ["golang", "bdd", "testing"],
+        "effort": "Complex"
+      },
+      {
+        "id": "task-18",
+        "title": "Create gate examples and comprehensive documentation",
+        "phase": 5,
+        "wave": 7,
+        "priority": "P1",
+        "dependencies": ["T16"],
+        "description": "Write working examples demonstrating gates in action and comprehensive documentation. Examples: Junior Engineer blocked, Junior Engineer redirected to TDD, QA gate passed, wave transition validated.",
+        "file_changes": [
+          "docs/gates/architecture.md (create)",
+          "docs/gates/configuration-guide.md (create)",
+          "docs/gates/extension-guide.md (create)",
+          "docs/gates/integration-guide.md (create)",
+          "examples/gates/junior_blocked_test.go (create)",
+          "examples/gates/junior_redirected_test.go (create)",
+          "examples/gates/qa_passed_test.go (create)",
+          "examples/gates/wave_transition_test.go (create)",
+          "examples/gates/custom_gate_test.go (create)"
+        ],
+        "acceptance_criteria": [
+          "Architecture document covers: component overview, data flow, gate lifecycle",
+          "Configuration guide covers: manifest format, gate parameters, thresholds",
+          "Extension guide covers: implementing custom `Validator`, adding new gate categories",
+          "Integration guide covers: wiring gates into orchestrators, agent-delegation-swarm compat",
+          "Each example is a runnable Go test (`go test ./examples/gates/...`)"
+        ],
+        "skills": ["golang", "technical-writing"],
+        "effort": "Moderate"
+      }
+    ],
+    "risk_register": [
+      {
+        "id": "R1",
+        "risk": "Gate overhead slows swarm execution >5%",
+        "severity": "Medium",
+        "probability": "Medium",
+        "mitigation": "Performance benchmarks in T18; lazy evaluation for SKIP gates; caching for repeated checks"
+      },
+      {
+        "id": "R2",
+        "risk": "Overly strict gates produce false positives, blocking valid work",
+        "severity": "High",
+        "probability": "Medium",
+        "mitigation": "Configurable thresholds; gate override mechanism for senior agents; false-positive rate tracking"
+      },
+      {
+        "id": "R3",
+        "risk": "State checkpoint corruption causes wave inconsistencies",
+        "severity": "High",
+        "probability": "Low",
+        "mitigation": "Hash verification in StateConsistencyGate; automatic rollback to last good checkpoint; audit trail"
+      },
+      {
+        "id": "R4",
+        "risk": "Gate system complexity makes maintenance difficult",
+        "severity": "Medium",
+        "probability": "Medium",
+        "mitigation": "Clear separation of concerns (7 components); comprehensive documentation; BDD test suite as living spec"
+      },
+      {
+        "id": "R5",
+        "risk": "Agents bypass gate enforcement",
+        "severity": "High",
+        "probability": "Low",
+        "mitigation": "Gates enforced at orchestrator level (not agent level); behavioural gates detect circumvention patterns; audit logging"
+      },
+      {
+        "id": "R6",
+        "risk": "Poor gate feedback fails to improve agent performance",
+        "severity": "Medium",
+        "probability": "Medium",
+        "mitigation": "Structured feedback via buildFeedback/appendFeedback; specific actionable guidance; feedback quality metrics"
+      },
+      {
+        "id": "R7",
+        "risk": "Breaking changes to existing 224 unit tests + 5 BDD tests",
+        "severity": "High",
+        "probability": "Low",
+        "mitigation": "Regression gate runs full test suite; no modification of existing test files; T17 verifies compatibility"
+      },
+      {
+        "id": "R8",
+        "risk": "Integration with agent-delegation-swarm Phase II causes conflicts",
+        "severity": "Medium",
+        "probability": "Medium",
+        "mitigation": "Explicit compatibility checks in T16; shared gate interface; coordination with agent-delegation-swarm chain"
+      }
+    ],
+    "final_verification": {
+      "foundation_verification": [
+        "All 7 reusable components exist in `internal/gate/`",
+        "Each component has unit tests passing independently",
+        "`ValidationResult` supports PASS/FAIL/SKIP with metadata",
+        "`ValidatorChain` supports ShortCircuit and FullExecution modes",
+        "`EvaluateRetryLoop` supports configurable retries with feedback",
+        "No external dependencies beyond standard library and existing project deps"
+      ],
+      "junior_engineer_protection_verification": [
+        "Pre-block gate blocks agents without required capabilities",
+        "Pre-block gate blocks agents without failing test (TDD discipline)",
+        "TDD guard enforces RED → GREEN → REFACTOR transitions",
+        "TDD guard redirects agents to RED phase on violation",
+        "Post-validate gate assesses TDD behavioural compliance",
+        "Post-validate gate generates actionable improvement feedback"
+      ],
+      "between_wave_and_integration_verification": [
+        "Wave completion gate detects incomplete and orphaned tasks",
+        "State consistency gate detects checkpoint corruption",
+        "Readiness gate checks resource and context availability",
+        "All 4 gate categories (Development, Security, Compliance, Resource) implemented",
+        "Agent manifests reference correct gate chains per agent type",
+        "Swarm orchestrator calls gates at correct lifecycle points",
+        "Async-only delegation pattern preserved",
+        "Agent-delegation-swarm Phase II compatibility verified"
+      ],
+      "quality_and_documentation_verification": [
+        "`go test ./internal/gate/... -cover` ≥ 95%",
+        "All existing 224 unit tests + 5 BDD tests pass unmodified",
+        "BDD feature files cover all 5 gate domains",
+        "All example tests are runnable (`go test ./examples/gates/...`)",
+        "Architecture, configuration, extension, and integration docs complete",
+        "Gate performance overhead < 5% of wave execution time",
+        "False-positive rate < 2% of gate blocks"
+      ]
+    }
+  }
+}

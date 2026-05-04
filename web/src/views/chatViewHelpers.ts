@@ -1,4 +1,18 @@
+import { isContextTool } from '@/tools/toolRegistry'
 import type { Agent, Message } from '@/types'
+
+export interface GroupedMessage {
+  type: 'message'
+  message: Message
+}
+
+export interface ContextGroup {
+  type: 'context-group'
+  messages: Message[]
+  toolCounts: Record<string, number>
+}
+
+export type GroupedMessageEntry = GroupedMessage | ContextGroup
 
 /**
  * Resolve the human-readable display name for the agent that produced a
@@ -46,4 +60,50 @@ export function collapseToolPairs(messages: Message[]): Message[] {
     out.push(current)
   }
   return out
+}
+
+/**
+ * Group consecutive context tools (tool_result role and isContextTool is true)
+ * into a single group entry. Single context tools are not grouped.
+ */
+export function groupContextTools(messages: Message[]): GroupedMessageEntry[] {
+  const result: GroupedMessageEntry[] = []
+  let i = 0
+
+  while (i < messages.length) {
+    const current = messages[i]
+    if (current.role === 'tool_result' && current.toolName && isContextTool(current.toolName)) {
+      const group: Message[] = [current]
+      let j = i + 1
+      while (j < messages.length) {
+        const next = messages[j]
+        if (next.role === 'tool_result' && next.toolName && isContextTool(next.toolName)) {
+          group.push(next)
+          j++
+        } else {
+          break
+        }
+      }
+
+      if (group.length >= 2) {
+        const toolCounts: Record<string, number> = {}
+        for (const msg of group) {
+          const name = msg.toolName!
+          toolCounts[name] = (toolCounts[name] || 0) + 1
+        }
+        result.push({
+          type: 'context-group',
+          messages: group,
+          toolCounts,
+        })
+        i = j
+        continue
+      }
+    }
+
+    result.push({ type: 'message', message: current })
+    i++
+  }
+
+  return result
 }

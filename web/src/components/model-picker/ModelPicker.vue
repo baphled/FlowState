@@ -6,6 +6,15 @@ import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
 
 defineOptions({ name: 'ModelPicker' })
 
+const props = withDefaults(
+  defineProps<{
+    readonly?: boolean
+  }>(),
+  {
+    readonly: false,
+  },
+)
+
 const chatStore = useChatStore()
 const isOpen = ref(false)
 
@@ -25,6 +34,10 @@ const fuzzyItems = computed<FuzzySearchItem[]>(() =>
 )
 
 function openModal(): void {
+  if (props.readonly) {
+    return
+  }
+
   isOpen.value = true
 }
 
@@ -50,6 +63,7 @@ onMounted(() => {
 <template>
   <span
     class="model-picker"
+    :class="{ 'is-readonly': props.readonly }"
     data-testid="model-picker"
     @click="openModal"
   >
@@ -71,32 +85,31 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-primary));
   cursor: pointer;
-  padding: 0.2rem 0.55rem;
-  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  background: var(--bg-elevated);
-  max-width: 240px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  background: transparent;
+  transition: background 0.15s;
   user-select: none;
-}
-
-.model-picker::after {
-  content: '\25BE';
-  font-size: 0.65rem;
-  flex-shrink: 0;
-  opacity: 0.6;
+  white-space: nowrap;
 }
 
 .model-picker:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
   color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-bg);
+}
+
+.model-picker.is-readonly {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.65;
+}
+
+.model-picker.is-readonly:hover {
+  background: transparent;
+  color: var(--text-muted);
 }
 </style>

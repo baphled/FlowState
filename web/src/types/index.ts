@@ -78,6 +78,7 @@ export interface SessionSummary {
   currentAgentId?: string
   currentModelId?: string
   currentProviderId?: string
+  parentId?: string
   title: string
   createdAt: string
   updatedAt: string

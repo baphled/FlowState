@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useSwarmStore } from '@/stores/swarmStore'
 import EventCard from '@/components/swarm/EventCard.vue'
+import TodoList from '@/components/swarm/TodoList.vue'
 
 defineOptions({ name: 'PlanPanel' })
 
@@ -30,6 +31,9 @@ const reviewEvents = computed(() => swarmStore.reviewEvents)
     </div>
 
     <div class="panel-content">
+      <TodoList />
+      <hr class="divider" />
+
       <section v-if="planEvents.length > 0" class="event-section">
         <h3>Plan Artifacts</h3>
         <EventCard
@@ -109,6 +113,12 @@ const reviewEvents = computed(() => swarmStore.reviewEvents)
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  margin: 1rem 0;
 }
 
 .event-section {

@@ -58,7 +58,7 @@ class FakeEventSource {
   fire(type: string, data: unknown): void {
     const fn = this.listeners[type]
     if (fn) {
-      fn({ data: JSON.stringify(data) } as MessageEvent)
+      fn({ data: typeof data === 'string' ? data : JSON.stringify(data) } as MessageEvent)
     }
   }
 }
@@ -259,7 +259,7 @@ describe('chatStore - sendMessage', () => {
     expect(FakeEventSource.instances.length).toBe(1)
 
     const es = FakeEventSource.instances[0]
-    es.fire('delegation', {
+    es.fire('message', {
       chain_id: 'chain-xyz',
       target_agent: 'researcher',
       tool_calls: 4,
@@ -365,6 +365,98 @@ describe('chatStore - sendMessage', () => {
       updatedAt: '',
     })
     await sendPromise
+  })
+
+  it('creates an assistant message on the first content chunk when none exists', () => {
+    const store = useChatStore()
+
+    store.applyContentEvent(JSON.stringify({ content: 'hello' }))
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].role).toBe('assistant')
+    expect(store.messages[0].content).toBe('hello')
+    expect(store.isStreaming).toBe(true)
+  })
+
+  it('appends content chunks to an existing in-flight assistant message', () => {
+    const store = useChatStore()
+    store.messages = [
+      { id: 'assistant-1', role: 'assistant', content: 'hel', timestamp: new Date().toISOString() },
+    ]
+
+    store.applyContentEvent(JSON.stringify({ content: 'lo' }))
+    store.applyContentEvent(JSON.stringify({ content: ' world' }))
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].content).toBe('hello world')
+    expect(store.isStreaming).toBe(true)
+  })
+
+  it('creates a running tool_result message for tool_call events', () => {
+    const store = useChatStore()
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].role).toBe('tool_result')
+    expect(store.messages[0].toolName).toBe('bash')
+    expect(store.messages[0].status).toBe('running')
+    expect(store.messages[0].content).toBe('')
+  })
+
+  it('updates the most recent running tool_result when a tool_result event arrives', () => {
+    const store = useChatStore()
+    store.messages = [
+      {
+        id: 'tool-1',
+        role: 'tool_result',
+        toolName: 'read',
+        content: '',
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+      },
+      {
+        id: 'tool-2',
+        role: 'tool_result',
+        toolName: 'bash',
+        content: '',
+        timestamp: new Date().toISOString(),
+        status: 'running',
+      },
+    ]
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_result', content: 'done' }))
+
+    expect(store.messages[1].content).toBe('done')
+    expect(store.messages[1].status).toBe('completed')
+  })
+
+  it('creates a running tool_result message for skill_load events', () => {
+    const store = useChatStore()
+
+    store.applyContentEvent(JSON.stringify({ type: 'skill_load', name: 'bdd-workflow' }))
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].role).toBe('tool_result')
+    expect(store.messages[0].toolName).toBe('bdd-workflow')
+    expect(store.messages[0].status).toBe('running')
+  })
+
+  it('sets the store error when an SSE error event arrives', () => {
+    const store = useChatStore()
+
+    store.applyContentEvent(JSON.stringify({ error: 'backend exploded' }))
+
+    expect(store.error).toBe('backend exploded')
+  })
+
+  it('marks streaming as finished when the DONE sentinel arrives', () => {
+    const store = useChatStore()
+    store.isStreaming = true
+
+    store.applyContentEvent('[DONE]')
+
+    expect(store.isStreaming).toBe(false)
   })
 })
 
