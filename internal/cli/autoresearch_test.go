@@ -51,16 +51,19 @@ var _ = Describe("autoresearch run command", func() {
 	// initRepo creates a temp git repo with a committed planner manifest
 	// at internal/app/agents/planner.md (the harness's hard-coded MVP
 	// surface per § 5.5) and a committed default `autoresearch` skill at
-	// skills/autoresearch/SKILL.md. The skill stub is the resolution
-	// target for the default `--program autoresearch` flag (Slice 6) —
-	// without it the skill-name resolver fails before the run starts.
+	// internal/app/skills/autoresearch/SKILL.md. The skill stub is the
+	// resolution target for the default `--program autoresearch` flag
+	// (Slice 6) — without it the skill-name resolver fails before the
+	// run starts. The internal/app/skills/ location matches resolveProgram
+	// in autoresearch.go and the //go:embed bundle layout in
+	// internal/app/embed_skills.go.
 	initRepo := func(repo, manifestBody string) {
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
 		Expect(os.WriteFile(manifestPath, []byte(manifestBody), 0o600)).To(Succeed())
 
-		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
-		skillPath := filepath.Join(repo, "skills", "autoresearch", "SKILL.md")
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "skills", "autoresearch"), 0o755)).To(Succeed())
+		skillPath := filepath.Join(repo, "internal", "app", "skills", "autoresearch", "SKILL.md")
 		Expect(os.WriteFile(skillPath, []byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
 
 		run := func(args ...string) {
@@ -2483,13 +2486,16 @@ exec %q
 			worktreeDir string
 		)
 
-		// writeProgramSkill creates `skills/<name>/SKILL.md` under the
-		// test repoDir so skill-name resolution has something real to
-		// point at. The body is minimal but valid markdown — the
-		// harness only resolves the path; it does not parse the
-		// content beyond a frontmatter/file-existence probe.
+		// writeProgramSkill creates `internal/app/skills/<name>/SKILL.md`
+		// under the test repoDir so skill-name resolution has something
+		// real to point at. The body is minimal but valid markdown —
+		// the harness only resolves the path; it does not parse the
+		// content beyond a frontmatter/file-existence probe. The
+		// internal/app/skills/ location matches resolveProgram in
+		// autoresearch.go, which mirrors where //go:embed picks up
+		// the bundles for runtime seeding.
 		writeProgramSkill := func(name, body string) string {
-			skillDir := filepath.Join(repoDir, "skills", name)
+			skillDir := filepath.Join(repoDir, "internal", "app", "skills", name)
 			Expect(os.MkdirAll(skillDir, 0o755)).To(Succeed())
 			skillPath := filepath.Join(skillDir, "SKILL.md")
 			Expect(os.WriteFile(skillPath, []byte(body), 0o600)).To(Succeed())
@@ -2758,21 +2764,24 @@ exec %q
 		})
 
 		Context("preset programs", func() {
-			It("ships skills/autoresearch-presets/planner-quality.md as a reference program", func() {
+			// Preset programs ship as part of the embedded skills bundle —
+			// see internal/app/embed_skills.go and internal/app/seed.go's
+			// SeedSkillsDir for how they reach cfg.SkillDir at runtime.
+			It("ships autoresearch-presets/planner-quality.md as a reference program", func() {
 				_, thisFile, _, ok := runtime.Caller(0)
 				Expect(ok).To(BeTrue())
 				preset := filepath.Join(filepath.Dir(thisFile), "..", "..",
-					"skills", "autoresearch-presets", "planner-quality.md")
+					"internal", "app", "skills", "autoresearch-presets", "planner-quality.md")
 				info, err := os.Stat(preset)
 				Expect(err).NotTo(HaveOccurred(), "planner-quality.md preset must exist")
 				Expect(info.Mode().IsRegular()).To(BeTrue())
 			})
 
-			It("ships skills/autoresearch-presets/perf-preserve-behaviour.md as a reference program", func() {
+			It("ships autoresearch-presets/perf-preserve-behaviour.md as a reference program", func() {
 				_, thisFile, _, ok := runtime.Caller(0)
 				Expect(ok).To(BeTrue())
 				preset := filepath.Join(filepath.Dir(thisFile), "..", "..",
-					"skills", "autoresearch-presets", "perf-preserve-behaviour.md")
+					"internal", "app", "skills", "autoresearch-presets", "perf-preserve-behaviour.md")
 				info, err := os.Stat(preset)
 				Expect(err).NotTo(HaveOccurred(), "perf-preserve-behaviour.md preset must exist")
 				Expect(info.Mode().IsRegular()).To(BeTrue())
@@ -3370,8 +3379,8 @@ capabilities:
 planner body
 `
 		Expect(os.WriteFile(manifestPath, []byte(body), 0o600)).To(Succeed())
-		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "skills", "autoresearch", "SKILL.md"),
 			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
 
 		run := func(args ...string) {
@@ -3589,8 +3598,8 @@ capabilities:
 planner body
 `
 		Expect(os.WriteFile(manifestPath, []byte(body), 0o600)).To(Succeed())
-		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "skills", "autoresearch", "SKILL.md"),
 			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
 
 		run := func(args ...string) {
@@ -3892,8 +3901,8 @@ planner body
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
 			[]byte(defaultManifestBody), 0o600)).To(Succeed())
-		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
-		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "skills", "autoresearch", "SKILL.md"),
 			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
 
 		run := func(args ...string) {

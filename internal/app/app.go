@@ -208,6 +208,19 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: agents seeded to %q", cfg.AgentDir)
 	}
 
+	// Seed the bundled skill manifests into cfg.SkillDir so the
+	// engine's prompt-build path (loadSkills + LoadAlwaysActiveSkills)
+	// finds the four always-active skills (pre-action, discipline,
+	// skill-discovery, agent-discovery) and the rest of the baseline
+	// on a fresh install. Without this seed step the loader walks an
+	// empty dir and silently returns the empty slice — see
+	// internal/skill/loader.go:44-46.
+	if err := SeedSkillsDir(EmbeddedSkillsFS(), cfg.SkillDir); err != nil {
+		log.Printf("warning: seeding skills to %q: %v", cfg.SkillDir, err)
+	} else {
+		log.Printf("info: skills seeded to %q", cfg.SkillDir)
+	}
+
 	swarmDir := resolveSwarmDir(cfg)
 	if err := SeedSwarmsDir(EmbeddedSwarmsFS(), swarmDir); err != nil {
 		log.Printf("warning: seeding swarms to %q: %v", swarmDir, err)

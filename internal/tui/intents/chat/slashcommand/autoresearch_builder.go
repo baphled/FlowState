@@ -48,7 +48,7 @@ var arPresets = map[string]arPreset{
 	arPresetPerfPreserveBehaviour: {
 		evaluator: "scripts/autoresearch-evaluators/bench.sh",
 		driver:    "scripts/autoresearch-drivers/default-assistant-driver.sh",
-		program:   "skills/autoresearch-presets/perf-preserve-behaviour.md",
+		program:   "internal/app/skills/autoresearch-presets/perf-preserve-behaviour.md",
 		direction: "min",
 	},
 }

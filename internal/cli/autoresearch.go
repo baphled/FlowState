@@ -17,8 +17,8 @@
 // non-conforming stdout / non-zero exit / timeout all collapse onto
 // `evaluator-contract-violation` with the three-strikes
 // `evaluator-contract-failure-rate` hard stop. The full operator-
-// facing contract lives in skills/autoresearch/SKILL.md "Writing an
-// evaluator" and plan v3.1 § 4.6; the runEvaluatorScript doc-comment
+// facing contract lives in internal/app/skills/autoresearch/SKILL.md
+// "Writing an evaluator" and plan v3.1 § 4.6; the runEvaluatorScript doc-comment
 // in autoresearch_loop.go pins the same contract at the seam.
 //
 // The harness owns the worktree's git history end-to-end. Per-trial
@@ -237,11 +237,11 @@ func newAutoresearchRunCmd(getApp func() *app.App) *cobra.Command {
 	flags.IntVar(&opts.promptHistoryWindow, "prompt-history-window", driverPromptHistoryDefault,
 		"Number of recent trial outcomes embedded in the synthesised driver prompt's # HISTORY section (default 5). Higher values show the driver more trajectory at the cost of prompt size.")
 	flags.StringVar(&opts.evaluatorScript, "evaluator-script", "",
-		"Evaluator script path. Any executable that satisfies the contract in plan v3.1 § 4.6 (one non-negative integer to stdout, exit 0; see skills/autoresearch/SKILL.md \"Writing an evaluator\"). Default: scripts/validate-harness.sh --score")
+		"Evaluator script path. Any executable that satisfies the contract in plan v3.1 § 4.6 (one non-negative integer to stdout, exit 0; see internal/app/skills/autoresearch/SKILL.md \"Writing an evaluator\"). Default: scripts/validate-harness.sh --score")
 	flags.DurationVar(&opts.evaluatorTimeout, "evaluator-timeout", 5*time.Minute,
 		"Per-invocation evaluator wall-clock cap. SIGTERM at deadline, SIGKILL 30s later. A timeout records `evaluator_timeout_ms` and counts toward `evaluator-contract-failure-rate`")
 	flags.StringVar(&opts.program, "program", "autoresearch",
-		"Program-of-record for this run. Either a registry skill name (resolved as `skills/<name>/SKILL.md` under the repo root) or a path (anything containing '/' or ending in '.md', resolved relative to the repo root or absolute). Default: `autoresearch`. Pluggable per Slice 6 of the autoresearch plan v3.1.")
+		"Program-of-record for this run. Either a registry skill name (resolved as `internal/app/skills/<name>/SKILL.md` under the repo root) or a path (anything containing '/' or ending in '.md', resolved relative to the repo root or absolute). Default: `autoresearch`. Pluggable per Slice 6 of the autoresearch plan v3.1.")
 	flags.StringVar(&opts.callingAgentManifest, "calling-agent", "",
 		"Path to the calling agent's manifest (.json or .md). When supplied AND --program resolves to a registry skill name, the harness consults the manifest's `always_active_skills` for the N12 de-dup check; a match logs a de-dup line and annotates the run's manifest record. Best-effort: missing or unreadable manifests are ignored without error.")
 	flags.BoolVar(&opts.keepWorktree, "keep-worktree", false,
@@ -726,10 +726,16 @@ func programIsPathForm(value string) bool {
 // § 5.10:
 //
 //   - Skill name (no '/' and no '.md' suffix): looked up as
-//     `<repoRoot>/skills/<name>/SKILL.md`. The skill body is read by
-//     the registry; the harness only confirms the file exists and is
-//     a regular file — content validation belongs to the engine's
-//     skill loader, not to the autoresearch surface gate.
+//     `<repoRoot>/internal/app/skills/<name>/SKILL.md`. The skill body
+//     is read by the registry; the harness only confirms the file
+//     exists and is a regular file — content validation belongs to the
+//     engine's skill loader, not to the autoresearch surface gate.
+//     The bundle directory lives next to the package that embeds it
+//     (internal/app/embed_skills.go) so the bundles ship with the
+//     binary; resolveProgram intentionally consults the on-disk source
+//     rather than the embedded FS so a user with a bespoke skill
+//     bundle in their working tree gets the same lookup path the
+//     harness uses for committed presets.
 //   - Path (contains '/' or ends in '.md'): resolved as an absolute
 //     path when given absolute, otherwise relative to the repo root.
 //     The path must point at an existing regular file.
@@ -772,12 +778,14 @@ func resolveProgram(value, repoRoot string) (resolved string, isSkillName bool, 
 		}
 		return abs, false, nil
 	}
-	// Skill-name form — look up `skills/<name>/SKILL.md` under the
-	// repo root. The harness deliberately does NOT search the user-
-	// global skill registry (~/.claude/skills/...); registry-named
+	// Skill-name form — look up `internal/app/skills/<name>/SKILL.md`
+	// under the repo root. The harness deliberately does NOT search the
+	// user-global skill registry (~/.claude/skills/...); registry-named
 	// programs must live alongside the surface so kept commits the
-	// harness cherry-picks back are reproducible across machines.
-	skillPath := filepath.Join(repoRoot, "skills", value, "SKILL.md")
+	// harness cherry-picks back are reproducible across machines. The
+	// internal/app/skills/ location matches where //go:embed picks up
+	// the bundles for runtime seeding (see internal/app/embed_skills.go).
+	skillPath := filepath.Join(repoRoot, "internal", "app", "skills", value, "SKILL.md")
 	info, statErr := os.Stat(skillPath)
 	if statErr != nil {
 		return "", false, fmt.Errorf("--program %q: skill not found at %s: %w", value, skillPath, statErr)
