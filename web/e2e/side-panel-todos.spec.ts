@@ -115,17 +115,31 @@ test.describe('Side panel reserved for todos', () => {
     await expect(sidebar.getByTestId('plan-panel')).toHaveCount(0)
   })
 
-  test('todo list entered through the side panel persists across reloads', async ({ page }) => {
+  test('side panel exposes no user-add affordance and is unreachable by keyboard', async ({ page }) => {
     const sidebar = page.getByTestId('swarm-pane')
     const panel = sidebar.getByTestId('todo-list-panel')
     await expect(panel).toBeVisible()
 
-    await panel.getByTestId('todo-input').fill('rebase the side panel')
-    await panel.getByTestId('todo-add-btn').click()
-
-    await expect(panel.getByTestId('todo-item')).toHaveCount(1)
-    await expect(panel.getByTestId('todo-item').first()).toContainText('rebase the side panel')
+    // Todos are agent-emitted (todowrite tool); the user is purely an
+    // observer. No input, no add button, and Tab navigation must not land
+    // on any focusable control inside the panel that mutates state.
+    await expect(panel.getByTestId('todo-input')).toHaveCount(0)
+    await expect(panel.getByTestId('todo-add-btn')).toHaveCount(0)
+    await expect(panel.getByTestId('todo-delete-btn')).toHaveCount(0)
+    await expect(panel.locator('input[type="text"]')).toHaveCount(0)
+    await expect(panel.locator('button')).toHaveCount(0)
   })
+
+  // NOTE: a "switching sessions changes the displayed todos" test is
+  // intentionally absent. The todoStore is currently a global state with no
+  // agent-emit ingestion path — todos do not respond to session changes
+  // because there is no SSE/event stream wiring the `todowrite` tool result
+  // into the web store. The TUI counterpart at
+  // internal/tui/intents/chat/intent.go:4366 ingests via
+  // chat.Message{Role: "todo_update"}; the web frontend lacks an equivalent.
+  // Adding that test before the ingestion exists would either fail or pass
+  // for the wrong reason. Track in the follow-up: agent-emit pipeline +
+  // per-session keying (see bug-fix note "Side-panel todos read-only").
 
   test('delegation events are reachable from the chat thread and switch session on click', async ({ page }) => {
     // The delegation event mocked above must surface inside the chat-main

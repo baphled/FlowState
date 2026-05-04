@@ -1,30 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useTodoStore } from '@/stores/todoStore'
 
 defineOptions({ name: 'TodoListPanel' })
 
-// TodoListPanel is the side-panel host for the todoStore. It lives next to
-// the chat thread, shares the SAME pinia instance as the in-message todo
-// checkboxes, and renders live updates without re-fetching state. There is
-// no local copy of the list — the store is the single source of truth.
+// TodoListPanel is the side-panel host for the todoStore. Todos are
+// agent-emitted (see the `todowrite` tool and internal/tui/uikit/widgets/
+// todo_widget.go FormatTodoList for the TUI counterpart) and the user is
+// purely an observer — no add input, no toggle, no delete. The store is
+// the single source of truth and is read-only from the UI.
 const todoStore = useTodoStore()
-const newTodoText = ref('')
-
-function addTodo(): void {
-  const text = newTodoText.value.trim()
-  if (!text) return
-  todoStore.addTodo(text)
-  newTodoText.value = ''
-}
-
-function toggleTodo(id: string): void {
-  todoStore.toggleTodo(id)
-}
-
-function deleteTodo(id: string): void {
-  todoStore.deleteTodo(id)
-}
 </script>
 
 <template>
@@ -36,19 +20,6 @@ function deleteTodo(id: string): void {
       </span>
     </header>
 
-    <div class="todo-input">
-      <input
-        v-model="newTodoText"
-        type="text"
-        placeholder="Add a task..."
-        data-testid="todo-input"
-        @keyup.enter="addTodo"
-      />
-      <button class="add-btn" data-testid="todo-add-btn" @click="addTodo">
-        Add
-      </button>
-    </div>
-
     <ul class="todo-items">
       <li
         v-for="todo in todoStore.todos"
@@ -57,15 +28,12 @@ function deleteTodo(id: string): void {
         :class="{ completed: todo.status === 'completed' }"
         data-testid="todo-item"
       >
-        <input
-          type="checkbox"
-          :checked="todo.status === 'completed'"
-          @change="toggleTodo(todo.id)"
-        />
-        <span class="todo-text" @click="toggleTodo(todo.id)">{{ todo.content }}</span>
-        <button class="delete-btn" data-testid="todo-delete-btn" @click="deleteTodo(todo.id)">
-          ✕
-        </button>
+        <span
+          class="status-icon"
+          :class="`status-${todo.status}`"
+          aria-hidden="true"
+        >{{ todo.status === 'completed' ? '✓' : '○' }}</span>
+        <span class="todo-text">{{ todo.content }}</span>
       </li>
     </ul>
 
@@ -111,36 +79,6 @@ function deleteTodo(id: string): void {
   border-radius: 10px;
 }
 
-.todo-input {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.todo-input input {
-  flex: 1;
-  padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: 0.25rem;
-  font-size: 0.875rem;
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-}
-
-.add-btn {
-  padding: 0.375rem 0.75rem;
-  background: var(--accent, #3b82f6);
-  color: white;
-  border: none;
-  border-radius: 0.25rem;
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-
-.add-btn:hover {
-  opacity: 0.9;
-}
-
 .todo-items {
   list-style: none;
   padding: 0;
@@ -163,28 +101,21 @@ function deleteTodo(id: string): void {
   opacity: 0.6;
 }
 
-.todo-item input[type="checkbox"] {
-  cursor: pointer;
+.status-icon {
+  font-size: 0.875rem;
+  width: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.status-icon.status-completed {
+  color: var(--accent, #3b82f6);
 }
 
 .todo-text {
   flex: 1;
-  cursor: pointer;
   font-size: 0.875rem;
   color: var(--text-primary);
-}
-
-.delete-btn {
-  padding: 0.125rem 0.375rem;
-  background: none;
-  border: none;
-  color: var(--text-muted, #9ca3af);
-  cursor: pointer;
-  font-size: 0.75rem;
-}
-
-.delete-btn:hover {
-  color: var(--error, #ef4444);
 }
 
 .empty {
