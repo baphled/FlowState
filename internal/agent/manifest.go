@@ -43,6 +43,91 @@ type Manifest struct {
 	// Set to true only for agents whose reasoning genuinely benefits
 	// from prior distilled knowledge (e.g. evidence synthesis roles).
 	UsesRecall bool `json:"uses_recall" yaml:"uses_recall"`
+	// PreferredModels lists provider/model pairs the agent is intended
+	// to run on. Order is significant — earlier entries are surfaced
+	// first to the operator picking a model. The list is advisory under
+	// a permissive ModelPolicy (operators see a "preferred" hint but
+	// may pick any model) and an allow-list under a strict policy
+	// (operators may only pick from this list).
+	//
+	// An empty slice combined with any policy is treated as fully
+	// permissive — see IsModelAllowed for the precise contract.
+	PreferredModels []ModelPreference `json:"preferred_models,omitempty" yaml:"preferred_models,omitempty"`
+	// ModelPolicy controls how PreferredModels is interpreted by the
+	// model picker. Valid values are "" (default permissive),
+	// "permissive", and "strict". Any other value fails Validate.
+	ModelPolicy string `json:"model_policy,omitempty" yaml:"model_policy,omitempty"`
+}
+
+// ModelPreference declares a single preferred provider/model pairing
+// for an agent. Tagged shape mirrors the wire format the web client
+// consumes; the Go field names follow the package's existing style.
+type ModelPreference struct {
+	Provider string `json:"provider" yaml:"provider"`
+	Model    string `json:"model" yaml:"model"`
+}
+
+// Model policy constants. Empty string is treated as permissive so
+// existing manifests need no migration.
+const (
+	ModelPolicyPermissive = "permissive"
+	ModelPolicyStrict     = "strict"
+)
+
+// IsModelAllowed reports whether the operator may pick the given
+// provider/model combination for this agent.
+//
+// Contract:
+//   - Empty ModelPolicy or "permissive": every model is allowed.
+//   - "strict" with a non-empty PreferredModels list: only listed
+//     pairs are allowed.
+//   - "strict" with an empty PreferredModels list: degrades to
+//     permissive — a strict policy without a list is meaningless and
+//     must not lock the operator out of every model.
+//
+// Returns:
+//   - true when the model may be selected.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) IsModelAllowed(provider, model string) bool {
+	if m == nil {
+		return true
+	}
+	if m.ModelPolicy != ModelPolicyStrict {
+		return true
+	}
+	if len(m.PreferredModels) == 0 {
+		return true
+	}
+	for _, pref := range m.PreferredModels {
+		if pref.Provider == provider && pref.Model == model {
+			return true
+		}
+	}
+	return false
+}
+
+// IsModelPreferred reports whether the given provider/model pair
+// appears in the agent's PreferredModels list. The result is
+// independent of ModelPolicy — it answers "is this a recommended
+// model" not "is this an allowed model".
+//
+// Returns:
+//   - true when the pair is in the preferred list.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) IsModelPreferred(provider, model string) bool {
+	if m == nil {
+		return false
+	}
+	for _, pref := range m.PreferredModels {
+		if pref.Provider == provider && pref.Model == model {
+			return true
+		}
+	}
+	return false
 }
 
 // UnmarshalJSON deserialises a manifest while defaulting aliases to an empty slice.
@@ -276,6 +361,14 @@ func (m *Manifest) Validate() error {
 	if m.Color != "" {
 		if !manifestHexColorPattern.MatchString(m.Color) {
 			return &ValidationError{Field: "color", Message: "must be empty or a valid hex colour (#RRGGBB)"}
+		}
+	}
+	switch m.ModelPolicy {
+	case "", ModelPolicyPermissive, ModelPolicyStrict:
+	default:
+		return &ValidationError{
+			Field:   "model_policy",
+			Message: `must be "permissive", "strict", or empty`,
 		}
 	}
 	return nil

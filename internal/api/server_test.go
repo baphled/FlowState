@@ -221,6 +221,70 @@ var _ = Describe("Server", func() {
 				Expect(recorder.Code).To(Equal(http.StatusNotFound))
 			})
 		})
+
+		Context("when agent declares model preferences", func() {
+			BeforeEach(func() {
+				strictManifest := agent.Manifest{
+					ID:          "junior-strict",
+					Name:        "Junior Strict",
+					ModelPolicy: agent.ModelPolicyStrict,
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-haiku-4"},
+						{Provider: "anthropic", Model: "claude-sonnet-4"},
+					},
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				registry.Register(&strictManifest)
+			})
+
+			It("serialises preferred_models and model_policy on the wire", func() {
+				req := httptest.NewRequest(http.MethodGet, "/api/agents/junior-strict", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+
+				// Decode into a generic map to pin the precise JSON shape
+				// the web client consumes — field names, casing, order
+				// inside each entry.
+				var payload map[string]any
+				Expect(json.Unmarshal(recorder.Body.Bytes(), &payload)).To(Succeed())
+
+				Expect(payload).To(HaveKey("model_policy"))
+				Expect(payload["model_policy"]).To(Equal("strict"))
+
+				Expect(payload).To(HaveKey("preferred_models"))
+				prefs, ok := payload["preferred_models"].([]any)
+				Expect(ok).To(BeTrue(), "preferred_models must be a JSON array")
+				Expect(prefs).To(HaveLen(2))
+
+				first, ok := prefs[0].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(first).To(HaveKeyWithValue("provider", "anthropic"))
+				Expect(first).To(HaveKeyWithValue("model", "claude-haiku-4"))
+			})
+		})
+
+		Context("when agent omits model preferences", func() {
+			BeforeEach(func() {
+				registry.Register(&testManifest)
+			})
+
+			It("omits the optional fields from JSON output", func() {
+				req := httptest.NewRequest(http.MethodGet, "/api/agents/test-agent", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+
+				var payload map[string]any
+				Expect(json.Unmarshal(recorder.Body.Bytes(), &payload)).To(Succeed())
+
+				// omitempty contract — when no preferences are declared
+				// the keys must not appear, so the web client's
+				// `agent.preferred_models ?? []` fallback is exercised.
+				Expect(payload).NotTo(HaveKey("preferred_models"))
+				Expect(payload).NotTo(HaveKey("model_policy"))
+			})
+		})
 	})
 
 	Describe("GET /api/discover", func() {

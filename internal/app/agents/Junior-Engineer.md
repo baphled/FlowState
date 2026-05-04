@@ -53,6 +53,15 @@ orchestrator_meta:
   prompt_alias: "junior"
   key_trigger: "execute"
 harness_enabled: false
+# Junior tasks are atomic and well-scoped — running them on Opus is
+# overkill and wasteful. Strict policy keeps the operator from
+# accidentally burning the deepest model on routine work.
+model_policy: "strict"
+preferred_models:
+  - provider: anthropic
+    model: claude-haiku-4-7
+  - provider: anthropic
+    model: claude-sonnet-4-7
 instructions:
   system_prompt: ""
   structured_prompt_file: ""
