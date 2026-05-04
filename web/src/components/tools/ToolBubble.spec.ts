@@ -112,7 +112,7 @@ describe('ToolBubble', () => {
     expect(wrapper.find('[data-testid="tool-bubble"]').attributes('data-status')).toBe('error')
   })
 
-  it('expanded body has overflow-y auto to allow scrolling', async () => {
+  it('expanded body has no viewport-relative max-height cap so content expands freely', async () => {
     const wrapper = mount(ToolBubble, {
       props: {
         ...defaultProps,
@@ -122,6 +122,6 @@ describe('ToolBubble', () => {
 
     const body = wrapper.find('.tool-bubble__body')
     expect(body.exists()).toBe(true)
-    expect(body.element.style.maxHeight).toBe('60vh')
+    expect(body.element.style.maxHeight).toBe('none')
   })
 })
