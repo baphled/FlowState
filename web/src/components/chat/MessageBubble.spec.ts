@@ -215,7 +215,13 @@ describe('MessageBubble', () => {
       expect(wrapper.text()).toContain('planner')
     })
 
-    it('renders the target agent name as a router link to /agents/:id when targetAgent is set', () => {
+    it('renders the target agent name as a button (not an anchor pointing at AgentInfoView)', () => {
+      // Previous revision rendered the affordance as <router-link to="/agents/:id">,
+      // which combined with `@click.prevent` failed to suppress the route push and
+      // landed users on AgentInfoView instead of the delegated child session.
+      // The delegation card is a session-load action, not navigation — the
+      // affordance must be a button so middle-click / right-click / @click handling
+      // all behave consistently with that intent.
       const wrapper = mountWithRouter(
         makeMessage({
           role: 'delegation_started',
@@ -229,7 +235,8 @@ describe('MessageBubble', () => {
       const link = wrapper.find('[data-testid="delegation-agent-link"]')
       expect(link.exists()).toBe(true)
       expect(link.text()).toContain('planner')
-      expect(link.attributes('href')).toBe('/agents/planner')
+      expect(link.element.tagName).toBe('BUTTON')
+      expect(link.attributes('href')).toBeUndefined()
     })
 
     it('calls loadSessionByAgentId when clicking the delegation agent link', async () => {
@@ -247,6 +254,89 @@ describe('MessageBubble', () => {
       await link.trigger('click')
 
       expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+    })
+
+    // Regression cover for the bug where clicking a delegation card navigated
+    // to /agents/:id (AgentInfoView) before the chat store had loaded the
+    // delegated session. The previous assertion above only proved the click
+    // handler ran, not that vue-router had been suppressed; in the live app
+    // <RouterLink> still pushed the route. The card must not navigate at all.
+    it('does not push the /agents/:id route when the delegation card is clicked', async () => {
+      const router = makeRouter()
+      await router.push('/')
+      await router.isReady()
+      const pushSpy = vi.spyOn(router, 'push')
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: 'delegation_started',
+            content: 'delegating to planner',
+            targetAgent: 'planner',
+            chainId: 'chain-1',
+            status: 'running',
+          }),
+        },
+        global: {
+          plugins: [router],
+          stubs: { ToolBubble, ToolErrorCard, GenericTool },
+        },
+      })
+
+      const link = wrapper.find('[data-testid="delegation-agent-link"]')
+      await link.trigger('click')
+
+      expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+      // The route MUST stay where the user was — clicking a delegation card
+      // is a session-load action, not navigation. AgentInfoView is reached
+      // from the agents picker, never from this affordance.
+      expect(router.currentRoute.value.path).toBe('/')
+      const pushedToAgents = pushSpy.mock.calls.some((call) => {
+        const target = call[0]
+        if (typeof target === 'string') return target.startsWith('/agents/')
+        if (target && typeof target === 'object' && 'path' in target) {
+          return typeof target.path === 'string' && target.path.startsWith('/agents/')
+        }
+        return false
+      })
+      expect(pushedToAgents).toBe(false)
+    })
+
+    it('does not push /agents/:id when the terminal delegation card is clicked', async () => {
+      const router = makeRouter()
+      await router.push('/')
+      await router.isReady()
+      const pushSpy = vi.spyOn(router, 'push')
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: 'delegation',
+            content: 'done',
+            targetAgent: 'planner',
+            chainId: 'chain-1',
+            status: 'completed',
+          }),
+        },
+        global: {
+          plugins: [router],
+          stubs: { ToolBubble, ToolErrorCard, GenericTool },
+        },
+      })
+
+      const link = wrapper.find('[data-testid="delegation-agent-link"]')
+      await link.trigger('click')
+
+      expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+      const pushedToAgents = pushSpy.mock.calls.some((call) => {
+        const target = call[0]
+        if (typeof target === 'string') return target.startsWith('/agents/')
+        if (target && typeof target === 'object' && 'path' in target) {
+          return typeof target.path === 'string' && target.path.startsWith('/agents/')
+        }
+        return false
+      })
+      expect(pushedToAgents).toBe(false)
     })
 
     it('shows live progress (tool count, current tool, elapsed time) for in-flight delegations', () => {

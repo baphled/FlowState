@@ -1,10 +1,27 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
+import { createRouter, createMemoryHistory } from 'vue-router'
+import { defineComponent, h } from 'vue'
 import DelegationStrip from './DelegationStrip.vue'
 import { useSwarmStore } from '@/stores/swarmStore'
 import { useChatStore } from '@/stores/chatStore'
 import type { SwarmEvent } from '@/types'
+
+function makeRouterForStripTests() {
+  return createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', name: 'home', component: defineComponent({ render: () => h('div') }) },
+      { path: '/chat', name: 'chat', component: defineComponent({ render: () => h('div') }) },
+      {
+        path: '/agents/:id',
+        name: 'agent-info',
+        component: defineComponent({ render: () => h('div') }),
+      },
+    ],
+  })
+}
 
 function makeDelegationEvent(overrides: Partial<SwarmEvent> = {}): SwarmEvent {
   return {
@@ -108,5 +125,44 @@ describe('DelegationStrip', () => {
 
     const entries = wrapper.findAll('[data-testid^="delegation-entry-"]')
     expect(entries).toHaveLength(0)
+  })
+
+  // Regression cover for the delegation-card-navigates-to-AgentInfoView bug.
+  // Even though DelegationStrip has never used <router-link> directly, the
+  // user-facing contract is that clicking a delegation card loads the
+  // delegated child session in chat WITHOUT routing to /agents/:id. This
+  // pins that contract at the strip level so any future refactor that
+  // re-introduces a router-link will be caught here, not in the live app.
+  it('does not push a /agents/:id route when an entry is clicked', async () => {
+    const router = makeRouterForStripTests()
+    await router.push('/chat')
+    await router.isReady()
+    const pushSpy = vi.spyOn(router, 'push')
+
+    const swarmStore = useSwarmStore()
+    swarmStore.events = [makeDelegationEvent()] as SwarmEvent[]
+
+    const chatStore = useChatStore()
+    vi.spyOn(chatStore, 'loadSessionMessages').mockResolvedValue()
+
+    const wrapper = mount(DelegationStrip, {
+      global: { plugins: [router] },
+    })
+    await flushPromises()
+
+    const entry = wrapper.find('[data-testid="delegation-entry-evt-strip-1"]')
+    await entry.trigger('click')
+    await flushPromises()
+
+    const pushedToAgents = pushSpy.mock.calls.some((call) => {
+      const target = call[0]
+      if (typeof target === 'string') return target.startsWith('/agents/')
+      if (target && typeof target === 'object' && 'path' in target) {
+        return typeof target.path === 'string' && target.path.startsWith('/agents/')
+      }
+      return false
+    })
+    expect(pushedToAgents).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/chat')
   })
 })
