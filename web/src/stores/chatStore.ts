@@ -13,6 +13,7 @@ import {
 } from '@/api'
 import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
+import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
 import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -897,72 +898,82 @@ export const useChatStore = defineStore('chat', {
       // still matches the streaming session).
       this.armStallWatchdog(this.currentSessionId ?? undefined)
 
-      if (payload === '[DONE]') {
-        // Seal any in-flight assistant message so a later turn's chunks
-        // cannot land on it. Without this, chatStore treats backend-loaded
-        // assistant rows (status === undefined) as valid streaming targets
-        // and turn N+1's chunks overwrite turn N's response in-place. See
-        // bug-fix note "Session message upsert collision" — pre-fix the
-        // user observed the previous response mutating into the new one.
-        const inFlight = [...this.messages].reverse().find(
-          (message) => message.role === 'assistant' && message.status === 'running',
-        )
-        if (inFlight) {
-          inFlight.status = 'completed'
-        }
-        this.isStreaming = false
-        // Stream is done — cancel the watchdog. isLoading is cleared by
-        // the sendMessage finally block (or by maybeReattachStream's
-        // close handler if this came from a reconnected stream).
-        sessionStream.clearWatchdog()
-        return
+      // Classify into the discriminated union — see web/src/lib/sseEvent.ts
+      // for the source-of-truth list of event variants tracked from the Go
+      // emitter. The exhaustive switch below means a new event type added
+      // server-side without a frontend handler fails compile rather than
+      // being silently swallowed.
+      //
+      // Pre-this-PR the dispatch was a `Record<string, unknown>` switch
+      // with a structural-fallback for delegation events that lacked the
+      // type discriminant. The Go side now ALWAYS tags delegation events
+      // with `type: 'delegation'` (writeSSEDelegationInfo injects the
+      // field even when wrapping a provider DelegationInfo), so the
+      // structural fallback was dead code.
+      const event: SSEEvent = parseSSEPayload(payload)
+      switch (event.kind) {
+        case 'done':
+          this.handleStreamDone()
+          return
+        case 'content':
+          this.handleContentChunk({ content: event.content })
+          return
+        case 'tool_call':
+          this.handleToolCallEvent({ name: event.name, status: event.status, input: event.input })
+          return
+        case 'skill_load':
+          this.handleToolCallEvent({ name: event.name, status: 'running' })
+          return
+        case 'tool_result':
+          this.handleToolResultEvent({ content: event.content })
+          return
+        case 'delegation':
+          this.applyDelegationEvent(event.raw)
+          return
+        case 'error':
+          this.error = event.error
+          return
+        case 'harness_retry':
+        case 'harness_attempt_start':
+        case 'harness_complete':
+        case 'harness_critic_feedback':
+          // Harness events are surfaced by the TUI but the Vue chat thread
+          // does not yet render them as bubbles — silently ignored here.
+          // Adding rendering is a future change; the dispatch path is
+          // typed so a renderer addition is a simple new case.
+          return
+        case 'unknown':
+        case 'malformed':
+          // Defensive: log structural-only metadata (no chunk content) so a
+          // future emitter mismatch is visible in window.__flowstateStreamLog
+          // without leaking user data. The event.kind is the only payload
+          // we record — never event.raw, which may carry user secrets.
+          recordStreamEvent({
+            kind: 'event-dropped',
+            sessionId: this.currentSessionId ?? '',
+            reason: event.kind,
+          })
+          return
+        default:
+          exhaustivenessGuard(event)
       }
+    },
 
-      let info: Record<string, unknown>
-      try {
-        info = JSON.parse(payload)
-      } catch {
-        return
+    // handleStreamDone owns the [DONE] sentinel side effects: seal any
+    // in-flight assistant bubble so a later turn's chunks cannot land on
+    // it (see "Session message upsert collision" bug-fix note), clear the
+    // streaming flag, and cancel the stall watchdog. isLoading is cleared
+    // by sendMessage's finally block or by maybeReattachStream's close
+    // handler — both already in place.
+    handleStreamDone(): void {
+      const inFlight = [...this.messages].reverse().find(
+        (message) => message.role === 'assistant' && message.status === 'running',
+      )
+      if (inFlight) {
+        inFlight.status = 'completed'
       }
-
-      if (info.type === 'tool_call') {
-        this.handleToolCallEvent(info)
-        return
-      }
-
-      if (info.type === 'tool_result') {
-        this.handleToolResultEvent(info)
-        return
-      }
-
-      if (info.type === 'skill_load') {
-        this.handleToolCallEvent({ ...info, name: info.name, status: 'running' })
-        return
-      }
-
-      if (info.type === 'delegation') {
-        this.applyDelegationEvent(payload)
-        return
-      }
-
-      if (
-        info.target_agent !== undefined ||
-        info.chain_id !== undefined ||
-        info.tool_calls !== undefined ||
-        info.last_tool !== undefined
-      ) {
-        this.applyDelegationEvent(payload)
-        return
-      }
-
-      if (info.content !== undefined) {
-        this.handleContentChunk(info)
-        return
-      }
-
-      if (info.error !== undefined) {
-        this.error = String(info.error)
-      }
+      this.isStreaming = false
+      sessionStream.clearWatchdog()
     },
 
     handleContentChunk(info: { content?: unknown }): void {

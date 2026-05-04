@@ -443,7 +443,14 @@ describe('chatStore - sendMessage', () => {
     expect(FakeEventSource.instances.length).toBe(1)
 
     const es = FakeEventSource.instances[0]
+    // Backend always tags delegation events with `type: 'delegation'`
+    // (writeSSEDelegationInfo in internal/api/server.go injects the field
+    // even when wrapping a provider DelegationInfo). The pre-PR-3
+    // structural fallback that accepted untyped delegation-shaped
+    // payloads was bug-for-bug compatibility with an older emitter and
+    // has been removed (Principal F6).
     es.fire('message', {
+      type: 'delegation',
       chain_id: 'chain-xyz',
       target_agent: 'researcher',
       tool_calls: 4,
