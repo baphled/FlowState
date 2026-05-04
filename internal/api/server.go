@@ -751,7 +751,11 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(name, "skill:") {
 					writeSSESkillLoad(w, flusher, strings.TrimPrefix(name, "skill:"))
 				} else {
-					writeSSEToolCall(w, flusher, name)
+					argsJSON := ""
+					if b, err := json.Marshal(chunk.ToolCall.Arguments); err == nil {
+						argsJSON = string(b)
+					}
+					writeSSEToolCall(w, flusher, name, argsJSON)
 				}
 			}
 			if chunk.EventType == "tool_result" && chunk.ToolResult != nil {
@@ -1274,19 +1278,21 @@ type sseToolCall struct {
 	Type   string `json:"type"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	Input  string `json:"input,omitempty"`
 }
 
 // writeSSEToolCall marshals a tool call as a JSON event and writes it as a server-sent event.
 //
 // Expected:
 //   - name is the tool name being invoked.
+//   - input is the raw JSON-encoded arguments string (may be empty).
 //   - flusher supports HTTP flushing.
 //
 // Side effects:
 //   - Writes SSE data line with JSON-encoded tool call to response.
 //   - Flushes response buffer.
-func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name string) {
-	data := sseToolCall{Type: "tool_call", Name: name, Status: "running"}
+func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name, input string) {
+	data := sseToolCall{Type: "tool_call", Name: name, Status: "running", Input: input}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return
