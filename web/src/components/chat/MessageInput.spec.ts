@@ -149,6 +149,24 @@ describe('MessageInput slash and mention triggers', () => {
     wrapper.unmount()
   })
 
+  it('Shift+Enter does NOT submit the message — allows inserting a newline', async () => {
+    const store = useChatStore()
+    const sendSpy = vi.spyOn(store, 'sendMessage').mockResolvedValue()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await typeInto(inputWrapper, 'hello', 5)
+
+    await inputWrapper.trigger('keydown', { key: 'Enter', shiftKey: true })
+    await flushPromises()
+
+    expect(sendSpy).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('Enter does NOT submit when the slash picker is open — it stays scoped to the picker', async () => {
     const store = useChatStore()
     const sendSpy = vi.spyOn(store, 'sendMessage').mockResolvedValue()
