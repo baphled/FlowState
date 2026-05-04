@@ -215,7 +215,10 @@ export const useChatStore = defineStore('chat', {
         this.currentModelId = sessionForAgent.currentModelId ?? ''
         this.currentProviderId = sessionForAgent.currentProviderId ?? ''
         persistSessionId(sessionForAgent.id)
-        this.messages = await fetchSessionMessages(sessionForAgent.id)
+        const loadedForAgent = await fetchSessionMessages(sessionForAgent.id)
+        this.messages = loadedForAgent.map((m) =>
+          m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+        )
         const todoStore = useTodoStore()
         todoStore.setCurrentSession(sessionForAgent.id)
         todoStore.hydrateFromMessages(sessionForAgent.id, this.messages)
@@ -227,7 +230,10 @@ export const useChatStore = defineStore('chat', {
       this.currentModelId = session.currentModelId ?? ''
       this.currentProviderId = session.currentProviderId ?? ''
       persistSessionId(session.id)
-      this.messages = await fetchSessionMessages(session.id)
+      const loadedForSession = await fetchSessionMessages(session.id)
+      this.messages = loadedForSession.map((m) =>
+        m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+      )
       const todoStore = useTodoStore()
       todoStore.setCurrentSession(session.id)
       todoStore.hydrateFromMessages(session.id, this.messages)
@@ -390,7 +396,15 @@ export const useChatStore = defineStore('chat', {
           this.currentProviderId = session.currentProviderId ?? ''
         }
 
-        this.messages = await fetchSessionMessages(sessionId)
+        const loaded = await fetchSessionMessages(sessionId)
+        // Seal all backend-loaded assistant messages as 'completed' so
+        // they can never be confused with an in-flight streaming target.
+        // Backend history has no notion of a 'running' state; leaving
+        // status === undefined allows handleContentChunk to wrongly adopt
+        // a prior turn's assistant as the chunk target on the next send.
+        this.messages = loaded.map((m) =>
+          m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+        )
 
         // Sync the todoStore: switch its active session and rebuild the
         // slice from the freshly-loaded history. The latest todowrite
@@ -461,13 +475,11 @@ export const useChatStore = defineStore('chat', {
 
         await sendSessionMessage(sessionId, text)
 
-        this.messages = await fetchSessionMessages(sessionId)
-        const seen = new Set<string>()
-        this.messages = this.messages.filter((message) => {
-          if (seen.has(message.id)) return false
-          seen.add(message.id)
-          return true
-        })
+        // Do NOT reload messages from the backend here. The SSE stream
+        // delivers the assistant response in real-time; replacing
+        // this.messages mid-stream causes the previous backend-loaded
+        // assistant (status === undefined) to appear above the new user
+        // prompt, producing the response-replay bug. Trust the stream.
         await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'

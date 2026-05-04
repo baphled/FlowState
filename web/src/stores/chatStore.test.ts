@@ -177,6 +177,35 @@ describe('chatStore - loadSessionMessages', () => {
     setActivePinia(createPinia())
   })
 
+  it('seals all backend-loaded assistant messages to status completed so they cannot be streaming targets', async () => {
+    // Backend history returns assistant rows with no status field. Without
+    // sealing, handleContentChunk's status === 'running' guard would create
+    // a new placeholder on every chunk — but before the fix, the old guard
+    // (status !== 'completed') would adopt the unseen assistant instead.
+    // Sealing to 'completed' here ensures no backend row is ever a target.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 2,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'u1', role: 'user', content: 'hello', timestamp: '' },
+      { id: 'a1', role: 'assistant', content: 'hi', timestamp: '' },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.loadSessionMessages('session-1')
+
+    const assistant = store.messages.find((m) => m.id === 'a1')
+    expect(assistant?.status).toBe('completed')
+  })
+
   it('switches to currentAgentId when loading a session whose last-selected agent differs from the active one', async () => {
     // The PATCH MUST target the freshly-selected session, not the
     // previously-active one. Selecting Session B while Session A is
@@ -223,7 +252,45 @@ describe('chatStore - sendMessage', () => {
 
     expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-1', 'Hello world')
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
-    expect(vi.mocked(fetchSessionMessages)).toHaveBeenCalledWith('session-1')
+  })
+
+  it('does NOT call fetchSessionMessages during sendMessage to prevent mid-stream message replacement', async () => {
+    // Regression guard: fetching and replacing this.messages while SSE
+    // is streaming injects backend-loaded assistant rows (status ===
+    // undefined) that handleContentChunk then adopts as streaming
+    // targets, causing the previous response to appear above the new
+    // user prompt. The SSE stream is the source of truth during a send.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    FakeEventSource.instances.length = 0
+
+    let resolveSend: (value: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveSend = resolve
+        }),
+    )
+
+    const sendPromise = store.sendMessage('test no reload')
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    resolveSend({
+      id: 'session-1',
+      agentId: 'agent-1',
+      messages: [],
+      messageCount: 0,
+      createdAt: '',
+      updatedAt: '',
+    })
+    await sendPromise
+
+    expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
   })
 
   it('targets the just-selected session on subsequent sendMessage calls instead of forking a new session', async () => {
@@ -960,6 +1027,10 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
   })
 
   it('preserves prior assistant content across two full sendMessage cycles with realistic chunked SSE', async () => {
+    // Post-fix: sendMessage no longer calls fetchSessionMessages mid-stream.
+    // Messages accumulate from SSE only. The key regression to pin: turn 2's
+    // chunks must land on a NEW assistant message, not on the sealed turn 1
+    // assistant (sealed by [DONE] → status === 'completed').
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
@@ -967,7 +1038,7 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
 
     FakeEventSource.instances.length = 0
 
-    // Turn 1: chunks then refetch returns canonical [user1, assistant1].
+    // Turn 1: stream chunks then [DONE] seals the assistant.
     let resolveSend1: (v: any) => void = () => {}
     vi.mocked(sendSessionMessage).mockImplementationOnce(
       () =>
@@ -975,10 +1046,6 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
           resolveSend1 = resolve
         }),
     )
-    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
-      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '2026-05-04T00:00:00Z' },
-      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '2026-05-04T00:00:01Z' },
-    ])
 
     const send1 = store.sendMessage('first prompt')
     await Promise.resolve(); await Promise.resolve()
@@ -989,12 +1056,16 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
     resolveSend1({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
     await send1
 
-    // After turn 1, messages reflect backend canonical history.
-    expect(store.messages.map((m) => m.content)).toEqual(['first prompt', 'first response'])
+    // After turn 1, the store holds the optimistic user message + the
+    // streamed assistant, both derived from SSE (no backend refetch).
+    const assistants1 = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants1).toHaveLength(1)
+    expect(assistants1[0].content).toBe('first response')
+    // [DONE] seals the turn-1 assistant — subsequent chunks must not land on it.
+    expect(assistants1[0].status).toBe('completed')
 
-    // Turn 2: chunks for the second response. The bug: these chunks land
-    // on srv-a1 because its status is undefined (passes the
-    // status !== 'completed' guard).
+    // Turn 2: a new user optimistic message is pushed, then chunks arrive.
+    // The sealed turn-1 assistant must not absorb turn-2 chunks.
     let resolveSend2: (v: any) => void = () => {}
     vi.mocked(sendSessionMessage).mockImplementationOnce(
       () =>
@@ -1002,32 +1073,23 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
           resolveSend2 = resolve
         }),
     )
-    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
-      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '2026-05-04T00:00:00Z' },
-      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '2026-05-04T00:00:01Z' },
-      { id: 'srv-u2', role: 'user', content: 'second prompt', timestamp: '2026-05-04T00:00:02Z' },
-      { id: 'srv-a2', role: 'assistant', content: 'second response', timestamp: '2026-05-04T00:00:03Z' },
-    ])
 
     const send2 = store.sendMessage('second prompt')
     await Promise.resolve(); await Promise.resolve()
     const es2 = FakeEventSource.instances[1]
 
-    // Capture the live mid-stream snapshot — this is what the user sees
-    // before refetch resolves. The bug shows up here.
     es2.fire('message', { content: 'second ' })
     es2.fire('message', { content: 'response' })
 
-    // Live snapshot assertions: turn 1's assistant content is still intact
-    // and a new assistant has accumulated turn 2's chunks. Pre-fix, the
-    // first response was being mutated into "first responsesecond response".
-    const firstAssistantLive = store.messages.find((m) => m.id === 'srv-a1')
-    expect(firstAssistantLive?.content).toBe('first response')
+    // Turn-1 assistant content is untouched.
+    const firstAssistant = store.messages.filter((m) => m.role === 'assistant')[0]
+    expect(firstAssistant.content).toBe('first response')
 
+    // A distinct second assistant carries turn-2 chunks.
     const assistantsLive = store.messages.filter((m) => m.role === 'assistant')
     expect(assistantsLive).toHaveLength(2)
     expect(assistantsLive[1].content).toBe('second response')
-    expect(assistantsLive[1].id).not.toBe('srv-a1')
+    expect(assistantsLive[1].id).not.toBe(firstAssistant.id)
 
     es2.fire('message', '[DONE]')
     resolveSend2({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
