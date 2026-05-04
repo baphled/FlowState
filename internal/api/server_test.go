@@ -725,7 +725,7 @@ var _ = Describe("Session stream live events", func() {
 		var body string
 		Eventually(bodyCh, 4*time.Second).Should(Receive(&body))
 
-		Expect(body).To(ContainSubstring("event: delegation"))
+		Expect(body).To(ContainSubstring(`"type":"delegation"`))
 		Expect(body).To(ContainSubstring(`"target_agent":"hephaestus"`))
 		Expect(body).To(ContainSubstring(`"tool_calls":3`))
 		Expect(body).To(ContainSubstring(`"last_tool":"write"`))
@@ -748,6 +748,10 @@ var _ = Describe("Session stream live events", func() {
 				Messages: []session.Message{
 					{ID: "m1", Role: "assistant", Content: "historical-msg-one"},
 					{ID: "m2", Role: "assistant", Content: "historical-msg-two"},
+					// A new user message was appended by POST /messages before SSE opens.
+					// The fast-path only fires when the last message is non-user, so this
+					// correctly models the real-app flow where a new Publish is pending.
+					{ID: "m3", Role: "user", Content: "new-user-prompt"},
 				},
 			},
 		})
