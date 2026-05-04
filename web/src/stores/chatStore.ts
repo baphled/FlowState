@@ -204,6 +204,15 @@ export const useChatStore = defineStore('chat', {
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
+
+        // Switch the active session id BEFORE delegating to setAgent.
+        // setAgent reads currentSessionId to decide which session to PATCH;
+        // running it before this assignment caused the previously-active
+        // session's agent to be updated instead of the one just selected,
+        // leaving the UI and backend out of sync after every switch.
+        this.currentSessionId = sessionId
+        persistSessionId(sessionId)
+
         if (sessionAgentId && sessionAgentId !== this.agentId) {
           await this.setAgent(sessionAgentId)
         }
@@ -214,8 +223,6 @@ export const useChatStore = defineStore('chat', {
         }
 
         this.messages = await fetchSessionMessages(sessionId)
-        this.currentSessionId = sessionId
-        persistSessionId(sessionId)
       } finally {
         this.isLoading = false
       }
