@@ -128,14 +128,14 @@ const displayRole = computed(() =>
       <span data-testid="delegation-spinner" class="delegation-spinner" aria-hidden="true">⋯</span>
       <div class="delegation-body">
         <div v-if="props.message.targetAgent" class="delegation-header">
-          <router-link
-            :to="`/agents/${props.message.targetAgent}`"
+          <button
+            type="button"
             data-testid="delegation-agent-link"
             class="delegation-agent-link"
-            @click.prevent="loadDelegatedSession"
+            @click="loadDelegatedSession"
           >
             {{ props.message.targetAgent }}
-          </router-link>
+          </button>
           <span data-testid="delegation-elapsed" class="delegation-elapsed">{{ elapsedLabel }}</span>
         </div>
         <pre class="delegation-content">{{ props.message.content }}</pre>
@@ -152,15 +152,15 @@ const displayRole = computed(() =>
 
     <div v-else-if="isDelegation" class="delegation-card delegation-card--done">
       <div class="delegation-body">
-        <router-link
+        <button
           v-if="props.message.targetAgent"
-          :to="`/agents/${props.message.targetAgent}`"
+          type="button"
           data-testid="delegation-agent-link"
           class="delegation-agent-link"
-          @click.prevent="loadDelegatedSession"
+          @click="loadDelegatedSession"
         >
           {{ props.message.targetAgent }}
-        </router-link>
+        </button>
         <pre class="delegation-content">{{ props.message.content }}</pre>
       </div>
     </div>
