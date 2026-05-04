@@ -7,11 +7,11 @@ import {
   fetchSessionMessages,
   fetchSessions,
   sendSessionMessage,
-  subscribeSessionStream,
   truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
 } from '@/api'
+import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -23,38 +23,14 @@ const activeProviderStorageKey = 'chat.selectedProvider'
 // and is the correct starting point for open-ended requests.
 const DEFAULT_AGENT_ID = 'team-lead'
 
-// 60s fail-safe — if no SSE activity arrives during a send, the store
-// assumes the stream is dead and clears isLoading. Without this the
-// submit gate stays locked forever after a network hiccup, presenting
-// to the user as "the chat is stuck". Reset on every chunk; cancelled
-// when the stream cleanly terminates.
-const SSE_STALL_TIMEOUT_MS = 60_000
-
-// Module-scoped watchdog handle. Module scope (not Pinia state) keeps it
-// out of reactivity tracking; the timer is an implementation detail of
-// the streaming lifecycle, never read by the UI.
-let stallWatchdog: ReturnType<typeof setTimeout> | null = null
-
-// Module-scoped EventSource handle. Only one SSE connection is valid at a
-// time — opening a second one without closing the first causes the broker
-// to register a duplicate subscriber, producing chunk duplication on the
-// next send. Both sendMessage and maybeReattachStream close any existing
-// connection before opening a new one.
-let activeEventSource: EventSource | null = null
-
-function clearStallWatchdog(): void {
-  if (stallWatchdog !== null) {
-    clearTimeout(stallWatchdog)
-    stallWatchdog = null
-  }
-}
-
-function closeActiveEventSource(): void {
-  if (activeEventSource !== null) {
-    activeEventSource.close()
-    activeEventSource = null
-  }
-}
+// Module-instantiated streaming lifecycle. The composable owns the EventSource
+// and stall watchdog handles internally; the store treats it as an opaque
+// dependency. Single-instance preserves the pre-extraction "one in-flight SSE
+// per page" invariant — concurrent connect calls still tear down the prior
+// connection. Per-test isolation continues to work via setActivePinia +
+// FakeEventSource.instances reset (the composable consumes the same global
+// EventSource constructor that the FakeEventSource mock swaps in).
+const sessionStream: SessionStream = useSessionStream()
 
 function getPersistedSessionId(): string | null {
   if (typeof window === 'undefined') {
@@ -392,14 +368,9 @@ export const useChatStore = defineStore('chat', {
 
       this.isLoading = true
       this.isStreaming = true
-      this.armStallWatchdog()
-
-      closeActiveEventSource()
-      activeEventSource = subscribeSessionStream(sessionId)
 
       const close = (): void => {
-        closeActiveEventSource()
-        clearStallWatchdog()
+        sessionStream.disconnect()
         this.isLoading = false
         this.isStreaming = false
 
@@ -423,18 +394,23 @@ export const useChatStore = defineStore('chat', {
         }
       }
 
-      activeEventSource.addEventListener('message', (event) => {
-        const payload = (event as MessageEvent).data as string
-        this.applyContentEvent(payload)
-        if (payload === '[DONE]') {
-          close()
-        }
-      })
-      activeEventSource.addEventListener('error', () => {
+      // connect tears down any prior SSE, opens a new one, and arms the stall
+      // watchdog. The watchdog onTrip handler is the same store action used
+      // for sendMessage so user-visible recovery behaviour is identical.
+      sessionStream.connect(sessionId, {
+        onMessage: (payload) => {
+          this.applyContentEvent(payload)
+          if (payload === '[DONE]') {
+            close()
+          }
+        },
         // Backend closed or proxy timed out — stop pretending we're still
         // streaming so the input gate unsticks. The user can fire a new
         // prompt to resume the conversation.
-        close()
+        onError: () => {
+          close()
+        },
+        onStall: () => this.handleStreamStall(),
       })
     },
 
@@ -530,8 +506,7 @@ export const useChatStore = defineStore('chat', {
       // Close any in-progress SSE from a prior session. Without this, the
       // stale SSE's close() callback can fire after the session switch and
       // overwrite the new session's messages with the old session's content.
-      closeActiveEventSource()
-      clearStallWatchdog()
+      sessionStream.disconnect()
       this.isLoading = true
       this.error = null
       try {
@@ -607,7 +582,6 @@ export const useChatStore = defineStore('chat', {
       this.error = null
       this.isLoading = true
       this.isStreaming = false
-      this.armStallWatchdog()
 
       const optimisticMessage: Message = {
         id: `temp-${Date.now()}`,
@@ -626,23 +600,25 @@ export const useChatStore = defineStore('chat', {
           persistSessionId(sessionId)
         }
 
-        closeActiveEventSource()
-        activeEventSource = subscribeSessionStream(sessionId)
-        activeEventSource.addEventListener('message', (event) => {
-          const payload = (event as MessageEvent).data as string
-          this.applyContentEvent(payload)
-          if (payload === '[DONE]') {
-            // Close immediately on stream end so the browser cannot
-            // auto-reconnect and register a second broker subscriber
-            // before the finally block runs.
-            closeActiveEventSource()
-          }
-        })
-        activeEventSource.addEventListener('error', () => {
-          // SSE connection dropped (stream ended or network error) —
-          // close immediately to prevent auto-reconnect registering a
-          // duplicate broker subscriber on the next send.
-          closeActiveEventSource()
+        // connect tears down any prior SSE, opens a new one, and arms the
+        // stall watchdog so a stuck stream cannot leave isLoading locked.
+        sessionStream.connect(sessionId, {
+          onMessage: (payload) => {
+            this.applyContentEvent(payload)
+            if (payload === '[DONE]') {
+              // Close immediately on stream end so the browser cannot
+              // auto-reconnect and register a second broker subscriber
+              // before the finally block runs.
+              sessionStream.disconnect()
+            }
+          },
+          onError: () => {
+            // SSE connection dropped (stream ended or network error) —
+            // close immediately to prevent auto-reconnect registering a
+            // duplicate broker subscriber on the next send.
+            sessionStream.disconnect()
+          },
+          onStall: () => this.handleStreamStall(),
         })
 
         await sendSessionMessage(sessionId, text)
@@ -658,31 +634,30 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
       } finally {
-        closeActiveEventSource()
-        clearStallWatchdog()
+        sessionStream.disconnect()
         this.isLoading = false
         this.isStreaming = false
       }
     },
 
-    // Re-arm the watchdog whenever there is fresh streaming activity.
-    // Called from sendMessage on send-start, from applyContentEvent on
-    // every chunk, and from maybeReattachStream on reconnect. The 60s
-    // window is intentionally generous — agents can sit thinking on a
-    // slow tool call without producing chunks; we only want to trip on
-    // "actually dead" streams, not "agent is busy".
+    // Re-arm the stall watchdog whenever there is fresh streaming activity.
+    // Called from applyContentEvent on every chunk to indicate liveness; the
+    // initial arm happens implicitly inside sessionStream.connect. The 60s
+    // window is intentionally generous — agents can sit thinking on a slow
+    // tool call without producing chunks; we only want to trip on "actually
+    // dead" streams, not "agent is busy".
     armStallWatchdog(): void {
-      clearStallWatchdog()
-      stallWatchdog = setTimeout(() => {
-        // Stream stalled — unsticky the input gate so the user can
-        // recover without reloading the page. The error footer surfaces
-        // the cause; if no chunks arrived at all the in-flight assistant
-        // bubble (if any) stays in-place but is no longer locked.
-        this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
-        this.isLoading = false
-        this.isStreaming = false
-        stallWatchdog = null
-      }, SSE_STALL_TIMEOUT_MS)
+      sessionStream.armWatchdog(() => this.handleStreamStall())
+    },
+
+    // Stall trip handler. Stream stalled — unsticky the input gate so the
+    // user can recover without reloading the page. The error footer surfaces
+    // the cause; if no chunks arrived at all the in-flight assistant bubble
+    // (if any) stays in-place but is no longer locked.
+    handleStreamStall(): void {
+      this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
+      this.isLoading = false
+      this.isStreaming = false
     },
 
     applyDelegationEvent(payload: string): void {
@@ -777,7 +752,7 @@ export const useChatStore = defineStore('chat', {
         // Stream is done — cancel the watchdog. isLoading is cleared by
         // the sendMessage finally block (or by maybeReattachStream's
         // close handler if this came from a reconnected stream).
-        clearStallWatchdog()
+        sessionStream.clearWatchdog()
         return
       }
 
@@ -909,8 +884,7 @@ export const useChatStore = defineStore('chat', {
       const content = this.messages[idx].content
       // Kill any in-flight stream before truncating — without this, chunks
       // arriving after the slice would re-insert content that was just removed.
-      closeActiveEventSource()
-      clearStallWatchdog()
+      sessionStream.disconnect()
       this.isLoading = false
       this.isStreaming = false
       await truncateSessionMessages(this.currentSessionId, messageId)
