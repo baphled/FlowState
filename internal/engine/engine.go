@@ -122,6 +122,12 @@ type Engine struct {
 	// compaction produced a new summary with its own FilesToRestore)
 	// and on session.ended.
 	sessionRehydrated map[string]struct{}
+
+	// seededSessions tracks which session IDs have had their historical
+	// messages loaded into e.store via SeedHistory. Once a session is
+	// seeded we skip future calls so that the messages are not duplicated
+	// across turns.
+	seededSessions map[string]struct{}
 	// compressionMetrics, when non-nil, is shared with the window
 	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
 	// successful L2 compaction so operators have a single counter set
@@ -549,6 +555,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
+		seededSessions:            make(map[string]struct{}),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 		swarmContext:              cfg.SwarmContext,
 		microCompactor:            resolveMicroCompactor(cfg),
@@ -1810,6 +1817,32 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 //   - May cache the schemas internally for subsequent calls.
 func (e *Engine) ToolSchemas() []provider.Tool {
 	return e.buildToolSchemas()
+}
+
+// SeedHistory pre-populates the context store with historical messages for
+// sessionID so that the engine retains conversation context after a restart.
+//
+// Expected:
+//   - sessionID is non-empty and identifies a session with prior history.
+//   - messages are the historical turns in chronological order, excluding the
+//     current user message (the caller is responsible for the exclusion).
+//
+// Side effects:
+//   - Appends messages to e.store on the first call per sessionID.
+//   - Subsequent calls for the same sessionID are no-ops (idempotent).
+func (e *Engine) SeedHistory(sessionID string, messages []provider.Message) {
+	if e.store == nil || sessionID == "" || len(messages) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, already := e.seededSessions[sessionID]; already {
+		return
+	}
+	for _, msg := range messages {
+		e.store.Append(msg)
+	}
+	e.seededSessions[sessionID] = struct{}{}
 }
 
 // Stream sends a message and returns a channel of streamed response chunks.
