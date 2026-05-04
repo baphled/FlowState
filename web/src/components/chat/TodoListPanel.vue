@@ -38,7 +38,7 @@ const todoStore = useTodoStore()
     </ul>
 
     <div v-if="todoStore.todos.length === 0" class="empty" data-testid="todo-empty">
-      No tasks yet
+      No todos in this session yet
     </div>
   </section>
 </template>

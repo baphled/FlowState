@@ -37,9 +37,23 @@ Object.defineProperty(window, 'localStorage', {
 
 // Seed the store directly — todos are agent-emitted, the store has no
 // user-add action. Tests stand in for the agent emission pipeline by
-// mutating $state through pinia's $patch.
-function seedTodos(todos: Todo[]): void {
-  useTodoStore().$patch({ todos })
+// driving the same actions chatStore would (setCurrentSession +
+// ingestToolResult). We never reach for $patch on the bySession map so the
+// session-keyed contract stays exercised by every spec.
+function seedTodos(todos: Todo[], sessionId = 'session-test'): void {
+  const store = useTodoStore()
+  store.setCurrentSession(sessionId)
+  // Reuse the public ingestion seam — going through ingestToolResult means
+  // these tests pin the same path the real SSE pipeline drives, which is
+  // exactly what the panel renders in production.
+  const payload = JSON.stringify(
+    todos.map((t) => ({
+      content: t.content,
+      status: t.status === 'completed' ? 'completed' : 'pending',
+      priority: 'low',
+    })),
+  )
+  store.ingestToolResult(sessionId, payload)
 }
 
 function makeTodo(overrides: Partial<Todo> = {}): Todo {
@@ -79,14 +93,64 @@ describe('TodoListPanel', () => {
 
     expect(wrapper.findAll('[data-testid="todo-item"]')).toHaveLength(0)
 
-    useTodoStore().$patch({
-      todos: [makeTodo({ content: 'emitted after mount' })],
-    })
+    const store = useTodoStore()
+    store.setCurrentSession('session-test')
+    store.ingestToolResult(
+      'session-test',
+      JSON.stringify([
+        { content: 'emitted after mount', status: 'pending', priority: 'low' },
+      ]),
+    )
     await flushPromises()
 
     const items = wrapper.findAll('[data-testid="todo-item"]')
     expect(items).toHaveLength(1)
     expect(wrapper.text()).toContain('emitted after mount')
+  })
+
+  it('swaps the rendered list when the active session changes', async () => {
+    const store = useTodoStore()
+    store.setCurrentSession('session-A')
+    store.ingestToolResult(
+      'session-A',
+      JSON.stringify([
+        { content: 'todo for A', status: 'pending', priority: 'low' },
+      ]),
+    )
+    store.ingestToolResult(
+      'session-B',
+      JSON.stringify([
+        { content: 'todo for B', status: 'pending', priority: 'low' },
+        { content: 'second for B', status: 'pending', priority: 'low' },
+      ]),
+    )
+
+    const wrapper = mount(TodoListPanel)
+    await flushPromises()
+    expect(wrapper.text()).toContain('todo for A')
+    expect(wrapper.text()).not.toContain('todo for B')
+
+    store.setCurrentSession('session-B')
+    await flushPromises()
+
+    const items = wrapper.findAll('[data-testid="todo-item"]')
+    expect(items).toHaveLength(2)
+    expect(wrapper.text()).toContain('todo for B')
+    expect(wrapper.text()).not.toContain('todo for A')
+  })
+
+  it('renders the session-aware empty-state copy when the current session has no todos', async () => {
+    const store = useTodoStore()
+    store.setCurrentSession('session-fresh')
+
+    const wrapper = mount(TodoListPanel)
+    await flushPromises()
+
+    const empty = wrapper.find('[data-testid="todo-empty"]')
+    expect(empty.exists()).toBe(true)
+    // The previous global "No tasks yet" copy implied user-add semantics; the
+    // session-scoped panel should make the scope explicit.
+    expect(empty.text()).toContain('No todos in this session yet')
   })
 
   it('exposes a stable testid hook for the side-panel mount point', () => {
