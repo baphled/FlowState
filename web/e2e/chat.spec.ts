@@ -112,23 +112,27 @@ test.describe('Chat view', () => {
 
   test('renders the chat view', async ({ page }) => {
     await expect(page.getByTestId('nav-bar')).toBeVisible()
-    await expect(page.getByTestId('agent-switcher')).toBeVisible()
+    // AgentPicker (moved from NavBar into input-selector-bar in eb15ab7)
+    await expect(page.getByTestId('agent-picker')).toBeVisible()
     await expect(page.getByTestId('session-switcher')).toBeVisible()
-    await expect(page.getByTestId('current-agent-summary')).toContainText('claude-sonnet-4-6')
-    await expect(page.getByTestId('current-agent-summary')).not.toContainText('models')
+    // AgentPicker shows the selected agent name, not a model summary
+    await expect(page.getByTestId('agent-picker')).toContainText('Planner')
     await expect(page.getByTestId('message-input')).toBeVisible()
     await expect(page.getByTestId('send-button')).toBeVisible()
+    // old model-select input is gone (replaced by ModelPicker component)
     await expect(page.getByTestId('model-select')).toHaveCount(0)
   })
 
-  test('opens and uses the nav bar switchers', async ({ page }) => {
-    const agentSwitcher = page.getByTestId('agent-switcher')
-    await agentSwitcher.getByRole('button').click()
-    await expect(agentSwitcher.getByRole('listbox')).toBeVisible()
-    await agentSwitcher.getByRole('option', { name: /Executor/i }).click()
-    await expect(agentSwitcher.getByRole('button')).toContainText('Executor')
-    await expect(agentSwitcher).toContainText('llama3.2')
+  test('opens and uses the agent picker and session switcher', async ({ page }) => {
+    // AgentPicker is a clickable span that opens a FuzzySearchModal (not a listbox)
+    const agentPicker = page.getByTestId('agent-picker')
+    await agentPicker.click()
+    await expect(page.getByTestId('fuzzy-search-modal')).toBeVisible()
+    await page.getByTestId('fuzzy-search-item-executor').click()
+    await expect(page.getByTestId('fuzzy-search-modal')).toHaveCount(0)
+    await expect(agentPicker).toContainText('Executor')
 
+    // SessionSwitcher uses a native button + listbox dropdown
     const sessionSwitcher = page.getByTestId('session-switcher')
     await sessionSwitcher.getByRole('button').click()
     await expect(sessionSwitcher.getByRole('listbox')).toBeVisible()
@@ -178,10 +182,11 @@ test.describe('Chat view', () => {
   })
 
   test('restores last-used session and agent after localStorage compaction', async ({ page }) => {
-    const agentSwitcher = page.getByTestId('agent-switcher')
-    await agentSwitcher.getByRole('button').click()
-    await agentSwitcher.getByRole('option', { name: /Executor/i }).click()
-    await expect(agentSwitcher.getByRole('button')).toContainText('Executor')
+    // Select Executor via AgentPicker FuzzySearchModal
+    await page.getByTestId('agent-picker').click()
+    await expect(page.getByTestId('fuzzy-search-modal')).toBeVisible()
+    await page.getByTestId('fuzzy-search-item-executor').click()
+    await expect(page.getByTestId('agent-picker')).toContainText('Executor')
 
     const sessionSwitcher = page.getByTestId('session-switcher')
     await sessionSwitcher.getByRole('button').click()
@@ -216,7 +221,7 @@ test.describe('Chat view', () => {
 
     await page.reload()
 
-    await expect(page.getByTestId('agent-switcher').getByRole('button')).toContainText('Executor')
+    await expect(page.getByTestId('agent-picker')).toContainText('Executor')
     await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Sprint Retro/)
   })
 

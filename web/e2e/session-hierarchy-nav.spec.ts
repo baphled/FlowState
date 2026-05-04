@@ -182,6 +182,12 @@ test.describe('Session hierarchy navigation', () => {
   })
 
   test('Ctrl+X then ArrowDown loads the most-recent child (child-c)', async ({ page }) => {
+    // Wait for restoreStateFromBackend to complete: sessions and parent-1
+    // messages must both be loaded before chatStore.lastDelegatedSessionId
+    // can return child-c. Without this guard the chord fires against an empty
+    // sessions array and lastDelegatedSessionId returns null — a silent no-op.
+    await expect(messagePane(page)).toContainText('Parent thread')
+
     // Move focus off the composer onto the message pane so the keybinds fire.
     await page.getByTestId('chat-message-pane').click()
 
