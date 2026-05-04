@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { defineComponent, h } from 'vue'
@@ -428,6 +428,91 @@ describe('MessageBubble', () => {
 
       expect(wrapper.attributes('data-role')).toBe('thinking')
       expect(wrapper.text()).toContain('considering options')
+    })
+  })
+
+  // Copy affordance on plain user/assistant bubbles. The tool-call/result
+  // branches already expose copy via their own per-tool components, so this
+  // contract is scoped to plain text bubbles only (assistant, user, system).
+  // Delegation, thinking, and tool roles must not surface a duplicate
+  // bubble-level copy button.
+  describe('copy affordance', () => {
+    const writeText = vi.fn()
+
+    beforeEach(() => {
+      writeText.mockReset()
+      vi.stubGlobal('navigator', {
+        clipboard: { writeText },
+      } as unknown as Navigator)
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('renders a copy button on assistant message bubbles', () => {
+      const wrapper = mountWithStubs(makeMessage({ role: 'assistant', content: 'hi there' }))
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(true)
+    })
+
+    it('renders a copy button on user message bubbles', () => {
+      const wrapper = mountWithStubs(makeMessage({ role: 'user', content: 'ping' }))
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(true)
+    })
+
+    it('copies the assistant message content to the clipboard when clicked', async () => {
+      writeText.mockResolvedValueOnce(undefined)
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'assistant', content: 'the assistant body' }),
+      )
+
+      await wrapper.get('[data-testid="message-copy-btn"]').trigger('click')
+
+      expect(writeText).toHaveBeenCalledWith('the assistant body')
+    })
+
+    it('copies the user message content to the clipboard when clicked', async () => {
+      writeText.mockResolvedValueOnce(undefined)
+      const wrapper = mountWithStubs(makeMessage({ role: 'user', content: 'ping pong' }))
+
+      await wrapper.get('[data-testid="message-copy-btn"]').trigger('click')
+
+      expect(writeText).toHaveBeenCalledWith('ping pong')
+    })
+
+    it('does not render a bubble-level copy button on tool_result messages', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'tool_result',
+          content: 'output',
+          toolName: 'bash',
+          toolInput: 'ls',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
+    })
+
+    it('does not render a copy button on delegation cards', () => {
+      const wrapper = mountWithRouter(
+        makeMessage({
+          role: 'delegation_started',
+          content: 'delegating',
+          targetAgent: 'planner',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
+    })
+
+    it('does not render a copy button on thinking messages', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'thinking', content: 'considering options' }),
+      )
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
     })
   })
 })
