@@ -146,6 +146,37 @@ test.describe('Chat view', () => {
     await expect(messages).toContainText('Hello from the mock assistant!')
   })
 
+  test('opens the slash command picker when "/" is typed and inserts the chosen command', async ({ page }) => {
+    const input = page.getByTestId('message-input')
+    await input.click()
+    await input.press('/')
+
+    // The picker reuses the FuzzySearchModal scaffolding so its backdrop
+    // shares the same testid as the toolbar AgentPicker / ModelPicker
+    // — only one is ever open at a time, so this is unambiguous.
+    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
+    await expect(page.getByTestId('fuzzy-search-item-clear')).toBeVisible()
+    await expect(page.getByTestId('fuzzy-search-item-help')).toBeVisible()
+
+    await page.getByTestId('fuzzy-search-item-clear').click()
+    await expect(page.getByTestId('fuzzy-search-backdrop')).toHaveCount(0)
+    await expect(input).toHaveValue('/clear ')
+  })
+
+  test('opens the agent mention picker when "@" is typed mid-message', async ({ page }) => {
+    const input = page.getByTestId('message-input')
+    await input.click()
+    await input.fill('hey ')
+    await input.press('@')
+
+    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
+    await expect(page.getByTestId('fuzzy-search-item-planner')).toBeVisible()
+
+    await page.getByTestId('fuzzy-search-item-planner').click()
+    await expect(page.getByTestId('fuzzy-search-backdrop')).toHaveCount(0)
+    await expect(input).toHaveValue('hey @planner ')
+  })
+
   test('restores last-used session and agent after localStorage compaction', async ({ page }) => {
     const agentSwitcher = page.getByTestId('agent-switcher')
     await agentSwitcher.getByRole('button').click()

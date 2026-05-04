@@ -184,4 +184,26 @@ describe('FuzzySearchModal', () => {
     const firstItem = wrapper.find('[data-testid="fuzzy-search-item-1"]')
     expect(firstItem.text()).toContain('Most capable')
   })
+
+  it('seeds the search input with initialQuery and filters accordingly', async () => {
+    const wrapper = mountModal({ initialQuery: 'gpt' })
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="fuzzy-search-input"]')
+    expect((input.element as HTMLInputElement).value).toBe('gpt')
+
+    const listItems = wrapper.findAll('[data-testid^="fuzzy-search-item-"]')
+    expect(listItems.length).toBe(1)
+    expect(listItems[0].text()).toContain('GPT-4o')
+  })
+
+  it('skips focus-on-open when focusOnOpen is false', async () => {
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, 'focus').mockImplementation(() => {})
+
+    mountModal({ focusOnOpen: false })
+    await flushPromises()
+
+    expect(focusSpy).not.toHaveBeenCalled()
+    focusSpy.mockRestore()
+  })
 })
