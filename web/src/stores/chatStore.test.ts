@@ -1552,3 +1552,84 @@ describe('chatStore - revertToMessage', () => {
     expect(vi.mocked(truncateSessionMessages)).not.toHaveBeenCalled()
   })
 })
+
+describe('chatStore - localStorage persistence for agent and model selection', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('persists agentId to localStorage under chat.agentId when setAgent is called', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setAgent('agent-2')
+
+    expect(window.localStorage.getItem('chat.agentId')).toBe('agent-2')
+  })
+
+  it('persists modelId to localStorage under chat.selectedModel when setModel is called', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setModel('gpt-4o', 'openai')
+
+    expect(window.localStorage.getItem('chat.selectedModel')).toBe('gpt-4o')
+  })
+
+  it('persists providerId to localStorage under chat.selectedProvider when setModel is called', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setModel('gpt-4o', 'openai')
+
+    expect(window.localStorage.getItem('chat.selectedProvider')).toBe('openai')
+  })
+
+  it('setAgent writes agentId to localStorage so it survives a page reload', async () => {
+    // The agent persistence key is written by setAgent on every agent
+    // selection. This pins the contract: after setAgent('agent-2') the
+    // stored value is 'agent-2', ready to be read back by
+    // restoreStateFromBackend on the next page load.
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setAgent('agent-2')
+
+    // Verify the key is present and correct — this is the signal that
+    // the selection survives a reload.
+    expect(window.localStorage.getItem('chat.agentId')).toBe('agent-2')
+  })
+
+  it('restores model and provider from localStorage when no session exists on restoreStateFromBackend', async () => {
+    window.localStorage.setItem('chat.selectedModel', 'gpt-4o')
+    window.localStorage.setItem('chat.selectedProvider', 'openai')
+    // Return no sessions so the "no sessionForAgent" path is exercised.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([])
+    vi.mocked(fetchModels).mockResolvedValueOnce([
+      { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.currentModelId).toBe('gpt-4o')
+    expect(store.currentProviderId).toBe('openai')
+  })
+
+  it('falls back to empty model when the stored model is not in the available models list', async () => {
+    window.localStorage.setItem('chat.selectedModel', 'obsolete-model')
+    window.localStorage.setItem('chat.selectedProvider', 'unknown-provider')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([])
+    vi.mocked(fetchModels).mockResolvedValueOnce([
+      { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.currentModelId).toBe('')
+    expect(store.currentProviderId).toBe('')
+  })
+})
