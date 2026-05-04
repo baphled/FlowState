@@ -47,20 +47,25 @@ const lastMessage = computed(() => {
 })
 const userScrolledUp = ref(false)
 
-async function scrollMessagePaneToBottom(): Promise<void> {
+function scrollMessagePaneToBottom(behavior: ScrollBehavior = 'smooth'): void {
   if (userScrolledUp.value) {
     return
   }
-
-  await nextTick()
   const el = messagePaneRef.value
   if (!el) {
     return
   }
+  el.scrollTo({ top: el.scrollHeight, behavior })
+}
 
-  el.scrollTo({
-    top: el.scrollHeight,
-    behavior: 'smooth',
+let scrollRaf: number | null = null
+function scheduleInstantScroll(): void {
+  if (scrollRaf !== null) {
+    cancelAnimationFrame(scrollRaf)
+  }
+  scrollRaf = requestAnimationFrame(() => {
+    scrollMessagePaneToBottom('instant')
+    scrollRaf = null
   })
 }
 
@@ -132,14 +137,22 @@ function showSwarmPaneAgain(): void {
 watch(
   () => chatStore.messages.length,
   async () => {
-    await scrollMessagePaneToBottom()
+    await nextTick()
+    scrollMessagePaneToBottom('smooth')
   },
 )
 
 watch(
   () => lastMessage.value?.content?.length,
-  async () => {
-    await scrollMessagePaneToBottom()
+  scheduleInstantScroll,
+)
+
+watch(
+  () => chatStore.isLoading,
+  (loading) => {
+    if (loading) {
+      userScrolledUp.value = false
+    }
   },
 )
 
@@ -148,7 +161,7 @@ watch(
   async () => {
     await nextTick()
     userScrolledUp.value = false
-    await scrollMessagePaneToBottom()
+    scrollMessagePaneToBottom('smooth')
   },
 )
 
@@ -158,7 +171,7 @@ onMounted(async () => {
   registerTools()
   teardownHierarchyNav = installSessionHierarchyNav()
   await chatStore.restoreStateFromBackend()
-  await scrollMessagePaneToBottom()
+  scrollMessagePaneToBottom('smooth')
   void swarmStore.connect()
 })
 
