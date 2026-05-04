@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -14,6 +13,34 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
+
+// manifestWriter is the narrow capability the wizard consumes to
+// persist its assembled manifest. The shape mirrors
+// *swarm.ManifestWriter so the production wiring drops a real writer
+// in directly; tests in this package swap in a recording fake to
+// assert the wizard delegates rather than poking the filesystem
+// behind the writer's back. Persistence and rollback both live on
+// this surface — see internal/swarm/manifest_writer.go for the
+// production implementation and the rationale for the writer
+// existing in the swarm package rather than the TUI sub-package.
+type manifestWriter interface {
+	// Write serialises m under name. The wizard always supplies a
+	// non-nil manifest and a non-empty name so the writer's input
+	// validation is treated as defensive rather than a normal
+	// branch.
+	Write(name string, m *swarm.Manifest) error
+
+	// Delete removes the manifest under name. Idempotent so the
+	// wizard's Cancel can call it unconditionally on the rollback
+	// path without first proving the file exists.
+	Delete(name string) error
+
+	// Path returns the path Write would target. Used by the
+	// wizard's overwrite-confirmation branch (it stat()s the path
+	// before prompting) and by the completion message ("Wrote
+	// swarm manifest to ...").
+	Path(name string) string
+}
 
 // builderStep enumerates the wizard's state-machine positions. Pulled
 // out as a typed enum so the swarm_builder transitions stay readable
@@ -61,7 +88,7 @@ type swarmBuilder struct {
 	chainPrefix       string
 	agents            *agent.Registry
 	schemaNames       []string
-	swarmsDir         string
+	writer            manifestWriter
 	overwrite         bool
 	cancelled         bool
 	wroteFile         bool
@@ -81,7 +108,9 @@ type swarmBuilder struct {
 //     swarm.RegisteredSchemaNames(); empty means the schema picker step
 //     is skipped (the gate is recorded with a blank SchemaRef).
 //   - swarmsDir is the destination directory for manifest writes
-//     (typically "$HOME/.config/flowstate/swarms").
+//     (typically "$HOME/.config/flowstate/swarms"). Persistence runs
+//     through swarm.NewManifestWriter(swarmsDir) so the wizard never
+//     touches the filesystem directly — see internal/swarm/manifest_writer.go.
 //
 // Returns:
 //   - A Wizard ready for the chat intent to drive.
@@ -89,11 +118,31 @@ type swarmBuilder struct {
 // Side effects:
 //   - None (no filesystem touches until the user confirms the write).
 func NewSwarmBuilder(agents *agent.Registry, schemaNames []string, swarmsDir string) Wizard {
+	return newSwarmBuilderWithWriter(agents, schemaNames, swarm.NewManifestWriter(swarmsDir))
+}
+
+// newSwarmBuilderWithWriter is the seam tests use to inject a fake
+// writer. Production callers go through NewSwarmBuilder which builds
+// a real *swarm.ManifestWriter; keeping the seam unexported (with an
+// export_test shim) prevents the writer plumbing from leaking onto
+// the public API while still allowing the wizard's specs to assert
+// "delegates to writer" rather than "happens to leave a file behind".
+//
+// Expected:
+//   - agents and schemaNames mirror NewSwarmBuilder.
+//   - writer is a non-nil manifestWriter implementation.
+//
+// Returns:
+//   - A Wizard wired to the supplied writer.
+//
+// Side effects:
+//   - None.
+func newSwarmBuilderWithWriter(agents *agent.Registry, schemaNames []string, writer manifestWriter) Wizard {
 	return &swarmBuilder{
 		step:        stepName,
 		agents:      agents,
 		schemaNames: append([]string(nil), schemaNames...),
-		swarmsDir:   swarmsDir,
+		writer:      writer,
 	}
 }
 
@@ -258,11 +307,18 @@ func (b *swarmBuilder) SubmitMulti(items []widgets.Item) error {
 //
 // Side effects:
 //   - Removes the on-disk manifest when the wizard had advanced past
-//     write but not past confirmation, then resets state.
+//     write but not past confirmation, then resets state. Rollback
+//     routes through the manifest writer's Delete (idempotent under
+//     the hood) so the wizard never touches the filesystem directly.
 func (b *swarmBuilder) Cancel() {
 	b.cancelled = true
-	if b.wroteFile && b.swarmsDir != "" && b.name != "" {
-		_ = os.Remove(filepath.Join(b.swarmsDir, b.name+".yml"))
+	if b.wroteFile && b.writer != nil && b.name != "" {
+		// Best-effort rollback. The manifest writer's Delete is
+		// idempotent and the wizard has no surface left to surface
+		// an error on (Cancel returns nothing); a transient
+		// filesystem failure here would be confusing noise rather
+		// than actionable, so the discard is intentional.
+		_ = b.writer.Delete(b.name) //nolint:errcheck // see comment above
 		b.wroteFile = false
 	}
 }
@@ -301,9 +357,8 @@ func (b *swarmBuilder) submitName(value string) error {
 		return errors.New("name must not contain spaces or path separators")
 	}
 	b.name = value
-	if b.swarmsDir != "" {
-		path := filepath.Join(b.swarmsDir, value+".yml")
-		if _, err := os.Stat(path); err == nil {
+	if b.writer != nil {
+		if _, err := os.Stat(b.writer.Path(value)); err == nil {
 			b.step = stepConfirmOverwrite
 			return nil
 		}
@@ -478,7 +533,7 @@ func (b *swarmBuilder) submitConfirmWriteChoice(item widgets.Item) error {
 		return err
 	}
 	b.step = stepFinished
-	b.completionMessage = fmt.Sprintf("Wrote swarm manifest to %s", filepath.Join(b.swarmsDir, b.name+".yml"))
+	b.completionMessage = fmt.Sprintf("Wrote swarm manifest to %s", b.writer.Path(b.name))
 	return nil
 }
 
@@ -523,29 +578,26 @@ func (b *swarmBuilder) buildManifest() swarm.Manifest {
 	}
 }
 
-// writeManifest serialises the in-progress manifest to disk under the
-// configured swarms directory. Directory creation uses 0o755 to match
-// the rest of the user-config tree.
+// writeManifest delegates to the configured manifest writer to
+// persist the in-progress manifest. Directory creation, YAML
+// marshalling, and file mode now live in internal/swarm so the
+// wizard never touches the filesystem directly — that ADR
+// alignment is the whole point of this seam (see Multi-Access
+// Method ADR § "Wrappers not duplicates").
 //
 // Returns:
-//   - nil on success; the first filesystem error otherwise.
+//   - nil on success; the writer's wrapped error otherwise.
 //
 // Side effects:
-//   - Creates b.swarmsDir if missing and writes the YAML file.
+//   - Creates the manifests directory if missing and writes the
+//     YAML file via the writer.
 func (b *swarmBuilder) writeManifest() error {
-	if b.swarmsDir == "" {
-		return errors.New("swarms directory is not configured")
+	if b.writer == nil {
+		return errors.New("swarm manifest writer is not configured")
 	}
-	if err := os.MkdirAll(b.swarmsDir, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", b.swarmsDir, err)
-	}
-	out, err := yaml.Marshal(b.buildManifest())
-	if err != nil {
-		return fmt.Errorf("marshal manifest: %w", err)
-	}
-	path := filepath.Join(b.swarmsDir, b.name+".yml")
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	manifest := b.buildManifest()
+	if err := b.writer.Write(b.name, &manifest); err != nil {
+		return err
 	}
 	b.wroteFile = true
 	return nil
