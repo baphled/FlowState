@@ -8,6 +8,7 @@ import type {
   Model,
   ModelsResponse,
 } from '@/types'
+import { parseError } from '@/lib/parseError'
 
 const BASE = '/api'
 const API_HOST_STORAGE_KEY = 'flowstate-api-host'
@@ -51,8 +52,7 @@ export async function postChat(
   })
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
-    throw new Error(err.error ?? `HTTP ${res.status}`)
+    throw new Error(await parseError(res))
   }
 
   if (!res.body) {
@@ -125,15 +125,14 @@ export async function sendSessionMessage(
   sessionId: string,
   content: string
 ): Promise<Session> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/messages`), {
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
   })
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
-    throw new Error(err.error ?? `HTTP ${res.status}`)
+    throw new Error(await parseError(res))
   }
 
   const session = (await res.json()) as Session
@@ -141,7 +140,7 @@ export async function sendSessionMessage(
 }
 
 export async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/messages`))
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`))
   if (!res.ok) {
     throw new Error(`Failed to fetch session messages: ${res.statusText}`)
   }
@@ -149,19 +148,32 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
   return data ?? []
 }
 
+// subscribeSessionStream opens a same-origin EventSource for the given session.
+//
+// Same-origin assumption: this app is served from the same origin as the
+// FlowState API (the Vite dev server proxies /api to the Go server, and the
+// production build is served alongside the Go server). EventSource follows
+// the page's CORS policy and does not send cookies cross-origin by default.
+//
+// Cross-origin support path: when the API moves to a different origin (e.g.
+// api.flowstate.app while the SPA is at app.flowstate.app), constructing
+// `new EventSource(url, { withCredentials: true })` is the minimum change —
+// the Go server must additionally emit `Access-Control-Allow-Origin: <origin>`
+// (NOT `*`, which is rejected when withCredentials is true) and
+// `Access-Control-Allow-Credentials: true`. See MDN:
+// https://developer.mozilla.org/en-US/docs/Web/API/EventSource/EventSource
 export function subscribeSessionStream(sessionId: string): EventSource {
   return new EventSource(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`))
 }
 
 export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/agent`), {
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/agent`), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agentId }),
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
-    throw new Error(err.error ?? `HTTP ${res.status}`)
+    throw new Error(await parseError(res))
   }
   return (await res.json()) as Session
 }
@@ -171,14 +183,13 @@ export async function updateSessionModel(
   modelId: string,
   providerId: string,
 ): Promise<Session> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${sessionId}/model`), {
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/model`), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modelId, providerId }),
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
-    throw new Error(err.error ?? `HTTP ${res.status}`)
+    throw new Error(await parseError(res))
   }
   return (await res.json()) as Session
 }
@@ -200,7 +211,9 @@ export async function fetchModels(): Promise<Model[]> {
 }
 
 export async function truncateSessionMessages(sessionId: string, fromMessageId: string): Promise<void> {
-  const url = joinBaseURL(`/v1/sessions/${sessionId}/messages/from/${fromMessageId}`)
+  const url = joinBaseURL(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/messages/from/${encodeURIComponent(fromMessageId)}`,
+  )
   const res = await fetch(url, { method: 'DELETE' })
   if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
 }

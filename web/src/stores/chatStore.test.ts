@@ -82,6 +82,9 @@ vi.mock('../api', () => ({
     agentId,
     messages: [],
     messageCount: 0,
+    status: 'active',
+    depth: 0,
+    isStreaming: false,
     createdAt: '',
     updatedAt: '',
   })),
@@ -90,6 +93,9 @@ vi.mock('../api', () => ({
     agentId: 'agent-1',
     messages: [{ id: 'msg-x', sessionId, content, sender: 'user' }],
     messageCount: 1,
+    status: 'active',
+    depth: 0,
+    isStreaming: false,
     createdAt: '',
     updatedAt: '',
   })),
@@ -98,6 +104,9 @@ vi.mock('../api', () => ({
     agentId,
     messages: [],
     messageCount: 0,
+    status: 'active',
+    depth: 0,
+    isStreaming: false,
     createdAt: '',
     updatedAt: '',
   })),
@@ -108,6 +117,9 @@ vi.mock('../api', () => ({
     currentProviderId: providerId,
     messages: [],
     messageCount: 0,
+    status: 'active',
+    depth: 0,
+    isStreaming: false,
     createdAt: '',
     updatedAt: '',
   })),
@@ -150,6 +162,9 @@ describe('chatStore - restoreStateFromBackend', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -191,6 +206,9 @@ describe('chatStore - loadSessionMessages', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 2,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
@@ -219,6 +237,9 @@ describe('chatStore - loadSessionMessages', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -285,6 +306,9 @@ describe('chatStore - sendMessage', () => {
       agentId: 'agent-1',
       messages: [],
       messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -308,6 +332,9 @@ describe('chatStore - sendMessage', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 1,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
       {
         id: 'session-B',
@@ -316,6 +343,9 @@ describe('chatStore - sendMessage', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 2,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -352,6 +382,9 @@ describe('chatStore - sendMessage', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -430,6 +463,9 @@ describe('chatStore - sendMessage', () => {
       agentId: 'agent-1',
       messages: [],
       messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -468,6 +504,9 @@ describe('chatStore - sendMessage', () => {
       agentId: 'agent-1',
       messages: [],
       messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -513,6 +552,9 @@ describe('chatStore - sendMessage', () => {
       agentId: 'agent-1',
       messages: [],
       messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -681,6 +723,9 @@ describe('chatStore - model restoration on restoreStateFromBackend', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -710,6 +755,9 @@ describe('chatStore - model restoration on loadSessionMessages', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
 
@@ -809,6 +857,9 @@ describe('chatStore - hierarchy getters', () => {
       createdAt,
       updatedAt: createdAt,
       messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
     }
   }
 
@@ -1459,6 +1510,9 @@ describe('chatStore - todoStore session swap on session switch', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 3,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ])
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
@@ -2014,6 +2068,8 @@ describe('chatStore - loadSessions detects was-streaming → not-streaming and r
         createdAt: '',
         updatedAt: '',
         messageCount: 1,
+        status: 'active',
+        depth: 0,
         isStreaming: true,
       },
     ])
@@ -2031,6 +2087,8 @@ describe('chatStore - loadSessions detects was-streaming → not-streaming and r
         createdAt: '',
         updatedAt: '',
         messageCount: 3,
+        status: 'active',
+        depth: 0,
         isStreaming: false,
       },
     ])
@@ -2061,6 +2119,8 @@ describe('chatStore - loadSessions detects was-streaming → not-streaming and r
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
         isStreaming: false,
       },
     ])
@@ -2129,6 +2189,9 @@ describe('chatStore - optimistic user message reconciliation (C-1, C-2)', () => 
         { id: 'srv-u-actual', role: 'user', content: 'reconcile me', timestamp: '' },
       ],
       messageCount: 1,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -2182,6 +2245,9 @@ describe('chatStore - optimistic user message reconciliation (C-1, C-2)', () => 
         { id: 'srv-u1', role: 'user', content: 'happy path', timestamp: '' },
       ],
       messageCount: 1,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
       createdAt: '',
       updatedAt: '',
     })
@@ -2216,7 +2282,7 @@ describe('chatStore - loadSessionMessages clears isStreaming alongside isLoading
     store.isLoading = false
 
     vi.mocked(fetchSessions).mockResolvedValueOnce([
-      { id: 'session-idle', agentId: 'agent-1', title: 'idle', createdAt: '', updatedAt: '', messageCount: 0 },
+      { id: 'session-idle', agentId: 'agent-1', title: 'idle', createdAt: '', updatedAt: '', messageCount: 0, status: 'active', depth: 0, isStreaming: false },
     ])
 
     await store.loadSessions()

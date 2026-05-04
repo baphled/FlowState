@@ -75,6 +75,8 @@ describe('chatStore', () => {
           createdAt: '2026-05-04T00:00:00Z',
           updatedAt: '2026-05-04T00:00:01Z',
           messageCount: 2,
+          status: 'active',
+          depth: 0,
           isStreaming: true,
         },
       ])
@@ -108,6 +110,8 @@ describe('chatStore', () => {
           createdAt: '2026-05-04T00:00:00Z',
           updatedAt: '2026-05-04T00:00:01Z',
           messageCount: 2,
+          status: 'active',
+          depth: 0,
           isStreaming: false,
         },
       ])
