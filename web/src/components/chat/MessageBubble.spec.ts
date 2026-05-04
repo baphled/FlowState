@@ -191,6 +191,48 @@ describe('MessageBubble', () => {
       expect(wrapper.find('[data-testid="tool-error-renderer"]').exists()).toBe(true)
       expect(wrapper.find('[data-testid="tool-error-renderer"]').attributes('data-tool')).toBe('bash')
     })
+
+    // Regression cover for the unmatched tool_call rendering path. When a
+    // tool_call has no paired tool_result (collapseToolPairs leaves it intact),
+    // the previous revision fell through to the plain-message branch and
+    // surfaced the role as a "TOOL_CALL" label (uppercased by .message-role
+    // CSS). The collapsable tool card already signals "this is a tool call",
+    // so the role label is redundant noise — route tool_call through the
+    // same per-tool component the tool_result path uses.
+    it('renders an unmatched tool_call with the registered tool component, not a TOOL_CALL role label', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'tool_call',
+          content: '',
+          toolName: 'bash',
+          toolInput: JSON.stringify({ command: 'ls' }),
+        }),
+      )
+
+      const tool = wrapper.find('[data-component="tool-renderer"]')
+      expect(tool.exists()).toBe(true)
+      expect(tool.attributes('data-tool')).toBe('bash')
+      // The literal "TOOL_CALL" label (rendered via uppercased .message-role)
+      // must not appear in the DOM — the card chrome already conveys it.
+      expect(wrapper.find('.message-role').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('tool_call')
+      expect(wrapper.text().toUpperCase()).not.toContain('TOOL_CALL')
+    })
+
+    it('renders an unmatched tool_call for an unknown tool via GenericTool', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'tool_call',
+          content: '',
+          toolName: 'mystery',
+        }),
+      )
+
+      const tool = wrapper.find('[data-component="tool-renderer"]')
+      expect(tool.exists()).toBe(true)
+      expect(tool.attributes('data-tool')).toBe('generic')
+      expect(wrapper.find('.message-role').exists()).toBe(false)
+    })
   })
 
   describe('delegation roles', () => {
