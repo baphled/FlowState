@@ -58,7 +58,14 @@ const isDelegationStarted = computed(() => props.message.role === 'delegation_st
 const isDelegation = computed(() => props.message.role === 'delegation')
 const isThinking = computed(() => props.message.role === 'thinking')
 
-const isToolResult = computed(() => props.message.role === 'tool_result')
+// Both tool_result and an unmatched tool_call (one without a paired
+// tool_result — collapseToolPairs leaves it intact) render through the
+// same per-tool component. The collapsable card chrome already signals
+// "this is a tool invocation", so a separate "TOOL_CALL" role label
+// would be redundant.
+const isToolInvocation = computed(
+  () => props.message.role === 'tool_result' || props.message.role === 'tool_call',
+)
 const isToolError = computed(() => props.message.role === 'tool_error')
 
 const toolSpec = computed(() => buildToolRenderSpec(props.message))
@@ -76,7 +83,7 @@ const toolComponent = computed(() => {
 
 const isPlain = computed(
   () =>
-    !isToolResult.value &&
+    !isToolInvocation.value &&
     !isToolError.value &&
     !isDelegationStarted.value &&
     !isDelegation.value &&
@@ -98,7 +105,7 @@ const displayRole = computed(() =>
     :data-role="props.message.role"
   >
     <component
-      v-if="isToolResult"
+      v-if="isToolInvocation"
       :is="toolComponent"
       :tool-name="toolSpec.toolName"
       :heading="toolSpec.heading"
