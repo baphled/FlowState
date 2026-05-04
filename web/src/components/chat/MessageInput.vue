@@ -5,6 +5,7 @@ import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
 import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
 import { SLASH_COMMANDS } from '@/commands/slashCommands'
 import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
+import { showToast } from '@/composables/useToast'
 
 defineOptions({ name: 'MessageInput' })
 
@@ -103,7 +104,21 @@ function autoResize(): void {
 
 async function submit(): Promise<void> {
   const text = inputText.value.trim()
-  if (!text || store.isLoading) return
+  if (!text) return
+  // Pre-fix this branch silently early-returned when isLoading was true.
+  // The user typed, pressed Enter, and saw nothing — leading them to
+  // conclude the chat was stuck. Now we surface the rejection via a
+  // toast so the cause is unambiguous. We keep the buffer intact so the
+  // user doesn't lose what they typed; closing the picker still happens
+  // because the rejection is a UI dead end either way.
+  if (store.isLoading) {
+    showToast({
+      message: 'An earlier message is still in flight. Wait for it to finish or reload the page.',
+      title: 'Send blocked',
+      variant: 'error',
+    })
+    return
+  }
   inputText.value = ''
   activeTrigger.value = null
   await store.sendMessage(text)

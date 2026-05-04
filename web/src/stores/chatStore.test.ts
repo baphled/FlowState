@@ -1092,6 +1092,255 @@ describe('chatStore - todowrite wiring (live SSE)', () => {
   })
 })
 
+describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-reload)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The user-reported symptom: after reloading the page mid-stream, the UI
+  // shows the prior in-flight assistant frozen and the next prompt appears
+  // to do nothing. Backend logs confirm the next prompt never reached the
+  // API. Two reinforcing causes; this block pins the SSE reconnect.
+  //
+  // Pre-fix: restoreStateFromBackend only fetches REST history. If the
+  // backend was still streaming when the reload happened, every chunk
+  // produced after the reload is dropped — the SSE consumer was never
+  // re-attached. The frontend has no way to know the stream resumed.
+  //
+  // Contract: when the most recent assistant message in restored history
+  // looks like an in-flight stream (status === 'running'), the store must
+  // re-subscribe to /api/v1/sessions/{id}/stream so any chunks the backend
+  // is still producing arrive at the UI. If the backend has already
+  // finished streaming the SSE connection closes cleanly with no chunks.
+
+  it('subscribes to the session stream when restored history shows an in-flight assistant (status === running)', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
+      {
+        id: 'srv-a1',
+        role: 'assistant',
+        content: 'partial response so far',
+        timestamp: '2026-05-04T00:00:01Z',
+        status: 'running',
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(vi.mocked(subscribeSessionStream)).toHaveBeenCalledWith('session-1')
+    expect(FakeEventSource.instances.length).toBe(1)
+  })
+
+  it('does NOT subscribe when the most recent assistant is already completed', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'hello', timestamp: '2026-05-04T00:00:00Z' },
+      {
+        id: 'srv-a1',
+        role: 'assistant',
+        content: 'all done',
+        timestamp: '2026-05-04T00:00:01Z',
+        status: 'completed',
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(vi.mocked(subscribeSessionStream)).not.toHaveBeenCalled()
+    expect(FakeEventSource.instances.length).toBe(0)
+  })
+
+  it('does NOT subscribe when restored history has no assistant message at all', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'just sent', timestamp: '2026-05-04T00:00:00Z' },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(vi.mocked(subscribeSessionStream)).not.toHaveBeenCalled()
+  })
+
+  it('routes chunks from the reconnected SSE stream onto the in-flight assistant message', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
+      {
+        id: 'srv-a1',
+        role: 'assistant',
+        content: 'partial ',
+        timestamp: '2026-05-04T00:00:01Z',
+        status: 'running',
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(FakeEventSource.instances.length).toBe(1)
+    const es = FakeEventSource.instances[0]
+    es.fire('message', { content: 'response ' })
+    es.fire('message', { content: 'continued' })
+
+    const inFlight = store.messages.find((m) => m.role === 'assistant' && m.status === 'running')
+    expect(inFlight?.content).toBe('partial response continued')
+  })
+
+  it('clears isLoading and seals the in-flight assistant when the reconnected stream emits [DONE]', async () => {
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
+      {
+        id: 'srv-a1',
+        role: 'assistant',
+        content: 'partial',
+        timestamp: '2026-05-04T00:00:01Z',
+        status: 'running',
+      },
+    ])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    const es = FakeEventSource.instances[0]
+    es.fire('message', '[DONE]')
+
+    const sealed = store.messages.find((m) => m.role === 'assistant')
+    expect(sealed?.status).toBe('completed')
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
+  })
+})
+
+describe('chatStore - sendMessage surfacing when isLoading is already true (silent-drop fix)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The user-reported symptom: typing into the input and pressing Enter
+  // appears to do nothing. The submit gate silently early-returns when
+  // isLoading is truthy — no toast, no error, no surfacing of any kind.
+  //
+  // Pre-fix: chatStore.sendMessage line 347-349 returns silently. The user
+  // has no way to know their prompt was rejected. Combined with a stuck
+  // isLoading from a prior stream that never produced [DONE], this presents
+  // as "the chat is broken".
+  //
+  // Contract: when sendMessage is invoked while isLoading is true, the
+  // store must surface the rejection. The error string is set so the
+  // existing chat-error footer renders, AND a toast fires for an in-front
+  // surfacing the user cannot miss.
+
+  it('sets store.error so the chat-error footer surfaces the rejection (was silent return)', async () => {
+    const store = useChatStore()
+    store.isLoading = true
+
+    await store.sendMessage('continue')
+
+    expect(store.error).toBeTruthy()
+    expect(String(store.error)).toMatch(/(in.flight|already|wait|reload)/i)
+    // The send pipeline must NOT have been reached.
+    expect(vi.mocked(sendSessionMessage)).not.toHaveBeenCalled()
+  })
+})
+
+describe('chatStore - isLoading watchdog (60s fail-safe)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // Pre-fix: if the SSE stream stalls (no chunks, no [DONE], no error),
+  // isLoading stays true forever and every subsequent submission is
+  // silently dropped by the gate. Reload is the user's only escape.
+  //
+  // Contract: a watchdog observes the most recent streaming activity. When
+  // sendMessage is in flight, the watchdog clears isLoading after 60s of
+  // no observed SSE activity, sets a surfacing error, and unwedges the UI.
+
+  it('clears isLoading after 60s of no SSE activity and surfaces a stall error', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      const sendPromise = store.sendMessage('hello')
+
+      // Allow microtasks so the eventSource is created.
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(store.isLoading).toBe(true)
+
+      // Advance 60s with no SSE activity at all.
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(store.isLoading).toBe(false)
+      expect(store.error).toBeTruthy()
+      expect(String(store.error)).toMatch(/(stall|stuck|timeout|no response)/i)
+
+      // Tidy: resolve the dangling send promise so the test exits cleanly.
+      resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+      await sendPromise
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does NOT trip the watchdog while SSE chunks keep arriving', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      const sendPromise = store.sendMessage('streaming')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const es = FakeEventSource.instances[0]
+
+      // Heartbeat every 30s — under the 60s threshold — for 5 minutes.
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(30_000)
+        es.fire('message', { content: '.' })
+      }
+
+      // After 5 minutes of activity isLoading is still true (no stall).
+      expect(store.isLoading).toBe(true)
+      expect(store.error).toBeNull()
+
+      es.fire('message', '[DONE]')
+      resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+      await sendPromise
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('chatStore - todoStore session swap on session switch', () => {
   beforeEach(() => {
     installLocalStorageStub()
