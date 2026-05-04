@@ -46,6 +46,15 @@ const lastMessage = computed(() => {
   return messages.length > 0 ? messages[messages.length - 1] : null
 })
 const userScrolledUp = ref(false)
+// lastScrollHeight tracks the message pane's scrollHeight at the time of
+// the last observed scroll so onMessagePaneScroll can distinguish a
+// content-reflow scroll (height grew while we were already at the bottom)
+// from a deliberate user scroll. Without this distinction streaming
+// content sticky-set userScrolledUp=true on the very first chunk because
+// scrollTop / scrollHeight diverged briefly while the new content
+// rendered. See Principal F10.
+let lastScrollHeight = 0
+let lastScrollTop = 0
 
 function scrollMessagePaneToBottom(behavior: ScrollBehavior = 'smooth'): void {
   if (userScrolledUp.value) {
@@ -56,6 +65,10 @@ function scrollMessagePaneToBottom(behavior: ScrollBehavior = 'smooth'): void {
     return
   }
   el.scrollTo({ top: el.scrollHeight, behavior })
+  // Sync the watermark so the next `scroll` event from the synthetic
+  // scrollTo doesn't get mis-classified as a user scroll.
+  lastScrollHeight = el.scrollHeight
+  lastScrollTop = el.scrollTop
 }
 
 let scrollRaf: number | null = null
@@ -75,8 +88,23 @@ function onMessagePaneScroll(): void {
     return
   }
 
-  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-  userScrolledUp.value = !atBottom
+  const heightDelta = el.scrollHeight - lastScrollHeight
+  const topDelta = el.scrollTop - lastScrollTop
+
+  // Reflow detection: when the content grows by N pixels and scrollTop
+  // moves by ≤N pixels in the SAME direction, the browser is just
+  // re-anchoring the viewport — no user input. The 4px tolerance covers
+  // sub-pixel rounding from layout and the smooth-scroll animation
+  // adjusting position by a small amount during a height change.
+  const isContentReflow = heightDelta > 0 && Math.abs(topDelta) <= heightDelta + 4
+
+  if (!isContentReflow) {
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    userScrolledUp.value = !atBottom
+  }
+
+  lastScrollHeight = el.scrollHeight
+  lastScrollTop = el.scrollTop
 }
 
 function agentNameFor(message: Message): string | undefined {
