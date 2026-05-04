@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import NavBar from '@/components/layout/NavBar.vue'
+import ToastContainer from '@/components/common/ToastContainer.vue'
 
 const apiOnline = ref(true)
 
@@ -23,6 +24,13 @@ onMounted(async () => {
     <main class="app-main">
       <RouterView />
     </main>
+    <!--
+      Global toast surface — used by chat for surfacing silent-drop
+      rejections (the input-gate locked because a prior send is still
+      in flight) and any future cross-cutting notifications. Mounted
+      once at the app shell so every view shares the same overlay.
+    -->
+    <ToastContainer />
   </div>
 </template>
 

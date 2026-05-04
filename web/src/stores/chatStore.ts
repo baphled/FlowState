@@ -16,6 +16,25 @@ import { useTodoStore } from './todoStore'
 const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
 
+// 60s fail-safe — if no SSE activity arrives during a send, the store
+// assumes the stream is dead and clears isLoading. Without this the
+// submit gate stays locked forever after a network hiccup, presenting
+// to the user as "the chat is stuck". Reset on every chunk; cancelled
+// when the stream cleanly terminates.
+const SSE_STALL_TIMEOUT_MS = 60_000
+
+// Module-scoped watchdog handle. Module scope (not Pinia state) keeps it
+// out of reactivity tracking; the timer is an implementation detail of
+// the streaming lifecycle, never read by the UI.
+let stallWatchdog: ReturnType<typeof setTimeout> | null = null
+
+function clearStallWatchdog(): void {
+  if (stallWatchdog !== null) {
+    clearTimeout(stallWatchdog)
+    stallWatchdog = null
+  }
+}
+
 function getPersistedSessionId(): string | null {
   if (typeof window === 'undefined') {
     return null
@@ -195,6 +214,7 @@ export const useChatStore = defineStore('chat', {
         const todoStore = useTodoStore()
         todoStore.setCurrentSession(sessionForAgent.id)
         todoStore.hydrateFromMessages(sessionForAgent.id, this.messages)
+        this.maybeReattachStream(sessionForAgent.id)
         return
       }
 
@@ -206,6 +226,53 @@ export const useChatStore = defineStore('chat', {
       const todoStore = useTodoStore()
       todoStore.setCurrentSession(session.id)
       todoStore.hydrateFromMessages(session.id, this.messages)
+      this.maybeReattachStream(session.id)
+    },
+
+    // Re-attach a live SSE consumer when restored history shows an
+    // in-flight assistant (status === 'running'). Pre-fix the user could
+    // reload mid-stream and the frontend would never reconnect — every
+    // chunk produced after the reload was dropped silently and the chat
+    // looked frozen. This bridges that gap: if the backend was still
+    // streaming when the reload happened, the consumer attaches and
+    // chunks land on the in-flight bubble; if the backend has already
+    // finished the EventSource closes cleanly without ever firing.
+    //
+    // isLoading is set to true so the submit gate keeps blocking new
+    // sends until [DONE] (or the watchdog) clears it — preventing a
+    // racy interleave where the user fires another prompt before the
+    // resumed stream settles.
+    maybeReattachStream(sessionId: string): void {
+      const lastAssistant = [...this.messages].reverse().find((m) => m.role === 'assistant')
+      if (!lastAssistant || lastAssistant.status !== 'running') {
+        return
+      }
+
+      this.isLoading = true
+      this.isStreaming = true
+      this.armStallWatchdog()
+
+      const eventSource = subscribeSessionStream(sessionId)
+      const close = (): void => {
+        eventSource.close()
+        clearStallWatchdog()
+        this.isLoading = false
+        this.isStreaming = false
+      }
+
+      eventSource.addEventListener('message', (event) => {
+        const payload = (event as MessageEvent).data as string
+        this.applyContentEvent(payload)
+        if (payload === '[DONE]') {
+          close()
+        }
+      })
+      eventSource.addEventListener('error', () => {
+        // Backend closed or proxy timed out — stop pretending we're still
+        // streaming so the input gate unsticks. The user can fire a new
+        // prompt to resume the conversation.
+        close()
+      })
     },
 
     async loadAgents(): Promise<void> {
@@ -344,13 +411,25 @@ export const useChatStore = defineStore('chat', {
 
     async sendMessage(content: string): Promise<void> {
       const text = content.trim()
-      if (!text || this.isLoading) {
+      if (!text) {
+        return
+      }
+      // Pre-fix this branch silently early-returned when isLoading was true.
+      // Combined with a stuck stream (no [DONE] from the backend), the user
+      // saw the chat appear frozen with no surfacing of any kind. The gate
+      // now sets this.error so the existing chat-error footer renders the
+      // rejection. The MessageInput component additionally surfaces a toast
+      // — the two surface independently because non-input call sites
+      // (e.g. programmatic resends) still need a visible signal.
+      if (this.isLoading) {
+        this.error = 'An earlier message is still in flight. Wait for it to finish or reload the page.'
         return
       }
 
       this.error = null
       this.isLoading = true
       this.isStreaming = false
+      this.armStallWatchdog()
 
       const optimisticMessage: Message = {
         id: `temp-${Date.now()}`,
@@ -391,9 +470,30 @@ export const useChatStore = defineStore('chat', {
         if (eventSource) {
           eventSource.close()
         }
+        clearStallWatchdog()
         this.isLoading = false
         this.isStreaming = false
       }
+    },
+
+    // Re-arm the watchdog whenever there is fresh streaming activity.
+    // Called from sendMessage on send-start, from applyContentEvent on
+    // every chunk, and from maybeReattachStream on reconnect. The 60s
+    // window is intentionally generous — agents can sit thinking on a
+    // slow tool call without producing chunks; we only want to trip on
+    // "actually dead" streams, not "agent is busy".
+    armStallWatchdog(): void {
+      clearStallWatchdog()
+      stallWatchdog = setTimeout(() => {
+        // Stream stalled — unsticky the input gate so the user can
+        // recover without reloading the page. The error footer surfaces
+        // the cause; if no chunks arrived at all the in-flight assistant
+        // bubble (if any) stays in-place but is no longer locked.
+        this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
+        this.isLoading = false
+        this.isStreaming = false
+        stallWatchdog = null
+      }, SSE_STALL_TIMEOUT_MS)
     },
 
     applyDelegationEvent(payload: string): void {
@@ -453,6 +553,11 @@ export const useChatStore = defineStore('chat', {
     },
 
     applyContentEvent(payload: string): void {
+      // Any SSE event counts as "the stream is alive" — re-arm the
+      // watchdog so a slow but progressing stream is never killed.
+      // The watchdog only trips on dead streams.
+      this.armStallWatchdog()
+
       if (payload === '[DONE]') {
         // Seal any in-flight assistant message so a later turn's chunks
         // cannot land on it. Without this, chatStore treats backend-loaded
@@ -467,6 +572,10 @@ export const useChatStore = defineStore('chat', {
           inFlight.status = 'completed'
         }
         this.isStreaming = false
+        // Stream is done — cancel the watchdog. isLoading is cleared by
+        // the sendMessage finally block (or by maybeReattachStream's
+        // close handler if this came from a reconnected stream).
+        clearStallWatchdog()
         return
       }
 

@@ -172,6 +172,48 @@ describe('MessageInput slash and mention triggers', () => {
     wrapper.unmount()
   })
 
+  it('surfaces a rejection toast when submit is attempted while isLoading is true (was silent drop)', async () => {
+    // Pre-fix: MessageInput.submit early-returns silently when
+    // store.isLoading is true. The user types "continue", presses Enter,
+    // and sees nothing happen — leading them to conclude the chat is
+    // stuck. The fix surfaces the rejection through a toast.
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+    const sendSpy = vi.spyOn(store, 'sendMessage').mockResolvedValue()
+    store.isLoading = true
+
+    const { showToast } = await import('@/composables/useToast')
+    const toastSpy = vi.spyOn({ showToast }, 'showToast')
+    // Re-import so the spy can capture the call. vi.spyOn on a module
+    // namespace requires the actual call site to read through the same
+    // object — we rely on the production code calling the bare exported
+    // showToast. A simpler approach: assert against the toasts ref.
+    toastSpy.mockClear()
+
+    const { useToast } = await import('@/composables/useToast')
+    const { toasts, dismissAll } = useToast()
+    dismissAll()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await typeInto(inputWrapper, 'continue', 8)
+    await inputWrapper.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    // Send must NOT have been invoked — the gate still rejects.
+    expect(sendSpy).not.toHaveBeenCalled()
+
+    // But the rejection MUST be surfaced — a toast fires explaining why.
+    expect(toasts.value.length).toBeGreaterThanOrEqual(1)
+    const lastToast = toasts.value[toasts.value.length - 1]
+    expect(lastToast.message).toMatch(/(in.flight|already|wait|reload)/i)
+
+    dismissAll()
+    wrapper.unmount()
+  })
+
   it('Escape closes an open picker without clearing the buffer', async () => {
     const store = useChatStore()
     vi.spyOn(store, 'loadAgents').mockResolvedValue()
