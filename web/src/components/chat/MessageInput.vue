@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
+import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
+import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
+import { SLASH_COMMANDS } from '@/commands/slashCommands'
+import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
 
 defineOptions({ name: 'MessageInput' })
 
@@ -8,7 +12,82 @@ const store = useChatStore()
 const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
+// activeTrigger drives picker visibility. The caret-tracking handlers
+// recompute it on every input/keyup/click, so it always reflects the
+// latest textarea state.
+const activeTrigger = ref<TriggerDescriptor | null>(null)
+
+// Static slash-command catalogue mirrored from the TUI registry. See
+// web/src/commands/slashCommands.ts for the canonical source-of-truth
+// notes. Mapped to FuzzySearchItem for the modal.
+const commandItems = computed<FuzzySearchItem[]>(() =>
+  SLASH_COMMANDS.map((cmd) => ({
+    id: cmd.name,
+    label: `/${cmd.name}`,
+    meta: cmd.description,
+  })),
+)
+
+// Combined agent + swarm surface for "@" mentions. Swarms have no read
+// API yet so the slice is empty until one lands; the picker still works
+// for agents alone.
+const mentionItems = computed<FuzzySearchItem[]>(() => {
+  const agents = store.availableAgentDetails.map<FuzzySearchItem>((agent) => ({
+    id: agent.id,
+    label: `@${agent.id}`,
+    group: 'Agents',
+    meta: agent.name,
+  }))
+  // Swarm slice intentionally empty — see InputTriggerPickers note for
+  // backend wiring TODO. Keep the group present so the surface is
+  // discoverable when the data lands.
+  return agents
+})
+
+// Group label varies between the two pickers — slash commands have no
+// group so they render as a flat list.
+const slashOpen = computed(() => activeTrigger.value?.kind === 'slash')
+const mentionOpen = computed(() => activeTrigger.value?.kind === 'mention')
+
+// Initial-fragment seed pushed into the modal's search input so the
+// user's typing-as-they-trigger filters the list immediately rather
+// than only after they type inside the modal.
+const initialQuery = computed(() => activeTrigger.value?.fragment ?? '')
+
+function handleInput(): void {
+  autoResize()
+  recomputeTrigger()
+}
+
+function recomputeTrigger(): void {
+  const el = textareaRef.value
+  if (!el) {
+    activeTrigger.value = null
+    return
+  }
+  // Read straight from the DOM element instead of `inputText.value` —
+  // when this fires inside the same input event as v-model's auto-
+  // generated listener, the reactive ref may not have been assigned
+  // yet. The element's `.value` is always authoritative.
+  activeTrigger.value = detectTrigger(el.value, el.selectionStart ?? 0)
+}
+
 function handleKeydown(event: KeyboardEvent): void {
+  // Esc closes any open picker without losing the buffer.
+  if (event.key === 'Escape' && activeTrigger.value !== null) {
+    event.preventDefault()
+    activeTrigger.value = null
+    return
+  }
+
+  // Arrow keys / Enter / Esc inside an open picker are owned by the
+  // FuzzySearchModal's own document-level handler, so the textarea
+  // stays out of the way. Submitting on Enter only fires when no
+  // picker is open.
+  if (activeTrigger.value !== null) {
+    return
+  }
+
   if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
     event.preventDefault()
     submit()
@@ -26,8 +105,36 @@ async function submit(): Promise<void> {
   const text = inputText.value.trim()
   if (!text || store.isLoading) return
   inputText.value = ''
+  activeTrigger.value = null
   await store.sendMessage(text)
 }
+
+async function applySelection(item: FuzzySearchItem): Promise<void> {
+  const trigger = activeTrigger.value
+  if (!trigger) return
+  const result = insertToken(inputText.value, trigger, item.label)
+  inputText.value = result.text
+  activeTrigger.value = null
+  await nextTick()
+  const el = textareaRef.value
+  if (el) {
+    el.focus()
+    el.selectionStart = result.caret
+    el.selectionEnd = result.caret
+  }
+}
+
+function closePicker(): void {
+  activeTrigger.value = null
+}
+
+onMounted(() => {
+  // Agents may not be loaded yet when the input mounts inside a fresh
+  // chat session — kick it off so the @-picker has something to show.
+  if (store.availableAgentDetails.length === 0) {
+    void store.loadAgents()
+  }
+})
 </script>
 
 <template>
@@ -40,7 +147,9 @@ async function submit(): Promise<void> {
         data-testid="message-input"
         placeholder="Type a message… (Enter to send, Shift+Enter or Alt+Enter for newline)"
         rows="3"
-        @input="autoResize"
+        @input="handleInput"
+        @keyup="recomputeTrigger"
+        @click="recomputeTrigger"
         @keydown="handleKeydown"
       />
 
@@ -58,7 +167,35 @@ async function submit(): Promise<void> {
       {{ store.error }}
     </p>
 
-    <p class="input-hint">Enter to send · Shift+Enter / Alt+Enter for newline</p>
+    <p class="input-hint">Enter to send · Shift+Enter / Alt+Enter for newline · "/" commands · "@" agents</p>
+
+    <!--
+      Slash and mention pickers reuse FuzzySearchModal — the same scaffolding
+      that backs the toolbar AgentPicker / ModelPicker — so there is exactly
+      one fuzzy-search overlay pattern in the app. Mutually exclusive: only
+      one of slashOpen / mentionOpen is true at a time, driven by detectTrigger.
+    -->
+    <FuzzySearchModal
+      :items="commandItems"
+      :open="slashOpen"
+      :initial-query="initialQuery"
+      :focus-on-open="false"
+      placeholder="Search commands..."
+      empty-message="No matching commands"
+      @select="applySelection"
+      @close="closePicker"
+    />
+
+    <FuzzySearchModal
+      :items="mentionItems"
+      :open="mentionOpen"
+      :initial-query="initialQuery"
+      :focus-on-open="false"
+      placeholder="Search agents and swarms..."
+      empty-message="No matching agents or swarms"
+      @select="applySelection"
+      @close="closePicker"
+    />
   </div>
 </template>
 

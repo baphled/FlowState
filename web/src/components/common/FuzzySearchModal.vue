@@ -10,10 +10,27 @@ const props = withDefaults(
     open: boolean
     placeholder?: string
     emptyMessage?: string
+    /**
+     * Seed text for the search input when the modal opens. Useful for
+     * inline triggers (e.g. "/cle" in the chat input) where the user
+     * has already started typing the filter before the picker
+     * appeared.
+     */
+    initialQuery?: string
+    /**
+     * When true (default), the modal grabs keyboard focus on its
+     * search input the moment it opens. Inline trigger pickers
+     * (slash / mention from the chat composer) set this false so the
+     * textarea retains focus and the user can keep typing the filter
+     * fragment in place.
+     */
+    focusOnOpen?: boolean
   }>(),
   {
     placeholder: 'Search...',
     emptyMessage: 'No results',
+    initialQuery: '',
+    focusOnOpen: true,
   },
 )
 
@@ -34,16 +51,25 @@ const {
 } = useFuzzyFilter(itemsRef)
 
 const groupedItems = computed(() => {
+  // Walks the filtered list and rolls runs of items that share the
+  // same `group` field into a single bucket. The previous version
+  // bootstrapped `currentGroup = undefined`, which collided with
+  // ungrouped items (whose group is also undefined) and produced
+  // `result[-1]` access on the first iteration. Tracking
+  // started-yet explicitly keeps both group=string and group=undefined
+  // surfaces correct.
   const result: { group?: string; items: FuzzySearchItem[] }[] = []
   let currentGroup: string | undefined
+  let started = false
 
   for (const item of filteredItems.value) {
-    if (item.group !== currentGroup) {
+    if (!started || item.group !== currentGroup) {
       currentGroup = item.group
+      started = true
       result.push({ group: currentGroup, items: [item] })
-    } else {
-      result[result.length - 1].items.push(item)
+      continue
     }
+    result[result.length - 1].items.push(item)
   }
 
   return result
@@ -96,12 +122,34 @@ watch(
   () => props.open,
   async (isOpen) => {
     if (isOpen) {
-      setQuery('')
+      // Seed the filter with the trigger fragment so inline pickers
+      // (slash / mention) reflect what the user has already typed.
+      // Falls back to empty string for the standalone toolbar pickers.
+      setQuery(props.initialQuery)
       await nextTick()
-      inputEl.value?.focus()
+      const el = inputEl.value
+      if (el) {
+        el.value = props.initialQuery
+        if (props.focusOnOpen) {
+          el.focus()
+        }
+      }
     }
   },
   { immediate: true },
+)
+
+// Keep the input element's displayed value in sync with the seeded
+// query when initialQuery changes mid-open (e.g. user types another
+// character into the textarea before the modal observed the change).
+watch(
+  () => props.initialQuery,
+  (q) => {
+    if (!props.open) return
+    setQuery(q)
+    const el = inputEl.value
+    if (el) el.value = q
+  },
 )
 
 onMounted(() => {
