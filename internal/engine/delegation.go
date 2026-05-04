@@ -14,6 +14,8 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
@@ -170,6 +172,15 @@ type DelegateTool struct {
 	// re-install of the same swarm id (e.g. after a chat-session
 	// reset) still suppresses the duplicate.
 	prefiredSwarmIDs map[string]bool
+
+	// eventBus is the engine's shared `*eventbus.EventBus`, installed via
+	// WithEventBus during App-level wiring. When non-nil, the executeSync
+	// and executeAsync paths publish `delegation.{started,completed,failed}`
+	// events at the six lifecycle sites identified by the bus-bridge plan
+	// (May 2026). When nil, the publish calls short-circuit so callers that
+	// have not opted into the bus (legacy unit tests, embedded callers
+	// without a full Engine) keep the historical behaviour.
+	eventBus *eventbus.EventBus
 }
 
 // delegationTarget carries the resolved agent, engine, and message for delegation.
@@ -236,6 +247,95 @@ func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegati
 		),
 		spawnLimits: delegation.DefaultSpawnLimits(),
 	}
+}
+
+// WithEventBus installs the shared `*eventbus.EventBus` the engine uses for
+// delegation lifecycle publication. Production wiring (App.configureDelegateTool)
+// passes `eng.EventBus()` so the bus is the same instance the API SSE handler
+// and TUI chat intent subscribe to.
+//
+// Expected:
+//   - bus may be nil to disable bus publication (the historical no-op
+//     behaviour for callers that pre-date the bus-bridge plan).
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously installed bus.
+func (d *DelegateTool) WithEventBus(bus *eventbus.EventBus) *DelegateTool {
+	d.eventBus = bus
+	return d
+}
+
+// publishDelegationEvent publishes a delegation lifecycle event onto the
+// installed bus (when one is wired). The status string drives the topic
+// selection: "started" → `delegation.started`, "completed" →
+// `delegation.completed`, anything else → `delegation.failed`.
+//
+// Expected:
+//   - status is one of "started", "completed", "failed".
+//   - data carries the delegation lifecycle payload; ChildSessionID must
+//     be populated by the caller (the publish sites fire post-resolve).
+//
+// Side effects:
+//   - Publishes onto the bus when wired; otherwise a no-op.
+func (d *DelegateTool) publishDelegationEvent(status string, data events.DelegationEventData) {
+	if d.eventBus == nil {
+		return
+	}
+	data.Status = status
+	switch status {
+	case "started":
+		d.eventBus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(data))
+	case "completed":
+		d.eventBus.Publish(events.EventDelegationCompleted, events.NewDelegationCompletedEvent(data))
+	default:
+		d.eventBus.Publish(events.EventDelegationFailed, events.NewDelegationFailedEvent(data))
+	}
+}
+
+// buildDelegationEventData composes the bus payload from baseInfo + the
+// resolved parent and child session ids and the optional model/provider
+// strings the engine has on hand at the call site. Centralised so each of
+// the six publish sites builds an identical-shape payload from its own
+// locally-known fields.
+//
+// Expected:
+//   - baseInfo carries the chunk-side delegation metadata (chainID,
+//     source/target agents, description, started_at, etc).
+//   - parentSessionID is the session that issued the delegate tool call.
+//   - childSessionID is the session created or resumed for the delegate;
+//     populated post-resolve.
+//   - errMsg is non-empty only on failure paths.
+//
+// Returns:
+//   - A populated DelegationEventData ready for publishDelegationEvent.
+//
+// Side effects:
+//   - None.
+func buildDelegationEventData(
+	baseInfo provider.DelegationInfo,
+	parentSessionID, childSessionID, errMsg string,
+) events.DelegationEventData {
+	data := events.DelegationEventData{
+		ChainID:         baseInfo.ChainID,
+		ParentSessionID: parentSessionID,
+		ChildSessionID:  childSessionID,
+		SourceAgent:     baseInfo.SourceAgent,
+		TargetAgent:     baseInfo.TargetAgent,
+		ModelName:       baseInfo.ModelName,
+		ProviderName:    baseInfo.ProviderName,
+		Description:     baseInfo.Description,
+		ToolCalls:       baseInfo.ToolCalls,
+		LastTool:        baseInfo.LastTool,
+		CompletedAt:     baseInfo.CompletedAt,
+		Error:           errMsg,
+	}
+	if baseInfo.StartedAt != nil {
+		data.StartedAt = *baseInfo.StartedAt
+	}
+	return data
 }
 
 // WithStreamers registers per-agent streamers that override direct engine streaming.
@@ -1743,16 +1843,32 @@ func (d *DelegateTool) executeSync(
 		}
 	}
 
+	parentSessionID := sessionIDFromContext(ctx)
+
 	if gateErr := d.dispatchPreSwarmGatesOnce(ctx); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		// Pre-resolve failure: ChildSessionID is unknown at this seam,
+		// so the bus event carries an empty child id. Subscribers that
+		// require a child id (the SSE click-through path) treat empty
+		// as "no navigable target" and fall back to surfacing the
+		// failure on the parent timeline.
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error()))
 		return tool.Result{}, gateErr
 	}
 	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error()))
 		return tool.Result{}, gateErr
 	}
 
 	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession)
+	// Bus-side `delegation.started` fires post-resolve so the payload
+	// carries the populated ChildSessionID. The chunk-side `started`
+	// at line 1837 is preserved verbatim for transcript rendering and
+	// fires *before* this — see Plans/Delegation Bus Bridge — Engine
+	// to SSE (May 2026) §"Why publish after resolve, not at chunk
+	// emission time" for the ordering rationale.
+	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, ""))
 	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
 	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
@@ -1765,6 +1881,7 @@ func (d *DelegateTool) executeSync(
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error()))
 		return tool.Result{}, dispatchErr
 	}
 
@@ -1777,11 +1894,13 @@ func (d *DelegateTool) executeSync(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
+	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, ""))
 	d.closeSessionIfManaged(delegateSessionID)
 
 	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID); gateErr != nil {
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error()))
 		return tool.Result{}, gateErr
 	}
 
@@ -2432,16 +2551,20 @@ func (d *DelegateTool) executeAsync(
 		return tool.Result{}, errBackgroundModeDisabled
 	}
 
+	parentSessionID := sessionIDFromContext(ctx)
 	taskID := d.createChildSession(ctx, target.agentID)
 	if taskID == "" {
 		taskID = fmt.Sprintf("task-%s-%d", target.agentID, time.Now().UTC().UnixNano())
 	}
 
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
+	// Bus-side `delegation.started` fires post-resolve so the payload
+	// carries the populated ChildSessionID (== taskID for the async path).
+	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, ""))
 
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
-		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, outChan, hasOutput)
+		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, parentSessionID, outChan, hasOutput)
 		if err != nil {
 			return "", err
 		}
@@ -2460,9 +2583,13 @@ func (d *DelegateTool) executeAsync(
 // executeBackgroundTask performs the actual delegation within a background goroutine.
 //
 // Expected:
-//   - ctx is the task context with cancellation support.
+//   - ctx is the task context with cancellation support; carries the
+//     child task session id under session.IDKey{}.
 //   - target is the resolved delegation target.
 //   - baseInfo contains delegation metadata.
+//   - parentSessionID is the parent session that issued the delegate
+//     tool call; carried through from executeAsync because the async
+//     ctx no longer carries the parent id.
 //   - outChan and hasOutput for streaming events.
 //
 // Returns:
@@ -2471,14 +2598,18 @@ func (d *DelegateTool) executeAsync(
 //
 // Side effects:
 //   - Emits delegation events for completed or failed status.
+//   - Publishes `delegation.completed` / `delegation.failed` on the bus
+//     when one is wired.
 func (d *DelegateTool) executeBackgroundTask(
 	ctx context.Context,
 	target delegationTarget,
 	baseInfo provider.DelegationInfo,
+	parentSessionID string,
 	outChan chan<- provider.StreamChunk,
 	hasOutput bool,
 ) (string, error) {
-	closeStore := d.attachSessionStore(target.engine, sessionIDFromContext(ctx))
+	taskID := sessionIDFromContext(ctx)
+	closeStore := d.attachSessionStore(target.engine, taskID)
 
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
@@ -2487,10 +2618,11 @@ func (d *DelegateTool) executeBackgroundTask(
 		completedAt := time.Now().UTC()
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
 		return "", fmt.Errorf("delegation failed: %w", err)
 	}
 
-	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
+	chunks = d.wrapWithAccumulator(ctx, chunks, taskID, target.agentID)
 
 	result, err := d.collectDelegationResult(chunks)
 	closeStore()
@@ -2501,6 +2633,7 @@ func (d *DelegateTool) executeBackgroundTask(
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
 		return "", err
 	}
 
@@ -2512,9 +2645,9 @@ func (d *DelegateTool) executeBackgroundTask(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
+	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, taskID, ""))
 
-	taskSessionID := sessionIDFromContext(ctx)
-	d.closeSessionIfManaged(taskSessionID)
+	d.closeSessionIfManaged(taskID)
 
 	return result.response, nil
 }
