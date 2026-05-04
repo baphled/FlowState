@@ -5,7 +5,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
 
@@ -64,32 +64,35 @@ var _ = Describe("swarm activity pane Ctrl+T binding (P11)", func() {
 		})
 	})
 
-	Describe("StreamChunk events continue to be recorded across Ctrl+T presses", func() {
+	Describe("Bus delegation events continue to be recorded across Ctrl+T presses", func() {
 		It("stores events regardless of the active filter profile", func() {
-			// Send a delegation chunk; it must be recorded whatever profile is active.
-			intent.Update(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-initial",
-					TargetAgent: "background-agent",
-					Status:      "started",
-				},
+			// Plans/Delegation Bus Bridge — Engine to SSE (May 2026):
+			// delegation events flow via the bus. Drive them through
+			// HandleEventBusNotificationForTest so the test mirrors
+			// the production projection path.
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationStarted: events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-initial",
+					ParentSessionID: "test-session",
+					TargetAgent:     "background-agent",
+				}),
 			})
-			events := intent.SwarmStoreForTest().All()
-			Expect(events).To(HaveLen(1),
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1),
 				"delegation must be stored before any filter cycling")
 
 			// Cycle to profileToolsOnly (hides delegation).
 			intent.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
-			intent.Update(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-hidden",
-					TargetAgent: "other-agent",
-					Status:      "started",
-				},
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationStarted: events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-hidden",
+					ParentSessionID: "test-session",
+					TargetAgent:     "other-agent",
+				}),
 			})
 
-			events = intent.SwarmStoreForTest().All()
-			Expect(events).To(HaveLen(2),
+			swarmEvents = intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(2),
 				"events must be recorded even when the active profile hides them — the filter is a view, not a gate")
 		})
 	})

@@ -1,10 +1,13 @@
 package chat_test
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
@@ -26,21 +29,10 @@ var _ = Describe("SwarmEvent creation invariants (P4)", func() {
 		wantType streaming.SwarmEventType
 	}
 
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): the
+	// delegation branch is no longer chunk-driven; the bus path is
+	// pinned in its own Describe below using HandleEventBusNotificationForTest.
 	cases := []chunkCase{
-		{
-			name: "delegation",
-			chunk: chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-1",
-					SourceAgent: "orchestrator",
-					TargetAgent: "engineer",
-					Status:      "started",
-					Description: "do the thing",
-				},
-			},
-			fallback: "orchestrator",
-			wantType: streaming.EventDelegation,
-		},
 		{
 			name: "tool_call",
 			chunk: chat.StreamChunkMsg{
@@ -101,4 +93,57 @@ var _ = Describe("SwarmEvent creation invariants (P4)", func() {
 			})
 		})
 	}
+
+	Describe("SwarmEvent from delegation bus event", func() {
+		var (
+			intent *chat.Intent
+			_      = eventbus.NewEventBus // import-anchor to satisfy goimports if no other use
+		)
+
+		BeforeEach(func() {
+			chat.SetRunningInTestsForTest(true)
+			intent = chat.NewIntent(chat.IntentConfig{
+				AgentID:      "test-agent",
+				SessionID:    "test-session",
+				ProviderName: "openai",
+				ModelName:    "gpt-4o",
+				TokenBudget:  4096,
+			})
+		})
+
+		AfterEach(func() {
+			chat.SetRunningInTestsForTest(false)
+		})
+
+		It("stamps SchemaVersion = CurrentSchemaVersion on bus-driven delegation events", func() {
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationStarted: events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-bus-inv",
+					ParentSessionID: "test-session",
+					TargetAgent:     "engineer",
+					Description:     "do the thing",
+				}, time.Now().UTC()),
+			})
+
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			Expect(swarmEvents[0].Type).To(Equal(streaming.EventDelegation))
+			Expect(swarmEvents[0].SchemaVersion).To(Equal(streaming.CurrentSchemaVersion))
+		})
+
+		It("stamps Timestamp in UTC on bus-driven delegation events", func() {
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationCompleted: events.NewDelegationCompletedEvent(events.DelegationEventData{
+					ChainID:         "chain-bus-utc",
+					ParentSessionID: "test-session",
+					TargetAgent:     "engineer",
+				}, time.Now().UTC()),
+			})
+
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			_, offset := swarmEvents[0].Timestamp.Zone()
+			Expect(offset).To(Equal(0))
+		})
+	})
 })
