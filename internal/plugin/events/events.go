@@ -616,6 +616,150 @@ func NewBackgroundTaskCancelledEvent(data BackgroundTaskEventData, ts ...time.Ti
 	}
 }
 
+// DelegationEventData holds data for delegation lifecycle events emitted by
+// the engine's DelegateTool at the seam where the child session is known.
+//
+// This payload is in-process: the bus delivers it to subscribers (the API SSE
+// handler and the chat-intent subscriber) which project it to the on-the-wire
+// streaming.SwarmEvent shape consumed by surfaces. The struct mirrors
+// BackgroundTaskEventData (its closest structural analog — both are lifecycle
+// events with started/completed/failed triplets) and uses Error string rather
+// than error so default JSON marshalling suffices without a bespoke
+// MarshalJSON method.
+//
+// Fields populated only on terminal events (completed/failed) are explicitly
+// noted; subscribers must guard reads on Status.
+type DelegationEventData struct {
+	// ChainID is the canonical FlowState-assigned delegation identifier;
+	// matches DelegationInfo.ChainID and survives provider failover.
+	ChainID string
+	// ParentSessionID is the session that issued the delegate tool call.
+	ParentSessionID string
+	// ChildSessionID is the session created or resumed for the delegate;
+	// always populated because the publisher fires post-resolve.
+	ChildSessionID string
+	// SourceAgent is the agent issuing the delegation.
+	SourceAgent string
+	// TargetAgent is the agent being delegated to.
+	TargetAgent string
+	// Status is one of "started", "completed", or "failed".
+	Status string
+	// ModelName carries the resolved model name; populated on
+	// completed/failed when known, empty on started.
+	ModelName string
+	// ProviderName carries the resolved provider name; populated on
+	// completed/failed when known, empty on started.
+	ProviderName string
+	// Description mirrors DelegationInfo.Description for surface rendering.
+	Description string
+	// ToolCalls is the count of tool invocations the child session made;
+	// populated on completed/failed.
+	ToolCalls int
+	// LastTool is the most recently invoked tool name on the child;
+	// populated on completed/failed.
+	LastTool string
+	// StartedAt is the wall-clock start time, set on started and copied
+	// through to completed/failed.
+	StartedAt time.Time
+	// CompletedAt is the wall-clock terminal time, set on completed/failed.
+	CompletedAt *time.Time
+	// Error carries the failure message; non-empty only on failed events.
+	Error string
+}
+
+// DelegationStartedEvent represents a delegation start event, published by the
+// engine after the child session has been resolved and before the stream
+// begins.
+type DelegationStartedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationStartedEvent creates a new delegation started event.
+//
+// Expected:
+//   - data carries the delegation metadata. ChildSessionID must be populated
+//     because the publisher fires post-resolve.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationStartedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationStartedEvent(data DelegationEventData, ts ...time.Time) *DelegationStartedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationStartedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationStarted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationCompletedEvent represents a delegation completion event, published
+// after the stream drains cleanly and the post-member gate (where present)
+// passes.
+type DelegationCompletedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationCompletedEvent creates a new delegation completed event.
+//
+// Expected:
+//   - data carries the delegation metadata. ModelName, ProviderName,
+//     ToolCalls, LastTool and CompletedAt are populated when known.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationCompletedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationCompletedEvent(data DelegationEventData, ts ...time.Time) *DelegationCompletedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationCompletedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationCompleted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// DelegationFailedEvent represents a delegation failure event, published on
+// any error path — pre-swarm gate failure, pre-member gate failure, runner
+// error, post-member gate failure.
+type DelegationFailedEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationFailedEvent creates a new delegation failed event.
+//
+// Expected:
+//   - data carries the delegation metadata. Error is populated with the
+//     failing path's error message.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationFailedEvent(data DelegationEventData, ts ...time.Time) *DelegationFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
 // ProviderResponseEventData holds data for provider response events emitted
 // when a streaming provider call completes successfully.
 //
@@ -1224,6 +1368,9 @@ var (
 	_ Event = (*BackgroundTaskCompletedEvent)(nil)
 	_ Event = (*BackgroundTaskFailedEvent)(nil)
 	_ Event = (*BackgroundTaskCancelledEvent)(nil)
+	_ Event = (*DelegationStartedEvent)(nil)
+	_ Event = (*DelegationCompletedEvent)(nil)
+	_ Event = (*DelegationFailedEvent)(nil)
 	_ Event = (*SessionResumedEvent)(nil)
 	_ Event = (*ToolExecuteErrorEvent)(nil)
 	_ Event = (*ToolExecuteResultEvent)(nil)
