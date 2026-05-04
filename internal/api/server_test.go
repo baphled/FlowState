@@ -1546,6 +1546,129 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 	It("includes the assistant reply when a broker is configured", func() {
 		assertAssistantInResponse(true)
 	})
+
+	It("streams all chunks to the SSE subscriber and persists the assistant reply before returning", func() {
+		// Full round-trip: POST /messages → broker publishes → SSE client
+		// receives chunks → GET /messages confirms persistence.
+		//
+		// This exercises the three behaviours added by the May 2026 fixes:
+		//   1. The handler streams every chunk to the live SSE subscriber.
+		//   2. AccumulateStream persists the assistant reply before returning.
+		//   3. GET /messages reflects the completed reply immediately after
+		//      the POST response is received — no polling required.
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{
+			{Content: "Hello"},
+			{Content: " there!"},
+			{Done: true},
+		}}
+		broker := api.NewSessionBroker()
+		mgr := session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv := api.NewServer(
+			streamer, registry, disc, nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(broker),
+		)
+		httpSrv := httptest.NewServer(srv.Handler())
+		defer httpSrv.Close()
+
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Step 1: subscribe to the SSE stream endpoint before POSTing so
+		// broker.Publish finds a live subscriber to forward chunks to.
+		streamCtx, cancelStream := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelStream()
+
+		streamURL := httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet, streamURL, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		streamRespCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(streamReq)
+			if doErr == nil {
+				streamRespCh <- resp
+			}
+		}()
+
+		// Give the SSE subscriber time to register before we trigger the POST.
+		time.Sleep(50 * time.Millisecond)
+
+		// Step 2: POST the message. The handler runs broker.Publish synchronously
+		// inside handleSessionMessage, blocking until AccumulateStream closes the
+		// channel (i.e., until all chunks are drained and the reply is persisted).
+		postURL := httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/messages"
+		postDone := make(chan struct{})
+		go func() {
+			defer close(postDone)
+			postResp, postErr := http.Post(postURL, "application/json", strings.NewReader(`{"content":"hello"}`)) //nolint:noctx
+			if postErr == nil {
+				postResp.Body.Close()
+			}
+		}()
+
+		// Step 3: collect SSE events from the stream connection.
+		var streamResp *http.Response
+		Eventually(streamRespCh, 3*time.Second).Should(Receive(&streamResp))
+		defer streamResp.Body.Close()
+
+		sseEventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(streamResp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			sseEventsCh <- evts
+		}()
+
+		var sseEvts []string
+		Eventually(sseEventsCh, 4*time.Second).Should(Receive(&sseEvts))
+
+		// Step 4: assert SSE content chunks and [DONE] arrived.
+		Expect(sseEvts).To(ContainElement(ContainSubstring("Hello")),
+			"first content chunk must appear in the SSE stream")
+		Expect(sseEvts).To(ContainElement(ContainSubstring("there!")),
+			"second content chunk must appear in the SSE stream")
+		Expect(sseEvts).To(ContainElement("[DONE]"),
+			"stream must terminate with [DONE]")
+
+		// Wait for the POST goroutine to finish so the reply is persisted.
+		Eventually(postDone, 3*time.Second).Should(BeClosed())
+
+		// Step 5: GET /messages and assert the assistant reply is persisted.
+		getResp, err := http.Get(httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/messages") //nolint:noctx
+		Expect(err).NotTo(HaveOccurred())
+		defer getResp.Body.Close()
+		Expect(getResp.StatusCode).To(Equal(http.StatusOK))
+
+		var messages []session.Message
+		Expect(json.NewDecoder(getResp.Body).Decode(&messages)).To(Succeed())
+
+		var assistantContent string
+		for _, m := range messages {
+			if m.Role == "assistant" {
+				assistantContent = m.Content
+				break
+			}
+		}
+		Expect(assistantContent).To(Equal("Hello there!"),
+			"assistant reply must be persisted in session.Messages before GET /messages is served")
+	})
 })
 
 var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
