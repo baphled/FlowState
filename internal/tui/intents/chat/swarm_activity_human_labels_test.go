@@ -5,7 +5,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
@@ -52,12 +52,17 @@ var _ = Describe("Intent.View swarm activity row labels", func() {
 	pushEvent := func(t streaming.SwarmEventType) {
 		switch t {
 		case streaming.EventDelegation:
-			intent.Update(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-lbl",
-					TargetAgent: "qa-agent",
-					Status:      "started",
-				},
+			// Delegation events flow via the bus path post-bus-bridge
+			// (May 2026). Drive HandleEventBusNotificationForTest so
+			// the test runs the same projection the production path
+			// runs at runtime.
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationStarted: events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-lbl",
+					ParentSessionID: "test-session",
+					TargetAgent:     "qa-agent",
+					Status:          "started",
+				}),
 			})
 		case streaming.EventToolCall:
 			intent.Update(chat.StreamChunkMsg{

@@ -5,6 +5,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
@@ -58,23 +59,31 @@ var _ = Describe("swarm activity pane wiring", func() {
 		})
 	})
 
-	Describe("StreamChunk events feed the swarm activity store", func() {
-		It("appends a delegation event when DelegationInfo is present", func() {
+	Describe("Delegation lifecycle events feed the swarm activity store via the bus", func() {
+		It("appends a delegation event when delegation.started fires on the engine bus", func() {
 			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 
-			intent.Update(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-99",
-					TargetAgent: "qa-agent",
-					Status:      "started",
-				},
+			// Plans/Delegation Bus Bridge — Engine to SSE (May 2026):
+			// delegation events no longer flow through the chunk
+			// pipeline; the chat intent subscribes on the bus and
+			// projects DelegationEventData to a SwarmEvent.
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				DelegationStarted: events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-99",
+					ParentSessionID: "test-session",
+					ChildSessionID:  "child-session-99",
+					TargetAgent:     "qa-agent",
+					Status:          "started",
+				}),
 			})
 
-			events := intent.SwarmStoreForTest().All()
-			Expect(events).To(HaveLen(1))
-			Expect(events[0].Type).To(Equal(streaming.EventDelegation))
-			Expect(events[0].AgentID).To(Equal("qa-agent"))
-			Expect(events[0].Status).To(Equal("started"))
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			Expect(swarmEvents[0].Type).To(Equal(streaming.EventDelegation))
+			Expect(swarmEvents[0].AgentID).To(Equal("qa-agent"))
+			Expect(swarmEvents[0].Status).To(Equal("started"))
+			Expect(swarmEvents[0].Metadata["child_session_id"]).To(Equal("child-session-99"),
+				"child_session_id is the load-bearing field for click-through navigation")
 
 			view := intent.View()
 			// The activity row renders the human label "Delegation"
@@ -82,6 +91,22 @@ var _ = Describe("swarm activity pane wiring", func() {
 			// swarm_activity_human_labels_test.go contract.
 			Expect(view).To(ContainSubstring("Delegation"))
 			Expect(view).To(ContainSubstring("qa-agent"))
+		})
+
+		It("ignores delegation chunks (chunk-side path is now consumer-agnostic noise)", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.Update(chat.StreamChunkMsg{
+				DelegationInfo: &provider.DelegationInfo{
+					ChainID:     "chain-chunk",
+					TargetAgent: "qa-agent",
+					Status:      "started",
+				},
+			})
+
+			Expect(intent.SwarmStoreForTest().All()).To(BeEmpty(),
+				"chunk-side DelegationInfo no longer populates the activity store; "+
+					"the engine publishes on the bus and the bus subscriber owns the projection")
 		})
 
 		It("appends a tool_call event when ToolCallName is present", func() {
@@ -184,18 +209,21 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(ev.AgentID).To(Equal("agent-1"))
 		})
 
-		It("falls back to the chat agent ID when DelegationInfo target is empty", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+		It("returns false for a chunk carrying only DelegationInfo (delegation events flow via the bus now)", func() {
+			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
 				DelegationInfo: &provider.DelegationInfo{
 					ChainID: "chain-x",
 					Status:  "started",
 				},
 			}, "agent-1")
-			Expect(ok).To(BeTrue())
-			Expect(ev.AgentID).To(Equal("agent-1"))
+			Expect(ok).To(BeFalse(),
+				"Plans/Delegation Bus Bridge — Engine to SSE (May 2026) lifted "+
+					"delegation event production into the engine; the chunk-side "+
+					"DelegationInfo branch in swarmEventFromChunk is intentionally "+
+					"absent, so a chunk with only DelegationInfo no longer maps")
 		})
 
-		It("maps a delegation chunk first when both DelegationInfo and ToolCallName are present", func() {
+		It("falls through to ToolCallName mapping when both DelegationInfo and ToolCallName are present", func() {
 			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
 				DelegationInfo: &provider.DelegationInfo{
 					ChainID:     "chain-precedence",
@@ -207,9 +235,10 @@ var _ = Describe("swarm activity pane wiring", func() {
 			}, "agent-1")
 
 			Expect(ok).To(BeTrue())
-			Expect(ev.Type).To(Equal(streaming.EventDelegation),
-				"DelegationInfo must win precedence over ToolCallName")
-			Expect(ev.AgentID).To(Equal("target"))
+			Expect(ev.Type).To(Equal(streaming.EventToolCall),
+				"with the chunk-side DelegationInfo branch removed, the ToolCallName "+
+					"branch is the next match — the bus path owns delegation projection")
+			Expect(ev.AgentID).To(Equal("agent-1"))
 		})
 
 		It("maps plan_artifact event type to EventPlan", func() {
@@ -254,18 +283,12 @@ var _ = Describe("swarm activity pane wiring", func() {
 	})
 
 	Describe("P2 T3: SwarmEvent.ID is populated for every event kind", func() {
-		It("uses the DelegationInfo.ChainID for delegation events", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-id-42",
-					TargetAgent: "engineer",
-					Status:      "started",
-				},
-			}, "chat-agent")
-			Expect(ok).To(BeTrue())
-			Expect(ev.ID).To(Equal("chain-id-42"),
-				"delegation ID must equal the ChainID so downstream correlation works")
-		})
+		// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): the
+		// chunk-side delegation branch is removed; the bus path owns
+		// the projection and uses ChainID as the SwarmEvent.ID via
+		// appendDelegationSwarmEvent. The id-from-ChainID contract is
+		// preserved end-to-end through the new bus path; pinned in
+		// the bus-driven specs above.
 
 		It("uses the chunk's ToolCallID for tool_call events when provided", func() {
 			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{

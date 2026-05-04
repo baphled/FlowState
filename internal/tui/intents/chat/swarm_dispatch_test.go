@@ -5,7 +5,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/tui/intents/chat"
 )
@@ -97,15 +96,20 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 		Expect(cmd).To(BeNil())
 	})
 
-	It("batches the SwarmEventAppendedMsg into the cmd chain returned by handleStreamChunkMsg", func() {
+	It("batches the SwarmEventAppendedMsg into the cmd chain returned by handleStreamChunkMsg for tool_call chunks", func() {
+		// Plans/Delegation Bus Bridge — Engine to SSE (May 2026):
+		// delegation events no longer flow through handleStreamChunkMsg
+		// (they fire via the bus). The batching contract still
+		// applies to the remaining chunk-driven event types
+		// (tool_call, tool_result, plan, review); ToolCall is the
+		// canonical example that exercises the same code path the
+		// removed delegation case used to.
 		intent := newIntent()
 
 		cmd := intent.Update(chat.StreamChunkMsg{
-			DelegationInfo: &provider.DelegationInfo{
-				ChainID:     "chain-batch",
-				TargetAgent: "qa-agent",
-				Status:      "started",
-			},
+			ToolCallID:   "toolu_batch",
+			ToolCallName: "bash",
+			ToolStatus:   "started",
 		})
 
 		Expect(cmd).NotTo(BeNil(),
@@ -113,8 +117,8 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 		Expect(cmdEventuallyProducesAppendedMsg(cmd)).To(BeTrue(),
 			"expected the returned cmd to produce a SwarmEventAppendedMsg via tea.Batch")
 
-		events := intent.SwarmStoreForTest().All()
-		Expect(events).To(HaveLen(1))
-		Expect(events[0].Type).To(Equal(streaming.EventDelegation))
+		swarmEvents := intent.SwarmStoreForTest().All()
+		Expect(swarmEvents).To(HaveLen(1))
+		Expect(swarmEvents[0].Type).To(Equal(streaming.EventToolCall))
 	})
 })

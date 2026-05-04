@@ -120,10 +120,13 @@ type BackgroundTaskCompletedMsg struct {
 // carries the event payload safely into Update() for processing on the main
 // goroutine.
 type EventBusNotificationMsg struct {
-	ProviderError     *events.ProviderErrorEvent
-	RateLimited       *events.ProviderEvent
-	ToolError         *events.ToolExecuteErrorEvent
-	CategoryModelSwap *engine.CategoryModelSwap
+	ProviderError        *events.ProviderErrorEvent
+	RateLimited          *events.ProviderEvent
+	ToolError            *events.ToolExecuteErrorEvent
+	CategoryModelSwap    *engine.CategoryModelSwap
+	DelegationStarted    *events.DelegationStartedEvent
+	DelegationCompleted  *events.DelegationCompletedEvent
+	DelegationFailed     *events.DelegationFailedEvent
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
@@ -941,6 +944,44 @@ func (i *Intent) subscribeToFailoverEvents() {
 		default:
 		}
 	})
+
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"TUI
+	// consumer migration". The chat intent ends as a bus subscriber;
+	// the chunk-driven `DelegationInfo` branch in swarmEventFromChunk
+	// is deleted in the same commit. Events are filtered by
+	// ParentSessionID so siblings' events do not bleed across activity
+	// panes — the engine fires on the lead's bus and every subscriber
+	// observes every event, so this is the canonical filter site.
+	bus.Subscribe(events.EventDelegationStarted, func(msg any) {
+		evt, ok := msg.(*events.DelegationStartedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationStarted: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventDelegationCompleted, func(msg any) {
+		evt, ok := msg.(*events.DelegationCompletedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationCompleted: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventDelegationFailed, func(msg any) {
+		evt, ok := msg.(*events.DelegationFailedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationFailed: evt}:
+		default:
+		}
+	})
 }
 
 // waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
@@ -989,9 +1030,69 @@ func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd
 		i.notifications.AddCategoryModelSwapNotification(
 			swap.Category, swap.Original, swap.Chosen, swap.Reason,
 		)
+	case msg.DelegationStarted != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationStarted.Data, "started", msg.DelegationStarted.Timestamp())
+	case msg.DelegationCompleted != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationCompleted.Data, "completed", msg.DelegationCompleted.Timestamp())
+	case msg.DelegationFailed != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationFailed.Data, "failed", msg.DelegationFailed.Timestamp())
 	}
 	i.refreshViewport()
 	return i.waitForEventBusNotification()
+}
+
+// appendDelegationSwarmEvent projects an `events.DelegationEventData` payload
+// onto the activity-pane SwarmEvent shape and writes it to the per-intent
+// store. Mirrors the projection the chunk-driven `delegationSwarmEvent`
+// helper used to perform — the migration is which subscriber populates the
+// store, not the SwarmEvent shape downstream surfaces consume.
+//
+// Expected:
+//   - data carries the bus payload from the engine.
+//   - status is one of "started", "completed", "failed".
+//   - ts is the bus event's timestamp; preserved on the SwarmEvent so the
+//     activity row's wall-clock matches the engine-side firing order.
+//
+// Side effects:
+//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
+func (i *Intent) appendDelegationSwarmEvent(data events.DelegationEventData, status string, ts time.Time) {
+	if i.swarmStore == nil {
+		return
+	}
+	agentID := data.TargetAgent
+	if agentID == "" {
+		agentID = i.agentID
+	}
+	metadata := map[string]interface{}{
+		"source_agent":      data.SourceAgent,
+		"description":       data.Description,
+		"child_session_id":  data.ChildSessionID,
+		"parent_session_id": data.ParentSessionID,
+	}
+	if data.ModelName != "" {
+		metadata["model_name"] = data.ModelName
+	}
+	if data.ProviderName != "" {
+		metadata["provider_name"] = data.ProviderName
+	}
+	if data.ToolCalls > 0 {
+		metadata["tool_calls"] = data.ToolCalls
+	}
+	if data.LastTool != "" {
+		metadata["last_tool"] = data.LastTool
+	}
+	if data.Error != "" {
+		metadata["error"] = data.Error
+	}
+	i.swarmStore.Append(streaming.SwarmEvent{
+		ID:            ensureEventID(data.ChainID),
+		Type:          streaming.EventDelegation,
+		Status:        status,
+		Timestamp:     ts.UTC(),
+		AgentID:       agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	})
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -2502,9 +2603,16 @@ func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) tea.Cmd {
 // Side effects:
 //   - None.
 func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
-	if msg.DelegationInfo != nil {
-		return delegationSwarmEvent(msg, fallbackAgent), true
-	}
+	// Delegation events no longer flow through the chunk-driven path.
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) lifted
+	// delegation event production into the engine; the chat intent
+	// subscribes to `delegation.{started,completed,failed}` on the
+	// engine's `*eventbus.EventBus` (see subscribeToFailoverEvents)
+	// and projects bus events to the SwarmEvent shape via
+	// appendDelegationSwarmEvent. The chunk-side DelegationInfo is
+	// preserved for transcript rendering and accumulator correlation
+	// — see engine/delegation.go::emitDelegationEvent — but no longer
+	// populates the activity pane.
 	if msg.ToolCallName != "" || msg.ToolStatus != "" {
 		return toolCallSwarmEvent(msg, fallbackAgent), true
 	}
@@ -2518,39 +2626,6 @@ func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.Sw
 		return planOrReviewSwarmEvent(streaming.EventReview, msg, fallbackAgent), true
 	}
 	return streaming.SwarmEvent{}, false
-}
-
-// delegationSwarmEvent constructs an EventDelegation SwarmEvent from a chunk
-// carrying DelegationInfo.
-//
-// Expected:
-//   - msg.DelegationInfo is non-nil.
-//   - fallbackAgent is the chat intent's agent ID used when DelegationInfo
-//     carries no TargetAgent.
-//
-// Returns:
-//   - A populated SwarmEvent with EventDelegation type and the DelegationInfo
-//     ChainID as its ID (generated UUID when ChainID is empty).
-//
-// Side effects:
-//   - None.
-func delegationSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
-	agentID := msg.DelegationInfo.TargetAgent
-	if agentID == "" {
-		agentID = fallbackAgent
-	}
-	return streaming.SwarmEvent{
-		ID:            ensureEventID(msg.DelegationInfo.ChainID),
-		Type:          streaming.EventDelegation,
-		Status:        msg.DelegationInfo.Status,
-		Timestamp:     time.Now().UTC(),
-		AgentID:       agentID,
-		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata: map[string]interface{}{
-			"source_agent": msg.DelegationInfo.SourceAgent,
-			"description":  msg.DelegationInfo.Description,
-		},
-	}
 }
 
 // toolCallSwarmEvent constructs an EventToolCall SwarmEvent from a chunk

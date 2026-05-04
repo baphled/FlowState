@@ -1010,6 +1010,9 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 		"background.task.started":   func(msg any) { eventCh <- msg },
 		"background.task.completed": func(msg any) { eventCh <- msg },
 		"background.task.failed":    func(msg any) { eventCh <- msg },
+		"delegation.started":        func(msg any) { eventCh <- msg },
+		"delegation.completed":      func(msg any) { eventCh <- msg },
+		"delegation.failed":         func(msg any) { eventCh <- msg },
 	}
 
 	for topic, handler := range handlers {
@@ -1122,8 +1125,64 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 				"error": e.Data.Error,
 			},
 		}
+	case *events.DelegationStartedEvent:
+		return projectDelegationEvent(e.Data, "started", e.Timestamp())
+	case *events.DelegationCompletedEvent:
+		return projectDelegationEvent(e.Data, "completed", e.Timestamp())
+	case *events.DelegationFailedEvent:
+		return projectDelegationEvent(e.Data, "failed", e.Timestamp())
 	}
 	return streaming.SwarmEvent{}
+}
+
+// projectDelegationEvent converts a DelegationEventData payload into the
+// on-the-wire `streaming.SwarmEvent` shape the Vue surface consumes. The
+// `metadata.child_session_id` field is the load-bearing slot the Vue
+// `DelegationPanel.vue` clicks through on; the other metadata keys are
+// forward-compatible decoration the frontend ignores today.
+//
+// Expected:
+//   - data carries the in-process bus payload populated by the engine.
+//   - status is one of "started", "completed", "failed".
+//   - ts is the bus event's timestamp; preserved on the wire so client-side
+//     ordering matches engine-side firing order.
+//
+// Returns:
+//   - A populated SwarmEvent ready for SSE emission.
+//
+// Side effects:
+//   - None.
+func projectDelegationEvent(data events.DelegationEventData, status string, ts time.Time) streaming.SwarmEvent {
+	metadata := map[string]interface{}{
+		"child_session_id":  data.ChildSessionID,
+		"parent_session_id": data.ParentSessionID,
+		"source_agent":      data.SourceAgent,
+		"description":       data.Description,
+	}
+	if data.ModelName != "" {
+		metadata["model_name"] = data.ModelName
+	}
+	if data.ProviderName != "" {
+		metadata["provider_name"] = data.ProviderName
+	}
+	if data.ToolCalls > 0 {
+		metadata["tool_calls"] = data.ToolCalls
+	}
+	if data.LastTool != "" {
+		metadata["last_tool"] = data.LastTool
+	}
+	if data.Error != "" {
+		metadata["error"] = data.Error
+	}
+	return streaming.SwarmEvent{
+		ID:            data.ChainID,
+		Type:          streaming.EventDelegation,
+		Status:        status,
+		AgentID:       data.TargetAgent,
+		Timestamp:     ts,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	}
 }
 
 // writeJSON encodes data as JSON and writes it to the response with HTTP 200.

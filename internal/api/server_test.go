@@ -19,9 +19,12 @@ import (
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 
@@ -1548,5 +1551,172 @@ var _ = Describe("GET /api/v1/models", func() {
 		srv.Handler().ServeHTTP(recorder, req)
 		Expect(recorder.Code).To(Equal(http.StatusNotImplemented),
 			"absent a ModelLister the endpoint must signal not-implemented rather than 200 with an empty list")
+	})
+})
+
+// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"Test
+// Strategy" §"API SSE seam". The /api/swarm/events endpoint
+// subscribes to the three new delegation topics and projects each
+// event variant into a `streaming.SwarmEvent` with
+// `metadata.child_session_id` populated. These specs pin both the
+// subscription wiring and the projection shape.
+var _ = Describe("GET /api/swarm/events delegation projection", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	publishAndDrain := func(publish func()) []map[string]any {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Give the handler time to subscribe before we publish.
+		time.Sleep(80 * time.Millisecond)
+		publish()
+
+		var resp *http.Response
+		Eventually(respCh, 2*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var collected []map[string]any
+			for {
+				line, readErr := reader.ReadString('\n')
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "data: ") {
+					payload := strings.TrimPrefix(trimmed, "data: ")
+					var parsed map[string]any
+					if json.Unmarshal([]byte(payload), &parsed) == nil {
+						collected = append(collected, parsed)
+					}
+				}
+				if readErr != nil {
+					break
+				}
+				if len(collected) >= 2 {
+					// connected + delegation event
+					break
+				}
+			}
+			eventsCh <- collected
+		}()
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+		return collected
+	}
+
+	It("emits a delegation event with metadata.child_session_id when delegation.started fires on the bus", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+				ChainID:         "chain-sse-1",
+				ParentSessionID: "parent-sse",
+				ChildSessionID:  "child-sse",
+				SourceAgent:     "orchestrator",
+				TargetAgent:     "qa-agent",
+				Description:     "test delegation",
+			}))
+		})
+
+		var delegation map[string]any
+		for _, ev := range collected {
+			if ev["type"] == string(streaming.EventDelegation) {
+				delegation = ev
+				break
+			}
+		}
+		Expect(delegation).NotTo(BeNil(),
+			"the SSE stream must emit a delegation event when the bus publishes delegation.started")
+		Expect(delegation["status"]).To(Equal("started"))
+		Expect(delegation["agent_id"]).To(Equal("qa-agent"))
+		Expect(delegation["id"]).To(Equal("chain-sse-1"))
+
+		metadata, ok := delegation["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["child_session_id"]).To(Equal("child-sse"),
+			"child_session_id is the load-bearing field the Vue DelegationPanel.vue clicks through on")
+		Expect(metadata["parent_session_id"]).To(Equal("parent-sse"))
+		Expect(metadata["source_agent"]).To(Equal("orchestrator"))
+	})
+
+	It("emits a delegation event with status=completed when delegation.completed fires", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventDelegationCompleted, events.NewDelegationCompletedEvent(events.DelegationEventData{
+				ChainID:         "chain-sse-c",
+				ParentSessionID: "parent",
+				ChildSessionID:  "child",
+				SourceAgent:     "lead",
+				TargetAgent:     "qa",
+				ModelName:       "claude-3",
+				ProviderName:    "anthropic",
+				ToolCalls:       4,
+				LastTool:        "bash",
+			}))
+		})
+
+		var delegation map[string]any
+		for _, ev := range collected {
+			if ev["type"] == string(streaming.EventDelegation) {
+				delegation = ev
+				break
+			}
+		}
+		Expect(delegation).NotTo(BeNil())
+		Expect(delegation["status"]).To(Equal("completed"))
+		metadata, ok := delegation["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["child_session_id"]).To(Equal("child"))
+		Expect(metadata["model_name"]).To(Equal("claude-3"))
+		Expect(metadata["provider_name"]).To(Equal("anthropic"))
+	})
+
+	It("emits a delegation event with status=failed and the error message when delegation.failed fires", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventDelegationFailed, events.NewDelegationFailedEvent(events.DelegationEventData{
+				ChainID:         "chain-sse-f",
+				ParentSessionID: "parent",
+				ChildSessionID:  "child",
+				SourceAgent:     "lead",
+				TargetAgent:     "qa",
+				Error:           "stream initialisation failed",
+			}))
+		})
+
+		var delegation map[string]any
+		for _, ev := range collected {
+			if ev["type"] == string(streaming.EventDelegation) {
+				delegation = ev
+				break
+			}
+		}
+		Expect(delegation).NotTo(BeNil())
+		Expect(delegation["status"]).To(Equal("failed"))
+		metadata, ok := delegation["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["error"]).To(Equal("stream initialisation failed"))
 	})
 })
