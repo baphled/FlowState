@@ -253,4 +253,87 @@ describe('MessageInput slash and mention triggers', () => {
     expect(textarea.value).toBe('/cle')
     wrapper.unmount()
   })
+
+  it('@agent selection inserts agent token, not a slash command', async () => {
+    // Regression guard for the cross-picker contamination bug: when the
+    // mention trigger is active, applySelection must only accept items
+    // whose label starts with "@". A slash-command item fired by the hidden
+    // command picker must not be inserted at the mention trigger's position.
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Open the mention picker by typing "@".
+    await typeInto(wrapper.get('[data-testid="message-input"]'), '@', 1)
+    await flushPromises()
+
+    // Click the planner agent item from the mention picker.
+    await wrapper.get('[data-testid="fuzzy-search-item-planner"]').trigger('click')
+    await flushPromises()
+
+    const textarea = wrapper.get('[data-testid="message-input"]').element as HTMLTextAreaElement
+    expect(textarea.value).toContain('@planner')
+    expect(textarea.value).not.toContain('/clear')
+    wrapper.unmount()
+  })
+
+  it('cross-contamination rejected — slash item ignored when mention trigger is active', async () => {
+    // When the mention trigger is active and applySelection is called with a
+    // slash-command item (e.g. from the hidden command picker firing first),
+    // the insertion must be silently rejected — inputText stays unchanged.
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Open the mention picker by typing "@".
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await typeInto(inputWrapper, '@', 1)
+    await flushPromises()
+
+    // Simulate the hidden slash picker firing @select with /clear before the
+    // mention picker fires. Access the component's vm to call applySelection
+    // directly with the contaminating item.
+    const vm = wrapper.getComponent(MessageInput).vm as unknown as {
+      applySelection: (item: { id: string; label: string; meta: string }) => Promise<void>
+    }
+    await vm.applySelection({ id: 'clear', label: '/clear', meta: 'Clear chat' })
+    await flushPromises()
+
+    const textarea = inputWrapper.element as HTMLTextAreaElement
+    // The slash item must have been rejected — only the "@" trigger character remains.
+    expect(textarea.value).not.toContain('/clear')
+    wrapper.unmount()
+  })
+
+  it('cross-contamination rejected — mention item ignored when slash trigger is active', async () => {
+    // When the slash trigger is active and applySelection is called with a
+    // mention item (e.g. "@planner"), the insertion must be silently rejected.
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Open the slash picker by typing "/".
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await typeInto(inputWrapper, '/', 1)
+    await flushPromises()
+
+    const vm = wrapper.getComponent(MessageInput).vm as unknown as {
+      applySelection: (item: { id: string; label: string; meta: string }) => Promise<void>
+    }
+    await vm.applySelection({ id: 'planner', label: '@planner', meta: 'Planner Agent' })
+    await flushPromises()
+
+    const textarea = inputWrapper.element as HTMLTextAreaElement
+    // The mention item must have been rejected — only the "/" trigger remains.
+    expect(textarea.value).not.toContain('@planner')
+    wrapper.unmount()
+  })
 })
