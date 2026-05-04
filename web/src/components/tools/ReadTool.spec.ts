@@ -40,4 +40,46 @@ describe('ReadTool', () => {
     expect(wrapper.get('[data-component="read-tool"]').text()).toContain('hello world')
     expect(wrapper.find('[data-testid="copy-btn"]').exists()).toBe(true)
   })
+
+  it('shows line range label when limit and offset are present in toolInput', () => {
+    const wrapper = mount(ReadTool, {
+      props: {
+        toolName: 'read',
+        heading: 'src/stores/chatStore.ts',
+        body: 'some content',
+        status: 'completed',
+        toolInput: JSON.stringify({ file_path: 'src/stores/chatStore.ts', limit: 100, offset: 99 }),
+      },
+      global: {
+        stubs: {
+          CopyButton,
+          ToolBubble,
+        },
+      },
+    })
+
+    const lineRange = wrapper.find('[data-testid="line-range"]')
+    expect(lineRange.exists()).toBe(true)
+    expect(lineRange.text()).toBe('[lines 100–199]')
+  })
+
+  it('does not show line range label when neither limit nor offset is set', () => {
+    const wrapper = mount(ReadTool, {
+      props: {
+        toolName: 'read',
+        heading: '/tmp/full.txt',
+        body: 'full file content',
+        status: 'completed',
+        toolInput: JSON.stringify({ file_path: '/tmp/full.txt' }),
+      },
+      global: {
+        stubs: {
+          CopyButton,
+          ToolBubble,
+        },
+      },
+    })
+
+    expect(wrapper.find('[data-testid="line-range"]').exists()).toBe(false)
+  })
 })

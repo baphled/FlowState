@@ -50,7 +50,7 @@ const statusIcon = computed(() => {
       </span>
     </div>
     
-    <div class="tool-bubble__body" :style="{ maxHeight: isOpen ? '1000px' : '0', opacity: isOpen ? '1' : '0' }">
+    <div class="tool-bubble__body" :style="{ maxHeight: isOpen ? '60vh' : '0', opacity: isOpen ? '1' : '0' }">
       <div class="tool-bubble__content">
         <slot />
       </div>
@@ -151,7 +151,7 @@ const statusIcon = computed(() => {
 }
 
 .tool-bubble__body {
-  overflow: hidden;
+  overflow-y: auto;
   transition: max-height 0.2s ease, opacity 0.15s ease;
 }
 
