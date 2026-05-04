@@ -234,6 +234,122 @@ var _ = Describe("Manifest JSON deserialisation", func() {
 			Expect(found).To(BeFalse(), "DelegationTable should be removed from Delegation struct")
 		})
 	})
+
+	Describe("Model preferences", func() {
+		Context("when JSON declares preferred_models and model_policy", func() {
+			It("deserialises both fields", func() {
+				raw := `{
+					"id": "junior",
+					"name": "Junior Engineer",
+					"preferred_models": [
+						{"provider": "anthropic", "model": "claude-haiku-4"},
+						{"provider": "anthropic", "model": "claude-sonnet-4"}
+					],
+					"model_policy": "strict"
+				}`
+
+				var m agent.Manifest
+				Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+
+				Expect(m.ModelPolicy).To(Equal("strict"))
+				Expect(m.PreferredModels).To(HaveLen(2))
+				Expect(m.PreferredModels[0].Provider).To(Equal("anthropic"))
+				Expect(m.PreferredModels[0].Model).To(Equal("claude-haiku-4"))
+				Expect(m.PreferredModels[1].Model).To(Equal("claude-sonnet-4"))
+			})
+		})
+
+		Describe("IsModelAllowed", func() {
+			It("allows any model when policy is empty", func() {
+				m := agent.Manifest{ID: "x", Name: "X"}
+
+				Expect(m.IsModelAllowed("anthropic", "anything")).To(BeTrue())
+			})
+
+			It("allows any model under permissive policy regardless of preferences", func() {
+				m := agent.Manifest{
+					ID:          "senior",
+					Name:        "Senior",
+					ModelPolicy: "permissive",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-opus-4"},
+					},
+				}
+
+				Expect(m.IsModelAllowed("anthropic", "claude-opus-4")).To(BeTrue())
+				Expect(m.IsModelAllowed("openai", "gpt-4o")).To(BeTrue())
+			})
+
+			It("rejects non-listed models under strict policy", func() {
+				m := agent.Manifest{
+					ID:          "junior",
+					Name:        "Junior",
+					ModelPolicy: "strict",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-haiku-4"},
+					},
+				}
+
+				Expect(m.IsModelAllowed("anthropic", "claude-haiku-4")).To(BeTrue())
+				Expect(m.IsModelAllowed("anthropic", "claude-opus-4")).To(BeFalse())
+				Expect(m.IsModelAllowed("openai", "gpt-4o")).To(BeFalse())
+			})
+
+			It("falls back to permissive when strict is set without preferences", func() {
+				m := agent.Manifest{
+					ID:              "edge",
+					Name:            "Edge",
+					ModelPolicy:     "strict",
+					PreferredModels: nil,
+				}
+
+				Expect(m.IsModelAllowed("openai", "gpt-4o")).To(BeTrue(),
+					"strict + empty list is meaningless and must not lock the user out")
+			})
+		})
+
+		Describe("IsModelPreferred", func() {
+			It("identifies preferred models regardless of policy", func() {
+				m := agent.Manifest{
+					ID:          "senior",
+					Name:        "Senior",
+					ModelPolicy: "permissive",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-opus-4"},
+					},
+				}
+
+				Expect(m.IsModelPreferred("anthropic", "claude-opus-4")).To(BeTrue())
+				Expect(m.IsModelPreferred("openai", "gpt-4o")).To(BeFalse())
+			})
+		})
+
+		Describe("Validate", func() {
+			It("rejects unknown model_policy values", func() {
+				m := &agent.Manifest{
+					ID:          "bad",
+					Name:        "Bad",
+					ModelPolicy: "tyrannical",
+				}
+
+				err := m.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("model_policy"))
+			})
+
+			It("accepts the empty model_policy", func() {
+				m := &agent.Manifest{ID: "ok", Name: "OK", ModelPolicy: ""}
+				Expect(m.Validate()).To(Succeed())
+			})
+
+			It("accepts strict and permissive", func() {
+				strict := &agent.Manifest{ID: "ok", Name: "OK", ModelPolicy: "strict"}
+				permissive := &agent.Manifest{ID: "ok", Name: "OK", ModelPolicy: "permissive"}
+				Expect(strict.Validate()).To(Succeed())
+				Expect(permissive.Validate()).To(Succeed())
+			})
+		})
+	})
 })
 
 var _ = Describe("ValidationError", func() {
