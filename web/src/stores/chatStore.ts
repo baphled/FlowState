@@ -16,6 +16,8 @@ import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
+const activeModelStorageKey = 'chat.selectedModel'
+const activeProviderStorageKey = 'chat.selectedProvider'
 
 // 60s fail-safe — if no SSE activity arrives during a send, the store
 // assumes the stream is dead and clears isLoading. Without this the
@@ -78,6 +80,47 @@ function persistAgentId(agentId: string | null): void {
   window.localStorage.removeItem(activeAgentStorageKey)
 }
 
+function getPersistedModelId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return window.localStorage.getItem(activeModelStorageKey)
+}
+
+function persistModelId(modelId: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (modelId) {
+    window.localStorage.setItem(activeModelStorageKey, modelId)
+    return
+  }
+
+  window.localStorage.removeItem(activeModelStorageKey)
+}
+
+function getPersistedProviderId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return window.localStorage.getItem(activeProviderStorageKey)
+}
+
+function persistProviderId(providerId: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (providerId) {
+    window.localStorage.setItem(activeProviderStorageKey, providerId)
+    return
+  }
+
+  window.localStorage.removeItem(activeProviderStorageKey)
+}
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -185,6 +228,7 @@ export const useChatStore = defineStore('chat', {
     async restoreStateFromBackend(): Promise<void> {
       await this.loadAgents()
       await this.loadSessions()
+      await this.loadModels()
 
       const persistedAgentId = getPersistedAgentId()
       const persistedSessionId = getPersistedSessionId()
@@ -203,8 +247,19 @@ export const useChatStore = defineStore('chat', {
         if (!sessionForAgent) {
           this.currentSessionId = null
           this.messages = []
-          this.currentModelId = ''
-          this.currentProviderId = ''
+          // Restore model/provider from localStorage when there is no session
+          // to derive them from. Validate the stored model still exists in the
+          // available models list; fall back to empty string if it has been
+          // removed so the picker shows its "Select model" placeholder.
+          const persistedModelId = getPersistedModelId()
+          const persistedProviderId = getPersistedProviderId()
+          const modelIsAvailable =
+            !!persistedModelId &&
+            this.availableModels.some(
+              (m) => m.id === persistedModelId && m.providerId === persistedProviderId,
+            )
+          this.currentModelId = modelIsAvailable ? persistedModelId! : ''
+          this.currentProviderId = modelIsAvailable ? (persistedProviderId ?? '') : ''
           persistSessionId(null)
           // Clear the todoStore's active session — there's nothing to show.
           useTodoStore().setCurrentSession(null)
@@ -212,8 +267,26 @@ export const useChatStore = defineStore('chat', {
         }
 
         this.currentSessionId = sessionForAgent.id
-        this.currentModelId = sessionForAgent.currentModelId ?? ''
-        this.currentProviderId = sessionForAgent.currentProviderId ?? ''
+        // Prefer the session's own model; fall back to a validated localStorage
+        // value when the session has never had a model set.
+        {
+          const sessionModelId = sessionForAgent.currentModelId ?? ''
+          const sessionProviderId = sessionForAgent.currentProviderId ?? ''
+          if (sessionModelId) {
+            this.currentModelId = sessionModelId
+            this.currentProviderId = sessionProviderId
+          } else {
+            const persistedModelId = getPersistedModelId()
+            const persistedProviderId = getPersistedProviderId()
+            const modelIsAvailable =
+              !!persistedModelId &&
+              this.availableModels.some(
+                (m) => m.id === persistedModelId && m.providerId === persistedProviderId,
+              )
+            this.currentModelId = modelIsAvailable ? persistedModelId! : ''
+            this.currentProviderId = modelIsAvailable ? (persistedProviderId ?? '') : ''
+          }
+        }
         persistSessionId(sessionForAgent.id)
         const loadedForAgent = await fetchSessionMessages(sessionForAgent.id)
         this.messages = loadedForAgent.map((m) =>
@@ -227,8 +300,26 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.currentSessionId = session.id
-      this.currentModelId = session.currentModelId ?? ''
-      this.currentProviderId = session.currentProviderId ?? ''
+      // Prefer the session's own model; fall back to a validated localStorage
+      // value when the session has never had a model set.
+      {
+        const sessionModelId = session.currentModelId ?? ''
+        const sessionProviderId = session.currentProviderId ?? ''
+        if (sessionModelId) {
+          this.currentModelId = sessionModelId
+          this.currentProviderId = sessionProviderId
+        } else {
+          const persistedModelId = getPersistedModelId()
+          const persistedProviderId = getPersistedProviderId()
+          const modelIsAvailable =
+            !!persistedModelId &&
+            this.availableModels.some(
+              (m) => m.id === persistedModelId && m.providerId === persistedProviderId,
+            )
+          this.currentModelId = modelIsAvailable ? persistedModelId! : ''
+          this.currentProviderId = modelIsAvailable ? (persistedProviderId ?? '') : ''
+        }
+      }
       persistSessionId(session.id)
       const loadedForSession = await fetchSessionMessages(session.id)
       this.messages = loadedForSession.map((m) =>
@@ -327,6 +418,8 @@ export const useChatStore = defineStore('chat', {
       const previousProviderId = this.currentProviderId
       this.currentModelId = modelId
       this.currentProviderId = providerId
+      persistModelId(modelId || null)
+      persistProviderId(providerId || null)
 
       if (!this.currentSessionId) {
         return
