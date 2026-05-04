@@ -382,6 +382,128 @@ var _ = Describe("Events", func() {
 		})
 	})
 
+	Describe("DelegationStartedEvent", func() {
+		It("implements Event interface and sets fields", func() {
+			data := events.DelegationEventData{
+				ChainID:         "chain-123",
+				ParentSessionID: "parent-sess",
+				ChildSessionID:  "child-sess",
+				SourceAgent:     "orchestrator",
+				TargetAgent:     "qa-agent",
+				Status:          "started",
+				Description:     "run all the tests",
+				StartedAt:       time.Now().UTC(),
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewDelegationStartedEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("delegation.started"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data).To(Equal(data))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			data := events.DelegationEventData{
+				ChainID:         "chain-456",
+				ParentSessionID: "p",
+				ChildSessionID:  "c",
+				SourceAgent:     "lead",
+				TargetAgent:     "worker",
+				Status:          "started",
+			}
+			evt := events.NewDelegationStartedEvent(data)
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+
+		It("serialises to JSON with snake_case keys for ChildSessionID", func() {
+			data := events.DelegationEventData{
+				ChainID:         "chain-json",
+				ParentSessionID: "parent-1",
+				ChildSessionID:  "child-1",
+				SourceAgent:     "lead",
+				TargetAgent:     "qa",
+				Status:          "started",
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			// Default Go JSON marshalling uses field names verbatim;
+			// downstream projection at the API SSE seam converts to
+			// snake_case for the on-the-wire SwarmEvent metadata.
+			Expect(parsed).To(HaveKey("ChildSessionID"))
+			Expect(parsed).To(HaveKey("ChainID"))
+			Expect(parsed["ChildSessionID"]).To(Equal("child-1"))
+		})
+	})
+
+	Describe("DelegationCompletedEvent", func() {
+		It("implements Event interface and sets fields including model and provider", func() {
+			completedAt := time.Now().UTC()
+			data := events.DelegationEventData{
+				ChainID:         "chain-c",
+				ParentSessionID: "p",
+				ChildSessionID:  "c",
+				SourceAgent:     "lead",
+				TargetAgent:     "qa",
+				Status:          "completed",
+				ModelName:       "claude-3",
+				ProviderName:    "anthropic",
+				ToolCalls:       3,
+				LastTool:        "bash",
+				StartedAt:       time.Now().UTC().Add(-time.Minute),
+				CompletedAt:     &completedAt,
+			}
+			evt := events.NewDelegationCompletedEvent(data)
+			Expect(evt.EventType()).To(Equal("delegation.completed"))
+			Expect(evt.Data.ModelName).To(Equal("claude-3"))
+			Expect(evt.Data.ProviderName).To(Equal("anthropic"))
+			Expect(evt.Data.ToolCalls).To(Equal(3))
+			Expect(evt.Data.LastTool).To(Equal("bash"))
+			Expect(evt.Data.CompletedAt).NotTo(BeNil())
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			evt := events.NewDelegationCompletedEvent(events.DelegationEventData{
+				ChainID: "x",
+				Status:  "completed",
+			})
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+	})
+
+	Describe("DelegationFailedEvent", func() {
+		It("implements Event interface and carries the error message as a string", func() {
+			completedAt := time.Now().UTC()
+			data := events.DelegationEventData{
+				ChainID:         "chain-f",
+				ParentSessionID: "p",
+				ChildSessionID:  "c",
+				SourceAgent:     "lead",
+				TargetAgent:     "qa",
+				Status:          "failed",
+				Error:           "gate rejected output",
+				CompletedAt:     &completedAt,
+			}
+			evt := events.NewDelegationFailedEvent(data)
+			Expect(evt.EventType()).To(Equal("delegation.failed"))
+			Expect(evt.Data.Error).To(Equal("gate rejected output"))
+		})
+
+		It("serialises to JSON with the error message as a plain string", func() {
+			data := events.DelegationEventData{
+				ChainID: "chain-fj",
+				Status:  "failed",
+				Error:   "stream error",
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed["Error"]).To(Equal("stream error"))
+		})
+	})
+
 	Describe("ProviderRequestRetryEvent", func() {
 		It("implements Event interface and sets fields", func() {
 			data := events.ProviderRequestRetryEventData{

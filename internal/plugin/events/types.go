@@ -34,6 +34,9 @@
 //   - background.task.started
 //   - background.task.completed
 //   - background.task.failed
+//   - delegation.started
+//   - delegation.completed
+//   - delegation.failed
 //   - recall.embedding.stored
 //   - recall.searched
 //   - recall.chain.searched
@@ -68,6 +71,9 @@ const (
 	EventBackgroundTaskCompleted = "background.task.completed"
 	EventBackgroundTaskFailed    = "background.task.failed"
 	EventBackgroundTaskCancelled = "background.task.cancelled"
+	EventDelegationStarted       = "delegation.started"
+	EventDelegationCompleted     = "delegation.completed"
+	EventDelegationFailed        = "delegation.failed"
 	EventRecallEmbeddingStored   = "recall.embedding.stored"
 	EventRecallSearched          = "recall.searched"
 	EventRecallChainSearched     = "recall.chain.searched"
