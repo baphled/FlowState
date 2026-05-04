@@ -89,12 +89,28 @@ export function useSessionStream(): SessionStream {
   // it cannot accidentally become reactive.
   let stallWatchdog: ReturnType<typeof setTimeout> | null = null
 
+  // disconnected gates the message/error listeners after disconnect() has run.
+  // EventSource.close() does not synchronously drain pending message-queued
+  // events: a chunk that was already in the read buffer when close() fired
+  // can be dispatched to the listener after disconnect returned. Without this
+  // gate the consumer would observe stray late events that re-set
+  // isStreaming=true with no producer left to clear it (compounding bug C-9
+  // from the PR-2 plan). The flag is reset to false on every connect() so a
+  // fresh connection starts with an open gate.
+  let disconnected = false
+
   function disconnect(): void {
     if (activeEventSource !== null) {
       activeEventSource.close()
       activeEventSource = null
     }
     clearWatchdog()
+    // Mark as disconnected AFTER the close call — the listener guard reads
+    // this flag synchronously when an event arrives, and we want anything
+    // scheduled by close() to flow through (there should be nothing, but
+    // setting the flag last preserves close-emits-event semantics for any
+    // EventSource implementation that does fire on close).
+    disconnected = true
   }
 
   function clearWatchdog(): void {
@@ -121,13 +137,25 @@ export function useSessionStream(): SessionStream {
     // prior watchdog (if any) is also cleared — the new connection arms its
     // own fresh timer below.
     disconnect()
+    // Reset the post-disconnect gate — this is a fresh connection, so any
+    // events on the new EventSource must flow through to the callbacks.
+    disconnected = false
 
     activeEventSource = subscribeSessionStream(sessionId)
     activeEventSource.addEventListener('message', (event) => {
+      // C-9 guard: drop any event scheduled before disconnect that arrives
+      // after we already closed. The consumer's onMessage may carry side
+      // effects (re-set isStreaming, reconcile) that would corrupt state if
+      // applied to a torn-down stream.
+      if (disconnected) return
       const payload = (event as MessageEvent).data as string
       callbacks.onMessage(payload)
     })
     activeEventSource.addEventListener('error', () => {
+      // Same C-9 guard for late error events — observed in some EventSource
+      // implementations when the underlying socket reports a delayed
+      // failure post-close.
+      if (disconnected) return
       callbacks.onError()
     })
     // Arm the stall watchdog as part of connect so the consumer cannot forget
