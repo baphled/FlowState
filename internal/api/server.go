@@ -707,15 +707,21 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	for _, msg := range sess.Messages {
-		if verbosity == "full" || msg.Role == "assistant" {
-			writeSSEContent(w, flusher, msg.Content)
-		}
-	}
 	if s.sessionBroker == nil {
+		// No live session — replay history as a one-shot stream and close.
+		// Historical content is loaded by the client via GET /messages when
+		// a live broker is present, so replaying here would duplicate content
+		// inside the streaming placeholder opened before the POST.
+		for _, msg := range sess.Messages {
+			if verbosity == "full" || msg.Role == "assistant" {
+				writeSSEContent(w, flusher, msg.Content)
+			}
+		}
 		writeSSEDone(w, flusher)
 		return
 	}
+	// Live session — stream new events only.
+	// Historical content is loaded by the client via GET /messages.
 	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
 	defer unsubscribe()
 	ctx := r.Context()

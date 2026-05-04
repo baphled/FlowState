@@ -127,6 +127,12 @@ async function submit(): Promise<void> {
 async function applySelection(item: FuzzySearchItem): Promise<void> {
   const trigger = activeTrigger.value
   if (!trigger) return
+  // Reject cross-picker contamination: a slash-command item must not be
+  // applied when the mention trigger is active, and vice versa. The hidden
+  // picker (v-show, not v-if) can fire @select with its top item before the
+  // visible picker fires, inserting the wrong token at the wrong position.
+  if (trigger.kind === 'slash' && !item.label.startsWith('/')) return
+  if (trigger.kind === 'mention' && !item.label.startsWith('@')) return
   const result = insertToken(inputText.value, trigger, item.label)
   inputText.value = result.text
   activeTrigger.value = null

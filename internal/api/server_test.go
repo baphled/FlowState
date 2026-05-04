@@ -730,6 +730,89 @@ var _ = Describe("Session stream live events", func() {
 		Expect(body).To(ContainSubstring(`"tool_calls":3`))
 		Expect(body).To(ContainSubstring(`"last_tool":"write"`))
 	})
+
+	It("does not replay history when broker is live — only broker-published events appear", func() {
+		// Regression guard for the SSE duplication bug: when handleSessionStream
+		// is connected to a live broker, it must NOT replay sess.Messages before
+		// subscribing. Historical content is loaded by the client via
+		// GET /messages; replaying it here caused the streaming placeholder to
+		// accumulate historical content inside the new response bubble.
+
+		// Restore a session with pre-populated messages directly — avoids the
+		// CreateSession→RestoreSessions conflict (RestoreSessions skips existing IDs).
+		sessID := "sse-replay-regression-test"
+		mgr.RestoreSessions([]*session.Session{
+			{
+				ID:      sessID,
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{ID: "m1", Role: "assistant", Content: "historical-msg-one"},
+					{ID: "m2", Role: "assistant", Content: "historical-msg-two"},
+				},
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// Publish a single live chunk then close the broker channel.
+		source := make(chan provider.StreamChunk, 2)
+		source <- provider.StreamChunk{Content: "live-only-chunk"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sessID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// The live-published chunk must appear.
+		Expect(evts).To(ContainElement(ContainSubstring("live-only-chunk")))
+		// Historical messages must NOT appear — they would duplicate content
+		// already rendered by the frontend via GET /messages.
+		Expect(evts).NotTo(ContainElement(ContainSubstring("historical-msg-one")))
+		Expect(evts).NotTo(ContainElement(ContainSubstring("historical-msg-two")))
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
 })
 
 func parseSSEEvents(body *bytes.Buffer) []string {
