@@ -12,6 +12,7 @@ import {
   updateSessionModel,
 } from '@/api'
 import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
+import { recordStreamEvent } from '@/lib/streamLog'
 import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -374,31 +375,27 @@ export const useChatStore = defineStore('chat', {
         this.isLoading = false
         this.isStreaming = false
 
-        // Guard: only fetch if we're still on the same session. The user may
-        // have navigated away (e.g. keyboard shortcut to a child session) while
-        // the SSE was open. Without this check, the close callback for the old
-        // session would overwrite the new session's messages.
-        if (this.currentSessionId !== sessionId) return
-
-        // If no chunks arrived (the last message is still the user turn),
-        // the stream had already completed before our subscriber registered.
-        // Pull the finished response from the backend so the user sees it.
-        const lastMsg = this.messages[this.messages.length - 1]
-        if (lastMsg?.role === 'user') {
-          void fetchSessionMessages(sessionId).then((loaded) => {
-            if (this.currentSessionId !== sessionId) return
-            this.messages = loaded.map((m) =>
-              m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
-            )
-          })
-        }
+        // Reconcile unconditionally — the pre-fix `lastMsg?.role === 'user'`
+        // gate dropped the more common case where chunks had arrived but the
+        // backend had follow-up state SSE didn't surface before close (a
+        // sealed assistant content, a tool_result, a delegation completion).
+        // reconcileFromBackend re-checks currentSessionId before and after
+        // its await so a session switch concurrent with this call is safe.
+        void this.reconcileFromBackend(sessionId)
       }
 
       // connect tears down any prior SSE, opens a new one, and arms the stall
       // watchdog. The watchdog onTrip handler is the same store action used
       // for sendMessage so user-visible recovery behaviour is identical.
-      sessionStream.connect(sessionId, {
+      // sessionId is captured in every callback closure so a mid-stream
+      // session switch never lands chunks on the wrong session.
+      // (Compounding bugs C-3, C-6 from the PR-2 plan.)
+      const capturedSessionId = sessionId
+      sessionStream.connect(capturedSessionId, {
         onMessage: (payload) => {
+          // C-3: discard chunks if the user navigated away while this
+          // stream was still alive.
+          if (this.currentSessionId !== capturedSessionId) return
           this.applyContentEvent(payload)
           if (payload === '[DONE]') {
             close()
@@ -410,7 +407,7 @@ export const useChatStore = defineStore('chat', {
         onError: () => {
           close()
         },
-        onStall: () => this.handleStreamStall(),
+        onStall: () => this.handleStreamStall(capturedSessionId),
       })
     },
 
@@ -483,10 +480,31 @@ export const useChatStore = defineStore('chat', {
 
     async loadSessions(): Promise<void> {
       this.isLoadingSessions = true
+      // Snapshot the prior streaming flag for the active session BEFORE the
+      // refetch so we can detect a was-streaming → not-streaming transition.
+      // The transition is the signal that a child agent (or the active
+      // session itself) just finished and we should reconcile so the
+      // user-visible bubble updates without a manual refresh. Compounding
+      // bug C-4 from the PR-2 plan.
+      const activeId = this.currentSessionId
+      const wasStreaming =
+        activeId !== null
+          ? this.sessions.find((s) => s.id === activeId)?.isStreaming === true
+          : false
       try {
         this.sessions = await fetchSessions()
       } finally {
         this.isLoadingSessions = false
+      }
+      if (activeId !== null && wasStreaming) {
+        const nowStreaming =
+          this.sessions.find((s) => s.id === activeId)?.isStreaming === true
+        if (!nowStreaming) {
+          // Fire-and-forget: reconcileFromBackend re-checks currentSessionId
+          // before and after its await, so a session switch concurrent with
+          // this background reconcile is safe.
+          void this.reconcileFromBackend(activeId)
+        }
       }
     },
 
@@ -549,7 +567,82 @@ export const useChatStore = defineStore('chat', {
         todoStore.hydrateFromMessages(sessionId, this.messages)
       } finally {
         this.isLoading = false
+        // Compounding bug C-7: switching to an idle session while
+        // isStreaming was true (left over from a prior session's SSE) leaves
+        // the activity indicator pulsing on a session that has nothing in
+        // flight. Clear both flags here.
+        this.isStreaming = false
       }
+    },
+
+    // reconcileFromBackend re-fetches the canonical session history and
+    // merges it into local state. It is the post-stream-end recovery
+    // primitive that replaces the pre-fix `if lastMsg?.role === 'user'`
+    // gated refetch — that gate dropped the more common case where chunks
+    // had arrived but the backend had follow-up state (a tool_result, a
+    // delegation completion, a sealed assistant) that SSE didn't surface
+    // before the close.
+    //
+    // Contract:
+    //   - Idempotent. Safe to call any number of times.
+    //   - Re-checks currentSessionId BEFORE the call (no-op for stale
+    //     session ids) and AFTER the await (discards the result if the
+    //     user navigated during the network round-trip).
+    //   - Merge semantics, not replace:
+    //       * backend canonical history is the base, with assistant rows
+    //         sealed to status='completed' (matching the seal rule used in
+    //         restoreStateFromBackend at line 290 and loadSessionMessages
+    //         at line 539).
+    //       * any local 'temp-*' optimistic user message that the backend
+    //         response does not yet contain is preserved and appended,
+    //         so a reconcile that races with a still-pending POST does not
+    //         visually swallow the user's just-sent bubble.
+    //   - Catches fetch failures silently. The watchdog/error path surfaces
+    //     user-facing messages — reconcile is best-effort recovery and must
+    //     not poison the UI on a transient network blip.
+    async reconcileFromBackend(sessionId: string): Promise<void> {
+      // Pre-await guard: caller may pass a stale sessionId (e.g. fired from
+      // a watchdog whose session the user has since navigated away from).
+      if (this.currentSessionId !== sessionId) return
+      recordStreamEvent({ kind: 'reconcile-call', sessionId })
+      let loaded
+      try {
+        loaded = await fetchSessionMessages(sessionId)
+      } catch {
+        // Silent — see contract docstring above. The watchdog/error path
+        // already informs the user something went wrong; double-surfacing
+        // would just be noise.
+        return
+      }
+      // Post-await guard: the user may have navigated away while we were
+      // waiting on the network. Landing this result on a different session
+      // would corrupt that session's view.
+      if (this.currentSessionId !== sessionId) return
+
+      // Seal backend-loaded assistant rows to 'completed' so they cannot be
+      // confused with an in-flight streaming target by a subsequent chunk.
+      // Mirrors the seal rule used at lines 290 and 539.
+      const sealedBackend: Message[] = loaded.map((m) =>
+        m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+      )
+
+      // Preserve any 'temp-*' optimistic user message the backend response
+      // does not yet have. Compounding bug C-5: the pre-fix wholesale
+      // replace dropped the in-flight bubble whenever a reconcile raced
+      // ahead of the POST settling. Match by id only — content equality is
+      // not safe (the user could send the same content twice) and the
+      // backend never reuses a 'temp-*' id.
+      const backendIds = new Set(sealedBackend.map((m) => m.id))
+      const optimisticOrphans = this.messages.filter(
+        (m) => m.id.startsWith('temp-') && !backendIds.has(m.id),
+      )
+
+      this.messages = [...sealedBackend, ...optimisticOrphans]
+      recordStreamEvent({
+        kind: 'reconcile-result',
+        sessionId,
+        messageCount: this.messages.length,
+      })
     },
 
     async loadSessionByAgentId(agentId: string): Promise<boolean> {
@@ -602,14 +695,27 @@ export const useChatStore = defineStore('chat', {
 
         // connect tears down any prior SSE, opens a new one, and arms the
         // stall watchdog so a stuck stream cannot leave isLoading locked.
-        sessionStream.connect(sessionId, {
+        // The sessionId is captured in every callback closure so a
+        // mid-stream session switch never lands chunks on the wrong session
+        // and never reconciles against the wrong session's history.
+        // (Compounding bugs C-3, C-6 from the PR-2 plan.)
+        const capturedSessionId = sessionId
+        sessionStream.connect(capturedSessionId, {
           onMessage: (payload) => {
+            // C-3: discard chunks if the user navigated away while this
+            // stream was still alive — they belong to capturedSessionId,
+            // not the now-active session.
+            if (this.currentSessionId !== capturedSessionId) return
             this.applyContentEvent(payload)
             if (payload === '[DONE]') {
               // Close immediately on stream end so the browser cannot
               // auto-reconnect and register a second broker subscriber
               // before the finally block runs.
               sessionStream.disconnect()
+              // Reconcile so any backend state SSE didn't surface (a
+              // tool_result, a delegation completion, a sealed assistant
+              // content) is visible without the user reloading.
+              void this.reconcileFromBackend(capturedSessionId)
             }
           },
           onError: () => {
@@ -617,8 +723,12 @@ export const useChatStore = defineStore('chat', {
             // close immediately to prevent auto-reconnect registering a
             // duplicate broker subscriber on the next send.
             sessionStream.disconnect()
+            // Reconcile in case the backend did finish despite the SSE
+            // drop. Silent on fetch failure — see reconcileFromBackend
+            // contract.
+            void this.reconcileFromBackend(capturedSessionId)
           },
-          onStall: () => this.handleStreamStall(),
+          onStall: () => this.handleStreamStall(capturedSessionId),
         })
 
         await sendSessionMessage(sessionId, text)
@@ -646,18 +756,35 @@ export const useChatStore = defineStore('chat', {
     // window is intentionally generous — agents can sit thinking on a slow
     // tool call without producing chunks; we only want to trip on "actually
     // dead" streams, not "agent is busy".
-    armStallWatchdog(): void {
-      sessionStream.armWatchdog(() => this.handleStreamStall())
+    //
+    // sessionId tracks which session armed this watchdog so a trip can
+    // reconcile against the right session (compounding bug C-6 from the
+    // PR-2 plan: a watchdog from session A must not act on session B after
+    // a navigation). When omitted, reconcile is skipped on trip — legacy
+    // call sites still get the gate-clearing behaviour.
+    armStallWatchdog(sessionId?: string): void {
+      sessionStream.armWatchdog(() => this.handleStreamStall(sessionId))
     },
 
     // Stall trip handler. Stream stalled — unsticky the input gate so the
     // user can recover without reloading the page. The error footer surfaces
     // the cause; if no chunks arrived at all the in-flight assistant bubble
     // (if any) stays in-place but is no longer locked.
-    handleStreamStall(): void {
+    //
+    // sessionId is the session whose SSE armed the watchdog. When provided
+    // (every PR-2 caller does), reconcile so a stream that completed
+    // server-side without [DONE] (proxy hang, network glitch) is recovered:
+    // the bubble updates from the partial chunk to the canonical backend
+    // state without the user having to reload. Without the sessionId
+    // argument, the call site is legacy and reconcile is skipped — the
+    // gate-clearing behaviour remains unchanged.
+    handleStreamStall(sessionId?: string): void {
       this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
       this.isLoading = false
       this.isStreaming = false
+      if (sessionId) {
+        void this.reconcileFromBackend(sessionId)
+      }
     },
 
     applyDelegationEvent(payload: string): void {
@@ -732,8 +859,11 @@ export const useChatStore = defineStore('chat', {
     applyContentEvent(payload: string): void {
       // Any SSE event counts as "the stream is alive" — re-arm the
       // watchdog so a slow but progressing stream is never killed.
-      // The watchdog only trips on dead streams.
-      this.armStallWatchdog()
+      // The watchdog only trips on dead streams. Pass currentSessionId so a
+      // trip can reconcile against the right session (the C-3 chunk-handler
+      // guard ensures applyContentEvent only runs while currentSessionId
+      // still matches the streaming session).
+      this.armStallWatchdog(this.currentSessionId ?? undefined)
 
       if (payload === '[DONE]') {
         // Seal any in-flight assistant message so a later turn's chunks
