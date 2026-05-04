@@ -238,7 +238,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="chatStore.isLoading || chatStore.isStreaming"
+        v-if="chatStore.isLoading && !chatStore.isStreaming"
         class="loading-pulse"
         data-testid="loading-pulse"
         aria-hidden="true"
