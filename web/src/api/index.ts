@@ -9,14 +9,45 @@ import type {
   ModelsResponse,
 } from '@/types'
 import { parseError } from '@/lib/parseError'
+import { isAllowedApiHost } from '@/lib/apiHostAllowlist'
 
 const BASE = '/api'
 const API_HOST_STORAGE_KEY = 'flowstate-api-host'
 
+/**
+ * getBaseURL returns the API base URL, validated against the host
+ * allowlist. A localStorage value that fails the allowlist (e.g. injected
+ * by an XSS vector or a malicious bookmarklet) is removed and the safe
+ * BASE default is returned. See apiHostAllowlist.ts for the policy and
+ * threat model.
+ */
 function getBaseURL(): string {
-  const stored = localStorage.getItem(API_HOST_STORAGE_KEY)
-  if (stored) return stored
-  return BASE
+  let stored: string | null = null
+  try {
+    stored = localStorage.getItem(API_HOST_STORAGE_KEY)
+  } catch {
+    // localStorage unavailable (private mode, SSR) — fall through to default.
+    return BASE
+  }
+  if (!stored) return BASE
+  if (!isAllowedApiHost(stored)) {
+    // Hostile or malformed override — clear it and warn (validateApiHost
+    // would also warn, but we want to log AND remove). The next page load
+    // sees the BASE default; in-flight requests in the same tick still
+    // see BASE because we returned it below.
+    try {
+      localStorage.removeItem(API_HOST_STORAGE_KEY)
+    } catch {
+      // best effort — fall through
+    }
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[flowstate] cleared API host override that failed allowlist policy:',
+      stored,
+    )
+    return BASE
+  }
+  return stored
 }
 
 export function joinBaseURL(path: string): string {
