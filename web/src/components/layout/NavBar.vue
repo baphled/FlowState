@@ -1,11 +1,27 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import SessionSwitcher from '@/components/session-switcher/SessionSwitcher.vue'
+import { useChatStore } from '@/stores/chatStore'
 
 defineOptions({ name: 'NavBar' })
 
 const router = useRouter()
 const route = useRoute()
+const chatStore = useChatStore()
+
+// Hide the entire NavBar in child sessions. The user's mental model: a
+// child session is a focused, read-only view of delegated work — the
+// chat/swarm tabs and the SessionSwitcher are global-navigation chrome
+// that we explicitly don't want to surface there. Hierarchy navigation
+// (ArrowUp/Left/Right) is wired at the document level inside ChatView and
+// is unaffected by hiding this bar.
+const isChildSession = computed(() => {
+  const id = chatStore.currentSessionId
+  if (!id) return false
+  const current = chatStore.sessions.find((session) => session.id === id)
+  return Boolean(current?.parentId)
+})
 
 const navItems = [
   { label: 'Chat', path: '/chat', testId: 'nav-chat' },
@@ -15,7 +31,7 @@ const navItems = [
 </script>
 
 <template>
-  <nav class="nav-bar" data-testid="nav-bar">
+  <nav v-if="!isChildSession" class="nav-bar" data-testid="nav-bar">
     <span class="nav-logo">FlowState</span>
     <div class="nav-switchers">
       <SessionSwitcher />

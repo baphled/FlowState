@@ -29,9 +29,12 @@ const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 const currentSessionSummary = computed(() =>
   chatStore.sessions.find((session) => session.id === chatStore.currentSessionId) ?? null,
 )
-// Child sessions hide the agent/model selector entirely. Their agent and
-// model are inherited from the parent context and changing them mid-thread
-// is not a supported flow. The bar is only meaningful at the parent level.
+// Child sessions render the toolbar in read-only mode: the agent and model
+// pickers display the values that were used by the delegated agent, but
+// clicking them does nothing (changing them mid-thread is not a supported
+// flow). The toolbar position is unchanged so the layout doesn't shift on
+// navigation. NavBar additionally hides itself in child sessions to remove
+// the chat/swarm/session-selection chrome.
 const isChildSession = computed(() => Boolean(currentSessionSummary.value?.parentId))
 
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
@@ -203,13 +206,23 @@ onBeforeUnmount(() => {
 
       <DelegationStrip />
 
-      <div
-        v-if="!isChildSession"
-        class="input-selector-bar"
-        data-testid="input-selector-bar"
-      >
-        <AgentPicker />
-        <ModelPicker />
+      <!--
+        The toolbar is rendered in the same DOM position for both parent and
+        child sessions so the bar layout doesn't shift on navigation. In a
+        child session the agent + model pickers go into a read-only display
+        mode (label only, no click-to-open) and a provider label is added so
+        the user can see *which* model + provider the delegated agent used.
+      -->
+      <div class="input-selector-bar" data-testid="input-selector-bar">
+        <AgentPicker :readonly="isChildSession" />
+        <span
+          v-if="chatStore.currentProviderId"
+          class="provider-label"
+          data-testid="toolbar-provider-label"
+        >
+          {{ chatStore.currentProviderId }}
+        </span>
+        <ModelPicker :readonly="isChildSession" />
       </div>
 
       <div
@@ -306,6 +319,14 @@ onBeforeUnmount(() => {
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.provider-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  user-select: none;
+  white-space: nowrap;
 }
 
 .loading-pulse {

@@ -1,11 +1,13 @@
 import { test, expect } from '@playwright/test'
 
-// End-to-end coverage for the five session-hierarchy navigation behaviours:
+// End-to-end coverage for the session-hierarchy navigation behaviours:
 //   1. DelegationStrip click → load child session
 //   2. Ctrl+X then Down chord → load most-recent child of current session
 //   3. ArrowLeft / ArrowRight on a child → previous / next sibling
-//   4. Toolbar (input-selector-bar) hidden when active session has parentId
-//   5. ArrowUp on a child → load parent
+//   4. Toolbar stays visible in child sessions but pickers go read-only and the
+//      provider label exposes the model/provider used by the delegated agent.
+//      The NavBar (chat/swarm tabs + SessionSwitcher) is hidden.
+//   5. ArrowUp on a child → load parent (NavBar + interactive toolbar return)
 //
 // Run this spec with `playwright test --workers=1` so the keyboard chord
 // (Ctrl+X then ArrowDown) isn't interleaved with another worker's keystrokes.
@@ -49,6 +51,8 @@ test.describe('Session hierarchy navigation', () => {
       createdAt: '2026-05-01T09:20:00Z',
       updatedAt: '2026-05-01T09:40:00Z',
       messageCount: 2,
+      currentModelId: 'llama3.2',
+      currentProviderId: 'ollama',
     },
     {
       id: 'child-c',
@@ -133,18 +137,40 @@ test.describe('Session hierarchy navigation', () => {
     await page.goto('/chat')
   })
 
-  test('hides the input-selector-bar in a child session and shows it in the parent', async ({ page }) => {
-    // Parent session: bar visible.
-    await expect(page.getByTestId('input-selector-bar')).toBeVisible()
+  test('keeps the input-selector-bar visible in a child session in read-only mode and surfaces the model/provider used', async ({ page }) => {
+    // Parent session: bar visible, pickers interactive.
+    const bar = page.getByTestId('input-selector-bar')
+    await expect(bar).toBeVisible()
+    await expect(bar.getByTestId('agent-picker')).not.toHaveClass(/is-readonly/)
+    await expect(bar.getByTestId('model-picker')).not.toHaveClass(/is-readonly/)
+    // The NavBar (chat/swarm tabs + SessionSwitcher) is visible at the parent.
+    await expect(page.getByTestId('nav-bar')).toBeVisible()
 
-    // Switch to a child via Left/Right (after Ctrl+X Down moves us to a child)
-    // — but for this test we use the delegation card to land on a child.
+    // Land on child-b via the delegation card.
     const strip = page.getByTestId('delegation-strip')
     await strip.locator('[data-testid^="delegation-entry-"]').first().click()
 
-    // Bar should disappear in the child session.
-    await expect(page.getByTestId('input-selector-bar')).toHaveCount(0)
+    // Toolbar stays visible in the child session, but pickers go read-only.
+    await expect(bar).toBeVisible()
+    await expect(bar.getByTestId('agent-picker')).toHaveClass(/is-readonly/)
+    await expect(bar.getByTestId('model-picker')).toHaveClass(/is-readonly/)
+
+    // The model + provider used by the delegated agent are surfaced as labels.
+    await expect(bar.getByTestId('toolbar-provider-label')).toContainText('ollama')
+    await expect(bar.getByTestId('model-picker')).toContainText('llama3.2')
+
+    // The NavBar is hidden — no chat/swarm/session-selection chrome in the
+    // child session view.
+    await expect(page.getByTestId('nav-bar')).toHaveCount(0)
   })
+
+  // Each seeded session has a distinct user-message body ("Parent thread",
+  // "Child A thread", "Child B thread", "Child C thread"). We verify
+  // navigation by reading the message-pane contents. The previous
+  // SessionSwitcher-based check no longer applies because the SessionSwitcher
+  // is part of the NavBar, which is hidden in child sessions.
+  const messagePane = (page: import('@playwright/test').Page) =>
+    page.getByTestId('chat-message-pane')
 
   test('clicking a delegation card loads the child session directly', async ({ page }) => {
     const strip = page.getByTestId('delegation-strip')
@@ -152,8 +178,7 @@ test.describe('Session hierarchy navigation', () => {
 
     await strip.locator('[data-testid^="delegation-entry-"]').first().click()
 
-    // The session switcher reflects the navigation target.
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child B/)
+    await expect(messagePane(page)).toContainText('Child B thread')
   })
 
   test('Ctrl+X then ArrowDown loads the most-recent child (child-c)', async ({ page }) => {
@@ -166,7 +191,7 @@ test.describe('Session hierarchy navigation', () => {
     await page.keyboard.press('ArrowDown')
 
     // child-c has the latest createdAt of all parent-1 children.
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child C/)
+    await expect(messagePane(page)).toContainText('Child C thread')
   })
 
   test('ArrowLeft and ArrowRight navigate siblings inside a child session', async ({ page }) => {
@@ -175,19 +200,19 @@ test.describe('Session hierarchy navigation', () => {
       .locator('[data-testid^="delegation-entry-"]')
       .first()
       .click()
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child B/)
+    await expect(messagePane(page)).toContainText('Child B thread')
 
     // Move focus off any input.
     await page.getByTestId('chat-message-pane').click()
 
     await page.keyboard.press('ArrowLeft')
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child A/)
+    await expect(messagePane(page)).toContainText('Child A thread')
 
     await page.keyboard.press('ArrowRight')
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child B/)
+    await expect(messagePane(page)).toContainText('Child B thread')
 
     await page.keyboard.press('ArrowRight')
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child C/)
+    await expect(messagePane(page)).toContainText('Child C thread')
   })
 
   test('ArrowUp on a child session navigates to the parent', async ({ page }) => {
@@ -196,13 +221,17 @@ test.describe('Session hierarchy navigation', () => {
       .locator('[data-testid^="delegation-entry-"]')
       .first()
       .click()
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Child B/)
+    await expect(messagePane(page)).toContainText('Child B thread')
 
     await page.getByTestId('chat-message-pane').click()
     await page.keyboard.press('ArrowUp')
 
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Parent Session/)
-    // And the toolbar reappears once we're back on the parent.
+    await expect(messagePane(page)).toContainText('Parent thread')
+    // The toolbar stays visible (it never disappeared) and the NavBar
+    // reappears once we're back on the parent.
     await expect(page.getByTestId('input-selector-bar')).toBeVisible()
+    await expect(page.getByTestId('input-selector-bar').getByTestId('agent-picker'))
+      .not.toHaveClass(/is-readonly/)
+    await expect(page.getByTestId('nav-bar')).toBeVisible()
   })
 })
