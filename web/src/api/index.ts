@@ -199,6 +199,12 @@ export async function fetchModels(): Promise<Model[]> {
   return models
 }
 
+export async function truncateSessionMessages(sessionId: string, fromMessageId: string): Promise<void> {
+  const url = joinBaseURL(`/v1/sessions/${sessionId}/messages/from/${fromMessageId}`)
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
+}
+
 export async function listModels(): Promise<ModelsResponse> {
   const res = await fetch(joinBaseURL('/v1/models'))
   if (!res.ok) {

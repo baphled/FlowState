@@ -1044,6 +1044,75 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("TruncateMessages", func() {
+		var (
+			ctx  context.Context
+			sess *session.Session
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			var err error
+			sess, err = mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Seed three messages via SendMessage so each has a real UUID.
+			for _, text := range []string{"first", "second", "third"} {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err = mgr.SendMessage(ctx, sess.ID, text)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			// Drain accumulator goroutines for all sessions before reading.
+			Eventually(func() int {
+				got, _ := mgr.GetSession(sess.ID)
+				return len(got.Messages)
+			}).Should(Equal(3))
+		})
+
+		Context("happy path", func() {
+			It("removes the target message and all subsequent messages", func() {
+				got, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				secondID := got.Messages[1].ID
+
+				err = mgr.TruncateMessages(sess.ID, secondID)
+				Expect(err).NotTo(HaveOccurred())
+
+				got, err = mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got.Messages).To(HaveLen(1))
+				Expect(got.Messages[0].Content).To(Equal("first"))
+			})
+
+			It("removes all messages when truncating at the first message", func() {
+				got, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				firstID := got.Messages[0].ID
+
+				err = mgr.TruncateMessages(sess.ID, firstID)
+				Expect(err).NotTo(HaveOccurred())
+
+				got, err = mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got.Messages).To(BeEmpty())
+			})
+		})
+
+		Context("when the message ID does not exist", func() {
+			It("returns ErrMessageNotFound", func() {
+				err := mgr.TruncateMessages(sess.ID, "nonexistent-msg-id")
+				Expect(err).To(MatchError(session.ErrMessageNotFound))
+			})
+		})
+
+		Context("when the session does not exist", func() {
+			It("returns ErrSessionNotFound", func() {
+				err := mgr.TruncateMessages("nonexistent-session", "any-msg-id")
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+			})
+		})
+	})
+
 	Describe("UpdateSessionAgent", func() {
 		var (
 			ctx  context.Context

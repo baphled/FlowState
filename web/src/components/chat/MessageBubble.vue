@@ -106,6 +106,17 @@ const showCopyButton = computed(
     isPlain.value &&
     (props.message.role === 'assistant' || props.message.role === 'user'),
 )
+
+// Revert affordance: only user messages can be reverted. Clicking revert
+// truncates the session at this message and pre-fills the composer so the
+// user can edit and re-send without re-typing.
+const showRevertButton = computed(
+  () => isPlain.value && props.message.role === 'user',
+)
+
+async function handleRevert(): Promise<void> {
+  await chatStore.revertToMessage(props.message.id)
+}
 </script>
 
 <template>
@@ -185,6 +196,14 @@ const showCopyButton = computed(
       />
       <p v-else class="message-content">{{ props.message.content }}</p>
       <div v-if="showCopyButton" class="message-actions">
+        <button
+          v-if="showRevertButton"
+          type="button"
+          class="revert-button"
+          data-testid="message-revert-btn"
+          title="Revert to this message"
+          @click="handleRevert"
+        >&#x21A9; Revert</button>
         <CopyButton data-testid="message-copy-btn" :text="props.message.content" />
       </div>
     </template>
@@ -250,7 +269,25 @@ const showCopyButton = computed(
 .message-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.4rem;
   margin-top: 0.35rem;
+}
+
+.revert-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 0.15rem 0.3rem;
+  border-radius: var(--radius);
+  font-family: inherit;
+  transition: color 0.15s, background 0.15s;
+}
+
+.revert-button:hover {
+  color: var(--accent);
+  background: var(--bg-elevated);
 }
 
 /* Tool blocks: collapsed by default, expand on click. opencode TUI vibe. */

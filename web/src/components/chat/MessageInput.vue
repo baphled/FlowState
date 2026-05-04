@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
 import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
@@ -150,6 +150,23 @@ onMounted(() => {
     void store.loadAgents()
   }
 })
+
+// Watch composerText so a revert-to-message action pre-fills the textarea.
+// We consume the value immediately and reset it to '' so subsequent renders
+// do not re-apply the same text.
+watch(
+  () => store.composerText,
+  (text) => {
+    if (text) {
+      inputText.value = text
+      store.composerText = ''
+      void nextTick(() => {
+        autoResize()
+        textareaRef.value?.focus()
+      })
+    }
+  },
+)
 </script>
 
 <template>
