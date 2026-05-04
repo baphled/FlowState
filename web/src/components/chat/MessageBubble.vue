@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
 import { useChatStore } from '@/stores/chatStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
-import ToolBubble from '@/components/tools/ToolBubble.vue'
 import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
 import GenericTool from '@/components/tools/GenericTool.vue'
 import { getToolComponent } from '@/tools/toolRegistry'
@@ -98,23 +97,16 @@ const displayRole = computed(() =>
     :data-testid="`message-${props.message.role}`"
     :data-role="props.message.role"
   >
-    <ToolBubble
+    <component
       v-if="isToolResult"
+      :is="toolComponent"
       :tool-name="toolSpec.toolName"
-      :title="toolSpec.toolName"
-      :subtitle="toolSpec.heading"
+      :heading="toolSpec.heading"
+      :body="toolSpec.body"
       :status="toolStatus"
+      :tool-input="props.message.toolInput"
       data-testid="tool-renderer"
-    >
-      <component
-        :is="toolComponent"
-        :tool-name="toolSpec.toolName"
-        :heading="toolSpec.heading"
-        :body="toolSpec.body"
-        :status="toolStatus"
-        :tool-input="props.message.toolInput"
-      />
-    </ToolBubble>
+    />
 
     <ToolErrorCard
       v-else-if="isToolError"

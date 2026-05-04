@@ -13,19 +13,27 @@ vi.mock('@/stores/chatStore', () => ({
   useChatStore: vi.fn(),
 }))
 
-// Stub all tool components to avoid deep rendering
-const ToolBubble = {
-  template: '<div data-component="tool" :data-tool="toolName" :data-status="status"><slot /></div>',
-  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
-}
+// Stub all tool components to avoid deep rendering. The per-tool components
+// own their own ToolBubble chrome; MessageBubble no longer wraps them in an
+// outer card layer (one tool invocation = one card).
 const ToolErrorCard = {
   template: '<div data-testid="tool-error-renderer" :data-tool="toolName" />',
   props: ['toolName', 'heading', 'body'],
 }
-// Stub specific tool renderers
-const BashTool = { template: '<div data-tool="bash" />' }
-const ReadTool = { template: '<div data-tool="read" />' }
-const GenericTool = { template: '<div data-tool="generic" />' }
+// Stub specific tool renderers — each carries the data-tool attr the spec
+// asserts against, mirroring what the real component would render.
+const BashTool = {
+  template: '<div data-component="tool-renderer" data-tool="bash" />',
+  props: ['toolName', 'heading', 'body', 'status', 'toolInput'],
+}
+const ReadTool = {
+  template: '<div data-component="tool-renderer" data-tool="read" />',
+  props: ['toolName', 'heading', 'body', 'status', 'toolInput'],
+}
+const GenericTool = {
+  template: '<div data-component="tool-renderer" data-tool="generic" />',
+  props: ['toolName', 'heading', 'body', 'status', 'toolInput'],
+}
 
 function makeRouter() {
   return createRouter({
@@ -48,7 +56,6 @@ function mountWithRouter(message: Message, agentName?: string) {
     global: {
       plugins: [router],
       stubs: {
-        ToolBubble,
         ToolErrorCard,
         GenericTool,
       },
@@ -61,7 +68,6 @@ function mountWithStubs(message: Message, agentName?: string) {
     props: { message, agentName },
     global: {
       stubs: {
-        ToolBubble,
         ToolErrorCard,
         GenericTool,
       },
@@ -128,7 +134,7 @@ describe('MessageBubble', () => {
   })
 
   describe('tool roles', () => {
-    it('renders a tool_result with BashTool via ToolBubble', () => {
+    it('renders a tool_result with the registered BashTool component', () => {
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'tool_result',
@@ -138,13 +144,12 @@ describe('MessageBubble', () => {
         }),
       )
 
-      const tool = wrapper.find('[data-component="tool"]')
+      const tool = wrapper.find('[data-component="tool-renderer"]')
       expect(tool.exists()).toBe(true)
       expect(tool.attributes('data-tool')).toBe('bash')
-      expect(wrapper.find('[data-tool="bash"]').exists()).toBe(true)
     })
 
-    it('renders a tool_result with ReadTool via ToolBubble', () => {
+    it('renders a tool_result with the registered ReadTool component', () => {
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'tool_result',
@@ -154,13 +159,12 @@ describe('MessageBubble', () => {
         }),
       )
 
-      const tool = wrapper.find('[data-component="tool"]')
+      const tool = wrapper.find('[data-component="tool-renderer"]')
       expect(tool.exists()).toBe(true)
       expect(tool.attributes('data-tool')).toBe('read')
-      expect(wrapper.find('[data-tool="read"]').exists()).toBe(true)
     })
 
-    it('renders an unknown tool_result with GenericTool via ToolBubble', () => {
+    it('renders an unknown tool_result via GenericTool', () => {
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'tool_result',
@@ -169,9 +173,9 @@ describe('MessageBubble', () => {
         }),
       )
 
-      const tool = wrapper.find('[data-component="tool"]')
+      const tool = wrapper.find('[data-component="tool-renderer"]')
       expect(tool.exists()).toBe(true)
-      expect(wrapper.find('[data-tool="generic"]').exists()).toBe(true)
+      expect(tool.attributes('data-tool')).toBe('generic')
     })
 
     it('renders a tool_error with ToolErrorCard', () => {
@@ -279,7 +283,7 @@ describe('MessageBubble', () => {
         },
         global: {
           plugins: [router],
-          stubs: { ToolBubble, ToolErrorCard, GenericTool },
+          stubs: { ToolErrorCard, GenericTool },
         },
       })
 
@@ -320,7 +324,7 @@ describe('MessageBubble', () => {
         },
         global: {
           plugins: [router],
-          stubs: { ToolBubble, ToolErrorCard, GenericTool },
+          stubs: { ToolErrorCard, GenericTool },
         },
       })
 

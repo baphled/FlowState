@@ -6,6 +6,8 @@ import GenericTool from '@/components/tools/GenericTool.vue'
 import GlobTool from '@/components/tools/GlobTool.vue'
 import GrepTool from '@/components/tools/GrepTool.vue'
 import ReadTool from '@/components/tools/ReadTool.vue'
+import RecallSearchTool from '@/components/tools/RecallSearchTool.vue'
+import TodoTool from '@/components/tools/TodoTool.vue'
 import WriteTool from '@/components/tools/WriteTool.vue'
 import { getToolComponent } from './toolRegistry'
 import { registerTools } from './registerTools'
@@ -42,6 +44,12 @@ describe('registerTools', () => {
     expect(getToolComponent('webfetch')).toBe(GenericTool)
     expect(getToolComponent('websearch')).toBe(GenericTool)
     expect(getToolComponent('task')).toBe(GenericTool)
+    expect(getToolComponent('todowrite')).toBe(TodoTool)
+    expect(getToolComponent('search_context')).toBe(RecallSearchTool)
+    expect(getToolComponent('chain_search_context')).toBe(RecallSearchTool)
+    expect(getToolComponent('get_messages')).toBe(RecallSearchTool)
+    expect(getToolComponent('chain_get_messages')).toBe(RecallSearchTool)
+    expect(getToolComponent('summarize_context')).toBe(GenericTool)
   })
 
   it('returns mountable components after registration', () => {
