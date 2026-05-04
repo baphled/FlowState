@@ -360,21 +360,26 @@ export const useChatStore = defineStore('chat', {
     // the consumer attaches and chunks arrive at the UI; if the backend has
     // already finished the EventSource closes cleanly without ever firing.
     //
-    // Detection heuristic: after sealing all backend-loaded assistant messages
-    // to status === 'completed' (commit a500958), searching for status ===
-    // 'running' never fires on reload. The correct signal is simpler: when the
-    // last message in restored history has role === 'user', the user sent
-    // something and no assistant reply has arrived yet — the session was
-    // waiting for a response when the page was reloaded.
+    // Detection heuristic: reattach when the session was in-flight at reload.
+    // Two signals indicate an incomplete response:
+    //   1. last message is the user turn — no assistant reply written yet
+    //      (real backend: accumulator only writes on stream-end)
+    //   2. last message is assistant with status === 'running' — backend has
+    //      a partial result (e.g. streamed incrementally or test mock)
+    // In both cases, the consumer subscribes; if the backend already finished
+    // (fast-path [DONE] from handleSessionStream), the EventSource closes
+    // cleanly and the fallback fetch fills in the completed response.
     //
     // isLoading is set to true so the submit gate keeps blocking new sends
-    // until [DONE] (or the watchdog) clears it — preventing a racy interleave
-    // where the user fires another prompt before the resumed stream settles.
+    // until [DONE] (or the watchdog) clears it.
     maybeReattachStream(sessionId: string): void {
       if (!sessionId || !this.messages.length) return
 
       const lastMessage = this.messages[this.messages.length - 1]
-      if (lastMessage.role !== 'user') return // assistant already replied — nothing to reattach
+      const needsReattach =
+        lastMessage.role === 'user' ||
+        (lastMessage.role === 'assistant' && lastMessage.status === 'running')
+      if (!needsReattach) return
 
       this.isLoading = true
       this.isStreaming = true
@@ -389,12 +394,19 @@ export const useChatStore = defineStore('chat', {
         this.isLoading = false
         this.isStreaming = false
 
+        // Guard: only fetch if we're still on the same session. The user may
+        // have navigated away (e.g. keyboard shortcut to a child session) while
+        // the SSE was open. Without this check, the close callback for the old
+        // session would overwrite the new session's messages.
+        if (this.currentSessionId !== sessionId) return
+
         // If no chunks arrived (the last message is still the user turn),
         // the stream had already completed before our subscriber registered.
         // Pull the finished response from the backend so the user sees it.
         const lastMsg = this.messages[this.messages.length - 1]
         if (lastMsg?.role === 'user') {
           void fetchSessionMessages(sessionId).then((loaded) => {
+            if (this.currentSessionId !== sessionId) return
             this.messages = loaded.map((m) =>
               m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
             )
@@ -506,6 +518,11 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadSessionMessages(sessionId: string): Promise<void> {
+      // Close any in-progress SSE from a prior session. Without this, the
+      // stale SSE's close() callback can fire after the session switch and
+      // overwrite the new session's messages with the old session's content.
+      closeActiveEventSource()
+      clearStallWatchdog()
       this.isLoading = true
       this.error = null
       try {
