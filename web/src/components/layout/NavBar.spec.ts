@@ -64,6 +64,9 @@ describe('NavBar visibility for child sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ]
     chatStore.currentSessionId = 'parent-1'
@@ -84,6 +87,9 @@ describe('NavBar visibility for child sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
       {
         id: 'child-a',
@@ -93,6 +99,9 @@ describe('NavBar visibility for child sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ]
     chatStore.currentSessionId = 'child-a'

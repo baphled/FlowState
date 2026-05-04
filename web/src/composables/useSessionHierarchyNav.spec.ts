@@ -49,6 +49,9 @@ function summary(id: string, parentId: string | undefined, createdAt: string) {
     createdAt,
     updatedAt: createdAt,
     messageCount: 0,
+    status: 'active',
+    depth: 0,
+    isStreaming: false,
   }
 }
 

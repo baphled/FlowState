@@ -293,7 +293,7 @@ export const useChatStore = defineStore('chat', {
         const todoStore = useTodoStore()
         todoStore.setCurrentSession(sessionForAgent.id)
         todoStore.hydrateFromMessages(sessionForAgent.id, this.messages)
-        this.maybeReattachStream(sessionForAgent.id, sessionForAgent.isStreaming === true)
+        this.maybeReattachStream(sessionForAgent.id, sessionForAgent.isStreaming ?? false)
         return
       }
 
@@ -326,7 +326,7 @@ export const useChatStore = defineStore('chat', {
       const todoStore = useTodoStore()
       todoStore.setCurrentSession(session.id)
       todoStore.hydrateFromMessages(session.id, this.messages)
-      this.maybeReattachStream(session.id, session.isStreaming === true)
+      this.maybeReattachStream(session.id, session.isStreaming ?? false)
     },
 
     // Re-attach a live SSE consumer when restored history shows the session
@@ -487,9 +487,12 @@ export const useChatStore = defineStore('chat', {
       // user-visible bubble updates without a manual refresh. Compounding
       // bug C-4 from the PR-2 plan.
       const activeId = this.currentSessionId
+      // SessionSummary.isStreaming is required on the wire (no omitempty in
+      // session_response.go). The boolean read is safe; ?? false defends
+      // against the session having been removed between renders.
       const wasStreaming =
         activeId !== null
-          ? this.sessions.find((s) => s.id === activeId)?.isStreaming === true
+          ? (this.sessions.find((s) => s.id === activeId)?.isStreaming ?? false)
           : false
       try {
         this.sessions = await fetchSessions()
@@ -498,7 +501,7 @@ export const useChatStore = defineStore('chat', {
       }
       if (activeId !== null && wasStreaming) {
         const nowStreaming =
-          this.sessions.find((s) => s.id === activeId)?.isStreaming === true
+          this.sessions.find((s) => s.id === activeId)?.isStreaming ?? false
         if (!nowStreaming) {
           // Fire-and-forget: reconcileFromBackend re-checks currentSessionId
           // before and after its await, so a session switch concurrent with

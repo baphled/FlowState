@@ -495,6 +495,9 @@ describe('ChatView toolbar in parent sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ]
     chatStore.currentSessionId = 'parent-1'
@@ -524,6 +527,9 @@ describe('ChatView toolbar in parent sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
     ]
     chatStore.currentSessionId = 'parent-1'
@@ -567,6 +573,9 @@ describe('ChatView read-only toolbar in child sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
       },
       {
         id: 'child-a',
@@ -576,6 +585,9 @@ describe('ChatView read-only toolbar in child sessions', () => {
         createdAt: '',
         updatedAt: '',
         messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
         currentModelId: 'claude-sonnet-4-6',
         currentProviderId: 'anthropic',
       },
