@@ -1,6 +1,7 @@
 package slashcommand_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -13,6 +14,46 @@ import (
 	"github.com/baphled/flowstate/internal/tui/intents/chat/slashcommand"
 	"github.com/baphled/flowstate/internal/tui/uikit/widgets"
 )
+
+// fakeManifestWriter records every Write / Delete call so the wizard
+// specs can assert the wizard delegates persistence to the writer
+// rather than poking the filesystem behind the writer's back. The
+// fake keeps a deep copy of every manifest pointer because the
+// wizard reuses its buildManifest output across calls; the spec
+// would otherwise see the post-Cancel state instead of the
+// snapshot at the moment of write.
+type fakeManifestWriter struct {
+	dir      string
+	writeErr error
+	writes   []fakeManifestWriterWrite
+	deletes  []string
+}
+
+type fakeManifestWriterWrite struct {
+	name     string
+	manifest swarm.Manifest
+}
+
+func (f *fakeManifestWriter) Write(name string, m *swarm.Manifest) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	var snapshot swarm.Manifest
+	if m != nil {
+		snapshot = *m
+	}
+	f.writes = append(f.writes, fakeManifestWriterWrite{name: name, manifest: snapshot})
+	return nil
+}
+
+func (f *fakeManifestWriter) Delete(name string) error {
+	f.deletes = append(f.deletes, name)
+	return nil
+}
+
+func (f *fakeManifestWriter) Path(name string) string {
+	return filepath.Join(f.dir, name+".yml")
+}
 
 var _ = Describe("SwarmBuilder", func() {
 	var (
@@ -153,6 +194,83 @@ var _ = Describe("SwarmBuilder", func() {
 			wizard := slashcommand.NewSwarmBuilder(agents, nil, dir)
 			driveToGateSchema(wizard)
 			Expect(stepLabels(wizard.Current().Items)).To(ContainElement("(no schemas registered)"))
+		})
+	})
+
+	Describe("manifest-writer delegation", func() {
+		// These specs pin the architectural contract: the wizard owns
+		// state-machine flow but persistence and rollback live in
+		// internal/swarm. The writer fake records every call so the
+		// specs assert the wizard delegates rather than poking the
+		// filesystem behind the writer's back.
+
+		It("routes confirmed writes through the writer's Write", func() {
+			fake := &fakeManifestWriter{dir: dir}
+			wizard := slashcommand.NewSwarmBuilderWithWriterForTest(agents, schemas, fake)
+
+			driveToGateLoop(wizard)
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			Expect(wizard.SubmitItem(itemFor("yes"))).To(Succeed())
+
+			Expect(fake.writes).To(HaveLen(1))
+			Expect(fake.writes[0].name).To(Equal("ws"))
+			Expect(fake.writes[0].manifest.ID).To(Equal("ws"))
+			Expect(fake.writes[0].manifest.Lead).To(Equal("planner"))
+			Expect(fake.writes[0].manifest.Members).To(ConsistOf("explorer"))
+			Expect(fake.deletes).To(BeEmpty())
+		})
+
+		It("routes Cancel rollback through the writer's Delete", func() {
+			fake := &fakeManifestWriter{dir: dir}
+			wizard := slashcommand.NewSwarmBuilderWithWriterForTest(agents, schemas, fake)
+
+			driveToGateLoop(wizard)
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			Expect(wizard.SubmitItem(itemFor("yes"))).To(Succeed())
+
+			wizard.Cancel()
+
+			Expect(fake.deletes).To(Equal([]string{"ws"}))
+		})
+
+		It("does not invoke the writer when the user declines confirm", func() {
+			fake := &fakeManifestWriter{dir: dir}
+			wizard := slashcommand.NewSwarmBuilderWithWriterForTest(agents, schemas, fake)
+
+			driveToGateLoop(wizard)
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+
+			Expect(fake.writes).To(BeEmpty())
+			Expect(fake.deletes).To(BeEmpty())
+		})
+
+		It("propagates the writer's error to the caller without marking wroteFile", func() {
+			fake := &fakeManifestWriter{dir: dir, writeErr: errors.New("disk full")}
+			wizard := slashcommand.NewSwarmBuilderWithWriterForTest(agents, schemas, fake)
+
+			driveToGateLoop(wizard)
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			err := wizard.SubmitItem(itemFor("yes"))
+			Expect(err).To(MatchError(ContainSubstring("disk full")))
+
+			// Cancel after a failed write must NOT issue a Delete:
+			// the writer reported failure, so there is no file to
+			// roll back. Asserting this prevents a future regression
+			// where every Cancel issues a spurious Delete.
+			wizard.Cancel()
+			Expect(fake.deletes).To(BeEmpty())
+		})
+
+		It("uses the writer's Path for the completion message", func() {
+			fake := &fakeManifestWriter{dir: dir}
+			wizard := slashcommand.NewSwarmBuilderWithWriterForTest(agents, schemas, fake)
+
+			driveToGateLoop(wizard)
+			Expect(wizard.SubmitItem(itemFor("no"))).To(Succeed())
+			Expect(wizard.SubmitItem(itemFor("yes"))).To(Succeed())
+
+			Expect(wizard.CompleteMessage()).To(ContainSubstring(filepath.Join(dir, "ws.yml")))
 		})
 	})
 })
