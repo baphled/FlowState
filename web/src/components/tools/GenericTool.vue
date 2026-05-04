@@ -86,6 +86,8 @@ const truncatedToolInput = computed(() => {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .tool-code--input {
