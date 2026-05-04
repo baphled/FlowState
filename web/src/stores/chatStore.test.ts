@@ -1027,10 +1027,14 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
   })
 
   it('preserves prior assistant content across two full sendMessage cycles with realistic chunked SSE', async () => {
-    // Post-fix: sendMessage no longer calls fetchSessionMessages mid-stream.
-    // Messages accumulate from SSE only. The key regression to pin: turn 2's
-    // chunks must land on a NEW assistant message, not on the sealed turn 1
-    // assistant (sealed by [DONE] → status === 'completed').
+    // Post-PR2: sendMessage's [DONE] handler now reconciles with the backend
+    // (replacing the pre-fix gated refetch). The key regression still being
+    // pinned: turn 2's chunks must land on a NEW assistant bubble, not on
+    // the sealed turn 1 assistant. We program the backend mock to return
+    // the canonical post-turn-1 history before turn 1's [DONE], and the
+    // canonical post-turn-2 history before turn 2's [DONE]; the test
+    // asserts the user-observable outcome (two distinct assistant bubbles)
+    // rather than implementation calls.
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
@@ -1046,6 +1050,12 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
           resolveSend1 = resolve
         }),
     )
+    // After turn 1's [DONE] the reconcile reads canonical history with one
+    // user + one (sealed) assistant.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '' },
+    ])
 
     const send1 = store.sendMessage('first prompt')
     await Promise.resolve(); await Promise.resolve()
@@ -1055,13 +1065,13 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
     es1.fire('message', '[DONE]')
     resolveSend1({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
     await send1
+    // Flush the reconcile microtask chain (await fetchSessionMessages).
+    await Promise.resolve(); await Promise.resolve()
 
-    // After turn 1, the store holds the optimistic user message + the
-    // streamed assistant, both derived from SSE (no backend refetch).
+    // After turn 1, the store holds the canonical history (sealed assistant).
     const assistants1 = store.messages.filter((m) => m.role === 'assistant')
     expect(assistants1).toHaveLength(1)
     expect(assistants1[0].content).toBe('first response')
-    // [DONE] seals the turn-1 assistant — subsequent chunks must not land on it.
     expect(assistants1[0].status).toBe('completed')
 
     // Turn 2: a new user optimistic message is pushed, then chunks arrive.
@@ -1073,6 +1083,14 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
           resolveSend2 = resolve
         }),
     )
+    // After turn 2's [DONE] the reconcile reads canonical history with two
+    // user + two (sealed) assistants.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'first response', timestamp: '' },
+      { id: 'srv-u2', role: 'user', content: 'second prompt', timestamp: '' },
+      { id: 'srv-a2', role: 'assistant', content: 'second response', timestamp: '' },
+    ])
 
     const send2 = store.sendMessage('second prompt')
     await Promise.resolve(); await Promise.resolve()
@@ -1081,11 +1099,12 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
     es2.fire('message', { content: 'second ' })
     es2.fire('message', { content: 'response' })
 
-    // Turn-1 assistant content is untouched.
+    // Mid-stream snapshot: turn-1 assistant content is untouched.
     const firstAssistant = store.messages.filter((m) => m.role === 'assistant')[0]
     expect(firstAssistant.content).toBe('first response')
 
-    // A distinct second assistant carries turn-2 chunks.
+    // A distinct second assistant carries turn-2 chunks (still streaming
+    // from SSE — reconcile hasn't fired yet because [DONE] hasn't arrived).
     const assistantsLive = store.messages.filter((m) => m.role === 'assistant')
     expect(assistantsLive).toHaveLength(2)
     expect(assistantsLive[1].content).toBe('second response')
@@ -1094,6 +1113,13 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
     es2.fire('message', '[DONE]')
     resolveSend2({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
     await send2
+    await Promise.resolve(); await Promise.resolve()
+
+    // Post-reconcile: the canonical history is two complete user+assistant pairs.
+    const finalAssistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(finalAssistants).toHaveLength(2)
+    expect(finalAssistants[0].content).toBe('first response')
+    expect(finalAssistants[1].content).toBe('second response')
   })
 })
 
@@ -1631,5 +1657,445 @@ describe('chatStore - localStorage persistence for agent and model selection', (
 
     expect(store.currentModelId).toBe('')
     expect(store.currentProviderId).toBe('')
+  })
+})
+
+describe('chatStore - reconcileFromBackend (post-stream merge with backend canonical state)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The user-visible bug: after a stream closes (or watchdog trips on a stall
+  // whose backend already finished), the UI is frozen on the last visible
+  // chunk. Manual page refresh fixes it because restoreStateFromBackend reads
+  // the canonical history. reconcileFromBackend is the action that does the
+  // same thing on stream-end without requiring the user to reload.
+  //
+  // Contract:
+  //   - Idempotent: safe to call any number of times.
+  //   - Re-checks currentSessionId before AND after the await — the user can
+  //     navigate during the network round-trip; landing the result on the
+  //     wrong session would corrupt the new session's view.
+  //   - Merge semantics, NOT replace:
+  //       * backend canonical history is the base, with assistant rows sealed
+  //         to status='completed' (matching the seal rule used elsewhere)
+  //       * any local optimistic user message (id starts with 'temp-') that
+  //         the backend does not yet have is preserved and appended
+  //       * any 'running' assistant placeholder the store created from SSE is
+  //         dropped if the backend now has its persisted equivalent
+  //   - Catches fetch failures silently — does not poison the UI; the
+  //     watchdog/error path surfaces the user-facing message.
+
+  it('replaces local messages with backend canonical history, sealing assistant rows to completed', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    // The store currently shows a stale partial.
+    store.messages = [
+      { id: 'srv-u1', role: 'user', content: 'hi', timestamp: '' },
+      { id: 'streaming-x', role: 'assistant', content: 'partial', timestamp: '', status: 'running' },
+    ]
+
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'hi', timestamp: '' },
+      // Backend assistant — no status, must be sealed to completed.
+      { id: 'srv-a1', role: 'assistant', content: 'hello world', timestamp: '' },
+    ])
+
+    await store.reconcileFromBackend('session-1')
+
+    expect(store.messages).toHaveLength(2)
+    const assistant = store.messages.find((m) => m.id === 'srv-a1')
+    expect(assistant?.content).toBe('hello world')
+    expect(assistant?.status).toBe('completed')
+    // The stale running placeholder must be gone — backend now has the
+    // persisted equivalent.
+    expect(store.messages.find((m) => m.id === 'streaming-x')).toBeUndefined()
+  })
+
+  it('preserves a temp-* optimistic user message that the backend response does not yet contain', async () => {
+    // The user clicks send. sendSessionMessage is in flight. A reconcile
+    // races with the still-pending append; the backend response is missing
+    // the just-sent message. Without the merge, the optimistic bubble
+    // disappears and the user thinks their click did nothing.
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'srv-u1', role: 'user', content: 'first', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'first reply', timestamp: '', status: 'completed' },
+      // The optimistic message that the backend has not seen yet.
+      { id: 'temp-12345', role: 'user', content: 'in flight', timestamp: '' },
+    ]
+
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'first', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'first reply', timestamp: '' },
+    ])
+
+    await store.reconcileFromBackend('session-1')
+
+    // Backend canonical first; optimistic in-flight appended at the end.
+    expect(store.messages.map((m) => m.id)).toEqual(['srv-u1', 'srv-a1', 'temp-12345'])
+    const optimistic = store.messages[2]
+    expect(optimistic.content).toBe('in flight')
+  })
+
+  it('is a no-op when currentSessionId changed BEFORE the call (called for a stale session id)', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-current'
+    store.messages = [{ id: 'msg-current', role: 'user', content: 'current', timestamp: '' }]
+
+    // Caller asks to reconcile session-other — but the user is on session-current.
+    await store.reconcileFromBackend('session-other')
+
+    // No fetch was made and messages were not touched.
+    expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
+    expect(store.messages.map((m) => m.id)).toEqual(['msg-current'])
+  })
+
+  it('discards the result when currentSessionId changes DURING the await', async () => {
+    // The user navigates while the network round-trip is in flight. The
+    // result must land on session-A's history, not corrupt session-B.
+    const store = useChatStore()
+    store.currentSessionId = 'session-A'
+
+    let resolveFetch: (value: any) => void = () => {}
+    vi.mocked(fetchSessionMessages).mockImplementationOnce(
+      () =>
+        new Promise<any>((resolve) => {
+          resolveFetch = resolve
+        }),
+    )
+
+    const reconcilePromise = store.reconcileFromBackend('session-A')
+
+    // Mid-flight: user switches to session-B and seeds new local state.
+    store.currentSessionId = 'session-B'
+    store.messages = [{ id: 'sb-msg', role: 'user', content: 'B content', timestamp: '' }]
+
+    // The original fetch (for A) finally resolves — but currentSessionId
+    // is now B, so the result must be discarded.
+    resolveFetch([
+      { id: 'sa-msg-1', role: 'user', content: 'A content', timestamp: '' },
+      { id: 'sa-msg-2', role: 'assistant', content: 'A reply', timestamp: '' },
+    ])
+    await reconcilePromise
+
+    // Session-B's local state is untouched.
+    expect(store.currentSessionId).toBe('session-B')
+    expect(store.messages.map((m) => m.id)).toEqual(['sb-msg'])
+  })
+
+  it('is idempotent — calling twice with the same backend state yields identical messages', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    vi.mocked(fetchSessionMessages).mockResolvedValue([
+      { id: 'srv-u1', role: 'user', content: 'hi', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'hello', timestamp: '' },
+    ])
+
+    await store.reconcileFromBackend('session-1')
+    const after1 = store.messages.map((m) => ({ id: m.id, content: m.content, status: m.status }))
+
+    await store.reconcileFromBackend('session-1')
+    const after2 = store.messages.map((m) => ({ id: m.id, content: m.content, status: m.status }))
+
+    expect(after2).toEqual(after1)
+  })
+
+  it('catches fetch failures silently and leaves messages untouched', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [{ id: 'local', role: 'user', content: 'preserve me', timestamp: '' }]
+
+    vi.mocked(fetchSessionMessages).mockRejectedValueOnce(new Error('network down'))
+
+    // Must not throw — the watchdog/error path surfaces user-facing errors.
+    await expect(store.reconcileFromBackend('session-1')).resolves.not.toThrow()
+    expect(store.messages.map((m) => m.id)).toEqual(['local'])
+  })
+})
+
+describe('chatStore - sendMessage stream-end reconciles with backend (replaces over-gated refetch)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The headline bug for PR 2: pre-fix, sendMessage's stream-close path did
+  // NOT refetch the canonical history. The user saw the partial response
+  // from SSE and that was it — anything the backend persisted after [DONE]
+  // (for example: a tool_result that finished after the assistant content
+  // chunk stopped) was invisible until the user reloaded the page.
+  //
+  // Post-fix: every stream-end path (DONE, error, watchdog-trip) reconciles
+  // with the backend so the user-visible state matches the canonical state.
+
+  it('reconciles with the backend after [DONE] so the bubble shows the canonical assistant content', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    let resolveSend: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSend = resolve }),
+    )
+    // The backend canonical state includes a tool_result the SSE didn't
+    // surface to this consumer (e.g. arrived during the brief gap between
+    // [DONE] and reconcile call).
+    vi.mocked(fetchSessionMessages).mockResolvedValue([
+      { id: 'srv-u1', role: 'user', content: 'go', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'final canonical reply', timestamp: '' },
+    ])
+
+    const sendPromise = store.sendMessage('go')
+    await Promise.resolve(); await Promise.resolve()
+    const es = FakeEventSource.instances[0]
+
+    // SSE delivers a partial — backend will hold the canonical full text.
+    es.fire('message', { content: 'partial' })
+    es.fire('message', '[DONE]')
+    resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+    await sendPromise
+
+    // Wait for the reconcile microtasks to flush.
+    await Promise.resolve(); await Promise.resolve()
+
+    // Post-reconcile, the user sees the backend canonical reply rather than
+    // the partial SSE chunk that arrived first.
+    const assistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0].content).toBe('final canonical reply')
+    expect(assistants[0].status).toBe('completed')
+  })
+
+  it('reconciles with the backend on SSE error (network glitch / proxy hang) so the bubble updates', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-1'
+    store.messages = []
+
+    let resolveSend: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSend = resolve }),
+    )
+    // Backend completed despite the SSE drop.
+    vi.mocked(fetchSessionMessages).mockResolvedValue([
+      { id: 'srv-u1', role: 'user', content: 'hi', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'recovered reply', timestamp: '' },
+    ])
+
+    const sendPromise = store.sendMessage('hi')
+    await Promise.resolve(); await Promise.resolve()
+    const es = FakeEventSource.instances[0]
+
+    // SSE pipe drops mid-stream.
+    es.fire('error', null)
+    resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+    await sendPromise
+    await Promise.resolve(); await Promise.resolve()
+
+    // The user sees the recovered reply rather than a frozen partial.
+    expect(store.messages.find((m) => m.id === 'srv-a1')?.content).toBe('recovered reply')
+    expect(store.isStreaming).toBe(false)
+    expect(store.isLoading).toBe(false)
+  })
+})
+
+describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The compounding bug: a stalled SSE (proxy hang or network glitch with
+  // server-side completion) tripped the watchdog at 60s, but pre-fix the
+  // watchdog only cleared isLoading/isStreaming — it never refetched. The
+  // user was left looking at the partial chunk frozen on screen and had to
+  // reload to see the actual completed response.
+
+  it('reconciles with the backend after the watchdog trips so the partial bubble updates to canonical', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+      store.messages = []
+
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+      // Backend completed; SSE just stopped delivering.
+      vi.mocked(fetchSessionMessages).mockResolvedValue([
+        { id: 'srv-u1', role: 'user', content: 'long task', timestamp: '' },
+        { id: 'srv-a1', role: 'assistant', content: 'completed despite stall', timestamp: '' },
+      ])
+
+      const sendPromise = store.sendMessage('long task')
+      await Promise.resolve(); await Promise.resolve()
+      const es = FakeEventSource.instances[0]
+
+      // Some content arrives, then the stream stalls completely.
+      es.fire('message', { content: 'partial frozen' })
+
+      // 60s of zero activity — watchdog must trip.
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      expect(store.isStreaming).toBe(false)
+      expect(store.isLoading).toBe(false)
+
+      // The watchdog fires handleStreamStall(sessionId) which fire-and-forgets
+      // reconcileFromBackend. Flush the queued microtask chain so the
+      // mocked fetchSessionMessages resolves and updates this.messages.
+      // advanceTimersByTimeAsync already runs queued microtasks, so a few
+      // explicit awaits here are sufficient to settle the await chain
+      // inside reconcileFromBackend.
+      for (let i = 0; i < 8; i++) {
+        await vi.advanceTimersByTimeAsync(0)
+      }
+
+      // The user-observable outcome: the bubble now reflects the canonical
+      // backend state, not the frozen partial.
+      const assistant = store.messages.find((m) => m.id === 'srv-a1')
+      expect(assistant?.content).toBe('completed despite stall')
+
+      // Tidy.
+      resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
+      await sendPromise
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('chatStore - loadSessions detects was-streaming → not-streaming and reconciles (parent watching child)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  // The compounding bug C-4: the parent session shows a delegation card
+  // while a child agent is doing the work. When the child finishes the
+  // backend marks the parent session as no-longer-streaming, but the parent
+  // UI never reconciles — the user has to reload to see the final reply.
+  //
+  // Contract: after each loadSessions poll, if the active session's
+  // isStreaming flag transitioned from true to false since the previous
+  // poll, the store reconciles with the backend so the child's final
+  // payload is visible without manual refresh.
+
+  it('reconciles when the active session transitions from isStreaming=true to false between two loadSessions calls', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'srv-u1', role: 'user', content: 'delegate this', timestamp: '' },
+      // The store still shows a 'running' delegation card from earlier SSE.
+      { id: 'streaming-del', role: 'delegation_started', content: '', timestamp: '', status: 'running' },
+    ]
+
+    // First poll: backend reports active stream — no reconcile expected.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 's',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 1,
+        isStreaming: true,
+      },
+    ])
+
+    await store.loadSessions()
+    // No reconcile while still streaming.
+    expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
+
+    // Second poll: backend now reports stream finished — reconcile expected.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 's',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 3,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
+      { id: 'srv-u1', role: 'user', content: 'delegate this', timestamp: '' },
+      { id: 'srv-a1', role: 'assistant', content: 'final after delegation', timestamp: '' },
+    ])
+
+    await store.loadSessions()
+    // Allow the queued reconcile microtasks to flush.
+    await Promise.resolve(); await Promise.resolve()
+
+    expect(vi.mocked(fetchSessionMessages)).toHaveBeenCalledWith('session-1')
+    // The store now shows the canonical history; the stale delegation card is gone.
+    expect(store.messages.find((m) => m.id === 'srv-a1')?.content).toBe('final after delegation')
+    expect(store.messages.find((m) => m.id === 'streaming-del')).toBeUndefined()
+  })
+
+  it('does not reconcile when the active session was not previously streaming (no-op transition)', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 's',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        isStreaming: false,
+      },
+    ])
+
+    await store.loadSessions()
+    expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
+  })
+})
+
+describe('chatStore - loadSessionMessages clears isStreaming alongside isLoading (C-7)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  // The compounding bug C-7: switching to an idle session while
+  // isStreaming was true left the activity indicator pulsing on a session
+  // that has nothing in flight. The user reads "agent is working" forever.
+
+  it('clears isStreaming in the finally block of loadSessionMessages', async () => {
+    const store = useChatStore()
+    // Simulate switching from a session that was streaming.
+    store.isStreaming = true
+    store.isLoading = false
+
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      { id: 'session-idle', agentId: 'agent-1', title: 'idle', createdAt: '', updatedAt: '', messageCount: 0 },
+    ])
+
+    await store.loadSessions()
+    await store.loadSessionMessages('session-idle')
+
+    // Both flags are cleared after the load completes.
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
   })
 })
