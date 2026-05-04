@@ -75,6 +75,80 @@ export const useChatStore = defineStore('chat', {
     error: null as string | null,
   }),
 
+  getters: {
+    // Session hierarchy — these getters back the keyboard navigation layer
+    // (Up to parent, Left/Right siblings, Ctrl+X Down to last delegated child)
+    // and the toolbar visibility check in ChatView.
+    //
+    // currentSession: looked up by id from the sessions list. Pure derivation —
+    // there is no `loaded session` cache.
+    currentSession(state): SessionSummary | undefined {
+      if (!state.currentSessionId) return undefined
+      return state.sessions.find((s) => s.id === state.currentSessionId)
+    },
+
+    // parentSessionId: parent of the active *child* session, or null when the
+    // active session has no parentId or no session is active.
+    parentSessionId(state): string | null {
+      if (!state.currentSessionId) return null
+      const current = state.sessions.find((s) => s.id === state.currentSessionId)
+      return current?.parentId ?? null
+    },
+
+    // siblingSessionIds: ids of all sessions that share the *current* session's
+    // parentId, ordered ascending by createdAt. Empty when the active session
+    // is a parent (i.e. has no parentId itself). Includes the current session
+    // so callers can compute previous/next by index.
+    siblingSessionIds(state): string[] {
+      if (!state.currentSessionId) return []
+      const current = state.sessions.find((s) => s.id === state.currentSessionId)
+      if (!current?.parentId) return []
+      const parentId = current.parentId
+      return [...state.sessions]
+        .filter((s) => s.parentId === parentId)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((s) => s.id)
+    },
+
+    // previousSiblingSessionId / nextSiblingSessionId: clamped at the ends —
+    // returns null at the first/last sibling, and null when there is only one
+    // sibling (so Left/Right do nothing on a single-child page).
+    previousSiblingSessionId(): string | null {
+      const siblings = (this as unknown as {
+        siblingSessionIds: string[]
+        currentSessionId: string | null
+      }).siblingSessionIds
+      const id = (this as unknown as { currentSessionId: string | null }).currentSessionId
+      if (!id || siblings.length < 2) return null
+      const idx = siblings.indexOf(id)
+      if (idx <= 0) return null
+      return siblings[idx - 1]
+    },
+
+    nextSiblingSessionId(): string | null {
+      const siblings = (this as unknown as {
+        siblingSessionIds: string[]
+        currentSessionId: string | null
+      }).siblingSessionIds
+      const id = (this as unknown as { currentSessionId: string | null }).currentSessionId
+      if (!id || siblings.length < 2) return null
+      const idx = siblings.indexOf(id)
+      if (idx < 0 || idx >= siblings.length - 1) return null
+      return siblings[idx + 1]
+    },
+
+    // lastDelegatedSessionId: most-recent child of the active session by
+    // createdAt. Used by the Ctrl+X Down chord. Returns null when the active
+    // session has no children, or when no session is active.
+    lastDelegatedSessionId(state): string | null {
+      if (!state.currentSessionId) return null
+      const children = state.sessions.filter((s) => s.parentId === state.currentSessionId)
+      if (children.length === 0) return null
+      const sorted = [...children].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      return sorted[0].id
+    },
+  },
+
   actions: {
     async restoreStateFromBackend(): Promise<void> {
       await this.loadAgents()

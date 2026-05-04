@@ -705,3 +705,168 @@ describe('chatStore - loadModels', () => {
     ])
   })
 })
+
+// Session hierarchy navigation — these getters back the keyboard nav layer
+// (Up to parent, Left/Right siblings, Ctrl+X Down to last delegated child).
+// Sibling order: ascending by createdAt.
+// "Last delegated" = most-recent child of the *current* session, by createdAt.
+describe('chatStore - hierarchy getters', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  function summary(id: string, parentId: string | undefined, createdAt: string) {
+    return {
+      id,
+      agentId: 'agent-x',
+      title: id,
+      parentId,
+      createdAt,
+      updatedAt: createdAt,
+      messageCount: 0,
+    }
+  }
+
+  it('exposes currentSession derived from currentSessionId', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-1', 'parent-1', '2026-01-01T00:01:00Z'),
+    ]
+    store.currentSessionId = 'child-1'
+
+    expect(store.currentSession?.id).toBe('child-1')
+    expect(store.currentSession?.parentId).toBe('parent-1')
+  })
+
+  it('returns undefined currentSession when no session is selected', () => {
+    const store = useChatStore()
+    store.sessions = [summary('parent-1', undefined, '2026-01-01T00:00:00Z')]
+    store.currentSessionId = null
+
+    expect(store.currentSession).toBeUndefined()
+  })
+
+  it('lastDelegatedSessionId returns the most-recent child of the active session', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+      summary('child-b', 'parent-1', '2026-01-01T00:03:00Z'),
+      summary('child-c', 'parent-1', '2026-01-01T00:02:00Z'),
+      summary('unrelated', 'parent-2', '2026-01-01T00:99:00Z'),
+    ]
+    store.currentSessionId = 'parent-1'
+
+    expect(store.lastDelegatedSessionId).toBe('child-b')
+  })
+
+  it('lastDelegatedSessionId returns null when the current session has no children', () => {
+    const store = useChatStore()
+    store.sessions = [summary('lonely', undefined, '2026-01-01T00:00:00Z')]
+    store.currentSessionId = 'lonely'
+
+    expect(store.lastDelegatedSessionId).toBeNull()
+  })
+
+  it('lastDelegatedSessionId returns null when no session is active', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+    ]
+    store.currentSessionId = null
+
+    expect(store.lastDelegatedSessionId).toBeNull()
+  })
+
+  it('parentSessionId returns the parent of the active child session', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+    ]
+    store.currentSessionId = 'child-a'
+
+    expect(store.parentSessionId).toBe('parent-1')
+  })
+
+  it('parentSessionId returns null when the active session is a parent (no parentId)', () => {
+    const store = useChatStore()
+    store.sessions = [summary('parent-1', undefined, '2026-01-01T00:00:00Z')]
+    store.currentSessionId = 'parent-1'
+
+    expect(store.parentSessionId).toBeNull()
+  })
+
+  it('siblingSessionIds returns siblings of the current child session in createdAt order', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-c', 'parent-1', '2026-01-01T00:03:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+      summary('child-b', 'parent-1', '2026-01-01T00:02:00Z'),
+      summary('unrelated', 'parent-2', '2026-01-01T00:00:00Z'),
+    ]
+    store.currentSessionId = 'child-b'
+
+    expect(store.siblingSessionIds).toEqual(['child-a', 'child-b', 'child-c'])
+  })
+
+  it('siblingSessionIds is empty when the active session is a parent', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+    ]
+    store.currentSessionId = 'parent-1'
+
+    expect(store.siblingSessionIds).toEqual([])
+  })
+
+  it('previousSiblingSessionId returns the prior sibling and clamps at the start', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+      summary('child-b', 'parent-1', '2026-01-01T00:02:00Z'),
+      summary('child-c', 'parent-1', '2026-01-01T00:03:00Z'),
+    ]
+
+    store.currentSessionId = 'child-b'
+    expect(store.previousSiblingSessionId).toBe('child-a')
+
+    store.currentSessionId = 'child-a'
+    expect(store.previousSiblingSessionId).toBeNull()
+  })
+
+  it('nextSiblingSessionId returns the next sibling and clamps at the end', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('child-a', 'parent-1', '2026-01-01T00:01:00Z'),
+      summary('child-b', 'parent-1', '2026-01-01T00:02:00Z'),
+      summary('child-c', 'parent-1', '2026-01-01T00:03:00Z'),
+    ]
+
+    store.currentSessionId = 'child-b'
+    expect(store.nextSiblingSessionId).toBe('child-c')
+
+    store.currentSessionId = 'child-c'
+    expect(store.nextSiblingSessionId).toBeNull()
+  })
+
+  it('previous/next sibling getters are null when there is only one child', () => {
+    const store = useChatStore()
+    store.sessions = [
+      summary('parent-1', undefined, '2026-01-01T00:00:00Z'),
+      summary('only-child', 'parent-1', '2026-01-01T00:01:00Z'),
+    ]
+    store.currentSessionId = 'only-child'
+
+    expect(store.previousSiblingSessionId).toBeNull()
+    expect(store.nextSiblingSessionId).toBeNull()
+  })
+})

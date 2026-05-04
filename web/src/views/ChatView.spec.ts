@@ -408,6 +408,79 @@ describe('ChatView side panel reorganisation', () => {
   })
 })
 
+describe('ChatView toolbar visibility for child sessions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('renders the input-selector-bar when the active session has no parentId (parent session)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'a',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(true)
+  })
+
+  it('hides the input-selector-bar when the active session has a parentId (child session)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'a',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+      {
+        id: 'child-a',
+        agentId: 'b',
+        title: 'child',
+        parentId: 'parent-1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ]
+    chatStore.currentSessionId = 'child-a'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="input-selector-bar"]').exists()).toBe(false)
+  })
+})
+
 describe('ChatView message grouping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
