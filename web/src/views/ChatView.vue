@@ -14,6 +14,7 @@ import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
 import { registerTools } from '@/tools/registerTools'
+import { installSessionHierarchyNav } from '@/composables/useSessionHierarchyNav'
 
 defineOptions({ name: 'ChatView' })
 
@@ -28,7 +29,10 @@ const showSwarmPane = computed(() => settingsStore.swarmPaneVisible)
 const currentSessionSummary = computed(() =>
   chatStore.sessions.find((session) => session.id === chatStore.currentSessionId) ?? null,
 )
-const isReadonlyPicker = computed(() => Boolean(currentSessionSummary.value?.parentId))
+// Child sessions hide the agent/model selector entirely. Their agent and
+// model are inherited from the parent context and changing them mid-thread
+// is not a supported flow. The bar is only meaningful at the parent level.
+const isChildSession = computed(() => Boolean(currentSessionSummary.value?.parentId))
 
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
   groupContextTools(collapseToolPairs(chatStore.messages)),
@@ -145,8 +149,11 @@ watch(
   },
 )
 
+let teardownHierarchyNav: (() => void) | null = null
+
 onMounted(async () => {
   registerTools()
+  teardownHierarchyNav = installSessionHierarchyNav()
   await chatStore.restoreStateFromBackend()
   await scrollMessagePaneToBottom()
   void swarmStore.connect()
@@ -155,6 +162,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopDragging()
   swarmStore.disconnect()
+  if (teardownHierarchyNav) {
+    teardownHierarchyNav()
+    teardownHierarchyNav = null
+  }
 })
 </script>
 
@@ -192,9 +203,13 @@ onBeforeUnmount(() => {
 
       <DelegationStrip />
 
-      <div class="input-selector-bar" data-testid="input-selector-bar">
-        <AgentPicker :readonly="isReadonlyPicker" />
-        <ModelPicker :readonly="isReadonlyPicker" />
+      <div
+        v-if="!isChildSession"
+        class="input-selector-bar"
+        data-testid="input-selector-bar"
+      >
+        <AgentPicker />
+        <ModelPicker />
       </div>
 
       <div
