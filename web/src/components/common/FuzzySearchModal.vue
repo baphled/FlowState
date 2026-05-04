@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
 import { useFuzzyFilter, type FuzzySearchItem } from '@/composables/useFuzzyFilter'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
 defineOptions({ name: 'FuzzySearchModal' })
 
@@ -40,7 +41,14 @@ const emit = defineEmits<{
 }>()
 
 const inputEl = ref<HTMLInputElement | null>(null)
+const modalEl = ref<HTMLElement | null>(null)
 const itemsRef = computed(() => props.items)
+
+// Accessibility (Principal F9): trap Tab/Shift+Tab inside the modal so
+// keyboard-only users can't fall out into the underlying chat thread.
+// The trap is gated on `props.open` and stays out of Escape's way — the
+// existing handleKeydown already emits 'close' on Escape.
+useFocusTrap(modalEl, toRef(props, 'open'))
 
 const {
   filteredItems,
@@ -168,7 +176,7 @@ onBeforeUnmount(() => {
     data-testid="fuzzy-search-backdrop"
     @click.self="handleBackdropClick"
   >
-    <div class="fuzzy-search-modal" data-testid="fuzzy-search-modal" @click.stop>
+    <div ref="modalEl" class="fuzzy-search-modal" data-testid="fuzzy-search-modal" role="dialog" aria-modal="true" @click.stop>
       <input
         ref="inputEl"
         type="text"
