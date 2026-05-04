@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSwarmStore } from '@/stores/swarmStore'
+import { useChatStore } from '@/stores/chatStore'
+import type { SwarmEvent } from '@/types'
 
 defineOptions({ name: 'DelegationPanel' })
 
 const swarmStore = useSwarmStore()
+const chatStore = useChatStore()
 const delegationEvents = computed(() => swarmStore.delegationEvents)
 const harnessEvents = computed(() => swarmStore.harnessEvents)
 
@@ -24,6 +27,31 @@ function delegationSummary(event: { metadata?: Record<string, unknown> }): strin
   const status = meta.status || meta.delegation_status || ''
   return `${from} → ${to}${status ? ` (${status})` : ''}`
 }
+
+// childSessionIdFor extracts the delegated agent's session identifier
+// from the SwarmEvent metadata. Mirrors the TUI delegation contract:
+// the engine emits `child_session_id` on delegation events that spawn a
+// new session so consumers can navigate to the delegated work without
+// reconstructing the parent → child mapping client-side.
+function childSessionIdFor(event: SwarmEvent): string | null {
+  const candidate = event.metadata?.child_session_id
+  if (typeof candidate === 'string' && candidate.length > 0) {
+    return candidate
+  }
+  return null
+}
+
+function isClickable(event: SwarmEvent): boolean {
+  return childSessionIdFor(event) !== null
+}
+
+async function selectDelegationSession(event: SwarmEvent): Promise<void> {
+  const sessionId = childSessionIdFor(event)
+  if (!sessionId) {
+    return
+  }
+  await chatStore.loadSessionMessages(sessionId)
+}
 </script>
 
 <template>
@@ -42,7 +70,13 @@ function delegationSummary(event: { metadata?: Record<string, unknown> }): strin
         v-for="event in delegationEvents"
         :key="event.id"
         class="delegation-card"
+        :class="{ clickable: isClickable(event) }"
         :data-testid="`delegation-${event.id}`"
+        :role="isClickable(event) ? 'button' : undefined"
+        :tabindex="isClickable(event) ? 0 : undefined"
+        @click="selectDelegationSession(event)"
+        @keydown.enter.prevent="selectDelegationSession(event)"
+        @keydown.space.prevent="selectDelegationSession(event)"
       >
         <div class="delegation-header">
           <span class="delegation-agent">{{ event.agent_id }}</span>
@@ -130,6 +164,22 @@ function delegationSummary(event: { metadata?: Record<string, unknown> }): strin
   background: var(--bg-elevated);
   border-radius: 0 var(--radius) var(--radius) 0;
   margin-bottom: 0.4rem;
+}
+
+.delegation-card.clickable {
+  cursor: pointer;
+  transition: background 0.15s, border-left-color 0.15s;
+}
+
+.delegation-card.clickable:hover,
+.delegation-card.clickable:focus-visible {
+  background: var(--bg-secondary);
+  outline: none;
+}
+
+.delegation-card.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .harness-card {

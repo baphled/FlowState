@@ -378,6 +378,57 @@ var _ = Describe("Manager", func() {
 				Expect(summaries[0].UpdatedAt.IsZero()).To(BeFalse(),
 					"restored sessions with zero UpdatedAt expose 0001-01-01T00:00:00Z to the frontend; manager should backfill from CreatedAt")
 			})
+
+			It("populates ParentID in the summary so the frontend can filter parent-only sessions in the switcher", func() {
+				parent, err := mgr.CreateSession("parent-agent")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(2))
+
+				summaryByID := map[string]*session.Summary{}
+				for _, s := range summaries {
+					summaryByID[s.ID] = s
+				}
+
+				Expect(summaryByID).To(HaveKey(parent.ID))
+				Expect(summaryByID[parent.ID].ParentID).To(BeEmpty(),
+					"top-level sessions must report an empty ParentID so the frontend filter !parentId selects them")
+				Expect(summaryByID).To(HaveKey(child.ID))
+				Expect(summaryByID[child.ID].ParentID).To(Equal(parent.ID),
+					"child session summaries must carry the parent identifier so the SessionSwitcher dropdown hides them")
+			})
+
+			It("emits a parentId key in the JSON summary so the Vue SessionSummary contract is satisfied", func() {
+				parent, err := mgr.CreateSession("agent-parent")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = mgr.CreateWithParent(parent.ID, "agent-child")
+				Expect(err).NotTo(HaveOccurred())
+
+				summaries := mgr.ListSessions()
+				Expect(summaries).To(HaveLen(2))
+
+				var childSummary *session.Summary
+				for _, s := range summaries {
+					if s.ParentID != "" {
+						childSummary = s
+						break
+					}
+				}
+				Expect(childSummary).NotTo(BeNil(),
+					"at least one summary should be a child carrying ParentID for this scenario")
+
+				data, err := json.Marshal(childSummary)
+				Expect(err).NotTo(HaveOccurred())
+
+				var decoded map[string]interface{}
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).To(HaveKey("parentId"),
+					"frontend SessionSummary expects a camelCase parentId field; the Vue switcher filter relies on it to drop child sessions")
+				Expect(decoded["parentId"]).To(Equal(parent.ID))
+			})
 		})
 	})
 

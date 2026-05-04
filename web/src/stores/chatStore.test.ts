@@ -176,6 +176,9 @@ describe('chatStore - loadSessionMessages', () => {
   })
 
   it('switches to currentAgentId when loading a session whose last-selected agent differs from the active one', async () => {
+    // The PATCH MUST target the freshly-selected session, not the
+    // previously-active one. Selecting Session B while Session A is
+    // active should only ever update Session B's agent.
     vi.mocked(fetchSessions).mockResolvedValueOnce([
       {
         id: 'session-1',
@@ -196,7 +199,9 @@ describe('chatStore - loadSessionMessages', () => {
     await store.loadSessionMessages('session-1')
 
     expect(store.agentId).toBe('agent-2')
-    expect(vi.mocked(updateSessionAgent)).toHaveBeenCalledWith('other', 'agent-2')
+    expect(vi.mocked(updateSessionAgent)).toHaveBeenCalledWith('session-1', 'agent-2')
+    expect(vi.mocked(updateSessionAgent)).not.toHaveBeenCalledWith('other', 'agent-2')
+    expect(store.currentSessionId).toBe('session-1')
   })
 })
 
@@ -217,6 +222,80 @@ describe('chatStore - sendMessage', () => {
     expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-1', 'Hello world')
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
     expect(vi.mocked(fetchSessionMessages)).toHaveBeenCalledWith('session-1')
+  })
+
+  it('targets the just-selected session on subsequent sendMessage calls instead of forking a new session', async () => {
+    // Reproduces the user-reported regression: after selecting an existing
+    // session from the switcher dropdown, the next sendMessage should land
+    // on that session — not fork a new one. The selection path runs
+    // loadSessionMessages, which switches the agent via setAgent. setAgent
+    // must not clear currentSessionId, and sendMessage must observe the
+    // selected session id.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-A',
+        agentId: 'agent-1',
+        title: 'Session A',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 1,
+      },
+      {
+        id: 'session-B',
+        agentId: 'agent-2',
+        title: 'Session B',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 2,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    // Mimic the SessionSwitcher pre-set then loadSessionMessages call
+    // that selectSession performs.
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-A'
+    await store.loadSessionMessages('session-B')
+
+    vi.mocked(sendSessionMessage).mockClear()
+    vi.mocked(createSession).mockClear()
+
+    await store.sendMessage('after switch')
+
+    expect(vi.mocked(createSession)).not.toHaveBeenCalled()
+    expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-B', 'after switch')
+    expect(store.currentSessionId).toBe('session-B')
+  })
+
+  it('PATCHes the newly-selected session\'s agent — not the previously active session — when loadSessionMessages switches agents', async () => {
+    // The setAgent call inside loadSessionMessages used to read the stale
+    // currentSessionId (still pointing at the previous session) and PATCH
+    // the wrong session. Selecting a session must update only the
+    // session that was selected.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-target',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-2',
+        title: 'Target Session',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'previous-session'
+
+    await store.loadSessionMessages('session-target')
+
+    expect(vi.mocked(updateSessionAgent)).toHaveBeenCalledWith('session-target', 'agent-2')
+    expect(vi.mocked(updateSessionAgent)).not.toHaveBeenCalledWith('previous-session', 'agent-2')
+    expect(store.currentSessionId).toBe('session-target')
   })
 
   it('creates a session, sends, and refreshes summaries when no session is active', async () => {

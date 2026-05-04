@@ -65,10 +65,20 @@ type Session struct {
 }
 
 // Summary provides a lightweight view of a session for listing.
+//
+// ParentID is empty for top-level sessions and carries the parent session
+// identifier for delegated child sessions. The Vue SessionSwitcher filters
+// `!parentId` to keep child sessions out of the recents dropdown — the
+// delegation panel surfaces them separately. The projected value prefers
+// the canonical `Session.ParentID` and falls back to the legacy
+// `Session.ParentSessionID` so restored or migrated sessions retain a
+// stable hierarchy. The JSON tag is camelCase to match the existing
+// frontend `SessionSummary` contract.
 type Summary struct {
 	ID             string    `json:"id"`
 	AgentID        string    `json:"agentId"`
 	CurrentAgentID string    `json:"currentAgentId,omitempty"`
+	ParentID       string    `json:"parentId,omitempty"`
 	Title          string    `json:"title"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
@@ -375,10 +385,20 @@ func (m *Manager) ListSessions() []*Summary {
 		if updatedAt.IsZero() {
 			updatedAt = sess.CreatedAt
 		}
+		// Prefer the canonical ParentID; fall back to the legacy
+		// ParentSessionID so restored sessions persisted before the
+		// rename retain a parent link in the projected summary. This
+		// mirrors the precedence used by ChildSessions and Depth so a
+		// single rule governs which sessions are "child" sessions.
+		parentID := sess.ParentID
+		if parentID == "" {
+			parentID = sess.ParentSessionID
+		}
 		summaries = append(summaries, &Summary{
 			ID:             sess.ID,
 			AgentID:        sess.AgentID,
 			CurrentAgentID: sess.CurrentAgentID,
+			ParentID:       parentID,
 			Title:          deriveSummaryTitle(sess),
 			CreatedAt:      sess.CreatedAt,
 			UpdatedAt:      updatedAt,
