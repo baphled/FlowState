@@ -769,3 +769,55 @@ describe('ChatView message grouping', () => {
     expect(wrapper.find('[data-testid="context-tool-group-stub"]').exists()).toBe(false)
   })
 })
+
+describe('ChatView mount-time restore failure (Principal F7)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  // The failure path: a network blip during initial hydration must surface
+  // a toast and assign chatStore.error so the user sees something
+  // actionable. Pre-fix the onMounted handler called restoreStateFromBackend
+  // without a try/catch; a rejection would leave the user staring at a
+  // blank chat with no signal of what went wrong.
+
+  it('shows an error toast and assigns chatStore.error when restoreStateFromBackend rejects', async () => {
+    const { showToast } = await import('@/composables/useToast')
+    const toastSpy = vi.spyOn({ showToast }, 'showToast')
+    const useToastMod = await import('@/composables/useToast')
+    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => {})
+
+    const chatStore = useChatStore()
+    vi.spyOn(chatStore, 'restoreStateFromBackend').mockRejectedValueOnce(
+      new Error('boom: network down'),
+    )
+
+    mount(ChatView)
+    await flushPromises()
+
+    expect(chatStore.error).toBe('boom: network down')
+    expect(realToast).toHaveBeenCalled()
+    const toastArgs = realToast.mock.calls[0][0]
+    if (typeof toastArgs === 'object') {
+      expect(toastArgs.variant).toBe('error')
+      expect(toastArgs.message).toBe('boom: network down')
+    }
+
+    realToast.mockRestore()
+    toastSpy.mockRestore()
+  })
+
+  it('does NOT toast on a successful restore', async () => {
+    const useToastMod = await import('@/composables/useToast')
+    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => {})
+
+    const chatStore = useChatStore()
+    vi.spyOn(chatStore, 'restoreStateFromBackend').mockResolvedValueOnce(undefined)
+
+    mount(ChatView)
+    await flushPromises()
+
+    expect(realToast).not.toHaveBeenCalled()
+    realToast.mockRestore()
+  })
+})

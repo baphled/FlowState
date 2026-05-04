@@ -118,6 +118,28 @@ function persistProviderId(providerId: string | null): void {
   window.localStorage.removeItem(activeProviderStorageKey)
 }
 
+// Error-handling convention (Principal F7)
+// =========================================
+// The chat store splits actions into two error-handling families. Both are
+// in-tree today and the split matches the call-site contract — do NOT
+// "normalise" them without re-auditing every consumer.
+//
+// Pattern A — catch + assign-to-this.error (fire-and-forget actions):
+//   Used when the action is invoked from the UI without an awaiting caller
+//   or from an event handler that has no error channel of its own.
+//   Examples: setAgent, setModel. The MessageBubble + chat-error footer
+//   render `chatStore.error` directly so a try/catch in the action is the
+//   minimum viable user-visible signal.
+//
+// Pattern B — propagate-and-let-caller-decide (initialisation + send):
+//   Used when the caller has richer recovery context than the store can
+//   reach. The two examples are restoreStateFromBackend (only ChatView
+//   onMounted needs the user-facing toast — other callers may suppress)
+//   and sendMessage (the optimistic-bubble failed-marker is set inside the
+//   action, but downstream toast surfacing belongs to the caller).
+//
+// New actions choose A when there is no caller that benefits from the
+// thrown error; B when there is. Don't introduce a third pattern.
 export const useChatStore = defineStore('chat', {
   state: () => ({
     availableAgentDetails: [] as Agent[],
