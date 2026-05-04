@@ -382,11 +382,24 @@ export const useChatStore = defineStore('chat', {
 
       closeActiveEventSource()
       activeEventSource = subscribeSessionStream(sessionId)
+
       const close = (): void => {
         closeActiveEventSource()
         clearStallWatchdog()
         this.isLoading = false
         this.isStreaming = false
+
+        // If no chunks arrived (the last message is still the user turn),
+        // the stream had already completed before our subscriber registered.
+        // Pull the finished response from the backend so the user sees it.
+        const lastMsg = this.messages[this.messages.length - 1]
+        if (lastMsg?.role === 'user') {
+          void fetchSessionMessages(sessionId).then((loaded) => {
+            this.messages = loaded.map((m) =>
+              m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+            )
+          })
+        }
       }
 
       activeEventSource.addEventListener('message', (event) => {
@@ -608,11 +621,23 @@ export const useChatStore = defineStore('chat', {
 
         await sendSessionMessage(sessionId, text)
 
-        // Do NOT reload messages from the backend here. The SSE stream
-        // delivers the assistant response in real-time; replacing
-        // this.messages mid-stream causes the previous backend-loaded
-        // assistant (status === undefined) to appear above the new user
-        // prompt, producing the response-replay bug. Trust the stream.
+        // sendSessionMessage blocks until broker.Publish completes, which
+        // means the engine has finished and the accumulator has flushed the
+        // assistant message to the session store. If no streaming assistant
+        // message was built in the UI (race: POST reached the server before
+        // the SSE GET established its subscriber), load the completed
+        // response from the backend now rather than leaving the user message
+        // as the last visible turn.
+        const hasStreamedResponse = this.messages.some(
+          (m) => m.role === 'assistant' && (m.status === 'running' || m.status === 'completed'),
+        )
+        if (!hasStreamedResponse) {
+          const loaded = await fetchSessionMessages(sessionId)
+          this.messages = loaded.map((m) =>
+            m.role === 'assistant' && !m.status ? { ...m, status: 'completed' } : m,
+          )
+        }
+
         await this.loadSessions()
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to send message'
