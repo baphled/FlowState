@@ -1,8 +1,9 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { SwarmEvent } from '@/types'
+import { joinBaseURL } from '@/api'
 
-const API_BASE = '/api/swarm/events'
+const MAX_EVENTS = 500
 
 export const useSwarmStore = defineStore('swarm', () => {
   const events = ref<SwarmEvent[]>([])
@@ -22,11 +23,14 @@ export const useSwarmStore = defineStore('swarm', () => {
 
     try {
       const event = JSON.parse(data) as SwarmEvent
+      if (typeof event.id !== 'string') return
       const idx = events.value.findIndex((e) => e.id === event.id)
       if (idx >= 0) {
         events.value[idx] = event
       } else {
-        events.value = [...events.value, event]
+        const next = [...events.value, event]
+        // Evict oldest entries to keep memory bounded.
+        events.value = next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next
       }
     } catch {
       return
@@ -40,7 +44,7 @@ export const useSwarmStore = defineStore('swarm', () => {
     abortController.value = new AbortController()
 
     try {
-      const response = await fetch(API_BASE, {
+      const response = await fetch(joinBaseURL('/swarm/events'), {
         signal: abortController.value.signal,
       })
 
@@ -58,19 +62,20 @@ export const useSwarmStore = defineStore('swarm', () => {
 
       while (true) {
         const { done, value } = await reader.read()
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          ingestEventLine(line)
-        }
-
         if (done) {
+          // Flush any remaining bytes held by the decoder's internal state,
+          // then process whatever is left in the line buffer.
+          buffer += decoder.decode()
           if (buffer) {
             ingestEventLine(buffer)
           }
           break
+        }
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          ingestEventLine(line)
         }
       }
     } catch (e) {

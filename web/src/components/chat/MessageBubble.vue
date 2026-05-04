@@ -22,17 +22,31 @@ async function loadDelegatedSession(): Promise<void> {
   await chatStore.loadSessionByAgentId(props.message.targetAgent)
 }
 
-onMounted(() => {
+function startTimer(): void {
+  if (elapsedTimer.value !== null) return
   elapsedTimer.value = setInterval(() => {
     now.value = Date.now()
   }, 1000)
-})
+}
 
-onBeforeUnmount(() => {
+function stopTimer(): void {
   if (elapsedTimer.value !== null) {
     clearInterval(elapsedTimer.value)
     elapsedTimer.value = null
   }
+}
+
+onMounted(() => {
+  // Only tick for in-flight delegation messages — elapsedLabel is only
+  // displayed there. Running an interval for every bubble in a long
+  // conversation burns CPU for no visible effect.
+  if (props.message.role === 'delegation_started' && props.message.status !== 'completed') {
+    startTimer()
+  }
+})
+
+onBeforeUnmount(() => {
+  stopTimer()
 })
 
 const elapsedLabel = computed(() => {

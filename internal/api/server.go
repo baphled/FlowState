@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -744,6 +745,17 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 			}
 			if chunk.DelegationInfo != nil {
 				writeSSEDelegationInfo(w, flusher, chunk.DelegationInfo)
+			}
+			if chunk.ToolCall != nil {
+				name := chunk.ToolCall.Name
+				if strings.HasPrefix(name, "skill:") {
+					writeSSESkillLoad(w, flusher, strings.TrimPrefix(name, "skill:"))
+				} else {
+					writeSSEToolCall(w, flusher, name)
+				}
+			}
+			if chunk.EventType == "tool_result" && chunk.ToolResult != nil {
+				writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
 			}
 			if chunk.Content != "" {
 				writeSSEContent(w, flusher, chunk.Content)

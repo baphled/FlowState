@@ -18,7 +18,7 @@ function getBaseURL(): string {
   return BASE
 }
 
-function joinBaseURL(path: string): string {
+export function joinBaseURL(path: string): string {
   const base = getBaseURL().replace(/\/$/, '')
   return `${base}${path}`
 }

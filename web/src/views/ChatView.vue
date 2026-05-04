@@ -40,7 +40,6 @@ const isChildSession = computed(() => Boolean(currentSessionSummary.value?.paren
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
   groupContextTools(collapseToolPairs(chatStore.messages)),
 )
-const hasSidebar = computed(() => settingsStore.swarmPaneVisible)
 const lastMessage = computed(() => {
   const messages = chatStore.messages
   return messages.length > 0 ? messages[messages.length - 1] : null
@@ -127,7 +126,7 @@ function startDraggingSidebar(event: MouseEvent): void {
 }
 
 function toggleSwarmPane(): void {
-  settingsStore.setSwarmPaneVisible(false)
+  settingsStore.toggleSwarmPane()
 }
 
 function showSwarmPaneAgain(): void {
@@ -202,7 +201,7 @@ onBeforeUnmount(() => {
           Start a conversation with the selected agent.
         </div>
         <div v-else class="message-list" data-testid="message-list">
-          <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? `${entry.message.role}-${index}` : `context-group-${index}`">
+          <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? entry.message.id : `context-group-${index}`">
             <MessageBubble
               v-if="entry.type === 'message'"
               :message="entry.message"
@@ -239,7 +238,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="chatStore.isLoading && !chatStore.isStreaming"
+        v-if="chatStore.isLoading || chatStore.isStreaming"
         class="loading-pulse"
         data-testid="loading-pulse"
         aria-hidden="true"
@@ -248,7 +247,7 @@ onBeforeUnmount(() => {
       <MessageInput />
     </div>
 
-    <aside v-if="hasSidebar && showSwarmPane" class="chat-sidebar" :style="{ width: `${settingsStore.chatSidebarWidth}px` }" data-testid="swarm-pane">
+    <aside v-if="showSwarmPane" class="chat-sidebar" :style="{ width: `${settingsStore.chatSidebarWidth}px` }" data-testid="swarm-pane">
       <div class="sidebar-panels">
         <TodoListPanel class="sidebar-panel" />
       </div>

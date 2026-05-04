@@ -122,6 +122,6 @@ describe('ToolBubble', () => {
 
     const body = wrapper.find('.tool-bubble__body')
     expect(body.exists()).toBe(true)
-    expect(body.element.style.maxHeight).toBe('none')
+    expect((body.element as HTMLElement).style.maxHeight).toBe('none')
   })
 })
