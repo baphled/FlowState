@@ -222,4 +222,101 @@ describe('chatStore', () => {
     })
   })
 
+  // ── applyContentEvent — discriminated union dispatch (Principal F5/F6) ───
+  //
+  // Pre-this-PR the dispatch was an untyped `Record<string, unknown>`
+  // switch with a structural-fallback for delegation events that lacked
+  // the `type` discriminant — bug-for-bug compatibility with an older
+  // emitter. The Go side now ALWAYS tags delegation events with
+  // `type: 'delegation'` (writeSSEDelegationInfo injects the field even
+  // when wrapping a provider DelegationInfo), so the structural fallback
+  // is dead code. The new dispatch uses the SSEEvent discriminated union
+  // and an exhaustive switch — adding a new event type without a handler
+  // fails compile.
+
+  describe('applyContentEvent — discriminated union dispatch', () => {
+    it('routes a type:tool_call payload to handleToolCallEvent', () => {
+      const store = useChatStore()
+      const spy = vi.spyOn(store, 'handleToolCallEvent')
+      store.applyContentEvent(
+        JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running', input: 'ls' }),
+      )
+      expect(spy).toHaveBeenCalledOnce()
+      expect(spy).toHaveBeenCalledWith({ name: 'bash', status: 'running', input: 'ls' })
+    })
+
+    it('routes a type:tool_result payload to handleToolResultEvent', () => {
+      const store = useChatStore()
+      const spy = vi.spyOn(store, 'handleToolResultEvent')
+      store.applyContentEvent(JSON.stringify({ type: 'tool_result', content: 'output' }))
+      expect(spy).toHaveBeenCalledOnce()
+      expect(spy).toHaveBeenCalledWith({ content: 'output' })
+    })
+
+    it('routes a type:skill_load payload to handleToolCallEvent with status running', () => {
+      const store = useChatStore()
+      const spy = vi.spyOn(store, 'handleToolCallEvent')
+      store.applyContentEvent(JSON.stringify({ type: 'skill_load', name: 'pre-action' }))
+      expect(spy).toHaveBeenCalledWith({ name: 'pre-action', status: 'running' })
+    })
+
+    it('routes an untyped content chunk to handleContentChunk', () => {
+      const store = useChatStore()
+      const spy = vi.spyOn(store, 'handleContentChunk')
+      store.applyContentEvent(JSON.stringify({ content: 'hello' }))
+      expect(spy).toHaveBeenCalledWith({ content: 'hello' })
+    })
+
+    it('sets store.error when an untyped error event arrives', () => {
+      const store = useChatStore()
+      store.applyContentEvent(JSON.stringify({ error: 'something broke' }))
+      expect(store.error).toBe('something broke')
+    })
+
+    it('seals the in-flight assistant and clears isStreaming on [DONE]', () => {
+      const store = useChatStore()
+      store.messages = [
+        { id: 'u1', role: 'user', content: 'go', timestamp: '' },
+        { id: 'a1', role: 'assistant', content: 'partial', timestamp: '', status: 'running' },
+      ]
+      store.isStreaming = true
+      store.applyContentEvent('[DONE]')
+      expect(store.messages.find((m) => m.id === 'a1')?.status).toBe('completed')
+      expect(store.isStreaming).toBe(false)
+    })
+
+    it('does NOT route an untyped delegation-shaped payload (structural fallback removed)', () => {
+      // Regression guard for Principal F6. The Go emitter always tags
+      // delegation events with `type: 'delegation'`. A payload that lacks
+      // the discriminant but happens to carry target_agent/chain_id is
+      // either a bug on the emitter side or a stray test fixture — either
+      // way it must not silently route to applyDelegationEvent. This spec
+      // pins the removal of the bug-for-bug fallback at chatStore.ts:945.
+      const store = useChatStore()
+      const spy = vi.spyOn(store, 'applyDelegationEvent')
+      store.applyContentEvent(
+        JSON.stringify({ target_agent: 'executor', chain_id: 'chain-1', status: 'started' }),
+      )
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('silently logs unknown events to streamLog without affecting state', () => {
+      const store = useChatStore()
+      const before = store.messages.length
+      // Payload has no recognised type and no content/error — must not
+      // touch messages or error.
+      store.applyContentEvent(JSON.stringify({ foo: 'bar' }))
+      expect(store.messages.length).toBe(before)
+      expect(store.error).toBeNull()
+    })
+
+    it('silently logs malformed payloads (non-JSON) to streamLog without throwing', () => {
+      const store = useChatStore()
+      const before = store.messages.length
+      expect(() => store.applyContentEvent('not json {')).not.toThrow()
+      expect(store.messages.length).toBe(before)
+      expect(store.error).toBeNull()
+    })
+  })
+
 })
