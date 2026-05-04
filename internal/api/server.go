@@ -409,6 +409,30 @@ type sseError struct {
 	Error string `json:"error"`
 }
 
+// TODO(security): The HTTP and SSE error paths in this file currently
+// forward `err.Error()` (or wrap-and-forward) directly to the client. On
+// any deployment that exposes the API to untrusted callers — multi-tenant,
+// production behind a reverse proxy, embedded in a third-party site —
+// raw error text leaks implementation detail (file paths, library
+// versions, internal IDs, occasionally stack-trace fragments) to whoever
+// triggered the request.
+//
+// Recommendation when the threat model expands beyond single-user local:
+//
+//  1. Introduce a sanitised error mapper (e.g. `func clientError(err error)
+//     string`) that returns one of a small set of canonical messages
+//     ("internal error", "session not found", "rate limited") while
+//     logging the raw error server-side with a correlation ID.
+//  2. Replace every `http.Error(w, err.Error(), …)` and
+//     `writeSSEError(…, err.Error())` call site with the mapper.
+//  3. Include the correlation ID in the response body so an operator can
+//     find the matching server log without exposing the underlying
+//     message.
+//
+// Out of scope for PR 3 (the Vue chat UX delivery) — single-user local
+// dev is the only currently-supported deployment. See the broader
+// SECURITY.md (TODO) for the migration plan.
+
 // handleChat processes a chat request and streams the response as server-sent events.
 //
 // Expected:
