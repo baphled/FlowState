@@ -36,13 +36,20 @@ import (
 type mockStreamer struct {
 	chunks          []provider.StreamChunk
 	err             error
+	mu              sync.Mutex
 	capturedAgentID string
 	capturedMessage string
 }
 
 func (m *mockStreamer) Stream(_ context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
+	// Capture under mu so the sibling-race specs (which fan out
+	// concurrent POSTs through this same fixture) do not race on the
+	// bookkeeping fields. The non-concurrent specs continue to read
+	// CapturedAgentID/CapturedMessage via the accessors below.
+	m.mu.Lock()
 	m.capturedAgentID = agentID
 	m.capturedMessage = message
+	m.mu.Unlock()
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -1390,6 +1397,167 @@ var _ = Describe("Session stream live events", func() {
 		// The spec passes if `go test -race` does not abort. No
 		// content assertions — the contract under test is purely
 		// concurrency: both endpoints stay race-free under load.
+	})
+})
+
+// Sibling races to the SSE-fast-path data race fixed in commit aaa6f1f:
+// every handler that called GetSession and then dereferenced fields on
+// the returned *Session held no lock during the read. SendMessage's
+// `sess.Messages = append(...)` under WLock raced each of those reads.
+// These specs drive concurrent POST /messages (the writer) against each
+// affected reader handler under `-race` so the race detector flags any
+// future regression.
+//
+// All four specs share the same shape: seed a session via
+// RestoreSessions, fire iterations of POSTs in one goroutine, fire
+// iterations of GET/PATCH against the targeted handler in a second
+// goroutine, wait. No content assertions — the contract under test is
+// purely "no race detected".
+var _ = Describe("GetSession-deref-after-lock-release sibling races", func() {
+	const (
+		sessID     = "sibling-race-session"
+		iterations = 20
+	)
+
+	// raceSetup builds an httptest server with a real Manager + Broker
+	// and seeds one session. Returned closer must be invoked.
+	raceSetup := func() (*session.Manager, *httptest.Server, func()) {
+		broker := api.NewSessionBroker()
+		streamer := &mockStreamer{chunks: []provider.StreamChunk{
+			{Content: "ack"},
+			{Done: true},
+		}}
+		mgr := session.NewManager(streamer)
+		srv := api.NewServer(
+			streamer,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(broker),
+		)
+		ts := httptest.NewServer(srv.Handler())
+		mgr.RestoreSessions([]*session.Session{
+			{
+				ID:                sessID,
+				AgentID:           "race-agent",
+				CurrentAgentID:    "race-agent",
+				CurrentProviderID: "anthropic",
+				CurrentModelID:    "claude-3-5-sonnet",
+				Messages: []session.Message{
+					{ID: "u0", Role: "user", Content: "seed"},
+					{ID: "a0", Role: "assistant", Content: "ack"},
+				},
+			},
+		})
+		return mgr, ts, ts.Close
+	}
+
+	// driveWriter fires POST /messages in a tight loop; each call goes
+	// through SendMessage's append-under-WLock path that all four
+	// reader sites used to race against.
+	driveWriter := func(wg *sync.WaitGroup, baseURL string) {
+		defer GinkgoRecover()
+		defer wg.Done()
+		for range iterations {
+			resp, postErr := http.Post(
+				baseURL+"/api/v1/sessions/"+sessID+"/messages",
+				"application/json",
+				strings.NewReader(`{"content":"hello"}`),
+			)
+			if postErr == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
+	// driveReader fires the targeted handler request in a tight loop.
+	// Each spec passes a different requestBuilder so the same wrapper
+	// drives POST/PATCH/GET shapes interchangeably.
+	driveReader := func(wg *sync.WaitGroup, requestBuilder func(ctx context.Context) (*http.Request, error)) {
+		defer GinkgoRecover()
+		defer wg.Done()
+		for range iterations {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			req, reqErr := requestBuilder(ctx)
+			if reqErr == nil {
+				if resp, doErr := http.DefaultClient.Do(req); doErr == nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+				}
+			}
+			cancel()
+		}
+	}
+
+	It("handleSessionMessage (POST /messages → NewSessionResponse) is race-free", func() {
+		// Pre-fix server.go:667 read NewSessionResponse(sess) on a
+		// *Session whose RLock had already dropped. POST /messages
+		// itself drives both the writer and the reader through that
+		// path, so two concurrent POSTs are sufficient — one's
+		// append-under-WLock races the other's NewSessionResponse
+		// deref.
+		_, ts, closeFn := raceSetup()
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go driveWriter(&wg, ts.URL)
+		go driveWriter(&wg, ts.URL)
+		wg.Wait()
+	})
+
+	It("handleSessionMessages (GET /messages → sess.Messages) is race-free", func() {
+		// Pre-fix server.go:1722 read `messages := sess.Messages`
+		// outside any lock, racing SendMessage's append.
+		_, ts, closeFn := raceSetup()
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go driveWriter(&wg, ts.URL)
+		go driveReader(&wg, func(ctx context.Context) (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodGet,
+				ts.URL+"/api/v1/sessions/"+sessID+"/messages", http.NoBody)
+		})
+		wg.Wait()
+	})
+
+	It("handleUpdateSessionAgent (PATCH /agent → NewSessionResponse) is race-free", func() {
+		// Pre-fix server.go:1796 called GetSession after
+		// UpdateSessionAgent and then NewSessionResponse(sess) on
+		// the leaked pointer.
+		_, ts, closeFn := raceSetup()
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go driveWriter(&wg, ts.URL)
+		go driveReader(&wg, func(ctx context.Context) (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodPatch,
+				ts.URL+"/api/v1/sessions/"+sessID+"/agent",
+				strings.NewReader(`{"agentId":"race-agent"}`))
+		})
+		wg.Wait()
+	})
+
+	It("handleUpdateSessionModel (PATCH /model → NewSessionResponse) is race-free", func() {
+		// Pre-fix server.go:1841 called GetSession after
+		// UpdateSessionModel and then NewSessionResponse(sess) on
+		// the leaked pointer.
+		_, ts, closeFn := raceSetup()
+		defer closeFn()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go driveWriter(&wg, ts.URL)
+		go driveReader(&wg, func(ctx context.Context) (*http.Request, error) {
+			return http.NewRequestWithContext(ctx, http.MethodPatch,
+				ts.URL+"/api/v1/sessions/"+sessID+"/model",
+				strings.NewReader(`{"providerId":"anthropic","modelId":"claude-3-5-sonnet"}`))
+		})
+		wg.Wait()
 	})
 })
 

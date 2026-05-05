@@ -428,6 +428,58 @@ func (m *Manager) LastMessageRole(id string) (role string, hasMessages bool, err
 	return sess.Messages[len(sess.Messages)-1].Role, true, nil
 }
 
+// SnapshotSession returns a value-type snapshot of the named session,
+// suitable for projecting into wire-format DTOs (e.g. NewSessionResponse)
+// without leaking the manager's *Session pointer past the lock boundary.
+//
+// The Messages slice is deep-copied so callers can read len/index/range
+// it after the manager's RLock is released without racing concurrent
+// SendMessage appends. All scalar fields (ID, AgentID, Status,
+// CurrentAgentID, CurrentModelID, CurrentProviderID, CreatedAt,
+// UpdatedAt, ParentID, ParentSessionID, Depth) are captured by value
+// under RLock, so concurrent UpdateSessionAgent / UpdateSessionModel
+// writers cannot tear those reads either.
+//
+// CoordinationStore is intentionally left aliased — it is not part of
+// the wire shape produced by NewSessionResponse, callers do not write
+// to it from this path, and deep-copying the store would defeat its
+// shared-by-design semantics. If a future caller projects it into a
+// wire shape, that caller must add its own snapshot boundary.
+//
+// Expected:
+//   - id identifies an existing session.
+//
+// Returns:
+//   - A Session value (not a pointer) with its Messages slice deep-copied.
+//   - ErrSessionNotFound when no session matches the identifier.
+//
+// Side effects:
+//   - Acquires the manager's RLock for the duration of the snapshot.
+//
+// Concurrency:
+//   - Only acquires RLock; never upgrades to WLock. Safe to call from
+//     code paths that hold no manager lock. Callers must NOT pass the
+//     returned snapshot back into mutating Manager methods — the
+//     snapshot is decoupled from the live session and writes against
+//     it would be silently lost.
+func (m *Manager) SnapshotSession(id string) (Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sess, ok := m.sessions[id]
+	if !ok {
+		return Session{}, ErrSessionNotFound
+	}
+	snap := *sess
+	if len(sess.Messages) > 0 {
+		snap.Messages = make([]Message, len(sess.Messages))
+		copy(snap.Messages, sess.Messages)
+	} else {
+		snap.Messages = nil
+	}
+	return snap, nil
+}
+
 // ListSessions returns summaries of all sessions.
 // Returns:
 //   - A slice containing one summary per stored session.

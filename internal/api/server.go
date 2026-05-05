@@ -594,7 +594,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, NewSessionResponse(sess))
+	// CreateSession returns the *Session pointer that has just been
+	// installed in the manager's map. Although unlikely in practice,
+	// another goroutine that already knows the ID (e.g. an aggressive
+	// frontend kicking off SendMessage immediately after POST returns
+	// before the response is written) could race the dereference here.
+	// Snapshot via the new ID for symmetry with the other handlers and
+	// to keep the "no *Session past lock boundary" invariant uniform.
+	snap, err := s.sessionManager.SnapshotSession(sess.ID)
+	if err != nil {
+		http.Error(w, "failed to read created session", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, NewSessionResponse(&snap))
 }
 
 // handleListV1Sessions lists all sessions as summaries.
@@ -664,12 +676,19 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	sess, err := s.sessionManager.GetSession(id)
+	// SnapshotSession (not GetSession) so the *Session pointer never
+	// escapes the manager's lock boundary. NewSessionResponse reads
+	// ~10 mutable fields (Messages, Status, CurrentAgentID, ...);
+	// any one of them races with SendMessage / UpdateSession* under
+	// WLock if the caller derefs after RLock drops. See vault note
+	// "Session Messages Data Race in SSE Fast-Path (May 2026)" §
+	// "Sibling races".
+	snap, err := s.sessionManager.SnapshotSession(id)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(sess))
+	writeJSON(w, NewSessionResponse(&snap))
 }
 
 // handleSessionTodos returns the todo list for the given session as JSON.
@@ -1719,12 +1738,17 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	sess, err := s.sessionManager.GetSession(id)
+	// SnapshotSession deep-copies the Messages slice under RLock so
+	// the read here never races with SendMessage's append under
+	// WLock. Pre-fix this site read sess.Messages on a *Session that
+	// had escaped the lock boundary — same anti-pattern as the SSE
+	// fast-path race fixed in commit aaa6f1f.
+	snap, err := s.sessionManager.SnapshotSession(id)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	messages := sess.Messages
+	messages := snap.Messages
 	if messages == nil {
 		messages = []session.Message{}
 	}
@@ -1793,12 +1817,14 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	sess, err := s.sessionManager.GetSession(id)
+	// SnapshotSession instead of GetSession — see handleSessionMessage
+	// for the rationale; identical pointer-leak race shape.
+	snap, err := s.sessionManager.SnapshotSession(id)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(sess))
+	writeJSON(w, NewSessionResponse(&snap))
 }
 
 // handleUpdateSessionModel switches the active provider+model pairing for a session.
@@ -1838,12 +1864,14 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	sess, err := s.sessionManager.GetSession(id)
+	// SnapshotSession instead of GetSession — see handleSessionMessage
+	// for the rationale; identical pointer-leak race shape.
+	snap, err := s.sessionManager.SnapshotSession(id)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(sess))
+	writeJSON(w, NewSessionResponse(&snap))
 }
 
 // modelDescriptor is the wire shape for a single model entry in the
