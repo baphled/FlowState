@@ -13,6 +13,13 @@ import { test, expect } from '@playwright/test'
 //   2. The chat view MUST stay mounted (no AgentInfoView render).
 //   3. The chat store MUST load the delegated session (here keyed on the
 //      target agent id, matching MessageBubble.loadDelegatedSession).
+//   4. When several sessions exist for the delegated agent, the click MUST
+//      load the child of the active parent — NOT an unrelated older session
+//      that happens to share the same agent id. This pins the regression
+//      reported as "no longer able to click on the delegating card and view
+//      the delegated agents session" — the prior find() returned the
+//      oldest-first session for that agent, which on a long-lived backend
+//      almost never points at the actual child of the current parent.
 test.describe('Delegation card navigation', () => {
   const agents = [
     { id: 'planner', name: 'Planner', description: 'Plans work', model: 'claude-sonnet-4-6' },
@@ -161,5 +168,126 @@ test.describe('Delegation card navigation', () => {
     await expect(bar).toBeVisible()
     await expect(bar.getByTestId('agent-picker')).toHaveClass(/is-readonly/)
     await expect(bar.getByTestId('model-picker')).toHaveClass(/is-readonly/)
+  })
+
+  test('clicking the delegation card loads the child of the active parent, not an unrelated older session for the same agent', async ({ page }) => {
+    // The user has been running the system for a while. The session list
+    // contains an OLD standalone executor session (created before this
+    // parent existed) plus the actual child created by the active parent's
+    // delegation. The card click must land on the child, not the
+    // unrelated older session that happens to share the agent id.
+    //
+    // Pre-fix: chatStore.loadSessionByAgentId did `sessions.find(s => agent
+    // matches)` against an oldest-first list, so it returned the stale
+    // standalone session. The user reported "we are no longer able to
+    // click on the delegating card and view the delegated agents session"
+    // — the click did fire but landed on the wrong session.
+    const multiAgents = [
+      { id: 'planner', name: 'Planner', description: 'Plans work', model: 'claude-sonnet-4-6' },
+      { id: 'executor', name: 'Executor', description: 'Runs work', model: 'llama3.2' },
+    ]
+    const multiSessions = [
+      // Old standalone executor session — shares the agent id but is NOT
+      // the child of the active parent. Sorted oldest-first by the backend.
+      {
+        id: 'session-stale-executor-001',
+        agentId: 'executor',
+        title: 'Old Standalone Executor Run',
+        messageCount: 2,
+        createdAt: '2026-04-15T08:00:00Z',
+        updatedAt: '2026-04-15T08:00:00Z',
+      },
+      {
+        id: 'session-parent-002',
+        agentId: 'planner',
+        title: 'Active Parent Plan',
+        messageCount: 1,
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+      },
+      {
+        id: 'session-correct-child-002',
+        agentId: 'executor',
+        parentId: 'session-parent-002',
+        title: 'Active Parent Delegated Run',
+        messageCount: 2,
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+      },
+    ]
+
+    const multiMessages: Record<string, Array<Record<string, unknown>>> = {
+      'session-parent-002': [
+        {
+          id: 'msg-parent-2',
+          role: 'delegation',
+          content: 'delegated to executor',
+          targetAgent: 'executor',
+          chainId: 'chain-active',
+          status: 'completed',
+          timestamp: '2026-05-01T09:00:30Z',
+        },
+      ],
+      'session-stale-executor-001': [
+        {
+          id: 'msg-stale-1',
+          role: 'assistant',
+          content: 'STALE STANDALONE EXECUTOR REPLY (do not load me).',
+          timestamp: '2026-04-15T08:00:30Z',
+        },
+      ],
+      'session-correct-child-002': [
+        {
+          id: 'msg-correct-1',
+          role: 'assistant',
+          content: 'CORRECT CHILD REPLY (active parent).',
+          timestamp: '2026-05-01T09:01:30Z',
+        },
+      ],
+    }
+
+    // Per-test routes override the beforeEach defaults — page.route('**/x',
+    // ...) replaces the prior handler for the same pattern (Playwright
+    // documents this as last-registered-wins for identical URL patterns).
+    await page.route('**/api/agents', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(multiAgents),
+      })
+    })
+    await page.route('**/api/v1/sessions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(multiSessions),
+      })
+    })
+    await page.route('**/api/v1/sessions/**/messages', async (route) => {
+      const sessionId = getSessionId(route.request().url())
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(multiMessages[sessionId] ?? []),
+      })
+    })
+
+    // Park the user on the active parent so the in-thread delegation card
+    // is rendered against this parent's context.
+    await page.evaluate(() => {
+      localStorage.setItem('chat.currentSessionId', 'session-parent-002')
+      localStorage.setItem('chat.agentId', 'planner')
+    })
+    await page.goto('/chat')
+
+    const card = page.getByTestId('delegation-agent-link').first()
+    await expect(card).toBeVisible()
+    await card.click()
+
+    const messageList = page.getByTestId('message-list')
+    // The active parent's child is the one that must load — its content
+    // must be visible and the stale standalone session's content must NOT.
+    await expect(messageList).toContainText('CORRECT CHILD REPLY (active parent).')
+    await expect(messageList).not.toContainText('STALE STANDALONE EXECUTOR REPLY')
   })
 })
