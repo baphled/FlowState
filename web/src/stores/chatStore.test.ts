@@ -1315,6 +1315,115 @@ describe('chatStore - multi-turn streaming (regression: prior assistant must not
   })
 })
 
+// User report: "we are seeing a todo list completing, but we don't see any
+// responses between the update." The agent emits assistant text, then a
+// `tool_call`/`tool_result` pair (e.g. `todowrite`), then more assistant
+// text. The chat thread should render three bubbles in order:
+//
+//   [assistant: pre-tool text]
+//   [tool_result: todowrite]      ← rendered as the todo card
+//   [assistant: post-tool text]
+//
+// Pre-fix the in-flight assistant message is never sealed when a tool fires.
+// `handleContentChunk` reverse-finds the first `role==='assistant' &&
+// status==='running'` message — which is still the pre-tool assistant —
+// and APPENDS the post-tool text onto it. The merged bubble then sits at
+// its original array position (BEFORE the tool_result), so the user sees
+// the pre+post text fused into one block above all the todo updates and
+// the inter-tool / post-tool replies appear to "vanish" from the thread.
+//
+// The contract being pinned: a `tool_call` (or `skill_load`) event seals
+// any in-flight assistant bubble. The next content chunk creates a new
+// assistant message AFTER the tool_result in array order, so the chat UI
+// renders distinct bubbles around each tool invocation.
+describe('chatStore - assistant content around tool_call (no merge across tool boundary)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('seals the in-flight assistant on tool_call so post-tool chunks land on a NEW message after the tool_result', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    // Simulate the start of a turn streaming a todowrite-using flow.
+    store.applyContentEvent(JSON.stringify({ content: 'Let me plan this out. ' }))
+
+    // Tool fires mid-stream.
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todowrite', status: 'running' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_result', content: '[{"id":"1","content":"step","status":"pending"}]' }))
+
+    // More assistant text arrives between the todo updates / after the tool.
+    store.applyContentEvent(JSON.stringify({ content: 'First step is ready.' }))
+
+    // The post-tool chunk MUST NOT merge into the pre-tool assistant.
+    const assistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants).toHaveLength(2)
+    expect(assistants[0].content).toBe('Let me plan this out. ')
+    expect(assistants[1].content).toBe('First step is ready.')
+    expect(assistants[1].id).not.toBe(assistants[0].id)
+
+    // And array order must be preserved so the UI renders bubbles in
+    // chronological order (pre-tool → tool_result → post-tool).
+    const order = store.messages.map((m) => ({ role: m.role, content: m.content }))
+    expect(order).toEqual([
+      { role: 'assistant', content: 'Let me plan this out. ' },
+      { role: 'tool_result', content: '[{"id":"1","content":"step","status":"pending"}]' },
+      { role: 'assistant', content: 'First step is ready.' },
+    ])
+  })
+
+  it('seals the in-flight assistant across multiple tool_call/tool_result pairs', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    // Simulate the multi-todo flow that produced the user-reported gap.
+    store.applyContentEvent(JSON.stringify({ content: 'I will track this with todos. ' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todowrite', status: 'running' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_result', content: '[{"id":"1","status":"pending"}]' }))
+
+    store.applyContentEvent(JSON.stringify({ content: 'Starting step one. ' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todowrite', status: 'running' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_result', content: '[{"id":"1","status":"in_progress"}]' }))
+
+    store.applyContentEvent(JSON.stringify({ content: 'All done.' }))
+    store.applyContentEvent('[DONE]')
+
+    const assistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants.map((m) => m.content)).toEqual([
+      'I will track this with todos. ',
+      'Starting step one. ',
+      'All done.',
+    ])
+
+    // Every assistant bubble between todo updates should be present and
+    // positioned between the tool_result rows in array order.
+    const roles = store.messages.map((m) => m.role)
+    expect(roles).toEqual([
+      'assistant',
+      'tool_result',
+      'assistant',
+      'tool_result',
+      'assistant',
+    ])
+  })
+
+  it('seals the in-flight assistant on a skill_load event as well', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    store.applyContentEvent(JSON.stringify({ content: 'Loading a skill. ' }))
+    store.applyContentEvent(JSON.stringify({ type: 'skill_load', name: 'bdd-workflow' }))
+    store.applyContentEvent(JSON.stringify({ content: 'Skill loaded, continuing.' }))
+
+    const assistants = store.messages.filter((m) => m.role === 'assistant')
+    expect(assistants).toHaveLength(2)
+    expect(assistants[0].content).toBe('Loading a skill. ')
+    expect(assistants[1].content).toBe('Skill loaded, continuing.')
+  })
+})
+
 describe('chatStore - todowrite wiring (live SSE)', () => {
   beforeEach(() => {
     installLocalStorageStub()
