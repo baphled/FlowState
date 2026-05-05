@@ -19,27 +19,88 @@ const brokerSubscriberGracePeriod = 50 * time.Millisecond
 
 // SessionBroker distributes live session events to registered subscribers.
 //
-// It maintains a map of session ID to subscriber channels. When events are
-// published for a session, they are forwarded to all active subscribers.
+// # Concurrency contract (formal, post-audit May 2026)
 //
-// active tracks sessions that currently have an in-progress Publish call.
-// Consumers call IsPublishing to detect whether a Publish is running before
-// entering the blocking select loop, so they can fast-path a [DONE] when a
-// late subscriber arrives after the stream has already completed.
+// The broker holds the following invariants under any concurrent
+// interleaving of Subscribe, Unsubscribe, Publish, IsPublishing, and
+// DroppedCount calls:
 //
-// dropped counts chunks that were discarded because a subscriber's channel
-// remained full past brokerSubscriberGracePeriod. Pre-Drop-#4 the broker
-// had no way to surface this — the silent loss was structurally invisible
-// to both frontend and server-side metrics. The atomic counter is exposed
-// via DroppedCount() for tests, log lines, and Prometheus integration.
+//   - I1 Single-closer per channel. A subscriber channel is closed
+//     EXACTLY ONCE, and only by the LAST in-flight Publish run for the
+//     session as it exits. Unsubscribe never closes; concurrent Publish
+//     runs cooperatively coordinate via the active refcount so only the
+//     last to exit owns the close.
+//
+//   - I2 Concurrent Publish for the same sessionID is safe. Chunks from
+//     N concurrent runs may interleave on subscriber channels in any
+//     order, but no panic, no double-close, and no leaked subscribers
+//     are possible. (Production wires one Publish per turn; this
+//     invariant defends against future wiring regressions.)
+//
+//   - I3 Subscribe-during-terminal-close is safe. The terminal close
+//     loop runs while holding b.mu; a Subscribe racing it either sees
+//     IsPublishing == true (and joins the in-flight run) or sees
+//     IsPublishing == false (and starts a fresh entry that no current
+//     Publish will close). No subscriber channel is ever closed twice
+//     and no live subscriber is ever orphaned in the map without an
+//     unsubscribe path.
+//
+//   - I4 Subscribe / Unsubscribe / Publish hold b.mu only across map
+//     mutations and channel closes. Channel SENDS happen outside the
+//     lock — sends are protected by the close-by-sender invariant
+//     (I1), not by b.mu.
+//
+//   - I5 No RWMutex upgrade. The broker uses sync.Mutex (not RWMutex)
+//     and never calls user code under the lock. The RWMutex deadlock
+//     class documented in the engine bug-fix note ("RLock then call
+//     that acquires WLock") is structurally inapplicable.
+//
+//   - I6 Live-events-only contract. The broker fans out events
+//     emitted strictly after a subscriber registers; it does not
+//     replay history. Historical content lives on
+//     GET /api/v1/sessions/{id}/messages. The broker has no replay
+//     branch and must not grow one (see SSE Broker Replays Sealed Turn
+//     bug-fix note).
+//
+//   - I7 Bounded backpressure. A subscriber that stays full past
+//     brokerSubscriberGracePeriod loses the chunk on a counted +
+//     logged drop. Sibling subscribers are never starved by a stuck
+//     consumer (see Streaming Signal-Drop Fix Drop #4).
+//
+//   - I8 Subscribers-map cleanliness. After a Publish run exits AND
+//     all its subscribers unsubscribe, the broker's subscribers map
+//     contains no entry for that session. Empty-slice entries are
+//     dropped on Unsubscribe so long-running servers do not accumulate
+//     dead session keys.
+//
+// # Field synchronisation
+//
+//   - mu: sync.Mutex protecting all map mutations (subscribers, active)
+//     and channel closes.
+//   - subscribers: map session-id -> []chan; written under mu, read
+//     under mu (snapshot copy returned for outside-lock fan-out).
+//   - active: refcount of in-flight Publish runs per session; written
+//     under mu, read under mu.
+//   - dropped: process-lifetime monotonic atomic counter for backpressure
+//     drops; safe for concurrent reads/writes without mu.
+//
+// # Why a refcount, not a bool, for `active`
+//
+// The pre-audit implementation used `active map[string]bool`. Two
+// concurrent Publish runs for the same sessionID would both set the
+// flag to true and both run the terminal close loop, calling close()
+// on every channel in the snapshot — a "close of closed channel" panic
+// on the second run. A bool cannot express "still in flight" once a
+// second run starts; a refcount can. With the refcount, only the run
+// that decrements active to zero owns the close.
 type SessionBroker struct {
 	mu          sync.Mutex
 	subscribers map[string][]chan provider.StreamChunk
-	active      map[string]bool
+	active      map[string]int
 	dropped     atomic.Uint64
 }
 
-// NewSessionBroker creates a new SessionBroker with an empty subscriber map.
+// NewSessionBroker creates a new SessionBroker with empty maps.
 //
 // Returns:
 //   - A ready-to-use SessionBroker.
@@ -49,22 +110,45 @@ type SessionBroker struct {
 func NewSessionBroker() *SessionBroker {
 	return &SessionBroker{
 		subscribers: make(map[string][]chan provider.StreamChunk),
-		active:      make(map[string]bool),
+		active:      make(map[string]int),
 	}
 }
 
-// IsPublishing reports whether a Publish call is currently in progress for
-// the given session. Callers use this to distinguish two cases after
-// subscribing:
+// IsPublishing reports whether at least one Publish call is currently in
+// progress for the given session.
 //
-//   - true  → chunks are flowing; the select loop will receive them.
-//   - false → either Publish hasn't started yet (pending message, caller
-//     should wait) or it finished before Subscribe was called (caller
-//     should check session state and fast-path [DONE] if complete).
+// Callers use this to distinguish two cases after subscribing:
+//
+//   - true  → at least one Publish run is mid-flight; the select loop
+//     will receive its chunks.
+//   - false → either Publish hasn't started yet (pending message,
+//     caller should wait) or every prior run has finished before
+//     Subscribe was called (caller should check session state and
+//     fast-path [DONE] if complete).
+//
+// Returns true while the active refcount is > 0; the count is
+// incremented at Publish entry and decremented at Publish exit, both
+// under b.mu.
 func (b *SessionBroker) IsPublishing(sessionID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.active[sessionID]
+	return b.active[sessionID] > 0
+}
+
+// SubscriberCount returns the number of registered subscribers for the
+// given session. Intended for invariant assertions in concurrency tests
+// (see broker_test.go's "concurrency audit" Describe block) — it is
+// the only safe way to observe the subscribers map without exporting
+// it.
+//
+// Production code MUST NOT branch on this value: doing so reintroduces
+// a TOCTOU window between the count read and any subsequent action,
+// and the broker's contract intentionally hides subscriber identity
+// from callers. The accessor is exported for test-introspection only.
+func (b *SessionBroker) SubscriberCount(sessionID string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subscribers[sessionID])
 }
 
 // DroppedCount returns the cumulative number of chunks the broker has
@@ -80,87 +164,162 @@ func (b *SessionBroker) DroppedCount() uint64 {
 	return b.dropped.Load()
 }
 
-// Subscribe registers a new subscriber for a session and returns a receive channel and an unsubscribe function.
+// Subscribe registers a new subscriber for a session and returns a
+// receive channel and an unsubscribe function.
 //
-// Channel-close ownership: the publisher (Publish) is the sole closer of
-// the returned channel. Unsubscribe removes the subscriber from the
-// fan-out set but does NOT close the channel. This is the close-by-sender
-// pattern — the only safe way to share a channel across a sender and a
-// concurrent canceller without a close-during-send race.
+// # Channel-close ownership
 //
-// Pre-fix Unsubscribe called close(ch) while holding the broker mutex.
-// Publish snapshots the subscriber slice under the same mutex, releases
-// it, then sends to each snapshot entry inside deliverWithBackpressure
-// without holding the mutex. Between Publish's lock release and its `case
-// sub <- chunk:` send, a concurrent Unsubscribe could run, remove the
-// subscriber from the canonical slice, and call close(ch). The next send
-// then panicked with "send on closed channel". Confirmed RED in the
-// `close-during-send race` Describe in broker_test.go.
+// The publisher is the sole closer of the returned channel (invariant
+// I1). Unsubscribe removes the subscriber from the fan-out set but does
+// NOT close the channel. This is the close-by-sender pattern — the only
+// safe way to share a channel across a sender and a concurrent canceller
+// without a close-during-send race.
 //
-// The fix shape: Unsubscribe never closes; Publish closes once on
-// source-channel close (terminal close loop). A subscriber that
-// unsubscribes mid-stream simply abandons its buffered channel — the
-// publisher will keep delivering to it until it either fills (drop
-// counter increments) or the publish run ends and the terminal close
-// runs. No goroutine reads from the abandoned channel, so the buffered
-// chunks are GC'd along with the channel once the publish run completes
-// and the snapshot reference is released.
+// Pre-audit Unsubscribe called close(ch) while holding the broker
+// mutex, while Publish snapshotted the subscriber slice under the same
+// mutex and then sent to each entry inside deliverWithBackpressure
+// WITHOUT holding the mutex. Between Publish's lock release and its
+// `case sub <- chunk:` send, a concurrent Unsubscribe could remove the
+// subscriber and call close(ch). The next send then panicked with
+// "send on closed channel". See "Session Messages Data Race in SSE
+// Fast-Path (May 2026)" § "Broker close-during-send race".
 //
-// The only production caller (handleSessionStream in server.go) does not
-// rely on the channel closing on unsubscribe — it breaks out of its
-// select via `ctx.Done()` and lets `defer unsubscribe()` run. The contract
-// change is invisible to that caller.
+// # Concurrency with terminal close
+//
+// Subscribe acquires b.mu before appending to the subscribers slice.
+// Publish's terminal close also acquires b.mu before snapshotting and
+// closing. Therefore Subscribe is serialised against terminal close:
+//
+//   - Subscribe runs first → channel is in the subscribers slice → if
+//     a Publish run was in flight when Subscribe ran, the channel is
+//     in that run's terminal snapshot and gets closed by it.
+//   - Subscribe runs after the LAST Publish run's terminal close → the
+//     subscribers entry is fresh (post-delete) → the channel is not in
+//     any current Publish run's snapshot → the channel is not closed
+//     by THIS publisher cohort. It will be closed only if a future
+//     Publish run starts and completes (delivering chunks of the next
+//     turn) OR garbage-collected when no goroutine references it
+//     (after `defer unsubscribe()` runs in handleSessionStream).
+//
+// The only production caller (handleSessionStream in server.go) does
+// not rely on the channel closing on unsubscribe — it breaks out via
+// `ctx.Done()` and lets `defer unsubscribe()` run. The contract change
+// is invisible to that caller.
 //
 // Expected:
 //   - sessionID is a non-empty string identifying an existing session.
 //
 // Returns:
-//   - A buffered channel that receives StreamChunk values as they are published.
-//   - A function that removes this subscriber from the fan-out set when called.
-//     Idempotent: safe to call multiple times.
+//   - A buffered channel that receives StreamChunk values as they are
+//     published. Capacity 64.
+//   - A function that removes this subscriber from the fan-out set when
+//     called. Idempotent: safe to call multiple times.
 //
 // Side effects:
 //   - Adds the subscriber channel to the session's subscriber list.
 func (b *SessionBroker) Subscribe(sessionID string) (<-chan provider.StreamChunk, func()) {
 	ch := make(chan provider.StreamChunk, 64)
+
 	b.mu.Lock()
 	b.subscribers[sessionID] = append(b.subscribers[sessionID], ch)
 	b.mu.Unlock()
 
+	var unsubOnce sync.Once
 	unsubscribe := func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		subs := b.subscribers[sessionID]
-		for i, sub := range subs {
-			if sub == ch {
-				b.subscribers[sessionID] = append(subs[:i], subs[i+1:]...)
-				// Intentionally NOT closing ch here. Publish is the
-				// sole closer; closing here would race with Publish's
-				// concurrent send (close-during-send panic).
-				break
+		unsubOnce.Do(func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			subs := b.subscribers[sessionID]
+			for i, sub := range subs {
+				if sub == ch {
+					b.subscribers[sessionID] = append(subs[:i], subs[i+1:]...)
+					// Invariant I8: drop empty-slice entries to keep
+					// the subscribers map clean. Pre-audit a long-
+					// running server accumulated zero-length entries
+					// for every session that ever had a subscriber.
+					if len(b.subscribers[sessionID]) == 0 {
+						delete(b.subscribers, sessionID)
+					}
+					// Invariant I1: NEVER close(ch) here. Publish is
+					// the sole closer; closing here would race with
+					// Publish's concurrent send (close-during-send
+					// panic).
+					return
+				}
 			}
-		}
+		})
 	}
 
 	return ch, unsubscribe
 }
 
-// Publish forwards all chunks from the given channel to all subscribers of a session.
+// Publish forwards all chunks from the given source channel to all
+// subscribers of a session, then closes every subscriber channel
+// owned by the LAST in-flight Publish run as it exits.
+//
+// # Lifecycle and invariants
+//
+// On entry: increments active[sessionID] under b.mu (refcount). Concurrent
+// Publish runs for the same sessionID push the count above 1 and BOTH fan
+// chunks out to all current subscribers. Their chunks interleave in fan-
+// out order; receivers MUST tolerate this ordering (production wires one
+// Publish per turn so this only matters as a safety guarantee).
+//
+// Per-chunk: snapshots the current subscriber slice under b.mu, releases
+// the lock, then calls deliverWithBackpressure for each entry. The lock
+// is held only for the snapshot copy, never during the send — so a slow
+// or stuck subscriber cannot block Subscribe or other concurrent Publish
+// runs.
+//
+// On exit (when the source channel closes): decrements active[sessionID]
+// under b.mu. The run that decrements to zero is the LAST out and owns
+// the terminal close — it captures the current subscriber slice, deletes
+// the map entries (active and subscribers), then closes every captured
+// channel. All map mutations AND closes happen under b.mu so a
+// concurrent Subscribe cannot insert into a stale map entry between
+// delete and close.
+//
+// Earlier-exiting concurrent runs (count > 0 after decrement) just
+// return — they neither close nor delete map state. This is the
+// refcount-based extension of the close-by-sender invariant: there are
+// many senders but exactly one closer, the LAST sender out.
+//
+// # Why close inside the lock
+//
+// The pre-audit implementation released b.mu before the close loop. A
+// concurrent Subscribe between the unlock and the close loop could
+// append a fresh channel to b.subscribers[sessionID] (re-creating the
+// just-deleted entry). That channel was orphaned: not closed by THIS
+// run's terminal loop, but visible to the next Publish run if any. By
+// holding the lock across the close loop, we make Subscribe wait until
+// terminal close completes — Subscribe then either sees an empty map
+// entry (if it was the LAST run to close) or the in-flight Publish's
+// active refcount > 0 (if a concurrent Publish is still running). Both
+// cases are safe.
+//
+// Closing inside the lock is safe because close(chan) is a constant-
+// time non-blocking operation; it never calls user code, never blocks
+// on a receiver, and never triggers a deadlock against the broker
+// itself (no broker code calls back into b.mu while a close is
+// pending).
 //
 // Expected:
 //   - sessionID is a non-empty string.
-//   - chunks is a readable channel of StreamChunk values that will be drained.
+//   - chunks is a readable channel of StreamChunk values that will be
+//     drained.
 //
 // Returns:
-//   - Nothing.
+//   - Nothing. Synchronous; returns when the source channel closes.
 //
 // Side effects:
 //   - Reads all chunks from the source channel.
-//   - Sends each chunk to every active subscriber channel for the session.
-//   - Unsubscribes all subscribers and closes their channels when the source closes.
+//   - Sends each chunk to every active subscriber channel for the
+//     session via deliverWithBackpressure.
+//   - On last-out exit: removes the session's entries from active and
+//     subscribers maps, and closes every captured subscriber channel.
 func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamChunk) {
 	b.mu.Lock()
-	b.active[sessionID] = true
+	b.active[sessionID]++
 	b.mu.Unlock()
 
 	for chunk := range chunks {
@@ -175,14 +334,26 @@ func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamC
 	}
 
 	b.mu.Lock()
+	b.active[sessionID]--
+	if b.active[sessionID] > 0 {
+		// Another Publish run is still in flight for this session.
+		// It owns the terminal close — we just exit. No close, no
+		// map mutation other than the decrement above.
+		b.mu.Unlock()
+		return
+	}
+	// Last out — own the terminal close.
 	delete(b.active, sessionID)
 	subs := b.subscribers[sessionID]
 	delete(b.subscribers, sessionID)
-	b.mu.Unlock()
-
+	// Close inside the lock. See the godoc above for why this is the
+	// right shape (eliminates the Subscribe-during-terminal-close
+	// orphan window) and why it is deadlock-free (close is constant-
+	// time, no callback into broker code).
 	for _, sub := range subs {
 		close(sub)
 	}
+	b.mu.Unlock()
 }
 
 // deliverWithBackpressure attempts to send a chunk to a single subscriber
@@ -200,6 +371,16 @@ func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamC
 // Crucially the grace period is per-subscriber, not per-broker — a
 // permanently stuck subscriber waits at most brokerSubscriberGracePeriod
 // before its chunk drops, so siblings of a stuck subscriber never starve.
+//
+// # Send safety under the close-by-sender invariant
+//
+// The send happens WITHOUT b.mu held. That is safe because of invariant
+// I1 (single-closer per channel): the sub channel is only closed by the
+// LAST Publish run's terminal close, which holds b.mu. Sub channels are
+// never closed by Unsubscribe. Therefore, while a Publish run is mid-
+// flight (active > 0 for this session), no concurrent close on this
+// sub can fire — the close path is guarded by `b.active[sessionID] == 0`
+// AFTER the current run's decrement.
 //
 // Expected:
 //   - sessionID identifies the session for log attribution.
