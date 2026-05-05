@@ -192,4 +192,90 @@ test.describe('chat real backend', () => {
       )
       .toBeGreaterThan(0)
   })
+
+  test('fresh session: model+provider chip renders after the first assistant turn (Track B chip-on-fresh-session)', async ({ page }) => {
+    // May 2026 regression cover. Track B's initial implementation only
+    // populated chatStore.currentModelId / currentProviderId on a
+    // `provider_changed` SSE transition, which never fires on the happy
+    // path. A user on a fresh session saw nothing for the model — the
+    // chip's `v-if` fell through and the activity indicator showed only
+    // "<agent> is working…" with no provenance.
+    //
+    // The fix lives at two layers:
+    //   - Backend: handleCreateSession seeds the session's
+    //     CurrentProviderID / CurrentModelID from the agent manifest's
+    //     first PreferredModels entry (when present).
+    //   - Backend: appendSessionMessage promotes the engine-stamped
+    //     (model, provider) onto the session whenever an assistant
+    //     turn lands. This is the path exercised here — the user's
+    //     live agent config typically has no PreferredModels (the
+    //     deployed manifests at ~/.config/flowstate/agents/*.md don't
+    //     declare them), so the chip becomes populated only after the
+    //     first assistant chunk lands and the engine's e.LastModel() /
+    //     e.LastProvider() flow into the message.
+    //
+    // The frontend reads from chatStore.currentModelId /
+    // currentProviderId; both are kept in sync with the session
+    // metadata via reconcileFromBackend on every poll. The chip's
+    // `data-testid="agent-activity-model"` becomes visible once at
+    // least one of the fields is non-empty.
+    const input = page.getByTestId('message-input')
+    const sendBtn = page.getByTestId('send-button')
+
+    await input.fill('say "ok"')
+    await sendBtn.click()
+
+    // Wait for an assistant bubble first — that confirms the engine has
+    // streamed at least one chunk (so e.LastModel() / e.LastProvider()
+    // are populated) and the post-POST reconcile has refreshed the
+    // session metadata.
+    await expect
+      .poll(
+        async () => await page.locator('.message-bubble.assistant').count(),
+        { timeout: 60_000, message: 'no assistant bubble — cannot assert chip provenance' },
+      )
+      .toBeGreaterThan(0)
+
+    // The chip is bound to chatStore state and rendered while
+    // isStreaming OR isLoading is true. After the assistant bubble
+    // arrives we may have settled to neither, so the chip will hide.
+    // Read the underlying store state directly — that's the load-bearing
+    // assertion for the regression: the *data* is now populated, even if
+    // the chip happens not to be on-screen at this exact tick.
+    const storeState = await page.evaluate(() => {
+      const w = window as unknown as {
+        __chatStoreSnapshot?: () => { currentModelId: string; currentProviderId: string }
+      }
+      // Prefer an injected snapshot helper when present (the dev build
+      // exposes one for diagnostics); fall back to scraping window for
+      // a Pinia instance.
+      if (typeof w.__chatStoreSnapshot === 'function') return w.__chatStoreSnapshot()
+      return null
+    })
+
+    // Re-trigger streaming so the chip is on-screen for the DOM-evidence
+    // assertion. We send a second prompt and assert the chip renders
+    // immediately — at this point the store state from the first turn is
+    // already promoted, so the chip must show non-empty content.
+    await input.fill('again')
+    await sendBtn.click()
+
+    const chip = page.getByTestId('agent-activity-model')
+    await expect(chip, 'model chip must be visible while the second turn streams').toBeVisible({
+      timeout: 10_000,
+    })
+    const chipText = (await chip.textContent())?.trim() ?? ''
+    expect(chipText.length, `chip text must not be blank — got "${chipText}"`).toBeGreaterThan(0)
+    expect(chipText, 'chip should start with "on " per the activity-indicator format').toMatch(/^on\s+\S+/)
+
+    // Optional store-state diagnostic. When the diagnostic helper isn't
+    // injected (production build, default config), the chip-text
+    // assertion above is the load-bearing check.
+    if (storeState) {
+      expect(
+        storeState.currentModelId.length + storeState.currentProviderId.length,
+        'at least one of currentModelId / currentProviderId must be set after the first assistant turn',
+      ).toBeGreaterThan(0)
+    }
+  })
 })

@@ -121,6 +121,13 @@ type StreamChunk struct {
 	Thinking string
 	// ModelID is the model that produced this chunk, stamped by the engine at stream time.
 	ModelID string
+	// ProviderID is the provider that produced this chunk, stamped by the engine at
+	// stream time. Paired with ModelID so downstream consumers (the session
+	// accumulator, the SSE writer, the per-message audit trail) can attribute
+	// every assistant turn to a (provider, model) pair without re-querying the
+	// engine. The value is the provider's stable identifier (e.g. "anthropic",
+	// "zai", "openai"), matching the `currentProviderId` shape used elsewhere.
+	ProviderID string
 }
 
 // EmbedRequest contains the parameters for an embedding request.

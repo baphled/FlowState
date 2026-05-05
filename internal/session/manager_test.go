@@ -67,6 +67,107 @@ var _ = Describe("Manager", func() {
 				Expect(sess.CreatedAt).To(BeTemporally(">=", before))
 				Expect(sess.UpdatedAt).To(BeTemporally(">=", before))
 			})
+
+			It("leaves CurrentProviderID and CurrentModelID empty when no defaults are seeded", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.CurrentProviderID).To(BeEmpty())
+				Expect(sess.CurrentModelID).To(BeEmpty())
+			})
+		})
+	})
+
+	Describe("CreateSessionWithDefaults", func() {
+		// Companion to the May 2026 chip-not-rendering fix on the API side.
+		// The session manager owns the in-memory CurrentProviderID and
+		// CurrentModelID fields the API handler seeds at create time. These
+		// specs pin the contract so a future refactor of CreateSession
+		// cannot silently drop the seed.
+		It("seeds CurrentProviderID and CurrentModelID when both defaults are non-empty", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.CurrentProviderID).To(Equal("anthropic"))
+			Expect(sess.CurrentModelID).To(Equal("claude-sonnet-4-6"))
+		})
+
+		It("makes the seeded pair visible via GetSession", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "zai", "glm-4.6")
+			Expect(err).NotTo(HaveOccurred())
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentProviderID).To(Equal("zai"))
+			Expect(loaded.CurrentModelID).To(Equal("glm-4.6"))
+		})
+
+		It("accepts empty defaults (degraded path) with the same shape as CreateSession", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "", "")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.CurrentProviderID).To(BeEmpty())
+			Expect(sess.CurrentModelID).To(BeEmpty())
+			Expect(sess.AgentID).To(Equal("agent-x"))
+			Expect(sess.Status).To(Equal("active"))
+		})
+	})
+
+	Describe("appendSessionMessage promotes assistant model+provider", func() {
+		// When the engine streams an assistant turn carrying a (model,
+		// provider) pair stamped by the engine — the typical hot path —
+		// the session metadata must be promoted to match. Without this,
+		// a session that started with empty defaults (manifest had no
+		// PreferredModels, or a legacy session pre-dating the seed) would
+		// keep showing nothing on the chip even though we now know which
+		// model produced the answer.
+		It("promotes the assistant message's ModelName and ProviderName onto the session", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "answer text",
+				ModelName:    "glm-4.6",
+				ProviderName: "zai",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentModelID).To(Equal("glm-4.6"))
+			Expect(loaded.CurrentProviderID).To(Equal("zai"))
+		})
+
+		It("does not clobber session model+provider when the assistant message has empty fields", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Engine forgot to stamp (legacy provider, mock streamer in a test).
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:    "assistant",
+				Content: "hi",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentProviderID).To(Equal("anthropic"),
+				"empty ModelName/ProviderName must not erase a previously-seeded pair")
+			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
+		})
+
+		It("does not promote model/provider on non-assistant message roles", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Tool calls / results don't carry these fields, but defend
+			// against a future refactor that accidentally populates them.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "tool_call",
+				Content:      "bash",
+				ModelName:    "should-be-ignored",
+				ProviderName: "should-be-ignored",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
+			Expect(loaded.CurrentProviderID).To(Equal("anthropic"))
 		})
 	})
 

@@ -105,10 +105,10 @@ var _ = Describe("SeedSkillsDir", func() {
 // path actually calls (see internal/app/app.go:2460 in loadSkills).
 //
 // On the bug commit (aa8891d) this fails because:
-//   1. The skills directory is empty (no embed + seed pipeline).
-//   2. FileSkillLoader.LoadAll returns an empty slice without error.
-//   3. LoadAlwaysActiveSkills filters that empty slice to nil.
-//   4. The agent prompt is built without the four user-named skills.
+//  1. The skills directory is empty (no embed + seed pipeline).
+//  2. FileSkillLoader.LoadAll returns an empty slice without error.
+//  3. LoadAlwaysActiveSkills filters that empty slice to nil.
+//  4. The agent prompt is built without the four user-named skills.
 //
 // On the fix it passes because SeedSkillsDir populates the dir from the
 // embedded FS before the loader runs, so the four bundles reach the

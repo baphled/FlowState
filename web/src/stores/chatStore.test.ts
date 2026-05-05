@@ -811,6 +811,109 @@ describe('chatStore - model restoration on loadSessionMessages', () => {
   })
 })
 
+describe('chatStore - newSession seeds chip data from POST /sessions response', () => {
+  // Regression cover for the May 2026 chip-not-rendering bug. The
+  // backend now seeds CurrentProviderID / CurrentModelID on a brand-new
+  // session from the agent manifest's first PreferredModels entry. The
+  // store must adopt those seed values so the persistent activity-
+  // indicator chip renders immediately, before the user picks a model
+  // and before any provider_changed transition fires.
+  //
+  // Without these specs, a future refactor of newSession could quietly
+  // drop the propagation and the chip would silently regress to "never
+  // shows on a fresh session" — exactly the symptom hands-on UI
+  // verification surfaced.
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('adopts currentModelId and currentProviderId from the createSession response', async () => {
+    vi.mocked(createSession).mockResolvedValueOnce({
+      id: 'session-new',
+      agentId: 'team-lead',
+      currentModelId: 'glm-4.6',
+      currentProviderId: 'zai',
+      messages: [],
+      messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
+      createdAt: '',
+      updatedAt: '',
+    })
+
+    const store = useChatStore()
+    store.agentId = 'team-lead'
+    // Pre-conditions mirror the bug repro: store fields start empty.
+    store.currentModelId = ''
+    store.currentProviderId = ''
+
+    await store.newSession()
+
+    expect(store.currentModelId).toBe('glm-4.6')
+    expect(store.currentProviderId).toBe('zai')
+  })
+
+  it('leaves chip fields empty when the createSession response carries no model+provider', async () => {
+    // Defensive: agent manifest with no PreferredModels (e.g. a
+    // bare-bones custom agent) returns empty defaults. The chip must
+    // stay hidden in that degraded path — never synthesise a fake
+    // value or leak a previously-set localStorage value into the
+    // session-bound chip.
+    vi.mocked(createSession).mockResolvedValueOnce({
+      id: 'session-new',
+      agentId: 'barebones-agent',
+      messages: [],
+      messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
+      createdAt: '',
+      updatedAt: '',
+    })
+
+    const store = useChatStore()
+    store.agentId = 'barebones-agent'
+    store.currentModelId = ''
+    store.currentProviderId = ''
+
+    await store.newSession()
+
+    expect(store.currentModelId).toBe('')
+    expect(store.currentProviderId).toBe('')
+  })
+
+  it('does not clobber a previously-selected model when the seed response is empty', async () => {
+    // The store may already hold a localStorage-backed model selection
+    // from a prior session. Creating a new session against a manifest
+    // with no preferred models must not erase that prior selection —
+    // the user expects their picker choice to carry forward.
+    vi.mocked(createSession).mockResolvedValueOnce({
+      id: 'session-new',
+      agentId: 'barebones-agent',
+      messages: [],
+      messageCount: 0,
+      status: 'active',
+      depth: 0,
+      isStreaming: false,
+      createdAt: '',
+      updatedAt: '',
+    })
+
+    const store = useChatStore()
+    store.agentId = 'barebones-agent'
+    store.currentModelId = 'claude-opus-4.7'
+    store.currentProviderId = 'anthropic'
+
+    await store.newSession()
+
+    expect(store.currentModelId).toBe('claude-opus-4.7')
+    expect(store.currentProviderId).toBe('anthropic')
+  })
+})
+
 describe('chatStore - setModel', () => {
   beforeEach(() => {
     installLocalStorageStub()

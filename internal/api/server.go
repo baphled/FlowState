@@ -589,7 +589,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	sess, err := s.sessionManager.CreateSession(req.AgentID)
+	// Pre-populate the new session's CurrentProviderID / CurrentModelID
+	// from the agent manifest's first PreferredModels entry when one
+	// exists. Without this the brand-new session has empty model+provider
+	// fields, the activity-indicator chip renders nothing on the very
+	// first turn, and the user has no way to confirm which model is
+	// producing the answer they're watching arrive — the regression
+	// reported during Track B hands-on UI verification (May 2026).
+	//
+	// The agent manifest is the canonical source: each manifest declares
+	// PreferredModels in priority order, and the first entry is the
+	// pairing the agent is intended to run on. The model picker uses the
+	// same first entry as its default highlight.
+	//
+	// Empty / missing manifest, or an empty PreferredModels list, both
+	// degrade silently to the legacy behaviour (no defaults; the chip
+	// stays hidden until the user picks a model or the engine streams an
+	// assistant turn that stamps the pair onto the session).
+	defaultProvider, defaultModel := defaultModelPairForAgent(s.registry, req.AgentID)
+	sess, err := s.sessionManager.CreateSessionWithDefaults(req.AgentID, defaultProvider, defaultModel)
 	if err != nil {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
@@ -607,6 +625,37 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, NewSessionResponse(&snap))
+}
+
+// defaultModelPairForAgent returns the (provider, model) pair the agent's
+// manifest declares as preferred, used to seed a newly-created session so
+// the chat activity-indicator chip renders immediately rather than waiting
+// for an explicit selection or a streamed assistant turn.
+//
+// Expected:
+//   - registry may be nil (early start-up, tests without a registry); the
+//     function tolerates this and returns empty strings.
+//   - agentID identifies the agent that owns the new session.
+//
+// Returns:
+//   - The Provider and Model strings from the first entry in the agent
+//     manifest's PreferredModels list, or empty strings when:
+//       (a) the registry is nil
+//       (b) the agentID is unknown
+//       (c) the manifest declares no preferred models
+//
+// Side effects:
+//   - None.
+func defaultModelPairForAgent(registry *agent.Registry, agentID string) (provider, model string) {
+	if registry == nil || agentID == "" {
+		return "", ""
+	}
+	manifest, ok := registry.Get(agentID)
+	if !ok || manifest == nil || len(manifest.PreferredModels) == 0 {
+		return "", ""
+	}
+	first := manifest.PreferredModels[0]
+	return first.Provider, first.Model
 }
 
 // handleListV1Sessions lists all sessions as summaries.
