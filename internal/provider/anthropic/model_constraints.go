@@ -41,12 +41,20 @@ import (
 
 // errThinking* are returned when caller-supplied thinking parameters
 // fail validation against the target model.
+//
+// The errAssistantPrefillRejected sentinel is returned when the
+// request's last message has role "assistant" (an "assistant prefill")
+// and the target model rejects prefill (Opus 4.6/4.7, Sonnet 4.6).
+// Without this pre-flight check the server returns an opaque HTTP 400
+// with body `Prefilling assistant messages is not supported for this
+// model`.
 var (
 	errThinkingBudgetTooLow      = errors.New("anthropic: thinking budget_tokens must be >= 1024")
 	errThinkingBudgetExceedsMax  = errors.New("anthropic: thinking budget_tokens must be < max_tokens")
 	errThinkingMaxTokensZero     = errors.New("anthropic: thinking requires max_tokens > 0")
 	errThinkingToolChoiceInvalid = errors.New("anthropic: thinking only supports tool_choice in {auto, none}")
 	errThinkingEnabledRejected   = errors.New("anthropic: model rejects manual thinking: enabled (use adaptive)")
+	errAssistantPrefillRejected  = errors.New("anthropic: model does not support assistant prefill")
 )
 
 // minThinkingBudgetTokens is the API-enforced minimum for
@@ -97,6 +105,13 @@ type modelDefaults struct {
 	// interleaving server-side and rejects the explicit header on
 	// Bedrock/Vertex; Sonnet 3.7 does not support interleaving.
 	requiresInterleavedThinkingHeader bool
+	// rejectsAssistantPrefill reports that the model rejects requests
+	// whose final message has role "assistant" (an "assistant prefill"
+	// — used by some callers to force an output prefix such as "{").
+	// The 4.6+ family (Opus 4.6/4.7, Sonnet 4.6) returns HTTP 400 in
+	// that case; older Claude models (4.5 and below, Sonnet 3.7, 3.5,
+	// 3.0) accept prefill.
+	rejectsAssistantPrefill bool
 	// betas are anthropic-beta header values to add by default when
 	// the caller is on this model. Used for Sonnet 3.7's optional
 	// 128k-output and token-efficient-tools betas.
@@ -160,18 +175,21 @@ func resolveModelDefaults(model string) modelDefaults {
 			rejectsManualThinkingEnabled: true,
 			supportsThinking:             true,
 			supportsAdaptiveThinking:     true,
+			rejectsAssistantPrefill:      true,
 		}
 	case strings.HasPrefix(id, "claude-opus-4-6"):
 		return modelDefaults{
 			maxTokens:                128000,
 			supportsThinking:         true,
 			supportsAdaptiveThinking: true,
+			rejectsAssistantPrefill:  true,
 		}
 	case strings.HasPrefix(id, "claude-sonnet-4-6"):
 		return modelDefaults{
 			maxTokens:                64000,
 			supportsThinking:         true,
 			supportsAdaptiveThinking: true,
+			rejectsAssistantPrefill:  true,
 		}
 	case strings.HasPrefix(id, "claude-haiku-4-5"):
 		return modelDefaults{
@@ -231,6 +249,9 @@ func applyModelConstraints(
 ) error {
 	defs := resolveModelDefaults(req.Model)
 
+	if err := applyAssistantPrefill(req, defs); err != nil {
+		return err
+	}
 	if err := applyMaxTokens(params, req, defs); err != nil {
 		return err
 	}
@@ -244,6 +265,45 @@ func applyModelConstraints(
 		return err
 	}
 	return nil
+}
+
+// applyAssistantPrefill rejects requests whose final message has role
+// "assistant" on models that do not support prefill (Opus 4.6/4.7,
+// Sonnet 4.6). Without this pre-flight check the server returns HTTP
+// 400 "Prefilling assistant messages is not supported for this model."
+// — opaque from the caller's perspective. We surface a clear sentinel
+// error wrapping the model id so callers can branch on
+// errAssistantPrefillRejected and the model id is visible in logs.
+//
+// Expected:
+//   - req.Messages may be empty, end with "user", or end with
+//     "assistant"; only the final entry is inspected.
+//
+// Returns:
+//   - errAssistantPrefillRejected (wrapped, with model id and detected
+//     role for diagnostics) when the model rejects prefill AND the
+//     final message has role "assistant".
+//   - nil otherwise — including empty Messages and capable-model cases.
+//
+// Side effects:
+//   - None. This validator is pure; it does not mutate params or req.
+func applyAssistantPrefill(
+	req provider.ChatRequest, defs modelDefaults,
+) error {
+	if !defs.rejectsAssistantPrefill {
+		return nil
+	}
+	if len(req.Messages) == 0 {
+		return nil
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != "assistant" {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: model %s does not support assistant prefill (last message was role=%s)",
+		errAssistantPrefillRejected, req.Model, last.Role,
+	)
 }
 
 // applyMaxTokens fills params.MaxTokens from req or per-model defaults.
