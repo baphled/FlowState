@@ -2536,6 +2536,54 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(spy).toHaveBeenCalledWith({ content: 'output' })
   })
 
+  it('attaches a type:thinking payload to the in-flight assistant message as thinkingContent', () => {
+    // Drop #2 — Thinking SSE handler. The chat store does NOT render the
+    // model's reasoning as the visible reply (that's Track B's UI work);
+    // instead it accumulates the thinking text on the in-flight assistant
+    // message's optional `thinkingContent` field so a later UI affordance
+    // can disclose it on demand. Crucially, thinking text MUST NOT land on
+    // `content`, which is the public assistant turn — leaking private
+    // reasoning into chat is exactly the failure mode we're fixing.
+    const store = useChatStore()
+    store.messages = [
+      { id: 'u1', role: 'user', content: 'go', timestamp: '2026-05-04T00:00:00Z' },
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        timestamp: '2026-05-04T00:00:01Z',
+        status: 'running',
+      },
+    ]
+
+    store.applyContentEvent(JSON.stringify({ type: 'thinking', content: 'reasoning step 1' }))
+    store.applyContentEvent(JSON.stringify({ type: 'thinking', content: ' step 2' }))
+
+    const target = store.messages.find((m) => m.id === 'a1')
+    expect(target?.thinkingContent).toBe('reasoning step 1 step 2')
+    // The visible reply MUST NOT carry the model's private reasoning.
+    expect(target?.content).toBe('')
+  })
+
+  it('creates an in-flight assistant target when a thinking event arrives before any content', () => {
+    // glm-4.6's observed shape: 52 seconds of reasoning_content arrives
+    // BEFORE the first content delta. The handler must materialise an
+    // in-flight assistant placeholder so the watchdog stays armed and the
+    // future content delta has a target. The placeholder's visible content
+    // MUST stay empty — only thinkingContent accumulates.
+    const store = useChatStore()
+    store.messages = [
+      { id: 'u1', role: 'user', content: 'plan it', timestamp: '2026-05-04T00:00:00Z' },
+    ]
+
+    store.applyContentEvent(JSON.stringify({ type: 'thinking', content: 'first thought' }))
+
+    const target = store.messages.find((m) => m.role === 'assistant' && m.status === 'running')
+    expect(target).toBeDefined()
+    expect(target?.thinkingContent).toBe('first thought')
+    expect(target?.content).toBe('')
+  })
+
   it('routes a type:skill_load payload to handleToolCallEvent with status running', () => {
     const store = useChatStore()
     const spy = vi.spyOn(store, 'handleToolCallEvent')

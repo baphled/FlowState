@@ -1007,6 +1007,9 @@ export const useChatStore = defineStore('chat', {
           // Adding rendering is a future change; the dispatch path is
           // typed so a renderer addition is a simple new case.
           return
+        case 'thinking':
+          this.handleThinkingEvent({ content: event.content })
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1070,6 +1073,49 @@ export const useChatStore = defineStore('chat', {
 
       target.content = (target.content ?? '') + info.content
       target.status = 'running'
+      this.isStreaming = true
+    },
+
+    /**
+     * Drop #2 — Thinking handler.
+     *
+     * Accumulates the model's private reasoning onto the in-flight
+     * assistant message's `thinkingContent` field. MUST NOT mutate
+     * `content` — the public assistant turn is reserved for the actual
+     * reply, not the model's chain of thought. The UI affordance to
+     * disclose this text on demand is Track B's work; until that lands,
+     * this handler exists so:
+     *
+     *   1. The watchdog re-arms during the reasoning phase (any SSE
+     *      event coming through applyContentEvent counts as liveness).
+     *   2. An in-flight assistant placeholder exists for the eventual
+     *      content delta to land on (mirrors handleContentChunk).
+     *   3. The data is captured end-to-end so the renderer addition is
+     *      purely additive when Track B layers UI on top.
+     */
+    handleThinkingEvent(info: { content?: unknown }): void {
+      if (typeof info.content !== 'string' || info.content.length === 0) {
+        return
+      }
+
+      let target = [...this.messages].reverse().find(
+        (message) => message.role === 'assistant' && message.status === 'running',
+      )
+
+      if (!target) {
+        target = {
+          id: `streaming-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          status: 'running',
+        }
+        this.messages.push(target)
+      }
+
+      target.thinkingContent = (target.thinkingContent ?? '') + info.content
+      // Note: target.content is INTENTIONALLY untouched. The model's private
+      // reasoning is not the assistant's reply.
       this.isStreaming = true
     },
 

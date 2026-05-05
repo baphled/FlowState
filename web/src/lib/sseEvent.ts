@@ -96,6 +96,24 @@ export interface SSEHarnessCriticFeedbackEvent {
   content: string
 }
 
+/**
+ * SSEThinkingEvent — model-reasoning event. Emitted by the Go SSE pipeline
+ * when a provider streams reasoning tokens (Anthropic thinking_delta blocks,
+ * openaicompat reasoning_content deltas — see Drop #1 / Drop #2 in the
+ * Streaming Signal-Drop fix). The content carries the model's private
+ * step-by-step reasoning. The chat store accumulates this onto the in-flight
+ * assistant message's `thinkingContent` field but MUST NOT render it as the
+ * visible reply — that's reserved for the eventual UI affordance Track B will
+ * add.
+ *
+ * Discriminant chosen as "thinking" specifically to leave room for Track B's
+ * planned "provider_changed" event (failover transitions).
+ */
+export interface SSEThinkingEvent {
+  kind: 'thinking'
+  content: string
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -120,6 +138,7 @@ export type SSEEvent =
   | SSEHarnessAttemptStartEvent
   | SSEHarnessCompleteEvent
   | SSEHarnessCriticFeedbackEvent
+  | SSEThinkingEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -190,6 +209,10 @@ export function parseSSEPayload(payload: string): SSEEvent {
       lastTool: typeof obj['last_tool'] === 'string' ? (obj['last_tool'] as string) : undefined,
       status: typeof obj['status'] === 'string' ? (obj['status'] as string) : undefined,
     }
+  }
+
+  if (type === 'thinking') {
+    return { kind: 'thinking', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
   }
 
   if (type === 'harness_retry') {
