@@ -82,12 +82,42 @@ func (b *SessionBroker) DroppedCount() uint64 {
 
 // Subscribe registers a new subscriber for a session and returns a receive channel and an unsubscribe function.
 //
+// Channel-close ownership: the publisher (Publish) is the sole closer of
+// the returned channel. Unsubscribe removes the subscriber from the
+// fan-out set but does NOT close the channel. This is the close-by-sender
+// pattern — the only safe way to share a channel across a sender and a
+// concurrent canceller without a close-during-send race.
+//
+// Pre-fix Unsubscribe called close(ch) while holding the broker mutex.
+// Publish snapshots the subscriber slice under the same mutex, releases
+// it, then sends to each snapshot entry inside deliverWithBackpressure
+// without holding the mutex. Between Publish's lock release and its `case
+// sub <- chunk:` send, a concurrent Unsubscribe could run, remove the
+// subscriber from the canonical slice, and call close(ch). The next send
+// then panicked with "send on closed channel". Confirmed RED in the
+// `close-during-send race` Describe in broker_test.go.
+//
+// The fix shape: Unsubscribe never closes; Publish closes once on
+// source-channel close (terminal close loop). A subscriber that
+// unsubscribes mid-stream simply abandons its buffered channel — the
+// publisher will keep delivering to it until it either fills (drop
+// counter increments) or the publish run ends and the terminal close
+// runs. No goroutine reads from the abandoned channel, so the buffered
+// chunks are GC'd along with the channel once the publish run completes
+// and the snapshot reference is released.
+//
+// The only production caller (handleSessionStream in server.go) does not
+// rely on the channel closing on unsubscribe — it breaks out of its
+// select via `ctx.Done()` and lets `defer unsubscribe()` run. The contract
+// change is invisible to that caller.
+//
 // Expected:
 //   - sessionID is a non-empty string identifying an existing session.
 //
 // Returns:
 //   - A buffered channel that receives StreamChunk values as they are published.
-//   - A function that removes this subscriber when called.
+//   - A function that removes this subscriber from the fan-out set when called.
+//     Idempotent: safe to call multiple times.
 //
 // Side effects:
 //   - Adds the subscriber channel to the session's subscriber list.
@@ -104,7 +134,9 @@ func (b *SessionBroker) Subscribe(sessionID string) (<-chan provider.StreamChunk
 		for i, sub := range subs {
 			if sub == ch {
 				b.subscribers[sessionID] = append(subs[:i], subs[i+1:]...)
-				close(ch)
+				// Intentionally NOT closing ch here. Publish is the
+				// sole closer; closing here would race with Publish's
+				// concurrent send (close-during-send panic).
 				break
 			}
 		}
