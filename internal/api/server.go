@@ -710,12 +710,17 @@ func (s *Server) handleSessionTodos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.todoStore.Get(id))
 }
 
-// handleSessionStream streams session events as SSE, supporting verbosity param.
+// handleSessionStream streams *live* session events as SSE.
+//
+// The SSE stream is for events emitted strictly after the subscriber
+// connects. Historical content lives on GET /api/v1/sessions/{id}/messages
+// (the canonical history endpoint) — replaying it here would duplicate the
+// previous turn's content into the next turn's streaming placeholder.
 //
 // Expected:
 //   - Request path parameter "id" contains the session identifier.
-//   - If a session broker is configured, subscribes to live events and forwards them.
-//   - Otherwise, replays session history and closes.
+//   - A session broker is configured (production wiring guarantees this
+//     when a session manager is configured; see app.go).
 //
 // Side effects:
 //   - Writes server-sent events to the response.
@@ -726,7 +731,6 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	verbosity := r.URL.Query().Get("verbosity")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -735,21 +739,14 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
-	sess, err := s.sessionManager.GetSession(id)
-	if err != nil {
+	if _, err := s.sessionManager.GetSession(id); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 	if s.sessionBroker == nil {
-		// No live session — replay history as a one-shot stream and close.
-		// Historical content is loaded by the client via GET /messages when
-		// a live broker is present, so replaying here would duplicate content
-		// inside the streaming placeholder opened before the POST.
-		for _, msg := range sess.Messages {
-			if verbosity == "full" || msg.Role == "assistant" {
-				writeSSEContent(w, flusher, msg.Content)
-			}
-		}
+		// No live broker — the SSE stream contract is "live events only";
+		// historical content lives on GET /api/v1/sessions/{id}/messages.
+		// Send [DONE] immediately so the client knows the stream is closed.
 		writeSSEDone(w, flusher)
 		return
 	}

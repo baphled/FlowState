@@ -820,6 +820,166 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).NotTo(ContainElement(ContainSubstring("historical-msg-two")))
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
+
+	It("emits no content events to a fresh subscriber on an idle session even when no broker is wired", func() {
+		// Regression for SSE replay-on-subscribe bug. The bug: when handleSessionStream
+		// was hit on a server with sessionBroker == nil (production wiring previously
+		// gated broker creation on backgroundManager being non-nil, which it isn't for
+		// non-delegating agents), the handler iterated sess.Messages and emitted every
+		// assistant content as an SSE chunk, then [DONE]. A fresh subscriber on an
+		// idle session would therefore receive a "ghost" of the previous turn — which
+		// the Vue frontend rendered as a duplicate bubble inside the next turn's
+		// streaming placeholder.
+		//
+		// Contract: the SSE stream is for events emitted strictly after subscription.
+		// Historical content lives on GET /messages. A fresh subscriber on an idle
+		// session must receive zero content events.
+		brokerlessMgr := session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		brokerlessSrv := api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(brokerlessMgr),
+			// NOTE: deliberately no WithSessionBroker — mirrors the
+			// pre-fix production wiring where the broker stayed nil for
+			// agents without delegation. The handler must not replay
+			// sess.Messages even in this configuration.
+		)
+		brokerlessHTTP := httptest.NewServer(brokerlessSrv.Handler())
+		defer brokerlessHTTP.Close()
+
+		brokerlessMgr.RestoreSessions([]*session.Session{
+			{
+				ID:      "sse-no-broker-replay",
+				AgentID: "test-agent",
+				Messages: []session.Message{
+					{ID: "u1", Role: "user", Content: "ping"},
+					{ID: "a1", Role: "assistant", Content: "PONG"},
+				},
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			brokerlessHTTP.URL+"/api/v1/sessions/sse-no-broker-replay/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := http.DefaultClient.Do(streamReq)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// MUST receive only [DONE]; never any historical content.
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring(`"content"`),
+				"fresh subscriber on idle session must receive zero content events; got: %v", evts)
+			Expect(e).NotTo(ContainSubstring("PONG"),
+				"fresh subscriber must not see prior assistant message replayed; got: %v", evts)
+		}
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
+	It("emits no content events to a fresh subscriber after a sealed turn (real broker, full POST→stream flow)", func() {
+		// End-to-end regression: drive the real Server through POST /messages
+		// to seal a turn, then subscribe with a fresh GET /stream and assert
+		// no content is replayed. This mirrors the production curl reproduction
+		// without involving any provider-layer mocks beyond the streamer.
+		realBroker := api.NewSessionBroker()
+		realStreamer := &mockStreamer{chunks: []provider.StreamChunk{
+			{Content: "PONG"},
+			{Done: true},
+		}}
+		realMgr := session.NewManager(realStreamer)
+		realSrv := api.NewServer(
+			realStreamer,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(realMgr),
+			api.WithSessionBroker(realBroker),
+		)
+		realHTTP := httptest.NewServer(realSrv.Handler())
+		defer realHTTP.Close()
+
+		sess, err := realMgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Seal turn 1: POST blocks until the broker drains the chunks.
+		postResp, err := http.Post(
+			realHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"hi"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = postResp.Body.Close()
+		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
+		Expect(realBroker.IsPublishing(sess.ID)).To(BeFalse(),
+			"broker must not still be publishing after POST returned")
+
+		// Fresh SSE subscriber on the now-idle session.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			realHTTP.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		streamResp, err := http.DefaultClient.Do(streamReq)
+		Expect(err).NotTo(HaveOccurred())
+		defer streamResp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(streamResp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring(`"content"`),
+				"fresh subscriber after sealed turn must receive zero content events; got: %v", evts)
+		}
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
 })
 
 func parseSSEEvents(body *bytes.Buffer) []string {
