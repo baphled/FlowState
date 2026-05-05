@@ -324,6 +324,16 @@ onBeforeUnmount(() => {
         aria-hidden="true"
       />
 
+      <!--
+        Track B — model+provider visibility during streaming.
+        The activity-indicator label now includes the active model and
+        provider when both are known, so the user can see at a glance
+        WHICH model is producing the answer they're watching arrive.
+        After a failover (provider_changed SSE event), the chatStore
+        updates currentProviderId/currentModelId so this label
+        reflects the new active model immediately — paired with the
+        transient toast that announces the switch.
+      -->
       <div
         v-if="chatStore.isStreaming || chatStore.isLoading"
         class="agent-activity-indicator"
@@ -333,6 +343,15 @@ onBeforeUnmount(() => {
       >
         <span class="agent-activity-dot" aria-hidden="true" />
         <span class="agent-activity-label">{{ chatStore.agentId }} is working…</span>
+        <span
+          v-if="chatStore.currentModelId || chatStore.currentProviderId"
+          class="agent-activity-model"
+          data-testid="agent-activity-model"
+        >
+          on {{ chatStore.currentModelId || chatStore.currentProviderId }}<template
+            v-if="chatStore.currentModelId && chatStore.currentProviderId"
+          > · {{ chatStore.currentProviderId }}</template>
+        </span>
       </div>
 
       <MessageInput />
@@ -463,6 +482,14 @@ onBeforeUnmount(() => {
 
 .agent-activity-label {
   color: var(--text-muted);
+}
+
+.agent-activity-model {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+  margin-left: 0.15rem;
 }
 
 @keyframes pulse-dot {

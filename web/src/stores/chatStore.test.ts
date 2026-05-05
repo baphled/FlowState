@@ -2565,6 +2565,98 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(target?.content).toBe('')
   })
 
+  it('updates currentProviderId and currentModelId when a provider_changed event arrives', () => {
+    // Track B — failover transition affordance. When the failover hook
+    // switches providers mid-request (e.g. anthropic 429 → zai/glm-4.6
+    // takes over), the SSE wire emits {"type":"provider_changed",
+    // "from":"anthropic+claude-sonnet-4-6","to":"zai+glm-4.6",
+    // "reason":"rate_limited"}. The chat store reflects the new active
+    // provider/model on its currentProviderId / currentModelId fields so
+    // the toolbar chip in ChatView refreshes immediately and the user
+    // sees that the answer they're now streaming is from a different
+    // model. The "to" string is "<provider>+<model>", split on "+".
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'zai+glm-4.6',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('zai')
+    expect(store.currentModelId).toBe('glm-4.6')
+  })
+
+  it('does NOT touch currentProviderId/currentModelId when the to field is empty', () => {
+    // Defensive: a malformed provider_changed event with no `to` must
+    // not nuke the toolbar chip — leave the previous provider in place
+    // so the user keeps seeing SOMETHING. The toast still fires (with
+    // generic copy) so the user knows a transition happened.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: '',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('anthropic')
+    expect(store.currentModelId).toBe('claude-sonnet-4-6')
+  })
+
+  it('handles a provider_changed event with no model component (provider-only "to")', () => {
+    // Forward-compat: a provider with no model qualifier (e.g. "ollama"
+    // alone) must split cleanly — provider gets the whole string,
+    // model stays empty. ModelPicker handles empty currentModelId by
+    // showing its "Select model" placeholder, which is the correct
+    // degraded UX.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'ollama',
+        reason: 'unknown',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('ollama')
+    expect(store.currentModelId).toBe('')
+  })
+
+  it('handles a model id that contains a "+" (split on FIRST separator only)', () => {
+    // Edge: model ids like "openrouter+anthropic/claude-3.5-sonnet+beta"
+    // can in principle contain "+". The split is on the FIRST "+" so the
+    // provider is the prefix and the model is everything after. This
+    // matches how the Go side encodes provider+model as a single token.
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'a+b',
+        to: 'openrouter+anthropic/claude-3.5+beta',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('openrouter')
+    expect(store.currentModelId).toBe('anthropic/claude-3.5+beta')
+  })
+
   it('creates an in-flight assistant target when a thinking event arrives before any content', () => {
     // glm-4.6's observed shape: 52 seconds of reasoning_content arrives
     // BEFORE the first content delta. The handler must materialise an
