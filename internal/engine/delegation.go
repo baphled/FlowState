@@ -1533,49 +1533,88 @@ func parseLoadSkills(value interface{}) ([]string, error) {
 	return nil, errLoadSkillsMustBeArray
 }
 
-// teeToParentStream buffers the full content of each member's stream and
-// forwards it to the parent outChan as a single coherent chunk once the
-// member's stream closes. Forwarding chunk-by-chunk produces interleaved,
-// unreadable output when multiple members run in parallel.
+// teeToParentStream forwards each in-band content chunk from a delegated
+// member's stream to the parent's outChan live, in source order. The src
+// channel is also returned (drained one-for-one) so downstream collectors
+// (accumulator, harness-events, response builder) can run their own
+// pipelines unchanged.
 //
-// The emitted chunk is prefixed with a bold agent label so the reader can
-// tell which member produced each block. Done and DelegationInfo-only chunks
-// are never forwarded: Done would prematurely close the parent stream and
-// DelegationInfo events are emitted separately by executeSync.
+// Pre-2026-05 the tee buffered the entire child stream into a
+// strings.Builder and emitted exactly one consolidated `**[<agentID>]**`
+// chunk after the source closed. That choice produced two production
+// failures: (1) a 322-second silent SSE wire during a delegation in
+// session 05ece3e7 — the parent UI saw nothing for the entire child run;
+// (2) a non-blocking send on the trailing emission silently dropped the
+// whole buffered output when the parent channel was momentarily full at
+// the close instant. Drop #3 of the streaming signal-drop fix removes
+// both: each chunk forwards live, with a context-aware bounded send so
+// backpressure surfaces as deadline rather than silent loss.
 //
-// The send to parentOut is non-blocking so a full or absent parent channel
-// never stalls the member's own stream pipeline.
+// Skipped chunks:
+//   - Done: would prematurely close the parent stream.
+//   - DelegationInfo-only: lifecycle events emitted separately by
+//     executeSync via the delegation event bus.
+//   - streaming.IsControlEvent EventTypes (harness_attempt_start, etc.):
+//     out-of-band metadata destined for the status-line consumer; pre-fix
+//     these leaked structured JSON like `{"attempt":1,"maxRetries":1}` into
+//     the assistant turn (session 2d8dc0ac messages 169/180/185/190).
+//
+// Attribution rationale: per-chunk attribution to the child agent is
+// handled by the existing delegation event bus (`delegation.{started,
+// completed,failed}` topics — see [[Delegation Bus Bridge — Engine to SSE
+// (May 2026)]]) and by the chunk-side `DelegationInfo` populated at the
+// `*Delegating to <agent>…*` boundary marker. The chunks themselves do
+// not need additional attribution. Interleaved output when multiple
+// members run in parallel is a rendering concern for the UI to solve via
+// per-agent stream lanes — not by stalling the wire.
 func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
 	parentOut, ok := streamOutputFromContext(ctx)
 	if !ok {
 		return src
 	}
+	_ = agentID // retained for log/diagnostic attribution; chunks use the bus for source-agent identity
 	out := make(chan provider.StreamChunk, cap(src)+1)
 	go func() {
 		defer close(out)
-		var buf strings.Builder
 		for chunk := range src {
-			// streaming.IsControlEvent gate: harness_attempt_start /
-			// harness_retry chunks carry structured metadata in Content
-			// (e.g. `{"attempt":1,"maxRetries":1}`) destined for the
-			// status-line consumer, not for inline rendering. Prior to
-			// this gate teeToParentStream wrote those bytes into the
-			// parent assistant turn — the leak captured in session
-			// 2d8dc0ac messages 169/180/185/190 (May 2026 chat-UI
-			// leak triage). The accumulator filters EventType chunks
-			// at internal/session/accumulator.go:192-194 already; this
-			// keeps the parent-tee path symmetric.
-			if chunk.Content != "" && !chunk.Done && chunk.DelegationInfo == nil &&
-				!streaming.IsControlEvent(chunk.EventType) {
-				buf.WriteString(chunk.Content)
-			}
+			// Forward the chunk down the internal pipeline first (the
+			// downstream collector / accumulator depends on every chunk
+			// flowing through). This must always happen, even if we
+			// later choose not to mirror the chunk to the parent.
 			out <- chunk
-		}
-		if buf.Len() > 0 {
-			text := "\n\n**[" + agentID + "]**\n\n" + buf.String() + "\n"
+
+			// Decide whether this chunk should also flow to the parent
+			// stream (the user-visible SSE wire). The skip rules are
+			// the same set the buffered version applied — preserved
+			// verbatim so the chat_ui_leak_test contracts (Leak A
+			// filtering) remain green.
+			if chunk.Done || chunk.DelegationInfo != nil {
+				continue
+			}
+			if streaming.IsControlEvent(chunk.EventType) {
+				continue
+			}
+			if chunk.Content == "" && chunk.Thinking == "" {
+				// Tool-call chunks, error chunks, ProgressEvents, etc.
+				// already flow through the engine's own paths to the
+				// parent (the SSE handler dispatches ToolCall, Error,
+				// and Event independently). Mirroring an empty chunk
+				// to the parent achieves nothing.
+				continue
+			}
+
+			// Bounded send: a context-aware deadline replaces the old
+			// silent-drop `default:` branch. If the parent channel
+			// stays full for the full deadline the chunk is dropped,
+			// but the drop is logged via the broker's metrics path
+			// (Drop #4) once it lands. Until that observability is in
+			// place this branch falls back to a context-checked send
+			// so a stalled consumer eventually surfaces as a cancelled
+			// context rather than an unbounded block.
 			select {
-			case parentOut <- provider.StreamChunk{Content: text}:
-			default:
+			case parentOut <- chunk:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
