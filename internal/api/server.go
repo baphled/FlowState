@@ -751,10 +751,17 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	// the session is between turns (Publish hasn't started for the new
 	// message yet) — fall through to the blocking select so the subscriber
 	// can receive the incoming chunks.
+	//
+	// LastMessageRole is used instead of GetSession + freshSess.Messages
+	// because GetSession returns the *Session pointer and releases the
+	// manager's RLock on return. Reading sess.Messages outside the lock
+	// races with SendMessage's append under the write lock — confirmed
+	// by `go test -race` triggering on the slice header at server.go:756
+	// vs manager.go:647. LastMessageRole projects the role under RLock
+	// and returns by value, closing the race window.
 	if !s.sessionBroker.IsPublishing(id) {
-		if freshSess, err := s.sessionManager.GetSession(id); err == nil {
-			msgs := freshSess.Messages
-			if len(msgs) > 0 && msgs[len(msgs)-1].Role != "user" {
+		if role, hasMsgs, err := s.sessionManager.LastMessageRole(id); err == nil {
+			if hasMsgs && role != "user" {
 				writeSSEDone(w, flusher)
 				return
 			}
