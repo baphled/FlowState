@@ -116,6 +116,22 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 				}
 				continue
 			}
+			// model_active fires on EVERY successful stream so the chat UI
+			// can pivot the persistent toolbar chip from the user's
+			// selection to the actual model the moment streaming starts.
+			// The user reported (May 2026) that the chip "shows what was
+			// selected, not what actually ran" — until this prepend, the
+			// chip had no signal during streaming distinguishing the two,
+			// so a selection that didn't match the actual call (failover,
+			// agent override, manifest override) read wrong until the
+			// post-stream reconcile pulled the engine-stamped pair.
+			//
+			// Order: model_active first, then provider_changed (when
+			// failover happened). Both must arrive before any user-visible
+			// content; the relative order between them is unspecified at
+			// the consumer (the frontend handles them as independent
+			// events).
+			replayCh = prependModelActiveChunk(replayCh, candidate)
 			if previousFailed != nil {
 				replayCh = prependProviderChangedChunk(replayCh, previousFailed, candidate)
 			}
@@ -262,6 +278,87 @@ func prependProviderChangedChunk(
 	go func() {
 		defer close(out)
 		out <- transition
+		for chunk := range upstream {
+			out <- chunk
+		}
+	}()
+	return out
+}
+
+// modelActivePayload is the wire shape for the always-on "model_active"
+// affordance. The fields are JSON-marshalled into chunk.Content of a
+// provider.StreamChunk{EventType: "model_active"}; the SSE dispatcher
+// in internal/api/server.go forwards the bytes verbatim into a
+// {"type":"model_active","provider":"<id>","model":"<id>"} SSE event.
+//
+// Why provider/model as separate fields (not the "<provider>+<model>"
+// string used by provider_changed): the chip rendering in the chat UI
+// reads currentProviderId / currentModelId as separate keys against the
+// availableModels list. Splitting on "+" works for provider_changed's
+// transient toast; for the persistent chip pivot, exposing the canonical
+// pair directly avoids a parser round-trip and a class of off-by-one
+// bugs around model ids that themselves contain "+" (rare; openrouter).
+type modelActivePayload struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// prependModelActiveChunk wraps an upstream replay channel so the FIRST
+// chunk delivered to the consumer is a synthetic provider.StreamChunk
+// announcing the actual (provider, model) pair the failover hook chose.
+// Subsequent chunks are the upstream's real output, untouched.
+//
+// Why on every successful stream (not just failover): the chip needs to
+// reflect the actual model the moment streaming starts, not the user's
+// selection. Without this, the user reported (May 2026) that the chip
+// "shows what was selected, not what actually ran". On the common case
+// (selection matches actual) the event is a no-op for the user; on the
+// divergent case (failover, agent override, manifest override), the chip
+// snaps to the truth immediately rather than waiting on reconcile.
+//
+// Why a wrapper instead of mutating the upstream channel: same rationale
+// as prependProviderChangedChunk above — the failover hook does not own
+// the upstream channel, so we compose a new one and forward.
+//
+// Expected:
+//   - upstream is the replay channel returned by streamWithReplay.
+//   - candidate is the candidate that succeeded; its Provider and Model
+//     are the values to surface to the consumer.
+//
+// Returns:
+//   - A buffered channel of size 1 + replayBufferSize that delivers the
+//     model_active chunk first, then forwards upstream chunks.
+//
+// Side effects:
+//   - Spawns one goroutine that reads from upstream until it closes,
+//     then closes the wrapper channel. The goroutine cannot leak —
+//     when the SSE consumer disconnects, upstream's goroutine cancels
+//     and closes its channel, which terminates this loop.
+//   - On a marshal failure (unreachable in practice for a 2-string struct)
+//     returns the upstream verbatim — the chip stays on the optimistic
+//     selection rather than a malformed stream.
+func prependModelActiveChunk(
+	upstream <-chan provider.StreamChunk,
+	candidate provider.ModelPreference,
+) <-chan provider.StreamChunk {
+	payload := modelActivePayload{
+		Provider: candidate.Provider,
+		Model:    candidate.Model,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return upstream
+	}
+
+	active := provider.StreamChunk{
+		EventType: "model_active",
+		Content:   string(encoded),
+	}
+
+	out := make(chan provider.StreamChunk, replayBufferSize+1)
+	go func() {
+		defer close(out)
+		out <- active
 		for chunk := range upstream {
 			out <- chunk
 		}

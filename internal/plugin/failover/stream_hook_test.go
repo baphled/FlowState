@@ -80,18 +80,26 @@ func closedChannelStreamFn() func(context.Context, provider.ChatRequest) (<-chan
 	}
 }
 
-// stripTransitionChunks removes provider_changed observability chunks from a
-// slice of stream chunks so existing fallback assertions can keep focusing on
-// user-visible content. The Track B failover affordance prepends a synthetic
-// chunk with EventType "provider_changed" before the new provider's real
-// stream — that chunk carries no content and is metadata for the chat UI's
-// toast affordance, not part of the assistant reply. Pre-existing tests
-// assert content shapes ("Fallback content", chunk count == 1, etc.) and
-// shouldn't have to know about the new metadata wrapper.
+// stripTransitionChunks removes provider_changed and model_active observability
+// chunks from a slice of stream chunks so existing fallback assertions can keep
+// focusing on user-visible content.
+//
+// Two metadata chunks are emitted by the failover hook:
+//   - "provider_changed" — prepended only when a previous candidate failed and
+//     a fallback succeeded. Carries from/to/reason as JSON in chunk.Content.
+//     Frontend renders a toast announcing the switch.
+//   - "model_active" — prepended on EVERY successful stream, carrying the
+//     actual (provider, model) the failover hook chose. Lets the chip pivot
+//     from the user's selection to the actual running model the moment
+//     streaming starts — addresses the "chip shows what was selected, not
+//     what actually ran" reported by the user (May 2026).
+//
+// Pre-existing tests assert content shapes ("Fallback content", chunk count
+// == 1, etc.) and shouldn't have to know about the metadata wrappers.
 func stripTransitionChunks(chunks []provider.StreamChunk) []provider.StreamChunk {
 	filtered := make([]provider.StreamChunk, 0, len(chunks))
 	for _, c := range chunks {
-		if c.EventType == "provider_changed" {
+		if c.EventType == "provider_changed" || c.EventType == "model_active" {
 			continue
 		}
 		filtered = append(filtered, c)
@@ -154,6 +162,7 @@ var _ = Describe("StreamHook", func() {
 				for chunk := range ch {
 					chunks = append(chunks, chunk)
 				}
+				chunks = stripTransitionChunks(chunks)
 				Expect(chunks).To(HaveLen(2))
 				Expect(chunks[0].Content).To(Equal("Hello"))
 				Expect(chunks[1].Content).To(Equal(" World"))
@@ -428,9 +437,13 @@ var _ = Describe("StreamHook", func() {
 				ch, err := handler(context.Background(), &provider.ChatRequest{})
 				Expect(err).NotTo(HaveOccurred())
 
-				var contents []string
+				var raw []provider.StreamChunk
 				for chunk := range ch {
-					contents = append(contents, chunk.Content)
+					raw = append(raw, chunk)
+				}
+				var contents []string
+				for _, c := range stripTransitionChunks(raw) {
+					contents = append(contents, c.Content)
 				}
 				Expect(contents).To(Equal([]string{"First", "Second", "Third"}))
 			})
@@ -580,9 +593,13 @@ var _ = Describe("StreamHook", func() {
 					ch, err := handler(context.Background(), pinnedReq)
 					Expect(err).NotTo(HaveOccurred())
 
-					var contents []string
+					var raw []provider.StreamChunk
 					for chunk := range ch {
-						contents = append(contents, chunk.Content)
+						raw = append(raw, chunk)
+					}
+					var contents []string
+					for _, c := range stripTransitionChunks(raw) {
+						contents = append(contents, c.Content)
 					}
 
 					attemptedMu.Lock()
@@ -1099,16 +1116,35 @@ var _ = Describe("StreamHook provider_changed event", func() {
 			ch, err := handler(context.Background(), &provider.ChatRequest{})
 			Expect(err).NotTo(HaveOccurred())
 
-			var chunks []provider.StreamChunk
+			var raw []provider.StreamChunk
 			for chunk := range ch {
-				chunks = append(chunks, chunk)
+				raw = append(raw, chunk)
 			}
 
-			// The transition chunk is index 0, real content begins at index 1.
-			Expect(chunks[0].EventType).To(Equal("provider_changed"))
-			Expect(chunks[1].Content).To(Equal("Fallback content"),
-				"the real fallback provider's content must arrive intact after the transition chunk")
-			Expect(chunks[1].Done).To(BeTrue())
+			// Two metadata chunks (provider_changed + model_active) precede
+			// the real content; their relative order is unspecified at the
+			// consumer (both are control events the frontend handles
+			// independently). Strip them and assert the user-visible content
+			// arrives intact.
+			content := stripTransitionChunks(raw)
+			Expect(content).To(HaveLen(1),
+				"after stripping metadata chunks the stream must carry exactly the real fallback content")
+			Expect(content[0].Content).To(Equal("Fallback content"),
+				"the real fallback provider's content must arrive intact after the metadata chunks")
+			Expect(content[0].Done).To(BeTrue())
+
+			// Both metadata chunks must precede the real content so the chip
+			// has the actual model in hand before the first user-visible
+			// token arrives.
+			var sawContent bool
+			for _, c := range raw {
+				if c.EventType == "" && c.Content != "" {
+					sawContent = true
+				}
+				if (c.EventType == "provider_changed" || c.EventType == "model_active") && sawContent {
+					Fail("metadata chunk arrived AFTER user-visible content; chip cannot pivot before token streams in")
+				}
+			}
 		})
 	})
 
@@ -1133,6 +1169,184 @@ var _ = Describe("StreamHook provider_changed event", func() {
 			_, err := handler(context.Background(), &provider.ChatRequest{})
 			Expect(err).To(HaveOccurred(),
 				"all-failed must surface as an error so the chat UI can render an error state, not a phantom transition")
+		})
+	})
+})
+
+// model_active addresses the user complaint
+// (May 2026): "the chip shows what was selected, not what actually ran".
+//
+// The user's selection updates `currentModelId` / `currentProviderId`
+// optimistically (so the picker stays responsive). Until this event existed,
+// the chat UI had no signal during streaming that distinguished the
+// selection from the actual model running — only after the assistant turn
+// finished and the post-stream reconcile pulled the engine-stamped
+// (model, provider) pair from the persisted message.
+//
+// The fix: the failover hook prepends a "model_active" chunk to EVERY
+// successful stream — not just on failover transitions, where the
+// "provider_changed" affordance fires. The chunk carries the actual
+// (provider, model) the failover hook chose, so the chip can pivot to
+// the truth the moment streaming starts. When the actual matches the
+// user's selection (the common case) this is a no-op for the user; when
+// they differ (failover, agent override, manifest override), the chip
+// snaps to the actual model immediately rather than waiting on reconcile.
+//
+// Wire contract:
+//   - EventType == "model_active" on a synthetic StreamChunk.
+//   - Content carries a JSON payload {"provider":"<id>","model":"<id>"}.
+//   - Position: immediately before the upstream's first real chunk. When a
+//     "provider_changed" chunk also fires (failover happened), the order
+//     between the two metadata chunks is unspecified — both must arrive
+//     before any user-visible content.
+//   - Done == false (real provider continues after).
+//   - No content (chunk.Content is metadata, not assistant text).
+var _ = Describe("StreamHook model_active event", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		manager = failover.NewManager(registry, health, 2*time.Second)
+		sh = failover.NewStreamHook(manager, nil, "")
+	})
+
+	Context("when the first provider succeeds (no failover needed)", func() {
+		BeforeEach(func() {
+			registry.Register(&mockStreamProvider{
+				name: "anthropic",
+				streamFn: successStreamFn(
+					provider.StreamChunk{Content: "Hello", Done: true},
+				),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+		})
+
+		It("prepends a model_active chunk before the real stream so the chip can pivot to actual on first chunk", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			var chunks []provider.StreamChunk
+			for chunk := range ch {
+				chunks = append(chunks, chunk)
+			}
+
+			Expect(len(chunks)).To(BeNumerically(">=", 2),
+				"the prepend must produce at least the model_active chunk + the real content chunk; got %d", len(chunks))
+			first := chunks[0]
+			Expect(first.EventType).To(Equal("model_active"),
+				"the first chunk must announce the actual model so the frontend chip can pivot from selection to actual the moment streaming starts")
+			Expect(first.Done).To(BeFalse(),
+				"the real provider's stream continues after this chunk")
+		})
+
+		It("carries provider/model metadata as JSON in chunk.Content", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			var active *provider.StreamChunk
+			for chunk := range ch {
+				c := chunk
+				if c.EventType == "model_active" {
+					active = &c
+					break
+				}
+			}
+			Expect(active).NotTo(BeNil(),
+				"a model_active chunk must be present on every successful stream")
+
+			var payload struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}
+			Expect(json.Unmarshal([]byte(active.Content), &payload)).To(Succeed(),
+				"chunk.Content must be parseable JSON; got: %q", active.Content)
+			Expect(payload.Provider).To(Equal("anthropic"),
+				"provider must carry the actual provider id used (not the user's selection)")
+			Expect(payload.Model).To(Equal("claude-sonnet-4-6"),
+				"model must carry the actual model id used so the chip can render `<model> · <provider>` truthfully")
+		})
+	})
+
+	Context("when the first candidate fails and the second succeeds", func() {
+		BeforeEach(func() {
+			registry.Register(&mockStreamProvider{
+				name: "anthropic",
+				streamFn: asyncErrorStreamFn(&provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "429 rate limited",
+				}),
+			})
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: successStreamFn(
+					provider.StreamChunk{Content: "Fallback content", Done: true},
+				),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+		})
+
+		It("emits model_active with the FALLBACK provider/model, not the original", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			var active *provider.StreamChunk
+			for chunk := range ch {
+				c := chunk
+				if c.EventType == "model_active" {
+					active = &c
+					break
+				}
+			}
+			Expect(active).NotTo(BeNil(),
+				"model_active must fire even when failover happens — the chip needs to know the *actual* model that's about to produce content, not the one that failed")
+
+			var payload struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			}
+			Expect(json.Unmarshal([]byte(active.Content), &payload)).To(Succeed())
+			Expect(payload.Provider).To(Equal("zai"),
+				"the surviving provider, not the rate-limited one")
+			Expect(payload.Model).To(Equal("glm-4.6"))
+		})
+	})
+
+	Context("when both candidates fail", func() {
+		BeforeEach(func() {
+			registry.Register(&mockStreamProvider{
+				name:     "anthropic",
+				streamFn: syncErrorStreamFn(errors.New("anthropic exploded")),
+			})
+			registry.Register(&mockStreamProvider{
+				name:     "zai",
+				streamFn: syncErrorStreamFn(errors.New("zai exploded")),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+		})
+
+		It("does NOT emit a model_active event when no candidate succeeded", func() {
+			handler := sh.Execute(baseHandler(registry))
+			_, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).To(HaveOccurred(),
+				"all-failed must surface as an error; there is no actual model to announce")
 		})
 	})
 })
