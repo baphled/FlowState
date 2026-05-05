@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 
+	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/provider"
 )
 
@@ -79,4 +80,32 @@ func (e *Engine) StopSessionSplitterForTesting(sessionID string) bool {
 	delete(e.sessionSplitters, sessionID)
 	entry.splitter.Stop()
 	return true
+}
+
+// HookChainForTesting exposes the engine's installed hook chain so
+// integration tests in sibling packages (notably internal/app delegate
+// engine wiring tests) can assert hook composition without duplicating
+// the buildHookChain construction. The chain itself is already a public
+// type (hook.Chain) — this seam only widens the field-private
+// e.hookChain to test code, mirroring BuildContextWindowForTesting and
+// SessionSplitterForTesting in this same file.
+//
+// Production code MUST NOT depend on this accessor; the hook chain is an
+// implementation detail of how Engine.Stream wraps the base provider
+// handler. Tests use it to verify wiring (chain length, hook order)
+// where the alternative would be exercising a full streaming round-trip
+// against a mock provider — which is heavier and less precise.
+//
+// Expected:
+//   - The receiver is a constructed *Engine. Returns nil when the engine
+//     was built with neither an explicit HookChain nor a FailoverManager
+//     (the resolveHookChain branch that returns nil at engine.go:485).
+//
+// Returns:
+//   - The installed hook.Chain or nil.
+//
+// Side effects:
+//   - None.
+func (e *Engine) HookChainForTesting() *hook.Chain {
+	return e.hookChain
 }

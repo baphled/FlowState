@@ -349,3 +349,55 @@ var _ = Describe("createDelegateEngine child failover preference building", func
 		})
 	})
 })
+
+// Pins the wiring contract that delegate engines installs the failover
+// StreamHook on their hook chain. Before this fix, createDelegateEngine
+// built the child hook chain WITHOUT passing failoverMgr — so a 429 /
+// rate_limit error inside a delegation surfaced as a hard failure
+// instead of triggering provider failover. The childFailoverMgr created
+// further down in the same function was handed to engine.New as
+// FailoverManager but went unused because the explicit HookChain
+// shadowed engine.resolveHookChain's failover-only fallback path
+// (see internal/engine/engine.go:480 — cfg.HookChain wins, so the
+// FailoverManager-derived default chain is bypassed).
+//
+// The assertion uses chain length as the wiring tell: with no
+// learningStore/dispatcher/twc the delegate chain is logger +
+// skill-autoloader + phase-detector + context-injection + tracer = 5,
+// and adding the failover StreamHook brings it to 6. Symmetrical with
+// harness_adapter_test.go's BuildHookChainForTest assertion which pins
+// the root chain at the same baseline.
+var _ = Describe("createDelegateEngine failover hook wiring", func() {
+	var (
+		parentPrefs = []provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4"},
+		}
+		store = coordination.NewMemoryStore()
+	)
+
+	Context("when the app carries a plugin runtime with a failover manager", func() {
+		It("installs the failover StreamHook on the delegate's hook chain", func() {
+			app := buildAppWithPlugins(parentPrefs)
+
+			manifest := agent.Manifest{
+				ID:   "delegate-with-failover",
+				Name: "Delegate With Failover",
+			}
+			app.Registry.Register(&manifest)
+
+			eng, _ := app.createDelegateEngine(manifest, store, nil)
+
+			Expect(eng.FailoverManager()).NotTo(BeNil(),
+				"sanity: childFailoverMgr should be wired onto the engine")
+
+			chain := eng.HookChainForTesting()
+			Expect(chain).NotTo(BeNil(),
+				"createDelegateEngine must install a hook chain on every delegate engine")
+			Expect(chain.Len()).To(Equal(6),
+				"delegate chain must include failover StreamHook on top of the "+
+					"5-hook baseline (logger + autoloader + phase + context + tracer); "+
+					"a length of 5 means failoverMgr was not wired into hookChainConfig "+
+					"and 429 errors during delegation will fail hard instead of failing over")
+		})
+	})
+})
