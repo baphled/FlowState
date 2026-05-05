@@ -275,16 +275,33 @@ describe('chatStore - sendMessage', () => {
     expect(vi.mocked(fetchSessions)).toHaveBeenCalled()
   })
 
-  it('does NOT call fetchSessionMessages during sendMessage to prevent mid-stream message replacement', async () => {
-    // Regression guard: fetching and replacing this.messages while SSE
-    // is streaming injects backend-loaded assistant rows (status ===
-    // undefined) that handleContentChunk then adopts as streaming
-    // targets, causing the previous response to appear above the new
-    // user prompt. The SSE stream is the source of truth during a send.
+  it('reconciles backend state ONCE after sendMessage resolves — never mid-stream', async () => {
+    // Behaviour pinning for the post-(May 2026 fresh-session bugfix)
+    // contract. There are two failure modes this guards against:
+    //
+    //   A. Calling fetchSessionMessages WHILE SSE is in flight injects
+    //      backend-loaded assistant rows (status === undefined) that
+    //      handleContentChunk would then adopt as the streaming target,
+    //      causing the previous response to appear above the new user
+    //      prompt. The contract is: no fetch during the SSE window.
+    //
+    //   B. NOT calling fetchSessionMessages after the POST resolves
+    //      leaves local state stale — the assistant content the
+    //      backend persisted post-stream-close (delegations, tool
+    //      results, late-sealed assistant rows) is invisible until the
+    //      next page reload. The contract is: exactly ONE fetch, after
+    //      `await sendSessionMessage` resolves.
+    //
+    // We assert both: zero calls during the in-flight window, exactly
+    // one call after the send resolves. The single call is the
+    // reconcileFromBackend invocation that lands the canonical state
+    // and prevents the duplicate-user-bubble + missing-assistant-after-
+    // refresh regressions reported in May 2026.
     const store = useChatStore()
     store.agentId = 'agent-1'
     store.currentSessionId = 'session-1'
     store.messages = []
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
 
     FakeEventSource.instances.length = 0
 
@@ -296,10 +313,17 @@ describe('chatStore - sendMessage', () => {
         }),
     )
 
-    const sendPromise = store.sendMessage('test no reload')
+    const sendPromise = store.sendMessage('test reconcile contract')
 
     await Promise.resolve()
     await Promise.resolve()
+
+    // Mid-flight: zero fetches. The SSE stream is the source of truth
+    // until [DONE] arrives.
+    expect(
+      vi.mocked(fetchSessionMessages),
+      'must not fetch messages while POST is still in flight — would race with the SSE stream',
+    ).not.toHaveBeenCalled()
 
     resolveSend({
       id: 'session-1',
@@ -314,7 +338,14 @@ describe('chatStore - sendMessage', () => {
     })
     await sendPromise
 
-    expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
+    // Post-resolve: exactly one fetch. This is the reconcileFromBackend
+    // call that lands the canonical state — without it the user must
+    // reload to see the assistant response.
+    expect(
+      vi.mocked(fetchSessionMessages),
+      'must fetch messages exactly once after POST resolves — the post-send reconcile',
+    ).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fetchSessionMessages)).toHaveBeenCalledWith('session-1')
   })
 
   it('targets the just-selected session on subsequent sendMessage calls instead of forking a new session', async () => {

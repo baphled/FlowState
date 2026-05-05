@@ -700,6 +700,15 @@ export const useChatStore = defineStore('chat', {
 
       this.error = null
       this.isLoading = true
+      // Note on activity affordance: `isStreaming` is intentionally NOT
+      // set true here — the SSE stream hasn't actually started yet, and
+      // `isStreaming` retains its precise meaning ("SSE chunks are
+      // arriving"). The user-facing "agent is working" indicator
+      // surfaces while either flag is true (see ChatView.vue v-if), so
+      // the affordance is continuously visible from this point through
+      // to the post-send reconcile completing — a regression in either
+      // gate would otherwise hide the indicator on backends that emit
+      // no intermediate `content` events.
       this.isStreaming = false
 
       // Optimistic id is `temp-${Date.now()}-${rand}` rather than just
@@ -729,6 +738,23 @@ export const useChatStore = defineStore('chat', {
         // mid-stream session switch never lands chunks on the wrong session
         // and never reconciles against the wrong session's history.
         // (Compounding bugs C-3, C-6 from the PR-2 plan.)
+        //
+        // SSE end-of-stream handling here is intentionally minimal: we
+        // close on [DONE]/error to prevent the browser auto-reconnecting
+        // and registering a second broker subscriber on the next send,
+        // but the canonical post-send state-sync runs unconditionally
+        // AFTER `await sendSessionMessage` resolves (see the post-await
+        // reconcile below). Pre-fix the [DONE] handler also fired
+        // `reconcileFromBackend`; that ran BEFORE the POST resolved,
+        // pulled an in-progress backend snapshot whose user message the
+        // merge logic treated as new (the local `temp-*` was preserved
+        // as an orphan), and produced a duplicate user bubble that
+        // persisted until the optimistic-id swap collapsed it. The fix:
+        // reconcile exactly once, post-POST, after the id swap has
+        // already replaced the temp-* with the canonical id so the
+        // merge sees zero orphans. See bug-fix note "Vue Chat
+        // Fresh-Session Duplicate User Bubble + Missing Streaming
+        // Affordance (May 2026)".
         const capturedSessionId = sessionId
         sessionStream.connect(capturedSessionId, {
           onMessage: (payload) => {
@@ -740,23 +766,21 @@ export const useChatStore = defineStore('chat', {
             if (payload === '[DONE]') {
               // Close immediately on stream end so the browser cannot
               // auto-reconnect and register a second broker subscriber
-              // before the finally block runs.
+              // before the finally block runs. Reconcile is intentionally
+              // NOT called here — see the post-await reconcile below.
               sessionStream.disconnect()
-              // Reconcile so any backend state SSE didn't surface (a
-              // tool_result, a delegation completion, a sealed assistant
-              // content) is visible without the user reloading.
-              void this.reconcileFromBackend(capturedSessionId)
             }
           },
           onError: () => {
             // SSE connection dropped (stream ended or network error) —
             // close immediately to prevent auto-reconnect registering a
-            // duplicate broker subscriber on the next send.
+            // duplicate broker subscriber on the next send. Reconcile is
+            // intentionally NOT called here either; the post-await
+            // reconcile below covers the success path, and the
+            // catch/finally below covers the failure path so a network
+            // drop never triggers a reconcile that races with the still
+            // pending POST resolution.
             sessionStream.disconnect()
-            // Reconcile in case the backend did finish despite the SSE
-            // drop. Silent on fetch failure — see reconcileFromBackend
-            // contract.
-            void this.reconcileFromBackend(capturedSessionId)
           },
           onStall: () => this.handleStreamStall(capturedSessionId),
         })
@@ -769,6 +793,12 @@ export const useChatStore = defineStore('chat', {
         // the response — the backend persisted the just-sent message and
         // returns it in the messages array. We pick the LAST user message
         // with the matching content to pin the most recent send.
+        //
+        // CRITICAL: this swap MUST run before reconcileFromBackend below,
+        // otherwise the merge would treat the local `temp-*` row as an
+        // orphan to preserve and the canonical-id row from the backend
+        // history would be ADDITIONAL — producing a duplicate user
+        // bubble. Order is load-bearing.
         const responseMessages = sentSession?.messages ?? []
         const serverUserMessage = [...responseMessages]
           .reverse()
@@ -780,12 +810,25 @@ export const useChatStore = defineStore('chat', {
           }
         }
 
-        // SSE is the source of truth during a send. Never replace this.messages
-        // with a backend refetch here — that would inject backend-loaded assistant
-        // rows (status === undefined) that handleContentChunk adopts as targets,
-        // causing the prior response to appear to mutate into the new one. The
-        // [DONE] sentinel from SSE, the error handler, and the stall watchdog all
-        // handle the end-of-stream and failure paths.
+        // Canonical post-send sync. The POST response carries the
+        // backend's authoritative session state, but we route through
+        // reconcileFromBackend (which re-fetches via GET /messages) for
+        // three reasons:
+        //   1. reconcileFromBackend already implements the seal/merge
+        //      semantics required to land tool_result, delegation, and
+        //      sealed-assistant rows correctly. Inlining the same logic
+        //      here would duplicate it and risk drift.
+        //   2. The POST may have triggered child-session writes (a
+        //      delegation, a swarm fan-out) that the response does not
+        //      include. The GET fetches the canonical merged history.
+        //   3. reconcileFromBackend re-checks currentSessionId before
+        //      and after the await, so a session switch concurrent with
+        //      this background sync is safe — re-implementing here would
+        //      drop the guard.
+        // The id swap above guarantees the local temp-* row has already
+        // been renamed to the canonical id, so the merge's orphan-
+        // preservation rule produces zero duplicates.
+        await this.reconcileFromBackend(capturedSessionId)
 
         await this.loadSessions()
       } catch (error) {
