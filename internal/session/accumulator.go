@@ -399,23 +399,23 @@ func formatDelegationSummary(info *provider.DelegationInfo) string {
 
 // toolArgValue returns the primary display argument value for the given tool call.
 //
+// Delegates to tooldisplay.PrimaryArgValue, which applies the tiered fallback
+// (hand-coded primary key → preferred fallback keys → compact JSON of all
+// string args) so unknown tools (delegate, search_nodes, coordination_store,
+// MCP tools, etc.) still produce an informative ToolInput rather than an
+// empty string. Sensitive args are redacted and long values are truncated.
+//
 // Expected:
 //   - name is a tool identifier.
 //   - args contains the tool call argument map.
 //
 // Returns:
-//   - The string value of the primary argument, or an empty string when absent.
+//   - A display string suitable for storage in Message.ToolInput, or an
+//     empty string when no informative value can be derived.
 //
 // Side effects:
 //   - None.
 func toolArgValue(name string, args map[string]any) string {
-	key := tooldisplay.PrimaryArgKey(name)
-	if key == "" {
-		return ""
-	}
-	v, ok := args[key].(string)
-	if !ok {
-		return ""
-	}
-	return v
+	value, _ := tooldisplay.PrimaryArgValue(name, args)
+	return value
 }

@@ -136,8 +136,17 @@ var _ = Describe("extractPrimaryArg", func() {
 		Expect(session.ExtractPrimaryArgForTest("bash", map[string]any{"command": "echo hi"})).To(Equal("echo hi"))
 	})
 
-	It("returns empty string for an unknown tool", func() {
-		Expect(session.ExtractPrimaryArgForTest("unknown_tool", map[string]any{"foo": "bar"})).To(BeEmpty())
+	It("returns the JSON fallback for an unknown tool with non-preferred string args", func() {
+		// Behaviour change: unknown tools used to persist with empty
+		// ToolInput, leaving the chat UI showing only the bare tool name.
+		// The tiered fallback now renders all string args as compact JSON
+		// so the user sees what the tool was called with.
+		Expect(session.ExtractPrimaryArgForTest("unknown_tool", map[string]any{"foo": "bar"})).
+			To(Equal(`{"foo":"bar"}`))
+	})
+
+	It("returns empty string for an unknown tool with no usable args", func() {
+		Expect(session.ExtractPrimaryArgForTest("unknown_tool", map[string]any{})).To(BeEmpty())
 	})
 
 	It("returns the filePath for the read tool", func() {

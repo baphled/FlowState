@@ -47,8 +47,13 @@ var _ = Describe("PrimaryArgKey", func() {
 
 var _ = Describe("Summary", func() {
 	Context("when tool has no recognised primary arg key", func() {
-		It("returns just the tool name", func() {
-			Expect(tooldisplay.Summary("unknown_tool", map[string]any{"foo": "bar"})).To(Equal("unknown_tool"))
+		It("returns the JSON fallback when only non-preferred string args are present", func() {
+			// Behaviour change: the previous bare-name fallback hid
+			// non-trivial calls (delegate, search_nodes, MCP tools) in the
+			// chat UI. The fallback now renders all string args as compact
+			// JSON so the user sees what the tool was called with.
+			Expect(tooldisplay.Summary("unknown_tool", map[string]any{"foo": "bar"})).
+				To(Equal(`unknown_tool: {"foo":"bar"}`))
 		})
 
 		It("returns just the tool name when args is nil", func() {
