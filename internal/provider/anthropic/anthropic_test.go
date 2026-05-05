@@ -839,6 +839,74 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			}
 		})
 	})
+
+	// Assistant prefill — when the request's last message has role
+	// "assistant", the server is asked to continue from that prefill.
+	// Models in the 4.6+ family (Opus 4.6, Sonnet 4.6, Opus 4.7) reject
+	// this with HTTP 400 "Prefilling assistant messages is not supported
+	// for this model." We catch this client-side so callers see a clear
+	// error before the request is sent.
+	Context("assistant prefill rejection (4.6+ family)", func() {
+		prefillReq := func(model string) provider.ChatRequest {
+			return provider.ChatRequest{
+				Model: model,
+				Messages: []provider.Message{
+					{Role: "user", Content: "hi"},
+					{Role: "assistant", Content: "{"},
+				},
+			}
+		}
+
+		It("Opus 4.7 rejects an assistant-role last message", func() {
+			_, _, err := p.buildRequestParams(prefillReq("claude-opus-4-7-20251201"))
+			Expect(err).To(MatchError(errAssistantPrefillRejected))
+			Expect(err.Error()).To(ContainSubstring("claude-opus-4-7-20251201"))
+			Expect(err.Error()).To(ContainSubstring("assistant prefill"))
+		})
+
+		It("Opus 4.6 rejects an assistant-role last message", func() {
+			_, _, err := p.buildRequestParams(prefillReq("claude-opus-4-6-20251020"))
+			Expect(err).To(MatchError(errAssistantPrefillRejected))
+			Expect(err.Error()).To(ContainSubstring("claude-opus-4-6-20251020"))
+		})
+
+		It("Sonnet 4.6 rejects an assistant-role last message", func() {
+			_, _, err := p.buildRequestParams(prefillReq("claude-sonnet-4-6-20251020"))
+			Expect(err).To(MatchError(errAssistantPrefillRejected))
+			Expect(err.Error()).To(ContainSubstring("claude-sonnet-4-6-20251020"))
+		})
+
+		It("Sonnet 4.5 accepts an assistant-role last message (prefill allowed)", func() {
+			_, _, err := p.buildRequestParams(prefillReq("claude-sonnet-4-5-20251020"))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Sonnet 3.7 accepts an assistant-role last message (prefill allowed)", func() {
+			_, _, err := p.buildRequestParams(prefillReq("claude-3-7-sonnet-20250219"))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Opus 4.7 with last message role=user is unaffected (no prefill)", func() {
+			req := provider.ChatRequest{
+				Model: "claude-opus-4-7-20251201",
+				Messages: []provider.Message{
+					{Role: "assistant", Content: "earlier turn"},
+					{Role: "user", Content: "follow-up"},
+				},
+			}
+			_, _, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("Opus 4.7 with empty messages is unaffected (no prefill present)", func() {
+			req := provider.ChatRequest{
+				Model:    "claude-opus-4-7-20251201",
+				Messages: nil,
+			}
+			_, _, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
 
 // Thinking-parameter validation operates on the assembled
