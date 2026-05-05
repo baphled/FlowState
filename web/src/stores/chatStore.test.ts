@@ -31,7 +31,7 @@ import {
   updateSessionAgent,
   updateSessionModel,
 } from '../api'
-import { useChatStore } from './chatStore'
+import { DEFAULT_AGENT_ID, useChatStore } from './chatStore'
 
 class FakeEventSource {
   static instances: FakeEventSource[] = []
@@ -2839,5 +2839,66 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(() => store.applyContentEvent('not json {')).not.toThrow()
     expect(store.messages.length).toBe(before)
     expect(store.error).toBeNull()
+  })
+})
+
+describe('chatStore - DEFAULT_AGENT_ID matches the manifest convention', () => {
+  // The frontend's DEFAULT_AGENT_ID is the agent the chat selects for a
+  // brand-new visitor with no persisted session and no persisted agent
+  // choice. This must point at default-assistant — the friendly, general-
+  // purpose agent that can delegate to specialists — NOT a sprint-
+  // coordinator orchestrator like Team-Lead.
+  //
+  // The agent id MUST match the manifest's `id:` field at
+  // internal/app/agents/default-assistant.md verbatim. The backend's
+  // POST /api/v1/sessions handler returns 400 when agent_id is empty, so
+  // the value the frontend sends is the value the backend resolves —
+  // there is no "system default" fallback at the API boundary that could
+  // paper over a typo here.
+  //
+  // This pins the constant so a future refactor cannot silently regress
+  // the default back to team-lead (which the user reported as wrong: it
+  // is optimised for multi-step delivery coordination, not chat).
+
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('exports DEFAULT_AGENT_ID as the lowercase hyphenated default-assistant id', () => {
+    expect(DEFAULT_AGENT_ID).toBe('default-assistant')
+  })
+
+  it('uses default-assistant as the chosen agent on a fresh restore when it is in the available list', async () => {
+    // No persisted session, no persisted agent. Available agents include
+    // default-assistant — the store must pick it as the default.
+    vi.mocked(fetchAgents).mockResolvedValueOnce([
+      { id: 'default-assistant', name: 'Default Assistant' } as never,
+      { id: 'Team-Lead', name: 'Team Lead' } as never,
+    ])
+    vi.mocked(fetchSessions).mockResolvedValueOnce([])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.agentId).toBe('default-assistant')
+    expect(window.localStorage.getItem('chat.agentId')).toBe('default-assistant')
+  })
+
+  it('falls back to the first available agent only when default-assistant is not in the list', async () => {
+    // Defensive: a deployment with the manifest removed must still pick
+    // *some* agent so the chat can boot. The first available agent is
+    // the documented fallback (chatStore.ts restoreStateFromBackend).
+    vi.mocked(fetchAgents).mockResolvedValueOnce([
+      { id: 'Team-Lead', name: 'Team Lead' } as never,
+      { id: 'Senior-Engineer', name: 'Senior Engineer' } as never,
+    ])
+    vi.mocked(fetchSessions).mockResolvedValueOnce([])
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.agentId).toBe('Team-Lead')
   })
 })

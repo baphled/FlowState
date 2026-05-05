@@ -33,8 +33,8 @@ context_management:
   compaction_threshold: 0.75
   embedding_model: nomic-embed-text
 delegation:
-  can_delegate: false
-  delegation_table: {}
+  can_delegate: true
+  delegation_allowlist: []
 hooks:
   before: []
   after: []
