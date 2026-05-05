@@ -858,13 +858,24 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	// reads from it) and attach them to the per-call context (for the
 	// serve path, where the engine uses ctx-scoped history as the
 	// authoritative source for the model request payload).
+	//
+	// ThinkingBlocks and StopReason MUST round-trip onto the projected
+	// provider.Message so subsequent turns replay the encrypted thinking
+	// signature verbatim. Without this propagation, Anthropic silently
+	// disables extended-thinking continuity from turn 2 onward — the
+	// session accumulator persists the structured blocks on
+	// session.Message.ThinkingBlocks, but the wire payload sent to the
+	// model is built from the slice projected here. Empty inputs project
+	// to empty (nil) outputs, preserving the no-thinking fall-through.
 	var providerMsgs []provider.Message
 	if len(priorMessages) > 0 {
 		providerMsgs = make([]provider.Message, 0, len(priorMessages))
 		for _, msg := range priorMessages {
 			providerMsgs = append(providerMsgs, provider.Message{
-				Role:    msg.Role,
-				Content: msg.Content,
+				Role:           msg.Role,
+				Content:        msg.Content,
+				ThinkingBlocks: msg.ThinkingBlocks,
+				StopReason:     msg.StopReason,
 			})
 		}
 	}

@@ -1030,7 +1030,16 @@ func (b *WindowBuilder) appendMessageWithBudget(
 		return messages, false
 	}
 
-	messages = append(messages, provider.Message{Role: msg.Role, Content: truncatedContent})
+	// Preserve all non-Content fields when truncating so a tight budget
+	// does not silently drop ToolCalls, Thinking, ThinkingBlocks,
+	// StopReason, or ModelID from a message that survives in the window.
+	// Anthropic extended-thinking continuity in particular relies on the
+	// structured ThinkingBlocks (signature, redacted data) round-tripping
+	// verbatim — a truncated assistant message with its blocks stripped
+	// would silently disable thinking on the next turn.
+	truncated := msg
+	truncated.Content = truncatedContent
+	messages = append(messages, truncated)
 	budget.Reserve("sliding", b.counter.Count(truncatedContent))
 	return messages, true
 }
