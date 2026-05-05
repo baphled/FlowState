@@ -22,9 +22,17 @@ const activeAgentStorageKey = 'chat.agentId'
 const activeModelStorageKey = 'chat.selectedModel'
 const activeProviderStorageKey = 'chat.selectedProvider'
 
-// team-lead is the lead orchestrator — it can delegate to any agent or swarm
-// and is the correct starting point for open-ended requests.
-const DEFAULT_AGENT_ID = 'team-lead'
+// default-assistant is the friendly general-purpose chat agent — it answers
+// directly when it can and delegates to specialists when the request needs
+// one. It is the right starting point for open-ended user requests, in
+// preference to a sprint-coordinator orchestrator like Team-Lead which is
+// optimised for multi-step delivery rather than conversational use.
+//
+// The id below MUST match the manifest's id field at
+// internal/app/agents/default-assistant.md (canonical: lowercase, hyphenated).
+// Backend default in internal/config/config.go is the same id, so no agent_id
+// in the POST /sessions body still resolves to the same agent.
+export const DEFAULT_AGENT_ID = 'default-assistant'
 
 /**
  * describeFailoverReason maps a failover-reason token (from
