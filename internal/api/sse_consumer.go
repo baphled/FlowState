@@ -49,16 +49,19 @@ func (c *SSEConsumer) WriteChunk(content string) error {
 	return nil
 }
 
-// WriteError writes a JSON-encoded error as a server-sent event.
+// WriteError writes a sanitized JSON-encoded error as a server-sent event.
+// The raw error is logged server-side with a correlation ID; only the
+// canonical category message and the ID are sent to the client.
 //
 // Expected:
 //   - err is the error to report to the client.
 //
 // Side effects:
-//   - Writes SSE data line with JSON-encoded error to the response.
+//   - Logs the raw error server-side with a correlation ID.
+//   - Writes SSE data line with JSON-encoded sanitized error to the response.
 //   - Flushes the response buffer.
 func (c *SSEConsumer) WriteError(err error) {
-	writeSSEError(c.w, c.flusher, err.Error())
+	writeSSEClientError(c.w, c.flusher, err, "stream_error")
 }
 
 // Done writes the completion sentinel as a server-sent event.

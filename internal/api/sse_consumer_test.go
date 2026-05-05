@@ -52,13 +52,17 @@ var _ = Describe("SSEConsumer", func() {
 	})
 
 	Describe("WriteError", func() {
-		It("writes JSON error as an SSE data line", func() {
+		It("writes a sanitized JSON error as an SSE data line", func() {
 			consumer, ok := api.NewSSEConsumer(recorder)
 			Expect(ok).To(BeTrue())
 
 			consumer.WriteError(errors.New("something broke"))
 
-			Expect(recorder.Body.String()).To(ContainSubstring(`data: {"error":"something broke"}`))
+			// Raw error text must not reach the client; only the canonical
+			// category message and a correlation ID are forwarded.
+			Expect(recorder.Body.String()).To(ContainSubstring(`"error":"stream error"`))
+			Expect(recorder.Body.String()).To(ContainSubstring(`"correlation_id"`))
+			Expect(recorder.Body.String()).NotTo(ContainSubstring("something broke"))
 		})
 	})
 
