@@ -90,14 +90,16 @@ func (m *Manager) UpdateDelegation(sessionID, chainID string, mutate func(*Messa
 
 // streamAccumState holds mutable accumulation state within AccumulateStream.
 //
-// lastModelID / lastProviderID track the most recent (model, provider) pair
-// stamped by the engine on the StreamChunk stream (see engine.go where
-// chunk.ModelID = e.LastModel() and chunk.ProviderID = e.LastProvider()).
-// flushContent and flushThinking copy these onto the appended assistant /
-// thinking messages so each persisted turn carries its provenance — the
-// chip and any future per-bubble badge can attribute the turn to the
-// model that actually produced it, even after a session reload or a
-// failover replay that switched providers mid-turn.
+// The lastModelID / lastProviderID fields track the most recent
+// (model, provider) pair stamped by the engine on the StreamChunk
+// stream (see engine.go where chunk.ModelID = e.LastModel() and
+// chunk.ProviderID = e.LastProvider()).
+// The flushContent / flushThinking helpers copy these onto the
+// appended assistant / thinking messages so each persisted turn
+// carries its provenance — the chip and any future per-bubble badge
+// can attribute the turn to the model that actually produced it,
+// even after a session reload or a failover replay that switched
+// providers mid-turn.
 type streamAccumState struct {
 	sessionID         string
 	agentID           string
@@ -108,6 +110,24 @@ type streamAccumState struct {
 	lastModelID       string
 	lastProviderID    string
 	seenStartedChains map[string]struct{}
+	// pendingThinkingSignature holds the signature received with the
+	// most recent thinking chunk. The Anthropic streaming layer emits
+	// the thinking content and its associated signature as one chunk
+	// (StreamChunk{Thinking, Signature}); the accumulator pairs them
+	// into a ThinkingBlock entry below. This is reset after the
+	// thinking message flushes so the next thinking block on the
+	// same turn captures its own signature.
+	pendingThinkingSignature string
+	// thinkingBlocks accumulates the structured per-block thinking
+	// records (signed and redacted) produced during the current turn.
+	// Persisted on the assistant message at flushContent so a session
+	// reload can replay them verbatim on the next turn — without
+	// them Anthropic silently disables extended thinking continuity.
+	thinkingBlocks []provider.ThinkingBlock
+	// turnStopReason is the upstream stop reason captured from the
+	// `message_delta` chunk, persisted on the assistant message at
+	// flushContent.
+	turnStopReason string
 }
 
 // AccumulateStream wraps rawCh with a goroutine that records assistant and tool
@@ -209,6 +229,28 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		applyToolResult(appender, s, chunk.ToolResult)
 	case chunk.DelegationInfo != nil:
 		applyDelegation(appender, s, chunk.DelegationInfo)
+	case chunk.RedactedThinking != "":
+		// Redacted thinking arrives as a single chunk (no deltas).
+		// Capture as an opaque thinking block so the next turn replays
+		// the encrypted payload verbatim. Anthropic requires this to
+		// preserve thinking-continuity guarantees.
+		s.thinkingBlocks = append(s.thinkingBlocks, provider.ThinkingBlock{
+			Redacted: true,
+			Data:     chunk.RedactedThinking,
+		})
+	case chunk.EventType == "stop_reason":
+		// Captured from `message_delta`. Stamp the turn-level stop
+		// reason so the subsequent flushContent persists it on the
+		// assistant message.
+		if chunk.StopReason != "" {
+			s.turnStopReason = chunk.StopReason
+		}
+	case chunk.EventType == "usage":
+		// Usage chunks carry no message content — token-accounting
+		// snapshots are intentionally not persisted on the message
+		// here. Downstream consumers (telemetry, the future
+		// per-bubble usage badge) read them from the live stream.
+		return
 	case chunk.Done:
 		flushThinking(appender, s)
 		flushContent(appender, s)
@@ -216,12 +258,37 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		if chunk.EventType != "" {
 			return
 		}
-		if chunk.Thinking != "" {
-			s.thinkingBuf.WriteString(chunk.Thinking)
+		applyThinkingAndContent(appender, s, chunk)
+	}
+}
+
+// applyThinkingAndContent handles the default chunk shape (text content
+// and/or thinking content). Thinking blocks are persisted at block
+// boundaries so multiple thinking blocks in one turn are recorded
+// independently rather than concatenated:
+//
+//   - When a chunk carries Signature, it is the terminal chunk of a
+//     thinking block (the Anthropic streaming layer emits exactly one
+//     such chunk per content_block_stop). The buffer is flushed to a
+//     visible thinking Message and a structured ThinkingBlock is
+//     appended for round-trip.
+//   - When a chunk carries thinking text but no signature, accumulate
+//     into the buffer — this is a legacy/test-only shape; the buffer is
+//     drained by flushThinking at Done time.
+func applyThinkingAndContent(
+	appender MessageAppender, s *streamAccumState, chunk provider.StreamChunk,
+) {
+	if chunk.Thinking != "" || chunk.Signature != "" {
+		s.thinkingBuf.WriteString(chunk.Thinking)
+		if chunk.Signature != "" {
+			// Block boundary: emit the visible thinking Message and
+			// stage the structured block for the next-turn replay.
+			s.pendingThinkingSignature = chunk.Signature
+			flushThinking(appender, s)
 		}
-		if chunk.Content != "" {
-			s.contentBuf.WriteString(chunk.Content)
-		}
+	}
+	if chunk.Content != "" {
+		s.contentBuf.WriteString(chunk.Content)
 	}
 }
 
@@ -367,12 +434,22 @@ func flushThinking(appender MessageAppender, s *streamAccumState) {
 	if s.thinkingBuf.Len() == 0 {
 		return
 	}
+	thinking := s.thinkingBuf.String()
+	signature := s.pendingThinkingSignature
 	appender.AppendMessage(s.sessionID, Message{
 		Role:    "thinking",
-		Content: s.thinkingBuf.String(),
+		Content: thinking,
 		AgentID: s.agentID,
 	})
+	// Capture the signed thinking block for replay on the next turn.
+	// Without round-tripping the signature, Anthropic disables thinking
+	// continuity silently — see provider.Message.ThinkingBlocks.
+	s.thinkingBlocks = append(s.thinkingBlocks, provider.ThinkingBlock{
+		Thinking:  thinking,
+		Signature: signature,
+	})
 	s.thinkingBuf.Reset()
+	s.pendingThinkingSignature = ""
 }
 
 // flushContent writes accumulated assistant content as an assistant message and resets the buffer.
@@ -393,14 +470,31 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	// stream produced no model/provider at all (legacy providers, test
 	// streams), the fields stay empty — Message.ModelName / ProviderName are
 	// `omitempty` so the wire and on-disk JSON remain stable.
-	appender.AppendMessage(s.sessionID, Message{
+	//
+	// ThinkingBlocks and StopReason are also stamped here so a session
+	// reload reconstructs everything needed to replay extended-thinking
+	// continuity on the next turn (Anthropic silently disables thinking
+	// without the original signatures and redacted payloads).
+	msg := Message{
 		Role:         "assistant",
 		Content:      s.contentBuf.String(),
 		AgentID:      s.agentID,
 		ModelName:    s.lastModelID,
 		ProviderName: s.lastProviderID,
-	})
+		StopReason:   s.turnStopReason,
+	}
+	if len(s.thinkingBlocks) > 0 {
+		// Copy the slice so subsequent mutation of s.thinkingBlocks
+		// (e.g. a follow-up turn within the same accumulator instance)
+		// cannot retro-edit the persisted message.
+		blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
+		copy(blocks, s.thinkingBlocks)
+		msg.ThinkingBlocks = blocks
+	}
+	appender.AppendMessage(s.sessionID, msg)
 	s.contentBuf.Reset()
+	s.thinkingBlocks = nil
+	s.turnStopReason = ""
 }
 
 // formatDelegationSummary builds a human-readable summary of a delegation event.

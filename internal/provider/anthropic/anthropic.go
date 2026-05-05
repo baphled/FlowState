@@ -581,11 +581,20 @@ func containsBillingKeyword(msg string) bool {
 
 // buildAssistantMessage converts a provider message to an Anthropic assistant message parameter.
 //
+// When the message carries thinking blocks (signed or redacted), they
+// are prepended to the content blocks array. Anthropic requires that
+// thinking blocks come BEFORE text and tool_use blocks on a replayed
+// assistant message; without round-tripping them with their original
+// signatures the server silently disables extended thinking on the
+// next turn. Empty thinking blocks are skipped so a fresh first turn
+// (no prior thinking) is unchanged.
+//
 // Expected:
 //   - m is a message with role "assistant".
 //
 // Returns:
-//   - A non-nil MessageParam if the message has content or tool calls.
+//   - A non-nil MessageParam if the message has content, tool calls,
+//     or thinking blocks.
 //   - nil if the message is empty.
 //
 // Side effects:
@@ -596,32 +605,53 @@ func buildAssistantMessage(
 	if len(m.ToolCalls) > 0 {
 		return buildAssistantWithTools(m)
 	}
+	thinkingBlocks := buildThinkingBlocks(m.ThinkingBlocks)
 	if m.Content != "" {
-		msg := anthropicAPI.NewAssistantMessage(
-			anthropicAPI.NewTextBlock(m.Content),
+		blocks := make(
+			[]anthropicAPI.ContentBlockParamUnion,
+			0, len(thinkingBlocks)+1,
 		)
+		blocks = append(blocks, thinkingBlocks...)
+		blocks = append(blocks, anthropicAPI.NewTextBlock(m.Content))
+		msg := anthropicAPI.NewAssistantMessage(blocks...)
+		return &msg
+	}
+	if len(thinkingBlocks) > 0 {
+		// Edge case: assistant turn that produced only thinking (no
+		// visible text and no tool call). Anthropic accepts this on
+		// replay — the thinking blocks alone are valid content.
+		msg := anthropicAPI.NewAssistantMessage(thinkingBlocks...)
 		return &msg
 	}
 	return nil
 }
 
-// buildAssistantWithTools creates an assistant message with text and tool-use blocks.
+// buildAssistantWithTools creates an assistant message with thinking,
+// text, and tool-use blocks in that order.
+//
+// Anthropic requires thinking blocks to precede tool_use blocks on
+// replayed assistant messages — the API rejects (or silently drops
+// thinking on) a request where tool_use comes before its associated
+// thinking.
 //
 // Expected:
 //   - m is a message with at least one tool call.
 //
 // Returns:
-//   - A MessageParam containing text and tool-use content blocks.
+//   - A MessageParam containing thinking, text, and tool-use content
+//     blocks.
 //
 // Side effects:
 //   - None.
 func buildAssistantWithTools(
 	m provider.Message,
 ) *anthropicAPI.MessageParam {
+	thinkingBlocks := buildThinkingBlocks(m.ThinkingBlocks)
 	blocks := make(
 		[]anthropicAPI.ContentBlockParamUnion,
-		0, len(m.ToolCalls)+1,
+		0, len(thinkingBlocks)+len(m.ToolCalls)+1,
 	)
+	blocks = append(blocks, thinkingBlocks...)
 	if m.Content != "" {
 		blocks = append(
 			blocks, anthropicAPI.NewTextBlock(m.Content),
@@ -636,6 +666,33 @@ func buildAssistantWithTools(
 	}
 	msg := anthropicAPI.NewAssistantMessage(blocks...)
 	return &msg
+}
+
+// buildThinkingBlocks converts captured ThinkingBlock records into
+// Anthropic ContentBlockParamUnion values suitable for replay on a
+// subsequent turn. Both signed thinking (Thinking + Signature) and
+// redacted thinking (Redacted=true + Data) are supported; empty
+// records are skipped.
+//
+// The Signature must be sent back UNCHANGED — without it the server
+// rejects thinking continuity and silently re-disables thinking on
+// the response, defeating per-model thinking opt-in.
+func buildThinkingBlocks(
+	blocks []provider.ThinkingBlock,
+) []anthropicAPI.ContentBlockParamUnion {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]anthropicAPI.ContentBlockParamUnion, 0, len(blocks))
+	for _, b := range blocks {
+		switch {
+		case b.Redacted && b.Data != "":
+			out = append(out, anthropicAPI.NewRedactedThinkingBlock(b.Data))
+		case b.Thinking != "" || b.Signature != "":
+			out = append(out, anthropicAPI.NewThinkingBlock(b.Signature, b.Thinking))
+		}
+	}
+	return out
 }
 
 // buildToolResultMessage creates an Anthropic user message containing tool result blocks.

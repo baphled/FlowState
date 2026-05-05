@@ -40,20 +40,34 @@ const (
 // without re-reading the session-level CurrentModelID/CurrentProviderID
 // (which only tracks the *current* selection, not historical turns).
 type Message struct {
-	ID           string    `json:"id"`
-	Role         string    `json:"role"`
-	Content      string    `json:"content"`
-	AgentID      string    `json:"agentId,omitempty"`
-	ToolName     string    `json:"toolName,omitempty"`
-	ToolInput    string    `json:"toolInput,omitempty"`
-	TargetAgent  string    `json:"targetAgent,omitempty"`
-	ChainID      string    `json:"chainId,omitempty"`
-	ToolCalls    int       `json:"toolCalls,omitempty"`
-	LastTool     string    `json:"lastTool,omitempty"`
-	Status       string    `json:"status,omitempty"`
-	ModelName    string    `json:"modelName,omitempty"`
-	ProviderName string    `json:"providerName,omitempty"`
-	Timestamp    time.Time `json:"timestamp"`
+	ID           string `json:"id"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	AgentID      string `json:"agentId,omitempty"`
+	ToolName     string `json:"toolName,omitempty"`
+	ToolInput    string `json:"toolInput,omitempty"`
+	TargetAgent  string `json:"targetAgent,omitempty"`
+	ChainID      string `json:"chainId,omitempty"`
+	ToolCalls    int    `json:"toolCalls,omitempty"`
+	LastTool     string `json:"lastTool,omitempty"`
+	Status       string `json:"status,omitempty"`
+	ModelName    string `json:"modelName,omitempty"`
+	ProviderName string `json:"providerName,omitempty"`
+	// ThinkingBlocks carries the per-block thinking content produced
+	// by Anthropic extended thinking (signed and redacted variants).
+	// Persisted on assistant messages so that a session reload can
+	// reconstruct the exact thinking blocks that must be replayed on
+	// subsequent turns. Without these, Anthropic silently disables
+	// extended thinking on turn 2+. Empty for non-thinking turns and
+	// for providers that do not produce thinking blocks.
+	ThinkingBlocks []provider.ThinkingBlock `json:"thinkingBlocks,omitempty"`
+	// StopReason is the upstream provider's terminal stop reason for
+	// the turn that produced this message. Empty when unknown. The
+	// `refusal` and `model_context_window_exceeded` values (Claude 4+
+	// additions) flow through here so consumers can distinguish them
+	// from a normal `end_turn`.
+	StopReason string    `json:"stopReason,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
 }
 
 // Session represents a planning session with conversation history,

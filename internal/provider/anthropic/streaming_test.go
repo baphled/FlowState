@@ -301,12 +301,354 @@ var _ = Describe("streamEventHandler", func() {
 		Context("when receiving an unrecognised event type", func() {
 			It("does not emit a chunk", func() {
 				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "ping",
+				}
+
+				_, shouldSend := handler.handleEvent(event)
+
+				Expect(shouldSend).To(BeFalse())
+			})
+		})
+
+		Context("when receiving a message_start event with usage data", func() {
+			It("captures input/output tokens and cache stats into Usage", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_start",
+					Message: anthropicAPI.Message{
+						ID:    "msg_01ABCXYZ",
+						Model: "claude-opus-4-7-20251201",
+						Usage: anthropicAPI.Usage{
+							InputTokens:              42,
+							OutputTokens:             1,
+							CacheCreationInputTokens: 1024,
+							CacheReadInputTokens:     2048,
+						},
+					},
+				}
+
+				chunk, shouldSend := handler.handleEvent(event)
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.EventType).To(Equal("usage"))
+				Expect(chunk.Usage).NotTo(BeNil())
+				Expect(chunk.Usage.InputTokens).To(Equal(int64(42)))
+				Expect(chunk.Usage.OutputTokens).To(Equal(int64(1)))
+				Expect(chunk.Usage.CacheCreationInputTokens).To(Equal(int64(1024)))
+				Expect(chunk.Usage.CacheReadInputTokens).To(Equal(int64(2048)),
+					"cache stats arrive on message_start, not message_delta — dropping "+
+						"the event under-reports cache hits in token accounting")
+				Expect(chunk.Usage.RequestID).To(Equal("msg_01ABCXYZ"))
+				Expect(chunk.Usage.Model).To(Equal("claude-opus-4-7-20251201"))
+			})
+
+			It("does not emit a chunk for an empty message_start", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
 					Type: "message_start",
 				}
 
 				_, shouldSend := handler.handleEvent(event)
 
 				Expect(shouldSend).To(BeFalse())
+			})
+		})
+
+		Context("when receiving a message_delta event", func() {
+			It("captures stop_reason end_turn", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonEndTurn,
+					},
+				}
+
+				chunk, shouldSend := handler.handleEvent(event)
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.EventType).To(Equal("stop_reason"))
+				Expect(chunk.StopReason).To(Equal("end_turn"))
+			})
+
+			It("captures stop_reason tool_use", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonToolUse,
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.StopReason).To(Equal("tool_use"))
+			})
+
+			It("captures stop_reason max_tokens", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonMaxTokens,
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.StopReason).To(Equal("max_tokens"))
+			})
+
+			It("captures stop_reason refusal (Claude 4+)", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonRefusal,
+					},
+				}
+
+				chunk, shouldSend := handler.handleEvent(event)
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.StopReason).To(Equal("refusal"),
+					"refusal must surface so the engine can distinguish a model "+
+						"refusal from a normal end_turn")
+			})
+
+			It("captures stop_reason pause_turn", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonPauseTurn,
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.StopReason).To(Equal("pause_turn"))
+			})
+
+			It("captures stop_sequence with the matched sequence", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason:   anthropicAPI.StopReasonStopSequence,
+						StopSequence: "</halt>",
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.StopReason).To(Equal("stop_sequence"))
+				Expect(chunk.StopSequence).To(Equal("</halt>"))
+			})
+
+			It("captures cumulative output tokens via Usage", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonEndTurn,
+					},
+					Usage: anthropicAPI.MessageDeltaUsage{
+						OutputTokens: 256,
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.Usage).NotTo(BeNil())
+				Expect(chunk.Usage.OutputTokens).To(Equal(int64(256)))
+			})
+
+			It("does not emit a chunk for an empty message_delta", func() {
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+				}
+
+				_, shouldSend := handler.handleEvent(event)
+
+				Expect(shouldSend).To(BeFalse())
+			})
+		})
+
+		Context("when receiving signature_delta events for thinking", func() {
+			It("accumulates the signature and emits it with the thinking chunk", func() {
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "thinking",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 0,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:     "thinking_delta",
+						Thinking: "weighing the request",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 0,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:      "signature_delta",
+						Signature: "sig-part-1",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 0,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:      "signature_delta",
+						Signature: "sig-part-2",
+					},
+				})
+
+				chunk, shouldSend := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 0,
+				})
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.Thinking).To(Equal("weighing the request"))
+				Expect(chunk.Signature).To(Equal("sig-part-1sig-part-2"),
+					"signature_delta accumulates across multiple deltas; without round-"+
+						"tripping the full signature, Anthropic silently disables thinking "+
+						"continuity on the next turn")
+			})
+
+			It("attributes signatures to the correct block when multiple thinking blocks interleave", func() {
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "thinking",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 1,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "thinking",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 0,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:     "thinking_delta",
+						Thinking: "first",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 0,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:      "signature_delta",
+						Signature: "sig-A",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 1,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:     "thinking_delta",
+						Thinking: "second",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 1,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:      "signature_delta",
+						Signature: "sig-B",
+					},
+				})
+
+				chunk0, _ := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 0,
+				})
+				chunk1, _ := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 1,
+				})
+
+				Expect(chunk0.Thinking).To(Equal("first"))
+				Expect(chunk0.Signature).To(Equal("sig-A"))
+				Expect(chunk1.Thinking).To(Equal("second"))
+				Expect(chunk1.Signature).To(Equal("sig-B"))
+			})
+		})
+
+		Context("when receiving a redacted_thinking content block", func() {
+			It("captures the encrypted data and emits it on content_block_stop", func() {
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "redacted_thinking",
+						Data: "encrypted-payload-xyz",
+					},
+				})
+
+				chunk, shouldSend := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 0,
+				})
+
+				Expect(shouldSend).To(BeTrue())
+				Expect(chunk.RedactedThinking).To(Equal("encrypted-payload-xyz"),
+					"redacted_thinking blocks must be replayed verbatim — Anthropic "+
+						"requires the encrypted payload on the next turn even though it "+
+						"is opaque to the client")
+				Expect(chunk.Thinking).To(BeEmpty())
+				Expect(chunk.Signature).To(BeEmpty())
+			})
+
+			It("does not interfere with regular signed thinking on a different index", func() {
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "redacted_thinking",
+						Data: "redacted-data",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 1,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "thinking",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 1,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:     "thinking_delta",
+						Thinking: "visible",
+					},
+				})
+				handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_delta",
+					Index: 1,
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						Type:      "signature_delta",
+						Signature: "sig-1",
+					},
+				})
+
+				redactedChunk, _ := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 0,
+				})
+				signedChunk, _ := handler.handleEvent(anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_stop",
+					Index: 1,
+				})
+
+				Expect(redactedChunk.RedactedThinking).To(Equal("redacted-data"))
+				Expect(redactedChunk.Thinking).To(BeEmpty())
+				Expect(signedChunk.Thinking).To(Equal("visible"))
+				Expect(signedChunk.Signature).To(Equal("sig-1"))
+				Expect(signedChunk.RedactedThinking).To(BeEmpty())
 			})
 		})
 

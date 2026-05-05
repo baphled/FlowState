@@ -378,6 +378,139 @@ var _ = Describe("AccumulateStream", func() {
 		})
 	})
 
+	Context("when thinking content arrives with a signature", func() {
+		// Phase 3 Anthropic round-trip: the assistant message produced by
+		// the turn must persist the structured ThinkingBlocks so the next
+		// turn can replay them verbatim. Without the signature being
+		// pinned to the persisted assistant message, Anthropic silently
+		// disables extended thinking continuity on turn 2+.
+		It("persists the signature on the assistant message via ThinkingBlocks", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Thinking:  "weighing the request",
+				Signature: "sig-encrypted-xyz",
+			}
+			rawCh <- provider.StreamChunk{Content: "the answer is 42"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"signed thinking blocks must round-trip on the persisted assistant "+
+					"message — without them, the next turn cannot replay thinking "+
+					"continuity and Anthropic disables thinking server-side")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-encrypted-xyz"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("weighing the request"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Redacted).To(BeFalse())
+		})
+
+		It("persists redacted thinking on the assistant message", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{RedactedThinking: "encrypted-blob-xyz"}
+			rawCh <- provider.StreamChunk{Content: "answer follows"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Redacted).To(BeTrue())
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Data).To(Equal("encrypted-blob-xyz"))
+		})
+
+		It("persists the stop_reason from a message_delta chunk on the assistant message", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Content: "I cannot help with that"}
+			rawCh <- provider.StreamChunk{
+				EventType:  "stop_reason",
+				StopReason: "refusal",
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal("refusal"),
+				"refusal must surface on the persisted message so consumers can "+
+					"distinguish it from a normal end_turn (Claude 4+ addition)")
+		})
+
+		It("ignores usage chunks (no message synthesis) but does not break content accumulation", func() {
+			rawCh := make(chan provider.StreamChunk, 5)
+			rawCh <- provider.StreamChunk{
+				EventType: "usage",
+				Usage: &provider.UsageDelta{
+					InputTokens:          100,
+					CacheReadInputTokens: 50,
+					RequestID:            "msg_01ABC",
+				},
+			}
+			rawCh <- provider.StreamChunk{Content: "hello"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.messages[0].Role).To(Equal("assistant"))
+			Expect(appender.messages[0].Content).To(Equal("hello"))
+		})
+
+		It("preserves multiple thinking blocks in order on the assistant message", func() {
+			rawCh := make(chan provider.StreamChunk, 6)
+			rawCh <- provider.StreamChunk{Thinking: "first", Signature: "sig-A"}
+			rawCh <- provider.StreamChunk{RedactedThinking: "redacted-B"}
+			rawCh <- provider.StreamChunk{Thinking: "third", Signature: "sig-C"}
+			rawCh <- provider.StreamChunk{Content: "final"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(3))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("first"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-A"))
+			Expect(assistantMsgs[0].ThinkingBlocks[1].Redacted).To(BeTrue())
+			Expect(assistantMsgs[0].ThinkingBlocks[1].Data).To(Equal("redacted-B"))
+			Expect(assistantMsgs[0].ThinkingBlocks[2].Thinking).To(Equal("third"))
+			Expect(assistantMsgs[0].ThinkingBlocks[2].Signature).To(Equal("sig-C"))
+		})
+	})
+
 	Context("when delegation info arrives", func() {
 		It("stores a delegation message when status is completed", func() {
 			rawCh := make(chan provider.StreamChunk, 2)

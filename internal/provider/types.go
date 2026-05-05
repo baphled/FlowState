@@ -18,6 +18,46 @@ type Message struct {
 	Thinking  string
 	// ModelID identifies the model that generated this message, if known.
 	ModelID string
+	// ThinkingBlocks carries the structured thinking content blocks
+	// emitted by the upstream provider on the turn that produced this
+	// message. The Anthropic API requires that on every subsequent turn
+	// the assistant's thinking blocks are sent back UNCHANGED — including
+	// the encrypted `signature` field on each thinking block, and the
+	// opaque `data` payload for redacted thinking. Without round-tripping
+	// these the server silently disables extended thinking on turn 2+.
+	//
+	// Empty for non-thinking turns and for providers that do not produce
+	// thinking blocks. Construction is the responsibility of the engine /
+	// session accumulator, NOT the provider — providers only emit the
+	// per-block fragments via StreamChunk.
+	ThinkingBlocks []ThinkingBlock
+	// StopReason is the upstream provider's stop reason for the turn that
+	// produced this message (e.g. "end_turn", "tool_use", "max_tokens",
+	// "refusal", "model_context_window_exceeded"). Empty when unknown.
+	StopReason string
+}
+
+// ThinkingBlock is a single thinking-content block as produced by the
+// upstream provider. Anthropic's extended thinking ships these as
+// signed (Thinking + Signature) or redacted (Redacted=true + Data)
+// variants. To round-trip thinking across turns, the engine must
+// preserve every block verbatim and replay it on the subsequent
+// request — see provider.Message.ThinkingBlocks.
+type ThinkingBlock struct {
+	// Thinking is the visible thinking text. Empty when Redacted is
+	// true.
+	Thinking string `json:"thinking,omitempty"`
+	// Signature is the encrypted continuity signature attached to a
+	// signed thinking block. Required by Anthropic on every replayed
+	// thinking block; must be sent back UNCHANGED.
+	Signature string `json:"signature,omitempty"`
+	// Redacted is true when the upstream returned a redacted_thinking
+	// block. Redacted blocks have no visible text — only the encrypted
+	// Data payload — but must still be replayed verbatim.
+	Redacted bool `json:"redacted,omitempty"`
+	// Data is the opaque encrypted payload for a redacted thinking
+	// block. Empty when Redacted is false.
+	Data string `json:"data,omitempty"`
 }
 
 // ToolCall represents a tool invocation request from the model.
@@ -122,6 +162,28 @@ type DelegationInfo struct {
 	Description  string     `json:"description"`
 }
 
+// UsageDelta carries per-turn token-accounting deltas reported by the
+// upstream provider on streaming events that carry usage data
+// (Anthropic's `message_start` and `message_delta`).
+//
+// The Anthropic API ships cumulative output_tokens on `message_delta`
+// and cache stats on `message_start`. RequestID is the upstream message
+// ID (Anthropic's `message.id`) and Model is the wire-confirmed model
+// from `message_start.message.model`.
+//
+// All fields are zero/empty when the chunk does not carry that data.
+// Consumers that aggregate usage should treat each chunk as a
+// snapshot — a later message_delta carries the latest cumulative
+// values, not an increment over the previous one.
+type UsageDelta struct {
+	InputTokens              int64  `json:"input_tokens,omitempty"`
+	OutputTokens             int64  `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens,omitempty"`
+	RequestID                string `json:"request_id,omitempty"`
+	Model                    string `json:"model,omitempty"`
+}
+
 // StreamChunk represents a single chunk of a streaming response.
 type StreamChunk struct {
 	Content        string
@@ -131,6 +193,29 @@ type StreamChunk struct {
 	ToolCall       *ToolCall
 	ToolResult     *ToolResultInfo
 	DelegationInfo *DelegationInfo
+	// Usage carries token-accounting and identity data captured from
+	// `message_start` / `message_delta` events. Nil when the chunk
+	// carries no usage data. EventType is "usage" for message_start
+	// chunks and "stop_reason" for message_delta chunks.
+	Usage *UsageDelta
+	// Signature is the encrypted continuity signature for a thinking
+	// block, accumulated across one or more `signature_delta` events
+	// and emitted alongside the matching Thinking content on
+	// content_block_stop. Empty for non-thinking chunks.
+	Signature string
+	// RedactedThinking is the opaque encrypted payload of a
+	// `redacted_thinking` content block, captured on content_block_start
+	// and emitted on the matching content_block_stop. Empty for
+	// non-redacted-thinking chunks.
+	RedactedThinking string
+	// StopReason is the upstream provider's stop reason for the turn
+	// (e.g. "end_turn", "tool_use", "max_tokens", "refusal",
+	// "model_context_window_exceeded"). Populated on the chunk emitted
+	// from a `message_delta` event. Empty otherwise.
+	StopReason string
+	// StopSequence is the matched stop sequence for the turn, when the
+	// stop reason is "stop_sequence". Empty otherwise.
+	StopSequence string
 	// ToolCallID carries the upstream provider's tool-use identifier (Anthropic
 	// block.ID for tool_use blocks, OpenAI tool_calls[].id) on every chunk
 	// associated with a tool call. Populated by providers on tool_call chunks,
