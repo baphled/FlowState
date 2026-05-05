@@ -628,6 +628,64 @@ var _ = Describe("Manager", func() {
 			}
 			wg.Wait()
 		})
+
+		// Regression for the data race surfaced during the Track A
+		// streaming signal-drop fixes: the API SSE fast-path called
+		// GetSession then read sess.Messages outside the manager lock,
+		// while SendMessage appended to sess.Messages under the write
+		// lock. `go test -race` flagged manager.go:647 (write) vs
+		// server.go:756 (read) on the slice header. The fix introduces
+		// LastMessageRole, which projects the value under RLock without
+		// leaking the *Session pointer past the lock boundary.
+		//
+		// This spec drives both code paths concurrently against a
+		// single session. Pre-fix it surfaces the race in the manager
+		// layer (the projection used to require dereferencing
+		// session.Messages outside the lock); post-fix the race
+		// detector reports clean.
+		It("handles concurrent SendMessage and LastMessageRole without races", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Prime the streamer with enough Done chunks to satisfy
+			// every SendMessage iteration; mockStreamer drains a queued
+			// channel per call.
+			const turns = 50
+			for range turns {
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+			}
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// Writer: hammers SendMessage which appends under WLock.
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				for range turns {
+					ch, sendErr := mgr.SendMessage(context.Background(), sess.ID, "msg")
+					Expect(sendErr).NotTo(HaveOccurred())
+					if ch != nil {
+						for range ch {
+						}
+					}
+				}
+			}()
+
+			// Reader: hammers LastMessageRole which must do the
+			// projection under RLock. Pre-fix the equivalent path
+			// (GetSession + sess.Messages dereference) raced.
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				for range turns * 4 {
+					_, _, readErr := mgr.LastMessageRole(sess.ID)
+					Expect(readErr).NotTo(HaveOccurred())
+				}
+			}()
+
+			wg.Wait()
+		})
 	})
 
 	Describe("Notifications", func() {

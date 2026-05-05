@@ -384,6 +384,50 @@ func (m *Manager) GetSession(id string) (*Session, error) {
 	return sess, nil
 }
 
+// LastMessageRole returns the role of the session's most recent message and
+// whether the session has any messages, performing the read under the
+// manager's RLock so concurrent SendMessage writes cannot race the slice
+// header.
+//
+// This accessor exists because returning *Session from GetSession leaks a
+// pointer past the lock boundary: callers that read sess.Messages outside
+// the lock race with SendMessage's append. Specifically, the SSE
+// fast-path in handleSessionStream needs only "did the last turn close"
+// to decide whether to emit [DONE] immediately; that question is
+// answered by the role of the final message and is safe to project
+// while holding RLock.
+//
+// Expected:
+//   - id identifies an existing session.
+//
+// Returns:
+//   - role: the role string of Messages[len-1] when present, empty otherwise.
+//   - hasMessages: true when len(Messages) > 0.
+//   - ErrSessionNotFound when no session matches the identifier.
+//
+// Side effects:
+//   - Acquires the manager's RLock for the duration of the projection.
+//
+// Concurrency:
+//   - Only acquires RLock; never upgrades to WLock. Safe to call from
+//     code paths that may themselves be invoked under the manager lock
+//     in future without triggering the RWMutex upgrade deadlock pattern
+//     (see the engine buildContextWindow bug-fix note for the canonical
+//     anti-pattern).
+func (m *Manager) LastMessageRole(id string) (role string, hasMessages bool, err error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sess, ok := m.sessions[id]
+	if !ok {
+		return "", false, ErrSessionNotFound
+	}
+	if len(sess.Messages) == 0 {
+		return "", false, nil
+	}
+	return sess.Messages[len(sess.Messages)-1].Role, true, nil
+}
+
 // ListSessions returns summaries of all sessions.
 // Returns:
 //   - A slice containing one summary per stored session.

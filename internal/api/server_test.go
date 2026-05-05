@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1291,6 +1292,104 @@ var _ = Describe("Session stream live events", func() {
 				"fresh subscriber after sealed turn must receive zero content events; got: %v", evts)
 		}
 		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
+	It("drives concurrent POST /messages and GET /stream without a data race on session.Messages", func() {
+		// Regression for the data race surfaced during Track A's
+		// streaming signal-drop fixes. `go test -race` reported:
+		//
+		//   Write at 0x... by goroutine N: session/manager.go:647
+		//     (sess.Messages = append(...) under WLock in SendMessage)
+		//   Previous read at 0x... by goroutine M: api/server.go:756
+		//     (msgs := freshSess.Messages outside any lock in
+		//      handleSessionStream's idle-session fast-path)
+		//
+		// The read site held no lock because GetSession returns the
+		// *Session pointer and releases its RLock on return. The fix
+		// replaces the dereference with Manager.LastMessageRole, which
+		// projects the role value under RLock — no pointer leaks past
+		// the lock boundary. This spec drives both code paths in
+		// parallel against a real Server and httptest backend so the
+		// race detector flags any future regression.
+		raceBroker := api.NewSessionBroker()
+		raceStreamer := &mockStreamer{chunks: []provider.StreamChunk{
+			{Content: "ack"},
+			{Done: true},
+		}}
+		raceMgr := session.NewManager(raceStreamer)
+		raceSrv := api.NewServer(
+			raceStreamer,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(raceMgr),
+			api.WithSessionBroker(raceBroker),
+		)
+		raceHTTP := httptest.NewServer(raceSrv.Handler())
+		defer raceHTTP.Close()
+
+		// Seed via RestoreSessions so the session has an assistant
+		// message as its tail, exercising the SSE fast-path's
+		// "last message role != user" branch on each GET. The fast
+		// path is exactly where the pre-fix dereference of
+		// freshSess.Messages raced with SendMessage's append.
+		const sessID = "race-session-id"
+		raceMgr.RestoreSessions([]*session.Session{
+			{
+				ID:      sessID,
+				AgentID: "race-agent",
+				Messages: []session.Message{
+					{ID: "u0", Role: "user", Content: "seed"},
+					{ID: "a0", Role: "assistant", Content: "ack"},
+				},
+			},
+		})
+
+		const iterations = 20
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Writer goroutine: fires POSTs that flow through
+		// SendMessage's sess.Messages = append under WLock.
+		go func() {
+			defer GinkgoRecover()
+			defer wg.Done()
+			for range iterations {
+				resp, postErr := http.Post(
+					raceHTTP.URL+"/api/v1/sessions/"+sessID+"/messages",
+					"application/json",
+					strings.NewReader(`{"content":"hello"}`),
+				)
+				if postErr == nil {
+					_ = resp.Body.Close()
+				}
+			}
+		}()
+
+		// Reader goroutine: fires GETs that flow through
+		// handleSessionStream's idle-session fast-path which used to
+		// read sess.Messages outside the lock.
+		go func() {
+			defer GinkgoRecover()
+			defer wg.Done()
+			for range iterations {
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet,
+					raceHTTP.URL+"/api/v1/sessions/"+sessID+"/stream", http.NoBody)
+				if reqErr == nil {
+					if resp, doErr := http.DefaultClient.Do(req); doErr == nil {
+						_, _ = io.Copy(io.Discard, resp.Body)
+						_ = resp.Body.Close()
+					}
+				}
+				cancel()
+			}
+		}()
+
+		wg.Wait()
+		// The spec passes if `go test -race` does not abort. No
+		// content assertions — the contract under test is purely
+		// concurrency: both endpoints stay race-free under load.
 	})
 })
 
