@@ -1054,6 +1054,106 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
 
+	// model_active SSE round-trip.
+	//
+	// The user reported (May 2026) that the persistent toolbar chip
+	// "shows what was selected, not what actually ran". Until this event
+	// existed, the chip stayed at the user's selection until the
+	// post-stream reconcile pulled the engine-stamped (model, provider)
+	// pair from the persisted assistant message — which arrives AFTER
+	// the answer has already streamed in.
+	//
+	// Wire contract: the failover hook prepends a synthetic StreamChunk
+	// with EventType "model_active" and Content carrying a JSON payload
+	// {provider, model} on EVERY successful stream (not only on failover).
+	// The dispatcher in handleSessionStream routes that chunk to
+	// writeSSEModelActive, which injects the "type":"model_active"
+	// discriminant the frontend's parseSSEPayload union dispatches on.
+	// The chip then pivots from selection to actual immediately, before
+	// the first user-visible token arrives.
+	It("emits a typed model_active SSE event when the failover hook prepends an active-model chunk", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		// Mirrors what failover.prependModelActiveChunk emits at the
+		// start of EVERY stream — selection-vs-actual divergence is
+		// the common case the chip needs to pivot on.
+		source <- provider.StreamChunk{
+			EventType: "model_active",
+			Content:   `{"provider":"zai","model":"glm-4.6"}`,
+		}
+		source <- provider.StreamChunk{Content: "answer body"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"model_active"`)),
+			"expected typed model_active SSE event; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring(`"provider":"zai"`)),
+			"provider must carry the actual provider id so the chip can render it")
+		Expect(evts).To(ContainElement(ContainSubstring(`"model":"glm-4.6"`)),
+			"model must carry the actual model id so the chip can render `<model> · <provider>` truthfully")
+
+		// MUST NOT leak the JSON payload as a plain content chunk —
+		// that would render `{"provider":"zai","model":"glm-4.6"}`
+		// inside the assistant bubble.
+		for _, e := range evts {
+			if strings.Contains(e, `"provider":"zai"`) && !strings.Contains(e, `"type":"model_active"`) {
+				Fail("model_active payload leaked into a plain content chunk: " + e)
+			}
+		}
+
+		Expect(evts).To(ContainElement(ContainSubstring("answer body")))
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
 	It("does not replay history when broker is live — only broker-published events appear", func() {
 		// Regression guard for the SSE duplication bug: when handleSessionStream
 		// is connected to a live broker, it must NOT replay sess.Messages before

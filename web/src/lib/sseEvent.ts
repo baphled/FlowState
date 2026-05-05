@@ -147,6 +147,43 @@ export interface SSEProviderChangedEvent {
   reason: string
 }
 
+/**
+ * SSEModelActiveEvent — always-on actual-model affordance.
+ *
+ * Emitted by the Go SSE pipeline (writeSSEModelActive at
+ * internal/api/server.go) at the start of EVERY successful stream — not
+ * just on failover transitions, where SSEProviderChangedEvent fires. The
+ * chat UI's chatStore handles this event by updating
+ * currentProviderId / currentModelId so the toolbar chip pivots from
+ * the user's selection to the actual model the moment streaming starts.
+ *
+ * Why a separate event from provider_changed: provider_changed only fires
+ * when a fallback candidate succeeded after a previous candidate failed.
+ * model_active fires unconditionally, so the chip can correct itself even
+ * on the common case where the actual matches the selection — and on the
+ * divergent case where the actual differs without a failover (agent
+ * override, manifest override), the chip still pivots to the truth.
+ *
+ * Field semantics:
+ *   - `provider` is the canonical provider id (e.g. "anthropic", "zai").
+ *   - `model` is the canonical model id (e.g. "claude-sonnet-4-6", "glm-4.6").
+ *
+ * The fields are split rather than concatenated (unlike provider_changed's
+ * "<provider>+<model>" pair) because the chip rendering reads them as
+ * separate keys against the availableModels list — splitting on "+"
+ * would re-introduce a parse step and a class of off-by-one bugs around
+ * model ids that themselves contain "+" (rare; openrouter).
+ *
+ * Both fields default to empty strings when missing — a degraded payload
+ * (defensive: a malformed wire format from a future emitter) leaves the
+ * chip on its prior value rather than blanking it out mid-conversation.
+ */
+export interface SSEModelActiveEvent {
+  kind: 'model_active'
+  provider: string
+  model: string
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -173,6 +210,7 @@ export type SSEEvent =
   | SSEHarnessCriticFeedbackEvent
   | SSEThinkingEvent
   | SSEProviderChangedEvent
+  | SSEModelActiveEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -255,6 +293,14 @@ export function parseSSEPayload(payload: string): SSEEvent {
       from: typeof obj['from'] === 'string' ? (obj['from'] as string) : '',
       to: typeof obj['to'] === 'string' ? (obj['to'] as string) : '',
       reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
+    }
+  }
+
+  if (type === 'model_active') {
+    return {
+      kind: 'model_active',
+      provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
+      model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
     }
   }
 

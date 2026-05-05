@@ -911,6 +911,17 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				// discriminated union's "provider_changed" branch parses
 				// from/to/reason and renders the toast.
 				writeSSEProviderChanged(w, flusher, chunk.Content)
+			case "model_active":
+				// Always-on actual-model affordance (May 2026 chip-shows-
+				// selection-not-actual fix). The failover StreamHook prepends
+				// a chunk{EventType:"model_active", Content:<json>} on EVERY
+				// successful stream — not just on failover. Content is the
+				// marshalled modelActivePayload (provider / model). The
+				// frontend's discriminated union "model_active" branch
+				// updates currentProviderId / currentModelId so the toolbar
+				// chip pivots from the user's selection to the actual model
+				// the moment streaming starts.
+				writeSSEModelActive(w, flusher, chunk.Content)
 			case "":
 				if chunk.Content != "" {
 					writeSSEContent(w, flusher, chunk.Content)
@@ -1558,6 +1569,33 @@ type sseProviderChanged struct {
 	Reason string `json:"reason"`
 }
 
+// sseModelActive represents the always-on "actual model is now streaming"
+// signal emitted at the start of every successful stream. The chat UI uses
+// this to pivot the persistent toolbar chip from the user's selection to
+// the actual model the moment streaming starts.
+//
+// Why a separate event from provider_changed: provider_changed only fires
+// on failover transitions (when a previous candidate failed). model_active
+// fires unconditionally so the chip can correct itself even on the common
+// case where the actual matches the selection — and on the divergent case
+// where the actual differs without a failover (agent override, manifest
+// override), the chip still pivots to the truth.
+//
+// Field semantics:
+//   - Provider is the canonical provider id (e.g. "anthropic", "zai").
+//   - Model is the canonical model id (e.g. "claude-sonnet-4-6", "glm-4.6").
+//
+// The fields are split rather than concatenated (unlike provider_changed's
+// "<provider>+<model>" pair) because the chip rendering reads them as
+// separate keys against the availableModels list — splitting on "+"
+// would re-introduce a parse step and a class of off-by-one bugs around
+// model ids that themselves contain "+" (rare; openrouter).
+type sseModelActive struct {
+	Type     string `json:"type"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 // writeSSEProviderChanged emits a typed failover-transition SSE event by
 // re-parsing the payload JSON marshalled by the failover hook and re-emitting
 // it with the canonical "type":"provider_changed" discriminant injected.
@@ -1593,6 +1631,47 @@ func writeSSEProviderChanged(w http.ResponseWriter, flusher http.Flusher, payloa
 		From:   parsed.From,
 		To:     parsed.To,
 		Reason: parsed.Reason,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEModelActive emits a typed "actual model is now streaming" SSE
+// event by re-parsing the payload JSON marshalled by the failover hook
+// and re-emitting it with the canonical "type":"model_active" discriminant
+// injected.
+//
+// Same pattern as writeSSEProviderChanged: the failover hook marshals
+// {provider, model} (no type field — that's the SSE writer's contract).
+// Injecting the type field here keeps the emitter side unaware of the
+// frontend dispatch convention.
+//
+// Expected:
+//   - payload is the JSON encoded by failover.modelActivePayload (provider/model).
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded model_active event.
+//   - Flushes response buffer.
+//   - On a malformed payload, drops the event silently rather than
+//     emitting a malformed SSE event the frontend's parser would
+//     classify as "unknown" and discard. The chip stays on the
+//     optimistic selection rather than blanking out mid-conversation.
+func writeSSEModelActive(w http.ResponseWriter, flusher http.Flusher, payload string) {
+	var parsed struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return
+	}
+	data := sseModelActive{
+		Type:     "model_active",
+		Provider: parsed.Provider,
+		Model:    parsed.Model,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {

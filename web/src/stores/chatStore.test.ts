@@ -2760,6 +2760,92 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.currentModelId).toBe('anthropic/claude-3.5+beta')
   })
 
+  it('updates currentProviderId and currentModelId from a model_active event so the chip pivots to actual at stream start', () => {
+    // May 2026 chip-shows-selection-not-actual fix. The user reported
+    // that the toolbar chip "shows what was selected, not what actually
+    // ran". The Go SSE pipeline now emits {"type":"model_active",
+    // "provider":"<id>","model":"<id>"} at the start of EVERY successful
+    // stream so the chat UI can pivot from the optimistic selection
+    // (set by setModel) to the actual model the moment streaming starts.
+    const store = useChatStore()
+    // Simulate an optimistic selection from the picker.
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    // First chunk of stream: backend says actual is glm-4.6 on zai
+    // (the user's selection diverged from the actual call — failover or
+    // agent override).
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'model_active',
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('zai')
+    expect(store.currentModelId).toBe('glm-4.6')
+  })
+
+  it('does NOT touch currentProviderId/currentModelId when both model_active fields are empty', () => {
+    // Defensive: a malformed model_active wire payload (defensive guard
+    // for a future emitter that ships only the type) must NOT blank the
+    // chip. Leave the prior optimistic selection visible — the user's
+    // mental model "I just picked X" stays consistent.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(JSON.stringify({ type: 'model_active' }))
+
+    expect(store.currentProviderId).toBe('anthropic')
+    expect(store.currentModelId).toBe('claude-sonnet-4-6')
+  })
+
+  it('updates only the populated fields when one of provider/model is missing on a model_active event', () => {
+    // Defensive: a partial payload (e.g. provider known but model id
+    // not yet resolved) must update only what's present. Empty fields
+    // never overwrite — better to keep the prior value than blank one
+    // half of the chip mid-conversation.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'model_active',
+        provider: 'zai',
+        model: '',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('zai')
+    expect(store.currentModelId).toBe('claude-sonnet-4-6')
+  })
+
+  it('does NOT fire a toast on model_active (chip pivot is silent; only failover transitions toast)', async () => {
+    // Behavioural distinction from provider_changed: model_active is the
+    // ambient "this is the actual model" signal that fires on EVERY
+    // stream. Toasting on every turn would be noise. Failover transitions
+    // (provider_changed) remain the only toast-worthy event because they
+    // mean a different model than the user picked is now answering.
+    const toastModule = await import('@/composables/useToast')
+    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => {})
+
+    const store = useChatStore()
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'model_active',
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(showToastSpy).not.toHaveBeenCalled()
+
+    showToastSpy.mockRestore()
+  })
+
   it('creates an in-flight assistant target when a thinking event arrives before any content', () => {
     // glm-4.6's observed shape: 52 seconds of reasoning_content arrives
     // BEFORE the first content delta. The handler must materialise an

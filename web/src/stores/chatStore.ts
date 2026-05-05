@@ -1105,6 +1105,12 @@ export const useChatStore = defineStore('chat', {
             reason: event.reason,
           })
           return
+        case 'model_active':
+          this.handleModelActiveEvent({
+            provider: event.provider,
+            model: event.model,
+          })
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1240,6 +1246,46 @@ export const useChatStore = defineStore('chat', {
      * mid-conversation. The toast still fires with generic copy
      * ("Switched to a different model") so the user gets the signal.
      */
+    /**
+     * model_active handler — May 2026 chip-shows-selection-not-actual fix.
+     *
+     * The user reported (May 2026) that the persistent toolbar chip
+     * "shows what was selected, not what actually ran". The backend now
+     * prepends a `model_active` SSE event to EVERY successful stream
+     * (see internal/plugin/failover/stream_hook.go prependModelActiveChunk)
+     * carrying the actual (provider, model) pair the failover hook
+     * chose. This handler updates currentProviderId / currentModelId so
+     * the chip pivots from the user's selection to the actual model the
+     * moment streaming starts.
+     *
+     * Behaviour notes:
+     *   - On the common case (selection matches actual) this is a no-op
+     *     for the user — the chip stays at its optimistic selection.
+     *   - On the divergent case (failover, agent override, manifest
+     *     override), the chip snaps to the truth before the first
+     *     user-visible token arrives.
+     *   - When the actual differs from the prior selection, the picker
+     *     (which reads currentModelId) will also reflect the actual.
+     *     That is intentional: the user's understanding of "what model
+     *     is producing the answer I'm watching" is the chip + picker.
+     *     A subsequent user-driven setModel still wins, because setModel
+     *     re-PATCHes the backend session and the next stream emits
+     *     model_active anew.
+     *   - Empty fields (defensive: malformed payload from a future
+     *     emitter) leave the prior values untouched. Better to keep the
+     *     optimistic selection visible than blank the chip out.
+     */
+    handleModelActiveEvent(info: { provider?: unknown; model?: unknown }): void {
+      const provider = typeof info.provider === 'string' ? info.provider : ''
+      const model = typeof info.model === 'string' ? info.model : ''
+      if (provider) {
+        this.currentProviderId = provider
+      }
+      if (model) {
+        this.currentModelId = model
+      }
+    },
+
     handleProviderChangedEvent(info: { from?: unknown; to?: unknown; reason?: unknown }): void {
       const to = typeof info.to === 'string' ? info.to : ''
       const from = typeof info.from === 'string' ? info.from : ''

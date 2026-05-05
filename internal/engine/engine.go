@@ -2446,6 +2446,20 @@ func (e *Engine) processStreamChunks(
 			if streaming.IsControlEvent(chunk.EventType) {
 				continue
 			}
+			// Typed observability events (provider_changed, model_active)
+			// carry structured metadata in chunk.Content for the chat UI's
+			// failover toast and chip-pivot affordances. Concatenating
+			// their JSON into responseContent leaked
+			// {"from":...,"to":...} and {"provider":...,"model":...} into
+			// the persisted assistant message body and the next-turn LLM
+			// context. Forward verbatim and skip the content/thinking
+			// accumulation. The session accumulator already filters at
+			// internal/session/accumulator.go:216-218; this mirrors the
+			// guard so in-flight responseContent stays clean.
+			if chunk.EventType != "" {
+				outChan <- chunk
+				continue
+			}
 			thinkingContent.WriteString(chunk.Thinking)
 			responseContent.WriteString(chunk.Content)
 			if chunk.Content != "" || chunk.Thinking != "" {

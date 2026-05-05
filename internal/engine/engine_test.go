@@ -859,6 +859,15 @@ var _ = Describe("Engine", func() {
 
 				var received []provider.StreamChunk
 				for chunk := range chunks {
+					// model_active is prepended on EVERY successful stream so
+					// the chat UI's chip can pivot from selection to actual
+					// the moment streaming starts. It is observability
+					// metadata for the chip — not user-visible content — so
+					// drop it before asserting on the assistant response
+					// stream.
+					if chunk.EventType == "model_active" {
+						continue
+					}
 					received = append(received, chunk)
 				}
 
@@ -889,11 +898,12 @@ var _ = Describe("Engine", func() {
 				for chunk := range chunks {
 					// The Track B failover affordance prepends a synthetic
 					// chunk{EventType:"provider_changed"} when fallback
-					// kicks in. That chunk is observability metadata for
-					// the chat UI's toast — not user-visible content — so
-					// drop it here before asserting on the assistant
-					// response stream.
-					if chunk.EventType == "provider_changed" {
+					// kicks in, and the May 2026 chip-fix prepends
+					// model_active on EVERY successful stream. Both are
+					// observability metadata for the chat UI — not
+					// user-visible content — so drop them before asserting
+					// on the assistant response stream.
+					if chunk.EventType == "provider_changed" || chunk.EventType == "model_active" {
 						continue
 					}
 					received = append(received, chunk)
@@ -970,10 +980,11 @@ var _ = Describe("Engine", func() {
 
 				var received []provider.StreamChunk
 				for chunk := range chunks {
-					// Skip the Track B failover transition affordance —
-					// see comment above on the prior fallback test for
-					// the rationale.
-					if chunk.EventType == "provider_changed" {
+					// Skip the Track B failover transition affordance and
+					// the May 2026 model_active chip-fix prepend — see
+					// comment above on the prior fallback test for the
+					// rationale.
+					if chunk.EventType == "provider_changed" || chunk.EventType == "model_active" {
 						continue
 					}
 					received = append(received, chunk)

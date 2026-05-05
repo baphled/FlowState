@@ -114,6 +114,40 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('classifies a model_active event by the type discriminant and unpacks provider/model', () => {
+    // May 2026 chip-shows-selection-not-actual fix. The Go SSE pipeline
+    // prepends {"type":"model_active","provider":"<id>","model":"<id>"} at
+    // the start of EVERY successful stream so the chat UI's toolbar chip
+    // can pivot from the user's selection to the actual model the moment
+    // streaming starts. The fields are split rather than concatenated
+    // (unlike provider_changed's "<provider>+<model>") because the chip
+    // reads provider and model as separate keys against availableModels.
+    const payload = JSON.stringify({
+      type: 'model_active',
+      provider: 'zai',
+      model: 'glm-4.6',
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('model_active')
+    if (ev.kind === 'model_active') {
+      expect(ev.provider).toBe('zai')
+      expect(ev.model).toBe('glm-4.6')
+    }
+  })
+
+  it('treats a model_active event with missing fields as well-formed (defaults to empty strings)', () => {
+    // Defensive: a malformed wire payload must not crash the union. The
+    // store's handler treats empty fields as "no information" and leaves
+    // the prior chip values untouched (better than blanking it out
+    // mid-conversation when the failover hook ships only the type).
+    const ev = parseSSEPayload('{"type":"model_active"}')
+    expect(ev.kind).toBe('model_active')
+    if (ev.kind === 'model_active') {
+      expect(ev.provider).toBe('')
+      expect(ev.model).toBe('')
+    }
+  })
+
   it('classifies a thinking event by the type discriminant and unpacks content', () => {
     // Drop #2 — thinking SSE event. The Go side emits
     // {"type":"thinking","content":"<reasoning text>"} when the provider
