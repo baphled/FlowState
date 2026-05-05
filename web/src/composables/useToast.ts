@@ -93,14 +93,53 @@ function dismissAll(): void {
   toasts.value.splice(0, toasts.value.length)
 }
 
-export function showToast(options: ToastOptions | string): void {
+export function showToast(options: ToastOptions | string): number {
   const toast = resolveOptions(options)
   toasts.value.push(toast)
   scheduleDismiss(toast)
+  return toast.id
 }
 
 export function dismissToast(id: number): void {
   removeToast(id)
+}
+
+/**
+ * updateToast — patch a live toast in place.
+ *
+ * Used by aggregating notifiers (e.g. the tool-activity rolling toast in
+ * chatStore.handleToolCallEvent) so a flurry of events updates a single
+ * toast rather than spawning a parallel toast per event. The toast keeps
+ * its id and DOM position; the auto-dismiss timer is rescheduled if the
+ * patch supplies a new `duration`.
+ *
+ * Returns true if the toast was found and patched, false otherwise — a
+ * caller can use the return to detect "the toast already auto-dismissed,
+ * spawn a fresh one" without racing the timer module.
+ *
+ * Patchable fields: message, title, variant, duration, action. The id is
+ * intentionally immutable — the whole point of this API is that a stale
+ * external reference still resolves to the same toast.
+ */
+export function updateToast(
+  id: number,
+  patch: Partial<Omit<Toast, 'id'>>,
+): boolean {
+  const toast = toasts.value.find((t) => t.id === id)
+  if (!toast) return false
+
+  if (patch.message !== undefined) toast.message = patch.message
+  if (patch.title !== undefined) toast.title = patch.title
+  if (patch.variant !== undefined) toast.variant = patch.variant
+  if (patch.action !== undefined) toast.action = patch.action
+
+  if (patch.duration !== undefined) {
+    toast.duration = patch.duration
+    clearTimer(id)
+    scheduleDismiss(toast)
+  }
+
+  return true
 }
 
 export function useToast() {

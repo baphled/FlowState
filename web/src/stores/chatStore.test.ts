@@ -1,5 +1,6 @@
 import { setActivePinia, createPinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useToast } from '@/composables/useToast'
 
 function installLocalStorageStub(): void {
   const store = new Map<string, string>()
@@ -31,7 +32,13 @@ import {
   updateSessionAgent,
   updateSessionModel,
 } from '../api'
-import { DEFAULT_AGENT_ID, useChatStore } from './chatStore'
+import {
+  DEFAULT_AGENT_ID,
+  TOOL_ACTIVITY_DISMISS_MS,
+  composeToolActivityMessage,
+  describeToolName,
+  useChatStore,
+} from './chatStore'
 
 class FakeEventSource {
   static instances: FakeEventSource[] = []
@@ -130,6 +137,16 @@ vi.mock('../api', () => ({
   subscribeSessionStream: vi.fn((sessionId: string) => new FakeEventSource(`/api/v1/sessions/${sessionId}/stream`)),
   truncateSessionMessages: vi.fn((_sessionId: string, _messageId: string) => Promise.resolve()),
 }))
+
+// Toast composable is a module singleton — without a global teardown the
+// rolling tool-activity toast (added May 2026) leaks between tests. Pinia
+// state is reset per-test, but the toasts ref lives in the composable's
+// module scope and survives setActivePinia. Dismiss everything between
+// tests so a tool_call test can't pollute a later "no toast" assertion.
+afterEach(() => {
+  const { dismissAll } = useToast()
+  dismissAll()
+})
 
 describe('chatStore - restoreStateFromBackend', () => {
   beforeEach(() => {
@@ -2932,16 +2949,19 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.currentModelId).toBe('claude-sonnet-4-6')
   })
 
-  it('does NOT fire a toast on model_active (chip pivot is silent; only failover transitions toast)', async () => {
-    // Behavioural distinction from provider_changed: model_active is the
-    // ambient "this is the actual model" signal that fires on EVERY
-    // stream. Toasting on every turn would be noise. Failover transitions
-    // (provider_changed) remain the only toast-worthy event because they
-    // mean a different model than the user picked is now answering.
+  it('does NOT fire a toast when model_active matches the prior chip values (selection matched actual)', async () => {
+    // May 2026 user-facing-notifications policy: model_active fires on
+    // every successful stream, so toasting unconditionally would spam the
+    // user 10+ times per multi-turn session. We toast ONLY when the
+    // actual model differs from what the chip already showed — the
+    // common "I selected X, X is answering" case stays silent.
     const toastModule = await import('@/composables/useToast')
-    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => {})
+    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => 0)
 
     const store = useChatStore()
+    store.currentProviderId = 'zai'
+    store.currentModelId = 'glm-4.6'
+
     store.applyContentEvent(
       JSON.stringify({
         type: 'model_active',
@@ -2951,6 +2971,82 @@ describe('chatStore - applyContentEvent dispatch', () => {
     )
 
     expect(showToastSpy).not.toHaveBeenCalled()
+
+    showToastSpy.mockRestore()
+  })
+
+  it('fires a toast on model_active when the actual model differs from the prior chip values', async () => {
+    // The user explicitly reversed the prior session's "always-silent"
+    // policy — they want to see when the model the chip showed is not
+    // the model that's now answering (agent-override, manifest-override,
+    // late discovery on a fresh session). The toast copy is the
+    // generic "Now answering with {model}." form because model_active
+    // doesn't carry a transition reason (only provider_changed does).
+    const toastModule = await import('@/composables/useToast')
+    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => 0)
+
+    const store = useChatStore()
+    // User picked claude on anthropic via the picker; agent override or
+    // a swarm manifest pin pivots the actual call to glm-4.6 on zai.
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'model_active',
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(showToastSpy).toHaveBeenCalledOnce()
+    const callArg = showToastSpy.mock.calls[0][0]
+    expect(typeof callArg).toBe('object')
+    if (typeof callArg === 'object') {
+      expect(callArg.message).toContain('glm-4.6')
+    }
+
+    showToastSpy.mockRestore()
+  })
+
+  it('does NOT fire a model_active toast when a provider_changed just toasted the same transition', async () => {
+    // Failover sequence on the wire: provider_changed (rich copy with
+    // failure reason) → model_active (target same provider+model).
+    // provider_changed already toasted a strictly-better message; a
+    // follow-up generic model_active toast for the same destination is
+    // pure duplicate noise. The store's lastProviderChangeKey gates
+    // the second toast.
+    const toastModule = await import('@/composables/useToast')
+    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => 0)
+
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'zai+glm-4.6',
+        reason: 'rate_limited',
+      }),
+    )
+
+    // provider_changed fired a toast.
+    expect(showToastSpy).toHaveBeenCalledTimes(1)
+
+    // The Go SSE pipeline now sends model_active right after
+    // provider_changed targeting the same provider+model.
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'model_active',
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    // Still 1 — model_active stayed silent thanks to the dedup key.
+    expect(showToastSpy).toHaveBeenCalledTimes(1)
 
     showToastSpy.mockRestore()
   })
@@ -3285,5 +3381,267 @@ describe('chatStore - loadSessionByAgentId (regression: prefer the active parent
 
     expect(loaded).toBe(false)
     expect(store.currentSessionId).toBe('parent')
+  })
+})
+
+describe('describeToolName (plain-language tool labels for non-technical users)', () => {
+  // The user explicitly called out that "tool: bash" reads as too
+  // technical — non-technical-user UX bar. The label map below is the
+  // contract the chat toast surface relies on; covering it case-wise
+  // pins the user-visible copy so a refactor doesn't accidentally
+  // regress to raw tool ids.
+  it('maps bash and shell variants to "Running command"', () => {
+    expect(describeToolName('bash')).toBe('Running command')
+    expect(describeToolName('Bash')).toBe('Running command')
+    expect(describeToolName('shell')).toBe('Running command')
+    expect(describeToolName('terminal')).toBe('Running command')
+  })
+
+  it('maps file read variants to "Reading file"', () => {
+    expect(describeToolName('read')).toBe('Reading file')
+    expect(describeToolName('Read')).toBe('Reading file')
+    expect(describeToolName('view')).toBe('Reading file')
+  })
+
+  it('maps file edit variants to "Editing file"', () => {
+    expect(describeToolName('edit')).toBe('Editing file')
+    expect(describeToolName('Edit')).toBe('Editing file')
+    expect(describeToolName('multiedit')).toBe('Editing file')
+    expect(describeToolName('str_replace_editor')).toBe('Editing file')
+  })
+
+  it('maps file write variants to "Writing file"', () => {
+    expect(describeToolName('write')).toBe('Writing file')
+    expect(describeToolName('Write')).toBe('Writing file')
+    expect(describeToolName('create_file')).toBe('Writing file')
+  })
+
+  it('maps grep and search variants to "Searching files"', () => {
+    expect(describeToolName('grep')).toBe('Searching files')
+    expect(describeToolName('search')).toBe('Searching files')
+  })
+
+  it('maps glob and find to "Finding files"', () => {
+    expect(describeToolName('glob')).toBe('Finding files')
+    expect(describeToolName('find')).toBe('Finding files')
+  })
+
+  it('maps web fetch variants to "Fetching web page"', () => {
+    expect(describeToolName('webfetch')).toBe('Fetching web page')
+    expect(describeToolName('WebFetch')).toBe('Fetching web page')
+    expect(describeToolName('web_fetch')).toBe('Fetching web page')
+    expect(describeToolName('fetch')).toBe('Fetching web page')
+  })
+
+  it('maps web search variants to "Searching the web"', () => {
+    expect(describeToolName('websearch')).toBe('Searching the web')
+    expect(describeToolName('WebSearch')).toBe('Searching the web')
+    expect(describeToolName('web_search')).toBe('Searching the web')
+  })
+
+  it('maps task and agent delegation to "Delegating to agent"', () => {
+    expect(describeToolName('task')).toBe('Delegating to agent')
+    expect(describeToolName('Task')).toBe('Delegating to agent')
+    expect(describeToolName('agent')).toBe('Delegating to agent')
+    expect(describeToolName('delegate')).toBe('Delegating to agent')
+  })
+
+  it('maps todowrite variants to "Updating to-dos"', () => {
+    expect(describeToolName('todowrite')).toBe('Updating to-dos')
+    expect(describeToolName('TodoWrite')).toBe('Updating to-dos')
+    expect(describeToolName('todo_write')).toBe('Updating to-dos')
+  })
+
+  it('falls back to "Running {tool}" with underscores normalised for unmapped tools', () => {
+    // Defensive: an unmapped tool (new MCP entry, custom dispatcher)
+    // still gets a recognisable signal — a notification with the raw
+    // id is more useful than no notification at all. Underscores are
+    // replaced with spaces for readability.
+    expect(describeToolName('fetch_models')).toBe('Running fetch models')
+    expect(describeToolName('mcp_custom_thing')).toBe('Running mcp custom thing')
+  })
+})
+
+describe('composeToolActivityMessage', () => {
+  it('returns the friendly label alone when one tool fired', () => {
+    expect(composeToolActivityMessage(['bash'])).toBe('Running command')
+  })
+
+  it('returns "{first label} + N more" for multi-tool bursts', () => {
+    expect(composeToolActivityMessage(['bash', 'read', 'edit'])).toBe('Running command + 2 more')
+  })
+
+  it('returns an empty string for an empty list (defensive)', () => {
+    // Defensive: composeToolActivityMessage is only called by
+    // recordToolActivity AFTER pushing a tool name, so the empty case
+    // is unreachable in the live flow. Still pinned so a refactor
+    // doesn't introduce a "Running undefined" message.
+    expect(composeToolActivityMessage([])).toBe('')
+  })
+})
+
+describe('chatStore - rolling tool-activity toast (handleToolCallEvent + recordToolActivity)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('spawns a single loading toast on the first tool_call of a burst', () => {
+    // First tool of a quiet period: one toast appears, with the
+    // friendly verb for that tool. Variant is "loading" (accent border,
+    // persistent — we own dismissal via the rolling timer).
+    const store = useChatStore()
+    const { toasts } = useToast()
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+
+    expect(toasts.value).toHaveLength(1)
+    expect(toasts.value[0].title).toBe('Working')
+    expect(toasts.value[0].message).toBe('Running command')
+    expect(toasts.value[0].variant).toBe('loading')
+    expect(toasts.value[0].duration).toBe(0)
+  })
+
+  it('aggregates subsequent tool_calls in the same burst into the SAME toast (no parallel toasts)', () => {
+    // Multi-tool turns can fire 10+ tool_calls. A toast per call would
+    // bury the user. The rolling toast UPDATES IN PLACE — same id,
+    // same DOM position — and the message reads "{first label} + N more".
+    const store = useChatStore()
+    const { toasts } = useToast()
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+    const firstId = toasts.value[0].id
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'read', status: 'running' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'edit', status: 'running' }))
+
+    expect(toasts.value).toHaveLength(1)
+    expect(toasts.value[0].id).toBe(firstId)
+    expect(toasts.value[0].message).toBe('Running command + 2 more')
+  })
+
+  it('auto-dismisses the rolling toast TOOL_ACTIVITY_DISMISS_MS after the LAST tool_call', () => {
+    // Rolling debounce: every new tool_call resets the auto-dismiss
+    // window. The toast lingers as long as tools keep firing and
+    // disappears soon after the burst ends.
+    const store = useChatStore()
+    const { toasts } = useToast()
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+    expect(toasts.value).toHaveLength(1)
+
+    // 800ms in — still alive (hasn't reached the dismiss window yet).
+    vi.advanceTimersByTime(800)
+    expect(toasts.value).toHaveLength(1)
+
+    // Another tool_call fires. Timer resets.
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'read', status: 'running' }))
+
+    // 1000ms after the SECOND call (1800ms after the first) — still
+    // alive, because the window is anchored to the LAST call.
+    vi.advanceTimersByTime(1000)
+    expect(toasts.value).toHaveLength(1)
+
+    // Past the dismiss window from the last call — gone.
+    vi.advanceTimersByTime(TOOL_ACTIVITY_DISMISS_MS)
+    expect(toasts.value).toHaveLength(0)
+  })
+
+  it('routes skill_load events through the same rolling-toast aggregator as tool_call', () => {
+    // skill_load is dispatched into handleToolCallEvent (chatStore.ts
+    // applyContentEvent), so the aggregator covers it for free. Pin
+    // that wiring — accidentally splitting the path would re-introduce
+    // parallel toasts.
+    const store = useChatStore()
+    const { toasts } = useToast()
+
+    store.applyContentEvent(JSON.stringify({ type: 'skill_load', name: 'pre-action' }))
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+
+    expect(toasts.value).toHaveLength(1)
+    expect(toasts.value[0].message).toContain('+ 1 more')
+  })
+
+  it('starts a fresh toast for the next burst after the previous one auto-dismissed', () => {
+    // Two distinct turns: first burst dismisses, second burst spawns a
+    // new toast (not a stale-state hangover from the first).
+    const store = useChatStore()
+    const { toasts } = useToast()
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running' }))
+    vi.advanceTimersByTime(TOOL_ACTIVITY_DISMISS_MS + 50)
+    expect(toasts.value).toHaveLength(0)
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'read', status: 'running' }))
+    expect(toasts.value).toHaveLength(1)
+    // Fresh burst — the message is the single-tool form, NOT "+ 1 more".
+    expect(toasts.value[0].message).toBe('Reading file')
+  })
+
+  it('still creates the underlying tool_result message in the chat thread (no regression)', () => {
+    // Critical: the toast surface must NEVER replace the in-thread
+    // tool_result row. The thread is the source of truth for what
+    // happened; the toast is an ambient affordance. Confirm both
+    // surfaces still receive the signal.
+    const store = useChatStore()
+    store.messages = []
+
+    store.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'bash', status: 'running', input: 'ls' }))
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].role).toBe('tool_result')
+    expect(store.messages[0].toolName).toBe('bash')
+  })
+})
+
+describe('chatStore.handleProviderChangedEvent records a dedup key for the follow-up model_active', () => {
+  // White-box: confirm the lastProviderChangeKey is set so the
+  // suppression path in the model_active handler has the data it needs.
+  // The behavioural consequence is covered by the "no duplicate toast"
+  // test in the dispatch suite; this pins the internal signal.
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('records "<newProvider>+<newModel>" on lastProviderChangeKey when the pivot has both fields', () => {
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'zai+glm-4.6',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.lastProviderChangeKey).toBe('zai+glm-4.6')
+  })
+
+  it('leaves lastProviderChangeKey untouched when the pivot has an empty "to" field (defensive)', () => {
+    // Empty "to" already disables the chip pivot — same defensive
+    // posture for the dedup key, otherwise an empty key would silence
+    // a legitimate model_active toast on the next session boundary.
+    const store = useChatStore()
+    store.lastProviderChangeKey = null
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: '',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.lastProviderChangeKey).toBeNull()
   })
 })
