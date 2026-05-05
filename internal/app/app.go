@@ -55,8 +55,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
-	"github.com/baphled/flowstate/internal/tool/pathguard"
 	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
@@ -1730,20 +1730,21 @@ func (a *App) createDelegateEngine(
 	manifest agent.Manifest, store coordination.Store, bus *eventbus.EventBus,
 ) (*engine.Engine, streaming.Streamer) {
 	delegateSkillDir, delegateLoadedSkills := a.resolveDelegateSkills(manifest)
-	hookChain := buildHookChain(hookChainConfig{
-		learningStore:   a.Learning,
-		manifestGetter:  func() agent.Manifest { return manifest },
-		bakedSkillNames: bakedSkillNamesFrom(delegateLoadedSkills),
-		eventBus:        bus,
-		agentID:         manifest.ID,
-		skillDir:        delegateSkillDir,
-	})
 
 	var chainStore recall.ChainContextStore
 	if a.Engine != nil {
 		chainStore = a.Engine.ChainStore()
 	}
 
+	// Build the per-delegate failover manager BEFORE the hook chain so the
+	// chain can install the failover StreamHook. Prior to this reordering
+	// the hook chain was built first with no failover hook, the manager
+	// was created later, and engine.New received both — but cfg.HookChain
+	// shadows the FailoverManager-derived default chain in
+	// engine.resolveHookChain (engine.go:480), leaving rate-limit /
+	// 429 errors during delegation as hard failures with no provider
+	// fallback. See bug-fix note: "Failover Hook Missing on Delegate
+	// Engines (May 2026)".
 	var childFailoverMgr *failover.Manager
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
@@ -1769,6 +1770,16 @@ func (a *App) createDelegateEngine(
 			childFailoverMgr.SetBasePreferences(a.plugins.failoverManager.Preferences())
 		}
 	}
+
+	hookChain := buildHookChain(hookChainConfig{
+		learningStore:   a.Learning,
+		manifestGetter:  func() agent.Manifest { return manifest },
+		bakedSkillNames: bakedSkillNamesFrom(delegateLoadedSkills),
+		failoverMgr:     childFailoverMgr,
+		eventBus:        bus,
+		agentID:         manifest.ID,
+		skillDir:        delegateSkillDir,
+	})
 
 	delegateCompression := a.buildDelegateCompression(manifest)
 
