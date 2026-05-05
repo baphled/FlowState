@@ -841,7 +841,7 @@ describe('ChatView mount-time restore failure (Principal F7)', () => {
     const { showToast } = await import('@/composables/useToast')
     const toastSpy = vi.spyOn({ showToast }, 'showToast')
     const useToastMod = await import('@/composables/useToast')
-    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => {})
+    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => 0)
 
     const chatStore = useChatStore()
     vi.spyOn(chatStore, 'restoreStateFromBackend').mockRejectedValueOnce(
@@ -865,7 +865,7 @@ describe('ChatView mount-time restore failure (Principal F7)', () => {
 
   it('does NOT toast on a successful restore', async () => {
     const useToastMod = await import('@/composables/useToast')
-    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => {})
+    const realToast = vi.spyOn(useToastMod, 'showToast').mockImplementation(() => 0)
 
     const chatStore = useChatStore()
     vi.spyOn(chatStore, 'restoreStateFromBackend').mockResolvedValueOnce(undefined)

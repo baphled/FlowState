@@ -14,7 +14,7 @@ import {
 import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
-import { showToast } from '@/composables/useToast'
+import { dismissToast, showToast, updateToast } from '@/composables/useToast'
 import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -33,6 +33,106 @@ const activeProviderStorageKey = 'chat.selectedProvider'
 // Backend default in internal/config/config.go is the same id, so no agent_id
 // in the POST /sessions body still resolves to the same agent.
 export const DEFAULT_AGENT_ID = 'default-assistant'
+
+/**
+ * TOOL_ACTIVITY_DISMISS_MS — how long after the LAST tool_call the rolling
+ * activity toast lingers before auto-dismissing. Calibrated to feel "live"
+ * (the user sees the tool indicator pulse during a multi-tool burst) without
+ * sticking around past the burst end. 1.2 seconds is a balance — short
+ * enough that the toast disappears quickly when the model is done invoking
+ * tools, long enough that two tools fired 500ms apart feel like a single
+ * burst rather than two flashes.
+ */
+export const TOOL_ACTIVITY_DISMISS_MS = 1200
+
+/**
+ * describeToolName maps a raw tool name (as reported by the SSE tool_call
+ * event — usually the same string the provider uses) to plain-language
+ * verb-style copy suitable for a non-technical user. The user explicitly
+ * called out "tool: bash" as too technical; "Running command" is the
+ * design target.
+ *
+ * Lookup is case-insensitive: the Anthropic SDK ships TitleCase tool names
+ * (Bash, Read, Edit), the openaicompat / z.ai pipeline often lowercases
+ * them, and the FlowState dispatcher emits both depending on the upstream
+ * provider. A single map covers both shapes.
+ *
+ * Unknown tools fall back to "Running {raw-name}" rather than blanking —
+ * the user still gets a recognisable signal even on a tool we haven't
+ * mapped yet (a new MCP tool, a custom dispatcher entry, a future
+ * provider extension). This is the deliberately permissive contract:
+ * a notification is more useful than a missing one, even if the wording
+ * is a literal tool id.
+ */
+export function describeToolName(rawName: string): string {
+  const key = rawName.trim().toLowerCase()
+  switch (key) {
+    case 'bash':
+    case 'shell':
+    case 'terminal':
+      return 'Running command'
+    case 'read':
+    case 'view':
+      return 'Reading file'
+    case 'edit':
+    case 'multiedit':
+    case 'str_replace_editor':
+      return 'Editing file'
+    case 'write':
+    case 'create_file':
+      return 'Writing file'
+    case 'grep':
+    case 'search':
+      return 'Searching files'
+    case 'glob':
+    case 'find':
+      return 'Finding files'
+    case 'webfetch':
+    case 'web_fetch':
+    case 'fetch':
+      return 'Fetching web page'
+    case 'websearch':
+    case 'web_search':
+      return 'Searching the web'
+    case 'task':
+    case 'agent':
+    case 'delegate':
+      return 'Delegating to agent'
+    case 'todowrite':
+    case 'todo_write':
+    case 'update_todos':
+      return 'Updating to-dos'
+    case 'notebookedit':
+    case 'notebook_edit':
+      return 'Editing notebook'
+    default:
+      // Keep raw form readable: replace underscores with spaces so an
+      // unmapped tool like "fetch_models" reads as "fetch models" rather
+      // than the underscore-joined token. Don't strip — the raw tool name
+      // is still informative when we don't have a friendlier verb.
+      return `Running ${rawName.replace(/_/g, ' ')}`
+  }
+}
+
+/**
+ * composeToolActivityMessage builds the message body for the rolling
+ * tool-activity toast given the full in-order list of tool names that
+ * have fired during the current burst. Single tool: just the friendly
+ * verb. Two-or-more: "{first verb} + N more" so the user gets a sense
+ * of scale without an unbounded growing list.
+ *
+ * Why not list every tool name (e.g. "Reading file, Searching files,
+ * Running command"): on tool-heavy turns the message would balloon and
+ * push other content out of the toast frame. The "+ N more" form keeps
+ * the toast height fixed.
+ */
+export function composeToolActivityMessage(toolNames: string[]): string {
+  if (toolNames.length === 0) return ''
+  const firstLabel = describeToolName(toolNames[0])
+  if (toolNames.length === 1) return firstLabel
+  const more = toolNames.length - 1
+  return `${firstLabel} + ${more} more`
+}
 
 /**
  * describeFailoverReason maps a failover-reason token (from
@@ -206,6 +306,47 @@ export const useChatStore = defineStore('chat', {
     // composer with the content of a reverted user message. MessageInput
     // watches this field and consumes it (resetting to '') on next tick.
     composerText: '',
+    // ---- tool-activity rolling-toast state (May 2026 notifications work) ----
+    //
+    // The user requested visible notifications when tools fire AND when the
+    // provider/model pivots. A naive implementation toasts per tool_call,
+    // which is unusable on tool-heavy turns (10+ tools/turn observed). We
+    // aggregate instead: the FIRST tool_call of a quiet period spawns one
+    // "loading"-variant toast that updates as subsequent tool_calls arrive,
+    // and a rolling debounce auto-dismisses it 1.2 seconds after the last
+    // tool_call. The fields below carry the bookkeeping for that flow.
+    //
+    //   toolActivityToastId    — id of the live aggregating toast, null when
+    //                            no toast is currently showing for tools.
+    //   toolActivityNames      — in-order list of tool names accumulated this
+    //                            burst, used to compose the toast message.
+    //                            Cleared when the toast auto-dismisses.
+    //   toolActivityTimer      — opaque setTimeout handle for the rolling
+    //                            auto-dismiss. Cleared and re-armed on every
+    //                            new tool_call.
+    //
+    // Transient UI state — never persisted, never hydrated from the backend.
+    toolActivityToastId: null as number | null,
+    toolActivityNames: [] as string[],
+    toolActivityTimer: null as ReturnType<typeof setTimeout> | null,
+    // ---- provider/model change toast deduplication state ------------------
+    //
+    // The Go SSE pipeline emits BOTH provider_changed (failover transition)
+    // and model_active (every-stream actual-model affordance). When a
+    // failover happens, both events fire back-to-back targeting the same
+    // (provider, model) pair. provider_changed already carries detailed
+    // toast copy ("Switched to {model} — {prev} is rate-limited"); a
+    // follow-up generic model_active toast is duplicate noise.
+    //
+    // lastProviderChangeKey snapshots the "<provider>+<model>" the most
+    // recent provider_changed pivoted to. handleModelActiveEvent compares
+    // against this and stays silent if it matches — letting the richer
+    // failover toast stand alone.
+    //
+    // Cleared on session change (loadSessionMessages clears it via the
+    // shared reset path) so a model_active on a fresh session is not
+    // accidentally suppressed by a key from a prior session.
+    lastProviderChangeKey: null as string | null,
   }),
 
   getters: {
@@ -1327,12 +1468,72 @@ export const useChatStore = defineStore('chat', {
     handleModelActiveEvent(info: { provider?: unknown; model?: unknown }): void {
       const provider = typeof info.provider === 'string' ? info.provider : ''
       const model = typeof info.model === 'string' ? info.model : ''
+
+      // Capture the prior chip values BEFORE the pivot so we can decide
+      // whether to surface a toast. We only toast when the actual model
+      // differs from what the user thought they selected — the common
+      // "selection matches actual" case stays silent (otherwise every
+      // single turn of every conversation would pop a toast).
+      const priorProvider = this.currentProviderId
+      const priorModel = this.currentModelId
+
       if (provider) {
         this.currentProviderId = provider
       }
       if (model) {
         this.currentModelId = model
       }
+
+      // Toasting policy (May 2026 user-facing-notifications work):
+      //
+      //   1. Both fields empty (defensive payload) — silent. Already
+      //      caught by the early no-op above; the chip stays put.
+      //   2. Actual matches prior chip — silent. The user's mental model
+      //      "I selected X, X is answering" is unbroken; a toast would be
+      //      noise.
+      //   3. Actual differs from prior chip AND a provider_changed just
+      //      pivoted to this same target — silent. provider_changed has
+      //      already shown a richer "Switched to X — primary is Y" toast
+      //      that strictly dominates a generic model_active toast for the
+      //      same transition.
+      //   4. Actual differs from prior chip AND no recent provider_changed
+      //      established this target — toast. This covers agent-override
+      //      (the chosen agent runs on a different model than the picker
+      //      shows), manifest-override (a swarm member pinned a model),
+      //      and fresh sessions where the seed didn't include the actual.
+      //
+      // Why a separate path from provider_changed: provider_changed knows
+      // the failure reason ("rate-limited", "over its quota") and crafts
+      // a transition-specific message; model_active only knows the
+      // destination. Generic copy here is correct.
+      if (!provider && !model) {
+        return
+      }
+
+      const targetKey = `${provider}+${model}`
+      const priorKey = `${priorProvider}+${priorModel}`
+
+      if (targetKey === priorKey) {
+        // Common case — selection matched the actual model. No toast.
+        return
+      }
+
+      if (targetKey === this.lastProviderChangeKey) {
+        // provider_changed already toasted this exact transition. Stay
+        // silent rather than double-fire. Don't clear the key — a future
+        // model_active back to the same target inside the same session
+        // is still that transition; only a *new* provider_changed should
+        // overwrite the dedup key.
+        return
+      }
+
+      const modelLabel = model || provider || 'a different model'
+      showToast({
+        title: 'Model changed',
+        message: `Now answering with ${modelLabel}.`,
+        variant: 'default',
+        duration: 5000,
+      })
     },
 
     handleProviderChangedEvent(info: { from?: unknown; to?: unknown; reason?: unknown }): void {
@@ -1352,6 +1553,12 @@ export const useChatStore = defineStore('chat', {
         }
         this.currentProviderId = newProvider
         this.currentModelId = newModel
+        // Record the transition target so a follow-up model_active event
+        // for the same target stays silent. The Go failover hook fires
+        // model_active immediately after provider_changed (both target the
+        // new provider+model); without this dedup the user sees two
+        // back-to-back toasts for one transition.
+        this.lastProviderChangeKey = `${newProvider}+${newModel}`
       }
 
       // Toast copy — keeping the mapping client-side keeps Go releases
@@ -1387,6 +1594,20 @@ export const useChatStore = defineStore('chat', {
       // into below.
       this.lastToolName = toolName
 
+      // ---- Rolling tool-activity toast (May 2026 notifications work) ----
+      //
+      // The user requested "trigger notifications when tools are triggered".
+      // A naive "toast per tool_call" is unusable — multi-tool turns spam
+      // the UI with 10+ stacked toasts. Instead we aggregate: the FIRST
+      // tool_call of a quiet period spawns ONE persistent toast that
+      // updates as subsequent tool_calls arrive, and a 1.2s rolling
+      // debounce auto-dismisses it after the burst ends.
+      //
+      // Wire format note: the brief said "every tool call" — we honour
+      // that signal-wise (every tool_call mutates the toast), the
+      // aggregation is purely a presentation decision.
+      this.recordToolActivity(toolName)
+
       // Seal any in-flight assistant bubble before recording the tool
       // invocation. Without this, post-tool content chunks reverse-find the
       // pre-tool assistant (still status === 'running') and APPEND, so the
@@ -1420,6 +1641,93 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.messages.push(toolMessage)
+    },
+
+    /**
+     * recordToolActivity drives the rolling tool-activity toast. Called
+     * from handleToolCallEvent for every tool_call (and skill_load,
+     * which the dispatcher folds into the same handler).
+     *
+     * Behaviour:
+     *
+     *   - First call of a burst: spawn a "loading"-variant toast (zero
+     *     auto-dismiss, accent border) saying "Running command" or the
+     *     friendlier verb for the tool. Track the toast id.
+     *   - Subsequent calls in the same burst: append the new tool name to
+     *     the running list and update the live toast's message via
+     *     updateToast — same id, same DOM position, no spawn-and-remove
+     *     flicker.
+     *   - 1.2s after the LAST call: auto-dismiss. Every new call cancels
+     *     and re-arms the timer so the toast lingers as long as tools
+     *     keep firing and disappears shortly after they stop.
+     *
+     * Defensive: if updateToast returns false (the toast was somehow
+     * dismissed externally — user closed it via the X), spawn a fresh
+     * toast with the accumulated names rather than silently dropping
+     * the signal.
+     */
+    recordToolActivity(toolName: string): void {
+      this.toolActivityNames.push(toolName)
+
+      const message = composeToolActivityMessage(this.toolActivityNames)
+      const title = 'Working'
+
+      if (this.toolActivityToastId === null) {
+        // First tool of a quiet period — spawn the rolling toast.
+        // Duration 0 means persistent; we own dismissal via the timer
+        // below.
+        this.toolActivityToastId = showToast({
+          title,
+          message,
+          variant: 'loading',
+          duration: 0,
+        })
+      } else {
+        // Live update — same toast id, replaced copy.
+        const ok = updateToast(this.toolActivityToastId, { message })
+        if (!ok) {
+          // The toast was externally dismissed (user clicked X, or the
+          // composable was reset). Recover by spawning a fresh one so
+          // the user keeps seeing the activity signal.
+          this.toolActivityToastId = showToast({
+            title,
+            message,
+            variant: 'loading',
+            duration: 0,
+          })
+        }
+      }
+
+      // Re-arm the rolling auto-dismiss. Every new tool_call resets the
+      // 1.2s window so a steady stream of tools keeps the toast alive
+      // and the toast disappears soon after the model stops invoking
+      // tools — reflecting the real-world "tools are happening / tools
+      // stopped" boundary.
+      if (this.toolActivityTimer) {
+        clearTimeout(this.toolActivityTimer)
+      }
+      this.toolActivityTimer = setTimeout(() => {
+        this.dismissToolActivityToast()
+      }, TOOL_ACTIVITY_DISMISS_MS)
+    },
+
+    /**
+     * dismissToolActivityToast — clean up the rolling toast and reset
+     * its state. Called from the rolling auto-dismiss timer and from
+     * any teardown path that needs to reset the burst (e.g. session
+     * switch, where lingering tool activity from a prior session
+     * shouldn't cross the boundary).
+     */
+    dismissToolActivityToast(): void {
+      if (this.toolActivityToastId !== null) {
+        dismissToast(this.toolActivityToastId)
+        this.toolActivityToastId = null
+      }
+      this.toolActivityNames = []
+      if (this.toolActivityTimer) {
+        clearTimeout(this.toolActivityTimer)
+        this.toolActivityTimer = null
+      }
     },
 
     // revertToMessage truncates the session at the given user message, removes

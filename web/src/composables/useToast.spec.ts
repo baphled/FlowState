@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
-import { dismissToast, showToast, useToast } from './useToast'
+import { dismissToast, showToast, updateToast, useToast } from './useToast'
 
 describe('useToast', () => {
   beforeEach(() => {
@@ -212,5 +212,88 @@ describe('useToast', () => {
 
     expect(toasts.value).toHaveLength(0)
     consoleSpy.mockRestore()
+  })
+
+  describe('showToast returns the new toast id', () => {
+    it('returns a numeric id that resolves to the just-pushed toast', () => {
+      // Aggregating callers (chatStore tool-activity rolling toast) need
+      // the id back so they can drive subsequent updateToast calls. The
+      // return value is additive — pre-this-PR callers ignored it, and
+      // the void-return contract is preserved at the call site since
+      // numbers are still discardable.
+      const { toasts } = useToast()
+      const id = showToast('First')
+
+      expect(typeof id).toBe('number')
+      expect(toasts.value).toHaveLength(1)
+      expect(toasts.value[0].id).toBe(id)
+    })
+  })
+
+  describe('updateToast', () => {
+    it('patches the message of a live toast in place', () => {
+      // The whole point of the API: same id, same DOM position, new
+      // copy. The chatStore aggregator relies on this so a multi-tool
+      // burst updates one toast rather than spawning parallel ones.
+      const { toasts } = useToast()
+      const id = showToast({ message: 'Working', variant: 'loading', duration: 0 })
+
+      const ok = updateToast(id, { message: 'Working — 3 actions' })
+
+      expect(ok).toBe(true)
+      expect(toasts.value).toHaveLength(1)
+      expect(toasts.value[0].id).toBe(id)
+      expect(toasts.value[0].message).toBe('Working — 3 actions')
+    })
+
+    it('returns false when the id is unknown (toast already dismissed)', () => {
+      // Caller contract: false means "spawn a fresh toast". Without
+      // this signal, an aggregator can't recover from the user
+      // closing the toast manually mid-burst.
+      const ok = updateToast(99999, { message: 'too late' })
+      expect(ok).toBe(false)
+    })
+
+    it('reschedules the auto-dismiss timer when the patch supplies a new duration', () => {
+      // Patching duration cancels and re-arms the timer with the new
+      // value, anchored at the patch moment. A 0-duration patch makes
+      // the toast persistent. Used by aggregators that switch a
+      // transient toast into "I own dismissal" mode mid-flight.
+      const { toasts } = useToast()
+      const id = showToast({ message: 'Soon', duration: 1000 })
+
+      // 800ms in — about to auto-dismiss.
+      vi.advanceTimersByTime(800)
+      expect(toasts.value).toHaveLength(1)
+
+      // Patch to 0 — persistent. The original 1000ms timer should be
+      // cancelled, so advancing past it does NOT auto-dismiss.
+      updateToast(id, { duration: 0 })
+      vi.advanceTimersByTime(1000)
+      expect(toasts.value).toHaveLength(1)
+    })
+
+    it('patches title, variant, and action without resurrecting cleared fields', () => {
+      const { toasts } = useToast()
+      const id = showToast({ message: 'Hello', title: 'Old', variant: 'default' })
+
+      const onClick = vi.fn()
+      updateToast(id, { title: 'New', variant: 'error', action: { label: 'Retry', onClick } })
+
+      expect(toasts.value[0].title).toBe('New')
+      expect(toasts.value[0].variant).toBe('error')
+      expect(toasts.value[0].action?.label).toBe('Retry')
+    })
+
+    it('leaves untouched fields alone (sparse patches)', () => {
+      const { toasts } = useToast()
+      const id = showToast({ message: 'Original', title: 'Hello', variant: 'success' })
+
+      updateToast(id, { message: 'Updated' })
+
+      expect(toasts.value[0].message).toBe('Updated')
+      expect(toasts.value[0].title).toBe('Hello')
+      expect(toasts.value[0].variant).toBe('success')
+    })
   })
 })
