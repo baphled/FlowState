@@ -632,7 +632,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Opus 4.7 (claude-opus-4-7*)", func() {
 		It("defaults max_tokens to 128000 when caller does not specify", func() {
-			params, err := p.buildRequestParams(baseReq("claude-opus-4-7-20251201"))
+			params, _, err := p.buildRequestParams(baseReq("claude-opus-4-7-20251201"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(128000)))
 		})
@@ -641,7 +641,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			req := baseReq("claude-opus-4-7-20251201")
 			t := 0.5
 			req.Temperature = &t
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Temperature.Valid()).To(BeFalse(),
 				"Opus 4.7 must omit temperature so the API uses its server-side default")
@@ -653,7 +653,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			tk := 40
 			req.TopP = &tp
 			req.TopK = &tk
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.TopP.Valid()).To(BeFalse())
 			Expect(params.TopK.Valid()).To(BeFalse())
@@ -662,21 +662,21 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("rejects manual thinking: enabled with errThinkingEnabledRejected", func() {
 			req := baseReq("claude-opus-4-7-20251201")
 			req.ThinkingMode = "enabled"
-			_, err := p.buildRequestParams(req)
+			_, _, err := p.buildRequestParams(req)
 			Expect(err).To(MatchError(errThinkingEnabledRejected))
 		})
 
 		It("rejects manual thinking: enabled:N with errThinkingEnabledRejected", func() {
 			req := baseReq("claude-opus-4-7-20251201")
 			req.ThinkingMode = "enabled:8000"
-			_, err := p.buildRequestParams(req)
+			_, _, err := p.buildRequestParams(req)
 			Expect(err).To(MatchError(errThinkingEnabledRejected))
 		})
 
 		It("accepts thinking: adaptive and writes the adaptive variant", func() {
 			req := baseReq("claude-opus-4-7-20251201")
 			req.ThinkingMode = "adaptive"
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfAdaptive).NotTo(BeNil())
 			Expect(params.Thinking.OfEnabled).To(BeNil())
@@ -685,7 +685,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Opus 4.6 (claude-opus-4-6*)", func() {
 		It("defaults max_tokens to 128000", func() {
-			params, err := p.buildRequestParams(baseReq("claude-opus-4-6-20251020"))
+			params, _, err := p.buildRequestParams(baseReq("claude-opus-4-6-20251020"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(128000)))
 		})
@@ -694,7 +694,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			req := baseReq("claude-opus-4-6-20251020")
 			t := 0.7
 			req.Temperature = &t
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Temperature.Valid()).To(BeTrue())
 			Expect(params.Temperature.Value).To(BeNumerically("~", 0.7, 1e-9))
@@ -703,7 +703,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("accepts manual thinking: enabled (deprecated but allowed)", func() {
 			req := baseReq("claude-opus-4-6-20251020")
 			req.ThinkingMode = "enabled:8000"
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
 			Expect(params.Thinking.OfEnabled.BudgetTokens).To(Equal(int64(8000)))
@@ -712,7 +712,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Sonnet 4.6 (claude-sonnet-4-6*)", func() {
 		It("defaults max_tokens to 64000", func() {
-			params, err := p.buildRequestParams(baseReq("claude-sonnet-4-6-20251020"))
+			params, _, err := p.buildRequestParams(baseReq("claude-sonnet-4-6-20251020"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(64000)))
 		})
@@ -720,7 +720,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("accepts thinking: adaptive", func() {
 			req := baseReq("claude-sonnet-4-6-20251020")
 			req.ThinkingMode = "adaptive"
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfAdaptive).NotTo(BeNil())
 		})
@@ -728,13 +728,13 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Sonnet 4.5 / Haiku 4.5 (claude-sonnet-4-5*, claude-haiku-4-5*)", func() {
 		It("Sonnet 4.5 defaults max_tokens to 64000", func() {
-			params, err := p.buildRequestParams(baseReq("claude-sonnet-4-5-20251020"))
+			params, _, err := p.buildRequestParams(baseReq("claude-sonnet-4-5-20251020"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(64000)))
 		})
 
 		It("Haiku 4.5 defaults max_tokens to 64000", func() {
-			params, err := p.buildRequestParams(baseReq("claude-haiku-4-5-20251020"))
+			params, _, err := p.buildRequestParams(baseReq("claude-haiku-4-5-20251020"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(64000)))
 		})
@@ -742,7 +742,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("allows manual thinking: enabled with explicit budget", func() {
 			req := baseReq("claude-sonnet-4-5-20251020")
 			req.ThinkingMode = "enabled:4096"
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
 			Expect(params.Thinking.OfEnabled.BudgetTokens).To(Equal(int64(4096)))
@@ -751,7 +751,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Opus 4 / 4.1 / 4.5 (claude-opus-4*)", func() {
 		It("defaults max_tokens to 32000", func() {
-			params, err := p.buildRequestParams(baseReq("claude-opus-4-20250514"))
+			params, _, err := p.buildRequestParams(baseReq("claude-opus-4-20250514"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(32000)))
 		})
@@ -764,7 +764,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			req.Temperature = &t
 			req.TopP = &tp
 			req.TopK = &tk
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Temperature.Value).To(BeNumerically("~", 0.4, 1e-9))
 			Expect(params.TopP.Value).To(BeNumerically("~", 0.95, 1e-9))
@@ -774,7 +774,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("Sonnet 3.7 (claude-3-7-sonnet*)", func() {
 		It("keeps the historical 4096 default when caller does not specify", func() {
-			params, err := p.buildRequestParams(baseReq("claude-3-7-sonnet-20250219"))
+			params, _, err := p.buildRequestParams(baseReq("claude-3-7-sonnet-20250219"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(4096)))
 		})
@@ -782,7 +782,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("allows the caller to opt into >64k output via MaxTokens", func() {
 			req := baseReq("claude-3-7-sonnet-20250219")
 			req.MaxTokens = 100000
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(100000)))
 		})
@@ -791,7 +791,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 			req := baseReq("claude-3-7-sonnet-20250219")
 			req.ThinkingMode = "enabled:8000"
 			req.MaxTokens = 16000
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
 		})
@@ -801,7 +801,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		It("silently drops thinking — older models do not support it", func() {
 			req := baseReq("claude-3-5-sonnet-20241022")
 			req.ThinkingMode = "enabled:8000"
-			params, err := p.buildRequestParams(req)
+			params, _, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.Thinking.OfEnabled).To(BeNil())
 			Expect(params.Thinking.OfAdaptive).To(BeNil())
@@ -809,7 +809,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 		})
 
 		It("keeps the historical 4096 default", func() {
-			params, err := p.buildRequestParams(baseReq("claude-3-5-haiku-latest"))
+			params, _, err := p.buildRequestParams(baseReq("claude-3-5-haiku-latest"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(4096)))
 		})
@@ -817,7 +817,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 
 	Context("backwards compatibility — caller supplies nothing", func() {
 		It("unknown model gets max_tokens=4096 / temperature=0", func() {
-			params, err := p.buildRequestParams(baseReq("claude-unknown-model-vXXX"))
+			params, _, err := p.buildRequestParams(baseReq("claude-unknown-model-vXXX"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(params.MaxTokens).To(Equal(int64(4096)))
 			Expect(params.Temperature.Valid()).To(BeTrue())
@@ -834,7 +834,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 				"claude-3-7-sonnet-20250219",
 				"claude-3-5-haiku-latest",
 			} {
-				_, err := p.buildRequestParams(baseReq(id))
+				_, _, err := p.buildRequestParams(baseReq(id))
 				Expect(err).NotTo(HaveOccurred(), "model %s rejected zero ChatRequest", id)
 			}
 		})
@@ -858,7 +858,7 @@ var _ = Describe("thinking constraint validation", func() {
 			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
 			ThinkingMode: "enabled:512",
 		}
-		_, err := p.buildRequestParams(req)
+		_, _, err := p.buildRequestParams(req)
 		Expect(err).To(MatchError(errThinkingBudgetTooLow))
 	})
 
@@ -869,7 +869,7 @@ var _ = Describe("thinking constraint validation", func() {
 			MaxTokens:    8000,
 			ThinkingMode: "enabled:8000",
 		}
-		_, err := p.buildRequestParams(req)
+		_, _, err := p.buildRequestParams(req)
 		Expect(err).To(MatchError(errThinkingBudgetExceedsMax))
 	})
 
@@ -879,7 +879,7 @@ var _ = Describe("thinking constraint validation", func() {
 			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
 			ThinkingMode: "enabled:not-a-number",
 		}
-		_, err := p.buildRequestParams(req)
+		_, _, err := p.buildRequestParams(req)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("invalid thinking mode"))
 	})
@@ -890,7 +890,7 @@ var _ = Describe("thinking constraint validation", func() {
 			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
 			ThinkingMode: "disabled",
 		}
-		params, err := p.buildRequestParams(req)
+		params, _, err := p.buildRequestParams(req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.Thinking.OfDisabled).NotTo(BeNil())
 		Expect(params.Thinking.OfAdaptive).To(BeNil())
@@ -920,54 +920,54 @@ var _ = Describe("tool_choice mapping", func() {
 	}
 
 	It("maps auto", func() {
-		params, err := p.buildRequestParams(makeReq("auto", ""))
+		params, _, err := p.buildRequestParams(makeReq("auto", ""))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfAuto).NotTo(BeNil())
 	})
 
 	It("maps any", func() {
-		params, err := p.buildRequestParams(makeReq("any", ""))
+		params, _, err := p.buildRequestParams(makeReq("any", ""))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfAny).NotTo(BeNil())
 	})
 
 	It("maps none", func() {
-		params, err := p.buildRequestParams(makeReq("none", ""))
+		params, _, err := p.buildRequestParams(makeReq("none", ""))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfNone).NotTo(BeNil())
 	})
 
 	It("maps tool:NAME", func() {
-		params, err := p.buildRequestParams(makeReq("tool:get_weather", ""))
+		params, _, err := p.buildRequestParams(makeReq("tool:get_weather", ""))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfTool).NotTo(BeNil())
 		Expect(params.ToolChoice.OfTool.Name).To(Equal("get_weather"))
 	})
 
 	It("rejects 'any' when thinking is on", func() {
-		_, err := p.buildRequestParams(makeReq("any", "enabled:4096"))
+		_, _, err := p.buildRequestParams(makeReq("any", "enabled:4096"))
 		Expect(err).To(MatchError(errThinkingToolChoiceInvalid))
 	})
 
 	It("rejects 'tool:X' when thinking is on", func() {
-		_, err := p.buildRequestParams(makeReq("tool:foo", "enabled:4096"))
+		_, _, err := p.buildRequestParams(makeReq("tool:foo", "enabled:4096"))
 		Expect(err).To(MatchError(errThinkingToolChoiceInvalid))
 	})
 
 	It("allows 'auto' when thinking is on", func() {
-		params, err := p.buildRequestParams(makeReq("auto", "enabled:4096"))
+		params, _, err := p.buildRequestParams(makeReq("auto", "enabled:4096"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfAuto).NotTo(BeNil())
 	})
 
 	It("allows 'none' when thinking is on", func() {
-		params, err := p.buildRequestParams(makeReq("none", "enabled:4096"))
+		params, _, err := p.buildRequestParams(makeReq("none", "enabled:4096"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.ToolChoice.OfNone).NotTo(BeNil())
 	})
 
 	It("rejects an unrecognised tool_choice with a clear error", func() {
-		_, err := p.buildRequestParams(makeReq("garbage", ""))
+		_, _, err := p.buildRequestParams(makeReq("garbage", ""))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("unrecognised tool_choice"))
 	})
@@ -990,7 +990,7 @@ var _ = Describe("ChatRequest field threading", func() {
 			Messages:  []provider.Message{{Role: "user", Content: "hi"}},
 			MaxTokens: 8192,
 		}
-		params, err := p.buildRequestParams(req)
+		params, _, err := p.buildRequestParams(req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.MaxTokens).To(Equal(int64(8192)))
 	})
@@ -1002,7 +1002,7 @@ var _ = Describe("ChatRequest field threading", func() {
 		}
 		t := 0.3
 		req.Temperature = &t
-		params, err := p.buildRequestParams(req)
+		params, _, err := p.buildRequestParams(req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.Temperature.Value).To(BeNumerically("~", 0.3, 1e-9))
 	})
@@ -1012,9 +1012,216 @@ var _ = Describe("ChatRequest field threading", func() {
 			Model:    "claude-sonnet-4-5-20251020",
 			Messages: []provider.Message{{Role: "user", Content: "hi"}},
 		}
-		params, err := p.buildRequestParams(req)
+		params, _, err := p.buildRequestParams(req)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(params.Temperature.Valid()).To(BeTrue())
 		Expect(params.Temperature.Value).To(BeNumerically("~", 0.0, 1e-9))
+	})
+})
+
+// Beta-header injection — interleaved-thinking-2025-05-14.
+//
+// The header gates whether Claude is allowed to interleave thinking
+// blocks with tool_use blocks within a single turn. Without it on
+// Claude 4 / 4.1 / 4.5 / Sonnet 4 / 4.5 / Haiku 4.5, thinking happens
+// once at the top of the turn and tools fire without further thinking
+// — degraded multi-step reasoning. On Claude 4.6+ (Opus 4.6/4.7,
+// Sonnet 4.6) interleaving is auto-enabled server-side; sending the
+// header is harmless on the direct API but REJECTED on Bedrock and
+// Vertex passthroughs, so it must NOT be sent for those models.
+//
+// The header is only useful when BOTH thinking is on AND tools are
+// present, so the classifier gates on both. This pins the matrix in
+// code so a silent regression on any branch surfaces here.
+var _ = Describe("interleaved-thinking beta header", func() {
+	var p *Provider
+
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	tool := provider.Tool{
+		Name:        "echo",
+		Description: "echo input",
+	}
+
+	reqWith := func(model, mode string, tools []provider.Tool) provider.ChatRequest {
+		return provider.ChatRequest{
+			Model:        model,
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			Tools:        tools,
+			ThinkingMode: mode,
+		}
+	}
+
+	Describe("classifier — modelDefaults.betaHeaders", func() {
+		It("Sonnet 4.5 emits the header when thinking is on AND tools are present", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
+			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Sonnet 4.5 omits the header when thinking is on but tools are empty", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
+			Expect(defs.betaHeaders(true, false)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Sonnet 4.5 omits the header when thinking is off but tools are present", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
+			Expect(defs.betaHeaders(false, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Opus 4.7 omits the header even with thinking on AND tools present (auto-enabled server-side)", func() {
+			defs := resolveModelDefaults("claude-opus-4-7-20251201")
+			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader),
+				"4.6+ family auto-enables interleaving; explicit header is rejected on Bedrock/Vertex")
+		})
+
+		It("Opus 4.6 omits the header (auto-enabled server-side)", func() {
+			defs := resolveModelDefaults("claude-opus-4-6-20251020")
+			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Sonnet 4.6 omits the header (auto-enabled server-side)", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-6-20251020")
+			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Sonnet 3.7 omits the header (interleaving not supported)", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Opus 4.1 emits the header when thinking is on AND tools are present", func() {
+			defs := resolveModelDefaults("claude-opus-4-1-20250805")
+			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+		})
+
+		It("Haiku 4.5 emits the header when thinking is on AND tools are present", func() {
+			defs := resolveModelDefaults("claude-haiku-4-5-20251020")
+			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+		})
+	})
+
+	Describe("wiring — buildRequestParams threads the option through", func() {
+		// The classifier specs above pin the per-model matrix on
+		// pure data. These specs pin that buildRequestParams plumbs
+		// the same matrix through to the per-call opts slice, by
+		// asserting the slice length matches what the classifier
+		// said. Length 1 is unambiguous because the only families
+		// that emit a static beta (`betas []string` field) are not
+		// exercised here — we never see the slice grow past 1.
+
+		It("Sonnet 4.5 + adaptive + tools → exactly one beta opt", func() {
+			req := reqWith("claude-sonnet-4-5-20251020", "adaptive", []provider.Tool{tool})
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(HaveLen(1),
+				"Sonnet 4.5 with thinking on AND tools must emit exactly the "+
+					"interleaved-thinking beta header")
+		})
+
+		It("Sonnet 4.5 + enabled:N + tools → exactly one beta opt", func() {
+			req := provider.ChatRequest{
+				Model:        "claude-sonnet-4-5-20251020",
+				Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:        []provider.Tool{tool},
+				ThinkingMode: "enabled:4096",
+				MaxTokens:    16000,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(HaveLen(1))
+		})
+
+		It("Opus 4.7 + adaptive + tools → no beta opt", func() {
+			req := reqWith("claude-opus-4-7-20251201", "adaptive", []provider.Tool{tool})
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"Opus 4.7 auto-enables interleaving; explicit header fails on Bedrock/Vertex")
+		})
+
+		It("Sonnet 3.7 + enabled + tools → no beta opt", func() {
+			req := provider.ChatRequest{
+				Model:        "claude-3-7-sonnet-20250219",
+				Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:        []provider.Tool{tool},
+				ThinkingMode: "enabled:4096",
+				MaxTokens:    16000,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"Sonnet 3.7 does not support interleaving — header must not be sent")
+		})
+
+		It("Sonnet 4.5 + thinking on but tools EMPTY → no beta opt", func() {
+			req := reqWith("claude-sonnet-4-5-20251020", "adaptive", nil)
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"interleaved-thinking is meaningless without tools — must not be sent")
+		})
+
+		It("Sonnet 4.5 + thinking OFF + tools present → no beta opt", func() {
+			req := reqWith("claude-sonnet-4-5-20251020", "", []provider.Tool{tool})
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"interleaved-thinking requires thinking to actually be on")
+		})
+
+		It("Sonnet 4.5 + thinking: disabled + tools present → no beta opt", func() {
+			req := reqWith("claude-sonnet-4-5-20251020", "disabled", []provider.Tool{tool})
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"explicit thinking: disabled means thinking is OFF — interleaved header must not be sent")
+		})
+
+		It("back-compat: no thinking, no tools → opts are empty (identical to today's request)", func() {
+			req := reqWith("claude-sonnet-4-5-20251020", "", nil)
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"requests without thinking or without tools must produce identical headers as today")
+		})
+
+		It("unknown model → opts are empty", func() {
+			req := reqWith("claude-unknown-model-vXXX", "adaptive", []provider.Tool{tool})
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty())
+		})
+	})
+
+	// buildBetaHeaderOptions is the wire-transformer between the
+	// string slice the classifier returns and the SDK's
+	// option.RequestOption type. It must produce one option per
+	// header value (the SDK's WithHeaderAdd appends each onto the
+	// same `anthropic-beta` HTTP header, comma-joining on the wire),
+	// and must return nil on empty input so the call site stays
+	// allocation-free for the steady-state path.
+	Describe("buildBetaHeaderOptions transformer", func() {
+		It("returns nil for an empty input", func() {
+			Expect(buildBetaHeaderOptions(nil)).To(BeNil())
+			Expect(buildBetaHeaderOptions([]string{})).To(BeNil())
+		})
+
+		It("emits one option per beta value", func() {
+			opts := buildBetaHeaderOptions([]string{"a", "b", "c"})
+			Expect(opts).To(HaveLen(3))
+		})
+	})
+})
+
+// constantWireValue pins the on-the-wire spelling of the
+// interleaved-thinking beta header. The constant in production must
+// match exactly — Anthropic checks for this literal string.
+var _ = Describe("interleavedThinkingBetaHeader wire spelling", func() {
+	It("matches the published Anthropic beta name", func() {
+		Expect(interleavedThinkingBetaHeader).To(Equal("interleaved-thinking-2025-05-14"))
 	})
 })

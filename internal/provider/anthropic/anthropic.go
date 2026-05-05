@@ -223,13 +223,13 @@ func (p *Provider) Stream(
 	if err := p.refreshClientIfNeeded(ctx); err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
-	params, err := p.buildRequestParams(req)
+	params, opts, err := p.buildRequestParams(req)
 	if err != nil {
 		return nil, fmt.Errorf("building anthropic request: %w", err)
 	}
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
-	go p.streamMessages(ctx, params, ch)
+	go p.streamMessages(ctx, params, opts, ch)
 
 	return ch, nil
 }
@@ -239,6 +239,8 @@ func (p *Provider) Stream(
 // Expected:
 //   - ctx is a valid context for the streaming call.
 //   - params contains the configured Anthropic request parameters.
+//   - opts carries per-call request options (e.g. conditional beta
+//     headers); may be nil.
 //   - ch is an open channel for receiving stream chunks.
 //
 // Side effects:
@@ -247,12 +249,13 @@ func (p *Provider) Stream(
 func (p *Provider) streamMessages(
 	ctx context.Context,
 	params anthropicAPI.MessageNewParams,
+	opts []option.RequestOption,
 	ch chan<- provider.StreamChunk,
 ) {
 	defer close(ch)
 
 	handler := newStreamEventHandler()
-	stream := p.client.Messages.NewStreaming(ctx, params)
+	stream := p.client.Messages.NewStreaming(ctx, params, opts...)
 
 	for stream.Next() {
 		event := stream.Current()
@@ -294,13 +297,13 @@ func (p *Provider) Chat(
 		return provider.ChatResponse{},
 			fmt.Errorf("refreshing token: %w", err)
 	}
-	params, err := p.buildRequestParams(req)
+	params, opts, err := p.buildRequestParams(req)
 	if err != nil {
 		return provider.ChatResponse{},
 			fmt.Errorf("building anthropic request: %w", err)
 	}
 
-	resp, err := p.client.Messages.New(ctx, params)
+	resp, err := p.client.Messages.New(ctx, params, opts...)
 	if err != nil {
 		if provErr := parseAnthropicError(err); provErr != nil {
 			return provider.ChatResponse{}, provErr
@@ -894,11 +897,21 @@ func buildTools(
 // rather than being hard-coded in this function. See model_constraints.go
 // for the per-model decision tree.
 //
+// In addition to the assembled MessageNewParams the function returns a
+// slice of per-call request options carrying any anthropic-beta headers
+// that depend on the assembled request (notably the
+// interleaved-thinking-2025-05-14 header which is conditional on both
+// thinking being on AND tools being present, only on the model families
+// that need it). The OAuth client-level beta header is unrelated and
+// unaffected.
+//
 // Expected:
 //   - req contains the model, messages, and optional tools for the request.
 //
 // Returns:
 //   - A fully configured MessageNewParams for the Anthropic API.
+//   - The per-call request options to be passed to Messages.New /
+//     Messages.NewStreaming. May be nil when no extra headers apply.
 //   - An error when the per-model contract rejects the request
 //     (e.g. Opus 4.7 + manual `thinking: enabled`, or a thinking budget
 //     that fails validation).
@@ -907,14 +920,14 @@ func buildTools(
 //   - None.
 func (p *Provider) buildRequestParams(
 	req provider.ChatRequest,
-) (anthropicAPI.MessageNewParams, error) {
+) (anthropicAPI.MessageNewParams, []option.RequestOption, error) {
 	params := anthropicAPI.MessageNewParams{
 		Model:    anthropicAPI.Model(req.Model),
 		Messages: buildMessages(req.Messages),
 	}
 
 	if err := applyModelConstraints(&params, req); err != nil {
-		return anthropicAPI.MessageNewParams{}, err
+		return anthropicAPI.MessageNewParams{}, nil, err
 	}
 
 	sysBlocks := p.extractSystemPrompt(req.Messages)
@@ -922,11 +935,41 @@ func (p *Provider) buildRequestParams(
 		params.System = sysBlocks
 	}
 
-	if tools := buildTools(req.Tools); len(tools) > 0 {
+	tools := buildTools(req.Tools)
+	if len(tools) > 0 {
 		params.Tools = tools
 	}
 
-	return params, nil
+	defs := resolveModelDefaults(req.Model)
+	betas := defs.betaHeaders(isThinkingActive(&params), len(tools) > 0)
+	opts := buildBetaHeaderOptions(betas)
+
+	return params, opts, nil
+}
+
+// buildBetaHeaderOptions converts a slice of anthropic-beta header
+// values into per-call request options. Each value is added via a
+// separate WithHeaderAdd call so the SDK appends them onto the same
+// `anthropic-beta` header (HTTP comma-joins multiple values), which is
+// what Anthropic and the official client expect.
+//
+// Expected:
+//   - betas is a slice of beta-feature names (may be nil/empty).
+//
+// Returns:
+//   - A slice of option.RequestOption values, or nil when betas is empty.
+//
+// Side effects:
+//   - None.
+func buildBetaHeaderOptions(betas []string) []option.RequestOption {
+	if len(betas) == 0 {
+		return nil
+	}
+	opts := make([]option.RequestOption, 0, len(betas))
+	for _, b := range betas {
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", b))
+	}
+	return opts
 }
 
 // extractTextContent returns the text from the first text-type content block.
