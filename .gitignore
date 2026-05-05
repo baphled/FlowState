@@ -12,6 +12,7 @@ web/.tmp/
 *.so
 *.dylib
 .opencode/*
+.claude/*.lock
 
 # Test binary, built with `go test -c`
 *.test
