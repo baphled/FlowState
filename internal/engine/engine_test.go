@@ -1813,4 +1813,91 @@ var _ = Describe("Engine", func() {
 			Expect(anthropicProvider.capturedRequest.Model).To(Equal("claude-opus"))
 		})
 	})
+
+	Describe("CategoryResolver wiring", func() {
+		// The engine consults CategoryResolver at Stream time to thread
+		// MaxTokens / Temperature from the active manifest's category
+		// onto provider.ChatRequest. This guards against a regression
+		// where the resolver is silently bypassed (which is exactly
+		// what the unwired-state-of-the-world looked like before).
+
+		It("threads MaxTokens and Temperature from CategoryConfig when wired", func() {
+			capturer := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "ok", Done: true},
+				},
+			}
+			cm := manifest
+			cm.OrchestratorMeta.Category = "deep" // default routes to temp=0.7, maxTokens=4096
+			resolver := engine.NewCategoryResolver(nil)
+			eng := engine.New(engine.Config{
+				ChatProvider:     capturer,
+				Manifest:         cm,
+				CategoryResolver: resolver,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "hi")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+			Expect(capturer.capturedRequest).NotTo(BeNil())
+			Expect(capturer.capturedRequest.MaxTokens).To(Equal(4096))
+			Expect(capturer.capturedRequest.Temperature).NotTo(BeNil())
+			Expect(*capturer.capturedRequest.Temperature).To(BeNumerically("~", 0.7, 1e-9))
+		})
+
+		It("leaves ChatRequest fields zero when no resolver is wired (back-compat)", func() {
+			capturer := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "ok", Done: true},
+				},
+			}
+			cm := manifest
+			cm.OrchestratorMeta.Category = "deep"
+			eng := engine.New(engine.Config{
+				ChatProvider: capturer,
+				Manifest:     cm,
+				// CategoryResolver intentionally nil
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "hi")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+			Expect(capturer.capturedRequest).NotTo(BeNil())
+			Expect(capturer.capturedRequest.MaxTokens).To(BeZero())
+			Expect(capturer.capturedRequest.Temperature).To(BeNil())
+		})
+
+		It("leaves ChatRequest fields zero when manifest has no Category", func() {
+			capturer := &mockProvider{
+				name: "anthropic",
+				streamChunks: []provider.StreamChunk{
+					{Content: "ok", Done: true},
+				},
+			}
+			resolver := engine.NewCategoryResolver(nil)
+			eng := engine.New(engine.Config{
+				ChatProvider:     capturer,
+				Manifest:         manifest, // no OrchestratorMeta.Category
+				CategoryResolver: resolver,
+			})
+
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "test-agent", "hi")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+			Expect(capturer.capturedRequest).NotTo(BeNil())
+			Expect(capturer.capturedRequest.MaxTokens).To(BeZero())
+			Expect(capturer.capturedRequest.Temperature).To(BeNil())
+		})
+	})
 })

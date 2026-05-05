@@ -69,6 +69,7 @@ type Engine struct {
 	bus                  *eventbus.EventBus
 	mcpServerTools       map[string][]string
 	toolTimeout          time.Duration
+	categoryResolver     *CategoryResolver
 
 	// toolCallCorrelator assigns a stable FlowState-internal identifier to
 	// every tool call observed on the stream path and reuses it whenever
@@ -359,6 +360,18 @@ type Config struct {
 	// of 2 minutes.
 	ToolTimeout time.Duration
 
+	// CategoryResolver, when non-nil, is consulted at Stream time to
+	// source caller-controlled chat parameters (Temperature, MaxTokens,
+	// future thinking/tool_choice/top_p hints) from the active manifest's
+	// OrchestratorMeta.Category. The resolved CategoryConfig is overlaid
+	// onto provider.ChatRequest before the request is dispatched.
+	//
+	// Nil disables category-driven parameter threading — the request
+	// goes out with zero-valued sampling fields and each provider falls
+	// back to its historical defaults (e.g. the Anthropic provider keeps
+	// max_tokens=4096 / temperature=0 for unknown models).
+	CategoryResolver *CategoryResolver
+
 	// SwarmContext is the T-swarm-2 lead-engine wiring point. When
 	// non-nil, the engine treats this run as a swarm invocation: the
 	// member roster shadows the lead agent's delegation.allowlist
@@ -552,6 +565,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		systemPromptDirty:         true,
 		mcpServerTools:            cfg.MCPServerTools,
 		toolTimeout:               resolveToolTimeout(cfg),
+		categoryResolver:          cfg.CategoryResolver,
 		autoCompactor:             cfg.AutoCompactor,
 		compressionConfig:         cfg.CompressionConfig,
 		compressionMetrics:        cfg.CompressionMetrics,
@@ -1918,6 +1932,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		Messages: messages,
 		Tools:    e.buildToolSchemas(),
 	}
+	e.applyCategoryParams(&req)
 
 	if override := session.ProviderOverrideFromContext(ctx); override != "" {
 		req.Provider = override
@@ -4448,6 +4463,51 @@ func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err e
 		data.IsRetriable = provErr.IsRetriable
 	}
 	e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
+}
+
+// applyCategoryParams overlays sampling and budget hints from the
+// active manifest's CategoryConfig onto the outgoing ChatRequest.
+//
+// The resolver is consulted only when:
+//   - the engine has a CategoryResolver wired (cfg.CategoryResolver), AND
+//   - the active manifest carries a non-empty OrchestratorMeta.Category
+//
+// Both conditions are deliberately permissive. A nil resolver, an empty
+// category, or a resolve error all leave req untouched so callers that
+// already populated the optional fields keep their values, and callers
+// that did not set anything fall through to the provider's per-model
+// defaults (e.g. the Anthropic provider's max_tokens=128k for
+// claude-opus-4-7*, 4096 for unknown ids).
+//
+// Expected:
+//   - req is a non-nil ChatRequest under construction. The optional
+//     sampling fields may be zero or already populated.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates *req: fills MaxTokens / Temperature when the active
+//     CategoryConfig supplies them and the caller has not already.
+func (e *Engine) applyCategoryParams(req *provider.ChatRequest) {
+	if req == nil || e.categoryResolver == nil {
+		return
+	}
+	category := e.manifest.OrchestratorMeta.Category
+	if category == "" {
+		return
+	}
+	cfg, err := e.categoryResolver.Resolve(category)
+	if err != nil {
+		return
+	}
+	if req.MaxTokens == 0 && cfg.MaxTokens > 0 {
+		req.MaxTokens = cfg.MaxTokens
+	}
+	if req.Temperature == nil && cfg.Temperature != 0 {
+		t := cfg.Temperature
+		req.Temperature = &t
+	}
 }
 
 // publishProviderRequestEvent publishes a provider request event to the engine bus

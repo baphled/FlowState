@@ -223,8 +223,11 @@ func (p *Provider) Stream(
 	if err := p.refreshClientIfNeeded(ctx); err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
+	params, err := p.buildRequestParams(req)
+	if err != nil {
+		return nil, fmt.Errorf("building anthropic request: %w", err)
+	}
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
-	params := p.buildRequestParams(req)
 
 	go p.streamMessages(ctx, params, ch)
 
@@ -291,7 +294,11 @@ func (p *Provider) Chat(
 		return provider.ChatResponse{},
 			fmt.Errorf("refreshing token: %w", err)
 	}
-	params := p.buildRequestParams(req)
+	params, err := p.buildRequestParams(req)
+	if err != nil {
+		return provider.ChatResponse{},
+			fmt.Errorf("building anthropic request: %w", err)
+	}
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
@@ -825,22 +832,32 @@ func buildTools(
 
 // buildRequestParams assembles the Anthropic API request from a ChatRequest.
 //
+// The per-model contract (max_tokens default, sampling rules, thinking
+// rewrite, tool_choice rules) is enforced via applyModelConstraints
+// rather than being hard-coded in this function. See model_constraints.go
+// for the per-model decision tree.
+//
 // Expected:
 //   - req contains the model, messages, and optional tools for the request.
 //
 // Returns:
 //   - A fully configured MessageNewParams for the Anthropic API.
+//   - An error when the per-model contract rejects the request
+//     (e.g. Opus 4.7 + manual `thinking: enabled`, or a thinking budget
+//     that fails validation).
 //
 // Side effects:
 //   - None.
 func (p *Provider) buildRequestParams(
 	req provider.ChatRequest,
-) anthropicAPI.MessageNewParams {
+) (anthropicAPI.MessageNewParams, error) {
 	params := anthropicAPI.MessageNewParams{
-		Model:       req.Model,
-		MaxTokens:   defaultMaxTokens,
-		Temperature: anthropicAPI.Float(0),
-		Messages:    buildMessages(req.Messages),
+		Model:    anthropicAPI.Model(req.Model),
+		Messages: buildMessages(req.Messages),
+	}
+
+	if err := applyModelConstraints(&params, req); err != nil {
+		return anthropicAPI.MessageNewParams{}, err
 	}
 
 	sysBlocks := p.extractSystemPrompt(req.Messages)
@@ -852,7 +869,7 @@ func (p *Provider) buildRequestParams(
 		params.Tools = tools
 	}
 
-	return params
+	return params, nil
 }
 
 // extractTextContent returns the text from the first text-type content block.
