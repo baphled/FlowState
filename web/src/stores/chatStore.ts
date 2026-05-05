@@ -570,6 +570,21 @@ export const useChatStore = defineStore('chat', {
       const session = await createSession(this.agentId)
       this.currentSessionId = session.id
       persistSessionId(session.id)
+      // Propagate the (provider, model) pair the backend seeded onto the
+      // session from the agent manifest's first PreferredModels entry. The
+      // POST /sessions response now carries these fields populated when
+      // the manifest declares any preferred model, so the persistent
+      // activity-indicator chip can render `on <model> · <provider>` as
+      // soon as the user issues a prompt — no waiting for a failover
+      // transition or a manual model selection. Empty strings (manifest
+      // had no PreferredModels) keep the chip hidden, matching the
+      // legacy degraded-session behaviour.
+      if (session.currentModelId) {
+        this.currentModelId = session.currentModelId
+      }
+      if (session.currentProviderId) {
+        this.currentProviderId = session.currentProviderId
+      }
       // A new session has no history yet, so the todoStore slice should be
       // empty for the panel to render the "No todos in this session yet"
       // empty state until the agent emits its first todowrite.
@@ -696,6 +711,27 @@ export const useChatStore = defineStore('chat', {
       )
 
       this.messages = [...sealedBackend, ...optimisticOrphans]
+
+      // Refresh the session-level model+provider from the most recent
+      // assistant message. The backend's appendSessionMessage promotes
+      // the engine-stamped (model, provider) onto the session whenever
+      // an assistant turn lands, but the only way that update reaches
+      // the chat-store today is via a full sessions-list refresh — and
+      // post-send reconcile calls this method, NOT loadSessions. Reading
+      // the most recent assistant message's modelName / providerName is
+      // sufficient: the per-message stamp is the source of truth for
+      // attribution, and the chip displays whatever the active session
+      // has on the chat-store. This keeps the chip in sync after every
+      // turn without an extra round-trip to GET /api/v1/sessions.
+      for (let i = sealedBackend.length - 1; i >= 0; i--) {
+        const m = sealedBackend[i]
+        if (m && m.role === 'assistant' && (m.modelName || m.providerName)) {
+          if (m.modelName) this.currentModelId = m.modelName
+          if (m.providerName) this.currentProviderId = m.providerName
+          break
+        }
+      }
+
       recordStreamEvent({
         kind: 'reconcile-result',
         sessionId,
@@ -762,6 +798,18 @@ export const useChatStore = defineStore('chat', {
           sessionId = session.id
           this.currentSessionId = sessionId
           persistSessionId(sessionId)
+          // Mirror newSession: the lazy-create path on a brand-new chat
+          // (user types into a session-less view and hits send) must
+          // surface the seed defaults onto the chip too, otherwise the
+          // first turn would still render with a blank chip until the
+          // first assistant chunk lands and the engine-stamped pair
+          // reaches restoreStateFromBackend on a refresh.
+          if (session.currentModelId) {
+            this.currentModelId = session.currentModelId
+          }
+          if (session.currentProviderId) {
+            this.currentProviderId = session.currentProviderId
+          }
         }
 
         // connect tears down any prior SSE, opens a new one, and arms the

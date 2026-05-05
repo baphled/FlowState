@@ -89,6 +89,15 @@ func (m *Manager) UpdateDelegation(sessionID, chainID string, mutate func(*Messa
 }
 
 // streamAccumState holds mutable accumulation state within AccumulateStream.
+//
+// lastModelID / lastProviderID track the most recent (model, provider) pair
+// stamped by the engine on the StreamChunk stream (see engine.go where
+// chunk.ModelID = e.LastModel() and chunk.ProviderID = e.LastProvider()).
+// flushContent and flushThinking copy these onto the appended assistant /
+// thinking messages so each persisted turn carries its provenance — the
+// chip and any future per-bubble badge can attribute the turn to the
+// model that actually produced it, even after a session reload or a
+// failover replay that switched providers mid-turn.
 type streamAccumState struct {
 	sessionID         string
 	agentID           string
@@ -96,6 +105,8 @@ type streamAccumState struct {
 	thinkingBuf       strings.Builder
 	lastToolName      string
 	lastToolInput     string
+	lastModelID       string
+	lastProviderID    string
 	seenStartedChains map[string]struct{}
 }
 
@@ -178,6 +189,19 @@ func AccumulateStream(
 //   - May call appender.AppendMessage to persist accumulated content.
 //   - Mutates s.contentBuf, s.thinkingBuf, s.lastToolName, and s.lastToolInput.
 func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.StreamChunk) {
+	// Track the latest engine-stamped (model, provider) so flushContent /
+	// flushThinking can persist the pair on the assistant message without
+	// having to plumb the engine through the accumulator. We update on EVERY
+	// chunk that carries a non-empty value so a mid-stream failover (the
+	// engine restamps subsequent chunks with the new provider/model after the
+	// failover hook has switched candidates) is reflected in the message
+	// stamped at the end of the turn.
+	if chunk.ModelID != "" {
+		s.lastModelID = chunk.ModelID
+	}
+	if chunk.ProviderID != "" {
+		s.lastProviderID = chunk.ProviderID
+	}
 	switch {
 	case chunk.ToolCall != nil:
 		applyToolCall(appender, s, chunk.ToolCall)
@@ -364,10 +388,17 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	if s.contentBuf.Len() == 0 {
 		return
 	}
+	// Stamp the (model, provider) pair seen on the most recent engine-tagged
+	// chunk so each persisted assistant turn carries its provenance. When the
+	// stream produced no model/provider at all (legacy providers, test
+	// streams), the fields stay empty — Message.ModelName / ProviderName are
+	// `omitempty` so the wire and on-disk JSON remain stable.
 	appender.AppendMessage(s.sessionID, Message{
-		Role:    "assistant",
-		Content: s.contentBuf.String(),
-		AgentID: s.agentID,
+		Role:         "assistant",
+		Content:      s.contentBuf.String(),
+		AgentID:      s.agentID,
+		ModelName:    s.lastModelID,
+		ProviderName: s.lastProviderID,
 	})
 	s.contentBuf.Reset()
 }

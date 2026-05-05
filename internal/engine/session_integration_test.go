@@ -1130,8 +1130,8 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 // content identity, not token math).
 type charCounter struct{}
 
-func (charCounter) Count(s string) int          { return len(s) }
-func (charCounter) ModelLimit(_ string) int     { return 1_000_000 }
+func (charCounter) Count(s string) int      { return len(s) }
+func (charCounter) ModelLimit(_ string) int { return 1_000_000 }
 
 // recordingChunkProvider is a stub Provider that records every Stream
 // request it receives so the spec can assert on what messages reached

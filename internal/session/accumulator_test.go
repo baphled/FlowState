@@ -51,6 +51,65 @@ var _ = Describe("AccumulateStream", func() {
 		Expect(appender.messages[0].AgentID).To(Equal("agent-1"))
 	})
 
+	Context("when chunks carry engine-stamped ModelID and ProviderID", func() {
+		// Track B regression cover: the assistant message must persist the
+		// (model, provider) pair the engine stamped on each chunk so per-turn
+		// attribution survives reload and the activity-indicator chip can
+		// show "produced by glm-4.6 · zai" even when the chunk itself didn't
+		// carry the fields (they were stamped on a previous chunk in the same
+		// turn). The accumulator records the most recent non-empty pair seen
+		// and copies it onto the appended assistant Message at flush time.
+		It("stamps the assistant message with ModelName and ProviderName from the latest chunk that carried them", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Content: "Hello ", ModelID: "glm-4.6", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Content: "world"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.messages[0].Role).To(Equal("assistant"))
+			Expect(appender.messages[0].ModelName).To(Equal("glm-4.6"))
+			Expect(appender.messages[0].ProviderName).To(Equal("zai"))
+		})
+
+		It("leaves ModelName and ProviderName empty when no chunk in the turn carried them", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Content: "Hello "}
+			rawCh <- provider.StreamChunk{Content: "world"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.messages[0].ModelName).To(BeEmpty())
+			Expect(appender.messages[0].ProviderName).To(BeEmpty())
+		})
+
+		It("uses the LAST non-empty pair seen so a mid-turn failover is reflected on the message", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			// First chunks: anthropic (the failed primary).
+			rawCh <- provider.StreamChunk{Content: "I tried", ModelID: "claude-sonnet-4-6", ProviderID: "anthropic"}
+			// Mid-turn: failover replays the prefix on a new provider, the
+			// engine restamps the chunks with the new pair.
+			rawCh <- provider.StreamChunk{Content: " and answered", ModelID: "glm-4.6", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ModelID: "glm-4.6", ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			Expect(appender.messages).To(HaveLen(1))
+			Expect(appender.messages[0].ModelName).To(Equal("glm-4.6"),
+				"the message should reflect the model that actually produced the persisted content")
+			Expect(appender.messages[0].ProviderName).To(Equal("zai"))
+		})
+	})
+
 	It("appends a tool_result message with ToolName and ToolInput", func() {
 		rawCh := make(chan provider.StreamChunk, 3)
 		rawCh <- provider.StreamChunk{

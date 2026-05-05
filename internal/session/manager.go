@@ -30,20 +30,30 @@ const (
 )
 
 // Message represents a single message in a session's conversation history.
+//
+// ModelName / ProviderName carry the (model, provider) pair that produced
+// an assistant turn, stamped by the session accumulator at flush time from
+// the engine-tagged StreamChunk. The pair is persisted on the message so
+// per-turn attribution survives server restart and provider failover —
+// the chip in the activity indicator can display "produced by glm-4.6"
+// after a reload, and a future per-bubble badge has the data it needs
+// without re-reading the session-level CurrentModelID/CurrentProviderID
+// (which only tracks the *current* selection, not historical turns).
 type Message struct {
-	ID          string    `json:"id"`
-	Role        string    `json:"role"`
-	Content     string    `json:"content"`
-	AgentID     string    `json:"agentId,omitempty"`
-	ToolName    string    `json:"toolName,omitempty"`
-	ToolInput   string    `json:"toolInput,omitempty"`
-	TargetAgent string    `json:"targetAgent,omitempty"`
-	ChainID     string    `json:"chainId,omitempty"`
-	ToolCalls   int       `json:"toolCalls,omitempty"`
-	LastTool    string    `json:"lastTool,omitempty"`
-	Status      string    `json:"status,omitempty"`
-	ModelName   string    `json:"modelName,omitempty"`
-	Timestamp   time.Time `json:"timestamp"`
+	ID           string    `json:"id"`
+	Role         string    `json:"role"`
+	Content      string    `json:"content"`
+	AgentID      string    `json:"agentId,omitempty"`
+	ToolName     string    `json:"toolName,omitempty"`
+	ToolInput    string    `json:"toolInput,omitempty"`
+	TargetAgent  string    `json:"targetAgent,omitempty"`
+	ChainID      string    `json:"chainId,omitempty"`
+	ToolCalls    int       `json:"toolCalls,omitempty"`
+	LastTool     string    `json:"lastTool,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	ModelName    string    `json:"modelName,omitempty"`
+	ProviderName string    `json:"providerName,omitempty"`
+	Timestamp    time.Time `json:"timestamp"`
 }
 
 // Session represents a planning session with conversation history,
@@ -273,10 +283,42 @@ func (m *Manager) RegisterSession(id, agentID string) {
 //   - Generates a new session identifier.
 //   - Stores the session in memory.
 func (m *Manager) CreateSession(agentID string) (*Session, error) {
+	return m.CreateSessionWithDefaults(agentID, "", "")
+}
+
+// CreateSessionWithDefaults creates a new session pre-populated with a
+// default (provider, model) pair so the persistent model chip in the chat
+// activity indicator can render immediately on a brand-new session, before
+// the user has selected a model and before the first assistant turn has
+// streamed.
+//
+// Expected:
+//   - agentID identifies the agent that owns the session.
+//   - providerID is the default provider identifier (may be empty).
+//   - modelID is the default model identifier (may be empty).
+//
+// Returns:
+//   - The newly created session, with CurrentProviderID and CurrentModelID
+//     populated from the supplied defaults.
+//   - An error if the session cannot be recorded.
+//
+// Side effects:
+//   - Generates a new session identifier.
+//   - Stores the session in memory.
+//   - Persists the session to the configured sessions dir when one is set,
+//     so a process restart between create and first message preserves the
+//     defaults (the .meta.json sidecar carries them).
+//
+// Empty defaults are accepted and result in the same shape CreateSession
+// produced before this method existed — used by the legacy CLI and tests
+// that don't care about the chip.
+func (m *Manager) CreateSessionWithDefaults(agentID, providerID, modelID string) (*Session, error) {
 	now := time.Now()
 	sess := &Session{
 		ID:                uuid.New().String(),
 		AgentID:           agentID,
+		CurrentProviderID: providerID,
+		CurrentModelID:    modelID,
 		Status:            string(StatusActive),
 		Depth:             0,
 		CoordinationStore: coordination.NewMemoryStore(),
@@ -286,9 +328,26 @@ func (m *Manager) CreateSession(agentID string) (*Session, error) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.sessions[sess.ID] = sess
+	sessionsDir := m.sessionsDir
+	persistFn := m.persistFn
+	var snapshot *Session
+	if sessionsDir != "" && (providerID != "" || modelID != "") {
+		snap := *sess
+		msgs := make([]Message, len(sess.Messages))
+		copy(msgs, sess.Messages)
+		snap.Messages = msgs
+		snapshot = &snap
+	}
+	m.mu.Unlock()
+
+	if snapshot != nil {
+		fn := persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		_ = fn(sessionsDir, snapshot)
+	}
 
 	return sess, nil
 }
@@ -693,6 +752,24 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	msg.ID = uuid.New().String()
 	msg.Timestamp = time.Now()
 	sess.Messages = append(sess.Messages, msg)
+
+	// When the engine stamps a (model, provider) onto an assistant message
+	// and the session-level fields are stale (empty, or a previously failed
+	// candidate that the failover hook has since replaced), promote the
+	// pair onto the session. This keeps the persistent chip ("on glm-4.6 ·
+	// zai") aligned with the model that actually produced the most recent
+	// turn, without requiring an explicit UpdateSessionModel PATCH from
+	// the client. The check is restricted to assistant turns so tool_call
+	// / tool_result / delegation messages — which never carry these
+	// fields anyway — cannot accidentally clear the pair.
+	if msg.Role == "assistant" {
+		if msg.ModelName != "" && sess.CurrentModelID != msg.ModelName {
+			sess.CurrentModelID = msg.ModelName
+		}
+		if msg.ProviderName != "" && sess.CurrentProviderID != msg.ProviderName {
+			sess.CurrentProviderID = msg.ProviderName
+		}
+	}
 
 	// Snapshot the fields needed for persistence under the lock, then release
 	// before doing I/O so GetSession readers are not blocked by disk writes.

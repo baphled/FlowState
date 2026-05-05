@@ -2402,12 +2402,12 @@ func (e *Engine) processStreamChunks(
 	for {
 		select {
 		case <-ctx.Done():
-			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel()}
+			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
 				if len(toolCalls) == 0 {
-					outChan <- provider.StreamChunk{Done: true, ModelID: e.LastModel()}
+					outChan <- provider.StreamChunk{Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 				}
 				return streamChunkResult{
 					toolCalls:       toolCalls,
@@ -2418,6 +2418,7 @@ func (e *Engine) processStreamChunks(
 			}
 
 			chunk.ModelID = e.LastModel()
+			chunk.ProviderID = e.LastProvider()
 
 			// Dispatch by chunk shape rather than EventType so the loop
 			// matches the session accumulator (internal/session/accumulator.go:98)
@@ -2533,8 +2534,9 @@ func (e *Engine) forwardToolCallChunk(
 	// commit against.
 	if !sawTextOrThinking {
 		outChan <- provider.StreamChunk{
-			Thinking: turnOpenMarker,
-			ModelID:  e.LastModel(),
+			Thinking:   turnOpenMarker,
+			ModelID:    e.LastModel(),
+			ProviderID: e.LastProvider(),
 		}
 		thinkingContent.WriteString(turnOpenMarker)
 	}

@@ -2794,3 +2794,134 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 		Expect(metadata["error"]).To(Equal("stream initialisation failed"))
 	})
 })
+
+var _ = Describe("POST /api/v1/sessions seeds default model from agent manifest", func() {
+	// Regression cover for the May 2026 chip-not-rendering bug: a brand-new
+	// session was returned with empty currentModelId / currentProviderId
+	// because handleCreateSession called CreateSession (no defaults) and
+	// nothing else populated the pair until either the user picked a model
+	// or a provider_changed transition fired. The chip's v-if fell through
+	// and non-technical users had no way to confirm which model they were
+	// using.
+	//
+	// The fix: handleCreateSession looks up the agent's manifest and seeds
+	// the new session with the first PreferredModels entry. These specs pin
+	// the contract so a future refactor can't silently undo it.
+
+	var (
+		recorder *httptest.ResponseRecorder
+		mgr      *session.Manager
+		registry *agent.Registry
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		registry = agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	postCreate := func(agentID string) map[string]interface{} {
+		body := `{"agent_id":"` + agentID + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		return out
+	}
+
+	It("populates currentModelId and currentProviderId from the agent manifest's first preferred model", func() {
+		registry.Register(&agent.Manifest{
+			ID:   "team-lead",
+			Name: "Team Lead",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "zai", Model: "glm-4.6"},
+			},
+		})
+
+		out := postCreate("team-lead")
+
+		Expect(out).To(HaveKeyWithValue("currentModelId", "claude-sonnet-4-6"),
+			"new session must carry the agent's first preferred model so the chip renders immediately")
+		Expect(out).To(HaveKeyWithValue("currentProviderId", "anthropic"),
+			"new session must carry the matching provider for the chip's `<model> · <provider>` format")
+	})
+
+	It("omits currentModelId and currentProviderId when the agent manifest declares no preferred models", func() {
+		registry.Register(&agent.Manifest{
+			ID:              "barebones-agent",
+			Name:            "Barebones",
+			PreferredModels: nil,
+		})
+
+		out := postCreate("barebones-agent")
+
+		Expect(out).NotTo(HaveKey("currentModelId"),
+			"omitempty: a manifest with no preferred models must not synthesise a fake default")
+		Expect(out).NotTo(HaveKey("currentProviderId"))
+	})
+
+	It("omits currentModelId and currentProviderId when the agent is unknown to the registry", func() {
+		// No Register call: the registry has no manifest for "ghost-agent".
+		// The session is still created (CreateSession does not validate the
+		// agent id), but defaults degrade silently.
+		out := postCreate("ghost-agent")
+
+		Expect(out).NotTo(HaveKey("currentModelId"))
+		Expect(out).NotTo(HaveKey("currentProviderId"))
+		// And the session itself must still be present in the manager so the
+		// degraded path doesn't leak a 500.
+		Expect(out).To(HaveKey("id"))
+	})
+})
+
+var _ = Describe("POST /api/v1/sessions persists default model+provider to the manager", func() {
+	// Companion to the wire-shape spec above: the seed must land on the
+	// session manager's in-memory state too, so the very first GET
+	// /api/v1/sessions/{id}/messages or PATCH /agent reads the same
+	// pair the create response advertised.
+
+	It("writes CurrentProviderID and CurrentModelID onto the session in the manager", func() {
+		mgr := session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		registry := agent.NewRegistry()
+		registry.Register(&agent.Manifest{
+			ID: "code-reviewer",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "openai", Model: "gpt-4o"},
+			},
+		})
+		disc := discovery.NewAgentDiscovery(nil)
+		srv := api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(`{"agent_id":"code-reviewer"}`))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		sessID, _ := out["id"].(string)
+		Expect(sessID).NotTo(BeEmpty())
+
+		stored, err := mgr.GetSession(sessID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stored.CurrentProviderID).To(Equal("openai"))
+		Expect(stored.CurrentModelID).To(Equal("gpt-4o"))
+	})
+})

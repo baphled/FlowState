@@ -15,6 +15,22 @@ export interface Message {
   status?: string
   modelName?: string
   /**
+   * providerName carries the provider that produced this message
+   * (e.g. "anthropic", "zai", "openai"), stamped by the engine on
+   * the StreamChunk and persisted by the session accumulator at flush
+   * time. Paired with modelName so per-turn attribution survives
+   * reload and a mid-stream failover that switches providers is
+   * reflected on the message itself, not just the session-level
+   * currentProviderId.
+   *
+   * Currently consumed by the activity-indicator chip when it falls
+   * back to per-message data (e.g. when restoring a session whose
+   * top-level currentProviderId has not yet been promoted from the
+   * latest assistant message). A future per-bubble badge will read
+   * this directly to show "produced by glm-4.6 · zai".
+   */
+  providerName?: string
+  /**
    * Model-reasoning text accumulated from `type: "thinking"` SSE events
    * (Drop #2 in the Streaming Signal-Drop fix). Carries the provider's
    * private step-by-step reasoning (Anthropic thinking_delta, glm-4.6
