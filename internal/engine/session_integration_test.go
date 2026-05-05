@@ -1121,6 +1121,152 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 				"first session's follow-up leaked into fresh session's first turn payload")
 		})
 	})
+
+	// thinking-block continuity round-trip: an Anthropic extended-thinking
+	// turn emits a thinking content block with an encrypted signature. The
+	// session accumulator persists those structured ThinkingBlocks on the
+	// assistant Message so a subsequent turn can replay them. The
+	// session.Manager → engine → provider seam must propagate
+	// session.Message.ThinkingBlocks (and StopReason) into the
+	// provider.Message instances it constructs for the next-turn request.
+	// Without this propagation, Anthropic silently disables extended
+	// thinking from turn 2 onward — see provider.Message.ThinkingBlocks
+	// and the Phase 3 #2 round-trip plumbing in the provider layer.
+	//
+	// This spec drives the full production path (session.SendMessage →
+	// AccumulateStream → buildContextWindow → provider.Stream) so the
+	// behaviour is asserted end-to-end at the same boundary that ships
+	// to users, not at a unit-test seam.
+	Describe("thinking-block continuity round-trip", Label("integration"), func() {
+		It("propagates persisted ThinkingBlocks and StopReason into the next-turn provider request", func() {
+			recorder := &recordingChunkProvider{
+				name: "recording",
+				// Turn 1 stream: a thinking block with a signature, then
+				// content, then the upstream stop_reason, then Done. This
+				// matches the chunk shape the Anthropic provider emits at
+				// content_block_stop / message_delta / message_stop.
+				chunks: []provider.StreamChunk{
+					{Thinking: "weighing the request", Signature: "sig-encrypted-xyz"},
+					{Content: "I have considered it."},
+					{EventType: "stop_reason", StopReason: "end_turn"},
+					{Content: "", Done: true},
+				},
+			}
+
+			store := recall.NewEmptyContextStore("test-model")
+			eng := engine.New(engine.Config{
+				ChatProvider: recorder,
+				Manifest:     newSessionTestManifest(),
+				Store:        store,
+				TokenCounter: charCounter{},
+			})
+			mgr := session.NewManager(eng)
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx := context.Background()
+
+			// Turn 1 — drive the stream so the accumulator persists
+			// session.Message.ThinkingBlocks for the assistant turn.
+			ch1, err := mgr.SendMessage(ctx, sess.ID, "thinking-probe-1")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch1)
+
+			// Verify the accumulator captured the structured thinking
+			// block on the persisted assistant Message. Without this
+			// the rest of the spec is meaningless — we want a clear
+			// failure if the upstream Phase 3 #2 plumbing regressed.
+			persisted, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			var assistantBlocks []provider.ThinkingBlock
+			var assistantStopReason string
+			for _, m := range persisted.Messages {
+				if m.Role == "assistant" {
+					assistantBlocks = m.ThinkingBlocks
+					assistantStopReason = m.StopReason
+				}
+			}
+			Expect(assistantBlocks).To(HaveLen(1),
+				"accumulator must persist the signed thinking block on the assistant message")
+			Expect(assistantBlocks[0].Thinking).To(Equal("weighing the request"))
+			Expect(assistantBlocks[0].Signature).To(Equal("sig-encrypted-xyz"))
+			Expect(assistantStopReason).To(Equal("end_turn"))
+
+			// Turn 2 — the captured provider request must carry the
+			// assistant message back with ThinkingBlocks intact. This is
+			// the user-visible behaviour: Anthropic only honours extended
+			// thinking continuity when the original signature is replayed
+			// verbatim on every subsequent turn.
+			ch2, err := mgr.SendMessage(ctx, sess.ID, "thinking-probe-2")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch2)
+
+			turn2Req := recorder.lastRequestForUser("thinking-probe-2")
+			Expect(turn2Req).NotTo(BeNil(), "no provider.request captured for turn 2")
+
+			var replayedAssistant *provider.Message
+			for i := range turn2Req.Messages {
+				if turn2Req.Messages[i].Role == "assistant" {
+					replayedAssistant = &turn2Req.Messages[i]
+					break
+				}
+			}
+			Expect(replayedAssistant).NotTo(BeNil(),
+				"turn 2 provider request must include the prior assistant turn")
+			Expect(replayedAssistant.ThinkingBlocks).To(Equal(assistantBlocks),
+				"turn 2 provider request must carry the prior turn's ThinkingBlocks byte-identical to what the accumulator persisted")
+			Expect(replayedAssistant.StopReason).To(Equal("end_turn"),
+				"turn 2 provider request must carry the prior turn's StopReason")
+		})
+
+		It("leaves ThinkingBlocks empty on next-turn requests when the prior turn produced none", func() {
+			// Regression guard: messages without thinking blocks must
+			// continue to round-trip cleanly. The propagation is
+			// zero-safe — an empty source slice projects to an empty
+			// destination slice (which marshals away under omitempty).
+			recorder := &recordingChunkProvider{
+				name: "recording",
+				chunks: []provider.StreamChunk{
+					{Content: "no thinking here"},
+					{Content: "", Done: true},
+				},
+			}
+
+			store := recall.NewEmptyContextStore("test-model")
+			eng := engine.New(engine.Config{
+				ChatProvider: recorder,
+				Manifest:     newSessionTestManifest(),
+				Store:        store,
+				TokenCounter: charCounter{},
+			})
+			mgr := session.NewManager(eng)
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx := context.Background()
+			ch1, err := mgr.SendMessage(ctx, sess.ID, "plain-probe-1")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch1)
+
+			ch2, err := mgr.SendMessage(ctx, sess.ID, "plain-probe-2")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch2)
+
+			turn2Req := recorder.lastRequestForUser("plain-probe-2")
+			Expect(turn2Req).NotTo(BeNil())
+
+			for _, m := range turn2Req.Messages {
+				if m.Role == "assistant" {
+					Expect(m.ThinkingBlocks).To(BeEmpty(),
+						"non-thinking turn must not synthesise ThinkingBlocks")
+					Expect(m.StopReason).To(BeEmpty(),
+						"non-thinking turn must not synthesise a StopReason")
+				}
+			}
+		})
+	})
 })
 
 // charCounter is a minimal TokenCounter for the cross-session isolation
