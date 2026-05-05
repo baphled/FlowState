@@ -619,6 +619,130 @@ var _ = Describe("RunStream", func() {
 				"non-anthropic silent-stall bug")
 	})
 
+	// Drop #1 — openaicompat reasoning_content emission.
+	//
+	// glm-4.6 (zai) and DeepSeek-R1 emit OpenAI-shaped chunks where the
+	// reasoning tokens arrive as a non-standard `reasoning_content` field on
+	// the delta — NOT the typed `content` field. The Go SDK's
+	// ChatCompletionChunkChoiceDelta has no `Reasoning` member, so the data
+	// only survives in `delta.RawJSON()` / `delta.JSON.ExtraFields`. Pre this
+	// fix the dispatcher checked `delta.Content != ""` and silently dropped
+	// every reasoning chunk; we measured 586 dropped deltas across a single
+	// 92-second glm-4.6 call in the Phase 1d capture (live SSE wire idle for
+	// the full 52-second reasoning phase).
+	//
+	// Contract: when a delta carries `reasoning_content`, RunStream MUST
+	// emit a `provider.StreamChunk{Thinking: <text>}` whose Thinking field
+	// holds the reasoning text. Existing content/tool-call paths are
+	// unchanged. Providers that never emit reasoning_content (openai,
+	// ollama, github-copilot text streams) are unaffected — the extraction
+	// is a no-op when the field is absent.
+	It("emits Thinking chunks when delta carries reasoning_content (glm-4.6 / DeepSeek-R1 shape)", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			// Real-shape glm-4.6 chunk: reasoning_content arrives in deltas
+			// with empty content. After several reasoning chunks the model
+			// switches to content. The dispatcher must emit thinking chunks
+			// for the reasoning phase and content chunks for the reply.
+			chunks := []string{
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think about this. "},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"reasoning_content":"The user is asking..."},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"The answer is 42."},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "glm-4.6",
+			Messages: []provider.Message{{Role: "user", Content: "What is the meaning of life?"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "zai")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		var thinkingChunks []provider.StreamChunk
+		var contentChunks []provider.StreamChunk
+		for _, c := range collected {
+			if c.Thinking != "" {
+				thinkingChunks = append(thinkingChunks, c)
+			}
+			if c.Content != "" {
+				contentChunks = append(contentChunks, c)
+			}
+		}
+
+		Expect(thinkingChunks).To(HaveLen(2),
+			"each reasoning_content delta MUST emit one thinking chunk; "+
+				"got %d thinking chunks across collected=%v", len(thinkingChunks), collected)
+		Expect(thinkingChunks[0].Thinking).To(Equal("Let me think about this. "))
+		Expect(thinkingChunks[1].Thinking).To(Equal("The user is asking..."))
+
+		// reasoning_content MUST NOT be conflated with Content — the chat
+		// store renders Content as the visible reply and Thinking as
+		// out-of-band reasoning. Conflating them would re-introduce the
+		// JSON-leak class of bugs.
+		for _, t := range thinkingChunks {
+			Expect(t.Content).To(BeEmpty(),
+				"thinking chunks MUST have empty Content; conflating reasoning with reply would leak private reasoning into the chat: %+v", t)
+		}
+
+		Expect(contentChunks).To(HaveLen(1),
+			"the visible reply MUST be a single content chunk separate from reasoning")
+		Expect(contentChunks[0].Content).To(Equal("The answer is 42."))
+	})
+
+	It("does not emit Thinking chunks for plain OpenAI providers (no reasoning_content field)", func() {
+		// Providers that never emit reasoning_content (openai, github-copilot
+		// text mode, ollama) MUST be unaffected by Drop #1 — the extraction
+		// is a no-op when the field is absent. Without this guard, a regression
+		// in the extraction logic could spuriously emit empty thinking chunks
+		// and re-arm the watchdog from non-existent reasoning.
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "Hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "openai")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		for _, c := range collected {
+			Expect(c.Thinking).To(BeEmpty(),
+				"plain OpenAI providers MUST NOT emit Thinking chunks: %+v", c)
+		}
+	})
+
 	It("stamps EventType=\"tool_call\" on chunks emitted by flushAccumulatedToolCalls (github-copilot shape)", func() {
 		// Regression pin for the flush path: github-copilot combines the final
 		// tool_calls delta with finish_reason in one chunk, so JustFinishedToolCall
