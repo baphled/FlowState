@@ -826,6 +826,16 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				writeSSEHarnessComplete(w, flusher, chunk.Content)
 			case "harness_critic_feedback":
 				writeSSECriticFeedback(w, flusher, chunk.Content)
+			case "provider_changed":
+				// Track B — failover transition affordance. The failover
+				// StreamHook prepends a chunk{EventType:"provider_changed",
+				// Content:<json>} when a fallback candidate succeeds after
+				// a previous candidate failed. Content is the marshalled
+				// providerChangedPayload (from / to / reason). The wire
+				// passes the JSON through verbatim — the frontend
+				// discriminated union's "provider_changed" branch parses
+				// from/to/reason and renders the toast.
+				writeSSEProviderChanged(w, flusher, chunk.Content)
 			case "":
 				if chunk.Content != "" {
 					writeSSEContent(w, flusher, chunk.Content)
@@ -1448,6 +1458,67 @@ type sseThinking struct {
 //   - Flushes response buffer.
 func writeSSEThinking(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseThinking{Type: "thinking", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseProviderChanged represents a failover transition event in a server-sent
+// event stream. The chat UI renders this as a toast notification ("Switched
+// to glm-4.6 — primary model rate-limited") plus updates the persistent
+// model/provider chip in the input toolbar.
+//
+// Field semantics:
+//   - From / To are "<provider>+<model>" strings (e.g. "anthropic+claude-sonnet-4-6").
+//     The frontend splits on "+" to extract the model for the toast copy.
+//   - Reason is a stable machine-readable token from a closed set; see
+//     classifyFailoverReason in internal/plugin/failover/stream_hook.go for
+//     the full vocabulary. The frontend maps it to plain English.
+type sseProviderChanged struct {
+	Type   string `json:"type"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+// writeSSEProviderChanged emits a typed failover-transition SSE event by
+// re-parsing the payload JSON marshalled by the failover hook and re-emitting
+// it with the canonical "type":"provider_changed" discriminant injected.
+//
+// Why re-marshal instead of pass-through: the failover hook marshals
+// {from, to, reason} (no type field — that's the SSE writer's contract).
+// Injecting the type field here keeps the emitter side unaware of the
+// frontend dispatch convention, mirroring how writeSSEDelegationInfo
+// injects "type":"delegation" on the wire.
+//
+// Expected:
+//   - payload is the JSON encoded by failover.providerChangedPayload (from/to/reason).
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded provider_changed event.
+//   - Flushes response buffer.
+//   - On a malformed payload, drops the event silently rather than emitting
+//     a malformed SSE event the frontend's parser would classify as
+//     "unknown" and discard. This keeps the wire clean for the user-visible
+//     toast: a corrupt failover signal is worse than no signal.
+func writeSSEProviderChanged(w http.ResponseWriter, flusher http.Flusher, payload string) {
+	var parsed struct {
+		From   string `json:"from"`
+		To     string `json:"to"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return
+	}
+	data := sseProviderChanged{
+		Type:   "provider_changed",
+		From:   parsed.From,
+		To:     parsed.To,
+		Reason: parsed.Reason,
+	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return

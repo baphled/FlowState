@@ -2,6 +2,7 @@ package failover
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -88,6 +89,17 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		}
 
 		var lastErr error
+		// previousFailed records the FIRST candidate that failed before
+		// this attempt succeeded. It powers the user-visible
+		// "provider_changed" Track B affordance: when the second (or
+		// later) candidate succeeds, the user is no longer on their
+		// primary model and the chat UI must surface the transition.
+		// We track only the first failure (not a list) because the
+		// toast renders one alert: "switched away from <primary>". A
+		// chain of multiple failures collapses to "primary failed" in
+		// the user's mental model — listing every retired candidate
+		// would be noise.
+		var previousFailed *failedCandidate
 		for _, candidate := range candidates {
 			req.Provider = candidate.Provider
 			req.Model = candidate.Model
@@ -95,12 +107,166 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			replayCh, err := sh.attemptCandidate(ctx, next, req, candidate)
 			if err != nil {
 				lastErr = err
+				if previousFailed == nil {
+					previousFailed = &failedCandidate{
+						provider: candidate.Provider,
+						model:    candidate.Model,
+						reason:   classifyFailoverReason(err),
+					}
+				}
 				continue
+			}
+			if previousFailed != nil {
+				replayCh = prependProviderChangedChunk(replayCh, previousFailed, candidate)
 			}
 			return replayCh, nil
 		}
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
+}
+
+// failedCandidate captures the provider/model pair of a candidate that was
+// retired during the current Execute call, plus the reason classification
+// derived from its error. It is internal state for the retry loop and
+// never escapes the StreamHook.
+type failedCandidate struct {
+	provider string
+	model    string
+	reason   string
+}
+
+// providerChangedPayload is the wire shape for the user-visible failover
+// transition event. The fields are JSON-marshalled into chunk.Content
+// of a provider.StreamChunk{EventType: "provider_changed"}; the SSE
+// dispatcher in internal/api/server.go forwards the bytes verbatim into
+// a {"type":"provider_changed","from":...,"to":...,"reason":...} SSE
+// event.
+//
+// Format choices:
+//   - From / To are "<provider>+<model>" strings so the chat UI can show
+//     the previous and current model in one toast line. The frontend
+//     splits on "+" to extract model for friendly display.
+//   - Reason is a stable machine-readable string ("rate_limited",
+//     "model_not_found", "auth_failure", "timeout", "unknown") that the
+//     frontend maps to plain English. Keeping the mapping on the
+//     frontend side decouples copy-changes from the Go release cycle.
+type providerChangedPayload struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+// classifyFailoverReason maps an error from a failed failover candidate
+// to a stable reason string the frontend can map to plain language.
+//
+// Why we don't reuse provider.ErrorType directly: a couple of common
+// transitions ("network", "deadline exceeded") aren't always wrapped in
+// provider.Error, and the user-visible vocabulary is intentionally
+// simpler than the full provider taxonomy. Reasons here are a subset
+// hand-picked for the toast copy.
+//
+// Expected:
+//   - err is non-nil (callers only invoke when a candidate has failed).
+//
+// Returns:
+//   - A stable string in the closed set:
+//     "rate_limited", "model_not_found", "auth_failure",
+//     "billing", "quota", "overload", "timeout", "unavailable", "unknown".
+//
+// Side effects:
+//   - None.
+func classifyFailoverReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		switch provErr.ErrorType {
+		case provider.ErrorTypeRateLimit:
+			return "rate_limited"
+		case provider.ErrorTypeBilling:
+			return "billing"
+		case provider.ErrorTypeQuota:
+			return "quota"
+		case provider.ErrorTypeOverload:
+			return "overload"
+		case provider.ErrorTypeAuthFailure:
+			return "auth_failure"
+		case provider.ErrorTypeModelNotFound:
+			return "model_not_found"
+		case provider.ErrorTypeNetworkError:
+			return "unavailable"
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "unknown"
+}
+
+// prependProviderChangedChunk wraps an upstream replay channel so the
+// FIRST chunk delivered to the consumer is a synthetic
+// provider.StreamChunk carrying the failover transition metadata. The
+// subsequent chunks are the upstream's real output, untouched.
+//
+// Why a wrapper instead of mutating the upstream channel: the failover
+// hook does not own the channel — streamWithReplay's goroutine does,
+// and that goroutine reads from the provider's stream. We compose a
+// new channel that the wrapper goroutine populates: send the
+// transition chunk, then forward upstream verbatim. The wrapper closes
+// the new channel when upstream closes, preserving the close-signals
+// the SSE consumer relies on (see handleSessionStream's `case chunk,
+// ok := <-liveCh; if !ok { writeSSEDone }`).
+//
+// Expected:
+//   - upstream is the replay channel returned by streamWithReplay.
+//   - failed is the candidate that triggered the transition.
+//   - newCandidate is the candidate that succeeded.
+//
+// Returns:
+//   - A buffered channel of size 1 + replayBufferSize that delivers
+//     the transition chunk first, then forwards upstream chunks.
+//
+// Side effects:
+//   - Spawns one goroutine that reads from upstream until it closes,
+//     then closes the wrapper channel. The goroutine cannot leak —
+//     when the SSE consumer disconnects, upstream's goroutine cancels
+//     and closes its channel, which terminates this loop.
+func prependProviderChangedChunk(
+	upstream <-chan provider.StreamChunk,
+	failed *failedCandidate,
+	newCandidate provider.ModelPreference,
+) <-chan provider.StreamChunk {
+	if failed == nil {
+		return upstream
+	}
+	payload := providerChangedPayload{
+		From:   failed.provider + "+" + failed.model,
+		To:     newCandidate.Provider + "+" + newCandidate.Model,
+		Reason: failed.reason,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		// Defensive: a marshal failure on a 3-field struct is
+		// unreachable in practice, but if it happens we'd rather skip
+		// the affordance than corrupt the stream.
+		return upstream
+	}
+
+	transition := provider.StreamChunk{
+		EventType: "provider_changed",
+		Content:   string(encoded),
+	}
+
+	out := make(chan provider.StreamChunk, replayBufferSize+1)
+	go func() {
+		defer close(out)
+		out <- transition
+		for chunk := range upstream {
+			out <- chunk
+		}
+	}()
+	return out
 }
 
 // promotePinned returns candidates with the caller-pinned provider/model

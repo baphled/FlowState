@@ -931,6 +931,121 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
 
+	// Track B — provider_changed SSE round-trip.
+	//
+	// When the failover hook switches providers mid-request (e.g. anthropic
+	// 429s and zai/glm-4.6 takes over), the user must be alerted: the
+	// answer they're now seeing was produced by a DIFFERENT MODEL than the
+	// one selected, which can change quality / style / format. Prior to
+	// this branch the failover was silent — the EventBus fired
+	// "provider.error" but no SSE consumer subscribed to it, so the chat
+	// UI showed no signal at all.
+	//
+	// Wire contract: the failover hook prepends a synthetic StreamChunk
+	// with EventType "provider_changed" and Content carrying a JSON
+	// payload {from, to, reason} (see internal/plugin/failover/stream_hook.go
+	// providerChangedPayload). The dispatcher in handleSessionStream
+	// routes that chunk to writeSSEProviderChanged, which injects the
+	// "type":"provider_changed" discriminant the frontend's
+	// parseSSEPayload union dispatches on.
+	//
+	// Forward-compat note: the original {from, to, reason} payload is the
+	// failover hook's wire format (no type field). The SSE writer must
+	// re-marshal with the type field injected — same pattern as
+	// writeSSEDelegationInfo at server.go:1599. A bare pass-through would
+	// land as "unknown" in the frontend's discriminated union.
+	It("emits a typed provider_changed SSE event when the failover hook prepends a transition chunk", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		// Mirrors what failover.prependProviderChangedChunk emits when
+		// anthropic+claude-sonnet-4-6 is rate-limited and zai+glm-4.6
+		// takes over.
+		source <- provider.StreamChunk{
+			EventType: "provider_changed",
+			Content:   `{"from":"anthropic+claude-sonnet-4-6","to":"zai+glm-4.6","reason":"rate_limited"}`,
+		}
+		source <- provider.StreamChunk{Content: "answer from glm-4.6"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// MUST emit the typed provider_changed event with all three
+		// payload fields visible to the frontend dispatcher.
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"provider_changed"`)),
+			"expected typed provider_changed SSE event; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring(`"from":"anthropic+claude-sonnet-4-6"`)),
+			"from must carry the previous provider+model so the toast can show what was retired")
+		Expect(evts).To(ContainElement(ContainSubstring(`"to":"zai+glm-4.6"`)),
+			"to must carry the new provider+model the user is now talking to")
+		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"rate_limited"`)),
+			"reason must be a stable machine-readable token the frontend maps to plain language")
+
+		// MUST NOT leak the raw provider_changed JSON as a plain content
+		// chunk — that would render the JSON inside the assistant bubble.
+		// The dispatcher at server.go:816 routes EventType-tagged chunks
+		// AWAY from the plain content emitter; this guard pins that
+		// invariant against accidental fall-through during refactors.
+		for _, e := range evts {
+			if strings.Contains(e, `"from":"anthropic`) && !strings.Contains(e, `"type":"provider_changed"`) {
+				Fail("provider_changed payload leaked into a plain content chunk: " + e)
+			}
+		}
+
+		// The real assistant content from the new provider must still
+		// arrive intact — the transition is metadata, not a stream
+		// terminator.
+		Expect(evts).To(ContainElement(ContainSubstring("answer from glm-4.6")))
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
 	It("does not replay history when broker is live — only broker-published events appear", func() {
 		// Regression guard for the SSE duplication bug: when handleSessionStream
 		// is connected to a live broker, it must NOT replay sess.Messages before

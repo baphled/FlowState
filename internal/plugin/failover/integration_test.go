@@ -62,6 +62,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Fallback via Anthropic"))
 		})
@@ -132,6 +133,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Rate-limit fallback"))
 		})
@@ -193,6 +195,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Overload fallback"))
 		})
@@ -289,6 +292,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Hybrid fallback"))
 		})
@@ -353,6 +357,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Backup response"))
 		})
@@ -401,6 +406,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Async billing fallback"))
 		})
@@ -469,6 +475,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			for chunk := range ch {
 				chunks = append(chunks, chunk)
 			}
+			chunks = stripTransitionChunks(chunks)
 			Expect(chunks).To(HaveLen(1))
 			Expect(chunks[0].Content).To(Equal("Wrapped fallback"))
 		})
