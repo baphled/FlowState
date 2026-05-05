@@ -3097,3 +3097,193 @@ describe('chatStore - DEFAULT_AGENT_ID matches the manifest convention', () => {
     expect(store.agentId).toBe('Team-Lead')
   })
 })
+
+// loadSessionByAgentId is the seam the in-thread MessageBubble
+// delegation card click hangs on. The persisted `delegation` /
+// `delegation_started` message carries only `targetAgent` (the
+// streaming.DelegationEvent wire shape has no ChildSessionID), so the
+// store has to resolve "the session for agent X" against the local
+// sessions list. Pre-fix this was a sessions.find() against an
+// oldest-first backend sort, which on a long-lived backend almost
+// always returned a stale standalone session for the agent rather than
+// the just-delegated child. The user reported this as "we are no
+// longer able to click on the delegating card and view the delegated
+// agents session".
+describe('chatStore - loadSessionByAgentId (regression: prefer the active parent\'s child)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+  it('prefers the most-recent child of the active session over an older standalone session for the same agent', async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      // Old standalone session for executor — unrelated to the active parent.
+      {
+        id: 'stale-executor',
+        agentId: 'executor',
+        title: 'Old standalone',
+        createdAt: '2026-04-15T08:00:00Z',
+        updatedAt: '2026-04-15T08:00:00Z',
+        messageCount: 1,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      // Active parent.
+      {
+        id: 'parent-active',
+        agentId: 'planner',
+        title: 'Active parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 1,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      // Active parent's child for executor — the click target.
+      {
+        id: 'child-of-active',
+        agentId: 'executor',
+        parentId: 'parent-active',
+        title: 'Active child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 1,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent-active'
+
+    const loaded = await store.loadSessionByAgentId('executor')
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('child-of-active')
+    // The stale standalone session — older but agent-id matched — must
+    // not have been the one the click landed on.
+    expect(store.currentSessionId).not.toBe('stale-executor')
+  })
+
+  it('picks the most-recent child when several siblings share the agent id', async () => {
+    // Same agent, several runs — common when a parent re-delegates to the
+    // same agent across iterations. The most recent run is the click's
+    // intended target.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-old',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'First run',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+      {
+        id: 'child-new',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'Second run',
+        createdAt: '2026-05-01T09:05:00Z',
+        updatedAt: '2026-05-01T09:05:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    await store.loadSessionByAgentId('executor')
+
+    expect(store.currentSessionId).toBe('child-new')
+  })
+
+  it('falls back to the most-recent overall match when no child of the active session matches', async () => {
+    // Edge case: parent is itself the delegated agent (a swarm-bridge
+    // re-entry), or the click happens before the child shows up in the
+    // sessions list. The fallback must still pick the most recent so the
+    // user lands on the freshest run rather than a stale one.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'older',
+        agentId: 'executor',
+        title: 'Older',
+        createdAt: '2026-04-01T08:00:00Z',
+        updatedAt: '2026-04-01T08:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'newer',
+        agentId: 'executor',
+        title: 'Newer',
+        createdAt: '2026-05-01T08:00:00Z',
+        updatedAt: '2026-05-01T08:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = null
+
+    await store.loadSessionByAgentId('executor')
+
+    expect(store.currentSessionId).toBe('newer')
+  })
+
+  it('returns false and leaves state untouched when no session matches the agent', async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const loaded = await store.loadSessionByAgentId('not-an-agent')
+
+    expect(loaded).toBe(false)
+    expect(store.currentSessionId).toBe('parent')
+  })
+})

@@ -747,13 +747,62 @@ export const useChatStore = defineStore('chat', {
       })
     },
 
+    // loadSessionByAgentId resolves the in-thread delegation-card click —
+    // MessageBubble.loadDelegatedSession passes `targetAgent` here because
+    // the persisted `delegation` / `delegation_started` message carries
+    // only the target agent name (the streaming.DelegationEvent wire shape
+    // has no ChildSessionID; the load-bearing child_session_id is on the
+    // separate SwarmEvent stream consumed by DelegationStrip, not on the
+    // per-session SSE chat stream).
+    //
+    // Resolution order — load-bearing:
+    //   1. The most-recent child of the active session whose agentId
+    //      matches. This is the click's actual intent: "open the agent
+    //      this parent just delegated to". Anchoring on parentId pins
+    //      the click to the active parent's branch of the delegation
+    //      tree.
+    //   2. The most-recent session for that agent overall, falling back
+    //      to oldest-first only if no createdAt is present. Used when no
+    //      active parent exists or no child of the parent matches (e.g.
+    //      the parent is itself the delegated agent — a swarm-bridge
+    //      edge case).
+    //
+    // Pre-fix this picked sessions[0]-of-match against an oldest-first
+    // backend list, so a long-running backend with a stale standalone
+    // session for the same agent always loaded that stale session
+    // instead of the just-delegated child. The user reported "we are no
+    // longer able to click on the delegating card and view the
+    // delegated agents session" — the click fired but landed on the
+    // wrong session, defeating the affordance.
     async loadSessionByAgentId(agentId: string): Promise<boolean> {
-      const session = this.sessions.find(
-        (s) => (s.currentAgentId ?? s.agentId) === agentId,
-      )
-      if (!session) return false
+      const matchesAgent = (s: SessionSummary) =>
+        (s.currentAgentId ?? s.agentId) === agentId
 
-      await this.loadSessionMessages(session.id)
+      const sortByCreatedAtDesc = (a: SessionSummary, b: SessionSummary) =>
+        b.createdAt.localeCompare(a.createdAt)
+
+      // Step 1: prefer a child of the active session.
+      let candidate: SessionSummary | undefined
+      if (this.currentSessionId) {
+        const childrenOfCurrent = this.sessions
+          .filter((s) => s.parentId === this.currentSessionId && matchesAgent(s))
+          .sort(sortByCreatedAtDesc)
+        candidate = childrenOfCurrent[0]
+      }
+
+      // Step 2: fall back to the most-recent overall match. The
+      // toSorted equivalent (spread + sort) is used so we don't mutate
+      // the pinia state array.
+      if (!candidate) {
+        const overallMatches = this.sessions
+          .filter(matchesAgent)
+          .sort(sortByCreatedAtDesc)
+        candidate = overallMatches[0]
+      }
+
+      if (!candidate) return false
+
+      await this.loadSessionMessages(candidate.id)
       return true
     },
 
