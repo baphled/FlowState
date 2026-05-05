@@ -171,6 +171,236 @@ var _ = Describe("buildMessages", func() {
 	})
 })
 
+var _ = Describe("Phase 3 multi-turn thinking round-trip", func() {
+	// End-to-end pin for the behaviour 266aec8 promised but didn't deliver
+	// on turn 2: a stream that emits signed-thinking + content must produce
+	// an assistant message whose thinking blocks survive into the next
+	// turn's request payload, with the signature UNCHANGED.
+	//
+	// The provider's StreamChunk shape is the seam between the streaming
+	// layer (which captures Signature alongside Thinking) and the message
+	// layer (which feeds buildAssistantMessage on subsequent turns). We
+	// drive both ends from the public types here to keep the test
+	// provider-agnostic at the seam — anyone porting the same accumulator
+	// to a different provider repeats the same shape.
+	It("turn 1 stream → assembled provider.Message → turn 2 request preserves thinking", func() {
+		// Turn 1: simulate the chunks the streaming layer would produce
+		// from a turn that ended with end_turn and contained one signed
+		// thinking block plus visible content.
+		turn1Chunks := []provider.StreamChunk{
+			{Thinking: "weighing the request", Signature: "sig-encrypted-xyz"},
+			{Content: "the answer is 42"},
+			{EventType: "stop_reason", StopReason: "end_turn"},
+			{Done: true},
+		}
+
+		// Reconstruct what the accumulator would persist on the assistant
+		// message: a provider.Message carrying the visible content, the
+		// stop reason, and the thinking blocks (with signatures).
+		// Construct equivalent provider.Message inline so this test
+		// remains in the anthropic package boundary; the equivalent
+		// accumulator behaviour is already covered by the session tests.
+		var thinking, signature, content, stopReason string
+		for _, c := range turn1Chunks {
+			if c.Thinking != "" {
+				thinking = c.Thinking
+				signature = c.Signature
+			}
+			if c.Content != "" {
+				content = c.Content
+			}
+			if c.EventType == "stop_reason" {
+				stopReason = c.StopReason
+			}
+		}
+		Expect(stopReason).To(Equal("end_turn"))
+
+		assistantMsg := provider.Message{
+			Role:       "assistant",
+			Content:    content,
+			StopReason: stopReason,
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: thinking, Signature: signature},
+			},
+		}
+
+		// Turn 2: caller sends back history (user, assistant, user). The
+		// assistant message reconstructed above must serialise into the
+		// turn-2 request with the thinking block intact and signature
+		// UNCHANGED — this is what Anthropic uses to verify thinking
+		// continuity. Without it, the API silently disables thinking.
+		turn2Messages := []provider.Message{
+			{Role: "user", Content: "what is the answer?"},
+			assistantMsg,
+			{Role: "user", Content: "and the question?"},
+		}
+
+		built := buildMessages(turn2Messages)
+		Expect(built).To(HaveLen(3))
+
+		// The assistant slot must carry the thinking block first, then text.
+		assistant := built[1]
+		Expect(string(assistant.Role)).To(Equal("assistant"))
+		Expect(assistant.Content).To(HaveLen(2))
+		Expect(assistant.Content[0].OfThinking).NotTo(BeNil(),
+			"the persisted thinking must round-trip into the turn-2 request — "+
+				"this is the bug 266aec8 left open: per-model thinking opt-in "+
+				"works on turn 1 only, because the streaming layer was dropping "+
+				"signature_delta and the round-trip path was dropping the block")
+		Expect(assistant.Content[0].OfThinking.Thinking).To(Equal("weighing the request"))
+		Expect(assistant.Content[0].OfThinking.Signature).To(Equal("sig-encrypted-xyz"),
+			"signature must be byte-identical to what the API returned — Anthropic "+
+				"verifies this before honouring thinking continuity")
+		Expect(assistant.Content[1].OfText).NotTo(BeNil())
+		Expect(assistant.Content[1].OfText.Text).To(Equal("the answer is 42"))
+	})
+
+	It("redacted thinking from turn 1 round-trips into turn 2 request", func() {
+		assistantMsg := provider.Message{
+			Role:    "assistant",
+			Content: "redacted answer",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Redacted: true, Data: "encrypted-payload-from-turn-1"},
+			},
+		}
+		built := buildMessages([]provider.Message{
+			{Role: "user", Content: "ask"},
+			assistantMsg,
+			{Role: "user", Content: "follow up"},
+		})
+
+		Expect(built).To(HaveLen(3))
+		assistant := built[1]
+		Expect(assistant.Content[0].OfRedactedThinking).NotTo(BeNil())
+		Expect(assistant.Content[0].OfRedactedThinking.Data).To(Equal("encrypted-payload-from-turn-1"),
+			"redacted thinking is opaque encrypted data — must replay verbatim "+
+				"or Anthropic disables thinking continuity")
+	})
+})
+
+var _ = Describe("buildAssistantMessage thinking round-trip", func() {
+	It("emits a single text block when no thinking blocks are present (back-compat)", func() {
+		m := provider.Message{Role: "assistant", Content: "hello"}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(1))
+		Expect(msg.Content[0].OfText).NotTo(BeNil())
+		Expect(msg.Content[0].OfText.Text).To(Equal("hello"))
+	})
+
+	It("prepends a signed thinking block before the text content", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "the answer is 42",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "weighing the request", Signature: "sig-encrypted-xyz"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(2),
+			"thinking block must precede the text block on a replayed turn")
+		Expect(msg.Content[0].OfThinking).NotTo(BeNil(),
+			"the first content block must be the thinking block — Anthropic "+
+				"rejects (or silently drops) thinking that comes after text")
+		Expect(msg.Content[0].OfThinking.Thinking).To(Equal("weighing the request"))
+		Expect(msg.Content[0].OfThinking.Signature).To(Equal("sig-encrypted-xyz"),
+			"the signature must round-trip UNCHANGED — without it, the server "+
+				"silently disables extended thinking on the next turn (266aec8 "+
+				"per-model thinking opt-in becomes a no-op past turn 1)")
+		Expect(msg.Content[1].OfText).NotTo(BeNil())
+		Expect(msg.Content[1].OfText.Text).To(Equal("the answer is 42"))
+	})
+
+	It("prepends a redacted thinking block carrying the encrypted data", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "redacted answer",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Redacted: true, Data: "encrypted-blob-xyz"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(2))
+		Expect(msg.Content[0].OfRedactedThinking).NotTo(BeNil())
+		Expect(msg.Content[0].OfRedactedThinking.Data).To(Equal("encrypted-blob-xyz"))
+	})
+
+	It("preserves block ordering when both signed and redacted thinking are present", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "final",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "visible", Signature: "sig-A"},
+				{Redacted: true, Data: "data-B"},
+				{Thinking: "more visible", Signature: "sig-C"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg.Content).To(HaveLen(4))
+		Expect(msg.Content[0].OfThinking).NotTo(BeNil())
+		Expect(msg.Content[0].OfThinking.Signature).To(Equal("sig-A"))
+		Expect(msg.Content[1].OfRedactedThinking).NotTo(BeNil())
+		Expect(msg.Content[1].OfRedactedThinking.Data).To(Equal("data-B"))
+		Expect(msg.Content[2].OfThinking).NotTo(BeNil())
+		Expect(msg.Content[2].OfThinking.Signature).To(Equal("sig-C"))
+		Expect(msg.Content[3].OfText).NotTo(BeNil())
+		Expect(msg.Content[3].OfText.Text).To(Equal("final"))
+	})
+
+	It("places thinking blocks before tool_use blocks (Anthropic ordering rule)", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "running tool",
+			ToolCalls: []provider.ToolCall{
+				{ID: "toolu_01call", Name: "bash", Arguments: map[string]any{"cmd": "ls"}},
+			},
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "deciding to call bash", Signature: "sig-tool"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(3))
+		Expect(msg.Content[0].OfThinking).NotTo(BeNil(),
+			"on a tool-use turn the thinking block must come BEFORE both text and "+
+				"tool_use — Anthropic rejects/drops thinking otherwise")
+		Expect(msg.Content[0].OfThinking.Signature).To(Equal("sig-tool"))
+		Expect(msg.Content[1].OfText).NotTo(BeNil())
+		Expect(msg.Content[2].OfToolUse).NotTo(BeNil())
+		Expect(msg.Content[2].OfToolUse.Name).To(Equal("bash"))
+	})
+
+	It("skips empty thinking-block records so a fresh first turn is unchanged", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "hello",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{}, // entirely empty record — should be skipped
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(1),
+			"empty thinking records must not synthesise blocks — back-compat for "+
+				"providers and turns that produced no thinking")
+		Expect(msg.Content[0].OfText).NotTo(BeNil())
+	})
+})
+
 var _ = Describe("mergeConsecutiveUserMessages", func() {
 	It("merges content with double newline", func() {
 		last := &provider.Message{Role: "user", Content: "foo"}
