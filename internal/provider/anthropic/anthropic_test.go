@@ -379,3 +379,412 @@ var _ = Describe("cross-provider failover id translation (Anthropic target)", fu
 		Expect(tr.ToolUseID).To(Equal("toolu_01NATIVEabc"))
 	})
 })
+
+// Per-model payload contract — each model id family has a different
+// "what is allowed" matrix. The provider's buildRequestParams fan out
+// to applyModelConstraints; these specs pin the matrix in code so a
+// silent regression on any branch surfaces here.
+var _ = Describe("buildRequestParams per-model contract", func() {
+	var p *Provider
+
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	baseReq := func(model string) provider.ChatRequest {
+		return provider.ChatRequest{
+			Model:    model,
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		}
+	}
+
+	Context("Opus 4.7 (claude-opus-4-7*)", func() {
+		It("defaults max_tokens to 128000 when caller does not specify", func() {
+			params, err := p.buildRequestParams(baseReq("claude-opus-4-7-20251201"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(128000)))
+		})
+
+		It("strips temperature even when caller sets it", func() {
+			req := baseReq("claude-opus-4-7-20251201")
+			t := 0.5
+			req.Temperature = &t
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Temperature.Valid()).To(BeFalse(),
+				"Opus 4.7 must omit temperature so the API uses its server-side default")
+		})
+
+		It("strips top_p and top_k when caller sets them", func() {
+			req := baseReq("claude-opus-4-7-20251201")
+			tp := 0.9
+			tk := 40
+			req.TopP = &tp
+			req.TopK = &tk
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.TopP.Valid()).To(BeFalse())
+			Expect(params.TopK.Valid()).To(BeFalse())
+		})
+
+		It("rejects manual thinking: enabled with errThinkingEnabledRejected", func() {
+			req := baseReq("claude-opus-4-7-20251201")
+			req.ThinkingMode = "enabled"
+			_, err := p.buildRequestParams(req)
+			Expect(err).To(MatchError(errThinkingEnabledRejected))
+		})
+
+		It("rejects manual thinking: enabled:N with errThinkingEnabledRejected", func() {
+			req := baseReq("claude-opus-4-7-20251201")
+			req.ThinkingMode = "enabled:8000"
+			_, err := p.buildRequestParams(req)
+			Expect(err).To(MatchError(errThinkingEnabledRejected))
+		})
+
+		It("accepts thinking: adaptive and writes the adaptive variant", func() {
+			req := baseReq("claude-opus-4-7-20251201")
+			req.ThinkingMode = "adaptive"
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfAdaptive).NotTo(BeNil())
+			Expect(params.Thinking.OfEnabled).To(BeNil())
+		})
+	})
+
+	Context("Opus 4.6 (claude-opus-4-6*)", func() {
+		It("defaults max_tokens to 128000", func() {
+			params, err := p.buildRequestParams(baseReq("claude-opus-4-6-20251020"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(128000)))
+		})
+
+		It("threads caller temperature through", func() {
+			req := baseReq("claude-opus-4-6-20251020")
+			t := 0.7
+			req.Temperature = &t
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Temperature.Valid()).To(BeTrue())
+			Expect(params.Temperature.Value).To(BeNumerically("~", 0.7, 1e-9))
+		})
+
+		It("accepts manual thinking: enabled (deprecated but allowed)", func() {
+			req := baseReq("claude-opus-4-6-20251020")
+			req.ThinkingMode = "enabled:8000"
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
+			Expect(params.Thinking.OfEnabled.BudgetTokens).To(Equal(int64(8000)))
+		})
+	})
+
+	Context("Sonnet 4.6 (claude-sonnet-4-6*)", func() {
+		It("defaults max_tokens to 64000", func() {
+			params, err := p.buildRequestParams(baseReq("claude-sonnet-4-6-20251020"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(64000)))
+		})
+
+		It("accepts thinking: adaptive", func() {
+			req := baseReq("claude-sonnet-4-6-20251020")
+			req.ThinkingMode = "adaptive"
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfAdaptive).NotTo(BeNil())
+		})
+	})
+
+	Context("Sonnet 4.5 / Haiku 4.5 (claude-sonnet-4-5*, claude-haiku-4-5*)", func() {
+		It("Sonnet 4.5 defaults max_tokens to 64000", func() {
+			params, err := p.buildRequestParams(baseReq("claude-sonnet-4-5-20251020"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(64000)))
+		})
+
+		It("Haiku 4.5 defaults max_tokens to 64000", func() {
+			params, err := p.buildRequestParams(baseReq("claude-haiku-4-5-20251020"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(64000)))
+		})
+
+		It("allows manual thinking: enabled with explicit budget", func() {
+			req := baseReq("claude-sonnet-4-5-20251020")
+			req.ThinkingMode = "enabled:4096"
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
+			Expect(params.Thinking.OfEnabled.BudgetTokens).To(Equal(int64(4096)))
+		})
+	})
+
+	Context("Opus 4 / 4.1 / 4.5 (claude-opus-4*)", func() {
+		It("defaults max_tokens to 32000", func() {
+			params, err := p.buildRequestParams(baseReq("claude-opus-4-20250514"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(32000)))
+		})
+
+		It("threads sampling fields through verbatim", func() {
+			req := baseReq("claude-opus-4-20250514")
+			t := 0.4
+			tp := 0.95
+			tk := 100
+			req.Temperature = &t
+			req.TopP = &tp
+			req.TopK = &tk
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Temperature.Value).To(BeNumerically("~", 0.4, 1e-9))
+			Expect(params.TopP.Value).To(BeNumerically("~", 0.95, 1e-9))
+			Expect(params.TopK.Value).To(Equal(int64(100)))
+		})
+	})
+
+	Context("Sonnet 3.7 (claude-3-7-sonnet*)", func() {
+		It("keeps the historical 4096 default when caller does not specify", func() {
+			params, err := p.buildRequestParams(baseReq("claude-3-7-sonnet-20250219"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(4096)))
+		})
+
+		It("allows the caller to opt into >64k output via MaxTokens", func() {
+			req := baseReq("claude-3-7-sonnet-20250219")
+			req.MaxTokens = 100000
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(100000)))
+		})
+
+		It("supports manual thinking: enabled", func() {
+			req := baseReq("claude-3-7-sonnet-20250219")
+			req.ThinkingMode = "enabled:8000"
+			req.MaxTokens = 16000
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfEnabled).NotTo(BeNil())
+		})
+	})
+
+	Context("legacy 3.5 / 3.0 models", func() {
+		It("silently drops thinking — older models do not support it", func() {
+			req := baseReq("claude-3-5-sonnet-20241022")
+			req.ThinkingMode = "enabled:8000"
+			params, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Thinking.OfEnabled).To(BeNil())
+			Expect(params.Thinking.OfAdaptive).To(BeNil())
+			Expect(params.Thinking.OfDisabled).To(BeNil())
+		})
+
+		It("keeps the historical 4096 default", func() {
+			params, err := p.buildRequestParams(baseReq("claude-3-5-haiku-latest"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(4096)))
+		})
+	})
+
+	Context("backwards compatibility — caller supplies nothing", func() {
+		It("unknown model gets max_tokens=4096 / temperature=0", func() {
+			params, err := p.buildRequestParams(baseReq("claude-unknown-model-vXXX"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.MaxTokens).To(Equal(int64(4096)))
+			Expect(params.Temperature.Valid()).To(BeTrue())
+			Expect(params.Temperature.Value).To(BeNumerically("~", 0.0, 1e-9))
+		})
+
+		It("zero ChatRequest fields are accepted on every Claude family", func() {
+			for _, id := range []string{
+				"claude-opus-4-7-20251201",
+				"claude-opus-4-6-20251020",
+				"claude-sonnet-4-6-20251020",
+				"claude-sonnet-4-5-20251020",
+				"claude-opus-4-20250514",
+				"claude-3-7-sonnet-20250219",
+				"claude-3-5-haiku-latest",
+			} {
+				_, err := p.buildRequestParams(baseReq(id))
+				Expect(err).NotTo(HaveOccurred(), "model %s rejected zero ChatRequest", id)
+			}
+		})
+	})
+})
+
+// Thinking-parameter validation operates on the assembled
+// MessageNewParams so the matrix is exercised directly without going
+// through the per-model branches.
+var _ = Describe("thinking constraint validation", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects budget_tokens < 1024 with errThinkingBudgetTooLow", func() {
+		req := provider.ChatRequest{
+			Model:        "claude-sonnet-4-5-20251020",
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			ThinkingMode: "enabled:512",
+		}
+		_, err := p.buildRequestParams(req)
+		Expect(err).To(MatchError(errThinkingBudgetTooLow))
+	})
+
+	It("rejects budget_tokens >= max_tokens with errThinkingBudgetExceedsMax", func() {
+		req := provider.ChatRequest{
+			Model:        "claude-sonnet-4-5-20251020",
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			MaxTokens:    8000,
+			ThinkingMode: "enabled:8000",
+		}
+		_, err := p.buildRequestParams(req)
+		Expect(err).To(MatchError(errThinkingBudgetExceedsMax))
+	})
+
+	It("returns an error for invalid enabled:N parse", func() {
+		req := provider.ChatRequest{
+			Model:        "claude-sonnet-4-5-20251020",
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			ThinkingMode: "enabled:not-a-number",
+		}
+		_, err := p.buildRequestParams(req)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid thinking mode"))
+	})
+
+	It("explicit thinking: disabled writes the disabled variant", func() {
+		req := provider.ChatRequest{
+			Model:        "claude-opus-4-7-20251201",
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			ThinkingMode: "disabled",
+		}
+		params, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Thinking.OfDisabled).NotTo(BeNil())
+		Expect(params.Thinking.OfAdaptive).To(BeNil())
+		Expect(params.Thinking.OfEnabled).To(BeNil())
+	})
+})
+
+// Tool choice mapping — the SDK union accepts auto/any/tool/none. The
+// {auto, none}-only contract applies only when thinking is on; without
+// thinking every variant is allowed.
+var _ = Describe("tool_choice mapping", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	makeReq := func(choice, thinking string) provider.ChatRequest {
+		return provider.ChatRequest{
+			Model:        "claude-sonnet-4-5-20251020",
+			Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+			MaxTokens:    16000,
+			ThinkingMode: thinking,
+			ToolChoice:   choice,
+		}
+	}
+
+	It("maps auto", func() {
+		params, err := p.buildRequestParams(makeReq("auto", ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfAuto).NotTo(BeNil())
+	})
+
+	It("maps any", func() {
+		params, err := p.buildRequestParams(makeReq("any", ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfAny).NotTo(BeNil())
+	})
+
+	It("maps none", func() {
+		params, err := p.buildRequestParams(makeReq("none", ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfNone).NotTo(BeNil())
+	})
+
+	It("maps tool:NAME", func() {
+		params, err := p.buildRequestParams(makeReq("tool:get_weather", ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfTool).NotTo(BeNil())
+		Expect(params.ToolChoice.OfTool.Name).To(Equal("get_weather"))
+	})
+
+	It("rejects 'any' when thinking is on", func() {
+		_, err := p.buildRequestParams(makeReq("any", "enabled:4096"))
+		Expect(err).To(MatchError(errThinkingToolChoiceInvalid))
+	})
+
+	It("rejects 'tool:X' when thinking is on", func() {
+		_, err := p.buildRequestParams(makeReq("tool:foo", "enabled:4096"))
+		Expect(err).To(MatchError(errThinkingToolChoiceInvalid))
+	})
+
+	It("allows 'auto' when thinking is on", func() {
+		params, err := p.buildRequestParams(makeReq("auto", "enabled:4096"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfAuto).NotTo(BeNil())
+	})
+
+	It("allows 'none' when thinking is on", func() {
+		params, err := p.buildRequestParams(makeReq("none", "enabled:4096"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.ToolChoice.OfNone).NotTo(BeNil())
+	})
+
+	It("rejects an unrecognised tool_choice with a clear error", func() {
+		_, err := p.buildRequestParams(makeReq("garbage", ""))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unrecognised tool_choice"))
+	})
+})
+
+// ChatRequest threading — the optional fields on provider.ChatRequest
+// (MaxTokens, Temperature, TopP, TopK) reach the assembled
+// MessageNewParams when the model permits them.
+var _ = Describe("ChatRequest field threading", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("MaxTokens overrides per-model default when set", func() {
+		req := provider.ChatRequest{
+			Model:     "claude-opus-4-7-20251201", // default would be 128k
+			Messages:  []provider.Message{{Role: "user", Content: "hi"}},
+			MaxTokens: 8192,
+		}
+		params, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.MaxTokens).To(Equal(int64(8192)))
+	})
+
+	It("Temperature pointer threads through on permissive models", func() {
+		req := provider.ChatRequest{
+			Model:    "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		}
+		t := 0.3
+		req.Temperature = &t
+		params, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Temperature.Value).To(BeNumerically("~", 0.3, 1e-9))
+	})
+
+	It("nil Temperature falls back to historical 0", func() {
+		req := provider.ChatRequest{
+			Model:    "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		}
+		params, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Temperature.Valid()).To(BeTrue())
+		Expect(params.Temperature.Value).To(BeNumerically("~", 0.0, 1e-9))
+	})
+})

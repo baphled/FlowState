@@ -34,11 +34,50 @@ type ToolResultInfo struct {
 }
 
 // ChatRequest contains the parameters for a chat completion request.
+//
+// The optional sampling and behaviour fields (MaxTokens, Temperature,
+// TopP, TopK, ThinkingMode, ToolChoice) are caller-supplied hints. Each
+// provider applies its own model-aware policy on top — e.g. the
+// Anthropic provider strips non-default sampling for models that reject
+// it (Opus 4.7) and rewrites manual `enabled` thinking to `adaptive`
+// where required. A zero value means "let the provider pick its
+// default", preserving back-compat for callers that do not set them.
 type ChatRequest struct {
 	Provider string
 	Model    string
 	Messages []Message
 	Tools    []Tool
+	// MaxTokens is the caller-requested upper bound on generated tokens.
+	// Zero means "use provider/model default". Providers may clamp this
+	// to a per-model ceiling.
+	MaxTokens int
+	// Temperature is the sampling temperature. Nil means "do not set"
+	// (provider default applies). Some models reject any non-default
+	// value; the provider is responsible for stripping when required.
+	Temperature *float64
+	// TopP is the nucleus-sampling cutoff. Nil means "do not set".
+	TopP *float64
+	// TopK is the top-K sampling cutoff. Nil means "do not set".
+	TopK *int
+	// ThinkingMode selects the extended-thinking configuration. Empty
+	// means "do not set". Recognised values:
+	//   - "disabled"    – explicitly disable thinking
+	//   - "adaptive"    – model-managed budget (Opus 4.7+ default)
+	//   - "enabled"     – manual thinking with provider-default budget
+	//   - "enabled:N"   – manual thinking with budget_tokens=N (N>=1024)
+	// Providers may rewrite or reject values incompatible with the
+	// target model (e.g. Opus 4.7 rejects "enabled").
+	ThinkingMode string
+	// ToolChoice constrains tool selection. Empty means "do not set".
+	// Recognised values:
+	//   - "auto"      – model decides (default behaviour)
+	//   - "any"       – model must call some tool
+	//   - "none"      – model must not call any tool
+	//   - "tool:NAME" – model must call the named tool
+	// Providers map to their native enum and may reject combinations
+	// incompatible with thinking (e.g. {auto, none} only when thinking
+	// is on).
+	ToolChoice string
 }
 
 // Tool describes a tool available for the model to use.
