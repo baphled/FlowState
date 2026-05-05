@@ -14,6 +14,7 @@ import {
 import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
+import { showToast } from '@/composables/useToast'
 import { useTodoStore } from './todoStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
@@ -24,6 +25,37 @@ const activeProviderStorageKey = 'chat.selectedProvider'
 // team-lead is the lead orchestrator — it can delegate to any agent or swarm
 // and is the correct starting point for open-ended requests.
 const DEFAULT_AGENT_ID = 'team-lead'
+
+/**
+ * describeFailoverReason maps a failover-reason token (from
+ * classifyFailoverReason in internal/plugin/failover/stream_hook.go) to
+ * plain English suitable for a toast notification body. The wording is
+ * deliberately user-facing — no jargon (no "429", no "HTTP", no
+ * "ErrorType"). Any unrecognised token degrades to "unavailable" which
+ * is true and non-alarming.
+ */
+function describeFailoverReason(reason: string): string {
+  switch (reason) {
+    case 'rate_limited':
+      return 'rate-limited'
+    case 'billing':
+      return 'unavailable due to billing'
+    case 'quota':
+      return 'over its quota'
+    case 'overload':
+      return 'overloaded'
+    case 'auth_failure':
+      return 'unavailable (authentication failed)'
+    case 'model_not_found':
+      return 'no longer available'
+    case 'unavailable':
+      return 'unavailable'
+    case 'timeout':
+      return 'too slow to respond'
+    default:
+      return 'unavailable'
+  }
+}
 
 // Module-instantiated streaming lifecycle. The composable owns the EventSource
 // and stall watchdog handles internally; the store treats it as an opaque
@@ -1010,6 +1042,13 @@ export const useChatStore = defineStore('chat', {
         case 'thinking':
           this.handleThinkingEvent({ content: event.content })
           return
+        case 'provider_changed':
+          this.handleProviderChangedEvent({
+            from: event.from,
+            to: event.to,
+            reason: event.reason,
+          })
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1117,6 +1156,75 @@ export const useChatStore = defineStore('chat', {
       // Note: target.content is INTENTIONALLY untouched. The model's private
       // reasoning is not the assistant's reply.
       this.isStreaming = true
+    },
+
+    /**
+     * Track B — failover transition handler.
+     *
+     * When the failover hook switches providers mid-request (anthropic 429
+     * → zai/glm-4.6 takes over), the SSE wire delivers a
+     * provider_changed event. The handler does two things:
+     *
+     *   1. Surfaces a transient toast notification telling the user that
+     *      a different model is now answering. The user explicitly asked
+     *      for this in Track B — fallback can change quality / style /
+     *      format and they need to know.
+     *   2. Updates currentProviderId / currentModelId so the persistent
+     *      toolbar chip in ChatView reflects the new active model going
+     *      forward — the user doesn't have to keep the toast in mind to
+     *      know what model produced the next message.
+     *
+     * Format: `to` is "<provider>+<model>" (e.g. "zai+glm-4.6"). The
+     * split is on the FIRST "+" so model ids that themselves contain "+"
+     * (rare; openrouter sometimes uses multi-tag identifiers) survive
+     * intact.
+     *
+     * Defensive: an empty `to` leaves currentProviderId/currentModelId
+     * untouched — better to keep the previous chip than blank it out
+     * mid-conversation. The toast still fires with generic copy
+     * ("Switched to a different model") so the user gets the signal.
+     */
+    handleProviderChangedEvent(info: { from?: unknown; to?: unknown; reason?: unknown }): void {
+      const to = typeof info.to === 'string' ? info.to : ''
+      const from = typeof info.from === 'string' ? info.from : ''
+      const reason = typeof info.reason === 'string' ? info.reason : ''
+
+      let newProvider = ''
+      let newModel = ''
+      if (to.length > 0) {
+        const sep = to.indexOf('+')
+        if (sep === -1) {
+          newProvider = to
+        } else {
+          newProvider = to.slice(0, sep)
+          newModel = to.slice(sep + 1)
+        }
+        this.currentProviderId = newProvider
+        this.currentModelId = newModel
+      }
+
+      // Toast copy — keeping the mapping client-side keeps Go releases
+      // independent of toast wording. The reason vocabulary is the
+      // closed set defined in classifyFailoverReason on the Go side
+      // (rate_limited, billing, quota, overload, auth_failure,
+      // model_not_found, unavailable, timeout, unknown).
+      const newModelLabel = newModel || newProvider || 'a different model'
+      const reasonLabel = describeFailoverReason(reason)
+      const fromModelLabel = (() => {
+        if (!from) return ''
+        const sep = from.indexOf('+')
+        return sep === -1 ? from : from.slice(sep + 1)
+      })()
+      const message = fromModelLabel
+        ? `Switched to ${newModelLabel} — ${fromModelLabel} is ${reasonLabel}.`
+        : `Switched to ${newModelLabel} — primary model is ${reasonLabel}.`
+
+      showToast({
+        title: 'Model changed',
+        message,
+        variant: 'default',
+        duration: 6000,
+      })
     },
 
     handleToolCallEvent(info: { name?: unknown; status?: unknown; type?: unknown; input?: unknown }): void {

@@ -712,6 +712,62 @@ describe('ChatView agent-activity indicator', () => {
     expect(indicator.exists()).toBe(true)
     expect(indicator.text()).toContain('planner')
   })
+
+  it('shows the active model and provider in the agent-activity-indicator during streaming', async () => {
+    // Track B — model+provider visibility. The user explicitly asked
+    // ("we need to see which model the request is using") to be able
+    // to tell at a glance what model is producing the streaming
+    // answer. After a failover the chatStore updates
+    // currentProviderId/currentModelId and this label refreshes
+    // immediately. Format is "agent is working… on <model> · <provider>"
+    // — the model goes first because it's the user's mental anchor
+    // (they pick a model), provider is the secondary qualifier.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.isStreaming = true
+    chatStore.agentId = 'team-lead'
+    chatStore.currentModelId = 'glm-4.6'
+    chatStore.currentProviderId = 'zai'
+    await wrapper.vm.$nextTick()
+
+    const modelChip = wrapper.find('[data-testid="agent-activity-model"]')
+    expect(modelChip.exists()).toBe(true)
+    expect(modelChip.text()).toContain('glm-4.6')
+    expect(modelChip.text()).toContain('zai')
+  })
+
+  it('omits the model chip when neither currentModelId nor currentProviderId is set', async () => {
+    // Defensive: a session that never had a model selected (degraded
+    // state) must not render a stray "on " label. The chip must hide
+    // entirely until at least one of model/provider is present.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.isStreaming = true
+    chatStore.agentId = 'team-lead'
+    chatStore.currentModelId = ''
+    chatStore.currentProviderId = ''
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-model"]').exists()).toBe(false)
+  })
 })
 
 describe('ChatView message grouping', () => {

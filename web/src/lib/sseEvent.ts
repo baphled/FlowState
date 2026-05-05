@@ -114,6 +114,39 @@ export interface SSEThinkingEvent {
   content: string
 }
 
+/**
+ * SSEProviderChangedEvent — failover transition event. Emitted by the Go
+ * SSE pipeline (writeSSEProviderChanged at internal/api/server.go) when
+ * the failover hook switches providers mid-request because the previous
+ * candidate failed (rate-limit, auth, model-not-found, etc.). The chat
+ * UI's chatStore dispatches this into:
+ *   - A transient toast notification ("Switched to glm-4.6 — primary
+ *     model is rate-limited") so the user knows the answer they're now
+ *     streaming is from a different model.
+ *   - A persistent update to currentProviderId / currentModelId so the
+ *     toolbar chip reflects the new active model going forward.
+ *
+ * Field semantics:
+ *   - `from` / `to` are "<provider>+<model>" strings (e.g.
+ *     "anthropic+claude-sonnet-4-6"). The store splits on "+" to
+ *     reconstruct the toolbar pair. The format is opaque to the parser.
+ *   - `reason` is a stable closed-set token (rate_limited, billing,
+ *     quota, overload, auth_failure, model_not_found, unavailable,
+ *     timeout, unknown) the store maps to plain English. Keeping the
+ *     mapping client-side decouples toast copy from Go release cadence.
+ *
+ * All three fields default to empty strings if missing — a future
+ * emitter that ships only `type` doesn't crash the dispatch, and the
+ * store renders generic copy ("Switched to a different model") in
+ * that degraded case.
+ */
+export interface SSEProviderChangedEvent {
+  kind: 'provider_changed'
+  from: string
+  to: string
+  reason: string
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -139,6 +172,7 @@ export type SSEEvent =
   | SSEHarnessCompleteEvent
   | SSEHarnessCriticFeedbackEvent
   | SSEThinkingEvent
+  | SSEProviderChangedEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -213,6 +247,15 @@ export function parseSSEPayload(payload: string): SSEEvent {
 
   if (type === 'thinking') {
     return { kind: 'thinking', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
+  }
+
+  if (type === 'provider_changed') {
+    return {
+      kind: 'provider_changed',
+      from: typeof obj['from'] === 'string' ? (obj['from'] as string) : '',
+      to: typeof obj['to'] === 'string' ? (obj['to'] as string) : '',
+      reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
+    }
   }
 
   if (type === 'harness_retry') {
