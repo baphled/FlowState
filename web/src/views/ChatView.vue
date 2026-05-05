@@ -303,6 +303,20 @@ onBeforeUnmount(() => {
         <ModelPicker :readonly="isChildSession" />
       </div>
 
+      <!--
+        Activity affordance: pre-fix the loading-pulse and the activity
+        indicator were gated on disjoint store flags (loading-pulse on
+        isLoading && !isStreaming; indicator on isStreaming alone). When
+        the backend emitted no intermediate `content` events on the SSE
+        stream — only the [DONE] sentinel — `isStreaming` was never true
+        for the entire send, so the user saw only a thin shimmer bar (the
+        2px loading-pulse) and reported "no loading dots, no animation".
+        The indicator now surfaces while EITHER flag is on, so the user
+        gets a continuous "the agent is working…" affordance from the
+        click through to the response landing in the thread.
+        See bug-fix note "Vue Chat Fresh-Session Duplicate User Bubble +
+        Missing Streaming Affordance (May 2026)".
+      -->
       <div
         v-if="chatStore.isLoading && !chatStore.isStreaming"
         class="loading-pulse"
@@ -311,7 +325,7 @@ onBeforeUnmount(() => {
       />
 
       <div
-        v-if="chatStore.isStreaming"
+        v-if="chatStore.isStreaming || chatStore.isLoading"
         class="agent-activity-indicator"
         data-testid="agent-activity-indicator"
         role="status"
