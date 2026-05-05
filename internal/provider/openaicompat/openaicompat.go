@@ -200,6 +200,16 @@ func RunStream(
 				if delta.Content != "" {
 					shared.SendChunk(ctx, ch, provider.StreamChunk{Content: delta.Content})
 				}
+				// Drop #1 — extract reasoning_content for OpenAI-compat
+				// providers that emit a separate reasoning channel
+				// (zai/glm-4.6, DeepSeek-R1). The Go SDK's typed delta
+				// has no Reasoning field; the data lives in the JSON
+				// extra-fields map (see openai-go ChoiceDelta.JSON.ExtraFields).
+				// extractReasoningContent returns the empty string when the
+				// field is absent, so plain OpenAI providers are unaffected.
+				if reasoning := extractReasoningContent(delta); reasoning != "" {
+					shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: reasoning})
+				}
 			}
 			if tc, ok := acc.JustFinishedToolCall(); ok {
 				emitted[tc.Index] = true
@@ -251,6 +261,50 @@ func wrapStreamError(providerName string, err error) error {
 		Message:   err.Error(),
 		RawError:  err,
 	}
+}
+
+// extractReasoningContent pulls a `reasoning_content` text fragment out of an
+// OpenAI-compat delta when the upstream provider emits its reasoning tokens
+// on that non-standard channel (zai/glm-4.6, DeepSeek-R1). The openai-go SDK's
+// typed `ChatCompletionChunkChoiceDelta` has no `Reasoning` field, so the data
+// is only reachable via the SDK's `JSON.ExtraFields` map of preserved JSON
+// values.
+//
+// Expected:
+//   - delta is the parsed delta from a streaming chunk choice. May contain a
+//     `reasoning_content` extra field (string-typed) when the provider speaks
+//     the reasoning dialect; otherwise the field is absent.
+//
+// Returns:
+//   - The decoded reasoning text when present.
+//   - The empty string when the field is absent, null, or non-string. Plain
+//     OpenAI providers fall through this empty path so the helper is a no-op
+//     for them.
+//
+// Side effects:
+//   - None.
+func extractReasoningContent(delta openaiAPI.ChatCompletionChunkChoiceDelta) string {
+	field, ok := delta.JSON.ExtraFields["reasoning_content"]
+	if !ok {
+		return ""
+	}
+	// Note: respjson.Field.Valid() returns false for ExtraFields entries
+	// because the SDK stores them with internal status=invalid (the typed
+	// `valid` status is reserved for fields with a typed Go counterpart).
+	// We rely on the Raw() text directly — presence of the key + non-empty,
+	// non-null raw JSON is enough.
+	raw := field.Raw()
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal([]byte(raw), &text); err != nil {
+		// reasoning_content is documented as a string by the providers
+		// that emit it. A non-string value is either a future schema
+		// change or noise — ignore rather than mis-emit.
+		return ""
+	}
+	return text
 }
 
 // flushAccumulatedToolCalls emits any tool calls that the openai-go accumulator
