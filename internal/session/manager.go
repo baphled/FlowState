@@ -666,23 +666,39 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	m.persistLocked(sess)
 	m.mu.Unlock()
 
-	// Pre-populate the engine's in-memory context store with the session's
-	// historical messages so the agent retains context after a server restart.
-	// Only fires when the streamer implements streaming.HistorySeeder and the
-	// session has prior turns; the engine marks the session seeded after the
-	// first call so subsequent turns are not duplicated.
-	if seeder, ok := m.streamer.(streaming.HistorySeeder); ok && len(priorMessages) > 0 {
-		providerMsgs := make([]provider.Message, 0, len(priorMessages))
+	// Build provider-shaped prior messages once so we can both seed the
+	// engine's process-wide store (for the legacy CLI path that still
+	// reads from it) and attach them to the per-call context (for the
+	// serve path, where the engine uses ctx-scoped history as the
+	// authoritative source for the model request payload).
+	var providerMsgs []provider.Message
+	if len(priorMessages) > 0 {
+		providerMsgs = make([]provider.Message, 0, len(priorMessages))
 		for _, msg := range priorMessages {
 			providerMsgs = append(providerMsgs, provider.Message{
 				Role:    msg.Role,
 				Content: msg.Content,
 			})
 		}
+	}
+
+	// Pre-populate the engine's in-memory context store with the session's
+	// historical messages so the agent retains context after a server restart.
+	// Only fires when the streamer implements streaming.HistorySeeder and the
+	// session has prior turns; the engine marks the session seeded after the
+	// first call so subsequent turns are not duplicated.
+	if seeder, ok := m.streamer.(streaming.HistorySeeder); ok && len(providerMsgs) > 0 {
 		seeder.SeedHistory(sessionID, providerMsgs)
 	}
 
 	ctx = context.WithValue(ctx, IDKey{}, sessionID)
+	// Attach the per-session prior history so the engine's
+	// buildContextWindow can source the model request payload from this
+	// session's messages alone, not from the shared FileContextStore that
+	// accumulates every session's turns. Without this, two concurrent
+	// sessions sharing one engine see each other's history in the model
+	// request — see session_integration_test.go cross-session isolation.
+	ctx = WithPriorMessages(ctx, providerMsgs)
 	if providerOverride != "" {
 		ctx = context.WithValue(ctx, ProviderOverrideKey{}, providerOverride)
 	}

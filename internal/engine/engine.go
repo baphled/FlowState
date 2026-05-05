@@ -2835,6 +2835,30 @@ func obsToSearchResults(observations []recall.Observation) []recall.SearchResult
 // Returns: Slice of provider.Message objects forming the context window for the language model.
 // Side effects: Logs query failures without crashing; uses RecallBroker if available.
 func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userMessage string) []provider.Message {
+	// Per-session source-of-truth path: when the caller (session.Manager
+	// in serve mode) attaches the session's prior messages to ctx, build
+	// the model request payload from those directly. The shared
+	// e.store path below reads from a process-wide store that mixes
+	// every session's history together — using ctx-scoped messages here
+	// is what isolates concurrent sessions at the model boundary. See
+	// session_integration_test.go cross-session isolation spec.
+	//
+	// We intentionally bypass the WindowBuilder (and its
+	// micro-compaction / recall hooks) on this path: those features
+	// operate on the shared store and so cannot be safely activated for
+	// a session whose history we are explicitly NOT sourcing from the
+	// store. Re-enabling them is future work that requires per-session
+	// stores upstream.
+	if priorMsgs, ok := session.PriorMessagesFromContext(ctx); ok {
+		systemPrompt := e.BuildSystemPrompt()
+		messages := make([]provider.Message, 0, len(priorMsgs)+2)
+		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+		messages = append(messages, priorMsgs...)
+		messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+		slog.Info("engine context window", "source", "session-scoped", "messages", len(messages))
+		return messages
+	}
+
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPrompt()
 		return []provider.Message{

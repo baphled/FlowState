@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -969,4 +971,232 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 			})
 		})
 	})
+
+	// cross-session context isolation: two sessions sharing the same engine
+	// must not see each other's conversation history in the messages sent to
+	// the model. Reproduces a bug where the engine's process-wide
+	// FileContextStore was used as the source of truth for context window
+	// construction, causing session B's user/assistant turns to appear as a
+	// prefix to session A's next provider request.
+	//
+	// Captured live on 2026-05-05 with sessions 611453fb (Alice/Zephyr) and
+	// 4efe04d0 (Bob/Helios): after session B sent its turns, session A's
+	// next provider.request event contained the entire B history before A's
+	// new user message — and the model returned "Name: Bob, Project: Helios"
+	// for an Alice-context probe.
+	Describe("cross-session context isolation", Label("integration"), func() {
+		It("does not leak session B history into session A's provider request", func() {
+			recorder := &recordingChunkProvider{
+				name: "recording",
+				chunks: []provider.StreamChunk{
+					{Content: "ok"},
+					{Content: "", Done: true},
+				},
+			}
+
+			store := recall.NewEmptyContextStore("test-model")
+			eng := engine.New(engine.Config{
+				ChatProvider: recorder,
+				Manifest:     newSessionTestManifest(),
+				Store:        store,
+				TokenCounter: charCounter{},
+			})
+			mgr := session.NewManager(eng)
+
+			sessA, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+			sessB, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx := context.Background()
+
+			// Session A turn 1.
+			chA1, err := mgr.SendMessage(ctx, sessA.ID, "alice-fact: zephyr")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chA1)
+
+			// Session A turn 2 — within session A only, history should be
+			// {alice-fact, ok} preceding the new user turn.
+			chA2, err := mgr.SendMessage(ctx, sessA.ID, "alice-followup")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chA2)
+
+			// Session B intervenes with conflicting facts. The bug is that
+			// these messages get appended to the engine's shared store and
+			// become part of session A's next request.
+			chB1, err := mgr.SendMessage(ctx, sessB.ID, "bob-fact: helios")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chB1)
+
+			chB2, err := mgr.SendMessage(ctx, sessB.ID, "bob-followup")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chB2)
+
+			// Session A turn 3 — the smoking-gun call. The provider request
+			// must contain ONLY session A's history.
+			chA3, err := mgr.SendMessage(ctx, sessA.ID, "alice-probe")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chA3)
+
+			lastA := recorder.lastRequestForUser("alice-probe")
+			Expect(lastA).NotTo(BeNil(), "no provider.request captured carrying alice-probe")
+
+			contents := joinUserAssistantContent(lastA.Messages)
+
+			// Session A's prior facts must be present.
+			Expect(contents).To(ContainSubstring("alice-fact: zephyr"))
+			Expect(contents).To(ContainSubstring("alice-followup"))
+
+			// Session B's facts must NOT appear in session A's payload.
+			Expect(contents).NotTo(ContainSubstring("bob-fact: helios"),
+				"session B user message leaked into session A's provider request")
+			Expect(contents).NotTo(ContainSubstring("bob-followup"),
+				"session B follow-up leaked into session A's provider request")
+		})
+
+		// Turn 1 of a fresh session has zero prior messages. Earlier
+		// fixes attached the per-session message slice to ctx only when
+		// non-empty, which meant turn 1 silently fell through to the
+		// shared-store path and inherited every other session's
+		// accumulated history as a prefix. The fix attaches an empty
+		// slice for fresh sessions so the engine still takes the
+		// session-scoped path.
+		It("does not leak prior session history into a fresh session's first turn", func() {
+			recorder := &recordingChunkProvider{
+				name: "recording",
+				chunks: []provider.StreamChunk{
+					{Content: "ok"},
+					{Content: "", Done: true},
+				},
+			}
+
+			store := recall.NewEmptyContextStore("test-model")
+			eng := engine.New(engine.Config{
+				ChatProvider: recorder,
+				Manifest:     newSessionTestManifest(),
+				Store:        store,
+				TokenCounter: charCounter{},
+			})
+			mgr := session.NewManager(eng)
+
+			// First session warms the engine's shared store with content
+			// the second session must NOT see.
+			sessFirst, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+			ctx := context.Background()
+
+			chF1, err := mgr.SendMessage(ctx, sessFirst.ID, "first-session-secret")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chF1)
+			chF2, err := mgr.SendMessage(ctx, sessFirst.ID, "first-session-followup")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chF2)
+
+			// Fresh second session — its turn 1 must be isolated.
+			sessFresh, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			chN1, err := mgr.SendMessage(ctx, sessFresh.ID, "fresh-turn-one")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(chN1)
+
+			lastFresh := recorder.lastRequestForUser("fresh-turn-one")
+			Expect(lastFresh).NotTo(BeNil(), "no provider.request captured carrying fresh-turn-one")
+
+			contents := joinUserAssistantContent(lastFresh.Messages)
+
+			Expect(contents).To(ContainSubstring("fresh-turn-one"))
+			Expect(contents).NotTo(ContainSubstring("first-session-secret"),
+				"first session's user message leaked into fresh session's first turn payload")
+			Expect(contents).NotTo(ContainSubstring("first-session-followup"),
+				"first session's follow-up leaked into fresh session's first turn payload")
+		})
+	})
 })
+
+// charCounter is a minimal TokenCounter for the cross-session isolation
+// spec. The spec exercises the buildContextWindow path which requires a
+// non-nil counter so the engine constructs a WindowBuilder; the actual
+// token counts do not affect the assertion (the spec checks message
+// content identity, not token math).
+type charCounter struct{}
+
+func (charCounter) Count(s string) int          { return len(s) }
+func (charCounter) ModelLimit(_ string) int     { return 1_000_000 }
+
+// recordingChunkProvider is a stub Provider that records every Stream
+// request it receives so the spec can assert on what messages reached
+// the provider boundary. Distinct from streamSequenceProvider (which
+// discards the request) and cachedProvider (which wraps a real call).
+type recordingChunkProvider struct {
+	name     string
+	chunks   []provider.StreamChunk
+	mu       sync.Mutex
+	requests []provider.ChatRequest
+}
+
+func (p *recordingChunkProvider) Name() string { return p.name }
+
+func (p *recordingChunkProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	p.mu.Lock()
+	// Deep-copy the messages slice — engine reuses underlying arrays
+	// across calls, so a shallow copy would leave assertions racing
+	// against later mutations.
+	msgsCopy := make([]provider.Message, len(req.Messages))
+	copy(msgsCopy, req.Messages)
+	captured := req
+	captured.Messages = msgsCopy
+	p.requests = append(p.requests, captured)
+	p.mu.Unlock()
+
+	ch := make(chan provider.StreamChunk, len(p.chunks))
+	go func() {
+		defer close(ch)
+		for _, c := range p.chunks {
+			ch <- c
+		}
+	}()
+	return ch, nil
+}
+
+func (p *recordingChunkProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *recordingChunkProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return []float64{0.0}, nil
+}
+
+func (p *recordingChunkProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// lastRequestForUser returns the most recent captured request whose
+// final user message content matches the given marker, or nil if none.
+// Used by the spec to disambiguate which request belongs to which turn
+// without relying on call ordering across concurrent SendMessage paths.
+func (p *recordingChunkProvider) lastRequestForUser(marker string) *provider.ChatRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := len(p.requests) - 1; i >= 0; i-- {
+		req := p.requests[i]
+		for j := len(req.Messages) - 1; j >= 0; j-- {
+			m := req.Messages[j]
+			if m.Role == "user" && strings.Contains(m.Content, marker) {
+				return &req
+			}
+		}
+	}
+	return nil
+}
+
+// joinUserAssistantContent collapses the user and assistant message
+// contents from a request into a single string so the spec can use
+// substring matchers without re-implementing per-role iteration.
+func joinUserAssistantContent(msgs []provider.Message) string {
+	var parts []string
+	for _, m := range msgs {
+		if m.Role == "user" || m.Role == "assistant" {
+			parts = append(parts, m.Content)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
