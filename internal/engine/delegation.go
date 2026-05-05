@@ -1555,7 +1555,18 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 		defer close(out)
 		var buf strings.Builder
 		for chunk := range src {
-			if chunk.Content != "" && !chunk.Done && chunk.DelegationInfo == nil {
+			// streaming.IsControlEvent gate: harness_attempt_start /
+			// harness_retry chunks carry structured metadata in Content
+			// (e.g. `{"attempt":1,"maxRetries":1}`) destined for the
+			// status-line consumer, not for inline rendering. Prior to
+			// this gate teeToParentStream wrote those bytes into the
+			// parent assistant turn — the leak captured in session
+			// 2d8dc0ac messages 169/180/185/190 (May 2026 chat-UI
+			// leak triage). The accumulator filters EventType chunks
+			// at internal/session/accumulator.go:192-194 already; this
+			// keeps the parent-tee path symmetric.
+			if chunk.Content != "" && !chunk.Done && chunk.DelegationInfo == nil &&
+				!streaming.IsControlEvent(chunk.EventType) {
 				buf.WriteString(chunk.Content)
 			}
 			out <- chunk
@@ -1830,6 +1841,51 @@ func formatDelegationOutput(text string) string {
 //   - None.
 func FormatDelegationOutput(text string) string {
 	return formatDelegationOutput(text)
+}
+
+// unwrapTaskResult returns the inner text of a delegation `<task_result>`
+// block, or s unchanged when the wrapper is absent. The wrapper is the
+// LLM-visible boundary marker emitted by formatDelegationOutput; chat-UI
+// renderers and the persisted message store should never see it because the
+// structural metadata (Role=tool, ToolName=delegate) already tells the
+// reader that this is a sub-agent response. Persistence-side stripping
+// keeps tool.Result.Output wrapped (LLM-bound on the same turn via
+// appendToolResultsBatchToMessages) while session.Messages content stays
+// clean — fixing the leak captured in session 2d8dc0ac messages
+// 167/178/183/188 (May 2026 chat-UI leak triage).
+//
+// Expected:
+//   - s is the raw tool result content; may or may not be wrapped.
+//
+// Returns:
+//   - The unwrapped text when s exactly matches "<task_result>\n...\n</task_result>".
+//   - s unchanged otherwise (never partial-strips).
+//
+// Side effects:
+//   - None.
+func unwrapTaskResult(s string) string {
+	const open = "<task_result>\n"
+	const close = "\n</task_result>"
+	if !strings.HasPrefix(s, open) || !strings.HasSuffix(s, close) {
+		return s
+	}
+	return s[len(open) : len(s)-len(close)]
+}
+
+// UnwrapTaskResult is the exported form of unwrapTaskResult for callers
+// outside this package (engine.storeToolResult, engine tool-result emission).
+//
+// Expected:
+//   - s is the raw tool result content; may or may not be wrapped.
+//
+// Returns:
+//   - The unwrapped text when s carries the canonical task_result wrapper.
+//   - s unchanged otherwise.
+//
+// Side effects:
+//   - None.
+func UnwrapTaskResult(s string) string {
+	return unwrapTaskResult(s)
 }
 
 // executeSync runs delegation synchronously, blocking until complete.
@@ -2967,6 +3023,16 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 		if chunk.Error != nil {
 			return delegationResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
 		}
+		// streaming.IsControlEvent gate — same rationale as
+		// teeToParentStream above. Without this, harness_attempt_start
+		// Content (`{"attempt":N,...}`) is concatenated into the
+		// delegated agent's response, then wrapped by
+		// formatDelegationOutput into <task_result>{"attempt":...}…</task_result>
+		// and persisted as a tool_result. Session 2d8dc0ac msg 167 is
+		// the canonical example.
+		if streaming.IsControlEvent(chunk.EventType) {
+			continue
+		}
 		response.WriteString(chunk.Content)
 	}
 
@@ -3279,6 +3345,10 @@ func (d *DelegateTool) collectWithProgress(
 			}
 			if chunk.Error != nil {
 				return delegationResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
+			}
+			// streaming.IsControlEvent gate — see collectDelegationResult.
+			if streaming.IsControlEvent(chunk.EventType) {
+				continue
 			}
 			response.WriteString(chunk.Content)
 			if toolCalls%progressInterval == 0 {

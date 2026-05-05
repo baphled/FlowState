@@ -84,6 +84,50 @@ func deliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 	tc.WriteToolCall(name)
 }
 
+// IsControlEvent reports whether a stream chunk's EventType identifies an
+// out-of-band control event whose Content is structured metadata for
+// in-stream consumers (TUI status line, SSE event channel) rather than
+// natural-language text destined for the assistant message body.
+//
+// The set MUST stay in sync with the event-type cases handled by
+// dispatchHarnessEvent below. Concatenating Content from these chunks into
+// assistant or tool_result text was the source of the "{"attempt":1,...}"
+// JSON leaks captured in session 2d8dc0ac (May 2026 chat-UI leak triage):
+// teeToParentStream and the delegation collectors wrote chunk.Content into
+// the parent stream / delegated response without checking EventType, so the
+// harness's structured retry metadata ended up in the chat bubble.
+//
+// Callers in the engine and delegation pipelines invoke this predicate
+// before any chunk.Content concatenation. Adding a new EventType to
+// dispatchHarnessEvent without adding it here is a regression of the same
+// leak class — keep both lists co-located.
+//
+// Expected:
+//   - eventType is the chunk's EventType field; "" denotes a non-event chunk.
+//
+// Returns:
+//   - true when eventType identifies a known out-of-band control event.
+//   - false for "" and for tool_call / tool_result EventTypes (those carry
+//     structural payloads handled by their dedicated channels).
+//
+// Side effects:
+//   - None.
+func IsControlEvent(eventType string) bool {
+	switch eventType {
+	case "harness_retry",
+		"harness_attempt_start",
+		"harness_complete",
+		"harness_critic_feedback",
+		"harness_wave_incomplete",
+		"plan_artifact",
+		"review_verdict",
+		"status_transition":
+		return true
+	default:
+		return false
+	}
+}
+
 // dispatchHarnessEvent checks whether the chunk is a harness lifecycle event or typed plan event
 // and delivers it to the consumer if supported. Returns true if the chunk was handled.
 //

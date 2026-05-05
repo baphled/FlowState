@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"time"
 
@@ -245,6 +246,91 @@ var _ = Describe("BackgroundOutputTool", func() {
 				// Should return within ~500ms, NOT wait 30 seconds
 				Expect(err).To(HaveOccurred()) // timeout error since task never completes
 				Expect(elapsed).To(BeNumerically("<", 2*time.Second))
+			})
+		})
+
+		// Chat-UI leak triage (May 2026): when a delegated background
+		// task fails (e.g. provider returns 429 rate-limit), the LLM
+		// calls background_output to retrieve the result. The tool's
+		// JSON response is persisted as a tool_result message and
+		// rendered in the chat bubble. Prior to sanitisation the
+		// "error" field carried the raw provider stack
+		// ('delegation stream error: provider github-copilot error
+		// [rate_limit HTTP 429]: POST "https://api.githubcopilot.com/...': 429 Too Many Requests')
+		// directly into the user-visible chat, leaking infrastructure
+		// detail and provider identifiers. Session 2d8dc0ac messages
+		// 231/232/243/244 captured the leak.
+		Context("when the underlying task failed with a rate-limit error", func() {
+			It("returns a sanitised canonical error message and a correlation_id, never the raw provider error", func() {
+				rawErr := errors.New(`delegation stream error: provider github-copilot error [rate_limit HTTP 429]: POST "https://api.githubcopilot.com/chat/completions": 429 Too Many Requests `)
+				task := manager.Launch(ctx, "leak-c-rate", "agent-x", "rate-limited delegation", func(_ context.Context) (string, error) {
+					return "", rawErr
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("failed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+					},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+				Expect(output["status"]).To(Equal("failed"))
+
+				errField, ok := output["error"].(string)
+				Expect(ok).To(BeTrue(), "error field must be present and a string")
+				Expect(errField).NotTo(ContainSubstring("github-copilot"),
+					"raw provider name must not leak into the chat-bubble payload")
+				Expect(errField).NotTo(ContainSubstring("api.githubcopilot.com"),
+					"raw provider URL must not leak into the chat-bubble payload")
+				Expect(errField).NotTo(ContainSubstring("HTTP 429"),
+					"raw HTTP status must not leak into the chat-bubble payload")
+				Expect(errField).To(ContainSubstring("rate"),
+					"sanitised message should still convey the rate-limit category")
+
+				cid, ok := output["correlation_id"].(string)
+				Expect(ok).To(BeTrue(), "correlation_id must accompany the sanitised error so support can locate the server log entry")
+				Expect(cid).To(MatchRegexp(`^[0-9a-f]{16}$`), "correlation_id must be 8-byte hex (matches internal/api/errors.go)")
+			})
+		})
+
+		Context("when the underlying task failed with a generic error", func() {
+			It("returns a generic safe error message, never the raw error string", func() {
+				rawErr := errors.New("delegated session ate the database")
+				task := manager.Launch(ctx, "leak-c-generic", "agent-y", "generic failure", func(_ context.Context) (string, error) {
+					return "", rawErr
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("failed"))
+
+				input := tool.Input{
+					Name:      "background_output",
+					Arguments: map[string]interface{}{"task_id": task.ID},
+				}
+
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				Expect(json.Unmarshal([]byte(result.Output), &output)).To(Succeed())
+				Expect(output["status"]).To(Equal("failed"))
+
+				errField, _ := output["error"].(string)
+				Expect(errField).NotTo(ContainSubstring("ate the database"),
+					"raw error text must never leak — server log retains it via correlation_id")
+				Expect(output).To(HaveKey("correlation_id"))
 			})
 		})
 

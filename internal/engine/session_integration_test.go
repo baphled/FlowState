@@ -523,7 +523,16 @@ var _ = Describe("Session Integration", Label("integration"), func() {
 				result, err := outputTool.Execute(context.Background(), input)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Output).To(ContainSubstring("failed"))
-				Expect(result.Output).To(ContainSubstring("task execution failed"))
+				// Chat-UI leak triage (May 2026): the raw underlying
+				// error is no longer surfaced verbatim — it goes to the
+				// server log paired with a correlation_id while the
+				// caller sees a sanitised canonical message. See
+				// engine.sanitiseTaskError + the Leak C specs in
+				// background_output_test.go.
+				Expect(result.Output).NotTo(ContainSubstring("task execution failed"),
+					"raw error text must not leak into the tool-result payload")
+				Expect(result.Output).To(ContainSubstring("correlation_id"),
+					"sanitised payload must carry a correlation_id for support lookup")
 			})
 		})
 
