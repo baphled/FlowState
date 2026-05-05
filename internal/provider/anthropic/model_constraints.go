@@ -53,6 +53,22 @@ var (
 // thinking.budget_tokens when the field is set.
 const minThinkingBudgetTokens int64 = 1024
 
+// interleavedThinkingBetaHeader is the anthropic-beta value that opts a
+// request into interleaved thinking — the model is allowed to emit
+// further thinking blocks between successive tool_use blocks within a
+// single turn. Without this header on Claude 4.x models that need it,
+// thinking happens once at the top of the turn and tool use proceeds
+// without further thinking, degrading multi-step reasoning.
+//
+// Claude 4.6+ family (Opus 4.6/4.7, Sonnet 4.6) auto-enables
+// interleaving server-side when adaptive thinking is on; sending the
+// header is a no-op on the direct API but is REJECTED on the Bedrock
+// and Vertex passthroughs, so it must NOT be sent for those models.
+//
+// Sonnet 3.7 does not support interleaving at all. Claude 3.5/3.0
+// have no thinking and so the header is never emitted.
+const interleavedThinkingBetaHeader = "interleaved-thinking-2025-05-14"
+
 // modelDefaults captures the per-model knobs that vary across the
 // Claude family. A caller's request is overlaid on top of these
 // defaults; only fields the caller did not set are filled in from here.
@@ -73,10 +89,52 @@ type modelDefaults struct {
 	// supportsAdaptiveThinking reports that the model recognises the
 	// `adaptive` thinking variant (Opus 4.7+ family).
 	supportsAdaptiveThinking bool
+	// requiresInterleavedThinkingHeader reports that the model needs
+	// the explicit `interleaved-thinking-2025-05-14` anthropic-beta
+	// header to interleave thinking with tool_use within a turn.
+	// Claude 4 family (Opus 4/4.1/4.5, Sonnet 4/4.5, Haiku 4.5) needs
+	// it; the 4.6+ family (Opus 4.6/4.7, Sonnet 4.6) auto-enables
+	// interleaving server-side and rejects the explicit header on
+	// Bedrock/Vertex; Sonnet 3.7 does not support interleaving.
+	requiresInterleavedThinkingHeader bool
 	// betas are anthropic-beta header values to add by default when
 	// the caller is on this model. Used for Sonnet 3.7's optional
 	// 128k-output and token-efficient-tools betas.
 	betas []string
+}
+
+// betaHeaders returns the per-call anthropic-beta header values that
+// must be added to the request, given whether thinking is on for this
+// turn and whether tools are present.
+//
+// The interleaved-thinking header is emitted IFF the model needs it
+// AND thinking is on AND tools are present — without all three the
+// header is either harmful (rejected on Bedrock/Vertex) or pointless.
+//
+// Static per-model betas (e.g. Sonnet 3.7's optional output-128k and
+// token-efficient-tools opt-ins) are appended afterwards so callers
+// always get a single ordered slice.
+//
+// Expected:
+//   - thinkingOn is true when params.Thinking is adaptive or enabled.
+//   - toolsPresent is true when the request will include any tool
+//     definitions on the wire.
+//
+// Returns:
+//   - The beta header values to add, in order. Empty/nil means no
+//     per-call beta header should be sent.
+//
+// Side effects:
+//   - None.
+func (d modelDefaults) betaHeaders(thinkingOn, toolsPresent bool) []string {
+	var headers []string
+	if d.requiresInterleavedThinkingHeader && thinkingOn && toolsPresent {
+		headers = append(headers, interleavedThinkingBetaHeader)
+	}
+	if len(d.betas) > 0 {
+		headers = append(headers, d.betas...)
+	}
+	return headers
 }
 
 // resolveModelDefaults returns the modelDefaults for the given model
@@ -117,21 +175,24 @@ func resolveModelDefaults(model string) modelDefaults {
 		}
 	case strings.HasPrefix(id, "claude-haiku-4-5"):
 		return modelDefaults{
-			maxTokens:        64000,
-			supportsThinking: true,
+			maxTokens:                         64000,
+			supportsThinking:                  true,
+			requiresInterleavedThinkingHeader: true,
 		}
 	case strings.HasPrefix(id, "claude-sonnet-4-5"),
 		strings.HasPrefix(id, "claude-sonnet-4"):
 		return modelDefaults{
-			maxTokens:        64000,
-			supportsThinking: true,
+			maxTokens:                         64000,
+			supportsThinking:                  true,
+			requiresInterleavedThinkingHeader: true,
 		}
 	case strings.HasPrefix(id, "claude-opus-4-5"),
 		strings.HasPrefix(id, "claude-opus-4-1"),
 		strings.HasPrefix(id, "claude-opus-4"):
 		return modelDefaults{
-			maxTokens:        32000,
-			supportsThinking: true,
+			maxTokens:                         32000,
+			supportsThinking:                  true,
+			requiresInterleavedThinkingHeader: true,
 		}
 	case strings.HasPrefix(id, "claude-3-7-sonnet"):
 		return modelDefaults{
