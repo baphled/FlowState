@@ -1338,6 +1338,23 @@ export const useChatStore = defineStore('chat', {
       // into below.
       this.lastToolName = toolName
 
+      // Seal any in-flight assistant bubble before recording the tool
+      // invocation. Without this, post-tool content chunks reverse-find the
+      // pre-tool assistant (still status === 'running') and APPEND, so the
+      // user sees a single fused assistant block with all pre/inter/post
+      // text collapsed together at the array position of the FIRST chunk —
+      // before every tool_result row. The user-visible symptom: "we are
+      // seeing a todo list completing, but we don't see any responses
+      // between the update." The fix: seal here so the next content chunk
+      // creates a new assistant message AFTER the tool_result, preserving
+      // chronological order in the rendered thread.
+      const inFlight = [...this.messages].reverse().find(
+        (message) => message.role === 'assistant' && message.status === 'running',
+      )
+      if (inFlight) {
+        inFlight.status = 'completed'
+      }
+
       // `input` carries the JSON-encoded arguments string emitted by the
       // server. Store it as toolInput so toolRenderSpec can build the heading
       // from the primary argument (e.g. "bash cat /home/user/foobar.md").
