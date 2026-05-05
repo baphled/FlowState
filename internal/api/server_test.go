@@ -400,7 +400,11 @@ var _ = Describe("Server", func() {
 				server.Handler().ServeHTTP(recorder, req)
 
 				events := parseSSEEvents(recorder.Body)
-				Expect(events).To(ContainElement(ContainSubstring(`"error":"stream failed"`)))
+				// Raw error text must not reach the client; only the canonical
+				// category message and a correlation ID are forwarded.
+				Expect(events).To(ContainElement(ContainSubstring(`"error":"stream error"`)))
+				Expect(events).To(ContainElement(ContainSubstring(`"correlation_id"`)))
+				Expect(events).NotTo(ContainElement(ContainSubstring("stream failed")))
 				Expect(events).To(ContainElement("[DONE]"))
 			})
 		})

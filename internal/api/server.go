@@ -409,29 +409,11 @@ type sseError struct {
 	Error string `json:"error"`
 }
 
-// TODO(security): The HTTP and SSE error paths in this file currently
-// forward `err.Error()` (or wrap-and-forward) directly to the client. On
-// any deployment that exposes the API to untrusted callers — multi-tenant,
-// production behind a reverse proxy, embedded in a third-party site —
-// raw error text leaks implementation detail (file paths, library
-// versions, internal IDs, occasionally stack-trace fragments) to whoever
-// triggered the request.
-//
-// Recommendation when the threat model expands beyond single-user local:
-//
-//  1. Introduce a sanitised error mapper (e.g. `func clientError(err error)
-//     string`) that returns one of a small set of canonical messages
-//     ("internal error", "session not found", "rate limited") while
-//     logging the raw error server-side with a correlation ID.
-//  2. Replace every `http.Error(w, err.Error(), …)` and
-//     `writeSSEError(…, err.Error())` call site with the mapper.
-//  3. Include the correlation ID in the response body so an operator can
-//     find the matching server log without exposing the underlying
-//     message.
-//
-// Out of scope for PR 3 (the Vue chat UX delivery) — single-user local
-// dev is the only currently-supported deployment. See the broader
-// SECURITY.md (TODO) for the migration plan.
+// Error sanitization: all HTTP and SSE error paths in this file route through
+// writeJSONError or writeSSEClientError (see errors.go). Raw err.Error() text
+// is never forwarded to clients; a canonical category message and a random
+// correlation ID are sent instead. The full error is logged server-side under
+// the same correlation ID so operators can locate the matching entry.
 
 // handleChat processes a chat request and streams the response as server-sent events.
 //
@@ -467,7 +449,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// preserves the historical 400-on-unknown-id contract.
 	leadID, swarmCtx, err := s.resolveDispatchTarget(req.AgentID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, err, "swarm_error", http.StatusBadRequest)
 		return
 	}
 
@@ -790,7 +772,7 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if chunk.Error != nil {
-				writeSSEError(w, flusher, chunk.Error.Error())
+				writeSSEClientError(w, flusher, chunk.Error, "stream_error")
 				continue
 			}
 			if chunk.Done {
@@ -876,7 +858,7 @@ func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	children, err := s.sessionManager.ChildSessions(id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, children)
@@ -902,7 +884,7 @@ func (s *Server) handleSessionTree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tree, err := s.sessionManager.SessionTree(id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, tree)
@@ -928,7 +910,7 @@ func (s *Server) handleSessionParent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	root, err := s.sessionManager.GetRootSession(id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, root)
@@ -998,7 +980,7 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.backgroundManager.Cancel(id); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeJSONError(w, err, "cancel_error", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1624,7 +1606,7 @@ func (s *Server) handleTruncateMessages(w http.ResponseWriter, r *http.Request) 
 	id := r.PathValue("id")
 	messageID := r.PathValue("messageId")
 	if err := s.sessionManager.TruncateMessages(id, messageID); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
+		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

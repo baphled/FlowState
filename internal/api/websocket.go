@@ -32,7 +32,9 @@ func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
 		EventType: chunk.EventType,
 	}
 	if chunk.Error != nil {
-		msg.Error = chunk.Error.Error()
+		safeMsg, cid := clientError(chunk.Error, "stream_error")
+		msg.Error = safeMsg
+		msg.CorrelationID = cid
 	}
 	if chunk.DelegationInfo != nil {
 		msg.Delegation = chunk.DelegationInfo
@@ -53,14 +55,15 @@ func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
 
 // WSChunkMsg represents a response chunk sent to a WebSocket client.
 type WSChunkMsg struct {
-	Content    string                   `json:"content,omitempty"`
-	Done       bool                     `json:"done,omitempty"`
-	Error      string                   `json:"error,omitempty"`
-	Delegation *provider.DelegationInfo `json:"delegation,omitempty"`
-	ToolCall   *provider.ToolCall       `json:"tool_call,omitempty"`
-	Progress   *streaming.ProgressEvent `json:"progress,omitempty"`
-	EventType  string                   `json:"event_type,omitempty"`
-	EventData  interface{}              `json:"event_data,omitempty"`
+	Content       string                   `json:"content,omitempty"`
+	Done          bool                     `json:"done,omitempty"`
+	Error         string                   `json:"error,omitempty"`
+	CorrelationID string                   `json:"correlation_id,omitempty"`
+	Delegation    *provider.DelegationInfo `json:"delegation,omitempty"`
+	ToolCall      *provider.ToolCall       `json:"tool_call,omitempty"`
+	Progress      *streaming.ProgressEvent `json:"progress,omitempty"`
+	EventType     string                   `json:"event_type,omitempty"`
+	EventData     interface{}              `json:"event_data,omitempty"`
 }
 
 // handleSessionWebSocket upgrades the connection to WebSocket, validates the session,
