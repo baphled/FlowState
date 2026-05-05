@@ -738,6 +738,199 @@ var _ = Describe("Session stream live events", func() {
 		Expect(body).To(ContainSubstring(`"last_tool":"write"`))
 	})
 
+	// Regression for the harness-JSON-leak bug. Before the fix,
+	// handleSessionStream ignored chunk.EventType for harness_* events and
+	// fell through to the unconditional `if chunk.Content != ""` branch,
+	// emitting a plain {"content":"..."} SSE event whose payload was the
+	// raw JSON marshalled by emitHarnessComplete (`{"valid":...,"score":...,
+	// "attemptCount":2,...}`). The frontend's parseSSEPayload classified that
+	// as a content chunk and appended the raw JSON string into the live
+	// assistant bubble — non-technical users saw a wall of JSON in chat.
+	//
+	// Contract: harness_* event chunks MUST be emitted as their typed SSE
+	// events (writeSSEHarness*) so the frontend's discriminated union
+	// dispatch (`case 'harness_complete': ...`) handles them as observability
+	// metadata, not assistant content. The Content field on a typed event
+	// chunk MUST NOT be re-emitted as a plain content chunk.
+	DescribeTable("emits typed SSE events for harness_* event chunks (no raw JSON in content)",
+		func(eventType, content, expectedTypeField string) {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+			Expect(err).NotTo(HaveOccurred())
+
+			respCh := make(chan *http.Response, 1)
+			go func() {
+				resp, doErr := http.DefaultClient.Do(req)
+				if doErr == nil {
+					respCh <- resp
+				}
+			}()
+
+			time.Sleep(50 * time.Millisecond)
+
+			source := make(chan provider.StreamChunk, 3)
+			source <- provider.StreamChunk{EventType: eventType, Content: content}
+			source <- provider.StreamChunk{Done: true}
+			close(source)
+			go broker.Publish(sess.ID, source)
+
+			var resp *http.Response
+			Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+			defer resp.Body.Close()
+
+			eventsCh := make(chan []string, 1)
+			go func() {
+				reader := bufio.NewReader(resp.Body)
+				var evts []string
+				for {
+					line, readErr := reader.ReadString('\n')
+					if line != "" {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "data: ") {
+							evts = append(evts, strings.TrimPrefix(line, "data: "))
+						}
+						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+							break
+						}
+					}
+					if readErr != nil {
+						break
+					}
+				}
+				eventsCh <- evts
+			}()
+
+			var evts []string
+			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+			// MUST emit the typed event (e.g. {"type":"harness_complete",...}).
+			Expect(evts).To(ContainElement(ContainSubstring(`"type":"`+expectedTypeField+`"`)),
+				"expected typed SSE event for %s; got: %v", eventType, evts)
+
+			// MUST NOT emit a raw {"content":"..."} chunk carrying the typed
+			// event's payload — that's the JSON-leak the user reported.
+			for _, e := range evts {
+				if strings.Contains(e, `"content":`) && !strings.Contains(e, `"type":`) {
+					Fail("plain content chunk leaked harness payload — non-technical users would see raw JSON in chat: " + e)
+				}
+			}
+			Expect(evts).To(ContainElement("[DONE]"))
+		},
+		Entry("harness_complete with attemptCount JSON",
+			"harness_complete",
+			`{"valid":true,"score":0.95,"attemptCount":2,"errors":[],"warnings":[]}`,
+			"harness_complete",
+		),
+		Entry("harness_retry with reason content",
+			"harness_retry",
+			"validation failed: schema mismatch on attempt 1",
+			"harness_retry",
+		),
+		Entry("harness_attempt_start with attempt label",
+			"harness_attempt_start",
+			"attempt 2 of 3",
+			"harness_attempt_start",
+		),
+		Entry("harness_critic_feedback with critic notes",
+			"harness_critic_feedback",
+			"critic verdict: REJECT — missing acceptance criteria",
+			"harness_critic_feedback",
+		),
+	)
+
+	// Drop #2 — Thinking SSE dispatch.
+	//
+	// Pre-fix the dispatcher in handleSessionStream had no branch for
+	// chunk.Thinking. The Anthropic adapter at internal/provider/anthropic/
+	// streaming.go:142 already emits provider.StreamChunk{Thinking: "..."},
+	// and the Drop #1 fix to openaicompat will make zai/glm-4.6 emit it too,
+	// but the wire silently swallowed the data. The end result was the live
+	// 92-second silent gap we instrumented in Phase 1d (586 reasoning_content
+	// deltas dropped end-to-end).
+	//
+	// Contract: a chunk with Thinking populated MUST emit a typed SSE event
+	// {"type":"thinking","content":"<thinking text>"} so the watchdog re-arms
+	// and the frontend can route it through its discriminated union without a
+	// bespoke channel. Thinking content MUST NOT leak into a plain
+	// {"content":"..."} chunk where the chat store would render it as the
+	// assistant's reply.
+	It("emits a typed thinking SSE event when chunk.Thinking is populated", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{Thinking: "let me reason about this..."}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"thinking"`)),
+			"expected typed thinking SSE event; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring(`"content":"let me reason about this..."`)),
+			"thinking event must carry the model's reasoning text; got: %v", evts)
+
+		// Thinking MUST NOT leak into a plain content chunk — that would
+		// render the model's private reasoning as the assistant's reply.
+		for _, e := range evts {
+			if strings.Contains(e, `"content":"let me reason`) && !strings.Contains(e, `"type":"thinking"`) {
+				Fail("thinking content leaked into a plain content chunk: " + e)
+			}
+		}
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
 	It("does not replay history when broker is live — only broker-published events appear", func() {
 		// Regression guard for the SSE duplication bug: when handleSessionStream
 		// is connected to a live broker, it must NOT replay sess.Messages before

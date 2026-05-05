@@ -14,6 +14,16 @@ export interface Message {
   lastTool?: string
   status?: string
   modelName?: string
+  /**
+   * Model-reasoning text accumulated from `type: "thinking"` SSE events
+   * (Drop #2 in the Streaming Signal-Drop fix). Carries the provider's
+   * private step-by-step reasoning (Anthropic thinking_delta, glm-4.6
+   * reasoning_content). MUST NOT be rendered as the visible reply — the
+   * UI affordance to disclose this on demand is Track B's work. Until
+   * that ships the field is plumbed end-to-end so the watchdog re-arms
+   * during the reasoning phase and the data is captured for later display.
+   */
+  thinkingContent?: string
 }
 
 export interface ChatRequest {

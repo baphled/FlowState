@@ -794,11 +794,53 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 					writeSSEToolCall(w, flusher, name, argsJSON)
 				}
 			}
-			if chunk.EventType == "tool_result" && chunk.ToolResult != nil {
-				writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
+			// Drop #2 — Thinking SSE dispatch. Anthropic's streaming.go
+			// already emits StreamChunk{Thinking: <text>} for thinking_delta
+			// blocks, and the openaicompat reasoning_content fix (Drop #1)
+			// emits the same shape for glm-4.6 / DeepSeek-R1 reasoning. Pre
+			// this branch the wire dropped both — the chat UI saw a 52-second
+			// silent gap during the model's reasoning phase.
+			if chunk.Thinking != "" {
+				writeSSEThinking(w, flusher, chunk.Thinking)
 			}
-			if chunk.Content != "" {
-				writeSSEContent(w, flusher, chunk.Content)
+			// Typed event chunks MUST route to their typed SSE writer rather
+			// than fall through to writeSSEContent. Pre-this-fix the
+			// dispatcher emitted a plain {"content":"..."} chunk for
+			// harness_* events, leaking raw JSON like
+			// {"valid":...,"score":...,"attemptCount":2,...} into the assistant
+			// bubble (visible to non-technical users in chat).
+			//
+			// The contract: when EventType is set, the chunk is observability
+			// metadata, not assistant content. Content is dispatched as plain
+			// text only when EventType is empty.
+			switch chunk.EventType {
+			case "tool_result":
+				if chunk.ToolResult != nil {
+					writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
+				}
+			case "harness_retry":
+				writeSSEHarnessRetry(w, flusher, chunk.Content)
+			case "harness_attempt_start":
+				writeSSEAttemptStart(w, flusher, chunk.Content)
+			case "harness_complete":
+				writeSSEHarnessComplete(w, flusher, chunk.Content)
+			case "harness_critic_feedback":
+				writeSSECriticFeedback(w, flusher, chunk.Content)
+			case "":
+				if chunk.Content != "" {
+					writeSSEContent(w, flusher, chunk.Content)
+				}
+			default:
+				// Forward-compatible: an unknown EventType chunk falls
+				// through to a plain content emission only when the
+				// frontend can render it as text. Absent that signal the
+				// chunk is dropped on the wire — the client's discriminated
+				// union 'unknown' bucket will record any genuinely-new
+				// typed events (see web/src/lib/sseEvent.ts) without
+				// affecting state.
+				if chunk.Content != "" {
+					writeSSEContent(w, flusher, chunk.Content)
+				}
 			}
 		}
 	}
@@ -1377,6 +1419,35 @@ type sseToolResult struct {
 //   - Flushes response buffer.
 func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseToolResult{Type: "tool_result", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseThinking represents a model reasoning ("thinking") event in a server-sent
+// event stream. The discriminant value "thinking" is namespaced specifically to
+// avoid collision with future provider-related event types planned by Track B
+// (e.g. "provider_changed" for failover transitions).
+type sseThinking struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// writeSSEThinking marshals a model-reasoning chunk as a JSON event and writes
+// it as a server-sent event.
+//
+// Expected:
+//   - content is the thinking text emitted by the provider's reasoning channel
+//     (Anthropic thinking_delta blocks, OpenAI-compat reasoning_content deltas).
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded thinking event to response.
+//   - Flushes response buffer.
+func writeSSEThinking(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseThinking{Type: "thinking", Content: content}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return

@@ -72,6 +72,22 @@ describe('parseSSEPayload', () => {
     expect(parseSSEPayload('{"type":"harness_critic_feedback","content":"f"}').kind).toBe('harness_critic_feedback')
   })
 
+  it('classifies a thinking event by the type discriminant and unpacks content', () => {
+    // Drop #2 — thinking SSE event. The Go side emits
+    // {"type":"thinking","content":"<reasoning text>"} when the provider
+    // streams reasoning tokens (Anthropic thinking_delta, glm-4.6 reasoning_content).
+    // Pre-this-PR these chunks were dropped at the openaicompat adapter and
+    // never serialised onto the wire, leaving the chat UI silent for tens of
+    // seconds while the model reasoned. The discriminant value is "thinking"
+    // (not "reasoning", not "thought") to avoid collision with future event
+    // types planned by Track B such as "provider_changed".
+    const ev = parseSSEPayload('{"type":"thinking","content":"let me reason step by step..."}')
+    expect(ev.kind).toBe('thinking')
+    if (ev.kind === 'thinking') {
+      expect(ev.content).toBe('let me reason step by step...')
+    }
+  })
+
   it('returns malformed for non-JSON payloads', () => {
     expect(parseSSEPayload('not json {')).toEqual({ kind: 'malformed', raw: 'not json {' })
   })
