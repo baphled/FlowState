@@ -2214,6 +2214,16 @@ func (e *Engine) streamWithToolLoop(
 			if isError {
 				resultContent = "Error: " + er.toolResult.Error.Error()
 			}
+			// Strip the delegation `<task_result>` wrapper from the
+			// chunk that feeds SSE consumers and the session accumulator.
+			// The wrapper is the LLM-visible boundary marker
+			// formatDelegationOutput emits — useful for the next-turn
+			// LLM prompt (preserved via tool.Result.Output in
+			// appendToolResultsBatchToMessages and storeToolResult)
+			// but pure noise in the chat bubble. Session 2d8dc0ac
+			// messages 167/178/183/188 captured the leak (May 2026
+			// chat-UI leak triage).
+			resultContent = UnwrapTaskResult(resultContent)
 			// P14: re-resolve the internal id so the tool_result chunk carries
 			// the same InternalToolCallID as the originating tool_call.
 			outChan <- provider.StreamChunk{
@@ -2423,6 +2433,18 @@ func (e *Engine) processStreamChunks(
 				continue // keep reading — there may be more tool calls in this turn
 			}
 
+			// streaming.IsControlEvent gate: harness_attempt_start /
+			// harness_retry / plan_artifact / etc. carry structured
+			// metadata in Content destined for out-of-band consumers
+			// (status line, SSE event channel) — never for the
+			// next-turn LLM context this loop assembles. The session
+			// accumulator already filters at
+			// internal/session/accumulator.go:192-194; mirror here so
+			// in-flight responseContent and tool-loop callers stay
+			// clean. See session 2d8dc0ac chat-UI leak triage.
+			if streaming.IsControlEvent(chunk.EventType) {
+				continue
+			}
 			thinkingContent.WriteString(chunk.Thinking)
 			responseContent.WriteString(chunk.Content)
 			if chunk.Content != "" || chunk.Thinking != "" {

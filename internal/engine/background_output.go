@@ -2,9 +2,13 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/baphled/flowstate/internal/tool"
@@ -254,7 +258,12 @@ func (b *BackgroundOutputTool) blockUntilComplete(ctx context.Context, taskID st
 //   - A map containing task ID, status, result, error, and optional full_session flag.
 //
 // Side effects:
-//   - None.
+//   - When task.Error is non-nil, logs the raw error server-side with a
+//     correlation_id and emits the same id in the returned map under
+//     "correlation_id" so a support lookup can find the full payload.
+//     The "error" field surfaced to the LLM/UI is a sanitised canonical
+//     message — never the raw provider error text. This mirrors the
+//     internal/api/errors.go pattern shipped in fc7e62e.
 func (b *BackgroundOutputTool) buildResultOutput(task *BackgroundTask, fullSession bool) map[string]interface{} {
 	output := map[string]interface{}{
 		"task_id": task.ID,
@@ -266,7 +275,9 @@ func (b *BackgroundOutputTool) buildResultOutput(task *BackgroundTask, fullSessi
 	}
 
 	if task.Error != nil {
-		output["error"] = task.Error.Error()
+		safeMsg, correlationID := sanitiseTaskError(task.ID, task.Error)
+		output["error"] = safeMsg
+		output["correlation_id"] = correlationID
 	}
 
 	if fullSession {
@@ -274,6 +285,54 @@ func (b *BackgroundOutputTool) buildResultOutput(task *BackgroundTask, fullSessi
 	}
 
 	return output
+}
+
+// sanitiseTaskError maps a background-task error to a safe canonical
+// message and a correlation id for log lookup. The raw error is logged
+// server-side; only the canonical message and id reach the LLM and the
+// chat UI. This is the same shape as internal/api/errors.go.clientError
+// so a single audit pattern covers HTTP, SSE, WS, and tool-result error
+// surfaces.
+//
+// The mapping is intentionally coarse — three buckets (rate_limited,
+// stream_error, internal). The chat UI's defensive filter keys on these
+// strings to render friendly fallbacks ("Sub-task was rate-limited —
+// please try again in a moment.") rather than the raw JSON.
+//
+// Expected:
+//   - taskID is the background task identifier; included in the slog
+//     entry so operators can join it with bus events.
+//   - err is the raw error from the failing delegation path; never nil
+//     when this helper is called.
+//
+// Returns:
+//   - safeMsg: a short, canonical, user-safe error message.
+//   - correlationID: a hex-encoded random id paired with the slog entry.
+//
+// Side effects:
+//   - Emits a slog.Error entry tagged "background_task_error" carrying
+//     correlation_id, task_id, and the raw error string.
+func sanitiseTaskError(taskID string, err error) (safeMsg, correlationID string) {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	correlationID = hex.EncodeToString(b)
+
+	raw := err.Error()
+	switch {
+	case strings.Contains(raw, "rate_limit") || strings.Contains(raw, "429"):
+		safeMsg = "rate limited — please retry shortly"
+	case strings.Contains(raw, "delegation stream error") || strings.Contains(raw, "stream error"):
+		safeMsg = "sub-task stream failed"
+	default:
+		safeMsg = "sub-task failed"
+	}
+
+	slog.Error("background_task_error",
+		"correlation_id", correlationID,
+		"task_id", taskID,
+		"error", raw,
+	)
+	return safeMsg, correlationID
 }
 
 // isTerminalStatus reports whether a status is in a terminal state.

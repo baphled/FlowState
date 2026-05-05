@@ -219,6 +219,24 @@ var _ = Describe("DelegateTool lifecycle", func() {
 	})
 
 	Describe("Gap 4: formatDelegationOutput and enriched Result", func() {
+		Describe("UnwrapTaskResult", func() {
+			It("strips the canonical wrapper that formatDelegationOutput emits", func() {
+				wrapped := engine.FormatDelegationOutput("inner agent text")
+				Expect(engine.UnwrapTaskResult(wrapped)).To(Equal("inner agent text"))
+			})
+
+			It("returns input unchanged when no wrapper is present (defensive — never partial-strips)", func() {
+				Expect(engine.UnwrapTaskResult("plain content")).To(Equal("plain content"))
+				Expect(engine.UnwrapTaskResult("<task_result>opening only")).To(Equal("<task_result>opening only"))
+				Expect(engine.UnwrapTaskResult("closing only</task_result>")).To(Equal("closing only</task_result>"))
+			})
+
+			It("preserves multi-line inner content verbatim", func() {
+				inner := "first line\n\nsecond line\nthird line"
+				Expect(engine.UnwrapTaskResult(engine.FormatDelegationOutput(inner))).To(Equal(inner))
+			})
+		})
+
 		Describe("formatDelegationOutput", func() {
 			It("wraps the response in a task_result block", func() {
 				output := engine.FormatDelegationOutput("the agent response")

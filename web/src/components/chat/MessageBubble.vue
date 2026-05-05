@@ -8,6 +8,7 @@ import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
 import GenericTool from '@/components/tools/GenericTool.vue'
 import { getToolComponent } from '@/tools/toolRegistry'
 import { buildToolRenderSpec } from '@/views/toolRenderSpec'
+import { sanitiseMessageContent } from '@/lib/messageContentBackstop'
 
 defineOptions({ name: 'MessageBubble' })
 
@@ -103,6 +104,23 @@ const isPlain = computed(
     !isDelegationStarted.value &&
     !isDelegation.value &&
     !isThinking.value,
+)
+
+// Defensive backstop for the May 2026 chat-UI leak class (session
+// 2d8dc0ac). The backend is the primary fix surface — see
+// internal/streaming.IsControlEvent, internal/engine.UnwrapTaskResult,
+// internal/engine.sanitiseTaskError. This computed catches anything
+// that slips through (e.g. session loaded from disk persisted before
+// the fix shipped) so non-technical users never see raw harness JSON,
+// `<task_result>` markers, or provider stack traces in the chat bubble.
+// The friendly fallback string is rendered verbatim — no markdown
+// processing — to avoid re-introducing exotic content via the same
+// surface the backstop is protecting.
+const sanitisedAssistantContent = computed(() =>
+  sanitiseMessageContent(props.message.content ?? ''),
+)
+const sanitisedPlainContent = computed(() =>
+  sanitiseMessageContent(props.message.content ?? ''),
 )
 
 const displayRole = computed(() =>
@@ -216,9 +234,14 @@ async function handleRevert(): Promise<void> {
       <span class="message-role">{{ displayRole }}</span>
       <MarkdownRenderer
         v-if="props.message.role === 'assistant'"
-        :content="props.message.content"
+        :content="sanitisedAssistantContent.content"
+        :data-leak-backstop="sanitisedAssistantContent.appliedFilter || undefined"
       />
-      <p v-else class="message-content">{{ props.message.content }}</p>
+      <p
+        v-else
+        class="message-content"
+        :data-leak-backstop="sanitisedPlainContent.appliedFilter || undefined"
+      >{{ sanitisedPlainContent.content }}</p>
       <div v-if="showCopyButton" class="message-actions">
         <span
           v-if="isFailedSend"
