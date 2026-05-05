@@ -145,6 +145,74 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(toolCalls[0].ToolInput).To(Equal("ls -la"))
 		})
 
+		It("populates ToolInput for tools outside the hand-coded allowlist via the tiered fallback", func() {
+			// Regression: tool_call messages for delegate / search_nodes /
+			// coordination_store / MCP tools previously persisted with empty
+			// ToolInput because the accumulator only knew the bash/read/write
+			// allowlist. The tiered fallback in tooldisplay.PrimaryArgValue
+			// must produce a useful display string for these too.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name:      "search_nodes",
+					Arguments: map[string]any{"query": "FlowState recall", "limit": 10},
+				},
+			}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "delegate",
+					Arguments: map[string]any{
+						"subagent_type": "senior-engineer",
+						"message":       "implement the fallback",
+					},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(2))
+			Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
+			Expect(toolCalls[0].ToolInput).To(Equal("FlowState recall"))
+			Expect(toolCalls[1].ToolName).To(Equal("delegate"))
+			Expect(toolCalls[1].ToolInput).To(Equal("senior-engineer"))
+		})
+
+		It("redacts sensitive arg values before persisting them as ToolInput", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					Name: "external_api",
+					Arguments: map[string]any{
+						"api_key": "sk-real-key-do-not-leak",
+					},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var toolCalls []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "tool_call" {
+					toolCalls = append(toolCalls, m)
+				}
+			}
+			Expect(toolCalls).To(HaveLen(1))
+			Expect(toolCalls[0].ToolInput).NotTo(ContainSubstring("sk-real-key"))
+			Expect(toolCalls[0].ToolInput).To(ContainSubstring("[REDACTED]"))
+		})
+
 		It("stores tool_call message before the tool_result message", func() {
 			rawCh := make(chan provider.StreamChunk, 3)
 			rawCh <- provider.StreamChunk{
