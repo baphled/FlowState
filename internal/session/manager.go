@@ -831,18 +831,25 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		return nil, ErrSessionNotFound
 	}
 
-	sess.Messages = append(sess.Messages, Message{
-		ID:        uuid.New().String(),
-		Role:      "user",
-		Content:   message,
-		AgentID:   sess.AgentID,
-		Timestamp: time.Now(),
-	})
-	sess.UpdatedAt = time.Now()
+	// Resolve the agent ID for this turn once and stamp both the user
+	// message and the downstream streaming/accumulator path with the same
+	// value. Previously the user message was pinned to sess.AgentID (the
+	// creation agent) while the streaming path resolved to
+	// CurrentAgentID || AgentID, so a mid-session agent switch left the
+	// user's bubble rendering under the original agent and the assistant
+	// reply under the new one — see Bug Fixes/Agent Stamping Asymmetry.
 	agentID := sess.AgentID
 	if sess.CurrentAgentID != "" {
 		agentID = sess.CurrentAgentID
 	}
+	sess.Messages = append(sess.Messages, Message{
+		ID:        uuid.New().String(),
+		Role:      "user",
+		Content:   message,
+		AgentID:   agentID,
+		Timestamp: time.Now(),
+	})
+	sess.UpdatedAt = time.Now()
 	modelOverride := sess.CurrentModelID
 	providerOverride := sess.CurrentProviderID
 	// Capture prior messages before releasing the lock so we can pass them

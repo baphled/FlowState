@@ -1323,6 +1323,43 @@ var _ = Describe("Manager", func() {
 					"UpdateSessionAgent must write the .meta.json sidecar so a fresh process can restore the user's last-selected agent")
 				Expect(loaded.CurrentAgentID).To(Equal("agent-persisted"))
 			})
+
+			It("stamps user messages with the current agent so user and assistant messages share the same agent label", func() {
+				// Bug: user messages were stamped with sess.AgentID (creation
+				// agent) while the assistant-stamping path resolved to
+				// CurrentAgentID || AgentID. Result: a user picks "Planner",
+				// switches mid-session to "API-Engineer", submits a turn —
+				// their own bubble renders under "Planner" while the reply
+				// renders under "API-Engineer". Pin the symmetric semantic:
+				// when CurrentAgentID is set, user messages carry it too.
+				Expect(mgr.UpdateSessionAgent(sess.ID, "agent-b")).To(Succeed())
+
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "hello after switch")
+				Expect(err).NotTo(HaveOccurred())
+
+				stored, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stored.Messages).NotTo(BeEmpty())
+				Expect(stored.Messages[0].Role).To(Equal("user"))
+				Expect(stored.Messages[0].AgentID).To(Equal("agent-b"),
+					"user message must be stamped with the active agent (CurrentAgentID), not the creation agent — otherwise the user's bubble and the reply render under different agent labels")
+			})
+
+			It("stamps user messages with the creation agent when no switch has occurred", func() {
+				// Symmetric guard: when CurrentAgentID is empty, the resolved
+				// agent ID is the creation AgentID. Pin that the user
+				// message carries it (i.e. the resolution rule is the same
+				// as the streaming path, not "always sess.AgentID").
+				mockStream.addChunk(provider.StreamChunk{Done: true})
+				_, err := mgr.SendMessage(ctx, sess.ID, "hello no switch")
+				Expect(err).NotTo(HaveOccurred())
+
+				stored, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stored.Messages).NotTo(BeEmpty())
+				Expect(stored.Messages[0].AgentID).To(Equal("agent-a"))
+			})
 		})
 	})
 
