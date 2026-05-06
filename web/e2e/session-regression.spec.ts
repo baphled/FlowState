@@ -15,7 +15,8 @@ import * as path from 'path'
  *   #2 single user bubble per send (no duplicates)          → 93bf40e
  *   #3 activity indicator visible during streaming, hidden  → Track A streaming UX
  *   #4 model+provider chip non-empty in `on M · P` format   → bc8ffbf, a1675ee
- *   #5 tool-trigger toast titled "Working" appears          → 3f176a4
+ *   #5 tool-trigger toast renders on tool_call SSE event    → 3f176a4
+ *      (deterministic — drives a fake EventSource, no LLM)
  *   #6 no raw JSON / wire-format leakage in chat thread     → 3537381, e81cb8d
  *   #7 multi-turn context retention across two turns        → 894b43c
  *   #8 delegation card click → child session                → 93bf40e (skipped: not
@@ -463,40 +464,171 @@ test.describe('session regression — live backend', () => {
     })
   })
 
-  test('#5: tool-trigger toast appears when the agent fires a tool', async ({ page }) => {
+  /**
+   * #5 — tool-trigger toast wire-contract test.
+   *
+   * History: the original variant (commit 6b0e6fe, refined in 3de25c8) drove
+   * the live backend with a prompt engineered to coax default-assistant into
+   * issuing a `read` tool_call within 30s, then asserted the rolling
+   * "Working" toast appeared. The probabilistic LLM step (does the model
+   * decide to use a tool on this prompt, in this run, with this temperature)
+   * caused ~37% of runs to fail timing out before any tool_call SSE event
+   * landed. The flake had nothing to do with the regression the test was
+   * meant to guard (commit 3f176a4 — the recordToolActivity toast plumbing
+   * in chatStore.ts:1701).
+   *
+   * The fix is structural: split contracts.
+   *
+   *   - This test (the regression guard) covers the FRONTEND contract:
+   *     "given a `tool_call` SSE event arrives, the chat store routes it
+   *     through recordToolActivity and the toast renders within ms".
+   *     Determinism: full. The seam mocked is the `EventSource` constructor
+   *     itself, so the test exercises the real chat store, the real toast
+   *     composable, the real ToastContainer component and the real Pinia
+   *     reactivity — only the wire is faked.
+   *
+   *   - The probabilistic "the LLM decides to use a tool" check is dropped
+   *     entirely. There is no reliable way to drive tool use from a fixed
+   *     prompt against an external model, and bringing it back later as a
+   *     separate file (its own project, allowed to retry, allowed to skip
+   *     when the API key is missing) is the correct path. Recorded as an
+   *     adjacent gap in the commit message.
+   *
+   * Mocking strategy:
+   *
+   *   1. addInitScript installs a fake EventSource on globalThis BEFORE any
+   *      app code runs. The chat store's `subscribeSessionStream` (api/index.ts:196)
+   *      calls `new EventSource(url)`, which now resolves to the fake.
+   *   2. The fake exposes `window.__flowstateDispatchSSE(payload)` so the
+   *      test driver can inject a single, well-formed `tool_call` event.
+   *   3. POST /sessions, GET /sessions, POST /messages and GET /messages
+   *      are all mocked via `page.route` so the test is fully hermetic —
+   *      no backend dependency, no LLM, no network egress.
+   */
+  test('#5: tool-trigger toast renders on tool_call SSE event (deterministic)', async ({ page }) => {
     ensureEvidenceDir(EVIDENCE_DIR)
 
-    // Pre-create a clean session for the tool-trigger test.
-    const createRes = await page.request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'default-assistant' },
-    })
-    expect(createRes.ok(), `tool-test session create failed: ${createRes.status()}`).toBeTruthy()
-    const created = (await createRes.json()) as { id: string; agentId: string; createdAt: string; updatedAt: string }
-    fs.writeFileSync(path.join(EVIDENCE_DIR, 'tool-session-id.txt'), created.id)
+    const SESSION_ID = 'regression-session-tool-toast'
+    const AGENT_ID = 'default-assistant'
+    const NOW_ISO = new Date().toISOString()
 
+    // ---- Step 1: install fake EventSource BEFORE the app boots --------
+    //
+    // addInitScript runs in every page (including after navigations),
+    // before any of the app's bundled scripts execute. The fake mirrors
+    // the same surface chatStore.test.ts's FakeEventSource exposes
+    // (constructor + addEventListener + close) so both unit and e2e
+    // exercise the same wire-contract.
+    await page.addInitScript(() => {
+      class FakeEventSource {
+        url: string
+        readyState = 1
+        listeners: Record<string, Array<(event: unknown) => void>> = {}
+        constructor(url: string) {
+          this.url = url
+          ;(window as unknown as { __flowstateFakeES?: FakeEventSource[] }).__flowstateFakeES =
+            (window as unknown as { __flowstateFakeES?: FakeEventSource[] }).__flowstateFakeES ?? []
+          ;(window as unknown as { __flowstateFakeES: FakeEventSource[] }).__flowstateFakeES.push(this)
+        }
+        addEventListener(type: string, listener: (event: unknown) => void): void {
+          this.listeners[type] = this.listeners[type] ?? []
+          this.listeners[type].push(listener)
+        }
+        removeEventListener(): void { /* noop — close path doesn't read from removed */ }
+        close(): void {
+          this.readyState = 2
+        }
+        dispatch(payload: string): void {
+          for (const cb of this.listeners['message'] ?? []) {
+            cb({ data: payload } as unknown)
+          }
+        }
+      }
+      ;(globalThis as unknown as { EventSource: unknown }).EventSource = FakeEventSource
+      // Driver hook: dispatch into the most-recently-constructed fake. The
+      // chat store opens at most one EventSource at a time (see
+      // useSessionStream.connect's prior-disconnect contract), so the last
+      // fake is always the active one.
+      ;(window as unknown as { __flowstateDispatchSSE: (payload: string) => boolean }).__flowstateDispatchSSE = (
+        payload: string,
+      ): boolean => {
+        const all = (window as unknown as { __flowstateFakeES?: { dispatch: (p: string) => void }[] }).__flowstateFakeES
+        if (!all || all.length === 0) return false
+        all[all.length - 1].dispatch(payload)
+        return true
+      }
+    })
+
+    // ---- Step 2: mock every HTTP path the chat round-trip touches ----
+    //
+    // The chat store calls (in order):
+    //   GET  /api/v1/sessions            — restoreStateFromBackend
+    //   GET  /api/v1/sessions/{id}/messages — initial history fetch
+    //   POST /api/v1/sessions/{id}/messages — sendMessage
+    // All three return canned, minimal responses. The `subscribeSessionStream`
+    // call constructs our fake EventSource — no HTTP traffic to mock there.
     await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+      const method = route.request().method()
+      if (method === 'GET') {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify([
             {
-              id: created.id,
-              agentId: created.agentId,
-              currentAgentId: created.agentId,
+              id: SESSION_ID,
+              agentId: AGENT_ID,
+              currentAgentId: AGENT_ID,
               title: '',
               messageCount: 0,
-              createdAt: created.createdAt,
-              updatedAt: created.updatedAt,
+              createdAt: NOW_ISO,
+              updatedAt: NOW_ISO,
               isStreaming: false,
             },
           ]),
         })
         return
       }
-      await route.continue()
+      if (method === 'POST') {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: SESSION_ID,
+            agentId: AGENT_ID,
+            currentAgentId: AGENT_ID,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+          }),
+        })
+        return
+      }
+      await route.fallback()
     })
 
+    await page.route(`**/api/v1/sessions/${SESSION_ID}/messages`, async (route) => {
+      const method = route.request().method()
+      if (method === 'GET') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+        return
+      }
+      if (method === 'POST') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: SESSION_ID,
+            agentId: AGENT_ID,
+            currentAgentId: AGENT_ID,
+            createdAt: NOW_ISO,
+            updatedAt: NOW_ISO,
+          }),
+        })
+        return
+      }
+      await route.fallback()
+    })
+
+    // ---- Step 3: open the chat, pin to our session ------------------
     await page.goto('/chat')
     await page.evaluate(
       ({ sid }) => {
@@ -504,36 +636,71 @@ test.describe('session regression — live backend', () => {
         localStorage.setItem('chat.currentSessionId', sid)
         localStorage.setItem('chat.agentId', 'default-assistant')
       },
-      { sid: created.id },
+      { sid: SESSION_ID },
     )
     await page.reload()
     await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
     await expect(page.getByTestId('agent-picker')).toContainText(/default assistant/i, { timeout: 10_000 })
 
-    // Prompt that reliably triggers a tool call. Verified manually
-    // against the live backend: default-assistant hits read with this
-    // exact phrasing, producing a tool_call SSE event within ~5s.
-    const PROMPT =
-      'Read the file /tmp/flowstate-tooltest-DOES-NOT-EXIST.txt and tell me whether it exists. If it does not, just say "MISSING".'
-    await page.getByTestId('message-input').fill(PROMPT)
+    // ---- Step 4: send a message — opens the (fake) EventSource -----
+    //
+    // The prompt content is irrelevant; what matters is that sendMessage
+    // runs `sessionStream.connect`, which calls
+    // `subscribeSessionStream` → `new EventSource(...)` → our fake.
+    // After click, poll until the fake is in place, then dispatch the
+    // tool_call payload directly.
+    await page.getByTestId('message-input').fill('test')
     await page.getByTestId('send-button').click()
 
-    // The rolling tool-activity toast (chatStore.recordToolActivity)
-    // spawns on the FIRST tool_call event with title "Working" — see
-    // chatStore.ts:1673. The toast persists until 1.2s after the LAST
-    // tool_call, so the visibility window is generous (≥1.2s, typically
-    // longer if the agent makes multiple tool calls).
-    const toastTitle = page.getByTestId('toast-container').getByTestId('toast-title').filter({ hasText: 'Working' })
-    await expect(toastTitle, '#5 tool-trigger toast titled "Working" must appear within 30s').toBeVisible({
-      timeout: 30_000,
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(
+            () =>
+              (window as unknown as { __flowstateFakeES?: unknown[] }).__flowstateFakeES?.length ?? 0,
+          ),
+        { timeout: 5_000, message: 'fake EventSource was never constructed by the chat store' },
+      )
+      .toBeGreaterThan(0)
+
+    // ---- Step 5: dispatch a tool_call SSE event --------------------
+    //
+    // Payload mirrors the Go SSE wire format (writeSSEToolCall in
+    // internal/api/server.go:1326): a JSON object with `type: "tool_call"`,
+    // a tool name and a status. parseSSEPayload (sseEvent.ts:251) routes
+    // this into the chat store's `handleToolCallEvent`, which calls
+    // `recordToolActivity('bash')` and spawns the rolling toast at
+    // chatStore.ts:1711.
+    const dispatched = await page.evaluate(() => {
+      const payload = JSON.stringify({
+        type: 'tool_call',
+        name: 'bash',
+        status: 'running',
+        input: '{"command":"ls"}',
+      })
+      return (
+        window as unknown as { __flowstateDispatchSSE: (p: string) => boolean }
+      ).__flowstateDispatchSSE(payload)
+    })
+    expect(dispatched, 'fake EventSource refused to dispatch — no instance').toBe(true)
+
+    // ---- Step 6: assert toast renders --------------------------------
+    //
+    // Tight 5s timeout: we just synchronously dispatched the event, so the
+    // toast should appear within a single Vue tick + DOM paint. A blown
+    // budget here means the toast plumbing is broken — exactly the
+    // regression we want to catch.
+    const toastTitle = page
+      .getByTestId('toast-container')
+      .getByTestId('toast-title')
+      .filter({ hasText: 'Working' })
+    await expect(toastTitle, '#5 tool-trigger toast titled "Working" must appear within 5s').toBeVisible({
+      timeout: 5_000,
     })
 
     await page.screenshot({
       path: path.join(EVIDENCE_DIR, 'tool-trigger-toast.png'),
       fullPage: true,
     }).catch(() => {})
-
-    // Let the agent finish so the test doesn't leak a streaming session.
-    await expect(page.getByTestId('agent-activity-indicator')).toBeHidden({ timeout: 90_000 }).catch(() => {})
   })
 })
