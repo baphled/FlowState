@@ -941,7 +941,9 @@ func (p *Provider) buildRequestParams(
 	}
 
 	defs := resolveModelDefaults(req.Model)
-	betas := defs.betaHeaders(isThinkingActive(&params), len(tools) > 0)
+	betas := defs.betaHeaders(
+		isThinkingActive(&params), len(tools) > 0, params.MaxTokens,
+	)
 	opts := buildBetaHeaderOptions(betas)
 
 	return params, opts, nil

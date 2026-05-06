@@ -1127,48 +1127,48 @@ var _ = Describe("interleaved-thinking beta header", func() {
 	Describe("classifier — modelDefaults.betaHeaders", func() {
 		It("Sonnet 4.5 emits the header when thinking is on AND tools are present", func() {
 			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
-			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).To(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Sonnet 4.5 omits the header when thinking is on but tools are empty", func() {
 			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
-			Expect(defs.betaHeaders(true, false)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, false, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Sonnet 4.5 omits the header when thinking is off but tools are present", func() {
 			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
-			Expect(defs.betaHeaders(false, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(false, true, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Opus 4.7 omits the header even with thinking on AND tools present (auto-enabled server-side)", func() {
 			defs := resolveModelDefaults("claude-opus-4-7-20251201")
-			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader),
+			Expect(defs.betaHeaders(true, true, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader),
 				"4.6+ family auto-enables interleaving; explicit header is rejected on Bedrock/Vertex")
 		})
 
 		It("Opus 4.6 omits the header (auto-enabled server-side)", func() {
 			defs := resolveModelDefaults("claude-opus-4-6-20251020")
-			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Sonnet 4.6 omits the header (auto-enabled server-side)", func() {
 			defs := resolveModelDefaults("claude-sonnet-4-6-20251020")
-			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader))
 		})
 
-		It("Sonnet 3.7 omits the header (interleaving not supported)", func() {
+		It("Sonnet 3.7 omits the interleaved-thinking header (interleaving not supported)", func() {
 			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
-			Expect(defs.betaHeaders(true, true)).NotTo(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).NotTo(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Opus 4.1 emits the header when thinking is on AND tools are present", func() {
 			defs := resolveModelDefaults("claude-opus-4-1-20250805")
-			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).To(ContainElement(interleavedThinkingBetaHeader))
 		})
 
 		It("Haiku 4.5 emits the header when thinking is on AND tools are present", func() {
 			defs := resolveModelDefaults("claude-haiku-4-5-20251020")
-			Expect(defs.betaHeaders(true, true)).To(ContainElement(interleavedThinkingBetaHeader))
+			Expect(defs.betaHeaders(true, true, 4096)).To(ContainElement(interleavedThinkingBetaHeader))
 		})
 	})
 
@@ -1211,7 +1211,13 @@ var _ = Describe("interleaved-thinking beta header", func() {
 				"Opus 4.7 auto-enables interleaving; explicit header fails on Bedrock/Vertex")
 		})
 
-		It("Sonnet 3.7 + enabled + tools → no beta opt", func() {
+		It("Sonnet 3.7 + enabled + tools → opts must NOT include interleaved-thinking", func() {
+			// Sonnet 3.7 does not support interleaving, so the
+			// interleaved-thinking header must never appear. The
+			// request DOES however get the Sonnet 3.7
+			// token-efficient-tools beta because tools are present —
+			// pinned in the dedicated Sonnet 3.7 spec block below.
+			// Here we only assert the interleaved-thinking gate.
 			req := provider.ChatRequest{
 				Model:        "claude-3-7-sonnet-20250219",
 				Messages:     []provider.Message{{Role: "user", Content: "hi"}},
@@ -1221,8 +1227,13 @@ var _ = Describe("interleaved-thinking beta header", func() {
 			}
 			_, opts, err := p.buildRequestParams(req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(opts).To(BeEmpty(),
-				"Sonnet 3.7 does not support interleaving — header must not be sent")
+			Expect(opts).To(HaveLen(1),
+				"Sonnet 3.7 with tools earns the token-efficient-tools "+
+					"beta but never the interleaved-thinking beta")
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.betaHeaders(true, true, 16000)).
+				NotTo(ContainElement(interleavedThinkingBetaHeader),
+					"Sonnet 3.7 does not support interleaving — header must not be sent")
 		})
 
 		It("Sonnet 4.5 + thinking on but tools EMPTY → no beta opt", func() {
@@ -1291,5 +1302,204 @@ var _ = Describe("interleaved-thinking beta header", func() {
 var _ = Describe("interleavedThinkingBetaHeader wire spelling", func() {
 	It("matches the published Anthropic beta name", func() {
 		Expect(interleavedThinkingBetaHeader).To(Equal("interleaved-thinking-2025-05-14"))
+	})
+})
+
+// Beta-header injection — Sonnet 3.7 (token-efficient-tools and
+// output-128k).
+//
+// Sonnet 3.7 ships two opt-in betas that callers should not have to
+// manage manually:
+//
+//   - `token-efficient-tools-2025-02-19` reduces output tokens on
+//     tool-using turns by ~14-70%. Harmless when the model does not
+//     emit a tool_use block, so the gate is "tools are declared".
+//   - `output-128k-2025-02-19` lifts the default 64k max_tokens cap to
+//     128k. Triggered by caller intent — when MaxTokens > 64000 we
+//     auto-attach the header so the upstream request is accepted.
+//
+// On Claude 4+ both headers are silently ignored on the direct API but
+// we strip them for request cleanliness. On Sonnet 3.7 they coexist
+// happily with one another (and with no other beta — Sonnet 3.7 does
+// not get the interleaved-thinking header).
+//
+// The classifier specs below pin the per-model matrix on pure data;
+// the wiring specs below assert that buildRequestParams plumbs the
+// matrix through to the per-call opts slice end-to-end.
+var _ = Describe("Sonnet 3.7 beta headers", func() {
+	var p *Provider
+
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	tool := provider.Tool{Name: "echo", Description: "echo input"}
+
+	Describe("classifier — modelDefaults.betaHeaders", func() {
+		It("Sonnet 3.7 + tools → token-efficient-tools header is present", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.betaHeaders(false, true, 4096)).
+				To(ContainElement(tokenEfficientToolsBetaHeader))
+		})
+
+		It("Sonnet 3.7 + max_tokens=128000 → output-128k header is present", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.betaHeaders(false, false, 128000)).
+				To(ContainElement(output128kBetaHeader))
+		})
+
+		It("Sonnet 3.7 + tools + max_tokens=100000 → BOTH headers are present", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			betas := defs.betaHeaders(false, true, 100000)
+			Expect(betas).To(ContainElement(tokenEfficientToolsBetaHeader))
+			Expect(betas).To(ContainElement(output128kBetaHeader))
+		})
+
+		It("Sonnet 3.7 + no tools + max_tokens=4096 → NEITHER header is present", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			betas := defs.betaHeaders(false, false, 4096)
+			Expect(betas).NotTo(ContainElement(tokenEfficientToolsBetaHeader))
+			Expect(betas).NotTo(ContainElement(output128kBetaHeader))
+		})
+
+		It("Sonnet 3.7 + max_tokens exactly at threshold (64000) → output-128k header NOT present", func() {
+			// The threshold is strictly greater-than: 64000 is the
+			// post-beta cap that's already legal without the header,
+			// so we must not opt in until the caller actually exceeds
+			// it. This pins the boundary so an off-by-one regression
+			// on the inequality surfaces here.
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.betaHeaders(false, false, 64000)).
+				NotTo(ContainElement(output128kBetaHeader))
+		})
+
+		It("Opus 4.7 + tools + max_tokens=128000 → NEITHER Sonnet 3.7 beta is present", func() {
+			defs := resolveModelDefaults("claude-opus-4-7-20251201")
+			betas := defs.betaHeaders(false, true, 128000)
+			Expect(betas).NotTo(ContainElement(tokenEfficientToolsBetaHeader),
+				"only Sonnet 3.7 honours token-efficient-tools — strip on 4.x")
+			Expect(betas).NotTo(ContainElement(output128kBetaHeader),
+				"only Sonnet 3.7 honours output-128k — strip on 4.x")
+		})
+
+		It("Sonnet 4.5 + tools → NEITHER Sonnet 3.7 beta is present", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
+			betas := defs.betaHeaders(false, true, 64000)
+			Expect(betas).NotTo(ContainElement(tokenEfficientToolsBetaHeader))
+			Expect(betas).NotTo(ContainElement(output128kBetaHeader))
+		})
+
+		It("Sonnet 3.7 + tools + thinking on → does NOT get interleaved-thinking", func() {
+			// Pins the coexistence contract: Sonnet 3.7 can earn the
+			// 3.7 betas but never the 4.x interleaved-thinking header.
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			betas := defs.betaHeaders(true, true, 100000)
+			Expect(betas).To(ContainElement(tokenEfficientToolsBetaHeader))
+			Expect(betas).To(ContainElement(output128kBetaHeader))
+			Expect(betas).NotTo(ContainElement(interleavedThinkingBetaHeader))
+		})
+	})
+
+	Describe("wiring — buildRequestParams threads the options through", func() {
+		It("Sonnet 3.7 + tools → opts include the token-efficient-tools beta", func() {
+			req := provider.ChatRequest{
+				Model:    "claude-3-7-sonnet-20250219",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:    []provider.Tool{tool},
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(HaveLen(1),
+				"tools-only request on Sonnet 3.7 emits exactly the "+
+					"token-efficient-tools beta")
+		})
+
+		It("Sonnet 3.7 + max_tokens=128000 → opts include the output-128k beta", func() {
+			req := provider.ChatRequest{
+				Model:     "claude-3-7-sonnet-20250219",
+				Messages:  []provider.Message{{Role: "user", Content: "hi"}},
+				MaxTokens: 128000,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(HaveLen(1),
+				"max_tokens above the 64k threshold on Sonnet 3.7 "+
+					"emits exactly the output-128k beta")
+		})
+
+		It("Sonnet 3.7 + tools + max_tokens=100000 → opts include BOTH betas", func() {
+			req := provider.ChatRequest{
+				Model:     "claude-3-7-sonnet-20250219",
+				Messages:  []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:     []provider.Tool{tool},
+				MaxTokens: 100000,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(HaveLen(2),
+				"both betas must be wired through when both gates fire")
+		})
+
+		It("Sonnet 3.7 + no tools + max_tokens=4096 → opts are empty", func() {
+			req := provider.ChatRequest{
+				Model:     "claude-3-7-sonnet-20250219",
+				Messages:  []provider.Message{{Role: "user", Content: "hi"}},
+				MaxTokens: 4096,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"steady-state Sonnet 3.7 request must remain identical to today")
+		})
+
+		It("Opus 4.7 + tools + max_tokens=200000 (clamped to 128k) → opts are empty", func() {
+			// Opus 4.7's per-model max_tokens ceiling is 128k; we
+			// pass 128000 directly because applyMaxTokens does not
+			// clamp, but the spirit of the brief is "Opus 4.7 with a
+			// large budget gets neither 3.7 beta". Use exactly 128000
+			// to match the model's documented cap and assert no 3.7
+			// betas appear regardless of how big the request is.
+			req := provider.ChatRequest{
+				Model:     "claude-opus-4-7-20251201",
+				Messages:  []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:     []provider.Tool{tool},
+				MaxTokens: 128000,
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"Claude 4.x must not emit Sonnet 3.7 betas — request must stay clean")
+		})
+
+		It("Sonnet 4.5 + tools → opts must NOT include any Sonnet 3.7 beta", func() {
+			// Sonnet 4.5 does emit interleaved-thinking when thinking
+			// is on; here we leave thinking off so the only gate that
+			// could fire is the 3.7-only ones, and they must not.
+			req := provider.ChatRequest{
+				Model:    "claude-sonnet-4-5-20251020",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:    []provider.Tool{tool},
+			}
+			_, opts, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"Sonnet 4.5 with no thinking must produce zero beta opts — "+
+					"only the 3.7 family gets these betas")
+		})
+	})
+
+	// Wire-spelling pins for the two new beta header constants. The
+	// strings must match the published Anthropic names exactly —
+	// Anthropic checks for these literals.
+	Describe("wire spelling", func() {
+		It("tokenEfficientToolsBetaHeader matches the published name", func() {
+			Expect(tokenEfficientToolsBetaHeader).To(Equal("token-efficient-tools-2025-02-19"))
+		})
+
+		It("output128kBetaHeader matches the published name", func() {
+			Expect(output128kBetaHeader).To(Equal("output-128k-2025-02-19"))
+		})
 	})
 })
