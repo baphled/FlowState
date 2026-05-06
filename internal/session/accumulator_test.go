@@ -1002,6 +1002,115 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs).To(HaveLen(1))
 			Expect(assistantMsgs[0].Content).To(Equal("only once"))
 		})
+
+		// Bug pin (E.1 / F.2): the OpenAI-compat layer only emits a
+		// terminal Done chunk when FinishReason != "" (see
+		// internal/provider/openaicompat/openaicompat.go:229-232). A
+		// thinking-only turn from a reasoning provider (zai/glm-4.6,
+		// DeepSeek-R1) can finish with no FinishReason chunk — the
+		// goroutine then close()s rawCh without ever emitting Done. The
+		// accumulator's `!ok` branch flushed thinking + content and
+		// returned without calling synthesizePlaceholderAssistant, so
+		// the persisted history again held a stranded Role: "thinking"
+		// with no enclosing assistant — the same chat-stalls symptom
+		// f918bb9f was meant to fix. The synthesis must fire on this
+		// end-of-stream path too.
+		It("synthesises a placeholder assistant message when only thinking arrived before channel close (no terminal Done)", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "weighing the request",
+				Signature:  "sig-close-only",
+				ModelID:    "glm-4.6",
+				ProviderID: "zai",
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"a thinking-only turn that ends with rawCh-close (no Done) must "+
+					"still produce an assistant placeholder — otherwise the chat UI "+
+					"sees no assistant turn to render and the session appears stalled, "+
+					"the same symptom f918bb9f closed for the Done-then-close path")
+			Expect(assistantMsgs[0].Content).To(BeEmpty(),
+				"the placeholder carries no content because the model produced none")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the accumulated thinking blocks must attach to the placeholder so "+
+					"the next turn can replay them via WithPriorMessages — without "+
+					"this Anthropic disables thinking continuity silently")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("weighing the request"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-close-only"))
+			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"),
+				"agent stamping is symmetric with the Done-then-close path")
+			Expect(assistantMsgs[0].ModelName).To(Equal("glm-4.6"),
+				"the engine-stamped model carries onto the placeholder so reload sees the producer")
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+		})
+
+		It("does not synthesise a placeholder when only content (no thinking) arrived before channel close", func() {
+			// Regression guard: pure-content close-without-Done turns are
+			// already covered by the "flushes accumulated assistant
+			// content on channel close" spec above — they produce exactly
+			// one assistant message, not two. The synthesis gate
+			// (len(thinkingBlocks) > 0) must keep this case unchanged.
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{Content: "no thinking here"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"content-bearing close-without-Done must continue to produce exactly "+
+					"one assistant message; the synthesis path must not double-fire")
+			Expect(assistantMsgs[0].Content).To(Equal("no thinking here"))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty())
+		})
+
+		It("does not synthesise a placeholder when a tool call preceded channel close (thinking-then-tool-call shape)", func() {
+			// Regression guard mirroring the existing Done-path
+			// tool-call gate: thinking-then-tool-call is a normal turn
+			// shape regardless of whether the stream ends with Done or
+			// raw-channel close. Adding a placeholder here would change
+			// the wire format for every reasoning-capable provider that
+			// also uses tools.
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Thinking: "deciding which tool", Signature: "sig-T"}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "call-close",
+					Name:      "search",
+					Arguments: map[string]any{"query": "anything"},
+				},
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(BeEmpty(),
+				"thinking-then-tool-call ending with rawCh-close must NOT produce a "+
+					"synthesised placeholder; the tool_call is the visible shape of the turn")
+		})
 	})
 })
 

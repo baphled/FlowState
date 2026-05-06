@@ -1278,6 +1278,97 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 				}
 			}
 		})
+
+		// Bug pin (F.3 — multi-turn coherence): the load-bearing
+		// guarantee for the OpenAI-compat reasoning path. When turn 1
+		// is a thinking-only turn that ends with rawCh-close (no Done
+		// chunk — the openaicompat layer only emits Done when
+		// FinishReason != ""), the accumulator must still synthesise an
+		// assistant placeholder carrying the ThinkingBlocks, AND those
+		// blocks must round-trip into the turn-2 provider request
+		// payload. Without this, the agent loses its own reasoning
+		// context turn-over-turn — the user-visible "sessions not
+		// coherent" symptom from session 3c5374fd.
+		It("propagates ThinkingBlocks into the next-turn provider request when turn 1 was thinking-only and ended without a Done chunk", func() {
+			recorder := &recordingChunkProvider{
+				name: "recording",
+				// Turn 1 chunks: reasoning_content only, NO terminal
+				// Done chunk — mirrors what openaicompat.go:229-232
+				// produces when FinishReason stays empty for the whole
+				// stream (thinking-only zai/glm-4.6 turn).
+				chunks: []provider.StreamChunk{
+					{Thinking: "considering carefully", Signature: "sig-thinking-only"},
+				},
+			}
+
+			store := recall.NewEmptyContextStore("test-model")
+			eng := engine.New(engine.Config{
+				ChatProvider: recorder,
+				Manifest:     newSessionTestManifest(),
+				Store:        store,
+				TokenCounter: charCounter{},
+			})
+			mgr := session.NewManager(eng)
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx := context.Background()
+
+			// Turn 1 — reasoning-only stream that closes without Done.
+			// The accumulator must synthesise an assistant placeholder
+			// holding the ThinkingBlock; without this, turn 2 has no
+			// assistant message to replay.
+			ch1, err := mgr.SendMessage(ctx, sess.ID, "thinking-only-probe-1")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch1)
+
+			persisted, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			var assistantBlocks []provider.ThinkingBlock
+			var assistantSeen bool
+			for _, m := range persisted.Messages {
+				if m.Role == "assistant" {
+					assistantSeen = true
+					assistantBlocks = m.ThinkingBlocks
+				}
+			}
+			Expect(assistantSeen).To(BeTrue(),
+				"thinking-only turn ending with rawCh-close must produce an assistant "+
+					"placeholder Message — without it the chat UI sees nothing to render "+
+					"AND turn 2 has no assistant turn to replay")
+			Expect(assistantBlocks).To(HaveLen(1),
+				"the synthesised placeholder must carry the captured ThinkingBlock so "+
+					"turn 2 can replay reasoning continuity")
+			Expect(assistantBlocks[0].Thinking).To(Equal("considering carefully"))
+			Expect(assistantBlocks[0].Signature).To(Equal("sig-thinking-only"))
+
+			// Turn 2 — drive a follow-up turn so we capture the
+			// provider request payload. The replayed assistant message
+			// must carry the prior turn's ThinkingBlocks intact, or the
+			// model loses its own reasoning context turn-over-turn.
+			ch2, err := mgr.SendMessage(ctx, sess.ID, "thinking-only-probe-2")
+			Expect(err).NotTo(HaveOccurred())
+			drainStreamContent(ch2)
+
+			turn2Req := recorder.lastRequestForUser("thinking-only-probe-2")
+			Expect(turn2Req).NotTo(BeNil(), "no provider.request captured for turn 2")
+
+			var replayedAssistant *provider.Message
+			for i := range turn2Req.Messages {
+				if turn2Req.Messages[i].Role == "assistant" {
+					replayedAssistant = &turn2Req.Messages[i]
+					break
+				}
+			}
+			Expect(replayedAssistant).NotTo(BeNil(),
+				"turn 2 provider request must include the prior thinking-only turn — "+
+					"otherwise the agent loses its own reasoning context across turns "+
+					"(the user-visible 'sessions not coherent' symptom)")
+			Expect(replayedAssistant.ThinkingBlocks).To(Equal(assistantBlocks),
+				"turn 2 must carry the prior turn's ThinkingBlocks byte-identical to "+
+					"what the accumulator persisted on the placeholder")
+		})
 	})
 })
 

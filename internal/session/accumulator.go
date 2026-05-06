@@ -180,6 +180,26 @@ func AccumulateStream(
 				if !ok {
 					flushThinking(appender, s)
 					flushContent(appender, s)
+					// Symmetric with the chunk.Done and ctx.Done() paths
+					// below: when a turn produced reasoning only and the
+					// upstream channel closes without ever emitting a
+					// terminal Done chunk, still synthesise the
+					// placeholder assistant Message so the persisted
+					// history holds the thinking blocks under an
+					// assistant turn (and not as a stranded Role:
+					// "thinking" with no enclosing assistant). The
+					// OpenAI-compat layer only emits Done when
+					// FinishReason != "" (see
+					// internal/provider/openaicompat/openaicompat.go:229-232),
+					// so a thinking-only turn from a reasoning provider
+					// (zai/glm-4.6, DeepSeek-R1) hits this branch in
+					// production whenever the engine's own Done
+					// injection is bypassed (direct accumulator callers,
+					// future regressions). The synthesis is gated on
+					// the same predicates as the Done path —
+					// content-only and thinking-then-tool-call turns are
+					// untouched.
+					synthesizePlaceholderAssistant(appender, s)
 					return
 				}
 				applyChunk(appender, s, chunk)
