@@ -527,6 +527,79 @@ var _ = Describe("DelegateTool delegation lifecycle bus publication", func() {
 			Expect(captured.completedEvents()).To(BeEmpty(),
 				"delegation.completed must not fire on the failure path")
 		})
+
+		// Bug: only the success branch in executeSync called the seal
+		// helper. dispatchErr returned without sealing — the child
+		// session stayed "active" both in memory and on disk. Behaviour
+		// pinned: a delegation failure must seal the child session in
+		// memory AND persist the seal to the on-disk meta sidecar so the
+		// orchestrator never re-loads it as active. Reads back via the
+		// public LoadSessionMetadata helper — no internal-call peeking.
+		It("seals the child session in memory and on disk when the streamer fails", func() {
+			failingProvider := &mockProvider{
+				name:      "failing-provider",
+				streamErr: errors.New("stream init failed"),
+			}
+			failingManifest := agent.Manifest{
+				ID:                "failing-agent",
+				Name:              "Failing Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "fail"},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			failingEngine := engine.New(engine.Config{
+				ChatProvider: failingProvider,
+				Manifest:     failingManifest,
+			})
+			failingEngines := map[string]*engine.Engine{
+				"failing-agent": failingEngine,
+			}
+
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+
+			captured := newDelegationCapture(bus)
+
+			delegateTool := engine.NewDelegateTool(failingEngines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "failing-agent",
+					"message":       "this will fail",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+			Expect(err).To(HaveOccurred())
+
+			// The bus-published failed event carries the resolved child
+			// session id — that's how we recover the id without leaking
+			// internals. Pre-resolve failures emit empty ids; the
+			// dispatch-failure path emits a populated one.
+			failed := captured.failedEvents()
+			Expect(failed).To(HaveLen(1))
+			childID := failed[0].Data.ChildSessionID
+			Expect(childID).NotTo(BeEmpty(),
+				"dispatch-failure path must emit a populated child session id (the seal target)")
+
+			// In-memory seal: the child must no longer be active.
+			child, err := mgr.GetSession(childID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child.Status).NotTo(Equal(string(session.StatusActive)),
+				"delegation failure must seal the child in memory — leaving it active clutters the UI and risks replay collisions")
+
+			// On-disk seal: the persisted sidecar must reflect the seal
+			// so the orchestrator does not re-load it as active after
+			// restart.
+			loaded, err := session.LoadSessionMetadata(tmpDir, childID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil(),
+				"delegation failure must persist the seal — staying \"active\" on disk re-loads the failed child as active after restart")
+			Expect(loaded.Status).NotTo(Equal(string(session.StatusActive)),
+				"on-disk status must reflect the seal — the whole point of the persist step")
+		})
 	})
 
 	Context("executeSync delegation-not-allowed path (pre-resolve failure)", func() {
