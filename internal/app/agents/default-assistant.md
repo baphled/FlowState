@@ -33,11 +33,23 @@ context_management:
   compaction_threshold: 0.75
   embedding_model: nomic-embed-text
 delegation:
-  can_delegate: true
-  delegation_allowlist: []
+  can_delegate: false
+  delegation_table: {}
 hooks:
   before: []
   after: []
+# The default chat agent is the system fallback — every fresh session
+# without an explicit agent pick lands here. Pinning Sonnet as the seeded
+# default keeps the user's "general assistant" experience grounded in the
+# Anthropic stack they configured, regardless of whichever provider the
+# global config.yaml default happens to be (z.ai today). Permissive policy
+# leaves the operator free to swap models per-session via the picker.
+# See the May 2026 bug fix "Agent Provider Cascade" for the cascade rule
+# (UI > manifest > global).
+model_policy: "permissive"
+preferred_models:
+  - provider: anthropic
+    model: claude-sonnet-4-7
 ---
 
 # FlowState General-Purpose AI Assistant
