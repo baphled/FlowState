@@ -27,7 +27,25 @@ const (
 	StatusCompleted Status = "completed"
 	// StatusFailed indicates the session ended with an error.
 	StatusFailed Status = "failed"
+	// StatusAbandoned indicates the session was reaped by the boot-time
+	// orphan sweep — it was still "active" on disk after a parent-process
+	// crash that never fired a seal event. Distinct from StatusCompleted
+	// so forensic tools and the UI can tell process-crash orphans apart
+	// from sessions that ran cleanly to completion. Distinct from
+	// StatusFailed because no upstream error was observed; the parent
+	// just disappeared.
+	StatusAbandoned Status = "abandoned"
 )
+
+// DefaultOrphanGrace is the default age threshold the boot-time orphan
+// sweep applies to restored sessions still marked "active". A session
+// whose UpdatedAt is older than this window is treated as a
+// parent-crash orphan and reaped to StatusAbandoned. The window must be
+// long enough that a parent restart does not erroneously reap children
+// the parent is about to re-attach to (the persistence path bumps
+// UpdatedAt on every message append, so any session that has streamed
+// in the last 30 minutes is by definition still alive).
+const DefaultOrphanGrace = 30 * time.Minute
 
 // Message represents a single message in a session's conversation history.
 //
@@ -131,6 +149,11 @@ type Manager struct {
 	notifMu       sync.Mutex
 	recorder      Recorder
 	sessionsDir   string
+	// orphanGrace is the age threshold the boot-time orphan sweep
+	// applies inside RestoreSessions. Zero means use DefaultOrphanGrace.
+	// Negative means "disable the sweep" — exposed so tests and
+	// operators can opt out without rewriting the call site.
+	orphanGrace time.Duration
 
 	// persistFn overrides the default PersistSession implementation.
 	// Nil means use PersistSession. Only set in tests via export_test.go.
@@ -186,7 +209,9 @@ func (m *Manager) MarkEndedFromEvent(sessionID string) {
 	if !ok {
 		return
 	}
-	if sess.Status == string(StatusFailed) || sess.Status == string(StatusCompleted) {
+	if sess.Status == string(StatusFailed) ||
+		sess.Status == string(StatusCompleted) ||
+		sess.Status == string(StatusAbandoned) {
 		return
 	}
 	sess.Status = string(StatusCompleted)
@@ -226,6 +251,24 @@ func (m *Manager) SetSessionsDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionsDir = dir
+}
+
+// SetOrphanGrace overrides the age threshold the boot-time orphan
+// sweep uses inside RestoreSessions. Zero restores DefaultOrphanGrace.
+// A negative duration disables the sweep entirely (preserved for
+// operators who would rather see ghost-active children than risk a
+// false-positive reap during planned migrations).
+//
+// Expected:
+//   - d is the new threshold; zero means "use the default", negative
+//     means "disable".
+//
+// Side effects:
+//   - Updates the manager's orphan-grace field under the write lock.
+func (m *Manager) SetOrphanGrace(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orphanGrace = d
 }
 
 // persistLocked writes the session to disk when sessionsDir is set.
@@ -633,6 +676,17 @@ func deriveSummaryTitle(sess *Session) string {
 // RestoreSessions registers persisted sessions into the manager.
 // Sessions that already exist (same ID) are skipped.
 //
+// After populating the in-memory map, RestoreSessions runs the
+// boot-time orphan sweep: any restored session whose Status is still
+// "active" AND whose UpdatedAt is older than the configured grace
+// window is sealed as StatusAbandoned and persisted via the same
+// locked-persist helper the seal sites use. This is the backstop for
+// the persistence-hole fix — when the parent process crashes
+// mid-flight, no seal event ever fires for child sessions, so without
+// the sweep they remain "active" on disk forever and the orchestrator
+// re-loads them as ghosts on every restart. The sweep targets the
+// root cause: untouched-since-crash sessions stay active on disk.
+//
 // Expected:
 //   - sessions is a slice of Sessions loaded from disk persistence.
 //
@@ -641,6 +695,9 @@ func deriveSummaryTitle(sess *Session) string {
 //
 // Side effects:
 //   - Adds each new session to the in-memory store under its ID.
+//   - Promotes stale-active restored sessions to StatusAbandoned and
+//     flushes the change to the .meta.json sidecar via persistLocked
+//     when sessionsDir is configured.
 func (m *Manager) RestoreSessions(sessions []*Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -654,6 +711,45 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 			}
 			m.sessions[sess.ID] = sess
 		}
+	}
+	m.sweepOrphansLocked()
+}
+
+// sweepOrphansLocked promotes restored sessions still marked active
+// past the orphan-grace threshold to StatusAbandoned, persisting via
+// the locked helper. Caller MUST hold m.mu (write). A negative
+// orphanGrace disables the sweep entirely so operators can opt out.
+//
+// Expected:
+//   - m.mu is held for write.
+//
+// Side effects:
+//   - Mutates Status and UpdatedAt for any session that meets the
+//     stale-active criteria.
+//   - Writes each swept session's .meta.json sidecar via persistLocked
+//     when sessionsDir is configured.
+func (m *Manager) sweepOrphansLocked() {
+	grace := m.orphanGrace
+	if grace == 0 {
+		grace = DefaultOrphanGrace
+	}
+	if grace < 0 {
+		return
+	}
+	cutoff := time.Now().Add(-grace)
+	for _, sess := range m.sessions {
+		if sess == nil {
+			continue
+		}
+		if sess.Status != string(StatusActive) {
+			continue
+		}
+		if sess.UpdatedAt.After(cutoff) {
+			continue
+		}
+		sess.Status = string(StatusAbandoned)
+		sess.UpdatedAt = time.Now()
+		m.persistLocked(sess)
 	}
 }
 

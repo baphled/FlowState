@@ -1159,6 +1159,106 @@ var _ = Describe("Manager", func() {
 				Expect(children[0].ID).To(Equal("child-sess"))
 			})
 		})
+
+		// Boot-time orphan sweep — backstop for the seal persistence hole
+		// (May 2026). When the parent process crashes mid-flight, no seal
+		// event ever fires for child sessions, so RestoreSessions re-loads
+		// them as "active" forever. The sweep runs after the per-session
+		// map population: any restored session whose Status is still
+		// "active" AND whose UpdatedAt is older than the configured grace
+		// window is sealed as "abandoned" (a status distinct from clean
+		// completion so forensics and the UI can tell the difference).
+		// Sessions within the grace window are left alone — a parent that
+		// has just been restarted may legitimately re-attach to its
+		// children. Already-sealed sessions are not re-touched.
+		Context("boot-time orphan sweep", func() {
+			It("seals stale-active sessions as abandoned in memory and on disk after the grace window elapses", func() {
+				tmpDir := GinkgoT().TempDir()
+				sweepMgr := session.NewManager(&mockStreamer{})
+				sweepMgr.SetSessionsDir(tmpDir)
+				sweepMgr.SetOrphanGrace(30 * time.Minute)
+
+				stale := &session.Session{
+					ID:        "orphan-stale",
+					AgentID:   "worker",
+					Status:    string(session.StatusActive),
+					CreatedAt: time.Now().Add(-2 * time.Hour),
+					UpdatedAt: time.Now().Add(-2 * time.Hour),
+				}
+
+				sweepMgr.RestoreSessions([]*session.Session{stale})
+
+				inMem, err := sweepMgr.GetSession("orphan-stale")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(inMem.Status).NotTo(Equal(string(session.StatusActive)),
+					"stale-active session must be sealed by the boot sweep — leaving it active resurrects ghost children after every restart")
+				Expect(inMem.Status).To(Equal(string(session.StatusAbandoned)),
+					"swept sessions are abandoned, not completed — downstream consumers need to distinguish process-crash orphans from clean completions")
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, "orphan-stale")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil(),
+					"sweep must persist via the same locked-persist helper the seal sites now use — otherwise the sweep is ephemeral and the next restart re-loads the orphan as active")
+				Expect(loaded.Status).To(Equal(string(session.StatusAbandoned)),
+					"on-disk meta must reflect the sweep so the abandoned status survives across restarts")
+			})
+
+			It("preserves active sessions whose UpdatedAt is within the grace window", func() {
+				tmpDir := GinkgoT().TempDir()
+				sweepMgr := session.NewManager(&mockStreamer{})
+				sweepMgr.SetSessionsDir(tmpDir)
+				sweepMgr.SetOrphanGrace(30 * time.Minute)
+
+				fresh := &session.Session{
+					ID:        "orphan-fresh",
+					AgentID:   "worker",
+					Status:    string(session.StatusActive),
+					CreatedAt: time.Now().Add(-1 * time.Minute),
+					UpdatedAt: time.Now().Add(-1 * time.Minute),
+				}
+
+				sweepMgr.RestoreSessions([]*session.Session{fresh})
+
+				inMem, err := sweepMgr.GetSession("orphan-fresh")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(inMem.Status).To(Equal(string(session.StatusActive)),
+					"a session inside the grace window must NOT be reaped — the parent may have just restarted and is about to re-attach")
+			})
+
+			It("leaves already-sealed sessions unchanged regardless of UpdatedAt age", func() {
+				tmpDir := GinkgoT().TempDir()
+				sweepMgr := session.NewManager(&mockStreamer{})
+				sweepMgr.SetSessionsDir(tmpDir)
+				sweepMgr.SetOrphanGrace(30 * time.Minute)
+
+				oldCompleted := &session.Session{
+					ID:        "old-completed",
+					AgentID:   "worker",
+					Status:    string(session.StatusCompleted),
+					CreatedAt: time.Now().Add(-3 * time.Hour),
+					UpdatedAt: time.Now().Add(-3 * time.Hour),
+				}
+				oldFailed := &session.Session{
+					ID:        "old-failed",
+					AgentID:   "worker",
+					Status:    string(session.StatusFailed),
+					CreatedAt: time.Now().Add(-3 * time.Hour),
+					UpdatedAt: time.Now().Add(-3 * time.Hour),
+				}
+
+				sweepMgr.RestoreSessions([]*session.Session{oldCompleted, oldFailed})
+
+				gotCompleted, err := sweepMgr.GetSession("old-completed")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(gotCompleted.Status).To(Equal(string(session.StatusCompleted)),
+					"the sweep must only target active sessions — rewriting a completed session loses information")
+
+				gotFailed, err := sweepMgr.GetSession("old-failed")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(gotFailed.Status).To(Equal(string(session.StatusFailed)),
+					"the sweep must not downgrade a known failure to abandoned — failed > abandoned in semantic precedence")
+			})
+		})
 	})
 
 	// AllSessions / ChildSessions previously iterated a Go map directly,
