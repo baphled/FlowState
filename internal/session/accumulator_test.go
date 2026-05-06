@@ -516,6 +516,135 @@ var _ = Describe("AccumulateStream", func() {
 		})
 	})
 
+	Context("when an assistant turn produces only thinking with no content", func() {
+		// Bug pin: OpenAI-compat reasoning providers (zai/glm-4.6, DeepSeek-R1)
+		// occasionally emit a Done after only reasoning_content tokens — no
+		// content tokens, no tool calls. Before this fix, flushContent
+		// early-returned on empty contentBuf, leaving the persisted session
+		// with a free-floating thinking message and no assistant turn. The
+		// chat UI saw nothing of Role: "assistant" and rendered a stalled
+		// session. The accumulator must synthesise a placeholder assistant
+		// message carrying the thinking blocks so the turn is renderable.
+		//
+		// Smoking gun: session 3c5374fd-2835-4720-b543-0c3c95b028aa on
+		// glm-4.6 — 362 chunks of reasoning_content, zero content, Done,
+		// 1492-char thinking block stranded with no enclosing assistant.
+		It("synthesises a placeholder assistant message carrying the thinking blocks", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "weighing the request", Signature: "sig-A"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"a thinking-only turn must still produce an assistant message so "+
+					"the UI can render the turn — without it the session appears stalled")
+			Expect(assistantMsgs[0].Content).To(BeEmpty(),
+				"the placeholder carries no content because the model produced none")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("weighing the request"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-A"))
+			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"),
+				"agent stamping is symmetric with the content-bearing path")
+		})
+
+		It("stamps the placeholder with model, provider, and stop_reason from the turn", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "long reasoning chain",
+				Signature:  "sig-B",
+				ModelID:    "glm-4.6",
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{
+				EventType:  "stop_reason",
+				StopReason: "end_turn",
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].ModelName).To(Equal("glm-4.6"))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+			Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"))
+		})
+
+		It("does not synthesise when the turn produced a tool call (existing tool-call shape handles wrapping)", func() {
+			// Regression guard: thinking-then-tool-call is a normal turn shape.
+			// The persisted history is [thinking, tool_call] with no trailing
+			// assistant placeholder — adding one here would change the wire
+			// format for every reasoning-capable provider that also uses
+			// tools. The synthesis path is gated on no-tool-call-this-turn.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "deciding which tool", Signature: "sig-T"}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "call-1",
+					Name:      "search",
+					Arguments: map[string]any{"query": "anything"},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(BeEmpty(),
+				"thinking-then-tool-call must NOT produce a synthesised placeholder; "+
+					"the tool_call is the visible shape of the turn")
+		})
+
+		It("does not regress the content-bearing turn — content and thinking still co-attach to the assistant message", func() {
+			// Pair guard: with thinking AND content present, behaviour is
+			// unchanged — exactly one assistant message containing the
+			// content and the thinking blocks.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "I think therefore", Signature: "sig-C"}
+			rawCh <- provider.StreamChunk{Content: "the answer is here"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"content-bearing turns must still produce exactly one assistant message")
+			Expect(assistantMsgs[0].Content).To(Equal("the answer is here"))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-C"))
+		})
+	})
+
 	Context("when delegation info arrives", func() {
 		It("stores a delegation message when status is completed", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
