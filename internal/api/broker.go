@@ -151,6 +151,110 @@ func (b *SessionBroker) SubscriberCount(sessionID string) int {
 	return len(b.subscribers[sessionID])
 }
 
+// SubscribeIfPublishing atomically checks whether a Publish is currently
+// in-flight for the session and, if so, registers a fresh subscriber.
+// Returns (ch, unsub, true) when a publisher is active and a subscriber
+// has been added; returns (nil, no-op, false) when no publisher is
+// active and no subscription was created.
+//
+// # Why this exists — closing the IsPublishing TOCTOU
+//
+// Pre-fix, callers wrote:
+//
+//	ch, unsub := broker.Subscribe(id)
+//	defer unsub()
+//	if !broker.IsPublishing(id) {
+//	    return // emit [DONE]
+//	}
+//	// consume from ch
+//
+// Between the IsPublishing read and the conditional return, a Publish
+// run could start. The subscriber was already registered (Subscribe
+// completed before IsPublishing), so the new run fans chunks into ch —
+// but the caller has already decided to return [DONE], drops out, and
+// the chunks pile up in the buffered channel until backpressure drops
+// them. The caller's semantics ("I want to know if a publisher will
+// drive me") are not expressible as separate Subscribe + IsPublishing
+// calls; the two reads observe different states.
+//
+// SubscribeIfPublishing collapses both decisions into a single critical
+// section under b.mu: the active refcount is read AND, if positive, the
+// subscriber slice is mutated atomically. There is no observable state
+// between "is publishing?" and "am I a subscriber?" — they are answered
+// together or not at all.
+//
+// # Contract
+//
+// On (ok == true): a fresh subscriber channel and unsubscribe function
+// are returned. The unsub function has the same semantics as the one
+// from Subscribe (idempotent, does not close the channel; close is the
+// publisher's responsibility per invariant I1). The caller MUST
+// eventually call unsub.
+//
+// On (ok == false): nil channel and a no-op unsubscribe function are
+// returned. No subscriber state has changed. The caller may safely call
+// the no-op unsub (it is provided so callers can `defer unsub()`
+// uniformly without nil-checks).
+//
+// # Invariant compliance
+//
+//   - I1 (single-closer): unchanged. The new method only inserts into
+//     the subscribers slice; it never closes a channel.
+//   - I3 (Subscribe-during-terminal-close): preserved. The whole
+//     check+insert runs under b.mu; if a Publish is in its terminal
+//     close (also under b.mu), this call serialises behind it and sees
+//     active == 0, returning (nil, no-op, false) — the correct outcome
+//     since the publisher cohort that would have closed the new channel
+//     has already exited.
+//   - I4 (lock scope): the lock is held only for the map read and the
+//     conditional append; there are no sends and no user callbacks.
+//   - I8 (cleanliness): unchanged; Unsubscribe still drops empty-slice
+//     entries.
+//
+// Expected:
+//   - sessionID is a non-empty string identifying an existing session.
+//
+// Returns:
+//   - A buffered (capacity 64) receive channel and an unsubscribe
+//     function when a Publish is active for the session.
+//   - nil channel and a no-op unsubscribe function when no Publish is
+//     active for the session.
+//   - A boolean indicating which case occurred.
+//
+// Side effects:
+//   - On (ok == true): adds a subscriber channel to the session's
+//     subscriber list.
+//   - On (ok == false): no state change.
+func (b *SessionBroker) SubscribeIfPublishing(sessionID string) (<-chan provider.StreamChunk, func(), bool) {
+	b.mu.Lock()
+	if b.active[sessionID] == 0 {
+		b.mu.Unlock()
+		return nil, func() {}, false
+	}
+	ch := make(chan provider.StreamChunk, 64)
+	b.subscribers[sessionID] = append(b.subscribers[sessionID], ch)
+	b.mu.Unlock()
+
+	var unsubOnce sync.Once
+	unsubscribe := func() {
+		unsubOnce.Do(func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			subs := b.subscribers[sessionID]
+			for i, sub := range subs {
+				if sub == ch {
+					b.subscribers[sessionID] = append(subs[:i], subs[i+1:]...)
+					if len(b.subscribers[sessionID]) == 0 {
+						delete(b.subscribers, sessionID)
+					}
+					return
+				}
+			}
+		})
+	}
+	return ch, unsubscribe, true
+}
+
 // DroppedCount returns the cumulative number of chunks the broker has
 // discarded because at least one subscriber's channel stayed full past
 // the per-subscriber grace period. The counter is process-lifetime
