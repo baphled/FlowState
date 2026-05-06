@@ -153,7 +153,14 @@ func newOAuthClient(token string, extraOpts ...option.RequestOption) anthropicAP
 	opts := []option.RequestOption{
 		option.WithAuthToken(token),
 		option.WithHeaderAdd("anthropic-beta", oauthBetaHeader),
-		option.WithHeaderAdd("user-agent", oauthUserAgent),
+		// `user-agent` must REPLACE the SDK default ("Anthropic/Go
+		// <version>"), not append to it. The Claude CLI sends a
+		// single user-agent value; if Anthropic's edge sees the
+		// SDK default first it can re-classify the request out of
+		// the Claude Code billing pool. WithHeaderAdd would leave
+		// both values on the wire (SDK default first), so we use
+		// WithHeader to overwrite.
+		option.WithHeader("user-agent", oauthUserAgent),
 		option.WithHeaderAdd("x-app", oauthAppHeader),
 		// Real HTTP header — billing-routing metadata. The Claude
 		// CLI sends this as a wire-level header; previously we

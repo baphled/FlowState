@@ -1508,28 +1508,41 @@ var _ = Describe("Sonnet 3.7 beta headers", func() {
 	})
 })
 
-// OAuth billing header — wire-level assertions.
+// OAuth wire headers — wire-level assertions.
 //
-// The Claude CLI sends `x-anthropic-billing-header` as a real HTTP
-// request header to route OAuth requests to the Claude Code billing
-// pool. An earlier (incorrect) implementation injected the header as
-// a synthetic `TextBlockParam` at the front of the system prompt,
-// which (a) wasted ~30 input tokens per request, (b) leaked routing
-// metadata into the model's view of the system prompt, and (c) sat
-// in front of the caller's first cache_control breakpoint as an
-// uncached prefix, invalidating the cache key.
+// The Claude CLI mimics four headers on every request to route OAuth
+// traffic to the Claude Code billing pool:
+//   - `x-anthropic-billing-header` — billing-routing metadata
+//     (cc_version, cc_entrypoint, cch).
+//   - `anthropic-beta` — must include `oauth-2025-04-20`. Anthropic's
+//     edge uses this beta value to recognise OAuth-issued requests.
+//     Other beta values (e.g. `interleaved-thinking-2025-05-14`) can
+//     comma-join onto the same header on a per-call basis, so OAuth
+//     coverage is asserted as a substring.
+//   - `user-agent` — exact `claude-cli/2.1.2 (external, cli)`.
+//   - `x-app` — exact `cli`.
+//
+// All four are equally load-bearing: a silent regression on any one
+// of them re-classifies the user's traffic out of the Claude Code
+// pool without surfacing an error. An earlier (incorrect)
+// implementation injected the billing header as a synthetic
+// `TextBlockParam` at the front of the system prompt, which (a)
+// wasted ~30 input tokens per request, (b) leaked routing metadata
+// into the model's view of the system prompt, and (c) sat in front
+// of the caller's first cache_control breakpoint as an uncached
+// prefix, invalidating the cache key.
 //
 // These specs pin the wire shape end-to-end:
-//   - OAuth requests carry the header on the wire.
+//   - OAuth requests carry all four headers on the wire.
 //   - OAuth requests' system prompt is exactly what the caller sent
 //     (no synthetic prefix, caller's cache_control intact on the
 //     first system block).
-//   - API-key requests do NOT carry the header (the header was
-//     never meaningful on the API-key path).
+//   - API-key requests do NOT carry the OAuth-only headers (they
+//     were never meaningful on the API-key path).
 //
 // We use a httptest server with WithBaseURL to capture the
 // SDK-issued HTTP request. No live API calls.
-var _ = Describe("OAuth billing header (wire)", func() {
+var _ = Describe("OAuth wire headers", func() {
 	type captured struct {
 		headers http.Header
 		body    map[string]any
@@ -1610,6 +1623,40 @@ var _ = Describe("OAuth billing header (wire)", func() {
 						"the Claude CLI")
 		})
 
+		It("sends anthropic-beta containing oauth-2025-04-20", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			// Substring-match: the SDK appends per-call betas
+			// (e.g. interleaved-thinking-2025-05-14) onto the same
+			// `anthropic-beta` HTTP header by comma-joining values.
+			// We only need to pin that the OAuth marker is present;
+			// other betas may legitimately appear alongside it.
+			Expect(cap.headers.Get("Anthropic-Beta")).
+				To(ContainSubstring(oauthBetaHeader),
+					"OAuth requests must carry oauth-2025-04-20 on "+
+						"anthropic-beta — Anthropic's edge uses this "+
+						"value to recognise OAuth-issued requests")
+		})
+
+		It("sends user-agent matching the Claude CLI exactly", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("User-Agent")).
+				To(Equal(oauthUserAgent),
+					"OAuth requests must spoof the Claude CLI user-agent "+
+						"byte-for-byte; any drift re-classifies traffic "+
+						"out of the Claude Code billing pool")
+		})
+
+		It("sends x-app: cli", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("X-App")).
+				To(Equal(oauthAppHeader),
+					"OAuth requests must declare x-app: cli to match "+
+						"the Claude CLI's edge classification")
+		})
+
 		It("does NOT inject the billing header as a synthetic system-prompt block", func() {
 			_, err := p.Chat(context.Background(), chatReq())
 			Expect(err).NotTo(HaveOccurred())
@@ -1651,6 +1698,9 @@ var _ = Describe("OAuth billing header (wire)", func() {
 			Expect(oauthBillingHeaderName).To(Equal("x-anthropic-billing-header"))
 			Expect(oauthBillingHeaderValue).To(Equal(
 				"cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"))
+			Expect(oauthBetaHeader).To(Equal("oauth-2025-04-20"))
+			Expect(oauthUserAgent).To(Equal("claude-cli/2.1.2 (external, cli)"))
+			Expect(oauthAppHeader).To(Equal("cli"))
 		})
 	})
 
@@ -1684,6 +1734,43 @@ var _ = Describe("OAuth billing header (wire)", func() {
 			Expect(cap.headers.Get("X-Anthropic-Billing-Header")).To(BeEmpty(),
 				"API-key path must remain header-clean — the billing "+
 					"header is OAuth-only routing metadata")
+		})
+
+		It("does NOT carry the OAuth anthropic-beta marker", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			// API-key with no tools / no thinking on a stable model
+			// (claude-3-5-sonnet-20241022) emits no per-call betas;
+			// the OAuth marker in particular is OAuth-only and must
+			// never appear here. Asserted as "no oauth-2025-04-20
+			// substring anywhere" rather than empty so this stays
+			// robust if a future model adds an unrelated beta.
+			Expect(cap.headers.Get("Anthropic-Beta")).
+				NotTo(ContainSubstring(oauthBetaHeader),
+					"API-key path must not carry oauth-2025-04-20 — "+
+						"the OAuth beta marker is what tells "+
+						"Anthropic's edge the request came from an "+
+						"OAuth-issued client")
+		})
+
+		It("does NOT spoof the Claude CLI user-agent", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("User-Agent")).
+				NotTo(Equal(oauthUserAgent),
+					"API-key path must not mimic the Claude CLI; "+
+						"sending claude-cli/2.1.2 from an API-key "+
+						"client would mis-classify traffic at "+
+						"Anthropic's edge")
+		})
+
+		It("does NOT send x-app: cli", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("X-App")).To(BeEmpty(),
+				"API-key path must not declare x-app — the header "+
+					"is part of the CLI-mimicking set and only "+
+					"belongs on OAuth requests")
 		})
 
 		It("does NOT leak billing metadata into the system prompt", func() {
