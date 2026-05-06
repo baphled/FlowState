@@ -395,6 +395,36 @@ type Config struct {
 	// the supplied TokenCounter (when it implements ctxstore.FallbackSetter)
 	// and FailoverManager so every fallback site shares the same cap.
 	SystemPromptBudget int
+
+	// RecallEmbeddingModel is the embedding-model identifier the recall
+	// pipeline is currently configured against (typically the value from
+	// cfg.ResolvedEmbeddingModel() at app wiring time). The RecallBroker
+	// hook compares this against the active session's stamped
+	// EmbeddingModel — see SessionEmbeddingLookup — to surface the
+	// silent-zero failure mode where an embedder/Qdrant-collection
+	// dimension mismatch returns 200 OK with zero matches. Empty disables
+	// the diagnostic entirely (test wiring, embedder not configured): we
+	// do not synthesise a comparison when there is no recall-side
+	// reference point.
+	//
+	// Memory: project_flowstate_recall_silent_zero_failure.
+	// Vault note: Bug Fixes/Recall Diagnostic - Embedding Model Stamp
+	// (May 2026).md.
+	RecallEmbeddingModel string
+
+	// SessionEmbeddingLookup, when non-nil, returns the session's
+	// stamped EmbeddingModel for the supplied sessionID. The engine
+	// invokes it at the RecallBroker hook seam to compare against
+	// RecallEmbeddingModel and emit a structured slog diagnostic on
+	// mismatch (WARN) or on legacy-empty stamp (INFO). Returning
+	// (model, true) for any non-empty model triggers the comparison;
+	// returning (model, true) for an empty model OR returning
+	// (anything, false) collapses to the legacy/unknown branch — the
+	// session predates Delivery G or has been evicted from the manager
+	// cache. The diagnostic never gates the broker query: degraded
+	// results still beat no results, and refusing a query breaks user
+	// workflows. Nil disables the diagnostic.
+	SessionEmbeddingLookup func(sessionID string) (string, bool)
 }
 
 // New creates a new Engine from the given configuration.
@@ -1009,6 +1039,14 @@ func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
 		// so this flag is effectively constant for the engine's
 		// lifetime.
 		usesRecall := cfg.Manifest.UsesRecall
+		// Capture the embedding-model diagnostic inputs by value for the
+		// same reason. recallEmbedModel is the pipeline-side reference
+		// (typically cfg.ResolvedEmbeddingModel() at app wiring time);
+		// sessionEmbedLookup resolves the session-side stamped value at
+		// query time. See the Config field docs and the vault note
+		// "Recall Diagnostic - Embedding Model Stamp (May 2026)".
+		recallEmbedModel := cfg.RecallEmbeddingModel
+		sessionEmbedLookup := cfg.SessionEmbeddingLookup
 		hooks = append(hooks, func(ctx context.Context, payload *plugin.ContextAssemblyPayload) error {
 			if !usesRecall {
 				// P13 opt-in gate: agent did not declare uses_recall:true
@@ -1018,6 +1056,7 @@ func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
 				// benefit from recalled observations.
 				return nil
 			}
+			emitRecallEmbeddingDiagnostic(payload.SessionID, recallEmbedModel, sessionEmbedLookup)
 			observations, err := broker.Query(ctx, payload.UserMessage, 5)
 			if err != nil {
 				return err
@@ -1028,6 +1067,100 @@ func buildContextAssemblyHooks(cfg Config) []plugin.ContextAssemblyHook {
 	}
 	hooks = append(hooks, cfg.ContextAssemblyHooks...)
 	return hooks
+}
+
+// emitRecallEmbeddingDiagnostic compares the recall pipeline's
+// configured embedding model against the active session's stamped
+// embedding model and emits a structured slog line describing the
+// outcome. It NEVER gates the broker query — degraded results still
+// beat no results, and refusing a query breaks user workflows. The
+// fix here is observability, not enforcement.
+//
+// Severity ladder:
+//
+//   - WARN ("recall embedding-model mismatch") when both sides supply
+//     a non-empty model and the values differ. This is the actionable
+//     case: an operator can correlate the warn with empty Recall
+//     results and reach for the embedder/Qdrant collection
+//     reconciliation playbook.
+//
+//   - INFO ("recall embedding-model unverifiable") when the session's
+//     stamped value is empty (legacy session predating Delivery G) or
+//     the lookup reports the session as not found. The diagnostic gap
+//     is real but the operator cannot act on missing data — recording
+//     it preserves the forensic trail without noise.
+//
+//   - silent when recallEmbedModel is empty (the recall pipeline is
+//     itself unconfigured for embedding routing — no reference point
+//     to compare against) or sessionEmbedLookup is nil (test wiring).
+//
+// Expected:
+//   - sessionID is the active session for which recall is being
+//     queried; may be empty when the engine is invoked outside a
+//     session context (the diagnostic still runs so an empty session
+//     id surfaces in the log line and operators can spot the rare
+//     "recall fired with no session" case).
+//   - recallEmbedModel is the pipeline-side reference, typically
+//     cfg.ResolvedEmbeddingModel() captured at app wiring time. Empty
+//     short-circuits the diagnostic.
+//   - sessionEmbedLookup, when non-nil, returns the stamped session
+//     model. (model, true) where model is non-empty triggers the
+//     match/mismatch comparison; (model, true) where model is empty,
+//     or (anything, false), collapses to the legacy/unknown branch.
+//
+// Side effects:
+//   - Emits at most one slog line per call. No I/O beyond logging.
+func emitRecallEmbeddingDiagnostic(sessionID, recallEmbedModel string, sessionEmbedLookup func(string) (string, bool)) {
+	if recallEmbedModel == "" || sessionEmbedLookup == nil {
+		return
+	}
+	sessionEmbedModel, found := sessionEmbedLookup(sessionID)
+	if !found || sessionEmbedModel == "" {
+		// Legacy session (predates Delivery G) or evicted from the
+		// manager cache. Cannot verify dimension; record the gap at
+		// INFO so the forensic trail is preserved without noise.
+		slog.Info("recall embedding-model unverifiable",
+			"session_id", sessionID,
+			"recall_embedding_model", recallEmbedModel,
+			"reason", legacyOrUnknownReason(found),
+		)
+		return
+	}
+	if sessionEmbedModel == recallEmbedModel {
+		// Match: silent. Happy path is byte-identical with the
+		// pre-diagnostic behaviour so the warn signal stays
+		// actionable.
+		return
+	}
+	slog.Warn("recall embedding-model mismatch",
+		"session_id", sessionID,
+		"session_embedding_model", sessionEmbedModel,
+		"recall_embedding_model", recallEmbedModel,
+	)
+}
+
+// legacyOrUnknownReason returns a short tag distinguishing "session
+// stamped but value is empty" (legacy sidecar predating Delivery G)
+// from "session not present in the manager" (evicted or never
+// registered). Surfaced inside the INFO line so operators do not need
+// to read the implementation to understand why the gap exists.
+//
+// Expected:
+//   - found mirrors the second return of SessionEmbeddingLookup.
+//
+// Returns:
+//   - "session-not-found" when the lookup reported absence.
+//   - "session-pre-stamp" when the session exists but stamped value is
+//     empty (the Delivery G frozen-at-creation contract calls this the
+//     "pre-schema" signal).
+//
+// Side effects:
+//   - None.
+func legacyOrUnknownReason(found bool) string {
+	if !found {
+		return "session-not-found"
+	}
+	return "session-pre-stamp"
 }
 
 // buildWindowBuilder constructs the engine's window builder from the
