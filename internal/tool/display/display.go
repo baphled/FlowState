@@ -79,13 +79,17 @@ func PrimaryArgKey(name string) string {
 // session accumulator (persisted ToolInput).
 //
 // Resolution order:
-//  1. If name is in the hand-coded primaryArgKeys map, use args[primaryArgKeys[name]]
+//  1. If name is "delegate", render "<subagent_type>: <message>" so the
+//     persisted ToolInput preserves the parent's brief alongside the routing
+//     target. Without this the brief silently vanishes from the session
+//     record, leaving "delegate: <agent>" as the entire trace of intent.
+//  2. If name is in the hand-coded primaryArgKeys map, use args[primaryArgKeys[name]]
 //     when present and a non-empty string.
-//  2. Otherwise, walk preferredFallbackKeys and return the first key whose value
+//  3. Otherwise, walk preferredFallbackKeys and return the first key whose value
 //     is a non-empty string.
-//  3. Otherwise, if any string-valued arg exists, return a compact JSON object
+//  4. Otherwise, if any string-valued arg exists, return a compact JSON object
 //     containing all string-coercible args (sorted by key for determinism).
-//  4. Otherwise return "" — caller renders just the tool name.
+//  5. Otherwise return "" — caller renders just the tool name.
 //
 // Sensitive values (matched against sensitiveKeySubstrings) are replaced with
 // "[REDACTED]" before being returned or serialised. The final value is
@@ -103,6 +107,12 @@ func PrimaryArgKey(name string) string {
 // Side effects:
 //   - None.
 func PrimaryArgValue(name string, args map[string]any) (string, bool) {
+	if name == "delegate" {
+		if v, ok := delegateDisplayValue(args); ok {
+			return v, true
+		}
+	}
+
 	if key := primaryArgKeys[name]; key != "" {
 		if v, ok := args[key].(string); ok && v != "" {
 			return truncate(redactIfSensitive(key, v)), true
@@ -125,6 +135,27 @@ func PrimaryArgValue(name string, args map[string]any) (string, bool) {
 		return truncate(encoded), true
 	}
 
+	return "", false
+}
+
+// delegateDisplayValue renders the delegate tool's display string as
+// "<subagent_type>: <message>" so the persisted ToolInput retains both the
+// routing target and the parent's brief. The combined string is truncated to
+// truncateLen characters with "..." appended on overflow.
+//
+// Returns ok=false when neither subagent_type nor message is a usable string,
+// allowing the caller to fall through to the generic resolution path.
+func delegateDisplayValue(args map[string]any) (string, bool) {
+	subagent, _ := args["subagent_type"].(string)
+	message, _ := args["message"].(string)
+	switch {
+	case subagent != "" && message != "":
+		return truncate(subagent + ": " + message), true
+	case subagent != "":
+		return truncate(subagent), true
+	case message != "":
+		return truncate(message), true
+	}
 	return "", false
 }
 
