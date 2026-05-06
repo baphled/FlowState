@@ -92,6 +92,18 @@ function selectHighlighted(): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  // Bug 5 (May 2026): the document-level listener is attached at mount time
+  // and survives `props.open` flipping between true/false because the modal
+  // toggles its DOM with v-if while the script-side composable stays alive.
+  // Without this gate, every Enter keypress anywhere on the page (including
+  // Shift+Enter inside the chat composer textarea) hits the switch below,
+  // gets event.preventDefault()'d, and the textarea's default newline
+  // insertion is suppressed. Two FuzzySearchModal instances live inside
+  // MessageInput.vue (slash + mention pickers, both `:open="false"` until
+  // their trigger fires), plus more in the toolbar — every one of them
+  // stacks an always-on keydown listener. The fix is a single open-gate so
+  // the handler only acts when the modal is actually visible.
+  if (!props.open) return
   switch (event.key) {
     case 'ArrowDown':
       event.preventDefault()
