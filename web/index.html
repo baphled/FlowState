@@ -5,9 +5,77 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FlowState</title>
+    <!--
+      Inline splash styling — kept in <head> so it paints with the
+      first byte of HTML and there is no FOUC window between
+      navigation and Vue mount. Colour values mirror themes.css
+      :root (--bg-primary / --accent / --text-muted) so the handover
+      to LoadingOverlay.vue is seamless. App.vue removes
+      #app-loading-splash on mount before its own overlay takes over.
+    -->
+    <style>
+      #app-loading-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1a1b26;
+        color: #c0caf5;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      }
+      #app-loading-splash .splash-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+      }
+      #app-loading-splash .splash-wordmark {
+        font-size: 1.75rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #7aa2f7;
+        animation: splash-pulse 1.6s ease-in-out infinite;
+      }
+      #app-loading-splash .splash-spinner {
+        display: flex;
+        gap: 0.4rem;
+      }
+      #app-loading-splash .splash-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #7aa2f7;
+        opacity: 0.4;
+        animation: splash-bounce 1.2s ease-in-out infinite;
+      }
+      #app-loading-splash .splash-dot:nth-child(2) { animation-delay: 0.15s; }
+      #app-loading-splash .splash-dot:nth-child(3) { animation-delay: 0.3s; }
+      @keyframes splash-pulse {
+        0%, 100% { opacity: 0.7; }
+        50% { opacity: 1; }
+      }
+      @keyframes splash-bounce {
+        0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+        40% { transform: translateY(-6px); opacity: 1; }
+      }
+      /* Hide app root until Vue mounts so any half-paint is invisible. */
+      #app:empty { visibility: hidden; }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="app-loading-splash" role="status" aria-live="polite" aria-label="Loading FlowState">
+      <div class="splash-content">
+        <div class="splash-wordmark" aria-hidden="true">FlowState</div>
+        <div class="splash-spinner" aria-hidden="true">
+          <span class="splash-dot"></span>
+          <span class="splash-dot"></span>
+          <span class="splash-dot"></span>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

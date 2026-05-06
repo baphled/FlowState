@@ -2,35 +2,66 @@
 import { ref, onMounted } from 'vue'
 import NavBar from '@/components/layout/NavBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
+import LoadingOverlay from '@/components/common/LoadingOverlay.vue'
+import { useChatStore } from '@/stores/chatStore'
 
+// appReady: drives the loading-overlay gate. Stays false until both
+// async bootstrap promises (the /api/health probe and chatStore.bootstrap)
+// have settled — success OR failure. The overlay covers the full
+// viewport while false and the <RouterView /> is withheld from the DOM,
+// so the user never sees a half-built page.
+//
+// Failure intentionally still flips appReady=true: a network blip during
+// hydration must not strand the user behind a permanent splash. ChatView's
+// onMounted catches the bootstrap rejection and surfaces an error toast
+// (see ChatView.vue Principal F7), and the api-offline-banner below
+// surfaces the health-check result.
+const appReady = ref(false)
 const apiOnline = ref(true)
+const chatStore = useChatStore()
 
 onMounted(async () => {
-  try {
-    const res = await fetch('/api/health')
-    apiOnline.value = res.ok
-  } catch {
-    apiOnline.value = false
-  }
+  // Tear down the index.html splash so the Vue overlay can take over
+  // without two opaque covers stacking. Removing it before flipping
+  // appReady (which would then unmount LoadingOverlay too) keeps the
+  // visual handover seamless: HTML splash → Vue overlay → app.
+  const htmlSplash = document.getElementById('app-loading-splash')
+  if (htmlSplash) htmlSplash.remove()
+
+  // Kick off both bootstrap probes in parallel. Promise.allSettled so
+  // either rejection still flips appReady — see the appReady comment.
+  const healthPromise = (async () => {
+    try {
+      const res = await fetch('/api/health')
+      apiOnline.value = res.ok
+    } catch {
+      apiOnline.value = false
+    }
+  })()
+  await Promise.allSettled([healthPromise, chatStore.bootstrap()])
+  appReady.value = true
 })
 </script>
 
 <template>
   <div class="app-shell">
-    <NavBar />
-    <div v-if="!apiOnline" class="api-offline-banner" data-testid="api-offline-banner">
-      ⚠ FlowState API server is offline. Run <code>make web-server</code> in another terminal.
-    </div>
-    <main class="app-main">
-      <RouterView />
-    </main>
-    <!--
-      Global toast surface — used by chat for surfacing silent-drop
-      rejections (the input-gate locked because a prior send is still
-      in flight) and any future cross-cutting notifications. Mounted
-      once at the app shell so every view shares the same overlay.
-    -->
-    <ToastContainer />
+    <LoadingOverlay v-if="!appReady" />
+    <template v-if="appReady">
+      <NavBar />
+      <div v-if="!apiOnline" class="api-offline-banner" data-testid="api-offline-banner">
+        ⚠ FlowState API server is offline. Run <code>make web-server</code> in another terminal.
+      </div>
+      <main class="app-main">
+        <RouterView />
+      </main>
+      <!--
+        Global toast surface — used by chat for surfacing silent-drop
+        rejections (the input-gate locked because a prior send is still
+        in flight) and any future cross-cutting notifications. Mounted
+        once at the app shell so every view shares the same overlay.
+      -->
+      <ToastContainer />
+    </template>
   </div>
 </template>
 
@@ -66,4 +97,3 @@ onMounted(async () => {
   flex-direction: column;
 }
 </style>
-
