@@ -1466,7 +1466,12 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 	return nil, nil
 }
 
-// BuildSystemPrompt constructs the system prompt from the agent manifest and active skills.
+// BuildSystemPrompt constructs the system prompt from the engine's
+// active agent manifest and skills. It is a convenience wrapper for
+// BuildSystemPromptCtx that uses a background context (no per-stream
+// binding) — call sites that route through Stream() should use
+// BuildSystemPromptCtx and pass the stream's ctx so the manifest
+// snapshot taken at Stream() entry is honoured.
 //
 // The composition order is: base prompt → agent files → delegation sections → prompt_append (last).
 // Returns a cached result when the prompt inputs have not changed since the last build.
@@ -1476,8 +1481,39 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 //   - The concatenated system prompt string including always-active and agent-level skill content.
 //
 // Side effects:
-//   - Caches the built prompt and loaded agent files for subsequent calls.
+//   - Caches the built prompt and loaded agent files for subsequent calls
+//     when no per-context manifest binding is active.
 func (e *Engine) BuildSystemPrompt() string {
+	return e.BuildSystemPromptCtx(context.Background())
+}
+
+// BuildSystemPromptCtx is the manifest-binding-aware variant of
+// BuildSystemPrompt. When ctx carries a bound manifest (via
+// WithBoundManifest), the prompt is composed from that manifest
+// directly and the engine's prompt cache is bypassed — concurrent
+// streams pinned to different manifests cannot share or invalidate
+// each other's cached prompt.
+//
+// When ctx carries no bound manifest the call is identical to
+// BuildSystemPrompt's historical behaviour, including cache use.
+//
+// Expected:
+//   - ctx is a valid context; nil is treated as an unbound ctx.
+//
+// Returns:
+//   - The concatenated system prompt string for the ctx-bound manifest
+//     when present, otherwise for the engine's active manifest.
+//
+// Side effects:
+//   - Caches the result against the engine's active manifest only.
+//   - Loads agent files once and caches them on the engine; the cached
+//     files are shared across manifests because they are project-level,
+//     not manifest-level.
+func (e *Engine) BuildSystemPromptCtx(ctx context.Context) string {
+	if bound, ok := manifestFromContext(ctx); ok {
+		return e.buildSystemPromptFor(bound)
+	}
+
 	e.mu.RLock()
 	if !e.systemPromptDirty {
 		cached := e.cachedSystemPrompt
@@ -1493,7 +1529,66 @@ func (e *Engine) BuildSystemPrompt() string {
 		return e.cachedSystemPrompt
 	}
 
-	base := e.manifest.Instructions.SystemPrompt
+	base := e.assembleSystemPromptLocked(e.manifest, e.skills)
+
+	e.cachedSystemPrompt = base
+	e.systemPromptDirty = false
+
+	return base
+}
+
+// buildSystemPromptFor composes a system prompt for the supplied
+// manifest, fully isolated from the engine's cached prompt state.
+// Used by the ctx-bound path so concurrent streams pinned to
+// different manifests each receive a freshly-built prompt that
+// reflects only their own manifest, skills, and delegation
+// allowlist.
+//
+// Skills resolution falls back to the engine's stored skills slice
+// when no per-manifest resolver is wired — this matches historical
+// single-session behaviour and keeps tests that pre-load skills
+// without a resolver working unchanged.
+//
+// Expected:
+//   - manifest is the manifest the caller wants this prompt to
+//     describe; ID and Instructions.SystemPrompt are populated.
+//
+// Returns:
+//   - The composed system prompt string.
+//
+// Side effects:
+//   - Loads agent files once via the engine's loader (cached on
+//     the engine — agent files are project-level, not
+//     manifest-level, so the cache is safe to share).
+func (e *Engine) buildSystemPromptFor(manifest agent.Manifest) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	skills := e.skills
+	if e.skillsResolver != nil {
+		skills = e.skillsResolver(manifest)
+	}
+	return e.assembleSystemPromptLocked(manifest, skills)
+}
+
+// assembleSystemPromptLocked is the pure composition routine
+// shared by the engine-state and ctx-bound build paths. The caller
+// must hold e.mu (write lock — agent file loading needs to mutate
+// the engine's cached-files state on first access).
+//
+// Expected:
+//   - e.mu is held for write.
+//   - manifest is the manifest to render against.
+//   - skills are the skills to inject into the prompt body in the
+//     order they should appear.
+//
+// Returns:
+//   - The composed system prompt string.
+//
+// Side effects:
+//   - Populates e.cachedAgentFiles on first access.
+func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []skill.Skill) string {
+	base := manifest.Instructions.SystemPrompt
 
 	base = base + "\n\n" + buildTemporalSection(e.nowFunc)
 
@@ -1507,24 +1602,21 @@ func (e *Engine) BuildSystemPrompt() string {
 		}
 	}
 
-	for i := range e.skills {
-		base = base + "\n\n# Skill: " + e.skills[i].Name + "\n\n" + e.skills[i].Content
+	for i := range skills {
+		base = base + "\n\n# Skill: " + skills[i].Name + "\n\n" + skills[i].Content
 	}
 
-	if e.manifest.Delegation.CanDelegate {
-		base = e.appendDelegationSections(base)
+	if manifest.Delegation.CanDelegate {
+		base = e.appendDelegationSectionsFor(base, manifest)
 	}
 
-	base = e.appendSwarmLeadSection(base)
+	base = e.appendSwarmLeadSectionFor(base, manifest)
 
 	if e.agentOverrides != nil {
-		if appendText, ok := e.agentOverrides[e.manifest.ID]; ok && appendText != "" {
+		if appendText, ok := e.agentOverrides[manifest.ID]; ok && appendText != "" {
 			base = base + "\n\n" + appendText
 		}
 	}
-
-	e.cachedSystemPrompt = base
-	e.systemPromptDirty = false
 
 	return base
 }
@@ -1582,11 +1674,31 @@ func (e *Engine) BuildSystemPrompt() string {
 // Side effects:
 //   - None; reads e.swarmContext, e.manifest, and e.agentRegistry.
 func (e *Engine) appendSwarmLeadSection(base string) string {
+	return e.appendSwarmLeadSectionFor(base, e.manifest)
+}
+
+// appendSwarmLeadSectionFor renders the swarm-lead block using the
+// supplied manifest as the lead-identity source. Used by the
+// ctx-bound build path so concurrent streams pinned to different
+// manifests render their own swarm headers.
+//
+// Expected:
+//   - base is the current system prompt string.
+//   - manifest is the manifest the prompt is being built for.
+//
+// Returns:
+//   - The base string with the swarm-lead block appended when the
+//     engine carries a swarm context whose LeadAgent matches
+//     manifest.ID; otherwise base is returned unchanged.
+//
+// Side effects:
+//   - None.
+func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest) string {
 	swarmCtx := e.swarmContext
 	if swarmCtx == nil {
 		return base
 	}
-	if swarmCtx.LeadAgent == "" || swarmCtx.LeadAgent != e.manifest.ID {
+	if swarmCtx.LeadAgent == "" || swarmCtx.LeadAgent != manifest.ID {
 		return base
 	}
 
@@ -1633,7 +1745,7 @@ func (e *Engine) appendSwarmLeadSection(base string) string {
 	b.WriteString("Write outputs to the coordination store under `")
 	b.WriteString(chainPrefix)
 	b.WriteString("/")
-	b.WriteString(e.manifest.ID)
+	b.WriteString(manifest.ID)
 	b.WriteString("/...` so the swarm's members agree on where to read and write.\n")
 
 	return b.String()
@@ -1668,7 +1780,10 @@ func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, boo
 	return manifest.Name, manifest.Metadata.Role, true
 }
 
-// appendDelegationSections builds and appends delegation sections from agent metadata or fallback table.
+// appendDelegationSections builds and appends delegation sections
+// using the engine's active manifest's allowlist. Convenience
+// wrapper for appendDelegationSectionsFor used by call sites that
+// already operate against the engine's stored manifest.
 //
 // Expected:
 //   - base is the current system prompt string.
@@ -1679,13 +1794,32 @@ func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, boo
 // Side effects:
 //   - None.
 func (e *Engine) appendDelegationSections(base string) string {
+	return e.appendDelegationSectionsFor(base, e.manifest)
+}
+
+// appendDelegationSectionsFor builds and appends delegation
+// sections using the supplied manifest's allowlist. The ctx-bound
+// build path calls this so each concurrent stream's prompt
+// reflects its own manifest's delegation envelope.
+//
+// Expected:
+//   - base is the current system prompt string.
+//   - manifest is the manifest whose Delegation.DelegationAllowlist
+//     drives the agent filtering.
+//
+// Returns:
+//   - The base string with appended delegation sections.
+//
+// Side effects:
+//   - None.
+func (e *Engine) appendDelegationSectionsFor(base string, manifest agent.Manifest) string {
 	if e.agentRegistry == nil {
 		return base
 	}
 
 	agents := e.agentRegistry.List()
 
-	allowlist := e.manifest.Delegation.DelegationAllowlist
+	allowlist := manifest.Delegation.DelegationAllowlist
 	if len(allowlist) > 0 {
 		agents = filterByAllowlist(agents, allowlist)
 	}
@@ -1715,11 +1849,33 @@ func (e *Engine) appendDelegationSections(base string) string {
 	return base
 }
 
-// buildAllowedToolSet returns the set of tool names allowed by the current manifest.
+// buildAllowedToolSet returns the set of tool names allowed by the
+// engine's active manifest. Convenience wrapper for
+// buildAllowedToolSetFor used by call sites that operate against
+// the engine's stored manifest.
+//
+// Returns:
+//   - A non-nil map of allowed tool names; see buildAllowedToolSetFor
+//     for the full contract.
+//
+// Side effects:
+//   - None.
+func (e *Engine) buildAllowedToolSet() map[string]bool {
+	return e.buildAllowedToolSetFor(e.manifest)
+}
+
+// buildAllowedToolSetFor returns the set of tool names allowed by
+// the supplied manifest. The ctx-bound build path calls this so
+// each concurrent stream's tool schemas are derived from its own
+// manifest's Capabilities, not from whatever happens to live on
+// the engine's shared manifest field at the moment buildToolSchemas
+// fires.
 //
 // Expected:
-//   - e.manifest is the current agent manifest.
-//   - e.mcpServerTools maps server names to their available tool names.
+//   - manifest is the manifest whose Capabilities drive tool
+//     filtering.
+//   - e.mcpServerTools maps server names to their available tool
+//     names.
 //
 // Returns:
 //   - A non-nil map of allowed tool names. Empty/nil Capabilities.Tools is
@@ -1729,14 +1885,15 @@ func (e *Engine) appendDelegationSections(base string) string {
 //     surface as "stuck" agents rather than silently inheriting the full
 //     toolbelt; the loader emits a warning when such a manifest loads.
 //   - When Capabilities.Tools is non-empty, MCP tools are gated by
-//     Capabilities.MCPServers: each declared server name has its tools merged into
-//     the allowed set. Unknown server names are silently ignored. See
-//     ADR - MCP Tool Gating by Agent Manifest for the full contract.
+//     Capabilities.MCPServers: each declared server name has its tools
+//     merged into the allowed set. Unknown server names are silently
+//     ignored. See ADR - MCP Tool Gating by Agent Manifest for the full
+//     contract.
 //
 // Side effects:
 //   - None.
-func (e *Engine) buildAllowedToolSet() map[string]bool {
-	manifestTools := e.manifest.Capabilities.Tools
+func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool {
+	manifestTools := manifest.Capabilities.Tools
 	allowed := make(map[string]bool, len(manifestTools)+1)
 	for _, mt := range manifestTools {
 		switch mt {
@@ -1753,7 +1910,7 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 		}
 	}
 
-	for _, serverName := range e.manifest.Capabilities.MCPServers {
+	for _, serverName := range manifest.Capabilities.MCPServers {
 		for _, toolName := range e.mcpServerTools[serverName] {
 			allowed[toolName] = true
 		}
@@ -1802,13 +1959,47 @@ func buildPropertyMap(properties map[string]tool.Property) map[string]interface{
 
 // buildToolSchemas constructs provider-compatible tool schemas from registered tools.
 //
+// Convenience wrapper for buildToolSchemasCtx using a background
+// context (no per-stream binding). Stream() and the retry path
+// pass the stream's ctx so concurrent callers each get their own
+// manifest's tool envelope.
+//
 // Returns:
 //   - A slice of provider.Tool values with schema information for each tool.
-//   - Returns a cached result when tools have not changed since the last call.
+//   - Returns a cached result when tools have not changed since the last call
+//     and no per-context manifest binding is active.
 //
 // Side effects:
-//   - Caches the built schemas for subsequent calls.
+//   - Caches the built schemas for subsequent calls when no
+//     per-context binding is active.
 func (e *Engine) buildToolSchemas() []provider.Tool {
+	return e.buildToolSchemasCtx(context.Background())
+}
+
+// buildToolSchemasCtx is the manifest-binding-aware variant of
+// buildToolSchemas. When ctx carries a bound manifest, schemas
+// are filtered against that manifest's Capabilities and the engine
+// cache is bypassed — concurrent streams pinned to different
+// manifests cannot share or invalidate each other's cached
+// schemas.
+//
+// Expected:
+//   - ctx is a valid context; nil is treated as unbound.
+//
+// Returns:
+//   - The provider tool schemas for the ctx-bound manifest when
+//     present, otherwise for the engine's active manifest.
+//
+// Side effects:
+//   - Updates the engine's tool-schema cache only on the unbound
+//     path.
+func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
+	if bound, ok := manifestFromContext(ctx); ok {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		return e.assembleToolSchemasLocked(bound)
+	}
+
 	e.mu.RLock()
 	if e.cachedToolSchemas != nil {
 		cached := e.cachedToolSchemas
@@ -1824,7 +2015,29 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 		return e.cachedToolSchemas
 	}
 
-	allowedSet := e.buildAllowedToolSet()
+	tools := e.assembleToolSchemasLocked(e.manifest)
+	e.cachedToolSchemas = tools
+	return tools
+}
+
+// assembleToolSchemasLocked is the pure tool-schema composition
+// routine shared by the engine-state and ctx-bound build paths.
+// Caller must hold e.mu (read lock for the ctx-bound path is
+// sufficient because no engine state is mutated; the unbound path
+// already holds the write lock for cache update).
+//
+// Expected:
+//   - e.mu is held (read or write).
+//   - manifest is the manifest to filter the engine's registered
+//     tools against.
+//
+// Returns:
+//   - The composed provider tool schemas slice.
+//
+// Side effects:
+//   - None.
+func (e *Engine) assembleToolSchemasLocked(manifest agent.Manifest) []provider.Tool {
+	allowedSet := e.buildAllowedToolSetFor(manifest)
 
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {
@@ -1843,8 +2056,6 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 			},
 		})
 	}
-
-	e.cachedToolSchemas = tools
 	return tools
 }
 
@@ -1857,6 +2068,24 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 //   - May cache the schemas internally for subsequent calls.
 func (e *Engine) ToolSchemas() []provider.Tool {
 	return e.buildToolSchemas()
+}
+
+// ToolSchemasCtx returns the tool schemas filtered against the
+// manifest bound to ctx (via WithBoundManifest), or against the
+// engine's active manifest when no binding is present. Callers
+// inside Stream/retry paths use this to honour the per-stream
+// manifest snapshot.
+//
+// Expected:
+//   - ctx is a valid context; nil is treated as unbound.
+//
+// Returns:
+//   - The provider tool schemas for the resolved manifest.
+//
+// Side effects:
+//   - Same as buildToolSchemasCtx.
+func (e *Engine) ToolSchemasCtx(ctx context.Context) []provider.Tool {
+	return e.buildToolSchemasCtx(ctx)
 }
 
 // SeedHistory pre-populates the context store with historical messages for
@@ -1907,6 +2136,17 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	e.currentSessionID = sessionID
 	e.mu.Unlock()
 
+	// Resolve THIS call's manifest. When the caller supplies an
+	// agentID, we look it up in the registry directly so the
+	// snapshot we bind into ctx reflects the requested agent
+	// even if a concurrent Stream call races to SetManifest a
+	// different agent in between. The legacy SetManifest call
+	// keeps the engine's "current" manifest tracking the most-
+	// recent dispatch — important for single-session sequential
+	// flows, the swap-for-next-turn semantic, and downstream
+	// readers that don't yet route through ctx (telemetry that
+	// uses activeAgentID falls back to e.manifest under lock).
+	var streamManifest agent.Manifest
 	if agentID != "" && e.agentRegistry != nil {
 		if manifest, found := e.agentRegistry.Get(agentID); found {
 			e.mu.RLock()
@@ -1915,36 +2155,49 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 			if manifest.ID != currentID {
 				e.SetManifest(*manifest)
 			}
+			streamManifest = *manifest
 		}
 	}
+	if streamManifest.ID == "" {
+		streamManifest = e.Manifest()
+	}
 
-	messages := e.buildContextWindow(ctx, sessionID, message)
+	// Bind the snapshot into ctx. Every downstream read inside
+	// the stream lifecycle (buildContextWindow →
+	// BuildSystemPromptCtx, buildToolSchemasCtx, the tool-loop
+	// retry path, telemetry publishers via activeAgentID) routes
+	// through the bound value rather than e.manifest, so a
+	// concurrent Stream that triggers SetManifest on a different
+	// agent cannot overwrite the in-flight manifest mid-call.
+	streamCtx := WithBoundManifest(ctx, streamManifest)
+
+	messages := e.buildContextWindow(streamCtx, sessionID, message)
 
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
 		msgID := e.store.AppendReturningID(userMsg)
-		e.embedMessage(ctx, message, msgID)
+		e.embedMessage(streamCtx, message, msgID)
 	}
 
 	req := provider.ChatRequest{
 		Provider: e.LastProvider(),
 		Model:    e.LastModel(),
 		Messages: messages,
-		Tools:    e.buildToolSchemas(),
+		Tools:    e.buildToolSchemasCtx(streamCtx),
 	}
 	e.applyCategoryParams(&req)
 
-	if override := session.ProviderOverrideFromContext(ctx); override != "" {
+	if override := session.ProviderOverrideFromContext(streamCtx); override != "" {
 		req.Provider = override
 	}
-	if override := session.ModelOverrideFromContext(ctx); override != "" {
+	if override := session.ModelOverrideFromContext(streamCtx); override != "" {
 		req.Model = override
 	}
 
-	providerChunks, err := e.streamFromProvider(ctx, &req)
-	e.publishProviderRequestEvent(sessionID, req)
+	providerChunks, err := e.streamFromProvider(streamCtx, &req)
+	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
 	if err != nil {
-		e.publishProviderErrorEvent(sessionID, "stream_init", err)
+		e.publishProviderErrorEventCtx(streamCtx, sessionID, "stream_init", err)
 		return nil, err
 	}
 
@@ -1952,7 +2205,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
-		e.streamWithToolLoop(ctx, sessionID, messages, providerChunks, outChan)
+		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan)
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
@@ -2341,7 +2594,7 @@ func (e *Engine) retryStreamForToolResult(
 ) (<-chan provider.StreamChunk, error) {
 	e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
 		SessionID:    sessionID,
-		AgentID:      e.manifest.ID,
+		AgentID:      e.activeAgentID(ctx),
 		ProviderName: e.LastProvider(),
 		ModelName:    e.LastModel(),
 		Reason:       "tool_loop_retry",
@@ -2351,12 +2604,17 @@ func (e *Engine) retryStreamForToolResult(
 		Provider: e.LastProvider(),
 		Model:    e.LastModel(),
 		Messages: messages,
-		Tools:    e.buildToolSchemas(),
+		// ctx carries the per-stream manifest binding established
+		// in Stream(). On retry the tool envelope must still match
+		// the manifest the in-flight call was dispatched with —
+		// not whatever lives on e.manifest after a concurrent
+		// SetManifest swap.
+		Tools: e.buildToolSchemasCtx(ctx),
 	}
 	chunks, streamErr := e.streamFromProvider(ctx, &toolReq)
-	e.publishProviderRequestEvent(sessionID, toolReq)
+	e.publishProviderRequestEventCtx(ctx, sessionID, toolReq)
 	if streamErr != nil {
-		e.publishProviderErrorEvent(sessionID, "stream_init", streamErr)
+		e.publishProviderErrorEventCtx(ctx, sessionID, "stream_init", streamErr)
 		return nil, streamErr
 	}
 	return chunks, nil
@@ -2903,7 +3161,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// store. Re-enabling them is future work that requires per-session
 	// stores upstream.
 	if priorMsgs, ok := session.PriorMessagesFromContext(ctx); ok {
-		systemPrompt := e.BuildSystemPrompt()
+		systemPrompt := e.BuildSystemPromptCtx(ctx)
 		messages := make([]provider.Message, 0, len(priorMsgs)+2)
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 		messages = append(messages, priorMsgs...)
@@ -2913,7 +3171,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	}
 
 	if e.windowBuilder == nil || e.store == nil {
-		systemPrompt := e.BuildSystemPrompt()
+		systemPrompt := e.BuildSystemPromptCtx(ctx)
 		return []provider.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},
@@ -2921,7 +3179,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	}
 
 	tokenBudget := e.ModelContextLimit()
-	systemPrompt := e.BuildSystemPrompt()
+	systemPrompt := e.BuildSystemPromptCtx(ctx)
 
 	// Item 3 — splitter is a per-Build option so the shared
 	// WindowBuilder no longer needs external serialisation to avoid
@@ -2935,7 +3193,15 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	manifestCopy := e.manifest
+	// Honour the per-stream manifest binding established by Stream()
+	// so context assembly (auto-compaction trigger, recall hooks
+	// downstream) sees the manifest the caller dispatched with —
+	// not whatever happens to live on e.manifest at the moment a
+	// concurrent SetManifest fires.
+	manifestCopy, ok := manifestFromContext(ctx)
+	if !ok {
+		manifestCopy = e.manifest
+	}
 	manifestCopy.Instructions.SystemPrompt = systemPrompt
 
 	searchResults := e.dispatchContextAssemblyHooks(ctx, sessionID, userMessage, tokenBudget)
@@ -4057,7 +4323,7 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 //   - Publishes a provider.response event on the engine bus.
 func (e *Engine) completeResponse(ctx context.Context, sessionID string, content, thinking string) {
 	e.storeResponse(ctx, content, thinking)
-	e.publishProviderResponseEvent(sessionID, content)
+	e.publishProviderResponseEventCtx(ctx, sessionID, content)
 }
 
 // dualWriteToChainStore appends an assistant message to the chain store if one is configured.
@@ -4442,13 +4708,21 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 // Side effects:
 //   - Publishes a provider.error event on the engine bus.
 func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err error) {
+	e.publishProviderErrorEventCtx(context.Background(), sessionID, phase, err)
+}
+
+// publishProviderErrorEventCtx is the ctx-aware variant of
+// publishProviderErrorEvent. Uses the in-flight stream's bound
+// manifest (when present) for AgentID stamping so concurrent
+// streams' error events stay correctly attributed.
+func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID string, phase string, err error) {
 	if e.bus == nil {
 		return
 	}
 
 	data := events.ProviderErrorEventData{
 		SessionID:    sessionID,
-		AgentID:      e.manifest.ID,
+		AgentID:      e.activeAgentID(ctx),
 		ProviderName: e.LastProvider(),
 		ModelName:    e.LastModel(),
 		Error:        err,
@@ -4522,16 +4796,52 @@ func (e *Engine) applyCategoryParams(req *provider.ChatRequest) {
 // Side effects:
 //   - Publishes a provider.request event on the engine bus.
 func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.ChatRequest) {
+	e.publishProviderRequestEventCtx(context.Background(), sessionID, req)
+}
+
+// publishProviderRequestEventCtx is the ctx-aware variant of
+// publishProviderRequestEvent. The AgentID stamped on the event
+// is sourced from the manifest bound to ctx (the in-flight
+// stream's manifest snapshot) when present, falling back to a
+// locked read of the engine's active manifest otherwise — so
+// concurrent streams stamp their own agent on their own events
+// instead of racing on the shared engine field.
+func (e *Engine) publishProviderRequestEventCtx(ctx context.Context, sessionID string, req provider.ChatRequest) {
 	if e.bus == nil {
 		return
 	}
 	e.bus.Publish(events.EventProviderRequest, events.NewProviderRequestEvent(events.ProviderRequestEventData{
 		SessionID:    sessionID,
-		AgentID:      e.manifest.ID,
+		AgentID:      e.activeAgentID(ctx),
 		ProviderName: req.Provider,
 		ModelName:    req.Model,
 		Request:      req,
 	}))
+}
+
+// activeAgentID returns the agent ID bound to ctx (when a
+// per-stream manifest binding is present) or the engine's active
+// manifest ID under the read lock. Centralises the "which agent
+// owns this side-effect" choice so concurrent streams cannot
+// race on direct e.manifest.ID reads from telemetry paths.
+//
+// Expected:
+//   - ctx is a valid context that may carry a boundManifestKey
+//     value.
+//
+// Returns:
+//   - The bound manifest's ID when present, the engine's active
+//     manifest ID otherwise.
+//
+// Side effects:
+//   - None.
+func (e *Engine) activeAgentID(ctx context.Context) string {
+	if bound, ok := manifestFromContext(ctx); ok {
+		return bound.ID
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.manifest.ID
 }
 
 // publishProviderResponseEvent publishes a provider response event to the engine bus
@@ -4547,12 +4857,19 @@ func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.Chat
 // Side effects:
 //   - Publishes a provider.response event on the engine bus.
 func (e *Engine) publishProviderResponseEvent(sessionID string, responseContent string) {
+	e.publishProviderResponseEventCtx(context.Background(), sessionID, responseContent)
+}
+
+// publishProviderResponseEventCtx is the ctx-aware variant of
+// publishProviderResponseEvent. Uses the in-flight stream's
+// bound manifest for AgentID stamping when present.
+func (e *Engine) publishProviderResponseEventCtx(ctx context.Context, sessionID string, responseContent string) {
 	if e.bus == nil {
 		return
 	}
 	e.bus.Publish(events.EventProviderResponse, events.NewProviderResponseEvent(events.ProviderResponseEventData{
 		SessionID:       sessionID,
-		AgentID:         e.manifest.ID,
+		AgentID:         e.activeAgentID(ctx),
 		ProviderName:    e.LastProvider(),
 		ModelName:       e.LastModel(),
 		ResponseContent: responseContent,
