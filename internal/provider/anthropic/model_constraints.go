@@ -77,6 +77,35 @@ const minThinkingBudgetTokens int64 = 1024
 // have no thinking and so the header is never emitted.
 const interleavedThinkingBetaHeader = "interleaved-thinking-2025-05-14"
 
+// tokenEfficientToolsBetaHeader is the anthropic-beta value that opts a
+// Sonnet 3.7 request into the token-efficient tool-use shape. The
+// header reduces output tokens on tool-using turns by ~14-70% and is
+// harmless on turns where the model does not actually emit a tool_use
+// block, so the gate is simply "tools are declared on this request".
+//
+// Only Sonnet 3.7 honours this beta. On Claude 4+ the header is
+// silently ignored on the direct API but we strip it for request
+// cleanliness — the matrix in resolveModelDefaults pins which model
+// families opt in.
+const tokenEfficientToolsBetaHeader = "token-efficient-tools-2025-02-19"
+
+// output128kBetaHeader is the anthropic-beta value that lifts Sonnet
+// 3.7's default 64k max_tokens cap to 128k. The header is opt-in: the
+// caller signals intent by setting MaxTokens above the post-beta
+// threshold, and we transparently add the header so the upstream
+// request is accepted instead of clamped.
+//
+// Only Sonnet 3.7 honours this beta. Claude 4+ models have their own
+// per-model max_tokens ceilings and do not need (and silently ignore)
+// this header — we strip it so the wire request matches the model.
+const output128kBetaHeader = "output-128k-2025-02-19"
+
+// output128kThreshold is the caller-requested max_tokens value above
+// which Sonnet 3.7 needs the output-128k-2025-02-19 beta header for
+// the request to be accepted. 64000 is the post-beta cap; anything
+// strictly greater forces the opt-in.
+const output128kThreshold int64 = 64000
+
 // modelDefaults captures the per-model knobs that vary across the
 // Claude family. A caller's request is overlaid on top of these
 // defaults; only fields the caller did not set are filled in from here.
@@ -112,28 +141,54 @@ type modelDefaults struct {
 	// that case; older Claude models (4.5 and below, Sonnet 3.7, 3.5,
 	// 3.0) accept prefill.
 	rejectsAssistantPrefill bool
-	// betas are anthropic-beta header values to add by default when
-	// the caller is on this model. Used for Sonnet 3.7's optional
-	// 128k-output and token-efficient-tools betas.
+	// supportsTokenEfficientToolsBeta reports that the model honours
+	// the `token-efficient-tools-2025-02-19` anthropic-beta header.
+	// Only Sonnet 3.7 does. The header is auto-injected when tools are
+	// present on the request, regardless of whether the model actually
+	// uses one — the beta is harmless on tool-less turns.
+	supportsTokenEfficientToolsBeta bool
+	// supportsOutput128kBeta reports that the model honours the
+	// `output-128k-2025-02-19` anthropic-beta header. Only Sonnet 3.7
+	// does. The header is auto-injected when the caller asks for
+	// max_tokens above the post-beta threshold (64k); below that the
+	// header is unnecessary so we omit it.
+	supportsOutput128kBeta bool
+	// betas are anthropic-beta header values to add unconditionally
+	// when the caller is on this model. Currently empty for every
+	// supported model — the conditional Sonnet 3.7 betas are gated by
+	// the supports*Beta flags above instead so the request only opts
+	// in when the caller's intent matches the beta.
 	betas []string
 }
 
 // betaHeaders returns the per-call anthropic-beta header values that
 // must be added to the request, given whether thinking is on for this
-// turn and whether tools are present.
+// turn, whether tools are present, and the resolved max_tokens.
 //
 // The interleaved-thinking header is emitted IFF the model needs it
 // AND thinking is on AND tools are present — without all three the
 // header is either harmful (rejected on Bedrock/Vertex) or pointless.
 //
-// Static per-model betas (e.g. Sonnet 3.7's optional output-128k and
-// token-efficient-tools opt-ins) are appended afterwards so callers
-// always get a single ordered slice.
+// The Sonnet 3.7 token-efficient-tools header is emitted IFF the
+// model honours it AND tools are present on the request — the beta is
+// harmless on tool-less turns but we keep the request clean.
+//
+// The Sonnet 3.7 output-128k header is emitted IFF the model honours
+// it AND the caller asked for max_tokens above the post-beta threshold
+// (64k). Below that the header is unnecessary; above it the header is
+// what makes the larger budget legal on the wire.
+//
+// Static per-model betas (the `betas` field) are appended afterwards
+// so callers always get a single ordered slice; currently empty for
+// every supported model.
 //
 // Expected:
 //   - thinkingOn is true when params.Thinking is adaptive or enabled.
 //   - toolsPresent is true when the request will include any tool
 //     definitions on the wire.
+//   - maxTokens is the resolved params.MaxTokens for this request
+//     (already populated by applyMaxTokens; never zero on the hot
+//     path because applyMaxTokens fills the package-wide default).
 //
 // Returns:
 //   - The beta header values to add, in order. Empty/nil means no
@@ -141,10 +196,18 @@ type modelDefaults struct {
 //
 // Side effects:
 //   - None.
-func (d modelDefaults) betaHeaders(thinkingOn, toolsPresent bool) []string {
+func (d modelDefaults) betaHeaders(
+	thinkingOn, toolsPresent bool, maxTokens int64,
+) []string {
 	var headers []string
 	if d.requiresInterleavedThinkingHeader && thinkingOn && toolsPresent {
 		headers = append(headers, interleavedThinkingBetaHeader)
+	}
+	if d.supportsTokenEfficientToolsBeta && toolsPresent {
+		headers = append(headers, tokenEfficientToolsBetaHeader)
+	}
+	if d.supportsOutput128kBeta && maxTokens > output128kThreshold {
+		headers = append(headers, output128kBetaHeader)
 	}
 	if len(d.betas) > 0 {
 		headers = append(headers, d.betas...)
@@ -217,9 +280,11 @@ func resolveModelDefaults(model string) modelDefaults {
 			// Default keeps the historical 4096 cap; callers asking
 			// for >64k must opt into the output-128k beta explicitly
 			// via the ChatRequest.MaxTokens field.
-			maxTokens:        0,
-			supportsThinking: true,
-			betas:            nil,
+			maxTokens:                       0,
+			supportsThinking:                true,
+			supportsTokenEfficientToolsBeta: true,
+			supportsOutput128kBeta:          true,
+			betas:                           nil,
 		}
 	}
 	return modelDefaults{}
