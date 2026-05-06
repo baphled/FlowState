@@ -347,6 +347,20 @@ export const useChatStore = defineStore('chat', {
     // shared reset path) so a model_active on a fresh session is not
     // accidentally suppressed by a key from a prior session.
     lastProviderChangeKey: null as string | null,
+    // ---- bootstrap singleton (App-level loading-overlay coordination) ----
+    //
+    // bootstrap() wraps restoreStateFromBackend so the App-level loading
+    // overlay has one definitive "first hydration done" promise to await,
+    // and so the documented loadAgents/restoreStateFromBackend race (eager
+    // pickers racing the canonical agent resolution) is closed at the
+    // source: the first call seeds this promise, every subsequent caller
+    // (App.vue, ChatView.onMounted, any future picker that mounts before
+    // restore completes) gets the same in-flight or already-settled
+    // handle. The underlying restoreStateFromBackend therefore runs
+    // exactly once per store instance per page-load.
+    //
+    // Transient — never persisted, never hydrated from the backend.
+    bootstrapPromise: null as Promise<void> | null,
   }),
 
   getters: {
@@ -424,6 +438,29 @@ export const useChatStore = defineStore('chat', {
   },
 
   actions: {
+    // bootstrap: singleton wrapper around restoreStateFromBackend.
+    //
+    // App-level callers (the loading overlay in App.vue, ChatView's
+    // onMounted handler, any future caller that needs a "first hydration
+    // done" gate) await this rather than restoreStateFromBackend
+    // directly. The first call invokes the underlying restore; concurrent
+    // and subsequent calls reuse the same promise instance. Failures
+    // propagate to every awaiter identically.
+    //
+    // Why a singleton: the existing call sites are already racy by design
+    // (eager pickers fire loadAgents before ChatView awaits restore — see
+    // the long history comment on loadAgents). Centralising "kick off the
+    // canonical restore exactly once" here means the overlay can rely on
+    // it and the legacy callers can keep their current shape without
+    // double-fetching agents/models/sessions.
+    bootstrap(): Promise<void> {
+      if (this.bootstrapPromise) {
+        return this.bootstrapPromise
+      }
+      this.bootstrapPromise = this.restoreStateFromBackend()
+      return this.bootstrapPromise
+    },
+
     async restoreStateFromBackend(): Promise<void> {
       await this.loadAgents()
       await this.loadSessions()

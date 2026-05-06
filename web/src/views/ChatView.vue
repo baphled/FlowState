@@ -224,8 +224,15 @@ onMounted(async () => {
   // catch its own errors (they bubble for callers to decide UX) — this
   // mount-time call is the only consumer that needs a user-facing
   // recovery affordance.
+  //
+  // We call bootstrap() (not restoreStateFromBackend directly) so that
+  // App.vue's loading-overlay gate and this mount-time hydration share a
+  // single in-flight promise — App.vue's earlier call seeded it, this
+  // call awaits the same singleton and gets the same resolution / same
+  // rejection. Without the singleton, both call sites would each kick
+  // off independent fetchAgents/fetchSessions/fetchModels round-trips.
   try {
-    await chatStore.restoreStateFromBackend()
+    await chatStore.bootstrap()
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to load sessions'
     chatStore.error = message

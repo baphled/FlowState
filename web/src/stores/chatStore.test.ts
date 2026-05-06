@@ -3720,3 +3720,61 @@ describe('chatStore.handleProviderChangedEvent records a dedup key for the follo
     expect(store.lastProviderChangeKey).toBeNull()
   })
 })
+
+describe('chatStore - bootstrap (singleton wrapper around restoreStateFromBackend)', () => {
+  // bootstrap() exists so the App-level loading overlay has a single
+  // reliable "first hydration done" signal it can await — and so the
+  // documented loadAgents/restoreStateFromBackend race (eager pickers
+  // racing the canonical agent resolution) is closed at the source. The
+  // contract:
+  //
+  //   1. The first call invokes restoreStateFromBackend and returns its
+  //      promise.
+  //   2. Concurrent and subsequent calls return the same in-flight or
+  //      already-settled promise — the underlying restore is invoked
+  //      exactly once per store instance.
+  //   3. Failures propagate to all awaiters identically (so ChatView's
+  //      try/catch toast + App.vue's overlay-dismiss both still fire).
+
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('invokes restoreStateFromBackend exactly once across multiple concurrent callers', async () => {
+    const store = useChatStore()
+    const restoreSpy = vi.spyOn(store, 'restoreStateFromBackend')
+
+    const [a, b, c] = [store.bootstrap(), store.bootstrap(), store.bootstrap()]
+    await Promise.all([a, b, c])
+
+    expect(restoreSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('caches the in-flight promise on the store so concurrent callers see the singleton', () => {
+    // Pinia's action wrapper returns a fresh Promise.resolve(actionResult)
+    // on every invocation (for hot-module-reload support), so promise
+    // identity at the call-site is not preserved. The behavioural
+    // singleton is observable via the store-state field — bootstrapPromise
+    // is non-null after the first call and remains the same reference.
+    const store = useChatStore()
+    expect(store.bootstrapPromise).toBeNull()
+    void store.bootstrap()
+    const cached = store.bootstrapPromise
+    expect(cached).not.toBeNull()
+    void store.bootstrap()
+    expect(store.bootstrapPromise).toBe(cached)
+  })
+
+  it('propagates a rejection from restoreStateFromBackend to all awaiters', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'restoreStateFromBackend').mockRejectedValueOnce(new Error('network blip'))
+
+    const a = store.bootstrap()
+    const b = store.bootstrap()
+
+    await expect(a).rejects.toThrow('network blip')
+    await expect(b).rejects.toThrow('network blip')
+  })
+})
