@@ -305,6 +305,68 @@ const (
 	ErrorTypeUnknown ErrorType = "unknown"
 )
 
+// RateLimit carries provider-issued rate-limit metadata extracted from
+// an HTTP response (typically on a 429 / 529 / 503 error). Each field is
+// optional — providers populate only what the upstream supplied. A
+// failover scheduler should prefer RetryAfter when non-zero over a
+// generic per-error-type cooldown so back-off matches the carrier
+// signal the provider gave us.
+//
+// All token / request counters use -1 to mean "not provided" so the
+// zero value (no metadata) is unambiguous from a real "0 remaining".
+// Reset times are zero-valued time.Time when not provided.
+//
+// The current populator is the Anthropic provider, which extracts the
+// `retry-after` and `anthropic-ratelimit-*` response headers; other
+// providers may leave the *RateLimit pointer nil on Error and the
+// failover hook falls back to the per-error-type cooldown table.
+type RateLimit struct {
+	// RetryAfter is the duration the carrier asked us to wait before
+	// retrying, parsed from the `retry-after` HTTP header. Zero when
+	// the header is absent or unparseable.
+	RetryAfter time.Duration
+	// InputTokensLimit is the per-window input-token budget. -1 when
+	// not provided.
+	InputTokensLimit int
+	// InputTokensRemaining is the input-token budget left in the
+	// current window. -1 when not provided.
+	InputTokensRemaining int
+	// InputTokensReset is the wall-clock time at which the
+	// input-token budget resets. Zero when not provided.
+	InputTokensReset time.Time
+	// OutputTokensLimit is the per-window output-token budget. -1
+	// when not provided.
+	OutputTokensLimit int
+	// OutputTokensRemaining is the output-token budget left in the
+	// current window. -1 when not provided.
+	OutputTokensRemaining int
+	// OutputTokensReset is the wall-clock time at which the
+	// output-token budget resets. Zero when not provided.
+	OutputTokensReset time.Time
+	// RequestsLimit is the per-window request budget. -1 when not
+	// provided.
+	RequestsLimit int
+	// RequestsRemaining is the request budget left in the current
+	// window. -1 when not provided.
+	RequestsRemaining int
+	// RequestsReset is the wall-clock time at which the request
+	// budget resets. Zero when not provided.
+	RequestsReset time.Time
+	// TokensLimit is the combined input+output per-window token
+	// budget when the provider exposes one. -1 when not provided.
+	TokensLimit int
+	// TokensRemaining is the combined token budget left in the
+	// current window. -1 when not provided.
+	TokensRemaining int
+	// TokensReset is the wall-clock time at which the combined token
+	// budget resets. Zero when not provided.
+	TokensReset time.Time
+	// RequestID is the upstream request identifier (Anthropic's
+	// `request-id` header) for support correlation. Empty when not
+	// provided.
+	RequestID string
+}
+
 // Error is a structured provider failure returned at the boundary.
 // It preserves HTTP status codes and provider-specific error codes for accurate classification.
 type Error struct {
@@ -315,6 +377,13 @@ type Error struct {
 	Message     string
 	IsRetriable bool
 	RawError    error
+	// RateLimit carries provider-issued rate-limit metadata when
+	// available. Nil when the provider did not surface any
+	// rate-limit headers (e.g. a generic 500 server error, or any
+	// provider that does not yet populate this field). A failover
+	// scheduler should consult RateLimit.RetryAfter (when non-zero)
+	// in preference to a generic per-error-type cooldown.
+	RateLimit *RateLimit
 }
 
 // Error returns a human-readable description of the provider error.

@@ -557,6 +557,14 @@ func streamWithReplay(
 // the error type. It applies differentiated durations: non-retriable errors use 24-hour
 // cooldown; retriable errors use error-type-specific durations from CooldownForErrorType.
 //
+// When the provider error carries a RateLimit struct with a non-zero
+// RetryAfter (parsed from the upstream's `retry-after` header), that
+// duration overrides the per-error-type table — the carrier already
+// told us how long to wait, and guessing is worse than respecting the
+// signal. RetryAfter == 0 (header absent or unparseable) falls back to
+// the per-error-type cooldown so other providers and pre-Phase-3
+// callers see no change in behaviour.
+//
 // Expected:
 //   - health is non-nil.
 //   - err may be nil (no-op).
@@ -569,11 +577,32 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	}
 	var provErr *provider.Error
 	if errors.As(err, &provErr) {
-		cooldown := CooldownForErrorType(provErr.ErrorType)
+		cooldown := cooldownForProviderError(provErr)
 		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
 		return
 	}
 	CheckAndMarkRateLimited(health, providerName, model, err)
+}
+
+// cooldownForProviderError returns the cooldown to apply for a given
+// provider.Error. When the error carries a RateLimit with a non-zero
+// RetryAfter, that value wins; otherwise the per-error-type table
+// applies. Centralised so the failover hook and the rate-limit detector
+// share a single carrier-vs-default precedence rule.
+//
+// Expected:
+//   - provErr is a non-nil *provider.Error.
+//
+// Returns:
+//   - The cooldown duration to apply.
+//
+// Side effects:
+//   - None.
+func cooldownForProviderError(provErr *provider.Error) time.Duration {
+	if provErr.RateLimit != nil && provErr.RateLimit.RetryAfter > 0 {
+		return provErr.RateLimit.RetryAfter
+	}
+	return CooldownForErrorType(provErr.ErrorType)
 }
 
 // publishFailoverError publishes a provider error event when a failover

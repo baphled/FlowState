@@ -933,6 +933,110 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// Phase 3 #3 — when the provider error carries
+		// RateLimit.RetryAfter (parsed from upstream's `retry-after`
+		// header), the cooldown must honour the carrier signal rather
+		// than the generic per-error-type table. Without this the
+		// failover hook would pin a healthy provider to a 1-hour
+		// rate-limit cooldown when the carrier asked for 30 seconds.
+		Context("when sync error carries RateLimit.RetryAfter override", func() {
+			BeforeEach(func() {
+				rateLimitErr := &provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "rate limited",
+					RateLimit: &provider.RateLimit{
+						RetryAfter: 30 * time.Second,
+						RequestID:  "req_abc",
+					},
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(rateLimitErr),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("sets the cooldown to RetryAfter, not the default 1-hour rate-limit cooldown", func() {
+				handler := sh.Execute(baseHandler(registry))
+				before := time.Now()
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				after := time.Now()
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"the failed provider must still be marked unavailable")
+
+				expiry, ok := health.RateLimitedUntil("anthropic", "claude-3")
+				Expect(ok).To(BeTrue())
+				// Carrier said 30s — so expiry is now+30s give or take
+				// the wall-clock drift across the call. Anchor the
+				// upper bound well below the 1-hour default so the
+				// failure mode is unmistakable.
+				Expect(expiry).To(BeTemporally(">=", before.Add(30*time.Second)))
+				Expect(expiry).To(BeTemporally("<=", after.Add(30*time.Second)))
+				Expect(expiry).To(BeTemporally("<", before.Add(2*time.Minute)),
+					"carrier-issued 30s back-off must override the 1h default; landing inside the default window proves the override fired")
+			})
+		})
+
+		// Phase 3 #3 — when the provider error has no RateLimit
+		// metadata (RateLimit is nil — the absent-headers case),
+		// the existing per-error-type cooldown must apply unchanged.
+		// This guards backwards-compat for non-Anthropic providers
+		// and pre-Phase-3 errors.
+		Context("when sync error is a provider.Error with no RateLimit metadata", func() {
+			BeforeEach(func() {
+				rateLimitErr := &provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "zai",
+					Message:   "rate limited",
+					// RateLimit deliberately nil — non-Anthropic
+					// provider, no header propagation.
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "zai",
+					streamFn: syncErrorStreamFn(rateLimitErr),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "OK", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "zai", Model: "glm-4.6"},
+					{Provider: "backup", Model: "backup-model"},
+				})
+			})
+
+			It("falls back to the default 1-hour rate-limit cooldown", func() {
+				handler := sh.Execute(baseHandler(registry))
+				before := time.Now()
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				after := time.Now()
+
+				Expect(health.IsRateLimited("zai", "glm-4.6")).To(BeTrue())
+				expiry, ok := health.RateLimitedUntil("zai", "glm-4.6")
+				Expect(ok).To(BeTrue())
+				// Default rate-limit cooldown is exactly 1 hour. Since
+				// no RateLimit was attached the override must not
+				// fire, so expiry is now+1h modulo wall-clock drift.
+				Expect(expiry).To(BeTemporally(">=", before.Add(time.Hour)))
+				Expect(expiry).To(BeTemporally("<=", after.Add(time.Hour)))
+			})
+		})
+
 		Context("when sync error is a plain string containing rate_limit keyword", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{

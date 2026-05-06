@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -549,6 +552,14 @@ func mapBadRequestError(apiErr *anthropicAPI.Error) *provider.Error {
 
 // buildProviderError creates a provider.Error from an Anthropic API error.
 //
+// When the underlying HTTP response carries Anthropic's rate-limit
+// metadata headers (`retry-after`, `anthropic-ratelimit-*`,
+// `request-id`), they are parsed into provider.RateLimit and attached
+// so failover schedulers can honour the carrier-issued back-off
+// instead of guessing per error type. Headers absent or unparseable
+// leave the field nil — callers must treat that as "no metadata
+// available", not "limits zeroed".
+//
 // Expected:
 //   - apiErr is a non-nil Anthropic API error.
 //   - errType classifies the error.
@@ -571,7 +582,257 @@ func buildProviderError(
 		Message:     apiErr.Error(),
 		RawError:    apiErr,
 		IsRetriable: retriable,
+		RateLimit:   extractRateLimitHeaders(apiErr),
 	}
+}
+
+// extractRateLimitHeaders inspects the Anthropic SDK error's underlying
+// http.Response for the documented rate-limit headers and returns a
+// populated RateLimit when at least one header is present.
+//
+// Anthropic exposes per-window budgets for input tokens, output tokens,
+// requests, and (sometimes) a combined token bucket. Each window has
+// three headers — limit, remaining, reset (RFC 3339). The 429/529 path
+// also carries `retry-after` (seconds) and every response carries
+// `request-id` for support correlation.
+//
+// Returns nil when the SDK error has no Response, the Response has no
+// Headers, or none of the documented headers are present.
+//
+// Expected:
+//   - apiErr may be nil or carry a nil Response.
+//
+// Returns:
+//   - A pointer to a RateLimit when at least one rate-limit header was
+//     present.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func extractRateLimitHeaders(apiErr *anthropicAPI.Error) *provider.RateLimit {
+	if apiErr == nil || apiErr.Response == nil {
+		return nil
+	}
+	headers := apiErr.Response.Header
+	if len(headers) == 0 {
+		return nil
+	}
+
+	rl := newEmptyRateLimit()
+	hasAny := readScalarHeaders(headers, apiErr.RequestID, &rl)
+	hasAny = readWindowHeaders(headers, &rl) || hasAny
+
+	if !hasAny {
+		return nil
+	}
+	return &rl
+}
+
+// newEmptyRateLimit builds a RateLimit pre-populated with -1 sentinels
+// so the caller can disambiguate "header not provided" from a real "0
+// remaining". Reset times stay zero-valued.
+//
+// Returns:
+//   - A RateLimit value ready to receive header-driven mutations.
+//
+// Side effects:
+//   - None.
+func newEmptyRateLimit() provider.RateLimit {
+	return provider.RateLimit{
+		InputTokensLimit:      -1,
+		InputTokensRemaining:  -1,
+		OutputTokensLimit:     -1,
+		OutputTokensRemaining: -1,
+		RequestsLimit:         -1,
+		RequestsRemaining:     -1,
+		TokensLimit:           -1,
+		TokensRemaining:       -1,
+	}
+}
+
+// readScalarHeaders captures the scalar (non-window) rate-limit
+// signals: `retry-after`, `request-id`, and the SDK-extracted request
+// ID fallback.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - sdkRequestID is apiErr.RequestID; "" when not provided.
+//   - rl is non-nil; mutated in place on hits.
+//
+// Returns:
+//   - true when at least one scalar header was captured.
+//
+// Side effects:
+//   - Mutates *rl on hits.
+func readScalarHeaders(headers http.Header, sdkRequestID string, rl *provider.RateLimit) bool {
+	hit := false
+	if v := headers.Get("retry-after"); v != "" {
+		if d, ok := parseRetryAfter(v); ok {
+			rl.RetryAfter = d
+			hit = true
+		}
+	}
+	if v := headers.Get("request-id"); v != "" {
+		rl.RequestID = v
+		hit = true
+	}
+	if sdkRequestID != "" && rl.RequestID == "" {
+		// SDK already extracted it via response_id; mirror so callers
+		// never have to walk both surfaces.
+		rl.RequestID = sdkRequestID
+		hit = true
+	}
+	return hit
+}
+
+// readWindowHeaders captures the four limit/remaining/reset triples
+// (input tokens, output tokens, requests, combined tokens). Decomposed
+// out of extractRateLimitHeaders so the latter stays under the
+// gocognit threshold.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - rl is non-nil; mutated in place on hits.
+//
+// Returns:
+//   - true when at least one window header was captured.
+//
+// Side effects:
+//   - Mutates *rl on hits.
+func readWindowHeaders(headers http.Header, rl *provider.RateLimit) bool {
+	windows := []struct {
+		limitHdr     string
+		remainingHdr string
+		resetHdr     string
+		limitDst     *int
+		remainingDst *int
+		resetDst     *time.Time
+	}{
+		{
+			"anthropic-ratelimit-input-tokens-limit",
+			"anthropic-ratelimit-input-tokens-remaining",
+			"anthropic-ratelimit-input-tokens-reset",
+			&rl.InputTokensLimit, &rl.InputTokensRemaining,
+			&rl.InputTokensReset,
+		},
+		{
+			"anthropic-ratelimit-output-tokens-limit",
+			"anthropic-ratelimit-output-tokens-remaining",
+			"anthropic-ratelimit-output-tokens-reset",
+			&rl.OutputTokensLimit, &rl.OutputTokensRemaining,
+			&rl.OutputTokensReset,
+		},
+		{
+			"anthropic-ratelimit-requests-limit",
+			"anthropic-ratelimit-requests-remaining",
+			"anthropic-ratelimit-requests-reset",
+			&rl.RequestsLimit, &rl.RequestsRemaining,
+			&rl.RequestsReset,
+		},
+		{
+			"anthropic-ratelimit-tokens-limit",
+			"anthropic-ratelimit-tokens-remaining",
+			"anthropic-ratelimit-tokens-reset",
+			&rl.TokensLimit, &rl.TokensRemaining,
+			&rl.TokensReset,
+		},
+	}
+	hit := false
+	for _, w := range windows {
+		if readIntHeader(headers, w.limitHdr, w.limitDst) {
+			hit = true
+		}
+		if readIntHeader(headers, w.remainingHdr, w.remainingDst) {
+			hit = true
+		}
+		if readTimeHeader(headers, w.resetHdr, w.resetDst) {
+			hit = true
+		}
+	}
+	return hit
+}
+
+// parseRetryAfter parses the `retry-after` HTTP header value. Anthropic
+// emits the seconds form on 429/529; the spec also permits an
+// HTTP-date, which we accept for forward-compat.
+//
+// Expected:
+//   - value is the raw header text.
+//
+// Returns:
+//   - The duration to wait and true on success.
+//   - 0 and false when the header is absent, blank, or unparseable.
+//
+// Side effects:
+//   - None.
+func parseRetryAfter(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(value); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// readIntHeader parses a non-negative integer header into dst and
+// returns true when the header was present and parseable.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - name is the header to look up.
+//   - dst is non-nil; left untouched on parse failure.
+//
+// Returns:
+//   - true when the header was present and successfully parsed.
+//
+// Side effects:
+//   - Mutates *dst on success.
+func readIntHeader(headers http.Header, name string, dst *int) bool {
+	v := headers.Get(name)
+	if v == "" {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return false
+	}
+	*dst = n
+	return true
+}
+
+// readTimeHeader parses an RFC 3339 timestamp header into dst and
+// returns true when the header was present and parseable.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - name is the header to look up.
+//   - dst is non-nil; left untouched on parse failure.
+//
+// Returns:
+//   - true when the header was present and successfully parsed.
+//
+// Side effects:
+//   - Mutates *dst on success.
+func readTimeHeader(headers http.Header, name string, dst *time.Time) bool {
+	v := strings.TrimSpace(headers.Get(name))
+	if v == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return false
+	}
+	*dst = t
+	return true
 }
 
 // parseAnthropicStreamError returns a structured provider.Error if the error is

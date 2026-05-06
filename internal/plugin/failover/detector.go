@@ -34,7 +34,7 @@ func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, 
 		cooldown := time.Hour
 		var provErr *provider.Error
 		if errors.As(err, &provErr) {
-			cooldown = CooldownForErrorType(provErr.ErrorType)
+			cooldown = cooldownForProviderError(provErr)
 		}
 		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
 		return true
@@ -119,7 +119,7 @@ func (d *RateLimitDetector) HandleError(event any) {
 		cooldown := time.Hour
 		var provErr *provider.Error
 		if errors.As(data.Error, &provErr) {
-			cooldown = CooldownForErrorType(provErr.ErrorType)
+			cooldown = cooldownForProviderError(provErr)
 		}
 		d.health.MarkRateLimited(
 			data.ProviderName,
