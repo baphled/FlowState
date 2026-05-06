@@ -154,28 +154,30 @@ test.describe('session regression — live backend', () => {
   test.setTimeout(360_000)
 
   /**
-   * Discovered regression while authoring this spec — left as a fixme so
-   * a later delivery picks it up. NOT silently skipped: this is the
-   * load-bearing user-visible behaviour for #1.
+   * Regression guard for the AgentPicker pre-empt race fixed alongside
+   * 5c596e8.
    *
    *   On a fresh visit (cleared localStorage), the AgentPicker component's
    *   onMounted hook fires `void chatStore.loadAgents()` BEFORE the parent
    *   ChatView's onMounted runs `await chatStore.restoreStateFromBackend()`.
-   *   loadAgents (chatStore.ts:618-631) sets `agents[0]` (alphabetically
-   *   API-Engineer) as the active agent and persists it to localStorage.
-   *   When restoreStateFromBackend then reads getPersistedAgentId() at
-   *   line 432, it finds "API-Engineer" — and the precedence on line 439
-   *   (`sessionAgentId ?? persistedAgentId ?? defaultAgent`) makes the
+   *   Pre-fix, loadAgents seeded `agents[0]` (alphabetically API-Engineer)
+   *   as the active agent and persisted it to localStorage. When
+   *   restoreStateFromBackend later read getPersistedAgentId(), it found
+   *   "API-Engineer" — and the precedence at chatStore.ts ~line 439
+   *   (`sessionAgentId ?? persistedAgentId ?? defaultAgent`) made the
    *   persisted value beat DEFAULT_AGENT_ID.
    *
-   *   Commit 5c596e8 changed the constant correctly; the unit test in
-   *   chatStore.test.ts proves the code path works in isolation. But the
-   *   live UX has a pre-existing AgentPicker pre-empt race that 5c596e8
-   *   did not address. To fully ship the fix, loadAgents needs to prefer
-   *   DEFAULT_AGENT_ID over `agents[0]` when no agent is persisted, OR
-   *   the AgentPicker must not seed an agent on mount.
+   *   The fix (this commit) decouples list-population from active-agent
+   *   selection: loadAgents now ONLY populates availableAgents/Details
+   *   and never touches `agentId` or localStorage. The active agent is
+   *   resolved exclusively by restoreStateFromBackend (boot-time) and
+   *   setAgent (user-driven). With this contract, the AgentPicker mount
+   *   has no path to pre-empt the active-agent decision regardless of
+   *   ordering. Backwards-compat: a legitimately-persisted non-default
+   *   `chat.agentId` is preserved by restoreStateFromBackend's
+   *   `persistedAgentId` branch (the existing chain at chatStore.ts:439).
    */
-  test.fixme('#1: fresh-visit defaults to default-assistant (AgentPicker pre-empt race)', async ({ page }) => {
+  test('#1: fresh-visit defaults to default-assistant (AgentPicker pre-empt race)', async ({ page }) => {
     await page.addInitScript(() => {
       try { localStorage.clear() } catch { /* first-load may not have storage yet */ }
     })
@@ -188,7 +190,19 @@ test.describe('session regression — live backend', () => {
     })
     await page.goto('/chat')
     await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
-    await page.waitForTimeout(2_000)
+    // Wait for restoreStateFromBackend to complete by polling localStorage.
+    // The picker label is intentionally NOT used as a proxy here — pre-fix
+    // it flipped to "Default Assistant" early via the AgentPicker pre-empt,
+    // so this test must observe the *persisted* value to detect the race.
+    await expect
+      .poll(
+        async () => await page.evaluate(() => localStorage.getItem('chat.agentId')),
+        {
+          timeout: 15_000,
+          message: 'restoreStateFromBackend never persisted chat.agentId',
+        },
+      )
+      .not.toBeNull()
     const persistedAgentId = await page.evaluate(() => localStorage.getItem('chat.agentId'))
     expect(
       persistedAgentId,

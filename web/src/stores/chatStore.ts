@@ -616,18 +616,50 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadAgents(): Promise<void> {
+      // loadAgents is responsible for populating the agent list — it is NOT
+      // responsible for deciding which agent the user should be talking to.
+      // restoreStateFromBackend owns the active-agent precedence (session
+      // agent first, then persisted, then DEFAULT_AGENT_ID, then alphabetical
+      // fallback), and setAgent owns the user-driven switch path.
+      //
+      // Pre-fix this method also seeded an active agent when none was set:
+      //
+      //     if (!this.agentId && agents.length > 0) {
+      //       await this.setAgent(agents[0].id)   // agents[0] = alphabetical first
+      //       return
+      //     }
+      //
+      // That created two problems:
+      //
+      //   1. AgentPicker.onMounted fires `void chatStore.loadAgents()` (no
+      //      await) BEFORE ChatView.onMounted runs `await chatStore.
+      //      restoreStateFromBackend()`. The eager seed persisted agents[0]
+      //      (alphabetically API-Engineer) to localStorage, where it then
+      //      beat DEFAULT_AGENT_ID in restoreStateFromBackend's
+      //      `sessionAgentId ?? persistedAgentId ?? defaultAgent` chain.
+      //      Commit 5c596e8 changed DEFAULT_AGENT_ID to default-assistant
+      //      but the live UX never saw it because of this pre-empt race.
+      //
+      //   2. Even after preferring DEFAULT_AGENT_ID over agents[0], the
+      //      eager seed made the AgentPicker's "Default Assistant" label
+      //      flip BEFORE restoreStateFromBackend had hydrated
+      //      currentSessionId. Tests gating on the picker label as a proxy
+      //      for "store fully restored" then proceeded to send a message
+      //      while currentSessionId was still null, hitting sendMessage's
+      //      lazy-create branch and creating a phantom session that
+      //      restoreStateFromBackend's late completion subsequently
+      //      clobbered (currentSessionId=null, messages=[]).
+      //
+      // The cleaner contract is: loadAgents fetches the list, period. The
+      // store is left with `agentId === ''` until restoreStateFromBackend
+      // resolves it from session > localStorage > default-assistant.
+      // setAgent (user-driven) and restoreStateFromBackend (boot-time) are
+      // the only two paths that mutate the active agent. AgentPicker,
+      // MessageInput, and AgentSwitcher only need the list — they no
+      // longer indirectly drive agent selection by mounting.
       const agents = await fetchAgents()
       this.availableAgentDetails = agents
       this.availableAgents = agents.map((agent) => agent.id)
-
-      if (!this.agentId && agents.length > 0) {
-        await this.setAgent(agents[0].id)
-        return
-      }
-
-      if (this.agentId && !this.availableAgents.includes(this.agentId) && agents.length > 0) {
-        await this.setAgent(agents[0].id)
-      }
     },
 
     async setAgent(agentId: string): Promise<void> {
