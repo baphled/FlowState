@@ -100,6 +100,18 @@ harness:
       description: "Plan reviewer evaluates the plan and emits an APPROVE/REJECT verdict."
       expected_keys:
         - "{chainID}/review"
+# Planning is the deepest reasoning workload in the system — wave fan-in,
+# critic re-prompting, and review-cycle gates all benefit from Sonnet-tier
+# instruction following. Permissive policy keeps the operator free to
+# downshift to Haiku for cheap iterations or up-shift to Opus for heavy
+# work; the manifest seeds the default so a fresh planner session never
+# silently lands on whichever provider config.yaml's global default points
+# at (z.ai today, something else tomorrow). See the May 2026 bug fix
+# "Agent Provider Cascade" for the cascade rule (UI > manifest > global).
+model_policy: "permissive"
+preferred_models:
+  - provider: anthropic
+    model: claude-sonnet-4-7
 ---
 
 # FlowState Planner
