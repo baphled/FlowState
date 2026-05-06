@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -632,6 +633,13 @@ type engineParams struct {
 	compaction         compactionpkg.Config
 	compactionStoreDir string
 	swarmRegistry      *swarm.Registry
+	// recallEmbeddingModel and sessionEmbeddingLookup carry the
+	// inputs the engine's RecallBroker hook compares to surface the
+	// silent-zero embedding-model dimension-mismatch diagnostic
+	// (Delivery G consumer wiring). Both forwarded straight to
+	// engine.Config.
+	recallEmbeddingModel   string
+	sessionEmbeddingLookup func(string) (string, bool)
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -690,17 +698,30 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	chainStore := createChainStore(params.cfg)
 	broker := buildRecallBrokerFromSetup(params, traced.provider, tp.mcpManager, contextStore, chainStore)
 	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, traced.recorder)
+	// sessionMgrHolder bridges the engine → streamer → sessionMgr
+	// construction cycle: the engine's Recall embedding-model
+	// diagnostic needs to look up Session.EmbeddingModel by ID, but
+	// the session manager itself can only be built after the
+	// streamer (which needs the engine). The lookup closure captures
+	// the holder pointer at engine-construct time and reads from it
+	// at hook-call time, after sessionMgr has been assigned below.
+	// Until that assignment, the closure returns ("", false) so the
+	// diagnostic surfaces as a legacy-or-unknown INFO line rather
+	// than panicking on a nil dereference.
+	sessionMgrHolder := &sessionManagerHolder{}
 	eng, setEnsureTools := createEngine(buildEngineParams(engineAssemblyParams{
-		setup:         params,
-		traced:        traced,
-		tools:         tp,
-		contextStore:  contextStore,
-		chainStore:    chainStore,
-		broker:        broker,
-		compression:   compression,
-		swarmRegistry: params.swarmRegistry,
-		memoryClient:  params.memoryClient,
-		vaultHandler:  params.vaultHandler,
+		setup:                   params,
+		traced:                  traced,
+		tools:                   tp,
+		contextStore:            contextStore,
+		chainStore:              chainStore,
+		broker:                  broker,
+		compression:             compression,
+		swarmRegistry:           params.swarmRegistry,
+		memoryClient:            params.memoryClient,
+		vaultHandler:            params.vaultHandler,
+		recallEmbeddingModel:    params.cfg.ResolvedEmbeddingModel(),
+		sessionEmbeddingLookup:  sessionMgrHolder.lookup,
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
@@ -714,6 +735,12 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	// session.Manager.SetEmbeddingModel and vault note "Recall
 	// Diagnostic - Embedding Model Stamp (May 2026)".
 	sessionMgr.SetEmbeddingModel(params.cfg.ResolvedEmbeddingModel())
+	// Wire the holder so the engine's recall embedding-model
+	// diagnostic can resolve Session.EmbeddingModel from now on.
+	// Queries before this point (none in production wiring; only a
+	// test that constructed the engine in isolation) collapse to the
+	// legacy/unknown branch. See sessionManagerHolder.lookup.
+	sessionMgrHolder.set(sessionMgr)
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
 		streamer,
@@ -760,6 +787,12 @@ type engineAssemblyParams struct {
 	compression   compressionComponents
 	swarmRegistry *swarm.Registry
 	memoryClient  learning.MemoryClient
+	// recallEmbeddingModel and sessionEmbeddingLookup carry the two
+	// inputs the engine's RecallBroker hook compares to surface the
+	// silent-zero embedding-model dimension-mismatch diagnostic
+	// (Delivery G consumer wiring). See engine.Config field docs.
+	recallEmbeddingModel   string
+	sessionEmbeddingLookup func(string) (string, bool)
 	vaultHandler  toolsvault.Handler
 }
 
@@ -814,6 +847,8 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		compaction:              in.setup.cfg.Compaction,
 		compactionStoreDir:      sessionsDirFromCfg(in.setup.cfg),
 		swarmRegistry:           in.swarmRegistry,
+		recallEmbeddingModel:    in.recallEmbeddingModel,
+		sessionEmbeddingLookup:  in.sessionEmbeddingLookup,
 	}
 }
 
@@ -1139,6 +1174,66 @@ type runtimeComponents struct {
 	mcpTools []tool.Tool
 }
 
+// sessionManagerHolder bridges the engine → streamer → sessionMgr
+// construction cycle for the Recall embedding-model diagnostic. The
+// engine.Config.SessionEmbeddingLookup closure must reach into the
+// session manager to read Session.EmbeddingModel, but the manager
+// cannot be constructed until after the engine (the streamer needs
+// the engine, the manager needs the streamer). The holder is created
+// before the engine, its lookup method captures a stable pointer in
+// the closure, and set() wires the live manager once it exists. Until
+// set is called, lookup returns ("", false) so the diagnostic
+// degrades to the legacy/unknown INFO branch instead of panicking.
+//
+// Concurrency: set is called once during setupEngine before any
+// stream serves a request; lookup is read-only thereafter. The
+// sync.RWMutex guards against the (currently impossible) case where
+// a request arrives during construction — defence-in-depth so a
+// future restructuring of setupEngine does not introduce a race.
+type sessionManagerHolder struct {
+	mu  sync.RWMutex
+	mgr *session.Manager
+}
+
+// set installs the live session manager. Called once during
+// setupEngine, after sessionMgr is constructed.
+//
+// Side effects:
+//   - Replaces the held manager pointer under the write lock.
+func (h *sessionManagerHolder) set(mgr *session.Manager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mgr = mgr
+}
+
+// lookup resolves the session's stamped embedding model. Wired into
+// engine.Config.SessionEmbeddingLookup so the RecallBroker hook can
+// compare against the recall pipeline's configured model. Returns
+// (model, true) when the session is registered with the manager,
+// even when the stamped model is empty (legacy session predating
+// Delivery G — the engine's diagnostic distinguishes empty-stamp
+// from not-found inside the INFO branch via a "reason" field).
+// Returns ("", false) when the manager is not yet wired or the
+// session is not registered — both are legacy/unknown for the
+// diagnostic.
+//
+// Side effects:
+//   - Acquires the holder's read lock for the projection.
+//   - Acquires the manager's read lock through GetSession.
+func (h *sessionManagerHolder) lookup(sessionID string) (string, bool) {
+	h.mu.RLock()
+	mgr := h.mgr
+	h.mu.RUnlock()
+	if mgr == nil {
+		return "", false
+	}
+	sess, err := mgr.GetSession(sessionID)
+	if err != nil || sess == nil {
+		return "", false
+	}
+	return sess.EmbeddingModel, true
+}
+
 // createEngine initialises the engine with live manifest getter for hook chain.
 //
 // Expected:
@@ -1182,6 +1277,8 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		MCPServerTools:            params.mcpServerTools,
 		EventBus:                  appEventBus,
 		RecallBroker:              params.recallBroker,
+		RecallEmbeddingModel:      params.recallEmbeddingModel,
+		SessionEmbeddingLookup:    params.sessionEmbeddingLookup,
 		ContextAssemblyHooks:      params.contextAssemblyHooks,
 		AutoCompactor:             params.compression.autoCompactor,
 		CompressionConfig:         params.compression.config,
