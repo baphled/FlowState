@@ -1908,3 +1908,361 @@ var _ = Describe("OAuth wire headers", func() {
 		})
 	})
 })
+
+// Cache breakpoint placement strategy.
+//
+// Anthropic accepts a maximum of 4 cache_control breakpoints per
+// request. A breakpoint marks the END of a cacheable prefix; everything
+// from the start of the request (or the previous breakpoint) up to and
+// including that block becomes the cache key. Marking every block of a
+// homogeneous prefix is wasteful — only the LAST block of the prefix
+// needs the breakpoint. The earlier blocks are covered automatically.
+//
+// FlowState's chosen strategy for multi-turn agent conversations:
+//
+//  1. End of system prefix       — one breakpoint on the LAST system block
+//  2. End of tool definitions    — one breakpoint on the LAST tool
+//  3. End of conversation prefix — one breakpoint on the LAST assistant
+//     message's last content block
+//  4. Reserved                   — left unused so we never exceed 4
+//
+// Only the LAST block of each homogeneous prefix carries the breakpoint;
+// earlier blocks ride inside the prefix the breakpoint anchors. This
+// keeps us at most 3 breakpoints, well under the hard cap of 4 — leaving
+// room for caller-driven overrides without a 400 from the API.
+//
+// TODO(min-cacheable-length): Anthropic silently drops cache attempts
+// shorter than the per-model minimum (~4096 tokens for Opus 4.7, ~2048
+// for Sonnet 4.6, ~1024 for older). We do not gate on length yet — the
+// bigger correctness win was breakpoint COUNT, not length. Add a
+// per-model `minCacheableTokens` table and a token-count gate before
+// shipping prompt-cache hit-rate stats (Phase 3 #4).
+var _ = Describe("extractSystemPrompt cache breakpoint placement", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("places a breakpoint on ONLY the last block when there are 3 system blocks", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "system block 1"},
+			{Role: "system", Content: "system block 2"},
+			{Role: "system", Content: "system block 3"},
+			{Role: "user", Content: "hi"},
+		}
+		blocks := p.extractSystemPrompt(msgs)
+		Expect(blocks).To(HaveLen(3))
+
+		Expect(string(blocks[0].CacheControl.Type)).To(BeEmpty(),
+			"earliest system block must NOT carry a breakpoint — it is "+
+				"already inside the cacheable prefix the final breakpoint "+
+				"anchors; marking it wastes one of Anthropic's 4 slots")
+		Expect(string(blocks[1].CacheControl.Type)).To(BeEmpty(),
+			"middle system block must NOT carry a breakpoint")
+		Expect(string(blocks[2].CacheControl.Type)).To(Equal("ephemeral"),
+			"the LAST system block anchors the entire system prefix — "+
+				"this is the breakpoint Anthropic uses as the cache key")
+	})
+
+	It("places a breakpoint on the only block when there is 1 system block", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: "single system message"},
+			{Role: "user", Content: "hi"},
+		}
+		blocks := p.extractSystemPrompt(msgs)
+		Expect(blocks).To(HaveLen(1))
+		Expect(string(blocks[0].CacheControl.Type)).To(Equal("ephemeral"),
+			"a single system block is its own end-of-prefix — must carry "+
+				"the breakpoint so the system prompt is cached")
+	})
+
+	It("returns no blocks (and no breakpoint) when there is no system prompt", func() {
+		msgs := []provider.Message{
+			{Role: "user", Content: "hi"},
+		}
+		blocks := p.extractSystemPrompt(msgs)
+		Expect(blocks).To(BeEmpty(),
+			"no system messages → no system blocks → zero breakpoints in "+
+				"this slot; this is the back-compat case for callers who "+
+				"do not set a system prompt")
+	})
+
+	It("ignores empty-content system messages so they do not consume a slot", func() {
+		msgs := []provider.Message{
+			{Role: "system", Content: ""},
+			{Role: "system", Content: "real content"},
+			{Role: "system", Content: ""},
+			{Role: "user", Content: "hi"},
+		}
+		blocks := p.extractSystemPrompt(msgs)
+		Expect(blocks).To(HaveLen(1),
+			"empty system messages are skipped at extraction time — "+
+				"they would not be part of a useful cache prefix")
+		Expect(string(blocks[0].CacheControl.Type)).To(Equal("ephemeral"))
+	})
+})
+
+// Cache breakpoint placement on the conversation prefix.
+//
+// In a multi-turn agent loop the most reusable prefix is the
+// conversation history through the model's most recent turn. Pinning a
+// breakpoint at the END of the LAST assistant message means every
+// follow-up turn re-uses that prefix as the cache key. Earlier
+// assistants ride inside the prefix that breakpoint anchors and do NOT
+// need their own breakpoints.
+var _ = Describe("buildRequestParams conversation cache breakpoint", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("places a breakpoint on the last content block of the last assistant message", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "user", Content: "first user turn"},
+				{Role: "assistant", Content: "first assistant turn"},
+				{Role: "user", Content: "second user turn"},
+				{Role: "assistant", Content: "second assistant turn"},
+				{Role: "user", Content: "third user turn"},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Messages).To(HaveLen(5))
+
+		// Earlier assistant must NOT carry a breakpoint.
+		earlierAssistant := params.Messages[1]
+		Expect(string(earlierAssistant.Role)).To(Equal("assistant"))
+		Expect(earlierAssistant.Content).To(HaveLen(1))
+		Expect(string(earlierAssistant.Content[0].OfText.CacheControl.Type)).
+			To(BeEmpty(),
+				"earlier assistant turn must NOT carry a breakpoint — it "+
+					"sits inside the conversation prefix anchored by the "+
+					"breakpoint on the LAST assistant turn")
+
+		// Last assistant must carry a breakpoint on its final block.
+		lastAssistant := params.Messages[3]
+		Expect(string(lastAssistant.Role)).To(Equal("assistant"))
+		Expect(lastAssistant.Content).To(HaveLen(1))
+		Expect(string(lastAssistant.Content[0].OfText.CacheControl.Type)).
+			To(Equal("ephemeral"),
+				"the LAST assistant message anchors the conversation "+
+					"prefix — every follow-up turn re-uses this as the "+
+					"cache key")
+
+		// User messages never carry breakpoints under this strategy.
+		for i, m := range params.Messages {
+			if string(m.Role) != "user" {
+				continue
+			}
+			for j, blk := range m.Content {
+				if blk.OfText == nil {
+					continue
+				}
+				Expect(string(blk.OfText.CacheControl.Type)).To(BeEmpty(),
+					"user message %d block %d must not carry a "+
+						"breakpoint under the chosen strategy", i, j)
+			}
+		}
+	})
+
+	It("does not add a conversation breakpoint when there is no assistant message", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "user", Content: "single user turn"},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Messages).To(HaveLen(1))
+		Expect(string(params.Messages[0].Role)).To(Equal("user"))
+		// The user block must not carry a cache breakpoint — there is
+		// no conversation prefix worth anchoring on a single-turn fresh
+		// request.
+		Expect(string(params.Messages[0].Content[0].OfText.CacheControl.Type)).
+			To(BeEmpty())
+	})
+
+	It("places the breakpoint on the LAST content block of an assistant tool-use turn", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "user", Content: "ask"},
+				{
+					Role:    "assistant",
+					Content: "calling tool",
+					ToolCalls: []provider.ToolCall{
+						{ID: "toolu_01abc", Name: "search", Arguments: map[string]any{"q": "x"}},
+					},
+				},
+				{Role: "tool", Content: "result", ToolCalls: []provider.ToolCall{{ID: "toolu_01abc"}}},
+				{Role: "user", Content: "follow up"},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// params.Messages[1] is the assistant turn (text + tool_use).
+		assistant := params.Messages[1]
+		Expect(string(assistant.Role)).To(Equal("assistant"))
+		Expect(len(assistant.Content)).To(BeNumerically(">=", 2),
+			"assistant turn must contain text and tool_use blocks")
+
+		last := assistant.Content[len(assistant.Content)-1]
+		Expect(last.OfToolUse).NotTo(BeNil(),
+			"the final block of an assistant tool-use turn is the "+
+				"tool_use block — that is where the breakpoint must "+
+				"sit so the entire turn is anchored")
+		Expect(string(last.OfToolUse.CacheControl.Type)).To(Equal("ephemeral"))
+
+		// Earlier blocks of the same assistant turn must NOT carry a
+		// duplicate breakpoint.
+		for i := 0; i < len(assistant.Content)-1; i++ {
+			blk := assistant.Content[i]
+			if blk.OfText != nil {
+				Expect(string(blk.OfText.CacheControl.Type)).To(BeEmpty(),
+					"earlier content block in the LAST assistant turn "+
+						"must not duplicate the breakpoint")
+			}
+			if blk.OfToolUse != nil {
+				Expect(string(blk.OfToolUse.CacheControl.Type)).To(BeEmpty())
+			}
+		}
+	})
+})
+
+// Total breakpoint budget across the request.
+//
+// Anthropic enforces a hard cap of 4 cache_control breakpoints per
+// request. The provider's strategy uses at most 3 (system + tools +
+// last-assistant) so a fully-loaded request leaves headroom. This spec
+// pins the integration: nobody slips a fourth breakpoint in by
+// accident, and the configured strategy never exceeds the cap.
+var _ = Describe("buildRequestParams cache breakpoint budget", func() {
+	var p *Provider
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	countBreakpoints := func(params anthropicAPI.MessageNewParams) int {
+		count := 0
+		for _, sb := range params.System {
+			if string(sb.CacheControl.Type) != "" {
+				count++
+			}
+		}
+		for _, t := range params.Tools {
+			if t.OfTool != nil && string(t.OfTool.CacheControl.Type) != "" {
+				count++
+			}
+		}
+		for _, m := range params.Messages {
+			for _, blk := range m.Content {
+				switch {
+				case blk.OfText != nil && string(blk.OfText.CacheControl.Type) != "":
+					count++
+				case blk.OfToolUse != nil && string(blk.OfToolUse.CacheControl.Type) != "":
+					count++
+				case blk.OfToolResult != nil && string(blk.OfToolResult.CacheControl.Type) != "":
+					count++
+				}
+			}
+		}
+		return count
+	}
+
+	It("never exceeds 4 breakpoints across system + tools + messages on a fully-loaded request", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "system", Content: "sys 1"},
+				{Role: "system", Content: "sys 2"},
+				{Role: "system", Content: "sys 3"},
+				{Role: "user", Content: "u1"},
+				{Role: "assistant", Content: "a1"},
+				{Role: "user", Content: "u2"},
+				{Role: "assistant", Content: "a2"},
+				{Role: "user", Content: "u3"},
+			},
+			Tools: []provider.Tool{
+				{Name: "t1", Description: "tool 1", Schema: provider.ToolSchema{Type: "object"}},
+				{Name: "t2", Description: "tool 2", Schema: provider.ToolSchema{Type: "object"}},
+				{Name: "t3", Description: "tool 3", Schema: provider.ToolSchema{Type: "object"}},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countBreakpoints(params)).To(BeNumerically("<=", 4),
+			"Anthropic rejects requests with more than 4 cache_control "+
+				"breakpoints — the strategy must never exceed the cap "+
+				"on its own")
+	})
+
+	It("uses exactly 3 breakpoints on a fully-loaded request (system + tools + last assistant)", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "system", Content: "sys 1"},
+				{Role: "system", Content: "sys 2"},
+				{Role: "user", Content: "u1"},
+				{Role: "assistant", Content: "a1"},
+				{Role: "user", Content: "u2"},
+			},
+			Tools: []provider.Tool{
+				{Name: "t1", Description: "tool 1", Schema: provider.ToolSchema{Type: "object"}},
+				{Name: "t2", Description: "tool 2", Schema: provider.ToolSchema{Type: "object"}},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countBreakpoints(params)).To(Equal(3),
+			"system prefix + tool prefix + conversation prefix = 3 "+
+				"breakpoints on a typical multi-turn agent request; "+
+				"slot 4 is reserved")
+	})
+
+	It("uses zero breakpoints on a request with no system prompt and no tools and no assistant turn", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "user", Content: "hi"},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countBreakpoints(params)).To(Equal(0),
+			"a request with no system, no tools, and a single user turn "+
+				"has no cacheable prefix worth anchoring — back-compat "+
+				"with callers that do not opt in")
+	})
+
+	It("preserves the breakpoint on the LAST tool definition (existing behaviour)", func() {
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-5-20251020",
+			Messages: []provider.Message{
+				{Role: "user", Content: "hi"},
+			},
+			Tools: []provider.Tool{
+				{Name: "t1", Description: "tool 1", Schema: provider.ToolSchema{Type: "object"}},
+				{Name: "t2", Description: "tool 2", Schema: provider.ToolSchema{Type: "object"}},
+				{Name: "t3", Description: "tool 3", Schema: provider.ToolSchema{Type: "object"}},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Tools).To(HaveLen(3))
+		Expect(string(params.Tools[0].OfTool.CacheControl.Type)).To(BeEmpty())
+		Expect(string(params.Tools[1].OfTool.CacheControl.Type)).To(BeEmpty())
+		Expect(string(params.Tools[2].OfTool.CacheControl.Type)).To(Equal("ephemeral"),
+			"the LAST tool keeps its breakpoint — this anchors the tool-"+
+				"definitions prefix and is the existing correct behaviour")
+	})
+})

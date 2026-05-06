@@ -1122,11 +1122,22 @@ func buildMessages(
 // has no cache_control) sits in front of the caller's cache
 // breakpoint as an uncached prefix, invalidating the cache key.
 //
+// Cache breakpoint placement: a cache_control breakpoint anchors the
+// END of a cacheable prefix. Only the LAST system block carries the
+// breakpoint — earlier system blocks ride inside the prefix it anchors
+// and do NOT need their own breakpoints. Marking every block was the
+// historical implementation; it wasted breakpoint slots (Anthropic caps
+// at 4 per request) without adding any cache-hit benefit. See the
+// "extractSystemPrompt cache breakpoint placement" specs for the
+// behaviour pin.
+//
 // Expected:
 //   - msgs is a slice of provider messages that may include system messages.
 //
 // Returns:
-//   - A slice of TextBlockParam values for the system prompt.
+//   - A slice of TextBlockParam values for the system prompt. The LAST
+//     block (when any) carries an ephemeral cache_control breakpoint;
+//     earlier blocks carry none.
 //
 // Side effects:
 //   - None.
@@ -1138,11 +1149,13 @@ func (p *Provider) extractSystemPrompt(
 		if m.Role != "system" || m.Content == "" {
 			continue
 		}
-		block := anthropicAPI.TextBlockParam{
-			Text:         m.Content,
-			CacheControl: anthropicAPI.NewCacheControlEphemeralParam(),
-		}
-		blocks = append(blocks, block)
+		blocks = append(blocks, anthropicAPI.TextBlockParam{
+			Text: m.Content,
+		})
+	}
+	if len(blocks) > 0 {
+		blocks[len(blocks)-1].CacheControl =
+			anthropicAPI.NewCacheControlEphemeralParam()
 	}
 	return blocks
 }
@@ -1235,6 +1248,12 @@ func (p *Provider) buildRequestParams(
 		params.Tools = tools
 	}
 
+	// Anchor the conversation prefix with a cache_control breakpoint
+	// on the last assistant message — but only if the request still
+	// has budget under Anthropic's 4-breakpoint cap. See
+	// applyConversationCacheBreakpoint for the placement rule.
+	applyConversationCacheBreakpoint(&params)
+
 	defs := resolveModelDefaults(req.Model)
 	betas := defs.betaHeaders(
 		isThinkingActive(&params), len(tools) > 0, params.MaxTokens,
@@ -1242,6 +1261,104 @@ func (p *Provider) buildRequestParams(
 	opts := buildBetaHeaderOptions(betas)
 
 	return params, opts, nil
+}
+
+// maxCacheBreakpoints is Anthropic's hard cap on cache_control
+// breakpoints per request. Exceeding it returns 400 from the API. The
+// provider's strategy uses at most 3 (system + tools + last-assistant)
+// so a fully-loaded request always has headroom.
+const maxCacheBreakpoints = 4
+
+// applyConversationCacheBreakpoint adds a cache_control breakpoint at
+// the END of the last assistant message in the conversation. The last
+// content block of that message is the one marked — anchoring the
+// entire conversation prefix through the model's most recent turn.
+// This is the highest-reuse cache key in a multi-turn agent loop:
+// every follow-up turn replays the same prefix.
+//
+// The function counts the breakpoints already present on system blocks
+// and tool definitions and skips the assistant breakpoint if doing so
+// would exceed the per-request cap of 4. The earlier-prefix anchors
+// are higher-reuse and larger, so we sacrifice the conversation
+// breakpoint first under pressure.
+//
+// Expected:
+//   - params.System and params.Tools have already had their breakpoints
+//     placed by extractSystemPrompt and buildTools respectively.
+//
+// Returns:
+//   - Nothing — params.Messages is mutated in place.
+//
+// Side effects:
+//   - Mutates the LAST content block of the LAST assistant message in
+//     params.Messages by setting its CacheControl field. Other messages
+//     and blocks are untouched.
+func applyConversationCacheBreakpoint(
+	params *anthropicAPI.MessageNewParams,
+) {
+	existing := countExistingCacheBreakpoints(params)
+	if existing >= maxCacheBreakpoints {
+		// No headroom — the system or tool prefix already used all four
+		// slots (should never happen under the current strategy, but
+		// guard defensively so we never send a 5th breakpoint).
+		return
+	}
+	idx := lastAssistantIndex(params.Messages)
+	if idx < 0 {
+		// No assistant turn yet — nothing to anchor.
+		return
+	}
+	msg := &params.Messages[idx]
+	if len(msg.Content) == 0 {
+		return
+	}
+	last := &msg.Content[len(msg.Content)-1]
+	switch {
+	case last.OfText != nil:
+		last.OfText.CacheControl =
+			anthropicAPI.NewCacheControlEphemeralParam()
+	case last.OfToolUse != nil:
+		last.OfToolUse.CacheControl =
+			anthropicAPI.NewCacheControlEphemeralParam()
+	case last.OfToolResult != nil:
+		last.OfToolResult.CacheControl =
+			anthropicAPI.NewCacheControlEphemeralParam()
+	}
+	// Thinking and other block kinds do not accept cache_control on
+	// the v1.27 SDK — fall through silently if the assistant turn
+	// happened to end on one of those.
+}
+
+// lastAssistantIndex returns the index of the last assistant message
+// in messages, or -1 when none exists.
+func lastAssistantIndex(messages []anthropicAPI.MessageParam) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if string(messages[i].Role) == "assistant" {
+			return i
+		}
+	}
+	return -1
+}
+
+// countExistingCacheBreakpoints counts cache_control breakpoints
+// already present on system blocks and tool definitions. Used to gate
+// the conversation breakpoint against the per-request cap.
+func countExistingCacheBreakpoints(
+	params *anthropicAPI.MessageNewParams,
+) int {
+	count := 0
+	for i := range params.System {
+		if string(params.System[i].CacheControl.Type) != "" {
+			count++
+		}
+	}
+	for i := range params.Tools {
+		t := params.Tools[i].OfTool
+		if t != nil && string(t.CacheControl.Type) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // buildBetaHeaderOptions converts a slice of anthropic-beta header
