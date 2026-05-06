@@ -27,7 +27,14 @@ type Metadata struct {
 	CurrentProviderID string    `json:"current_provider_id,omitempty"`
 	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"created_at"`
-	Messages          []Message `json:"messages,omitempty"`
+	// EmbeddingModel mirrors Session.EmbeddingModel and surfaces in the
+	// .meta.json sidecar as "embedding_model". Omitted when empty so
+	// legacy sidecars that predate the field stay byte-identical to
+	// their previous shape and a missing key on load is interpreted as
+	// the legacy "no diagnostic available" condition. See
+	// Session.EmbeddingModel for the full rationale.
+	EmbeddingModel string    `json:"embedding_model,omitempty"`
+	Messages       []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -52,6 +59,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		CurrentProviderID: sess.CurrentProviderID,
 		Status:            sess.Status,
 		CreatedAt:         sess.CreatedAt,
+		EmbeddingModel:    sess.EmbeddingModel,
 		Messages:          sess.Messages,
 	}
 
@@ -147,6 +155,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		CurrentProviderID: meta.CurrentProviderID,
 		Status:            meta.Status,
 		CreatedAt:         meta.CreatedAt,
+		EmbeddingModel:    meta.EmbeddingModel,
 		Messages:          meta.Messages,
 	}, nil
 }
@@ -181,6 +190,7 @@ func loadMetaFile(path string) *Session {
 		CurrentProviderID: meta.CurrentProviderID,
 		Status:            meta.Status,
 		CreatedAt:         meta.CreatedAt,
+		EmbeddingModel:    meta.EmbeddingModel,
 		Messages:          meta.Messages,
 	}
 }

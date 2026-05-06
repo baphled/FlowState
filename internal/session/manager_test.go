@@ -109,6 +109,81 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// EmbeddingModel diagnostic stamp — the configured embedding model is
+	// captured on the session at creation time so a Recall silent-zero
+	// failure (empty results from a dimension mismatch) is diagnosable
+	// from the persisted .meta.json sidecar. The value is frozen at
+	// creation: a mid-session config flip MUST NOT rewrite it, otherwise
+	// the diagnostic is erased and the original mismatch becomes
+	// invisible. See vault note "Recall Diagnostic - Embedding Model
+	// Stamp (May 2026)" and memory entry
+	// `project_flowstate_recall_silent_zero_failure`.
+	Describe("EmbeddingModel diagnostic stamp", func() {
+		Context("when the manager has an embedding model configured", func() {
+			BeforeEach(func() {
+				mgr.SetEmbeddingModel("nomic-embed-text")
+			})
+
+			It("stamps the configured embedding model on a new session via CreateSession", func() {
+				sess, err := mgr.CreateSession("agent-x")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.EmbeddingModel).To(Equal("nomic-embed-text"))
+			})
+
+			It("stamps the configured embedding model on a new session via CreateSessionWithDefaults", func() {
+				sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.EmbeddingModel).To(Equal("nomic-embed-text"))
+			})
+
+			It("stamps the configured embedding model on a new child session via CreateWithParent", func() {
+				parent, err := mgr.CreateSession("parent-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(child.EmbeddingModel).To(Equal("nomic-embed-text"))
+			})
+
+			It("stamps the configured embedding model when EnsureSession registers a new session", func() {
+				mgr.EnsureSession("ensured-id", "agent-x")
+
+				loaded, err := mgr.GetSession("ensured-id")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded.EmbeddingModel).To(Equal("nomic-embed-text"))
+			})
+
+			It("freezes the embedding model at creation — a later SetEmbeddingModel does not rewrite existing sessions", func() {
+				sess, err := mgr.CreateSession("agent-x")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.EmbeddingModel).To(Equal("nomic-embed-text"))
+
+				mgr.SetEmbeddingModel("text-embedding-3-large")
+
+				loaded, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded.EmbeddingModel).To(Equal("nomic-embed-text"),
+					"freezing the field at creation preserves the diagnostic; a mid-session flip must NOT erase the model that was active when the session began")
+			})
+
+			It("uses the model active at creation time for sessions created after a flip", func() {
+				mgr.SetEmbeddingModel("text-embedding-3-large")
+
+				sess, err := mgr.CreateSession("agent-x")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.EmbeddingModel).To(Equal("text-embedding-3-large"))
+			})
+		})
+
+		Context("when the manager has no embedding model configured", func() {
+			It("leaves EmbeddingModel empty so the legacy path stays empty rather than synthesising a value", func() {
+				sess, err := mgr.CreateSession("agent-x")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sess.EmbeddingModel).To(BeEmpty())
+			})
+		})
+	})
+
 	Describe("appendSessionMessage promotes assistant model+provider", func() {
 		// When the engine streams an assistant turn carrying a (model,
 		// provider) pair stamped by the engine — the typical hot path —

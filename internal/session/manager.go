@@ -104,6 +104,17 @@ type Session struct {
 	Messages          []Message                 `json:"messages"`
 	CreatedAt         time.Time                 `json:"created_at"`
 	UpdatedAt         time.Time                 `json:"updated_at"`
+	// EmbeddingModel records the embedding model that was active at session
+	// creation time. Frozen at creation — a mid-session config flip MUST NOT
+	// rewrite this field, otherwise the diagnostic gets erased and a Recall
+	// silent-zero failure (empty results from a dimension mismatch between
+	// the configured model and the persisted vectors) becomes invisible.
+	// Empty for legacy sessions persisted before this field existed; that
+	// absence is the condition the diagnostic exists to flag. See
+	// `Bug Fixes/Recall Diagnostic - Embedding Model Stamp (May 2026).md`
+	// in the FlowState vault and memory entry
+	// `project_flowstate_recall_silent_zero_failure`.
+	EmbeddingModel string `json:"embedding_model,omitempty"`
 }
 
 // Summary provides a lightweight view of a session for listing.
@@ -154,6 +165,15 @@ type Manager struct {
 	// Negative means "disable the sweep" — exposed so tests and
 	// operators can opt out without rewriting the call site.
 	orphanGrace time.Duration
+
+	// embeddingModel is the diagnostic value the manager stamps on
+	// every newly-created session. Set once at app wiring time from
+	// cfg.ResolvedEmbeddingModel(). Empty when the manager was never
+	// configured (tests, ephemeral runs); newly-created sessions will
+	// carry an empty EmbeddingModel rather than a synthesised default,
+	// so a missing value is always traceable to "manager wasn't told"
+	// rather than a silent fallback. The field is read under m.mu.
+	embeddingModel string
 
 	// persistFn overrides the default PersistSession implementation.
 	// Nil means use PersistSession. Only set in tests via export_test.go.
@@ -253,6 +273,37 @@ func (m *Manager) SetSessionsDir(dir string) {
 	m.sessionsDir = dir
 }
 
+// SetEmbeddingModel records the embedding-model name the manager
+// will stamp on every newly-created session via its EmbeddingModel
+// field. Idempotent — safe to call multiple times. The stamp is
+// applied at session-creation time and is frozen on each session
+// thereafter; a later SetEmbeddingModel call only affects sessions
+// created after the call, never existing ones. Empty input clears
+// the configured value (subsequent sessions then have an empty
+// EmbeddingModel, which the load path treats as the legacy "no
+// diagnostic available" condition).
+//
+// Wire this from the app layer once, immediately after NewManager,
+// using cfg.ResolvedEmbeddingModel() so the (qdrant, ollama,
+// embedding-model) tuple stamped on a session matches the tuple the
+// recall pipeline was built against. Without this stamp a Recall
+// silent-zero failure (empty results from a dimension mismatch
+// between the configured model and the persisted vectors) is
+// undiagnosable from the session sidecar — see vault note
+// "Recall Diagnostic - Embedding Model Stamp (May 2026)" and
+// memory entry `project_flowstate_recall_silent_zero_failure`.
+//
+// Expected:
+//   - model is the embedding model identifier; empty disables the stamp.
+//
+// Side effects:
+//   - Updates the manager's embeddingModel field under the write lock.
+func (m *Manager) SetEmbeddingModel(model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.embeddingModel = model
+}
+
 // SetOrphanGrace overrides the age threshold the boot-time orphan
 // sweep uses inside RestoreSessions. Zero restores DefaultOrphanGrace.
 // A negative duration disables the sweep entirely (preserved for
@@ -331,6 +382,10 @@ func (m *Manager) RegisterSession(id, agentID string) {
 		Messages:          make([]Message, 0),
 		CreatedAt:         now,
 		UpdatedAt:         now,
+		// Stamp the configured embedding model so a Recall silent-zero
+		// failure on this session is later diagnosable from the .meta.json
+		// sidecar. See SetEmbeddingModel for rationale.
+		EmbeddingModel: m.embeddingModel,
 	}
 }
 
@@ -377,6 +432,12 @@ func (m *Manager) CreateSession(agentID string) (*Session, error) {
 // that don't care about the chip.
 func (m *Manager) CreateSessionWithDefaults(agentID, providerID, modelID string) (*Session, error) {
 	now := time.Now()
+	// Read the configured embedding-model snapshot under the lock so a
+	// concurrent SetEmbeddingModel cannot tear the field. The value is
+	// then stamped on the new session and frozen — subsequent
+	// SetEmbeddingModel calls will not mutate this session.
+	m.mu.Lock()
+	embeddingModel := m.embeddingModel
 	sess := &Session{
 		ID:                uuid.New().String(),
 		AgentID:           agentID,
@@ -388,9 +449,9 @@ func (m *Manager) CreateSessionWithDefaults(agentID, providerID, modelID string)
 		Messages:          make([]Message, 0),
 		CreatedAt:         now,
 		UpdatedAt:         now,
+		EmbeddingModel:    embeddingModel,
 	}
 
-	m.mu.Lock()
 	m.sessions[sess.ID] = sess
 	sessionsDir := m.sessionsDir
 	persistFn := m.persistFn
@@ -435,6 +496,8 @@ func (m *Manager) CreateWithParent(parentID string, agentID string) (*Session, e
 		return nil, ErrSessionNotFound
 	}
 	now := time.Now()
+	m.mu.Lock()
+	embeddingModel := m.embeddingModel
 	sess := &Session{
 		ID:                uuid.New().String(),
 		AgentID:           agentID,
@@ -445,8 +508,8 @@ func (m *Manager) CreateWithParent(parentID string, agentID string) (*Session, e
 		Messages:          make([]Message, 0),
 		CreatedAt:         now,
 		UpdatedAt:         now,
+		EmbeddingModel:    embeddingModel,
 	}
-	m.mu.Lock()
 	m.sessions[sess.ID] = sess
 	m.mu.Unlock()
 	return sess, nil
