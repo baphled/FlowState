@@ -847,6 +847,22 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if chunk.Error != nil {
+				// Gate on severity so fatal provider errors (revoked
+				// OAuth, 401, model-not-found, billing/quota lockout)
+				// stop the SSE fan-out instead of being treated as
+				// self-healing blips. Pre-fix the consumer always
+				// `continue`d on chunk.Error, so the loop kept
+				// reading subsequent chunks from the live channel
+				// and emitting whatever landed — even after the
+				// provider was definitively dead. The chunk-error
+				// helper IsCriticalStreamError has been wired here
+				// so the fix is one branch and one early return,
+				// not a refactor of the surrounding dispatcher.
+				if provider.IsCriticalStreamError(chunk.Error) {
+					writeSSEClientError(w, flusher, chunk.Error, "stream_critical")
+					writeSSEDone(w, flusher)
+					return
+				}
 				writeSSEClientError(w, flusher, chunk.Error, "stream_error")
 				continue
 			}

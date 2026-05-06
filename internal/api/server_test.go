@@ -1498,6 +1498,219 @@ var _ = Describe("Session stream live events", func() {
 		// content assertions — the contract under test is purely
 		// concurrency: both endpoints stay race-free under load.
 	})
+
+	// Critical-stream-error severity gating regression specs.
+	//
+	// Pre-fix the SSE fan-out at handleSessionStream's chunk.Error
+	// branch wrote a sanitized "stream_error" event and then
+	// `continue`d the receive loop unconditionally. That meant a
+	// fatal provider error (revoked OAuth token, 401, model-not-
+	// found, billing/quota lockout) was treated indistinguishably
+	// from a transient blip: the loop kept reading subsequent
+	// chunks from the live channel and emitting whatever landed,
+	// and the UI had no signal that the session had reached an
+	// unrecoverable state.
+	//
+	// internal/provider/stream_error.go has classified error
+	// severities since P18a, but IsCriticalStreamError had zero
+	// production callers — the broker fan-out never consulted it.
+	//
+	// The contract these specs pin:
+	//
+	//   1. When chunk.Error classifies as SeverityCritical, the
+	//      fan-out emits a typed critical-class SSE error event,
+	//      writes [DONE], and breaks the loop. NO further chunks
+	//      from the live channel reach the client after the
+	//      critical signal — even chunks the broker has already
+	//      buffered for fan-out.
+	//
+	//   2. When chunk.Error classifies as transient/user (the
+	//      non-critical path), the fan-out emits the existing
+	//      "stream_error" event and continues the loop. Subsequent
+	//      chunks on the live channel still flow through to the
+	//      client.
+	//
+	// Both specs assert behaviour on the wire (the bytes the SSE
+	// reader observes), not internal function names. The
+	// behaviour-pinning shape is the same as the
+	// "forwards live chunks" spec above — same fixture, same
+	// SSE reader pattern.
+	It("breaks the SSE fan-out and emits a critical-class error when chunk.Error is critical, with no further chunks reaching the client", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// "401 unauthorized" matches the criticalKeywords list in
+		// internal/provider/stream_error.go ("401" and "unauthori"),
+		// so ClassifyStreamError returns SeverityCritical without
+		// needing a structured *provider.Error wrapper. The post-
+		// critical chunks ("after-critical-content" and Done) are
+		// pushed into the broker before Publish runs so the broker
+		// fans them out promptly — pre-fix, the consumer's
+		// continue-loop would surface them on the wire.
+		source := make(chan provider.StreamChunk, 4)
+		source <- provider.StreamChunk{Content: "pre-error-content"}
+		source <- provider.StreamChunk{Error: errors.New("401 unauthorized")}
+		source <- provider.StreamChunk{Content: "after-critical-content"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var events []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						events = append(events, strings.TrimPrefix(line, "data: "))
+					}
+					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- events
+		}()
+
+		var events []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
+
+		// Pre-error content must reach the client (we did not
+		// regress the happy path before the critical chunk).
+		Expect(events).To(ContainElement(ContainSubstring("pre-error-content")),
+			"chunks emitted before the critical error must still reach the client")
+
+		// The critical signal must surface on the wire as a
+		// distinct event from the non-critical "stream error".
+		// The exact category text comes from clientError's
+		// "stream_critical" branch in errors.go.
+		Expect(events).To(ContainElement(ContainSubstring("critical stream error")),
+			"a critical chunk.Error must surface as a critical-class SSE event, not as the non-critical 'stream error' message")
+
+		// The fan-out must terminate after the critical signal.
+		// Chunks the broker fans out after the critical error —
+		// "after-critical-content" here — must NOT reach the
+		// client. This is the bug the gate fixes.
+		Expect(events).NotTo(ContainElement(ContainSubstring("after-critical-content")),
+			"after a critical chunk.Error the SSE fan-out must break and emit no further chunks to the client")
+
+		// The session settles into a recoverable closed state:
+		// the client always sees the [DONE] sentinel so it can
+		// re-render and resume.
+		Expect(events).To(ContainElement("[DONE]"),
+			"the SSE handler must always close the stream with [DONE] after a critical error so the client can settle")
+	})
+
+	It("continues the SSE fan-out on a non-critical chunk.Error and lets subsequent chunks flow to the client", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// "connection refused" matches the transientKeywords list,
+		// so ClassifyStreamError returns SeverityTransient and
+		// IsCriticalStreamError reports false. The gate must NOT
+		// fire — subsequent chunks must still surface on the wire,
+		// preserving today's behaviour for self-healing errors.
+		source := make(chan provider.StreamChunk, 4)
+		source <- provider.StreamChunk{Content: "before-transient-error"}
+		source <- provider.StreamChunk{Error: errors.New("connection refused")}
+		source <- provider.StreamChunk{Content: "after-transient-error"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var events []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						events = append(events, strings.TrimPrefix(line, "data: "))
+					}
+					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- events
+		}()
+
+		var events []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
+
+		// Pre-error content reaches the client.
+		Expect(events).To(ContainElement(ContainSubstring("before-transient-error")),
+			"chunks emitted before a transient error must reach the client")
+
+		// The non-critical event surfaces with the existing
+		// "stream error" message — NOT the critical-class one.
+		Expect(events).To(ContainElement(ContainSubstring("stream error")),
+			"a transient chunk.Error must surface as the existing 'stream error' SSE event")
+		Expect(events).NotTo(ContainElement(ContainSubstring("critical stream error")),
+			"a transient chunk.Error must NOT escalate to the critical-class SSE event")
+
+		// The contract: the fan-out keeps reading and chunks
+		// after a non-critical error still reach the client.
+		// This is the regression-resistance assertion — without
+		// it, a future change that always-breaks on chunk.Error
+		// would silently drop transient-error sessions.
+		Expect(events).To(ContainElement(ContainSubstring("after-transient-error")),
+			"after a transient chunk.Error the SSE fan-out must continue and subsequent chunks must reach the client")
+
+		Expect(events).To(ContainElement("[DONE]"))
+	})
 })
 
 // Sibling races to the SSE-fast-path data race fixed in commit aaa6f1f:

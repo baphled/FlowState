@@ -33,6 +33,17 @@ func clientError(err error, category string) (safeMsg string, correlationID stri
 		safeMsg = "rate limited"
 	case "stream_error":
 		safeMsg = "stream error"
+	case "stream_critical":
+		// Used by handleSessionStream's chunk-error gate to distinguish
+		// fatal provider errors (revoked OAuth, 401, model-not-found,
+		// quota lockout) from self-healing transient errors. The
+		// critical-class category triggers the SSE fan-out to break
+		// the receive loop and emit [DONE] so the session settles
+		// into a state the UI can render. Sanitisation rules are the
+		// same as stream_error — the underlying message is logged
+		// server-side under the correlation ID, never sent to the
+		// client.
+		safeMsg = "critical stream error"
 	case "cancel_error":
 		safeMsg = "cancel failed"
 	case "swarm_error":
