@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 )
 
@@ -53,6 +54,13 @@ func (c *SSEConsumer) WriteChunk(content string) error {
 // The raw error is logged server-side with a correlation ID; only the
 // canonical category message and the ID are sent to the client.
 //
+// Severity is gated on provider.IsCriticalStreamError so callers from
+// the streaming package (which use this consumer rather than the broker
+// fan-out's writeSSEClientError directly) emit the same "stream_critical"
+// vs "stream_error" distinction the SSE seam (server.go) and WebSocket
+// consumer (websocket.go) carry. Wire shape is unchanged; clients that
+// only know "stream_error" continue to render through the existing path.
+//
 // Expected:
 //   - err is the error to report to the client.
 //
@@ -61,7 +69,11 @@ func (c *SSEConsumer) WriteChunk(content string) error {
 //   - Writes SSE data line with JSON-encoded sanitized error to the response.
 //   - Flushes the response buffer.
 func (c *SSEConsumer) WriteError(err error) {
-	writeSSEClientError(c.w, c.flusher, err, "stream_error")
+	category := "stream_error"
+	if provider.IsCriticalStreamError(err) {
+		category = "stream_critical"
+	}
+	writeSSEClientError(c.w, c.flusher, err, category)
 }
 
 // Done writes the completion sentinel as a server-sent event.

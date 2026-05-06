@@ -64,6 +64,35 @@ var _ = Describe("SSEConsumer", func() {
 			Expect(recorder.Body.String()).To(ContainSubstring(`"correlation_id"`))
 			Expect(recorder.Body.String()).NotTo(ContainSubstring("something broke"))
 		})
+
+		It("escalates the category to stream_critical for fatal provider errors", func() {
+			// Mirrors the SSE fan-out (server.go) and WebSocket consumer
+			// gates: a critical error (revoked OAuth, 401, model-not-found,
+			// billing/quota lockout) must reach the client as the
+			// "critical stream error" category, distinct from a transient
+			// blip. The classification predicate is shared across all
+			// three seams via provider.IsCriticalStreamError.
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteError(errors.New("401 unauthorized: token revoked"))
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`"error":"critical stream error"`))
+			Expect(recorder.Body.String()).To(ContainSubstring(`"correlation_id"`))
+			Expect(recorder.Body.String()).NotTo(ContainSubstring("token revoked"))
+		})
+
+		It("keeps non-critical errors in the stream_error category", func() {
+			// Regression-resistance guard: a future "always classify as
+			// critical" simplification would swallow transient retries.
+			consumer, ok := api.NewSSEConsumer(recorder)
+			Expect(ok).To(BeTrue())
+
+			consumer.WriteError(errors.New("connection refused"))
+
+			Expect(recorder.Body.String()).To(ContainSubstring(`"error":"stream error"`))
+			Expect(recorder.Body.String()).NotTo(ContainSubstring(`"critical stream error"`))
+		})
 	})
 
 	Describe("Done", func() {
