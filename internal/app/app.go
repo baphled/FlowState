@@ -707,6 +707,13 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
 	sessionMgr := session.NewManager(streamer)
 	sessionMgr.SetSessionsDir(sessionsDirFromCfg(params.cfg))
+	// Stamp the configured embedding model on every newly-created
+	// session so a Recall silent-zero failure (empty results from a
+	// dimension mismatch between the configured model and the persisted
+	// vectors) is later diagnosable from the .meta.json sidecar. See
+	// session.Manager.SetEmbeddingModel and vault note "Recall
+	// Diagnostic - Embedding Model Stamp (May 2026)".
+	sessionMgr.SetEmbeddingModel(params.cfg.ResolvedEmbeddingModel())
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
 		streamer,

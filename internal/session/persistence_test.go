@@ -319,6 +319,55 @@ var _ = Describe("Session persistence", func() {
 				Expect(restored.CurrentProviderID).To(BeEmpty())
 			})
 
+			It("round-trips EmbeddingModel via LoadSessionMetadata so the diagnostic survives process restart", func() {
+				original := &session.Session{
+					ID:             "embed-model-round-trip",
+					AgentID:        "default-assistant",
+					EmbeddingModel: "nomic-embed-text",
+					Status:         "active",
+				}
+				Expect(session.PersistSession(sessionsDir, original)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "embed-model-round-trip.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).To(ContainSubstring(`"embedding_model":"nomic-embed-text"`))
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "embed-model-round-trip")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.EmbeddingModel).To(Equal("nomic-embed-text"))
+			})
+
+			It("returns an empty EmbeddingModel for legacy on-disk files that predate the field", func() {
+				// Legacy session JSON without the field MUST load cleanly —
+				// no panic, no error, just an empty value. This is the
+				// pre-schema diagnostic gap (sessions like
+				// 3c5374fd-2835-4720-b543-0c3c95b028aa) where Recall
+				// silent-zero failures were undiagnosable.
+				legacyJSON := `{"id":"legacy-embed-sess","agent_id":"default-assistant","status":"active","created_at":"2026-04-01T12:00:00Z"}`
+				Expect(os.WriteFile(filepath.Join(sessionsDir, "legacy-embed-sess.meta.json"), []byte(legacyJSON), 0o600)).To(Succeed())
+
+				restored, err := session.LoadSessionMetadata(sessionsDir, "legacy-embed-sess")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(restored).NotTo(BeNil())
+				Expect(restored.EmbeddingModel).To(BeEmpty())
+				Expect(restored.AgentID).To(Equal("default-assistant"))
+			})
+
+			It("omits embedding_model from the JSON when the field is empty (backwards-compat with legacy on-disk files)", func() {
+				sess := &session.Session{
+					ID:      "no-embed-model-sess",
+					AgentID: "default-assistant",
+					Status:  "active",
+				}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "no-embed-model-sess.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(data)).NotTo(ContainSubstring("embedding_model"))
+			})
+
 			It("round-trips when only CurrentModelID is set, leaving CurrentProviderID empty and omitted from JSON", func() {
 				original := &session.Session{
 					ID:             "model-only-sess",
