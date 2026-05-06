@@ -102,14 +102,25 @@ var _ = Describe("Display integration", Label("integration"), func() {
 				To(Equal("search_nodes: FlowState recall architecture"))
 		})
 
-		It("uses 'subagent_type' for delegate calls so the target is visible", func() {
+		It("renders subagent_type and the brief together for delegate calls", func() {
+			// Historical behaviour returned only the subagent_type, dropping
+			// the message argument from the persisted ToolInput. Production
+			// session c8c138e5-d7ae-46a9-835b-9b2e16534ac8 lost every parent
+			// delegation brief that way, leaving "delegate: senior-engineer"
+			// as the entire record of what the parent asked for.
+			//
+			// The brief is the load-bearing field for delegation. Pin both
+			// pieces in the rendered display so the parent's persisted
+			// tool_call ToolInput preserves intent alongside routing.
 			args := map[string]any{
 				"category":      "implementation",
 				"subagent_type": "senior-engineer",
 				"message":       "implement the fallback",
 			}
-			Expect(tooldisplay.Summary("delegate", args)).
-				To(Equal("delegate: senior-engineer"))
+			result := tooldisplay.Summary("delegate", args)
+			Expect(result).To(HavePrefix("delegate: "))
+			Expect(result).To(ContainSubstring("senior-engineer"))
+			Expect(result).To(ContainSubstring("implement the fallback"))
 		})
 
 		It("uses 'key' for coordination_store calls so the slot is visible", func() {
@@ -221,11 +232,12 @@ var _ = Describe("Display integration", Label("integration"), func() {
 			Expect(value).To(Equal("ls"))
 		})
 
-		It("returns ok=true and the preferred-key value for an unknown tool", func() {
+		It("returns ok=true with subagent_type and the brief for delegate calls", func() {
 			value, ok := tooldisplay.PrimaryArgValue("delegate",
 				map[string]any{"subagent_type": "qa-engineer", "message": "verify"})
 			Expect(ok).To(BeTrue())
-			Expect(value).To(Equal("qa-engineer"))
+			Expect(value).To(ContainSubstring("qa-engineer"))
+			Expect(value).To(ContainSubstring("verify"))
 		})
 	})
 })

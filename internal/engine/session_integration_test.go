@@ -767,8 +767,20 @@ var _ = Describe("DelegateTool.WithMessageAppender", func() {
 		sess, err := mgr.GetSession(child.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sess.Messages).NotTo(BeEmpty())
-		Expect(sess.Messages[0].Role).To(Equal("assistant"))
-		Expect(sess.Messages[0].Content).To(Equal("Delegated reply"))
+		// Child session history now opens with the parent's brief as a
+		// user-role message, followed by the accumulated assistant reply.
+		// See Bug Fixes/Delegation Brief Persistence (May 2026).
+		Expect(sess.Messages[0].Role).To(Equal("user"))
+		Expect(sess.Messages[0].Content).To(Equal("Do something"))
+		var assistant *session.Message
+		for i := range sess.Messages {
+			if sess.Messages[i].Role == "assistant" {
+				assistant = &sess.Messages[i]
+				break
+			}
+		}
+		Expect(assistant).NotTo(BeNil())
+		Expect(assistant.Content).To(Equal("Delegated reply"))
 	})
 
 	It("accepts nil messageAppender without panicking", func() {

@@ -1649,6 +1649,39 @@ func (d *DelegateTool) wrapWithAccumulator(
 	return session.AccumulateStream(ctx, d.messageAppender, sessionID, agentID, rawCh)
 }
 
+// persistChildBrief writes the parent's delegation brief into the child
+// session as a user-role message stamped with the delegated agent's ID.
+//
+// This restores symmetry between what the parent sent (target.message into
+// engine.Stream) and what the child session persists. Without it the child
+// session's message log opens with an assistant turn responding to a
+// brief that has no recorded predecessor — making the session unreplayable
+// in isolation and erasing the parent's stated intent from the audit trail.
+//
+// Expected:
+//   - sessionID identifies the child session created or resolved for the
+//     delegation.
+//   - agentID identifies the delegated agent (matches the AgentID stamp on
+//     subsequent assistant messages in the same session).
+//   - message is the brief the parent passed to the delegate tool's
+//     "message" argument.
+//
+// Side effects:
+//   - When messageAppender is configured and message is non-empty, appends a
+//     single user-role Message to the child session via AppendMessage.
+//   - No-op when messageAppender is nil, when sessionID is empty, or when
+//     message is empty (defensive — empty briefs would be a separate bug).
+func (d *DelegateTool) persistChildBrief(sessionID, agentID, message string) {
+	if d.messageAppender == nil || sessionID == "" || message == "" {
+		return
+	}
+	d.messageAppender.AppendMessage(sessionID, session.Message{
+		Role:    "user",
+		Content: message,
+		AgentID: agentID,
+	})
+}
+
 // withHarnessEvents wires harness lifecycle events into outChan for harness-enabled targets.
 // When an explicit Streamer is registered for the target, it tees EventType chunks from src
 // to outChan (the registered Streamer emits its own harness events already).
@@ -1975,6 +2008,13 @@ func (d *DelegateTool) executeSync(
 	}
 
 	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession)
+	// Persist the parent's brief as a user-role message on the child
+	// session before the stream begins, so the child's session record is
+	// replayable in isolation. Without this the child session contains
+	// only assistant / tool_call / tool_result messages and the brief
+	// (target.message) is lost — see Bug Fixes/Delegation Brief
+	// Persistence (May 2026) for the original symptom.
+	d.persistChildBrief(delegateSessionID, target.agentID, target.message)
 	// Bus-side `delegation.started` fires post-resolve so the payload
 	// carries the populated ChildSessionID. The chunk-side `started`
 	// at line 1837 is preserved verbatim for transcript rendering and
@@ -2740,6 +2780,9 @@ func (d *DelegateTool) executeBackgroundTask(
 	hasOutput bool,
 ) (string, error) {
 	taskID := sessionIDFromContext(ctx)
+	// Mirror the sync path: persist the brief on the child task session
+	// before streaming so async delegations stay replayable too.
+	d.persistChildBrief(taskID, target.agentID, target.message)
 	closeStore := d.attachSessionStore(target.engine, taskID)
 
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)

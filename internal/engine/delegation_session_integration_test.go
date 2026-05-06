@@ -132,6 +132,82 @@ var _ = Describe("createChildSession behaviour", Label("integration"), func() {
 	})
 })
 
+var _ = Describe("Delegation brief persistence in child session", Label("integration"), func() {
+	Context("when a parent delegates with a brief and messageAppender is wired", func() {
+		It("persists a user-role message containing the brief stamped with the delegated agent ID", func() {
+			// The parent's delegate call sends `target.message` to the child engine
+			// via Stream(...) but historically nothing wrote that brief into the
+			// child session's Messages slice. Confirmed in production session
+			// c8c138e5-d7ae-46a9-835b-9b2e16534ac8 → child
+			// 4ec8a988-062a-4f20-ad28-49286db7ee3a, where every persisted role was
+			// assistant / tool_call / tool_result and no user message existed.
+			//
+			// Without that user message the child session is unreplayable and
+			// debuggers cannot reconstruct the delegation intent. Pin the
+			// behaviour: after Execute returns, the child session must contain
+			// at least one user message whose Content is the brief and whose
+			// AgentID is the delegated agent.
+			brief := "investigate the chat-ui leak and propose a fix"
+			targetEngine := newDelegationTestEngine([]provider.StreamChunk{
+				{Content: "child response", Done: true},
+			})
+			mgr := session.NewManager(targetEngine)
+			mgr.RegisterSession("parent-brief-persist", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionCreator(mgr)
+			delegateTool.WithMessageAppender(mgr)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-brief-persist")
+			_, err := delegateTool.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "target-agent",
+					"message":       brief,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			children, err := mgr.ChildSessions("parent-brief-persist")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).NotTo(BeEmpty())
+
+			child := children[0]
+			Eventually(func() []session.Message {
+				sess, _ := mgr.GetSession(child.ID)
+				if sess == nil {
+					return nil
+				}
+				out := make([]session.Message, 0, len(sess.Messages))
+				for _, m := range sess.Messages {
+					if m.Role == "user" {
+						out = append(out, m)
+					}
+				}
+				return out
+			}).ShouldNot(BeEmpty(), "child session must contain a user-role message carrying the parent's brief")
+
+			childSess, err := mgr.GetSession(child.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			var userMsg *session.Message
+			for i := range childSess.Messages {
+				if childSess.Messages[i].Role == "user" {
+					userMsg = &childSess.Messages[i]
+					break
+				}
+			}
+			Expect(userMsg).NotTo(BeNil())
+			Expect(userMsg.Content).To(Equal(brief))
+			Expect(userMsg.AgentID).To(Equal("target-agent"))
+		})
+	})
+})
+
 var _ = Describe("Delegation message accumulation", Label("integration"), func() {
 	Context("when messageAppender is set alongside sessionCreator", func() {
 		It("stores ToolName from the delegation stream in child session messages", func() {

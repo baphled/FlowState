@@ -242,7 +242,12 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(toolCalls[0].ToolName).To(Equal("search_nodes"))
 			Expect(toolCalls[0].ToolInput).To(Equal("FlowState recall"))
 			Expect(toolCalls[1].ToolName).To(Equal("delegate"))
-			Expect(toolCalls[1].ToolInput).To(Equal("senior-engineer"))
+			// Delegate must persist both the routing target and the brief —
+			// the previous "subagent_type only" rendering silently dropped
+			// every parent's delegation intent. See Bug Fixes/Delegation
+			// Brief Persistence (May 2026).
+			Expect(toolCalls[1].ToolInput).To(ContainSubstring("senior-engineer"))
+			Expect(toolCalls[1].ToolInput).To(ContainSubstring("implement the fallback"))
 		})
 
 		It("redacts sensitive arg values before persisting them as ToolInput", func() {
