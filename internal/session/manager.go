@@ -191,6 +191,12 @@ func (m *Manager) MarkEndedFromEvent(sessionID string) {
 	}
 	sess.Status = string(StatusCompleted)
 	sess.UpdatedAt = time.Now()
+	// Bug fix (May 2026 — Session Seal Persistence Hole): the in-memory
+	// status flip above never reached disk, so the .meta.json sidecar
+	// stayed at "active" and the sealed child re-loaded as active after
+	// restart. The bus-driven seal must persist alongside the message-
+	// append paths that already use this helper.
+	m.persistLocked(sess)
 }
 
 // SetRecorder attaches an optional session recorder to the manager.
@@ -1045,6 +1051,11 @@ func (m *Manager) CloseSession(sessionID string) error {
 
 	sess.Status = string(StatusCompleted)
 	sess.UpdatedAt = time.Now()
+	// Bug fix (May 2026 — Session Seal Persistence Hole): mirror the
+	// MarkEndedFromEvent fix on the direct-close site. Without this the
+	// engine's closeSessionIfManaged success path leaves a stale "active"
+	// sidecar, undoing the seal at next restart.
+	m.persistLocked(sess)
 
 	return nil
 }

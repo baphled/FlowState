@@ -663,6 +663,33 @@ var _ = Describe("Manager", func() {
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		// Bug: CloseSession flipped Status in memory but skipped the
+		// persist-locked helper that the message-append path uses, so the
+		// .meta.json sidecar stayed at "active". On reload the sealed
+		// child re-appeared as active, cluttering the UI and risking
+		// replay collisions. The behavioural pin is "after sealing, the
+		// on-disk status is no longer active" — read back via the public
+		// LoadSessionMetadata helper, no internal-call peeking.
+		Context("when sessionsDir is configured", func() {
+			It("persists the sealed status to the on-disk meta sidecar so the child is not re-loaded as active after restart", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				sess, err := mgr.CreateSession("worker")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil(),
+					"CloseSession must write the .meta.json sidecar — otherwise the sealed child re-appears as active after restart")
+				Expect(loaded.Status).NotTo(Equal(string(session.StatusActive)),
+					"on-disk status must reflect the seal — staying at \"active\" defeats the whole point of the seal")
+				Expect(loaded.Status).To(Equal(string(session.StatusCompleted)))
+			})
+		})
 	})
 
 	Describe("Concurrent access", func() {
@@ -1467,6 +1494,32 @@ var _ = Describe("Manager", func() {
 		It("ignores empty session IDs", func() {
 			mgr := session.NewManager(&mockStreamer{})
 			Expect(func() { mgr.MarkEndedFromEvent("") }).NotTo(Panic())
+		})
+
+		// Symmetric pin to the CloseSession persistence spec above.
+		// MarkEndedFromEvent is the bus-driven seal site — it mutated the
+		// in-memory Status under the write lock but never invoked the
+		// persist-locked helper, so the on-disk meta stayed "active".
+		// After restart the orchestrator re-loaded the sealed child as
+		// active. Behaviour pinned: when sessionsDir is configured, the
+		// bus-driven seal must also flush to the sidecar.
+		It("persists the sealed status to the on-disk meta sidecar when sessionsDir is configured", func() {
+			tmpDir := GinkgoT().TempDir()
+			lockMgr := session.NewManager(&mockStreamer{})
+			lockMgr.SetSessionsDir(tmpDir)
+
+			sess, err := lockMgr.CreateSession("worker")
+			Expect(err).NotTo(HaveOccurred())
+
+			lockMgr.MarkEndedFromEvent(sess.ID)
+
+			loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil(),
+				"MarkEndedFromEvent must write the .meta.json sidecar — staying at \"active\" on disk re-loads the sealed child as active after restart")
+			Expect(loaded.Status).NotTo(Equal(string(session.StatusActive)),
+				"on-disk status must reflect the seal so reload does not resurrect the child as active")
+			Expect(loaded.Status).To(Equal(string(session.StatusCompleted)))
 		})
 	})
 

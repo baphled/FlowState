@@ -2040,6 +2040,13 @@ func (d *DelegateTool) executeSync(
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error()))
+		// Bug fix (May 2026 — Session Seal Persistence Hole): the success
+		// branch below seals the child session via closeSessionIfManaged
+		// (line ~2016), but the dispatch-failure path returned without
+		// sealing. The child stayed "active" both in memory and (with
+		// sessionsDir wired) on disk, cluttering the UI and risking
+		// replay collisions on reload. Mirror the success-branch seal.
+		d.closeSessionIfManaged(delegateSessionID)
 		return tool.Result{}, dispatchErr
 	}
 
@@ -2793,6 +2800,11 @@ func (d *DelegateTool) executeBackgroundTask(
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
+		// Bug fix (May 2026 — Session Seal Persistence Hole): mirror the
+		// sync-dispatcher fix on the async runner. The success branch
+		// (line ~2790) seals the child via closeSessionIfManaged, but the
+		// Stream-error and collect-error paths skipped it.
+		d.closeSessionIfManaged(taskID)
 		return "", fmt.Errorf("delegation failed: %w", err)
 	}
 
@@ -2808,6 +2820,10 @@ func (d *DelegateTool) executeBackgroundTask(
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
+		// Bug fix (May 2026 — Session Seal Persistence Hole): see the
+		// twin comment on the Stream-error path above. The async runner's
+		// success branch is the only place that previously sealed.
+		d.closeSessionIfManaged(taskID)
 		return "", err
 	}
 
