@@ -3,6 +3,7 @@ package copilot_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -413,6 +414,121 @@ var _ = Describe("Direct Token Management", func() {
 		_, err = p.Chat(context.Background(), newTestChatRequest())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(atomic.LoadInt32(&exchangeCalls)).To(Equal(int32(0)))
+	})
+})
+
+// Sibling defensive coverage to 457dcdf (rate-limit capture for
+// openai/openaicompat/zai). Copilot routes Chat errors through
+// `openaicompat.WrapChatError` (copilot.go:246) and Stream chunks
+// through `openaicompat.RunStream` (copilot.go:269), so the
+// rate-limit header parsing landed in 457dcdf is inherited
+// transitively. These specs pin that inheritance: if a future
+// refactor moves copilot off the openaicompat error seam, the
+// failover hook would silently lose the carrier-issued back-off
+// hints. Same shape as openai_test.go and zai_test.go got in
+// 457dcdf, with the copilot-specific quirks (gho_-token direct
+// path bypasses token exchange, copilot provider name).
+var _ = Describe("Rate-limit header capture", func() {
+	Context("when the upstream returns 429 with retry-after only", func() {
+		It("attaches RateLimit.RetryAfter to the provider.Error", func() {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("retry-after", "30")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "Rate limit exceeded",
+						"type":    "rate_limit_error",
+					},
+				})
+			}))
+			defer ts.Close()
+
+			p, err := copilot.New("gho_ratelimit_retry_after_test")
+			Expect(err).NotTo(HaveOccurred())
+			p.SetBaseURL(ts.URL)
+
+			_, err = p.Chat(context.Background(), newTestChatRequest())
+			Expect(err).To(HaveOccurred())
+
+			var provErr *provider.Error
+			Expect(errors.As(err, &provErr)).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("github-copilot"))
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(provErr.RateLimit).NotTo(BeNil())
+			Expect(provErr.RateLimit.RetryAfter).To(Equal(30 * time.Second))
+		})
+	})
+
+	Context("when the upstream returns 429 with full x-ratelimit-* headers", func() {
+		It("populates every parsed RateLimit field", func() {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("retry-after", "12")
+				w.Header().Set("x-ratelimit-limit-requests", "500")
+				w.Header().Set("x-ratelimit-remaining-requests", "0")
+				w.Header().Set("x-ratelimit-reset-requests", "12s")
+				w.Header().Set("x-ratelimit-limit-tokens", "30000")
+				w.Header().Set("x-ratelimit-remaining-tokens", "1000")
+				w.Header().Set("x-ratelimit-reset-tokens", "200ms")
+				w.Header().Set("x-request-id", "req_copilot_429")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "Rate limit exceeded",
+						"type":    "rate_limit_error",
+					},
+				})
+			}))
+			defer ts.Close()
+
+			p, err := copilot.New("gho_ratelimit_full_headers_test")
+			Expect(err).NotTo(HaveOccurred())
+			p.SetBaseURL(ts.URL)
+
+			_, err = p.Chat(context.Background(), newTestChatRequest())
+			Expect(err).To(HaveOccurred())
+
+			var provErr *provider.Error
+			Expect(errors.As(err, &provErr)).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("github-copilot"))
+			Expect(provErr.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(provErr.RateLimit).NotTo(BeNil())
+			Expect(provErr.RateLimit.RetryAfter).To(Equal(12 * time.Second))
+			Expect(provErr.RateLimit.RequestsLimit).To(Equal(500))
+			Expect(provErr.RateLimit.RequestsRemaining).To(Equal(0))
+			Expect(provErr.RateLimit.RequestsReset.IsZero()).To(BeFalse())
+			Expect(provErr.RateLimit.TokensLimit).To(Equal(30000))
+			Expect(provErr.RateLimit.TokensRemaining).To(Equal(1000))
+			Expect(provErr.RateLimit.TokensReset.IsZero()).To(BeFalse())
+			Expect(provErr.RateLimit.RequestID).To(Equal("req_copilot_429"))
+		})
+	})
+
+	Context("when the upstream returns 500 with no rate-limit headers", func() {
+		It("leaves provider.Error.RateLimit nil", func() {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "internal server error",
+						"type":    "server_error",
+					},
+				})
+			}))
+			defer ts.Close()
+
+			p, err := copilot.New("gho_ratelimit_500_no_headers_test")
+			Expect(err).NotTo(HaveOccurred())
+			p.SetBaseURL(ts.URL)
+
+			_, err = p.Chat(context.Background(), newTestChatRequest())
+			Expect(err).To(HaveOccurred())
+
+			var provErr *provider.Error
+			Expect(errors.As(err, &provErr)).To(BeTrue())
+			Expect(provErr.Provider).To(Equal("github-copilot"))
+			Expect(provErr.RateLimit).To(BeNil(),
+				"500 with no rate-limit headers must leave RateLimit nil so failover falls back to per-error-type cooldown")
+		})
 	})
 })
 
