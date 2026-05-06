@@ -3192,6 +3192,81 @@ describe('chatStore - DEFAULT_AGENT_ID matches the manifest convention', () => {
 
     expect(store.agentId).toBe('Team-Lead')
   })
+
+  it('loadAgents populates the list without persisting an active agent (AgentPicker pre-empt race)', async () => {
+    // The AgentPicker component's onMounted hook calls loadAgents()
+    // before ChatView's onMounted runs restoreStateFromBackend. Pre-fix
+    // loadAgents seeded agents[0] (alphabetically API-Engineer) into
+    // this.agentId and persisted it to localStorage; restoreStateFromBackend
+    // then read that persisted value and DEFAULT_AGENT_ID never won.
+    //
+    // This pin enforces the new contract: loadAgents is responsible for
+    // populating availableAgents/availableAgentDetails only. It must
+    // not touch agentId or localStorage. The active-agent precedence
+    // belongs to restoreStateFromBackend (boot-time) and setAgent
+    // (user-driven). Decoupling the two is what closes the pre-empt
+    // race for both fresh visits AND fast tests that gate on the
+    // picker label as a proxy for "store fully restored".
+    vi.mocked(fetchAgents).mockResolvedValueOnce([
+      { id: 'API-Engineer', name: 'API Engineer' } as never,
+      { id: 'default-assistant', name: 'Default Assistant' } as never,
+      { id: 'Team-Lead', name: 'Team Lead' } as never,
+    ])
+
+    const store = useChatStore()
+    expect(store.agentId).toBe('')
+    await store.loadAgents()
+
+    expect(store.availableAgents).toEqual(['API-Engineer', 'default-assistant', 'Team-Lead'])
+    expect(store.availableAgentDetails).toHaveLength(3)
+    // The bug: loadAgents must not have set agentId or persisted to localStorage.
+    expect(store.agentId).toBe('')
+    expect(window.localStorage.getItem('chat.agentId')).toBeNull()
+  })
+
+  it('loadAgents preserves an already-set active agent and does not re-persist it', async () => {
+    // setAgent (user-driven) is the only path that should persist an
+    // active agent choice. loadAgents merely refreshes the list; an
+    // agent already on the store stays put, and localStorage is not
+    // re-written on every refresh.
+    vi.mocked(fetchAgents).mockResolvedValueOnce([
+      { id: 'default-assistant', name: 'Default Assistant' } as never,
+      { id: 'Team-Lead', name: 'Team Lead' } as never,
+    ])
+
+    const store = useChatStore()
+    store.agentId = 'Team-Lead'
+    // Simulating a localStorage value set by setAgent earlier.
+    window.localStorage.setItem('chat.agentId', 'Team-Lead')
+
+    await store.loadAgents()
+
+    expect(store.agentId).toBe('Team-Lead')
+    expect(window.localStorage.getItem('chat.agentId')).toBe('Team-Lead')
+  })
+
+  it('loadAgents leaves an active agent untouched even when it has been removed from the manifest', async () => {
+    // Reseeding-when-stale is restoreStateFromBackend's job (it falls
+    // back to DEFAULT_AGENT_ID when the persisted agent is no longer
+    // in the available list). loadAgents must not pre-empt that
+    // decision — doing so racially clobbers the persisted-agent fallback
+    // that restoreStateFromBackend's precedence chain depends on.
+    vi.mocked(fetchAgents).mockResolvedValueOnce([
+      { id: 'API-Engineer', name: 'API Engineer' } as never,
+      { id: 'default-assistant', name: 'Default Assistant' } as never,
+    ])
+
+    const store = useChatStore()
+    store.agentId = 'Retired-Agent'
+    window.localStorage.setItem('chat.agentId', 'Retired-Agent')
+
+    await store.loadAgents()
+
+    // Stale-agent reconciliation belongs to restoreStateFromBackend.
+    // loadAgents only refreshes the list.
+    expect(store.agentId).toBe('Retired-Agent')
+    expect(window.localStorage.getItem('chat.agentId')).toBe('Retired-Agent')
+  })
 })
 
 // loadSessionByAgentId is the seam the in-thread MessageBubble
