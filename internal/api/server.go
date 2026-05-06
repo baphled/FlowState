@@ -802,23 +802,30 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// Live session — stream new events only.
 	// Historical content is loaded by the client via GET /messages.
-	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
-	defer unsubscribe()
-
-	// Fast-path: if no Publish is currently active AND the session already
-	// has a non-user message as its last entry, the stream completed before
-	// this subscriber arrived. Signal [DONE] immediately rather than blocking
-	// on a channel that Publish will never close again.
 	//
-	// This covers two cases:
-	//   1. Page reload after stream completion — late EventSource GET.
-	//   2. Normal prompting race — POST reaches the server before the SSE
-	//      GET, so Publish runs and finishes before Subscribe is called.
+	// Branch on the session's last-message role to decide which broker
+	// accessor to use:
 	//
-	// When IsPublishing returns false but the last message IS a user message,
-	// the session is between turns (Publish hasn't started for the new
-	// message yet) — fall through to the blocking select so the subscriber
-	// can receive the incoming chunks.
+	//   - Last message non-user (sealed turn) → SubscribeIfPublishing.
+	//     The transactional accessor returns (nil, no-op, false) when
+	//     no Publish is in-flight, in which case we emit [DONE]
+	//     immediately. When (ok == true) a fresh Publish run is
+	//     mid-flight despite the sealed last message (e.g. a recovery
+	//     turn or future multi-publish wiring) — consume from ch.
+	//
+	//   - Last message is user / no messages (between turns) →
+	//     unconditional Subscribe. Publish hasn't started for the new
+	//     turn yet; we must register a subscriber and wait for chunks
+	//     to land. (Subscribing before Publish increments the active
+	//     refcount is exactly the case Subscribe is for.)
+	//
+	// This ordering closes the IsPublishing TOCTOU previously surfaced
+	// by the broker concurrency audit: separate Subscribe + IsPublishing
+	// calls observed two different states, and a Publish that started
+	// in the gap fanned chunks into a channel the handler had already
+	// abandoned. The new transactional accessor decides "is there a
+	// publisher AND register me" in one critical section under the
+	// broker mutex.
 	//
 	// LastMessageRole is used instead of GetSession + freshSess.Messages
 	// because GetSession returns the *Session pointer and releases the
@@ -827,14 +834,23 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	// by `go test -race` triggering on the slice header at server.go:756
 	// vs manager.go:647. LastMessageRole projects the role under RLock
 	// and returns by value, closing the race window.
-	if !s.sessionBroker.IsPublishing(id) {
-		if role, hasMsgs, err := s.sessionManager.LastMessageRole(id); err == nil {
-			if hasMsgs && role != "user" {
-				writeSSEDone(w, flusher)
-				return
-			}
+	role, hasMsgs, lastErr := s.sessionManager.LastMessageRole(id)
+	sealed := lastErr == nil && hasMsgs && role != "user"
+
+	var liveCh <-chan provider.StreamChunk
+	var unsubscribe func()
+	if sealed {
+		ch, unsub, ok := s.sessionBroker.SubscribeIfPublishing(id)
+		if !ok {
+			writeSSEDone(w, flusher)
+			return
 		}
+		liveCh = ch
+		unsubscribe = unsub
+	} else {
+		liveCh, unsubscribe = s.sessionBroker.Subscribe(id)
 	}
+	defer unsubscribe()
 
 	ctx := r.Context()
 	for {

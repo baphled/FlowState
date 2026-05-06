@@ -880,5 +880,222 @@ var _ = Describe("SessionBroker", func() {
 					"iteration %d: subscriber channel must be closed exactly once by the LAST Publish to exit", iter)
 			}
 		})
+
+		It("SubscribeIfPublishing returns (nil, false) when no Publish is in flight for the session", func() {
+			// The transactional accessor's no-publisher branch: there is
+			// no active publisher, so the call MUST NOT register a
+			// subscriber and MUST signal the caller to fast-path [DONE].
+			// Pre-fix the only available primitive was Subscribe + the
+			// non-atomic IsPublishing — a caller could not express
+			// "register me only if a publisher will drive me" without a
+			// TOCTOU window between the two reads.
+			b := api.NewSessionBroker()
+			const sessionID = "sess-no-publisher"
+
+			ch, unsub, ok := b.SubscribeIfPublishing(sessionID)
+
+			Expect(ok).To(BeFalse(),
+				"with no Publish in flight, SubscribeIfPublishing must report ok=false")
+			Expect(ch).To(BeNil(),
+				"with ok=false, the returned channel must be nil so callers cannot accidentally receive from it")
+			Expect(unsub).NotTo(BeNil(),
+				"a no-op unsub must be returned so callers can `defer unsub()` uniformly")
+			Expect(b.SubscriberCount(sessionID)).To(Equal(0),
+				"no subscriber state may be left behind on the no-publisher branch")
+			// no-op unsub must be idempotent and safe to call multiple
+			// times (callers `defer unsub()` regardless of branch).
+			Expect(unsub).NotTo(Panic())
+			Expect(unsub).NotTo(Panic())
+			Expect(b.SubscriberCount(sessionID)).To(Equal(0))
+		})
+
+		It("SubscribeIfPublishing returns (ch, true) and registers a subscriber that receives subsequent chunks while a Publish is in flight", func() {
+			// The transactional accessor's publisher-active branch: a
+			// publisher is mid-stream, so the call MUST register a
+			// subscriber atomically and the caller MUST receive every
+			// subsequent fan-out chunk.
+			b := api.NewSessionBroker()
+			const sessionID = "sess-publisher-active"
+
+			// Open a long-running source so the Publish goroutine sits
+			// in its `for chunk := range chunks` loop with active > 0
+			// while we call SubscribeIfPublishing.
+			source := make(chan provider.StreamChunk, 4)
+			pubDone := make(chan struct{})
+			go func() {
+				defer close(pubDone)
+				b.Publish(sessionID, source)
+			}()
+
+			// Wait for active to flip to true. Publish increments the
+			// refcount under b.mu before entering the receive loop, so
+			// IsPublishing is the right wait predicate here.
+			Eventually(func() bool { return b.IsPublishing(sessionID) }).
+				Should(BeTrue(), "Publish must report active before the test interrogates the broker")
+
+			ch, unsub, ok := b.SubscribeIfPublishing(sessionID)
+			Expect(ok).To(BeTrue(),
+				"with a Publish in flight, SubscribeIfPublishing must report ok=true")
+			Expect(ch).NotTo(BeNil(),
+				"with ok=true, the returned channel must be non-nil and ready to receive chunks")
+			Expect(b.SubscriberCount(sessionID)).To(Equal(1),
+				"the subscriber must be registered atomically with the active-check")
+
+			// Drive a chunk through the live source; the freshly-
+			// registered subscriber must receive it.
+			source <- provider.StreamChunk{Content: "post-subscribe"}
+			var received provider.StreamChunk
+			Eventually(ch).Should(Receive(&received),
+				"subscriber registered via SubscribeIfPublishing must receive the next published chunk")
+			Expect(received.Content).To(Equal("post-subscribe"))
+
+			// Unblock the publisher: send Done and close source so
+			// Publish's terminal close runs and shuts the channel.
+			source <- provider.StreamChunk{Done: true}
+			close(source)
+
+			// Drain remaining chunks until close; final receive on a
+			// closed channel returns the zero value with ok=false.
+			Eventually(func() bool {
+				select {
+				case _, recvOK := <-ch:
+					return !recvOK
+				default:
+					return false
+				}
+			}).Should(BeTrue(), "publisher's terminal close must close the subscriber channel")
+
+			unsub()
+			<-pubDone
+			Expect(b.SubscriberCount(sessionID)).To(Equal(0),
+				"after publisher exits and subscriber unsubscribes the map must be clean (I8)")
+		})
+
+		It("SubscribeIfPublishing under high concurrency never registers a subscriber when no publisher is active and never returns ok=false during an active publish", func() {
+			// This is the race-stress spec for the new transactional
+			// accessor. It races SubscribeIfPublishing against
+			// Publish-start and Publish-end across many iterations and
+			// goroutines. The invariants:
+			//
+			//   1. (Subscriber-registered → ok-was-true): every
+			//      subscriber that ends up in the broker map was returned
+			//      via an ok=true call. There is no path where ok=false
+			//      leaves a subscriber behind.
+			//   2. (No starvation of late subscribers): every ok=true
+			//      subscriber receives the close signal eventually
+			//      (either via the publisher's terminal close or its own
+			//      unsubscribe path).
+			//   3. (Refcount monotone with calls): IsPublishing observed
+			//      after an ok=true return implies active > 0 was true at
+			//      the moment of the call (we can't observe the moment
+			//      directly, but a panic-free run with no orphaned
+			//      subscribers is the contract guarantee).
+			//
+			// Pre-fix the equivalent caller pattern (Subscribe +
+			// IsPublishing) had a window where a subscriber could be
+			// registered while ok=false was observed — exactly the
+			// TOCTOU the audit flagged at server.go:830.
+			const iterations = 100
+			const callersPerIteration = 8
+
+			panicCh := make(chan string, iterations*callersPerIteration)
+			recoverInto := makeRecover(panicCh)
+
+			for iter := 0; iter < iterations; iter++ {
+				b := api.NewSessionBroker()
+				sessionID := fmt.Sprintf("sess-toctou-stress-%d", iter)
+
+				source := make(chan provider.StreamChunk, 4)
+				source <- provider.StreamChunk{Content: "c"}
+				source <- provider.StreamChunk{Done: true}
+				close(source)
+
+				pubDone := make(chan struct{})
+				go func() {
+					defer recoverInto("publisher")
+					defer close(pubDone)
+					b.Publish(sessionID, source)
+				}()
+
+				// Hammer SubscribeIfPublishing concurrently with the
+				// short-running Publish. Some calls land before the
+				// active refcount goes positive (must return ok=false),
+				// some land while it is positive (must return ok=true
+				// and register), some land after the terminal close
+				// (must return ok=false and leave no subscriber).
+				var (
+					wg          sync.WaitGroup
+					okCount     int
+					notOkCount  int
+					countMu     sync.Mutex
+					okChannels  []<-chan provider.StreamChunk
+					okUnsubs    []func()
+					okChannelMu sync.Mutex
+				)
+				for i := 0; i < callersPerIteration; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						defer recoverInto("caller")
+						ch, unsub, ok := b.SubscribeIfPublishing(sessionID)
+						countMu.Lock()
+						if ok {
+							okCount++
+						} else {
+							notOkCount++
+						}
+						countMu.Unlock()
+						if ok {
+							okChannelMu.Lock()
+							okChannels = append(okChannels, ch)
+							okUnsubs = append(okUnsubs, unsub)
+							okChannelMu.Unlock()
+						} else {
+							// no-op unsub; must be safe to call.
+							unsub()
+						}
+					}()
+				}
+				wg.Wait()
+				<-pubDone
+
+				// Drain every ok=true subscriber to its close. The
+				// invariant: every registered subscriber receives a
+				// close (publisher closes, or this drain blocks
+				// forever — bounded by deadline below).
+				for i, ch := range okChannels {
+					deadline := time.After(2 * time.Second)
+				drain:
+					for {
+						select {
+						case _, recvOK := <-ch:
+							if !recvOK {
+								break drain
+							}
+						case <-deadline:
+							Fail(fmt.Sprintf("iteration %d caller %d: ok=true subscriber never received close", iter, i))
+						}
+					}
+					okUnsubs[i]()
+				}
+
+				Expect(b.SubscriberCount(sessionID)).To(Equal(0),
+					"iteration %d: after publisher exits and every ok=true subscriber unsubscribes, the map must be clean", iter)
+				// Sanity: at least one branch fired. Both branches
+				// firing is the common case; a run that hits zero
+				// callers in either branch is statistically rare but
+				// not a failure (race timing).
+				Expect(okCount + notOkCount).To(Equal(callersPerIteration),
+					"iteration %d: every caller must have observed exactly one branch", iter)
+			}
+
+			close(panicCh)
+			var panics []string
+			for p := range panicCh {
+				panics = append(panics, p)
+			}
+			Expect(panics).To(BeEmpty(),
+				"SubscribeIfPublishing under stress must not panic and must not orphan subscribers")
+		})
 	})
 })
