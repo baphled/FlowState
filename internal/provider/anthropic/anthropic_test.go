@@ -1,12 +1,16 @@
 package anthropic
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/provider"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1500,6 +1504,197 @@ var _ = Describe("Sonnet 3.7 beta headers", func() {
 
 		It("output128kBetaHeader matches the published name", func() {
 			Expect(output128kBetaHeader).To(Equal("output-128k-2025-02-19"))
+		})
+	})
+})
+
+// OAuth billing header — wire-level assertions.
+//
+// The Claude CLI sends `x-anthropic-billing-header` as a real HTTP
+// request header to route OAuth requests to the Claude Code billing
+// pool. An earlier (incorrect) implementation injected the header as
+// a synthetic `TextBlockParam` at the front of the system prompt,
+// which (a) wasted ~30 input tokens per request, (b) leaked routing
+// metadata into the model's view of the system prompt, and (c) sat
+// in front of the caller's first cache_control breakpoint as an
+// uncached prefix, invalidating the cache key.
+//
+// These specs pin the wire shape end-to-end:
+//   - OAuth requests carry the header on the wire.
+//   - OAuth requests' system prompt is exactly what the caller sent
+//     (no synthetic prefix, caller's cache_control intact on the
+//     first system block).
+//   - API-key requests do NOT carry the header (the header was
+//     never meaningful on the API-key path).
+//
+// We use a httptest server with WithBaseURL to capture the
+// SDK-issued HTTP request. No live API calls.
+var _ = Describe("OAuth billing header (wire)", func() {
+	type captured struct {
+		headers http.Header
+		body    map[string]any
+	}
+
+	// minimalMessageResponse returns the smallest body the
+	// anthropic-sdk-go decoder accepts as a successful Message.
+	// Just enough to let p.Chat unwind without erroring so the
+	// captured request is the focus of the assertion.
+	minimalMessageResponse := func() string {
+		return `{
+			"id": "msg_test",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-3-5-sonnet-20241022",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`
+	}
+
+	captureServer := func(c *captured) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				c.headers = r.Header.Clone()
+				_ = json.NewDecoder(r.Body).Decode(&c.body)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, minimalMessageResponse())
+			},
+		))
+	}
+
+	chatReq := func() provider.ChatRequest {
+		return provider.ChatRequest{
+			Model: "claude-3-5-sonnet-20241022",
+			Messages: []provider.Message{
+				{Role: "system", Content: "You are a helpful assistant."},
+				{Role: "user", Content: "hello"},
+			},
+		}
+	}
+
+	Context("OAuth path", func() {
+		var (
+			server *httptest.Server
+			cap    captured
+			p      *Provider
+		)
+
+		BeforeEach(func() {
+			cap = captured{}
+			server = captureServer(&cap)
+			p = &Provider{
+				client: newOAuthClient(
+					"sk-ant-oat01-test",
+					option.WithBaseURL(server.URL),
+				),
+				isOAuth:      true,
+				tokenManager: NewDirectTokenManager("sk-ant-oat01-test"),
+				currentToken: "sk-ant-oat01-test",
+			}
+		})
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		It("sends x-anthropic-billing-header as a real HTTP header", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("X-Anthropic-Billing-Header")).
+				To(Equal("cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"),
+					"OAuth requests must carry the billing-routing "+
+						"metadata on the wire, byte-for-byte matching "+
+						"the Claude CLI")
+		})
+
+		It("does NOT inject the billing header as a synthetic system-prompt block", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			sys, ok := cap.body["system"].([]any)
+			Expect(ok).To(BeTrue(), "system field must be present and an array")
+			for i, blk := range sys {
+				bm, ok := blk.(map[string]any)
+				Expect(ok).To(BeTrue(), "system[%d] must be an object", i)
+				text, _ := bm["text"].(string)
+				Expect(text).NotTo(ContainSubstring("x-anthropic-billing-header"),
+					"system[%d] must not leak the billing header as text", i)
+				Expect(text).NotTo(ContainSubstring("cc_version="),
+					"system[%d] must not leak billing-routing metadata as text", i)
+				Expect(text).NotTo(ContainSubstring("cc_entrypoint="),
+					"system[%d] must not leak billing-routing metadata as text", i)
+			}
+		})
+
+		It("preserves the caller's cache_control on the first system block (no synthetic prefix)", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			sys, ok := cap.body["system"].([]any)
+			Expect(ok).To(BeTrue())
+			Expect(sys).To(HaveLen(1),
+				"OAuth must NOT prepend a synthetic block — the only "+
+					"block on the wire is the caller's system message")
+			first, _ := sys[0].(map[string]any)
+			Expect(first["text"]).To(Equal("You are a helpful assistant."),
+				"first system block must be the caller's content verbatim")
+			cc, hasCC := first["cache_control"].(map[string]any)
+			Expect(hasCC).To(BeTrue(),
+				"first system block must carry the caller's "+
+					"cache_control — a synthetic uncached prefix would "+
+					"break the cache key by sitting in front of it")
+			Expect(cc["type"]).To(Equal("ephemeral"))
+		})
+
+		It("constants match the wire spelling expected by Anthropic", func() {
+			Expect(oauthBillingHeaderName).To(Equal("x-anthropic-billing-header"))
+			Expect(oauthBillingHeaderValue).To(Equal(
+				"cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"))
+		})
+	})
+
+	Context("API-key path", func() {
+		var (
+			server *httptest.Server
+			cap    captured
+			p      *Provider
+		)
+
+		BeforeEach(func() {
+			cap = captured{}
+			server = captureServer(&cap)
+			var err error
+			p, err = NewWithOptions(
+				"test-api-key",
+				option.WithBaseURL(server.URL),
+			)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		It("does NOT send x-anthropic-billing-header (only OAuth carries it)", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cap.headers.Get("X-Anthropic-Billing-Header")).To(BeEmpty(),
+				"API-key path must remain header-clean — the billing "+
+					"header is OAuth-only routing metadata")
+		})
+
+		It("does NOT leak billing metadata into the system prompt", func() {
+			_, err := p.Chat(context.Background(), chatReq())
+			Expect(err).NotTo(HaveOccurred())
+			sys, ok := cap.body["system"].([]any)
+			Expect(ok).To(BeTrue())
+			Expect(sys).To(HaveLen(1))
+			first, _ := sys[0].(map[string]any)
+			text, _ := first["text"].(string)
+			Expect(text).To(Equal("You are a helpful assistant."))
 		})
 	})
 })
