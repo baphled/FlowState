@@ -6,6 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
@@ -391,6 +394,16 @@ func ParseChatResponse(resp *openaiAPI.ChatCompletion) (provider.ChatResponse, e
 // ParseProviderError extracts a *provider.Error from an OpenAI-compatible SDK error.
 // It uses errors.As to retrieve the typed *openai.Error with HTTP status and error code.
 //
+// When the underlying HTTP response carries OpenAI-style rate-limit
+// metadata headers (`retry-after`, `x-ratelimit-*`, `x-request-id` /
+// `request-id`), they are parsed into provider.RateLimit and attached
+// so failover schedulers can honour the carrier-issued back-off
+// instead of guessing per error type. Headers absent or unparseable
+// leave the field nil — callers must treat that as "no metadata
+// available", not "limits zeroed". Both OpenAI's duration-string
+// reset format ("1s", "10ms") and Z.AI's seconds-int form are
+// accepted because openaicompat is shared across both backends.
+//
 // Expected:
 //   - providerName is the provider identifier.
 //   - err may be nil.
@@ -417,6 +430,7 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 			Message:     openaiErr.Message,
 			IsRetriable: retriable,
 			RawError:    err,
+			RateLimit:   extractRateLimitHeaders(openaiErr.Response),
 		}
 	}
 
@@ -432,6 +446,249 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 	}
 
 	return nil
+}
+
+// extractRateLimitHeaders inspects the openai-go SDK error's underlying
+// http.Response for the documented rate-limit headers and returns a
+// populated RateLimit when at least one header is present.
+//
+// OpenAI exposes per-window budgets for requests and tokens. Each
+// window has three headers — limit, remaining, reset. Reset is a
+// duration string in the OpenAI dialect ("1s", "10ms") and a
+// seconds-int in the Z.AI dialect; both are accepted and turned into a
+// wall-clock time. The 429 path also carries `retry-after` (seconds
+// or HTTP-date) and either `x-request-id` (OpenAI) or `request-id`
+// (Z.AI) for support correlation.
+//
+// Expected:
+//   - resp may be nil.
+//
+// Returns:
+//   - A pointer to a RateLimit when at least one rate-limit header was
+//     present.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func extractRateLimitHeaders(resp *http.Response) *provider.RateLimit {
+	if resp == nil {
+		return nil
+	}
+	headers := resp.Header
+	if len(headers) == 0 {
+		return nil
+	}
+
+	rl := newEmptyRateLimit()
+	hasAny := readScalarHeaders(headers, &rl)
+	hasAny = readWindowHeaders(headers, &rl) || hasAny
+
+	if !hasAny {
+		return nil
+	}
+	return &rl
+}
+
+// newEmptyRateLimit builds a RateLimit pre-populated with -1 sentinels
+// so the caller can disambiguate "header not provided" from a real "0
+// remaining". Reset times stay zero-valued.
+//
+// Returns:
+//   - A RateLimit value ready to receive header-driven mutations.
+//
+// Side effects:
+//   - None.
+func newEmptyRateLimit() provider.RateLimit {
+	return provider.RateLimit{
+		InputTokensLimit:      -1,
+		InputTokensRemaining:  -1,
+		OutputTokensLimit:     -1,
+		OutputTokensRemaining: -1,
+		RequestsLimit:         -1,
+		RequestsRemaining:     -1,
+		TokensLimit:           -1,
+		TokensRemaining:       -1,
+	}
+}
+
+// readScalarHeaders captures the scalar (non-window) rate-limit
+// signals: `retry-after` and the request-id header (which most OpenAI-
+// compat backends emit as `x-request-id`, while Z.AI also emits a bare
+// `request-id`).
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - rl is non-nil; mutated in place on hits.
+//
+// Returns:
+//   - true when at least one scalar header was captured.
+//
+// Side effects:
+//   - Mutates *rl on hits.
+func readScalarHeaders(headers http.Header, rl *provider.RateLimit) bool {
+	hit := false
+	if v := headers.Get("retry-after"); v != "" {
+		if d, ok := parseRetryAfter(v); ok {
+			rl.RetryAfter = d
+			hit = true
+		}
+	}
+	// Try the canonical OpenAI form first; fall back to the bare form
+	// some backends (Z.AI, fireworks) emit.
+	if v := headers.Get("x-request-id"); v != "" {
+		rl.RequestID = v
+		hit = true
+	} else if v := headers.Get("request-id"); v != "" {
+		rl.RequestID = v
+		hit = true
+	}
+	return hit
+}
+
+// readWindowHeaders captures the requests/tokens limit/remaining/reset
+// triples. Decomposed out of extractRateLimitHeaders so the latter
+// stays under the gocognit threshold.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - rl is non-nil; mutated in place on hits.
+//
+// Returns:
+//   - true when at least one window header was captured.
+//
+// Side effects:
+//   - Mutates *rl on hits.
+func readWindowHeaders(headers http.Header, rl *provider.RateLimit) bool {
+	windows := []struct {
+		limitHdr     string
+		remainingHdr string
+		resetHdr     string
+		limitDst     *int
+		remainingDst *int
+		resetDst     *time.Time
+	}{
+		{
+			"x-ratelimit-limit-requests",
+			"x-ratelimit-remaining-requests",
+			"x-ratelimit-reset-requests",
+			&rl.RequestsLimit, &rl.RequestsRemaining,
+			&rl.RequestsReset,
+		},
+		{
+			"x-ratelimit-limit-tokens",
+			"x-ratelimit-remaining-tokens",
+			"x-ratelimit-reset-tokens",
+			&rl.TokensLimit, &rl.TokensRemaining,
+			&rl.TokensReset,
+		},
+	}
+	hit := false
+	for _, w := range windows {
+		if readIntHeader(headers, w.limitHdr, w.limitDst) {
+			hit = true
+		}
+		if readIntHeader(headers, w.remainingHdr, w.remainingDst) {
+			hit = true
+		}
+		if readResetHeader(headers, w.resetHdr, w.resetDst) {
+			hit = true
+		}
+	}
+	return hit
+}
+
+// parseRetryAfter parses the `retry-after` HTTP header value. The spec
+// permits either a non-negative integer (seconds) or an HTTP-date;
+// most providers emit the seconds form on 429 but we accept both.
+//
+// Expected:
+//   - value is the raw header text.
+//
+// Returns:
+//   - The duration to wait and true on success.
+//   - 0 and false when the header is absent, blank, or unparseable.
+//
+// Side effects:
+//   - None.
+func parseRetryAfter(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(value); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// readIntHeader parses a non-negative integer header into dst and
+// returns true when the header was present and parseable.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - name is the header to look up.
+//   - dst is non-nil; left untouched on parse failure.
+//
+// Returns:
+//   - true when the header was present and successfully parsed.
+//
+// Side effects:
+//   - Mutates *dst on success.
+func readIntHeader(headers http.Header, name string, dst *int) bool {
+	v := headers.Get(name)
+	if v == "" {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return false
+	}
+	*dst = n
+	return true
+}
+
+// readResetHeader parses a window-reset header into dst as a wall-clock
+// time. Two formats are accepted because openaicompat is shared across
+// backends:
+//
+//   - OpenAI emits a Go-compatible duration string like "1s" or "10ms".
+//   - Z.AI emits a bare seconds-int.
+//
+// Both are interpreted as "time-until-reset" relative to now. Reset is
+// stored as a future wall-clock time so the failover hook can compare
+// against time.Now() directly.
+//
+// Expected:
+//   - headers is the response header map (may be empty).
+//   - name is the header to look up.
+//   - dst is non-nil; left untouched on parse failure.
+//
+// Returns:
+//   - true when the header was present and successfully parsed.
+//
+// Side effects:
+//   - Mutates *dst on success.
+func readResetHeader(headers http.Header, name string, dst *time.Time) bool {
+	v := strings.TrimSpace(headers.Get(name))
+	if v == "" {
+		return false
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		*dst = time.Now().Add(time.Duration(secs) * time.Second)
+		return true
+	}
+	if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+		*dst = time.Now().Add(d)
+		return true
+	}
+	return false
 }
 
 // classifyHTTPStatus maps an HTTP status code to an ErrorType and retriability flag.

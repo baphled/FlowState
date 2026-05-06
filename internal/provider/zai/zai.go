@@ -268,6 +268,13 @@ func fallbackModels() []provider.Model {
 // classifyZAIError refines the classification of a Z.AI error by inspecting the provider-specific
 // error code. Z.AI reuses HTTP 429 for billing, quota, and overload errors that are NOT rate limits.
 //
+// The reconstructed error preserves baseErr.RateLimit so any
+// `retry-after` / `x-ratelimit-*` metadata captured by
+// openaicompat.ParseProviderError reaches the failover hook intact —
+// Z.AI emits `retry-after` on the 1001 rate-limit code path and
+// dropping it here would force failover back onto the per-error-type
+// cooldown table.
+//
 // Expected:
 //   - baseErr may be nil.
 //
@@ -287,21 +294,25 @@ func classifyZAIError(baseErr *provider.Error) *provider.Error {
 		return &provider.Error{
 			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1001", ErrorType: provider.ErrorTypeRateLimit,
 			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
+			RateLimit: baseErr.RateLimit,
 		}
 	case "1002":
 		return &provider.Error{
 			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1002", ErrorType: provider.ErrorTypeOverload,
 			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
+			RateLimit: baseErr.RateLimit,
 		}
 	case "1112":
 		return &provider.Error{
 			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1112", ErrorType: provider.ErrorTypeQuota,
 			Provider: providerName, Message: baseErr.Message, IsRetriable: false, RawError: baseErr.RawError,
+			RateLimit: baseErr.RateLimit,
 		}
 	case "1113":
 		return &provider.Error{
 			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1113", ErrorType: provider.ErrorTypeBilling,
 			Provider: providerName, Message: baseErr.Message, IsRetriable: false, RawError: baseErr.RawError,
+			RateLimit: baseErr.RateLimit,
 		}
 	default:
 		return baseErr

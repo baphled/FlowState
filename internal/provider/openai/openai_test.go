@@ -3,6 +3,7 @@ package openai_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -291,6 +292,58 @@ var _ = Describe("OpenAI Provider", func() {
 					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
 				})
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		// Sibling follow-up to anthropic Phase 3 #3 — OpenAI emits
+		// `retry-after` and `x-ratelimit-*` on 429s. Verify the
+		// e2e Chat path attaches those to provider.Error.RateLimit
+		// so the failover hook honours the carrier-issued back-off.
+		Context("when server returns 429 with rate-limit headers", func() {
+			BeforeEach(func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("retry-after", "12")
+					w.Header().Set("x-ratelimit-limit-requests", "500")
+					w.Header().Set("x-ratelimit-remaining-requests", "0")
+					w.Header().Set("x-ratelimit-reset-requests", "12s")
+					w.Header().Set("x-ratelimit-limit-tokens", "30000")
+					w.Header().Set("x-ratelimit-remaining-tokens", "1000")
+					w.Header().Set("x-ratelimit-reset-tokens", "200ms")
+					w.Header().Set("x-request-id", "req_openai_429")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"error": map[string]interface{}{
+							"message": "Rate limit exceeded",
+							"type":    "rate_limit_error",
+						},
+					})
+				}))
+
+				var err error
+				provider, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("attaches RateLimit metadata parsed from headers", func() {
+				ctx := context.Background()
+				_, err := provider.Chat(ctx, providerPkg.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []providerPkg.Message{{Role: "user", Content: "Hello"}},
+				})
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeRateLimit))
+				Expect(provErr.RateLimit).NotTo(BeNil())
+				Expect(provErr.RateLimit.RetryAfter).To(Equal(12 * time.Second))
+				Expect(provErr.RateLimit.RequestsLimit).To(Equal(500))
+				Expect(provErr.RateLimit.RequestsRemaining).To(Equal(0))
+				Expect(provErr.RateLimit.RequestsReset.IsZero()).To(BeFalse())
+				Expect(provErr.RateLimit.TokensLimit).To(Equal(30000))
+				Expect(provErr.RateLimit.TokensRemaining).To(Equal(1000))
+				Expect(provErr.RateLimit.TokensReset.IsZero()).To(BeFalse())
+				Expect(provErr.RateLimit.RequestID).To(Equal("req_openai_429"))
 			})
 		})
 	})
