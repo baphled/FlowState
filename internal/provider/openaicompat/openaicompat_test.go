@@ -1105,6 +1105,148 @@ var _ = Describe("ParseProviderError", func() {
 			Expect(openaicompat.ParseProviderError(testProvider, errors.New("something"))).To(Succeed())
 		})
 	})
+
+	// Sibling follow-up to anthropic Phase 3 #3 — OpenAI exposes
+	// `retry-after` and `x-ratelimit-*` on 429 errors; Z.AI also
+	// returns `retry-after` on 429 / 1001. Capturing them here on
+	// every openaicompat-routed provider lets the failover hook
+	// honour the carrier-issued back-off instead of the per-error
+	// cooldown table. Mirrors the anthropic pattern in
+	// internal/provider/anthropic/anthropic_test.go.
+	Context("when the error response carries rate-limit headers", func() {
+		It("populates RateLimit.RetryAfter from a numeric retry-after", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "30")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit_exceeded"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).NotTo(BeNil(),
+				"a 429 with retry-after must carry the parsed metadata so failover can back off precisely")
+			Expect(result.RateLimit.RetryAfter).To(Equal(30 * time.Second))
+		})
+
+		It("populates RateLimit.RetryAfter from an HTTP-date retry-after", func() {
+			// Some openaicompat backends emit retry-after as an
+			// HTTP-date instead of an int — the spec permits both.
+			future := time.Now().UTC().Add(45 * time.Second).Truncate(time.Second)
+			headers := http.Header{}
+			headers.Set("retry-after", future.Format(http.TimeFormat))
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			// Allow a small drift; the exact difference depends on
+			// when time.Until is evaluated relative to the test
+			// clock.
+			Expect(result.RateLimit.RetryAfter).To(BeNumerically("~", 45*time.Second, 5*time.Second))
+		})
+
+		It("captures the OpenAI x-ratelimit-* requests/tokens triples", func() {
+			// OpenAI emits reset values as duration strings ("1s",
+			// "10ms"); convert to wall-clock time so the failover
+			// hook can compare against time.Now().
+			headers := http.Header{}
+			headers.Set("x-ratelimit-limit-requests", "1000")
+			headers.Set("x-ratelimit-remaining-requests", "0")
+			headers.Set("x-ratelimit-reset-requests", "1s")
+			headers.Set("x-ratelimit-limit-tokens", "40000")
+			headers.Set("x-ratelimit-remaining-tokens", "1500")
+			headers.Set("x-ratelimit-reset-tokens", "10ms")
+			headers.Set("x-request-id", "req_abc123")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			rl := result.RateLimit
+			Expect(rl.RequestsLimit).To(Equal(1000))
+			Expect(rl.RequestsRemaining).To(Equal(0))
+			Expect(rl.RequestsReset.IsZero()).To(BeFalse())
+			Expect(rl.TokensLimit).To(Equal(40000))
+			Expect(rl.TokensRemaining).To(Equal(1500))
+			Expect(rl.TokensReset.IsZero()).To(BeFalse())
+			Expect(rl.RequestID).To(Equal("req_abc123"))
+		})
+
+		It("captures Z.AI-style integer-seconds reset values", func() {
+			// Z.AI emits x-ratelimit-reset-* as seconds-until-reset
+			// (an integer), not the OpenAI duration-string form.
+			// The parser must accept both shapes since openaicompat
+			// is shared by zai, openai, and other backends.
+			headers := http.Header{}
+			headers.Set("x-ratelimit-limit-requests", "60")
+			headers.Set("x-ratelimit-remaining-requests", "0")
+			headers.Set("x-ratelimit-reset-requests", "60")
+			headers.Set("request-id", "zai_req_xyz")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"1001"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.RequestsLimit).To(Equal(60))
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(0))
+			Expect(result.RateLimit.RequestsReset.IsZero()).To(BeFalse())
+			Expect(result.RateLimit.RequestID).To(Equal("zai_req_xyz"))
+		})
+
+		It("uses -1 sentinels for windows that were not reported", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "5")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(-1))
+			Expect(result.RateLimit.TokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.InputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.OutputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.RequestsReset.IsZero()).To(BeTrue())
+			Expect(result.RateLimit.TokensReset.IsZero()).To(BeTrue())
+		})
+	})
+
+	Context("when the error response carries no rate-limit headers", func() {
+		It("leaves RateLimit nil for a 500 server error", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"boom","type":"server_error","code":"server_error"}`,
+				http.StatusInternalServerError, http.Header{},
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.RateLimit).To(BeNil(),
+				"absent rate-limit headers must surface as nil so failover falls back to the default cooldown")
+		})
+
+		It("leaves RateLimit nil when retry-after is unparseable", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "not-a-number")
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, headers,
+			)
+
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).To(BeNil(),
+				"a malformed header must not crash and must not synthesise a phantom 0s back-off")
+		})
+	})
 })
 
 var _ = Describe("WrapChatError", func() {
@@ -1238,6 +1380,14 @@ func unmarshalCompletion(raw string) *openaiAPI.ChatCompletion {
 }
 
 func newOpenAIError(body string, statusCode int) *openaiAPI.Error {
+	return newOpenAIErrorWithHeaders(body, statusCode, nil)
+}
+
+// newOpenAIErrorWithHeaders builds an openai-go SDK error whose
+// underlying http.Response carries the given headers. Used by the
+// rate-limit capture tests to drive ParseProviderError without standing
+// up an httptest server for each case.
+func newOpenAIErrorWithHeaders(body string, statusCode int, headers http.Header) *openaiAPI.Error {
 	var err openaiAPI.Error
 	if uErr := json.Unmarshal([]byte(body), &err); uErr != nil {
 		panic("failed to unmarshal openai error: " + uErr.Error())
@@ -1248,6 +1398,7 @@ func newOpenAIError(body string, statusCode int) *openaiAPI.Error {
 		StatusCode: statusCode,
 		Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)),
 		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     headers,
 	}
 	return &err
 }

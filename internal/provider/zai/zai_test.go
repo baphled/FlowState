@@ -190,6 +190,41 @@ var _ = Describe("ZAI Provider", func() {
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		// Sibling follow-up to anthropic Phase 3 #3. Z.AI emits
+		// `retry-after` on its 1001 rate-limit code path; failover
+		// has to see it on provider.Error.RateLimit (rather than the
+		// per-error-type cooldown fallback) because user traffic
+		// here is dominated by glm-4.6. classifyZAIError reconstructs
+		// the *provider.Error to attach the 1001 code, so it must
+		// preserve the RateLimit struct that openaicompat populated.
+		Context("when the 1001 rate-limit response carries retry-after", func() {
+			It("preserves RetryAfter on the reclassified provider.Error", func() {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("retry-after", "42")
+					w.Header().Set("request-id", "zai_req_1001")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"error": map[string]interface{}{"message": "rate limited", "code": "1001"},
+					})
+				}))
+
+				p, err := zai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = p.Chat(context.Background(), providerPkg.ChatRequest{Model: "glm-4.6"})
+				Expect(err).To(HaveOccurred())
+
+				var provErr *providerPkg.Error
+				Expect(errors.As(err, &provErr)).To(BeTrue())
+				Expect(provErr.ErrorType).To(Equal(providerPkg.ErrorTypeRateLimit))
+				Expect(provErr.ErrorCode).To(Equal("1001"))
+				Expect(provErr.RateLimit).NotTo(BeNil(),
+					"the 1001 code reclassification must not drop the rate-limit metadata")
+				Expect(provErr.RateLimit.RetryAfter).To(Equal(42 * time.Second))
+				Expect(provErr.RateLimit.RequestID).To(Equal("zai_req_1001"))
+			})
+		})
 	})
 
 	Describe("Stream", func() {
