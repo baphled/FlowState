@@ -2161,9 +2161,41 @@ func (a *App) delegateCompactionStoreDir() string {
 	return a.SessionsDir()
 }
 
+// SessionOrphanGraceEnv is the environment variable operators set to
+// override the default age threshold for the boot-time orphan sweep.
+// Accepts any time.ParseDuration value (e.g. "30m", "2h", "0" to use
+// the default, "-1s" to disable). Invalid values are logged once at
+// WARN and treated as unset so a typo cannot silently disable the
+// sweep.
+const SessionOrphanGraceEnv = "FLOWSTATE_SESSION_ORPHAN_GRACE"
+
+// resolveOrphanGrace returns the configured orphan-grace duration,
+// reading the env var when set. Zero means "use the default"; a
+// negative value means "disable the sweep". Invalid env strings fall
+// through to zero so the manager applies its default.
+func resolveOrphanGrace() time.Duration {
+	v := os.Getenv(SessionOrphanGraceEnv)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Warn("config: invalid env value; falling back to default orphan-grace",
+			"key", SessionOrphanGraceEnv, "value", v, "error", err)
+		return 0
+	}
+	return d
+}
+
 // restorePersistedSessions loads session metadata from disk and registers the
 // sessions into the session manager so that child sessions created before the
 // last restart are available after restart.
+//
+// The boot-time orphan sweep runs inside RestoreSessions: any restored
+// session still flagged active past the grace window is sealed as
+// StatusAbandoned and persisted so the next restart does not re-load
+// it as a ghost. The grace window is configurable via the
+// FLOWSTATE_SESSION_ORPHAN_GRACE env var; default 30 minutes.
 //
 // Expected:
 //   - a.sessionManager is non-nil.
@@ -2174,10 +2206,13 @@ func (a *App) delegateCompactionStoreDir() string {
 //
 // Side effects:
 //   - Reads .meta.json files from SessionsDir and calls RestoreSessions.
+//   - Applies SessionOrphanGraceEnv override before RestoreSessions so
+//     the sweep uses the operator-configured threshold.
 func (a *App) restorePersistedSessions() {
 	if a.sessionManager == nil {
 		return
 	}
+	a.sessionManager.SetOrphanGrace(resolveOrphanGrace())
 	restored, err := session.LoadSessionsFromDirectory(a.SessionsDir())
 	if err != nil {
 		return
