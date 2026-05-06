@@ -128,6 +128,14 @@ type streamAccumState struct {
 	// `message_delta` chunk, persisted on the assistant message at
 	// flushContent.
 	turnStopReason string
+	// turnHadToolCall records whether a tool_call chunk was observed in
+	// the current turn. When true, the synthesizePlaceholderAssistant
+	// path at end-of-turn is suppressed: thinking-then-tool-call is a
+	// normal turn shape (the tool_call message is the visible artefact
+	// of the turn), so wrapping it in an additional thinking-only
+	// assistant placeholder would change the persisted history shape
+	// for every reasoning-capable provider that also uses tools.
+	turnHadToolCall bool
 }
 
 // AccumulateStream wraps rawCh with a goroutine that records assistant and tool
@@ -188,6 +196,7 @@ func AccumulateStream(
 			case <-ctx.Done():
 				flushThinking(appender, s)
 				flushContent(appender, s)
+				synthesizePlaceholderAssistant(appender, s)
 				return
 			}
 		}
@@ -254,6 +263,7 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 	case chunk.Done:
 		flushThinking(appender, s)
 		flushContent(appender, s)
+		synthesizePlaceholderAssistant(appender, s)
 	default:
 		if chunk.EventType != "" {
 			return
@@ -315,6 +325,7 @@ func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.T
 	})
 	s.lastToolName = tc.Name
 	s.lastToolInput = input
+	s.turnHadToolCall = true
 }
 
 // applyToolResult stores a tool_result or tool_error message.
@@ -493,6 +504,62 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	}
 	appender.AppendMessage(s.sessionID, msg)
 	s.contentBuf.Reset()
+	s.thinkingBlocks = nil
+	s.turnStopReason = ""
+}
+
+// synthesizePlaceholderAssistant emits an empty-content assistant message
+// carrying the accumulated thinking blocks when a turn produced reasoning
+// only — no content tokens, no tool calls.
+//
+// Background: OpenAI-compat reasoning providers (zai/glm-4.6, DeepSeek-R1)
+// occasionally finish a turn after emitting only `reasoning_content` tokens,
+// with no content delta. Without this synthesis, flushContent's
+// empty-contentBuf early-return left the persisted session with a
+// free-floating thinking message and no enclosing `Role: "assistant"`
+// turn — the chat UI saw nothing to render and the session appeared
+// stalled. The placeholder makes the turn renderable: the UI can show a
+// "agent thought but produced no response" affordance or surface the
+// thinking content as a degraded turn.
+//
+// Expected:
+//   - appender is the message sink.
+//   - s holds the current accumulation state, immediately after
+//     flushThinking + flushContent have run.
+//
+// Side effects:
+//   - Appends an assistant Message with empty Content, the accumulated
+//     thinking blocks, and the turn's stop_reason / model / provider
+//     stamps when:
+//     1. contentBuf is empty (flushContent emitted nothing this turn), AND
+//     2. thinkingBlocks is non-empty (the model emitted reasoning), AND
+//     3. turnHadToolCall is false (a tool_call would already shape the turn).
+//   - Resets s.thinkingBlocks and s.turnStopReason on success.
+//   - Does nothing when any of the gates is unmet.
+func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumState) {
+	if s.contentBuf.Len() != 0 {
+		return
+	}
+	if len(s.thinkingBlocks) == 0 {
+		return
+	}
+	if s.turnHadToolCall {
+		return
+	}
+	// Copy the slice so subsequent mutation of s.thinkingBlocks (a
+	// follow-up turn within the same accumulator instance) cannot
+	// retro-edit the persisted message.
+	blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
+	copy(blocks, s.thinkingBlocks)
+	appender.AppendMessage(s.sessionID, Message{
+		Role:           "assistant",
+		Content:        "",
+		AgentID:        s.agentID,
+		ModelName:      s.lastModelID,
+		ProviderName:   s.lastProviderID,
+		StopReason:     s.turnStopReason,
+		ThinkingBlocks: blocks,
+	})
 	s.thinkingBlocks = nil
 	s.turnStopReason = ""
 }
