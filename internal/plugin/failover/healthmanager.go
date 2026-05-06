@@ -62,6 +62,33 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 	}
 }
 
+// RateLimitedUntil reports the wall-clock time at which the
+// provider/model's rate-limit cooldown expires.
+//
+// Returns the zero time and false when the pair is not currently
+// rate-limited. Used by failover diagnostics and tests that need to
+// assert the carrier-issued back-off (parsed from `retry-after`)
+// produced a shorter cooldown than the per-error-type default.
+//
+// Expected:
+//   - provider and model are non-empty strings.
+//
+// Returns:
+//   - The cooldown expiry time and true when rate-limited.
+//   - The zero time.Time and false when not rate-limited or expired.
+//
+// Side effects:
+//   - None (read-only; expiry sweeping happens in IsRateLimited).
+func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bool) {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	expiry, ok := hm.data[provider+"+"+model]
+	if !ok || !expiry.After(time.Now()) {
+		return time.Time{}, false
+	}
+	return expiry, true
+}
+
 // IsRateLimited returns true if provider/model is currently rate-limited.
 //
 // Expected: provider and model are non-empty strings.

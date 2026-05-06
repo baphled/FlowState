@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"time"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -24,6 +25,17 @@ func newTestAPIError(statusCode int) *anthropicAPI.Error {
 		Request:    &http.Request{Method: "POST", URL: u},
 		Response:   &http.Response{StatusCode: statusCode},
 	}
+}
+
+// newTestAPIErrorWithHeaders builds an SDK error whose underlying
+// http.Response carries the given headers. Used to exercise rate-limit
+// header propagation without round-tripping through a live HTTP server.
+func newTestAPIErrorWithHeaders(
+	statusCode int, headers http.Header,
+) *anthropicAPI.Error {
+	apiErr := newTestAPIError(statusCode)
+	apiErr.Response.Header = headers
+	return apiErr
 }
 
 func newTestAPIErrorWithBody(
@@ -527,6 +539,117 @@ var _ = Describe("parseAnthropicError", func() {
 			result := parseAnthropicError(wrapped)
 			Expect(result).To(HaveOccurred())
 			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+		})
+	})
+
+	// Phase 3 #3 — Anthropic exposes per-window rate-limit metadata as
+	// response headers on every response (success and error). On the
+	// error path, capturing them on provider.Error lets the failover
+	// hook honour the carrier-issued back-off (`retry-after`) instead
+	// of guessing a generic per-error-type cooldown. The four windows
+	// (input tokens, output tokens, requests, combined tokens) each
+	// have limit / remaining / reset triples; reset is RFC 3339.
+	Context("when the error response carries rate-limit headers", func() {
+		It("populates RateLimit.RetryAfter from the retry-after header (seconds form)", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "30")
+			apiErr := newTestAPIErrorWithHeaders(429, headers)
+
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).NotTo(BeNil(),
+				"a 429 with retry-after must carry the parsed metadata so failover can back off precisely")
+			Expect(result.RateLimit.RetryAfter).To(Equal(30 * time.Second))
+		})
+
+		It("captures the request-id header for support correlation", func() {
+			headers := http.Header{}
+			headers.Set("request-id", "req_abc123")
+			apiErr := newTestAPIErrorWithHeaders(429, headers)
+
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.RequestID).To(Equal("req_abc123"))
+		})
+
+		It("captures all four window remaining/reset triples", func() {
+			resetTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			headers := http.Header{}
+			headers.Set("anthropic-ratelimit-input-tokens-limit", "20000")
+			headers.Set("anthropic-ratelimit-input-tokens-remaining", "1000")
+			headers.Set("anthropic-ratelimit-input-tokens-reset", resetTime.Format(time.RFC3339))
+			headers.Set("anthropic-ratelimit-output-tokens-limit", "8000")
+			headers.Set("anthropic-ratelimit-output-tokens-remaining", "500")
+			headers.Set("anthropic-ratelimit-output-tokens-reset", resetTime.Format(time.RFC3339))
+			headers.Set("anthropic-ratelimit-requests-limit", "1000")
+			headers.Set("anthropic-ratelimit-requests-remaining", "0")
+			headers.Set("anthropic-ratelimit-requests-reset", resetTime.Format(time.RFC3339))
+			headers.Set("anthropic-ratelimit-tokens-limit", "28000")
+			headers.Set("anthropic-ratelimit-tokens-remaining", "1500")
+			headers.Set("anthropic-ratelimit-tokens-reset", resetTime.Format(time.RFC3339))
+			apiErr := newTestAPIErrorWithHeaders(429, headers)
+
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).NotTo(BeNil())
+			rl := result.RateLimit
+			Expect(rl.InputTokensLimit).To(Equal(20000))
+			Expect(rl.InputTokensRemaining).To(Equal(1000))
+			Expect(rl.InputTokensReset).To(BeTemporally("==", resetTime))
+			Expect(rl.OutputTokensLimit).To(Equal(8000))
+			Expect(rl.OutputTokensRemaining).To(Equal(500))
+			Expect(rl.OutputTokensReset).To(BeTemporally("==", resetTime))
+			Expect(rl.RequestsLimit).To(Equal(1000))
+			Expect(rl.RequestsRemaining).To(Equal(0))
+			Expect(rl.RequestsReset).To(BeTemporally("==", resetTime))
+			Expect(rl.TokensLimit).To(Equal(28000))
+			Expect(rl.TokensRemaining).To(Equal(1500))
+			Expect(rl.TokensReset).To(BeTemporally("==", resetTime))
+		})
+
+		It("uses -1 sentinels for windows that were not reported", func() {
+			// A response that only carries retry-after and request-id
+			// (e.g. an early 429 before the per-window headers are
+			// populated) must not pretend the budgets are zero. -1
+			// disambiguates "not provided" from "0 remaining".
+			headers := http.Header{}
+			headers.Set("retry-after", "5")
+			headers.Set("request-id", "req_partial")
+			apiErr := newTestAPIErrorWithHeaders(429, headers)
+
+			result := parseAnthropicError(apiErr)
+			Expect(result.RateLimit).NotTo(BeNil())
+			Expect(result.RateLimit.InputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.OutputTokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(-1))
+			Expect(result.RateLimit.TokensRemaining).To(Equal(-1))
+			Expect(result.RateLimit.InputTokensReset.IsZero()).To(BeTrue())
+		})
+	})
+
+	Context("when the error response carries no rate-limit headers", func() {
+		It("leaves RateLimit nil for a 500 server error", func() {
+			// A vanilla 500 has no rate-limit metadata; the failover
+			// hook must fall back to the per-error-type cooldown.
+			apiErr := newTestAPIErrorWithHeaders(500, http.Header{})
+
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeServerError))
+			Expect(result.RateLimit).To(BeNil(),
+				"absent rate-limit headers must surface as nil so the failover hook falls back to the default cooldown")
+		})
+
+		It("leaves RateLimit nil when retry-after is unparseable", func() {
+			headers := http.Header{}
+			headers.Set("retry-after", "not-a-number")
+			apiErr := newTestAPIErrorWithHeaders(429, headers)
+
+			result := parseAnthropicError(apiErr)
+			Expect(result).To(HaveOccurred())
+			Expect(result.RateLimit).To(BeNil(),
+				"a malformed header must not synthesise a phantom 0s back-off; the default cooldown wins")
 		})
 	})
 })
