@@ -28,8 +28,18 @@ const (
 	oauthBetaHeader       = "oauth-2025-04-20"
 	oauthUserAgent        = "claude-cli/2.1.2 (external, cli)"
 	oauthAppHeader        = "cli"
-	oauthBillingHeader    = "x-anthropic-billing-header: " +
-		"cc_version=2.1.80.a46; cc_entrypoint=sdk-cli; cch=00000;"
+	// oauthBillingHeaderName is the HTTP header name Anthropic's
+	// edge uses to route OAuth requests to the Claude Code billing
+	// pool (no per-token cost on the user). The Claude CLI sends it
+	// as a real HTTP header — we mirror that.
+	oauthBillingHeaderName = "x-anthropic-billing-header"
+	// oauthBillingHeaderValue is the exact value the Claude CLI
+	// sends. cc_version, cc_entrypoint and cch are billing-routing
+	// metadata; the trailing semicolon matches the CLI's spelling
+	// byte-for-byte. Kept as a constant — do NOT synthesise or
+	// rotate dynamically until Anthropic documents that contract.
+	oauthBillingHeaderValue = "cc_version=2.1.80.a46; " +
+		"cc_entrypoint=sdk-cli; cch=00000;"
 )
 
 // Provider implements the provider.Provider interface for Anthropic Claude.
@@ -129,19 +139,33 @@ func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
 //
 // Expected:
 //   - token is a non-empty OAuth bearer token.
+//   - extraOpts are appended after the OAuth defaults so callers
+//     (notably tests) can override the base URL, HTTP client, or add
+//     further headers without rebuilding the OAuth-specific set.
 //
 // Returns:
-//   - A configured Anthropic API client with OAuth headers.
+//   - A configured Anthropic API client with OAuth headers and the
+//     `x-anthropic-billing-header` wire-level header pre-attached.
 //
 // Side effects:
 //   - None.
-func newOAuthClient(token string) anthropicAPI.Client {
-	return anthropicAPI.NewClient(
+func newOAuthClient(token string, extraOpts ...option.RequestOption) anthropicAPI.Client {
+	opts := []option.RequestOption{
 		option.WithAuthToken(token),
 		option.WithHeaderAdd("anthropic-beta", oauthBetaHeader),
 		option.WithHeaderAdd("user-agent", oauthUserAgent),
 		option.WithHeaderAdd("x-app", oauthAppHeader),
-	)
+		// Real HTTP header — billing-routing metadata. The Claude
+		// CLI sends this as a wire-level header; previously we
+		// (incorrectly) injected it as a synthetic system-prompt
+		// text block, which wasted ~30 input tokens per request,
+		// polluted the model's view of the system prompt, and broke
+		// the cache boundary by sitting before the first
+		// caller-supplied cache_control breakpoint.
+		option.WithHeaderAdd(oauthBillingHeaderName, oauthBillingHeaderValue),
+	}
+	opts = append(opts, extraOpts...)
+	return anthropicAPI.NewClient(opts...)
 }
 
 // NewFromConfig creates an Anthropic provider from a configured API key or
@@ -820,7 +844,15 @@ func buildMessages(
 	return messages
 }
 
-// extractSystemPrompt collects system messages into text blocks, prepending the billing header for OAuth.
+// extractSystemPrompt collects system messages into text blocks.
+//
+// The OAuth billing-routing metadata is sent as a real HTTP header
+// (`x-anthropic-billing-header`) configured on the SDK client — see
+// newOAuthClient. It is intentionally NOT injected as a synthetic
+// system-prompt block: doing so wastes input tokens, leaks routing
+// metadata into the model's view, and (because the synthetic block
+// has no cache_control) sits in front of the caller's cache
+// breakpoint as an uncached prefix, invalidating the cache key.
 //
 // Expected:
 //   - msgs is a slice of provider messages that may include system messages.
@@ -834,11 +866,6 @@ func (p *Provider) extractSystemPrompt(
 	msgs []provider.Message,
 ) []anthropicAPI.TextBlockParam {
 	var blocks []anthropicAPI.TextBlockParam
-	if p.isOAuth {
-		blocks = append(blocks, anthropicAPI.TextBlockParam{
-			Text: oauthBillingHeader,
-		})
-	}
 	for _, m := range msgs {
 		if m.Role != "system" || m.Content == "" {
 			continue
