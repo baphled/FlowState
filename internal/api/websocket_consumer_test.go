@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -273,5 +274,42 @@ var _ = Describe("BuildWSChunkMsg EventType extraction", func() {
 		msg := api.BuildWSChunkMsg(chunk)
 		Expect(msg.Delegation).NotTo(BeNil())
 		Expect(msg.Delegation.StartedAt).To(Equal(&now))
+	})
+
+	// Critical-stream-error severity gating regression specs (WS builder seam).
+	//
+	// Mirrors the SSE fan-out fix landed in commit 090a2c32. Pre-fix the
+	// WS builder always categorised chunk.Error as "stream_error", so a
+	// fatal provider error (revoked OAuth, 401, model-not-found,
+	// billing/quota lockout) reached the client with the same sanitised
+	// "stream error" text as a self-healing transient blip. The
+	// classifier provider.IsCriticalStreamError already exists; the
+	// builder must consult it so the wire carries a distinct
+	// "critical stream error" message for the critical-class path.
+	//
+	// The non-critical spec is the regression-resistance guard: it pins
+	// that transient errors continue to surface as the existing
+	// "stream error" message (no escalation, no wire-format break).
+	Context("when chunk carries a stream error", func() {
+		It("populates Error with the critical-class message when the error classifies as critical", func() {
+			chunk := provider.StreamChunk{
+				Error: errors.New("401 unauthorized"),
+			}
+
+			msg := api.BuildWSChunkMsg(chunk)
+			Expect(msg.Error).To(Equal("critical stream error"))
+			Expect(msg.CorrelationID).NotTo(BeEmpty())
+		})
+
+		It("populates Error with the existing stream-error message when the error classifies as transient", func() {
+			chunk := provider.StreamChunk{
+				Error: errors.New("connection refused"),
+			}
+
+			msg := api.BuildWSChunkMsg(chunk)
+			Expect(msg.Error).To(Equal("stream error"))
+			Expect(msg.Error).NotTo(Equal("critical stream error"))
+			Expect(msg.CorrelationID).NotTo(BeEmpty())
+		})
 	})
 })

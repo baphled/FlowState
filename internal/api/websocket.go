@@ -32,7 +32,20 @@ func BuildWSChunkMsg(chunk provider.StreamChunk) WSChunkMsg {
 		EventType: chunk.EventType,
 	}
 	if chunk.Error != nil {
-		safeMsg, cid := clientError(chunk.Error, "stream_error")
+		// Mirror the SSE seam (handleSessionStream) by gating on
+		// severity. Pre-fix every chunk.Error was sanitised as
+		// "stream_error" — a fatal provider error (revoked OAuth,
+		// 401, model-not-found, billing/quota lockout) reached
+		// the client with the same text as a self-healing blip.
+		// IsCriticalStreamError lets the wire carry a distinct
+		// "critical stream error" message; the rest of the JSON
+		// shape stays identical so frontends that only know about
+		// the existing error+correlation_id fields keep working.
+		category := "stream_error"
+		if provider.IsCriticalStreamError(chunk.Error) {
+			category = "stream_critical"
+		}
+		safeMsg, cid := clientError(chunk.Error, category)
 		msg.Error = safeMsg
 		msg.CorrelationID = cid
 	}
@@ -211,7 +224,20 @@ func (s *Server) forwardWSChunks(ctx context.Context, out chan<- WSChunkMsg, chu
 		case <-ctx.Done():
 			return false
 		}
-		if chunk.Done || chunk.Error != nil {
+		// Gate the loop break on severity, mirroring the SSE
+		// fan-out fix in handleSessionStream. Pre-fix the consumer
+		// always broke on any chunk.Error, so a transient blip
+		// (network reset, rate-limit retry) terminated the WS
+		// turn even when the provider could self-heal and produce
+		// further chunks. Post-fix only critical errors (revoked
+		// OAuth, 401, model-not-found, billing/quota lockout) and
+		// chunk.Done end the loop; transient errors surface as
+		// "stream error" via BuildWSChunkMsg and the consumer
+		// keeps reading from chunks.
+		if chunk.Done {
+			return false
+		}
+		if chunk.Error != nil && provider.IsCriticalStreamError(chunk.Error) {
 			return false
 		}
 	}
