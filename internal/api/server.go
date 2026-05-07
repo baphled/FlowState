@@ -330,6 +330,7 @@ func securityHeaders(next http.Handler) http.Handler {
 func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
+	s.mux.HandleFunc("GET /api/swarms", s.handleListSwarms)
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 	s.mux.HandleFunc("GET /api/discover", s.handleDiscover)
 	s.mux.HandleFunc("GET /api/skills", s.handleListSkills)
@@ -391,6 +392,58 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, manifest)
+}
+
+// swarmListEntry is the compact projection of swarm.Manifest the web
+// frontend's @-picker consumes via GET /api/swarms. Mirrors GET
+// /api/agents in shape but trims the manifest to the four fields the
+// picker needs — id, description, lead, members. The full manifest
+// (gates, harness, retry, circuit breaker) stays server-side because
+// no web surface today reasons about gate kinds or precedence.
+type swarmListEntry struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description,omitempty"`
+	Lead        string   `json:"lead"`
+	Members     []string `json:"members"`
+}
+
+// handleListSwarms writes registered swarm manifests as a compact JSON
+// array projected through swarmListEntry. The web frontend's
+// MessageInput populates its @-picker swarm slice from this endpoint
+// (see web/src/stores/chatStore.ts loadSwarms). The shape is
+// independent of the on-disk YAML so adding manifest fields later
+// (sub-swarm composition, harness tweaks) does not push them onto the
+// wire automatically — the projection is opt-in.
+//
+// Expected:
+//   - None.
+//
+// Side effects:
+//   - Writes HTTP 200 with Content-Type application/json.
+//   - When the swarm registry is unconfigured (Server constructed
+//     without WithSwarmRegistry — test surfaces, or a build that
+//     omitted the loader), returns `[]` so the web client never sees
+//     `null`. Matches GET /api/agents' empty-registry contract.
+func (s *Server) handleListSwarms(w http.ResponseWriter, _ *http.Request) {
+	if s.swarmRegistry == nil {
+		writeJSON(w, []swarmListEntry{})
+		return
+	}
+	manifests := s.swarmRegistry.List()
+	out := make([]swarmListEntry, 0, len(manifests))
+	for _, m := range manifests {
+		members := m.Members
+		if members == nil {
+			members = []string{}
+		}
+		out = append(out, swarmListEntry{
+			ID:          m.ID,
+			Description: m.Description,
+			Lead:        m.Lead,
+			Members:     members,
+		})
+	}
+	writeJSON(w, out)
 }
 
 // chatRequest represents a chat message request from the client.
@@ -485,6 +538,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		err := orch.ProcessUserInput(r.Context(), orchestrator.UserInput{
 			Message:      req.Message,
 			DefaultAgent: req.AgentID,
+			// ScanMentions matches TUI parity (Web Swarm Mention Parity,
+			// May 2026): the web chat composer routes typed @-mentions
+			// through the same orchestrator path the TUI's chat intent
+			// uses, so a typed `@<swarm-id>` dispatches the swarm
+			// regardless of which agent the toolbar AgentPicker has
+			// selected. Agent @-mentions and unknown @-mentions still
+			// fall through to req.AgentID — the orchestrator's resolver
+			// only redirects on a swarm hit (see internal/orchestrator/
+			// orchestrator.go::resolve).
+			ScanMentions: true,
 		}, consumer)
 		if err != nil {
 			log.Printf("[api] chat stream error: %v", err)

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fetchSessionMessages, fetchSessions, fetchSwarmEvents, updateSessionAgent } from './index'
+import {
+  fetchSessionMessages,
+  fetchSessions,
+  fetchSwarmEvents,
+  fetchSwarms,
+  updateSessionAgent,
+} from './index'
 
 function installLocalStorageStub() {
   const store = new Map<string, string>()
@@ -45,6 +51,62 @@ describe('fetchSwarmEvents', () => {
     const events = await fetchSwarmEvents()
 
     expect(events).toEqual([{ id: 'evt-1', type: 'tool_call' }])
+  })
+})
+
+// Web Swarm Mention Parity (May 2026) — `fetchSwarms` mirrors
+// `fetchAgents`: a single GET to /api/swarms returning the list of
+// registered swarm manifests. The chat store calls it on bootstrap so
+// the @-picker has swarms to surface alongside agents.
+describe('fetchSwarms', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify([
+            { id: 'planning-loop', description: 'Planner orchestration', lead: 'planner', members: ['explorer'] },
+            { id: 'solo', description: 'Single-member', lead: 'executor', members: [] },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('issues a GET to /api/swarms', async () => {
+    await fetchSwarms()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const calledUrl = fetchMock.mock.calls[0][0] as string
+    expect(calledUrl).toContain('/api/swarms')
+  })
+
+  it('returns the parsed array of swarm manifests', async () => {
+    const swarms = await fetchSwarms()
+
+    expect(swarms).toHaveLength(2)
+    expect(swarms[0].id).toBe('planning-loop')
+    expect(swarms[0].lead).toBe('planner')
+    expect(swarms[1].id).toBe('solo')
+  })
+
+  it('throws when the backend responds with a non-OK status', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response('boom', { status: 500, statusText: 'Internal Server Error' })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchSwarms()).rejects.toThrow(/swarms/i)
   })
 })
 

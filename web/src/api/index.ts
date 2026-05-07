@@ -7,6 +7,7 @@ import type {
   Message,
   Model,
   ModelsResponse,
+  Swarm,
 } from '@/types'
 import { parseError } from '@/lib/parseError'
 import { isAllowedApiHost } from '@/lib/apiHostAllowlist'
@@ -67,6 +68,24 @@ export async function fetchAgent(id: string): Promise<Agent> {
   const res = await fetch(joinBaseURL(`/agents/${encodeURIComponent(id)}`))
   if (!res.ok) {
     throw new Error(`Failed to fetch agent ${id}: ${res.statusText}`)
+  }
+  return res.json()
+}
+
+/**
+ * fetchSwarms returns the registered swarms in stable id order. Used
+ * by the chat store on bootstrap so the MessageInput's @-picker can
+ * surface swarms alongside agents — same shape as fetchAgents, just a
+ * different endpoint and entity.
+ *
+ * The backend coerces an unconfigured registry to `[]` so callers
+ * never see `null`; the array form is contractual (see the Go-side
+ * GET /api/swarms specs in internal/api/server_test.go).
+ */
+export async function fetchSwarms(): Promise<Swarm[]> {
+  const res = await fetch(joinBaseURL('/swarms'))
+  if (!res.ok) {
+    throw new Error(`Failed to fetch swarms: ${res.statusText}`)
   }
   return res.json()
 }

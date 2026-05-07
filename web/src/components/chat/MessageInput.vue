@@ -29,9 +29,13 @@ const commandItems = computed<FuzzySearchItem[]>(() =>
   })),
 )
 
-// Combined agent + swarm surface for "@" mentions. Swarms have no read
-// API yet so the slice is empty until one lands; the picker still works
-// for agents alone.
+// Combined agent + swarm surface for "@" mentions. Both slices flow
+// from the chat store; swarms come from GET /api/swarms via
+// chatStore.loadSwarms (Web Swarm Mention Parity, May 2026), agents
+// from chatStore.loadAgents. The orchestrator-side ScanMentions path
+// is unconditional for the API surface, so any @<swarm-id> typed here
+// dispatches identically to the TUI's @-mention flow when the user
+// presses Send.
 const mentionItems = computed<FuzzySearchItem[]>(() => {
   const agents = store.availableAgentDetails.map<FuzzySearchItem>((agent) => ({
     id: agent.id,
@@ -39,10 +43,13 @@ const mentionItems = computed<FuzzySearchItem[]>(() => {
     group: 'Agents',
     meta: agent.name,
   }))
-  // Swarm slice intentionally empty — see InputTriggerPickers note for
-  // backend wiring TODO. Keep the group present so the surface is
-  // discoverable when the data lands.
-  return agents
+  const swarms = store.swarms.map<FuzzySearchItem>((swarm) => ({
+    id: swarm.id,
+    label: `@${swarm.id}`,
+    group: 'Swarms',
+    meta: swarm.lead,
+  }))
+  return [...agents, ...swarms]
 })
 
 // Group label varies between the two pickers — slash commands have no

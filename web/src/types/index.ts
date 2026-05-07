@@ -158,6 +158,26 @@ export interface Agent {
 }
 
 /**
+ * Swarm mirrors the shape returned by GET /api/swarms — a compact
+ * projection of swarm.Manifest carrying just the fields the web
+ * @-picker and any future web swarm panel needs. The full manifest
+ * (gates, harness, retry, circuit breaker) stays server-side so the
+ * web client never has to reason about gate kinds or precedence.
+ *
+ * Field-by-field correspondence to internal/swarm/manifest.go:
+ *   id          ← Manifest.ID
+ *   description ← Manifest.Description (may be empty)
+ *   lead        ← Manifest.Lead (the agent or sub-swarm id that runs first)
+ *   members     ← Manifest.Members (always an array; never null)
+ */
+export interface Swarm {
+  id: string
+  description?: string
+  lead: string
+  members: string[]
+}
+
+/**
  * Session and SessionSummary mirror SessionResponse in
  * internal/api/session_response.go. Hand-aligned (no codegen). The contract
  * spec in `types/contract.spec.ts` asserts every Go field is mirrored here so

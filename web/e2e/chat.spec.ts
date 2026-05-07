@@ -181,6 +181,32 @@ test.describe('Chat view', () => {
     await expect(input).toHaveValue('hey @planner ')
   })
 
+  // Web Swarm Mention Parity (May 2026) — typing @<swarm-id> in the
+  // composer surfaces the registered swarm in the @-picker and, on
+  // send, dispatches identically to the TUI. The mocked backend serves
+  // a swarm at GET /api/swarms; this spec proves the surface picks it
+  // up via the chatStore's `swarms` slice and renders it in the
+  // FuzzySearchModal alongside agents.
+  test('opens the @-picker with registered swarms when "@" is typed', async ({ page }) => {
+    await page.route('**/api/swarms', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { id: 'a-team', description: 'Alpha team', lead: 'planner', members: ['executor'] },
+        ]),
+      })
+    })
+    await page.reload()
+
+    const input = page.getByTestId('message-input')
+    await input.click()
+    await input.press('@')
+
+    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
+    await expect(page.getByTestId('fuzzy-search-item-a-team')).toBeVisible()
+  })
+
   test('restores last-used session and agent after localStorage compaction', async ({ page }) => {
     // Select Executor via AgentPicker FuzzySearchModal
     await page.getByTestId('agent-picker').click()

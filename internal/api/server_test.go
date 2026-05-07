@@ -3238,3 +3238,169 @@ var _ = Describe("POST /api/v1/sessions persists default model+provider to the m
 		Expect(stored.CurrentModelID).To(Equal("gpt-4o"))
 	})
 })
+
+// Web Swarm Mention Parity (May 2026) — the Vue web chat needs the
+// same @swarm trigger the TUI has had since the Multi-Agent Chat UX
+// work. Two seams under test here:
+//
+//  1. GET /api/swarms — read-side endpoint feeding the web @-picker.
+//     Mirrors GET /api/agents in shape (JSON array of registered
+//     manifests in stable id order). The web client maps each entry
+//     into a FuzzySearchItem with `meta` taken from the lead.
+//  2. POST /api/chat — when a registered swarm id appears as @<id>
+//     in the message body, the orchestrator MUST resolve the mention
+//     to a swarm dispatch identical to the TUI's chat path. Parity
+//     with the TUI is non-negotiable: no opt-in field on the request
+//     body — ScanMentions runs unconditionally.
+var _ = Describe("Web Swarm Mention Parity", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		registry *agent.Registry
+		streamer *mockStreamer
+		swarmReg *swarm.Registry
+		engStub  *fakeDispatchEngine
+		server   *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		registry = agent.NewRegistry()
+		registry.Register(&agent.Manifest{ID: "lead-one", Name: "Lead One"})
+		registry.Register(&agent.Manifest{ID: "lead-two", Name: "Lead Two"})
+		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+
+		swarmReg = swarm.NewRegistry()
+		swarmReg.Register(&swarm.Manifest{
+			SchemaVersion: "1.0.0",
+			ID:            "alpha-team",
+			Description:   "Alpha analysis swarm",
+			Lead:          "lead-one",
+			Members:       []string{"lead-two"},
+		})
+		swarmReg.Register(&swarm.Manifest{
+			SchemaVersion: "1.0.0",
+			ID:            "beta-team",
+			Description:   "Beta codegen swarm",
+			Lead:          "lead-two",
+			Members:       []string{},
+		})
+
+		streamer = &mockStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "ack"},
+				{Content: "", Done: true},
+			},
+		}
+		engStub = &fakeDispatchEngine{}
+		server = api.NewServer(streamer, registry, nil, nil,
+			api.WithSwarmRegistry(swarmReg),
+			api.WithDispatchEngine(engStub),
+		)
+	})
+
+	Describe("GET /api/swarms", func() {
+		It("returns the registered swarms as a JSON array", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/swarms", http.NoBody)
+			server.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
+
+			var swarms []map[string]any
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &swarms)).To(Succeed())
+			Expect(swarms).To(HaveLen(2))
+		})
+
+		It("publishes a stable JSON shape: id, description, lead, members", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/swarms", http.NoBody)
+			server.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			var swarms []map[string]any
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &swarms)).To(Succeed())
+			Expect(swarms).To(HaveLen(2))
+
+			// Sorted alphabetically by id (matches Registry.List() contract).
+			Expect(swarms[0]).To(HaveKeyWithValue("id", "alpha-team"))
+			Expect(swarms[0]).To(HaveKeyWithValue("description", "Alpha analysis swarm"))
+			Expect(swarms[0]).To(HaveKeyWithValue("lead", "lead-one"))
+			members, ok := swarms[0]["members"].([]any)
+			Expect(ok).To(BeTrue(), "members must serialise as a JSON array, not null")
+			Expect(members).To(ConsistOf("lead-two"))
+
+			// Empty Members must round-trip as [], not null — the web
+			// client renders this list directly and will iterate it.
+			Expect(swarms[1]).To(HaveKeyWithValue("id", "beta-team"))
+			Expect(swarms[1]).To(HaveKeyWithValue("lead", "lead-two"))
+			betaMembers, ok := swarms[1]["members"].([]any)
+			Expect(ok).To(BeTrue(),
+				"empty roster must serialise as [], so the picker can iterate without a nil guard")
+			Expect(betaMembers).To(BeEmpty())
+		})
+
+		Context("when the swarm registry is not configured", func() {
+			It("returns an empty JSON array", func() {
+				bareServer := api.NewServer(streamer, registry, nil, nil)
+
+				req := httptest.NewRequest(http.MethodGet, "/api/swarms", http.NoBody)
+				bareServer.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(recorder.Header().Get("Content-Type")).To(Equal("application/json"))
+
+				body := strings.TrimSpace(recorder.Body.String())
+				Expect(body).To(Equal("[]"),
+					"a missing swarm registry must surface as [], not null — matches GET /api/agents")
+			})
+		})
+	})
+
+	Describe("POST /api/chat with @<swarm-id> in the body", func() {
+		It("dispatches the swarm even though agent_id names a plain agent (TUI parity)", func() {
+			// Web user types `@alpha-team please look` while the
+			// MessageInput's bound agent_id is whatever the toolbar
+			// AgentPicker had selected. Without ScanMentions the server
+			// would stream from default-assistant and ignore the
+			// mention; with parity wiring the mention overrides the
+			// default and the streamer drives the swarm's lead.
+			body := `{"agent_id":"default-assistant","message":"@alpha-team please look at the auth path"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			server.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(streamer.capturedAgentID).To(Equal("lead-one"),
+				"the @swarm mention must override agent_id, dispatching from the swarm's lead")
+			Expect(engStub.installedContext).NotTo(BeNil(),
+				"a swarm context must be installed on the engine when the mention resolves")
+			Expect(engStub.installedContext.SwarmID).To(Equal("alpha-team"))
+			Expect(engStub.installedContext.LeadAgent).To(Equal("lead-one"))
+		})
+
+		It("falls through to agent_id when no @-mention resolves to a swarm", func() {
+			body := `{"agent_id":"default-assistant","message":"plain message no mention"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			server.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(streamer.capturedAgentID).To(Equal("default-assistant"),
+				"absent a swarm @-mention the default agent_id still drives the stream")
+			Expect(engStub.installedContext).To(BeNil(),
+				"no swarm context when the message contains no swarm mention")
+		})
+
+		It("ignores @<agent-id> mentions and stays with agent_id (agent mentions don't redirect)", func() {
+			body := `{"agent_id":"default-assistant","message":"ask @lead-one to look"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			server.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(streamer.capturedAgentID).To(Equal("default-assistant"),
+				"agent @-mentions don't redirect — only swarm mentions do (orchestrator parity contract)")
+			Expect(engStub.installedContext).To(BeNil())
+		})
+	})
+})
