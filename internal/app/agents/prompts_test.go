@@ -41,6 +41,16 @@ const todoDisciplineHeader = "Todo Discipline"
 // instruction at index 0.
 const canonicalTodoMandate = "Always use the `todowrite` tool to track multi-step work; do not start work on a multi-step task without first recording it."
 
+// canonicalAutoContinueSentence is the case-sensitive substring every agent
+// prompt MUST carry alongside the canonical todo mandate. User feedback (May
+// 2026): agents were pausing mid-todo-list to ask "should I continue?" or
+// waiting for an additional prompt before working on the next item. Direct
+// quote: "If the agent has tasks to do, unless it needs my input, it should
+// just continue with the work, and not ask for me to continue, or add another
+// prompt." The clause pins three legitimate pause reasons and three
+// anti-pattern phrasings so every agent has the same explicit guard.
+const canonicalAutoContinueSentence = `Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.`
+
 // exemptedPrompts is the documented allow-list for prompts that are out of
 // scope of the propagation contract. Each entry MUST cite a reason and a
 // long-lived owner.
@@ -139,6 +149,26 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 			content := readFile(path)
 			Expect(content).To(ContainSubstring(canonicalTodoMandate),
 				"agent prompt missing canonical todo mandate sentence: %s", path)
+		}
+	})
+
+	It("every agent prompt carries the canonical auto-continue sentence", func() {
+		// Bug provenance: user feedback (May 2026) reported agents pausing
+		// mid-todo-list to ask "should I continue?" or waiting for an
+		// additional prompt before working on the next item. The pre-existing
+		// Todo Discipline block (shipped by 3d02901e) said "actively work
+		// through the items" but did not explicitly forbid mid-list
+		// permission-asking. This assertion pins the extension that closes
+		// that gap — the auto-continue clause names three legitimate pause
+		// reasons and three anti-pattern phrasings.
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := todoExempt[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(canonicalAutoContinueSentence),
+				"agent prompt missing canonical auto-continue sentence: %s", path)
 		}
 	})
 })
