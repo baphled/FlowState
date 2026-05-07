@@ -74,6 +74,40 @@ const isDelegationStarted = computed(() => props.message.role === 'delegation_st
 const isDelegation = computed(() => props.message.role === 'delegation')
 const isThinking = computed(() => props.message.role === 'thinking')
 
+// Thinking-only degraded turn — closes the UI follow-up flagged by
+// `Empty-Content Thinking-Only Assistant Turn (May 2026)` in the
+// FlowState vault. The session accumulator synthesises a placeholder
+// assistant Message (commit fbecedfe and siblings) when an OpenAI-
+// compat reasoning provider produces reasoning tokens but never emits
+// visible content. The placeholder shape on the wire is:
+//
+//   { role: "assistant", content: "", thinkingBlocks: [...], stopReason: "..." }
+//
+// Without a UI render branch the user sees a blank bubble — visually
+// indistinguishable from a stalled stream. The soft-error affordance
+// surfaces "the agent thought but produced no response", a third UX
+// class alongside (a) a stalled stream (no bubble at all) and (b) a
+// critical stream error (CriticalErrorBanner, role="alert"). This
+// affordance uses role="status" (informational) — the turn already
+// finished, the user is being told *after the fact* that it produced
+// no visible reply.
+//
+// The predicate is intentionally narrow: ALL three signals must be
+// present. That matches the synthesis predicate on the Go side
+// (`contentBuf.Len() == 0 && len(thinkingBlocks) > 0` plus a non-empty
+// stop_reason from the upstream) and means a non-placeholder empty
+// assistant — e.g. a true stall, or a placeholder synthesised by some
+// future error path that doesn't carry thinking blocks — does not
+// collide with this rendering.
+const isThinkingOnlyDegraded = computed(() => {
+  if (props.message.role !== 'assistant') return false
+  if ((props.message.content ?? '') !== '') return false
+  const thinkingBlocks = props.message.thinkingBlocks ?? []
+  if (thinkingBlocks.length === 0) return false
+  if (!props.message.stopReason) return false
+  return true
+})
+
 // Both tool_result and an unmatched tool_call (one without a paired
 // tool_result — collapseToolPairs leaves it intact) render through the
 // same per-tool component. The collapsable card chrome already signals
@@ -103,7 +137,8 @@ const isPlain = computed(
     !isToolError.value &&
     !isDelegationStarted.value &&
     !isDelegation.value &&
-    !isThinking.value,
+    !isThinking.value &&
+    !isThinkingOnlyDegraded.value,
 )
 
 // Defensive backstop for the May 2026 chat-UI leak class (session
@@ -229,6 +264,21 @@ async function handleRevert(): Promise<void> {
     </div>
 
     <p v-else-if="isThinking" class="thinking">{{ props.message.content }}</p>
+
+    <div
+      v-else-if="isThinkingOnlyDegraded"
+      class="thinking-only-affordance"
+      role="status"
+      data-testid="thinking-only-affordance"
+    >
+      <span class="thinking-only-icon" aria-hidden="true">!</span>
+      <div class="thinking-only-content">
+        <span class="thinking-only-title">No response produced</span>
+        <span class="thinking-only-message">
+          The agent thought through this turn but produced no response.
+        </span>
+      </div>
+    </div>
 
     <template v-else-if="isPlain">
       <span class="message-role">{{ displayRole }}</span>
@@ -475,5 +525,61 @@ async function handleRevert(): Promise<void> {
   font-size: 0.85rem;
   line-height: 1.5;
   margin: 0;
+}
+
+/* Thinking-only degraded-turn affordance.
+ *
+ * Visual language mirrors CriticalErrorBanner's layout (icon + title +
+ * message stacked) but uses the warning (--warning) palette instead of
+ * the red --error palette so the user can tell the two surfaces apart
+ * at a glance. CriticalErrorBanner = fatal stream failure (red,
+ * role="alert", anchored at top of chat). This = degraded turn
+ * (amber, role="status", inline in the conversation flow). */
+.thinking-only-affordance {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--warning, #e0af68);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, transparent);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.thinking-only-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--warning, #e0af68);
+  color: var(--bg-primary, #1a1b26);
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.thinking-only-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.thinking-only-title {
+  font-weight: 600;
+  color: var(--warning, #e0af68);
+  font-size: 0.9rem;
+}
+
+.thinking-only-message {
+  color: var(--text-secondary, var(--text-primary));
+  word-wrap: break-word;
+  line-height: 1.4;
 }
 </style>
