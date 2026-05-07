@@ -10,19 +10,19 @@
 // The rules implemented here come from the Phase 1 research pass:
 //
 //   - Opus 4.7 (`claude-opus-4-7*`):
-//       * rejects non-default `temperature`/`top_p`/`top_k`
-//       * rejects manual `thinking: enabled` (must use `adaptive`)
-//       * `max_tokens` ceiling is 128k; default `thinking.display`
-//         is `omitted`
+//   - rejects non-default `temperature`/`top_p`/`top_k`
+//   - rejects manual `thinking: enabled` (must use `adaptive`)
+//   - `max_tokens` ceiling is 128k; default `thinking.display`
+//     is `omitted`
 //   - Opus 4.6 / Sonnet 4.6 (`claude-opus-4-6*`, `claude-sonnet-4-6*`):
-//       * manual `thinking: enabled` is deprecated but accepted
-//       * `max_tokens` ceiling: Opus 4.6 = 128k, Sonnet 4.6 = 64k
+//   - manual `thinking: enabled` is deprecated but accepted
+//   - `max_tokens` ceiling: Opus 4.6 = 128k, Sonnet 4.6 = 64k
 //   - Other Claude 4.x (Opus 4/4.1/4.5, Sonnet 4/4.5, Haiku 4.5):
-//       * manual thinking allowed, sampling allowed
-//       * `max_tokens` ceiling per matrix
+//   - manual thinking allowed, sampling allowed
+//   - `max_tokens` ceiling per matrix
 //   - Sonnet 3.7 (`claude-3-7-sonnet*`):
-//       * full thinking; supports `output-128k-2025-02-19` and
-//         `token-efficient-tools-2025-02-19` betas
+//   - full thinking; supports `output-128k-2025-02-19` and
+//     `token-efficient-tools-2025-02-19` betas
 //   - Claude 3.5/3.0: no extended thinking
 //
 // Out of scope here (deferred to Phase 3): cache_control breakpoint

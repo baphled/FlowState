@@ -703,9 +703,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 // Returns:
 //   - The Provider and Model strings from the first entry in the agent
 //     manifest's PreferredModels list, or empty strings when:
-//       (a) the registry is nil
-//       (b) the agentID is unknown
-//       (c) the manifest declares no preferred models
+//     (a) the registry is nil
+//     (b) the agentID is unknown
+//     (c) the manifest declares no preferred models
 //
 // Side effects:
 //   - None.

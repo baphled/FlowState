@@ -1085,7 +1085,7 @@ var _ = Describe("SessionBroker", func() {
 				// firing is the common case; a run that hits zero
 				// callers in either branch is statistically rare but
 				// not a failure (race timing).
-				Expect(okCount + notOkCount).To(Equal(callersPerIteration),
+				Expect(okCount+notOkCount).To(Equal(callersPerIteration),
 					"iteration %d: every caller must have observed exactly one branch", iter)
 			}
 

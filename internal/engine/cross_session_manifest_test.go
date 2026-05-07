@@ -690,4 +690,3 @@ var _ = Describe("Cross-session manifest binding", func() {
 		})
 	})
 })
-
