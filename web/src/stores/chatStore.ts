@@ -295,6 +295,29 @@ export const useChatStore = defineStore('chat', {
     isStreaming: false,
     isLoadingSessions: false,
     error: null as string | null,
+    // criticalError carries the wire-level signal for fatal provider
+    // errors (revoked OAuth, 401, model-not-found, billing/quota
+    // lockout). Set when applyContentEvent sees an SSE event of
+    // kind: 'stream_critical' (sniffed from the canonical
+    // "critical stream error" safeMsg in the SSE/WS error JSON shape —
+    // see web/src/lib/sseEvent.ts CRITICAL_STREAM_ERROR_MESSAGE). The
+    // distinction from the existing transient `error` field above is
+    // deliberate: the chat UI surfaces criticality via a persistent
+    // banner (CriticalErrorBanner.vue) above the message list, while
+    // transient errors fall through to the existing toast path.
+    //
+    // The session is unrecoverable until the operator re-authenticates,
+    // fixes billing, or switches provider, so the banner persists
+    // across user interactions until either (a) the user clicks
+    // Dismiss, which calls `dismissCriticalError()`, or (b) the user
+    // navigates to a different session, which resets state via the
+    // shared session-change clear path.
+    //
+    // `correlationId` is the server-side log lookup token; the banner
+    // exposes it via a "Show details" affordance so users can paste it
+    // for support. The raw provider error never reaches the client —
+    // only the canonical safeMsg + correlation id.
+    criticalError: null as { message: string; correlationId: string } | null,
     // lastToolName tracks the tool whose result is expected next over the
     // SSE stream. The server emits `tool_call` then `tool_result` as a pair
     // (see internal/api/sse_consumer.go WriteToolCall/WriteToolResult), but
@@ -818,6 +841,11 @@ export const useChatStore = defineStore('chat', {
       sessionStream.disconnect()
       this.isLoading = true
       this.error = null
+      // A critical-class banner from a prior session is no longer
+      // relevant once the user switches contexts. The banner is bound
+      // to the failing session — the new one starts clean. A fresh
+      // critical event on the new session will repopulate this.
+      this.criticalError = null
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -1345,6 +1373,21 @@ export const useChatStore = defineStore('chat', {
         case 'error':
           this.error = event.error
           return
+        case 'stream_critical':
+          // Fatal provider error — the engine has classified this as
+          // SeverityCritical (revoked OAuth, 401, model-not-found,
+          // billing/quota lockout) and the session is unrecoverable
+          // until the operator intervenes. Surface a persistent banner
+          // (CriticalErrorBanner.vue) instead of the transient toast
+          // path used for `error` events. Always overwrite a prior
+          // criticalError — a fresh fatal error must replace any
+          // previously-dismissed banner with the new correlation id so
+          // support can locate the latest server-side log entry.
+          this.criticalError = {
+            message: event.error,
+            correlationId: event.correlationId,
+          }
+          return
         case 'harness_retry':
         case 'harness_attempt_start':
         case 'harness_complete':
@@ -1385,6 +1428,22 @@ export const useChatStore = defineStore('chat', {
         default:
           exhaustivenessGuard(event)
       }
+    },
+
+    /**
+     * dismissCriticalError clears the persistent critical-error banner
+     * for the current session. The banner re-appears the moment a new
+     * critical event lands on the stream — `criticalError` is overwritten
+     * unconditionally in the dispatch above. This is intentional: a
+     * fresh fatal error after a dismissal is a new failure with a new
+     * correlation id and the user must see it.
+     *
+     * Dismissal is per-session by virtue of `loadSessionMessages`
+     * resetting the field on session change; this action does not
+     * persist any "user has dismissed N criticals" history.
+     */
+    dismissCriticalError(): void {
+      this.criticalError = null
     },
 
     // handleStreamDone owns the [DONE] sentinel side effects: seal any

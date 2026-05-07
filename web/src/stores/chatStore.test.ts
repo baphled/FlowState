@@ -709,6 +709,61 @@ describe('chatStore - sendMessage', () => {
     expect(store.error).toBe('backend exploded')
   })
 
+  it('sets criticalError (with correlation_id) when a stream_critical event arrives', () => {
+    // The Go SSE pipeline emits {"error":"critical stream error","correlation_id":"<id>"}
+    // when handleSessionStream / SSEConsumer.WriteError / BuildWSChunkMsg
+    // classify a provider error as SeverityCritical (revoked OAuth, 401,
+    // model-not-found, billing/quota lockout). The chat UI surfaces this
+    // via a persistent banner, so the store must capture both the safe
+    // message and the correlation id (used by the banner's "Show details"
+    // affordance).
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({ error: 'critical stream error', correlation_id: 'abc123' }),
+    )
+
+    expect(store.criticalError).toEqual({
+      message: 'critical stream error',
+      correlationId: 'abc123',
+    })
+  })
+
+  it('does NOT set criticalError when a transient stream_error event arrives (regression-resistance)', () => {
+    // Without this guard a future change that broadens the criticality
+    // discriminator would silently escalate every transient blip into a
+    // persistent banner. The transient path must continue to set only
+    // store.error.
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({ error: 'stream error', correlation_id: 'xyz' }),
+    )
+
+    expect(store.criticalError).toBeNull()
+    expect(store.error).toBe('stream error')
+  })
+
+  it('overwrites criticalError when a fresh stream_critical event arrives after dismissal', () => {
+    // Per the spec: dismissing the banner must NOT permanently suppress
+    // criticality — a fresh fatal error after dismissal carries a new
+    // correlation id and the user must see it. This pins the
+    // overwrite-on-arrival contract independent of any prior dismissal.
+    const store = useChatStore()
+    store.criticalError = { message: 'critical stream error', correlationId: 'old-id' }
+    store.dismissCriticalError()
+    expect(store.criticalError).toBeNull()
+
+    store.applyContentEvent(
+      JSON.stringify({ error: 'critical stream error', correlation_id: 'new-id' }),
+    )
+
+    expect(store.criticalError).toEqual({
+      message: 'critical stream error',
+      correlationId: 'new-id',
+    })
+  })
+
   it('marks streaming as finished when the DONE sentinel arrives', () => {
     const store = useChatStore()
     store.isStreaming = true

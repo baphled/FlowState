@@ -6,6 +6,7 @@ import { useSwarmStore } from '@/stores/swarmStore'
 import { resolveAgentName, collapseToolPairs, groupContextTools } from '@/views/chatViewHelpers'
 import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
+import CriticalErrorBanner from '@/components/chat/CriticalErrorBanner.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
 import TodoListPanel from '@/components/chat/TodoListPanel.vue'
@@ -268,6 +269,16 @@ onBeforeUnmount(() => {
           Show swarm pane
         </button>
       </div>
+
+      <!--
+        Persistent banner for stream_critical SSE events. Mounted above
+        the message-pane so the user sees fatal provider errors
+        (revoked OAuth, 401, billing/quota) immediately, distinct from
+        the transient-error toast at the viewport's bottom-right. The
+        banner is gated entirely on chatStore.criticalError — it is
+        invisible when the state is null.
+      -->
+      <CriticalErrorBanner />
 
       <section ref="messagePaneRef" class="message-pane" data-testid="chat-message-pane" @scroll="onMessagePaneScroll">
         <div v-if="groupedMessages.length === 0" class="empty-state" data-testid="chat-empty-state">
