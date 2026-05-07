@@ -82,6 +82,16 @@ func SanitiseDelegationMessageForTest(msg string) string {
 	return sanitiseDelegationMessage(msg)
 }
 
+// AppendToolResultsBatchToMessagesForTest exposes appendToolResultsBatchToMessages
+// for the context-anchoring spec. The fix injects a system-role re-anchor
+// reminder after non-trivial tool-result batches so the model does not drift
+// onto trailing tool output and lose the user's original prompt.
+func (e *Engine) AppendToolResultsBatchToMessagesForTest(
+	messages []provider.Message, toolCalls []*provider.ToolCall, results []tool.Result,
+) []provider.Message {
+	return e.appendToolResultsBatchToMessages(messages, toolCalls, results)
+}
+
 // CheckSpawnLimitsForTest exposes checkSpawnLimits so the depth-
 // resolution test can assert the manifest-aware ceiling without
 // driving Execute end-to-end.
