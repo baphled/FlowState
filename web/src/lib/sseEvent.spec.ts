@@ -24,6 +24,45 @@ describe('parseSSEPayload', () => {
     expect(parseSSEPayload('{"error":"something broke"}')).toEqual({ kind: 'error', error: 'something broke' })
   })
 
+  it('classifies an error chunk carrying the canonical "critical stream error" safeMsg as stream_critical and extracts correlation_id', () => {
+    // The Go SSE pipeline emits {"error":"critical stream error","correlation_id":"<id>"}
+    // when handleSessionStream's chunk-error gate hits a fatal provider
+    // error (revoked OAuth, 401, model-not-found, billing/quota lockout).
+    // The wire shape is shared with the transient stream_error category,
+    // so the parser discriminates on the safeMsg text.
+    const ev = parseSSEPayload('{"error":"critical stream error","correlation_id":"abc123"}')
+    expect(ev.kind).toBe('stream_critical')
+    if (ev.kind === 'stream_critical') {
+      expect(ev.error).toBe('critical stream error')
+      expect(ev.correlationId).toBe('abc123')
+    }
+  })
+
+  it('keeps a transient error chunk on the existing kind: "error" path (regression-resistance for stream_critical gate)', () => {
+    // Without this guard a future maintainer could broaden the
+    // criticality discriminator to match any error text and silently
+    // escalate every transient blip into a persistent banner. This spec
+    // pins that "stream error" — the canonical transient safeMsg — must
+    // continue to land on the existing SSEErrorEvent path.
+    const ev = parseSSEPayload('{"error":"stream error","correlation_id":"xyz"}')
+    expect(ev.kind).toBe('error')
+    if (ev.kind === 'error') {
+      expect(ev.error).toBe('stream error')
+    }
+  })
+
+  it('still emits stream_critical when correlation_id is absent (defensive default to empty string)', () => {
+    // The wire format always carries correlation_id but we tolerate its
+    // absence so a degraded emitter still surfaces the banner. Empty
+    // string lets the UI render the banner without the "Show details"
+    // affordance instead of crashing the dispatch.
+    const ev = parseSSEPayload('{"error":"critical stream error"}')
+    expect(ev.kind).toBe('stream_critical')
+    if (ev.kind === 'stream_critical') {
+      expect(ev.correlationId).toBe('')
+    }
+  })
+
   it('classifies a tool_call by the type discriminant', () => {
     const ev = parseSSEPayload('{"type":"tool_call","name":"bash","status":"running","input":"ls"}')
     expect(ev.kind).toBe('tool_call')

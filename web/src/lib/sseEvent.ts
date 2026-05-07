@@ -44,6 +44,44 @@ export interface SSEErrorEvent {
   error: string
 }
 
+/**
+ * SSECriticalErrorEvent — fatal provider error event.
+ *
+ * Emitted by the Go SSE pipeline (writeSSEClientError with category
+ * "stream_critical") when handleSessionStream's chunk-error gate
+ * classifies a provider error as `provider.SeverityCritical` (revoked
+ * OAuth, 401, model-not-found, billing/quota lockout). The same shape
+ * comes off SSEConsumer.WriteError for the streaming-package call paths.
+ *
+ * Wire shape: `{"error":"critical stream error","correlation_id":"<id>"}`.
+ * The wire shape is identical to a transient `stream_error` event — the
+ * `error` text is the only discriminant, chosen by the engine PR for
+ * forward compatibility (parsers that ignore the message text still see
+ * a recognisable error event and fall through to the generic
+ * `SSEErrorEvent` path). The chat store branches on this event into a
+ * persistent banner affordance because the session is unrecoverable
+ * until the operator intervenes (re-auth, billing, switch provider).
+ *
+ * `correlationId` is the server-side log-lookup token. It is surfaced to
+ * the user via a "Show details" affordance so they can paste it for
+ * support; the server logs the raw error under this id.
+ */
+export interface SSECriticalErrorEvent {
+  kind: 'stream_critical'
+  error: string
+  correlationId: string
+}
+
+/**
+ * CRITICAL_STREAM_ERROR_MESSAGE is the canonical safe-message text the
+ * engine emits for fatal provider errors (see `clientError` in
+ * `internal/api/errors.go` `case "stream_critical"`). The parser uses
+ * this as the discriminant because the wire shape `{error, correlation_id}`
+ * is shared between transient and critical error categories — only the
+ * `error` text identifies criticality.
+ */
+export const CRITICAL_STREAM_ERROR_MESSAGE = 'critical stream error'
+
 export interface SSEDoneEvent {
   kind: 'done'
 }
@@ -199,6 +237,7 @@ export interface SSEMalformedEvent {
 export type SSEEvent =
   | SSEContentChunkEvent
   | SSEErrorEvent
+  | SSECriticalErrorEvent
   | SSEDoneEvent
   | SSEToolCallEvent
   | SSESkillLoadEvent
@@ -322,7 +361,25 @@ export function parseSSEPayload(payload: string): SSEEvent {
     return { kind: 'content', content: obj['content'] as string }
   }
   if (typeof obj['error'] === 'string') {
-    return { kind: 'error', error: obj['error'] as string }
+    const errorText = obj['error'] as string
+    // Critical-class fan-out gate: the engine's "stream_critical" category
+    // produces the canonical safeMsg `CRITICAL_STREAM_ERROR_MESSAGE`. The
+    // wire shape is otherwise identical to a transient "stream_error"
+    // event, so we discriminate on the safeMsg text. The correlation id
+    // is mandatory on the wire (writeSSEErrorMsg always emits it) but we
+    // tolerate its absence with an empty string so a degraded payload
+    // still surfaces the banner.
+    if (errorText === CRITICAL_STREAM_ERROR_MESSAGE) {
+      return {
+        kind: 'stream_critical',
+        error: errorText,
+        correlationId:
+          typeof obj['correlation_id'] === 'string'
+            ? (obj['correlation_id'] as string)
+            : '',
+      }
+    }
+    return { kind: 'error', error: errorText }
   }
 
   return { kind: 'unknown', raw: payload }
