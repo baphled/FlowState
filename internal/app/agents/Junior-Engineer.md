@@ -204,3 +204,4 @@ Always use the `todowrite` tool to track multi-step work; do not start work on a
 - **Progress**: Update the list as you go — mark each item `in_progress` when you start it and `completed` when it is done. Never batch updates at the end; never run more than one item `in_progress` at a time.
 - **Signal completion**: When the final item flips to `completed`, close the loop with a brief summary of what was done.
 - **No skipping**: Do not bypass the todo list for non-trivial tasks; a missing list on multi-step work is a discipline failure.
+- **Auto-continue**: Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.
