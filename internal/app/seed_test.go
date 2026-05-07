@@ -694,6 +694,127 @@ var _ = Describe("SeedSwarmsDir", func() {
 			}
 			Expect(names).To(ContainElements("planning-loop.yml", "solo.yml"))
 		})
+
+		It("seeds a-team.yml so @a-team resolves at the swarm registry", func() {
+			// Pinning a-team alongside the existing assertions keeps the
+			// shipped swarm catalogue covered; without this assertion a
+			// future delete that orphans a-team.yml lands silently and
+			// `@a-team` mentions resolve to "unknown swarm".
+			swarmsDest := filepath.Join(destDir, "swarms")
+
+			err := app.SeedSwarmsDir(app.EmbeddedSwarmsFS(), swarmsDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			content, err := os.ReadFile(filepath.Join(swarmsDest, "a-team.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(content)).To(ContainSubstring("id: a-team"))
+		})
+	})
+})
+
+var _ = Describe("SeedGatesDir", func() {
+	// SeedGatesDir is the runtime bridge between the binary's bundled
+	// gate bundles (//go:embed gates/*/manifest.yml gates/*/gate.py in
+	// embed_gates.go) and cfg.GatesDir. The gate runner subprocess path
+	// requires the exec bit set on gate.py / gate.sh, so the seeder is
+	// also responsible for chmodding the manifest's `exec:` file to
+	// 0755 after copySingleFile (which writes 0644). These specs pin
+	// both halves: copy-and-skip semantics matching SeedSkillsDir, plus
+	// the exec-bit propagation that SeedSkillsDir does NOT need to do.
+
+	var (
+		destDir string
+		srcFS   fs.FS
+	)
+
+	BeforeEach(func() {
+		var err error
+		destDir, err = os.MkdirTemp("", "seed-gates-test")
+		Expect(err).NotTo(HaveOccurred())
+
+		srcFS = fstest.MapFS{
+			"gates/example/manifest.yml": &fstest.MapFile{
+				Data: []byte("name: example\nexec: ./gate.py\ntimeout: 5s\n"),
+			},
+			"gates/example/gate.py": &fstest.MapFile{
+				Data: []byte("#!/usr/bin/env python3\nprint('{}')\n"),
+				Mode: 0o644,
+			},
+		}
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(destDir)
+	})
+
+	Context("when destination directory is empty", func() {
+		It("copies every bundle file preserving the per-gate subdirectory layout", func() {
+			gatesDest := filepath.Join(destDir, "gates")
+
+			err := app.SeedGatesDir(srcFS, gatesDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			body, err := os.ReadFile(filepath.Join(gatesDest, "example", "manifest.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("name: example"))
+
+			// gate.py must exist alongside manifest.yml so the
+			// subprocess runner's AbsoluteExecPath resolves at boot.
+			_, err = os.Stat(filepath.Join(gatesDest, "example", "gate.py"))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("chmods the manifest's exec file to 0755 so newSubprocessRunner accepts it", func() {
+			gatesDest := filepath.Join(destDir, "gates")
+
+			err := app.SeedGatesDir(srcFS, gatesDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			info, err := os.Stat(filepath.Join(gatesDest, "example", "gate.py"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Mode().Perm()&0o111).NotTo(BeZero(),
+				"exec bit not set: gate.Discover would reject this gate at boot")
+		})
+	})
+
+	Context("when destination already has the gate", func() {
+		It("preserves operator edits to manifest.yml and gate.py", func() {
+			gatesDest := filepath.Join(destDir, "gates")
+			Expect(os.MkdirAll(filepath.Join(gatesDest, "example"), 0o755)).To(Succeed())
+			customManifest := []byte("name: example\nexec: ./gate.py\ntimeout: 99s\n# operator-edited\n")
+			Expect(os.WriteFile(filepath.Join(gatesDest, "example", "manifest.yml"), customManifest, 0o600)).To(Succeed())
+
+			err := app.SeedGatesDir(srcFS, gatesDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			body, err := os.ReadFile(filepath.Join(gatesDest, "example", "manifest.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("operator-edited"))
+		})
+	})
+
+	Context("with the embedded gates FS", func() {
+		It("seeds the relevance-gate bundle with manifest.yml + executable gate.py", func() {
+			// Concrete end-to-end pin: the bundled relevance-gate must
+			// land on disk with an executable gate.py so app.New's
+			// RegisterDiscoveredGates accepts it. Without this, the
+			// A-Team swarm's `ext:relevance-gate` dispatch fails with
+			// "ext gate not registered" the first time the researcher
+			// finishes a turn.
+			gatesDest := filepath.Join(destDir, "gates")
+
+			err := app.SeedGatesDir(app.EmbeddedGatesFS(), gatesDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			body, err := os.ReadFile(filepath.Join(gatesDest, "relevance-gate", "manifest.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("name: relevance-gate"))
+			Expect(string(body)).To(ContainSubstring("inputs:"))
+
+			info, err := os.Stat(filepath.Join(gatesDest, "relevance-gate", "gate.py"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Mode().Perm() & 0o111).NotTo(BeZero())
+		})
 	})
 })
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // MigrateAgentsResult classifies the outcome of a single
@@ -756,4 +757,191 @@ func SeedSkillsDir(srcFS fs.FS, destDir string) error {
 		}
 		return copySingleFile(skillsRoot, path, target)
 	})
+}
+
+// SeedGatesDir copies every embedded v0 ext-gate bundle from srcFS
+// into destDir, preserving the bundle directory layout (one
+// subdirectory per gate, each containing manifest.yml plus an exec
+// file like gate.py / gate.sh / gate binary).
+//
+// Gates differ from agents (a flat .md tree) and swarms (a flat .yml
+// tree): each gate is its own directory because the manifest's exec
+// field references a sibling executable that must ship alongside.
+// SeedGatesDir therefore walks srcFS recursively under the "gates"
+// subtree, mirrors directory creation, and copies regular files via
+// copySingleFile so the existing skip-on-existing semantics extend to
+// gate bundles — operator edits to manifest.yml (or to a sibling
+// gate.py) survive a FlowState upgrade exactly the way they do for
+// agent manifests.
+//
+// Executable bit propagation: copySingleFile creates files with 0644,
+// which would leave gate.py / gate.sh non-executable on the
+// destination. After copying every file in the bundle, SeedGatesDir
+// reads the manifest.yml's exec entry and chmods that single file to
+// 0755 so newSubprocessRunner's `executable bit set` check passes at
+// app boot. The chmod is a no-op when the destination is already
+// 0755 (skip-on-existing leaves operator edits alone) and produces a
+// single warning rather than aborting boot when the manifest is
+// malformed enough to omit `exec:`.
+//
+// This seeder is the runtime bridge between the binary's bundled
+// gates (//go:embed gates/*/manifest.yml gates/*/gate.py in
+// embed_gates.go) and the GatesDir that gates.Discover walks during
+// app.New (via RegisterDiscoveredGates). Without it, a fresh
+// `flowstate` install resolves cfg.GatesDir to ~/.config/flowstate/
+// gates/ — an empty directory — and the swarm runner's `ext:*` kinds
+// fail with "ext gate %q is not registered" the first time a member
+// triggers a gate dispatch.
+//
+// Expected:
+//   - srcFS is a valid fs.FS containing a "gates" subdirectory whose
+//     entries are bundle directories with manifest.yml inside.
+//   - destDir is a writable destination directory path (created if
+//     missing).
+//
+// Returns:
+//   - An error if the source has no gates directory, the destination
+//     cannot be created, or any I/O step fails.
+//   - nil on success, including when every bundle file already exists.
+//
+// Side effects:
+//   - Creates destDir if it does not exist.
+//   - Creates per-bundle subdirectories under destDir as needed.
+//   - Copies each bundle file from srcFS to destDir only when the
+//     destination file does not already exist (skip-on-existing).
+//   - chmods the manifest's exec file to 0755 after copy.
+func SeedGatesDir(srcFS fs.FS, destDir string) error {
+	gatesRoot, err := fs.Sub(srcFS, "gates")
+	if err != nil {
+		return fmt.Errorf("gates directory not found in source: %w", err)
+	}
+
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+
+	bundles := make(map[string]struct{})
+	walkErr := fs.WalkDir(gatesRoot, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walking embedded gates %q: %w", path, err)
+		}
+		if path == "." {
+			return nil
+		}
+		target := filepath.Join(destDir, path)
+		if d.IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("creating gate bundle subdir %q: %w", target, err)
+			}
+			bundles[path] = struct{}{}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return copySingleFile(gatesRoot, path, target)
+	})
+	if walkErr != nil {
+		return walkErr
+	}
+
+	for bundle := range bundles {
+		if err := chmodGateExec(filepath.Join(destDir, bundle)); err != nil {
+			slog.Warn("seeding gate exec bit", "bundle", bundle, "err", err)
+		}
+	}
+	return nil
+}
+
+// chmodGateExec parses bundleDir/manifest.yml and chmods the file
+// referenced by the manifest's `exec:` field to 0755. Used by
+// SeedGatesDir after copySingleFile (which writes 0644) to restore the
+// executable bit gate runners require. A missing or malformed manifest
+// is reported via the returned error so the caller can warn-and-continue
+// without aborting boot — a malformed seeded gate is still discoverable,
+// it just fails at registration time rather than seed time.
+//
+// Expected:
+//   - bundleDir is the seeded bundle's destination path containing
+//     manifest.yml.
+//
+// Returns:
+//   - nil when the exec file was found and chmodded successfully (or
+//     was already executable).
+//   - A wrapped error when the manifest cannot be read, parsed, or its
+//     exec field is empty / points at a missing file.
+//
+// Side effects:
+//   - Reads bundleDir/manifest.yml.
+//   - chmods the resolved exec file to 0755.
+func chmodGateExec(bundleDir string) error {
+	manifestPath := filepath.Join(bundleDir, "manifest.yml")
+	body, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", manifestPath, err)
+	}
+	exec := extractExecField(body)
+	if exec == "" {
+		return fmt.Errorf("manifest %s has no exec field", manifestPath)
+	}
+	execPath := exec
+	if !filepath.IsAbs(execPath) {
+		execPath = filepath.Join(bundleDir, execPath)
+	}
+	// Re-resolve through the bundle directory so an `exec:` value
+	// containing path traversal (`../foo`) cannot escape the seeded
+	// bundle. SeedGatesDir owns bundleDir, but a malformed manifest
+	// shipped via go:embed should still be confined.
+	if rel, err := filepath.Rel(bundleDir, execPath); err != nil || rel == "" || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("exec %s escapes bundle %s", execPath, bundleDir)
+	}
+	info, err := os.Stat(execPath) //nolint:gosec // execPath is confined to bundleDir by the Rel check above.
+	if err != nil {
+		return fmt.Errorf("stat exec %s: %w", execPath, err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		return nil
+	}
+	if err := os.Chmod(execPath, 0o755); err != nil { //nolint:gosec // execPath is confined to bundleDir by the Rel check above.
+		return fmt.Errorf("chmod exec %s: %w", execPath, err)
+	}
+	return nil
+}
+
+// extractExecField pulls the `exec:` value out of a gate manifest.yml
+// body without taking a yaml.v3 dependency at the seed layer (seed.go
+// is otherwise stdlib-only). The caller validates non-empty; this
+// helper just parses lines until it finds the first top-level `exec:`
+// key. Quoted values have surrounding quotes stripped so
+// `exec: "./gate.py"` and `exec: ./gate.py` resolve to the same path.
+//
+// Expected:
+//   - body is a manifest.yml file's contents.
+//
+// Returns:
+//   - The exec field's trimmed string value when present.
+//   - An empty string when the field is missing or empty.
+//
+// Side effects:
+//   - None.
+func extractExecField(body []byte) string {
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Skip indented lines — exec must be a top-level key. Top-level
+		// keys have no leading whitespace.
+		if line != trimmed {
+			continue
+		}
+		const prefix = "exec:"
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		value = strings.Trim(value, `"'`)
+		return value
+	}
+	return ""
 }

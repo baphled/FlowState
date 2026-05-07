@@ -159,3 +159,90 @@ func testdataDir(name string) string {
 	Expect(err).ToNot(HaveOccurred())
 	return abs
 }
+
+// relevanceGateManifestPath resolves the path of the bundled
+// relevance-gate manifest as it lives under
+// internal/app/gates/relevance-gate/. The relevance-gate spec runs
+// against the actual bundled gate.py rather than a synthetic stub so a
+// regression in the gate executable (e.g. an accidental change to the
+// pass/fail thresholds) surfaces in CI rather than at first dispatch.
+func relevanceGateManifestPath() string {
+	abs, err := filepath.Abs(filepath.Join("..", "app", "gates", "relevance-gate", "manifest.yml"))
+	Expect(err).ToNot(HaveOccurred())
+	return abs
+}
+
+var _ = Describe("ext:relevance-gate (bundled gate)", func() {
+	// Behavioural specs for the bundled relevance-gate executable. The
+	// gate validates that the researcher's output is on-topic for the
+	// task plan via word-overlap scoring; pass:true above the policy
+	// threshold (default 0.4) and pass:false otherwise. These specs run
+	// the actual gate.py shipped under internal/app/gates/relevance-gate
+	// (not a Go stub) so a regression in the executable's pass/fail
+	// logic surfaces here rather than at first A-Team dispatch.
+	//
+	// The host-side composition path packs the coord-store inputs
+	// declared on the manifest into a multi-key JSON payload before
+	// invoking the gate — see commit `0cb50144`. These specs feed that
+	// payload directly via swarm.ExtGateRequest{Payload: ...} so they
+	// pin the gate-executable contract independent of the host
+	// composition path (which has its own coverage in gate_policy_test).
+
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+		manifest, err := gates.LoadManifest(relevanceGateManifestPath())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(swarm.RegisterExtGateFromManifest(manifest)).To(Succeed())
+	})
+
+	It("passes when research keywords overlap the task plan above the threshold", func() {
+		runner, ok := swarm.LookupExtGate("relevance-gate")
+		Expect(ok).To(BeTrue())
+
+		payload := []byte(`{"task_plan":"investigate database connection pooling tuning patterns","research":"investigate database connection pooling tuning patterns demonstrate that pool size scales with workload"}`)
+
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			MemberID: "researcher", When: "post-member", Payload: payload,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Pass).To(BeTrue(), "expected pass for high-overlap research, got reason=%q", resp.Reason)
+	})
+
+	It("rejects off-topic research with a redirect signal embedded in the reason", func() {
+		runner, ok := swarm.LookupExtGate("relevance-gate")
+		Expect(ok).To(BeTrue())
+
+		payload := []byte(`{"task_plan":"investigate database connection pooling tuning patterns","research":"baking sourdough requires patience flour water salt and time"}`)
+
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			MemberID: "researcher", When: "post-member", Payload: payload,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Pass).To(BeFalse(), "expected fail for off-topic research")
+		Expect(resp.Reason).To(ContainSubstring("below threshold"))
+		Expect(resp.Reason).To(ContainSubstring("Research should cover"))
+	})
+
+	It("declares the multi-key inputs the host's composition path needs", func() {
+		// LookupGateInputs is the registry-level entry point the
+		// composeMultiKeyPayload code path consults at dispatch time.
+		// Pinning the registered inputs from the bundled manifest
+		// guarantees the multi-key payload shape downstream gate.py
+		// expects ({"task_plan":..., "research":...}) cannot drift away
+		// from what the gate executable actually parses.
+		inputs, ok := swarm.LookupGateInputs("relevance-gate")
+		Expect(ok).To(BeTrue())
+		Expect(inputs).To(HaveLen(2))
+
+		byName := map[string]gates.InputSpec{}
+		for _, in := range inputs {
+			byName[in.Name] = in
+		}
+		Expect(byName).To(HaveKey("task_plan"))
+		Expect(byName).To(HaveKey("research"))
+		Expect(byName["task_plan"].Member).To(Equal("coordinator"))
+		Expect(byName["task_plan"].OutputKey).To(Equal("task-plan"))
+		Expect(byName["research"].Member).To(Equal(gates.TargetPlaceholder))
+		Expect(byName["research"].OutputKey).To(Equal("output"))
+	})
+})
