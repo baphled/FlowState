@@ -1288,6 +1288,191 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
 		})
 	})
+
+	Context("when an assistant turn produced only raw thinking text (no Signature, no stop_reason, no tool_call)", func() {
+		// Bug pin (May 7 2026, follow-up to e8e7226f): live reproducer
+		// session 718b5d51-f01b-45f0-80bb-31329a9d44e7 message index 9
+		// (glm-4.5 via zai) ended with a Thinking-only turn whose
+		// reasoning_content tokens never carried a Signature (no
+		// content_block_stop boundary on this provider) and whose Done
+		// chunk arrived without a preceding `stop_reason` event. After
+		// flushThinking + flushContent, ThinkingBlocks did accumulate (one
+		// block with empty Signature) and synthesizePlaceholderAssistant
+		// fired — but the persisted placeholder carried StopReason="" so
+		// the Vue UI predicate from 0f27ac98 (`stopReason !== ""`) saw
+		// nothing and rendered a blank bubble. The fix synthesises a
+		// non-empty StopReason ("thinking_only") whenever the turn's
+		// upstream stop_reason was missing, so the existing UI affordance
+		// can locate the placeholder without touching the Vue render
+		// branch.
+		It("synthesises a placeholder with a non-empty StopReason on raw-thinking Done with no upstream stop_reason", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "\n<think>\n<tool_call>bash\n</tool_call>",
+				ProviderID: "zai",
+				ModelID:    "glm-4.5",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-4.5"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"a raw-thinking-only turn must still produce an assistant placeholder "+
+					"so the Vue UI affordance from 0f27ac98 has a row to render — "+
+					"otherwise the user sees a blank bubble")
+			Expect(assistantMsgs[0].Content).To(BeEmpty(),
+				"the placeholder carries no content because the model produced none")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the captured raw thinking text must attach as a synthetic ThinkingBlock "+
+					"so the Vue predicate (thinkingBlocks.length > 0) is satisfied")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("\n<think>\n<tool_call>bash\n</tool_call>"),
+				"the raw thinking text is preserved verbatim on the synthetic block — "+
+					"the malformed-tool-call XML is still readable in the UI")
+			Expect(assistantMsgs[0].StopReason).NotTo(BeEmpty(),
+				"the placeholder MUST carry a non-empty StopReason so the Vue UI "+
+					"predicate from 0f27ac98 (`stopReason !== \"\"`) locates the "+
+					"affordance — without this the existing render branch sees "+
+					"nothing to anchor on and the bubble stays blank")
+			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"),
+				"agent stamping is symmetric with the other synthesis paths")
+			Expect(assistantMsgs[0].ModelName).To(Equal("glm-4.5"),
+				"the engine-stamped model carries onto the placeholder so reload "+
+					"sees the producer that emitted the raw reasoning")
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+		})
+
+		It("synthesises a placeholder with a non-empty StopReason on raw-thinking close-without-Done", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "raw reasoning, no signature",
+				ProviderID: "zai",
+				ModelID:    "glm-4.5",
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"the close-without-Done end-of-stream path must mirror the Done path "+
+					"for raw-thinking turns — otherwise providers whose stream ends "+
+					"after reasoning_content with no FinishReason chunk strand the turn")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("raw reasoning, no signature"))
+			Expect(assistantMsgs[0].StopReason).NotTo(BeEmpty(),
+				"the placeholder MUST carry a non-empty StopReason on the close-without-Done "+
+					"path too, so the Vue UI affordance is reachable on every end-of-stream "+
+					"branch the provider can take")
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+		})
+
+		It("does NOT synthesise a placeholder when the turn produced no content AND no thinking at all (true stall)", func() {
+			// Negative: a true stall — no content, no thinking text, no
+			// thinking blocks, no tool calls — must NOT trigger synthesis.
+			// Otherwise every provider error or aborted turn would persist
+			// a phantom assistant message.
+			rawCh := make(chan provider.StreamChunk, 1)
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(BeEmpty(),
+				"a turn with no content and no thinking is a genuine stall, not a "+
+					"thinking-only degraded turn — synthesising a placeholder here "+
+					"would persist phantom assistant messages on every aborted turn")
+		})
+
+		It("does NOT regress a content-bearing turn when raw Thinking text was also present", func() {
+			// Negative: a normal turn with both content and raw thinking
+			// text must continue producing exactly one content-bearing
+			// assistant message — no extra synthesised placeholder. The
+			// fix must not double-fire on content-bearing turns.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "raw reasoning, no sig", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Content: "the answer is 42", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"content-bearing turns must produce exactly one assistant message "+
+					"regardless of whether raw thinking text was also captured")
+			Expect(assistantMsgs[0].Content).To(Equal("the answer is 42"))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the raw thinking still attaches to the content-bearing message — "+
+					"existing flushContent path covers this")
+		})
+
+		It("does NOT regress a tool-bearing turn (existing covered path) — no double-firing on raw thinking + tool_call", func() {
+			// Negative: a tool-bearing turn from a non-unified provider
+			// already fires synthesis exactly once at end-of-turn carrying
+			// the accumulated reasoning. The raw-thinking fix must not
+			// produce a second placeholder on the same turn — the existing
+			// behaviour from e8e7226f remains: one assistant message per
+			// turn, full reasoning chain attached.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "raw reasoning, no sig", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "call-rt",
+					Name:      "search",
+					Arguments: map[string]any{"q": "anything"},
+				},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"a tool-bearing turn with raw thinking still produces exactly one "+
+					"assistant placeholder — the e8e7226f synthesis path covers this")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the raw thinking attaches to the placeholder so persisted history "+
+					"holds the reasoning under the assistant turn")
+			Expect(assistantMsgs[0].StopReason).NotTo(BeEmpty(),
+				"every synthesised placeholder MUST carry a non-empty StopReason — "+
+					"the tool-bearing path inherits the same fix")
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {
