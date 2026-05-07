@@ -129,13 +129,57 @@ type streamAccumState struct {
 	// flushContent.
 	turnStopReason string
 	// turnHadToolCall records whether a tool_call chunk was observed in
-	// the current turn. When true, the synthesizePlaceholderAssistant
-	// path at end-of-turn is suppressed: thinking-then-tool-call is a
-	// normal turn shape (the tool_call message is the visible artefact
-	// of the turn), so wrapping it in an additional thinking-only
-	// assistant placeholder would change the persisted history shape
-	// for every reasoning-capable provider that also uses tools.
+	// the current turn. The synthesizePlaceholderAssistant path at
+	// end-of-turn consults this flag together with
+	// providerProducesUnifiedAssistant(s.lastProviderID): on providers
+	// that natively pack assistant content + tool_use into one wire
+	// message (Anthropic), a tool_call already carries the turn's
+	// assistant artefact and a synthesised placeholder would
+	// double-stamp the persisted history. On providers whose wire
+	// format separates `reasoning_content` from `content` and emits
+	// tool_calls without re-stamping the assistant body
+	// (OpenAI-compat: zai, openai, copilot, ollama), the placeholder
+	// is the only thing that carries the turn's accumulated
+	// ThinkingBlocks — without it the full reasoning chain across a
+	// multi-round tool loop is dropped from persisted history and the
+	// chat UI renders thinking → gap → tool widget with no closing
+	// assistant turn. See bug-fix note "Tool-bearing turn coverage
+	// (delivered May 2026)" for the full forensic trace.
 	turnHadToolCall bool
+}
+
+// providerProducesUnifiedAssistant reports whether the named provider's
+// wire format packs assistant content (and reasoning, when applicable)
+// together with tool_use into a single assistant message per round.
+//
+// Anthropic returns true: a single `messages.create` response carries
+// `content_block`s for text, thinking, and tool_use as siblings under one
+// assistant message. The session accumulator's `applyToolCall` already
+// emits the tool_call as the turn's visible artefact; synthesising an
+// extra empty-content assistant placeholder would change the persisted
+// history shape for every reasoning-capable Anthropic turn that uses
+// tools.
+//
+// Every other registered provider returns false. The OpenAI-compat layer
+// (zai, openai, copilot, ollama, ollamacloud, openzen) routes
+// `reasoning_content` to the Thinking channel separately from Content
+// and tool_calls — so a thinking-only turn ending in a tool_call is
+// genuinely missing its assistant placeholder unless the accumulator
+// synthesises one. Without synthesis, multi-round tool loops accumulate
+// ThinkingBlocks across every round and then drop them at end-of-turn,
+// producing the user-visible "agent returns empty response after tool
+// use" symptom captured in session 089c7cd5-37d8-4a59-868d-366d2dca0cfb.
+//
+// The function is keyed on the engine-stamped chunk.ProviderID (the
+// stable string ID returned by Provider.Name()), not the Provider
+// interface, so the accumulator stays consumer-agnostic and does not
+// import any provider package. New providers default to false (opt-in
+// to the unified-assistant suppression) — safer than the inverse, since
+// the synthesis only fires when the turn produced reasoning but no
+// content, and at worst attaches an extra placeholder that the UI is
+// already designed to render.
+func providerProducesUnifiedAssistant(providerID string) bool {
+	return providerID == "anthropic"
 }
 
 // AccumulateStream wraps rawCh with a goroutine that records assistant and tool
@@ -530,17 +574,22 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
-// only — no content tokens, no tool calls.
+// without an enclosing assistant artefact.
 //
 // Background: OpenAI-compat reasoning providers (zai/glm-4.6, DeepSeek-R1)
-// occasionally finish a turn after emitting only `reasoning_content` tokens,
-// with no content delta. Without this synthesis, flushContent's
-// empty-contentBuf early-return left the persisted session with a
-// free-floating thinking message and no enclosing `Role: "assistant"`
-// turn — the chat UI saw nothing to render and the session appeared
-// stalled. The placeholder makes the turn renderable: the UI can show a
-// "agent thought but produced no response" affordance or surface the
-// thinking content as a degraded turn.
+// finish a turn after emitting only `reasoning_content` tokens, with no
+// content delta. The same providers, mid-tool-loop, emit
+// `thinking + tool_call` rounds back-to-back where ThinkingBlocks
+// accumulate across every round but never co-attach to a content-bearing
+// assistant message (their wire shape splits reasoning from content).
+// Without this synthesis, flushContent's empty-contentBuf early-return
+// leaves the persisted session with a free-floating thinking message
+// (or, worse, a multi-round chain of thinking+tool_call rows) and no
+// enclosing `Role: "assistant"` turn — the chat UI sees nothing to
+// render and the user reports "the agent returned an empty response
+// after tool use". The placeholder makes the turn renderable: the UI
+// gets one assistant message per turn carrying the full reasoning
+// chain, matching the harness pattern other tools converge on.
 //
 // Expected:
 //   - appender is the message sink.
@@ -553,7 +602,15 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 //     stamps when:
 //     1. contentBuf is empty (flushContent emitted nothing this turn), AND
 //     2. thinkingBlocks is non-empty (the model emitted reasoning), AND
-//     3. turnHadToolCall is false (a tool_call would already shape the turn).
+//     3. NOT (turnHadToolCall && providerProducesUnifiedAssistant(s.lastProviderID)) —
+//        the suppression only applies to providers whose wire format
+//        natively packs assistant content + tool_use into one message
+//        (Anthropic). On every other provider, a tool-bearing turn that
+//        produced reasoning STILL needs the placeholder to carry the
+//        accumulated ThinkingBlocks across the persisted history. This
+//        reverses the over-aggressive blanket tool-call gate
+//        introduced alongside the original synthesis fix
+//        (commit f918bb9f) — see bug-fix note for the forensic trace.
 //   - Resets s.thinkingBlocks and s.turnStopReason on success.
 //   - Does nothing when any of the gates is unmet.
 func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumState) {
@@ -563,7 +620,12 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	if len(s.thinkingBlocks) == 0 {
 		return
 	}
-	if s.turnHadToolCall {
+	// Provider-aware suppression: only providers whose wire format
+	// already packs assistant content + tool_use into a single message
+	// (Anthropic) get the tool-call gate. Every other provider falls
+	// through and synthesises the placeholder so the turn's accumulated
+	// ThinkingBlocks are not silently dropped from persisted history.
+	if s.turnHadToolCall && providerProducesUnifiedAssistant(s.lastProviderID) {
 		return
 	}
 	// Copy the slice so subsequent mutation of s.thinkingBlocks (a
