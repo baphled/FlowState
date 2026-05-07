@@ -1333,6 +1333,51 @@ var _ = Describe("Manager", func() {
 				Expect(gotFailed.Status).To(Equal(string(session.StatusFailed)),
 					"the sweep must not downgrade a known failure to abandoned — failed > abandoned in semantic precedence")
 			})
+
+			// The original sweep stamped UpdatedAt = time.Now() at the
+			// moment of reaping, which OVERWRITES the forensic signal
+			// "this session went stale at time T" with "we discovered
+			// the orphan at boot time T+N". Operators investigating
+			// "when did the parent crash?" need the original UpdatedAt
+			// preserved — the sweep is a status promotion, not a fresh
+			// activity record.
+			//
+			// Scope note: this spec asserts in-memory preservation
+			// only. Cross-restart preservation is blocked by a
+			// separate, broader issue — the persistence Metadata
+			// struct does NOT carry UpdatedAt at all, so loadMetaFile
+			// reconstructs every session with a zero-time UpdatedAt.
+			// That gap is its own ADR-class change (schema migration,
+			// backcompat for existing sidecars) tracked in the
+			// "Empty-Content Thinking-Only Assistant Turn" bug-fix
+			// note's open items. The in-memory fix here closes the
+			// half of the bug we can close cleanly without scope
+			// creep.
+			It("preserves the pre-sweep UpdatedAt in memory when reaping a stale-active session", func() {
+				tmpDir := GinkgoT().TempDir()
+				sweepMgr := session.NewManager(&mockStreamer{})
+				sweepMgr.SetSessionsDir(tmpDir)
+				sweepMgr.SetOrphanGrace(30 * time.Minute)
+
+				originalUpdatedAt := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+				stale := &session.Session{
+					ID:        "orphan-mtime",
+					AgentID:   "worker",
+					Status:    string(session.StatusActive),
+					CreatedAt: originalUpdatedAt,
+					UpdatedAt: originalUpdatedAt,
+				}
+
+				sweepMgr.RestoreSessions([]*session.Session{stale})
+
+				inMem, err := sweepMgr.GetSession("orphan-mtime")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(inMem.Status).To(Equal(string(session.StatusAbandoned)),
+					"sanity: the sweep must still seal the session as abandoned")
+				Expect(inMem.UpdatedAt.UTC().Truncate(time.Second)).To(Equal(originalUpdatedAt),
+					"in-memory UpdatedAt must be preserved — the sweep is a status promotion, "+
+						"not a fresh activity event; rewriting it loses 'when did the parent crash?' forensic data")
+			})
 		})
 	})
 
