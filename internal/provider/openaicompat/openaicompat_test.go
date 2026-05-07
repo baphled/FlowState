@@ -783,6 +783,399 @@ var _ = Describe("RunStream", func() {
 				"so the engine tool loop dispatches them; this is the github-copilot code path")
 	})
 
+	// Inline-XML tool-call recovery from the reasoning_content stream.
+	//
+	// glm-4.5 / glm-4.6 (zai) sometimes emit tool calls as a literal
+	// `<tool_call>...</tool_call>` block inside the reasoning_content channel
+	// instead of populating the structured `tool_calls` array. The model then
+	// stops, expecting a tool result; the runtime, having parsed nothing, sees
+	// an empty assistant turn and shows the soft-error affordance "The model
+	// worked through this turn but stopped before replying. Try sending the
+	// prompt again." That affordance is treating a symptom — the underlying
+	// defect is that we drop a tool call the model actually emitted.
+	//
+	// Reproducer: session 718b5d51-f01b-45f0-80bb-31329a9d44e7 message 9.
+	// Persisted Thinking text was:
+	//
+	//   "\n<think>\n<tool_call>bash\n<arg_key>command</arg_key>\n"+
+	//   "<arg_value>find /home/baphled/vaults -name \"*.md\" -type f | "+
+	//   "grep -i \"baphled\" | head -20</arg_value>\n</tool_call>"
+	//
+	// Content empty, ToolCalls null, no Done. After the recovery RunStream
+	// MUST extract the embedded tool call and emit it as a structured
+	// StreamChunk with EventType="tool_call" so the engine tool-loop runs
+	// the call as normal.
+	Context("inline-XML tool-call recovery (glm-4.5/4.6 reasoning-stream variant)", func() {
+		It("emits a structured ToolCall when reasoning_content carries a paired-arg <tool_call> block", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Real-shape: zai/glm-4.5 streams reasoning_content with an
+				// inline tool_call block, then closes finish_reason="stop"
+				// (NOT "tool_calls") because the structured tool_calls array
+				// is empty.
+				chunks := []string{
+					`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"\n<think>\n<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>find /home/baphled/vaults -name \"*.md\" -type f | grep -i \"baphled\" | head -20</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "find baphled notes"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+
+			var toolCallChunks []provider.StreamChunk
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1),
+				"the embedded <tool_call> block MUST be recovered as a structured ToolCall "+
+					"chunk so the engine tool-loop runs the call; without recovery the model "+
+					"appears to stop with no reply (session 718b5d51 message 9)")
+
+			tc := toolCallChunks[0].ToolCall
+			Expect(tc.Name).To(Equal("bash"),
+				"the tool name is the first non-attribute token inside the <tool_call> body")
+			Expect(tc.Arguments).To(HaveKeyWithValue("command",
+				"find /home/baphled/vaults -name \"*.md\" -type f | grep -i \"baphled\" | head -20"),
+				"the <arg_key>/<arg_value> pair MUST be parsed into the structured args map verbatim")
+			Expect(tc.ID).NotTo(BeEmpty(),
+				"a synthetic tool-call id MUST be generated so the engine tool-loop and "+
+					"failover correlator can track the call across providers")
+			Expect(toolCallChunks[0].EventType).To(Equal("tool_call"),
+				"the recovered chunk MUST carry EventType=\"tool_call\" so the engine tool "+
+					"loop dispatches it (matches every other tool_call emission path in this file)")
+			Expect(toolCallChunks[0].ToolCallID).To(Equal(tc.ID),
+				"the chunk-level ToolCallID MUST mirror the inner ToolCall.ID for downstream "+
+					"correlation, matching the JustFinishedToolCall path")
+
+			// The original markup MUST be stripped from the Thinking text so
+			// the UI does not double-render: the structured ToolCall is the
+			// canonical surface, and leaving the raw <tool_call>...</tool_call>
+			// in the visible reasoning would replay the symptom in a new shape.
+			var thinkingText strings.Builder
+			for _, c := range collected {
+				if c.Thinking != "" {
+					thinkingText.WriteString(c.Thinking)
+				}
+			}
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<tool_call>"),
+				"after recovery the markup MUST be stripped from downstream Thinking; "+
+					"otherwise the UI double-renders (raw markup + executed tool result)")
+			Expect(thinkingText.String()).NotTo(ContainSubstring("</tool_call>"),
+				"closing tag must also be stripped")
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<arg_key>"),
+				"arg markup must also be stripped")
+		})
+
+		It("emits multiple structured ToolCalls when reasoning_content carries two <tool_call> blocks", func() {
+			// Multi-call sanity: a single reasoning_content payload containing
+			// two closed tool_call blocks MUST yield two ToolCall chunks in
+			// emission order. Without this, models that batch parallel tool
+			// calls in one reasoning emission would still stall after the
+			// first.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>ls /tmp</arg_value>\n</tool_call>\nthen\n<tool_call>read\n<arg_key>path</arg_key>\n<arg_value>/etc/hosts</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r2","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "two calls"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(2),
+				"both inline tool_call blocks MUST be recovered, in order")
+			Expect(toolCallChunks[0].ToolCall.Name).To(Equal("bash"))
+			Expect(toolCallChunks[0].ToolCall.Arguments).To(HaveKeyWithValue("command", "ls /tmp"))
+			Expect(toolCallChunks[1].ToolCall.Name).To(Equal("read"))
+			Expect(toolCallChunks[1].ToolCall.Arguments).To(HaveKeyWithValue("path", "/etc/hosts"))
+			Expect(toolCallChunks[0].ToolCall.ID).NotTo(Equal(toolCallChunks[1].ToolCall.ID),
+				"each recovered call MUST get a distinct synthetic id so downstream "+
+					"correlation and result-pairing keep them apart")
+		})
+
+		It("recovers a <tool_call> block with multiple <arg_key>/<arg_value> pairs", func() {
+			// Multi-pair body: a single tool_call with two arg pairs (the
+			// shape observed in session 45d39c27 message 19's would-be call,
+			// where the upstream JSON-args mangling we still see today only
+			// happens BECAUSE the attribute-form is malformed; the well-
+			// formed paired body is the canonical multi-arg shape).
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r3","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>delegate\n<arg_key>subagent_type</arg_key>\n<arg_value>explorer</arg_value>\n<arg_key>message</arg_key>\n<arg_value>Search the vault</arg_value>\n</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r3","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "delegate"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1))
+			tc := toolCallChunks[0].ToolCall
+			Expect(tc.Name).To(Equal("delegate"))
+			Expect(tc.Arguments).To(HaveKeyWithValue("subagent_type", "explorer"))
+			Expect(tc.Arguments).To(HaveKeyWithValue("message", "Search the vault"))
+		})
+
+		It("does not emit a ToolCall when reasoning_content has no inline-XML markup", func() {
+			// Negative: a normal reasoning stream without any <tool_call>
+			// markup MUST be unchanged byte-for-byte downstream — no
+			// spurious ToolCalls, no Thinking-text mutation. Without this
+			// guard a regression in the parser could spuriously fire on
+			// substrings that resemble the markup.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think about how to answer this."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":" The user wants the weather."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"content":"It is sunny."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r4","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "weather?"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var toolCallChunks []provider.StreamChunk
+			var thinkingText strings.Builder
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+				if c.Thinking != "" {
+					thinkingText.WriteString(c.Thinking)
+				}
+			}
+			Expect(toolCallChunks).To(BeEmpty(),
+				"plain reasoning text MUST NOT produce spurious tool calls")
+			Expect(thinkingText.String()).To(Equal("Let me think about how to answer this. The user wants the weather."),
+				"plain reasoning text MUST flow downstream unchanged byte-for-byte")
+		})
+
+		It("preserves an unclosed <tool_call> block verbatim and emits no ToolCall (malformed-soft-error path)", func() {
+			// Malformed/unclosed: the existing soft-error affordance still
+			// has a job for genuinely broken markup. We MUST NOT half-parse
+			// an unclosed tool_call — that would drop a ToolCall chunk the
+			// engine will then dispatch with garbage args. Better to leave
+			// the markup in Thinking and let the placeholder/affordance
+			// surface the failure to the user.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r5","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>echo hi"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r5","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "broken"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var toolCallChunks []provider.StreamChunk
+			var thinkingText strings.Builder
+			for _, c := range collected {
+				if c.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, c)
+				}
+				if c.Thinking != "" {
+					thinkingText.WriteString(c.Thinking)
+				}
+			}
+			Expect(toolCallChunks).To(BeEmpty(),
+				"an unclosed <tool_call> MUST NOT yield a structured ToolCall; "+
+					"genuinely broken markup stays on the soft-error path")
+			Expect(thinkingText.String()).To(ContainSubstring("<tool_call>bash"),
+				"unparsed markup MUST be preserved in Thinking so the user/affordance "+
+					"can surface the failure")
+			Expect(thinkingText.String()).To(ContainSubstring("echo hi"),
+				"the partial body MUST also be preserved verbatim")
+		})
+
+		It("does not double-emit when a structured tool_calls delta look-alike string sits in reasoning_content", func() {
+			// Cross-check: providers that emit BOTH a structured tool_calls
+			// (the happy OpenAI shape) AND a reasoning_content with the same
+			// substring must not produce two ToolCalls. This guards against
+			// a race where the recovery path fires on text that the SDK has
+			// already turned into a structured call.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r6","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"I will call: <tool_call>bash\n<arg_key>command</arg_key>\n<arg_value>ls</arg_value>\n</tool_call>","tool_calls":[{"id":"call_real","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r6","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "ls"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+			}
+			// When the SDK already parsed a structured tool call, recovery
+			// MUST defer — emitting a second call would drive the engine to
+			// double-execute. The structured call is canonical.
+			Expect(toolCallChunks).To(HaveLen(1),
+				"recovery MUST NOT fire when the structured tool_calls path "+
+					"already produced a ToolCall — that would double-execute")
+			Expect(toolCallChunks[0].ToolCall.ID).To(Equal("call_real"),
+				"the structured call wins; recovery is the fallback only")
+		})
+
+		It("assembles a <tool_call> block split across multiple reasoning_content chunks", func() {
+			// Stream-boundary safety: the buffer MUST hold a partial
+			// tool_call across chunk boundaries and only emit the structured
+			// ToolCall once the closing tag arrives. A naive per-chunk
+			// scanner would miss the call if the opening and closing tags
+			// land in different chunks.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"<tool_call>bash\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"<arg_key>command</arg_key>\n<arg_value>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"echo hello</arg_value>\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{"reasoning_content":"</tool_call>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-r7","object":"chat.completion.chunk","model":"glm-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.5",
+				Messages: []provider.Message{{Role: "user", Content: "split"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var toolCallChunks []provider.StreamChunk
+			var thinkingText strings.Builder
+			for chunk := range ch {
+				if chunk.ToolCall != nil {
+					toolCallChunks = append(toolCallChunks, chunk)
+				}
+				if chunk.Thinking != "" {
+					thinkingText.WriteString(chunk.Thinking)
+				}
+			}
+			Expect(toolCallChunks).To(HaveLen(1),
+				"a <tool_call> block split across chunks MUST be assembled in the buffer "+
+					"and emitted exactly once on close-tag")
+			Expect(toolCallChunks[0].ToolCall.Name).To(Equal("bash"))
+			Expect(toolCallChunks[0].ToolCall.Arguments).To(HaveKeyWithValue("command", "echo hello"))
+			Expect(thinkingText.String()).NotTo(ContainSubstring("<tool_call>"),
+				"all markup MUST be stripped from Thinking once recovery completes, "+
+					"even when the markup arrived across multiple chunks")
+		})
+	})
+
 	It("propagates server errors", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
