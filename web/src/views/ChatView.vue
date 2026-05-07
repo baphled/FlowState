@@ -6,6 +6,7 @@ import { useSwarmStore } from '@/stores/swarmStore'
 import { resolveAgentName, collapseToolPairs, groupContextTools } from '@/views/chatViewHelpers'
 import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
+import ContextUsageChip from '@/components/chat/ContextUsageChip.vue'
 import CriticalErrorBanner from '@/components/chat/CriticalErrorBanner.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -318,6 +319,7 @@ onBeforeUnmount(() => {
         >
           {{ chatStore.currentProviderId }}
         </span>
+        <ContextUsageChip />
         <ModelPicker :readonly="isChildSession" />
       </div>
 

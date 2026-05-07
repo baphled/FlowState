@@ -239,6 +239,56 @@ export interface SSEModelActiveEvent {
   model: string
 }
 
+/**
+ * SSEContextUsageEvent — always-on context-window usage affordance.
+ *
+ * Phase 2 of the May 2026 context-window saturation fix (companion to
+ * the proactive overflow gate that closes the glm-4.6 "thought into
+ * the void" failure mode). The engine emits this chunk as the first
+ * artefact of every Stream that has enough information to compute it
+ * (token counter wired AND resolved limit > 0). The Go SSE pipeline
+ * routes it through writeSSEContextUsage which injects the canonical
+ * `"type":"context_usage"` discriminant.
+ *
+ * The chat UI renders this as a usage chip alongside the model picker.
+ * Threshold colours match the CriticalErrorBanner palette:
+ *   - <75%   → neutral
+ *   - >=75%  → warning (rgb(217, 119, 6) — amber severity)
+ *   - >=90%  → danger  (rgb(220, 38, 38) — red severity, same as
+ *              the critical-error banner)
+ *
+ * The chip arrives BEFORE the gate refusal error chunk on the overflow
+ * path (the engine pushes it onto outChan as the first goroutine step,
+ * ahead of the synthetic refusal channel feed) so the user always sees
+ * "how close did this get?" even when the gate denies the request.
+ *
+ * Field semantics:
+ *   - `inputTokens` is the engine-side estimate of the prompt cost.
+ *     Conservative (tiktoken / character-based heuristic).
+ *   - `outputReserve` is the reserve subtracted from limit before the
+ *     overflow gate compares input against usable. Defaults to 4096
+ *     when MaxTokens is unstamped; clamped to a 1024 floor when the
+ *     caller supplies a smaller value.
+ *   - `limit` is the resolved per-(provider, model) context window.
+ *   - `percentage` is round(input / limit * 100), capped at 999 on the
+ *     engine side so the chip's three-digit formatter is safe.
+ *   - `provider` / `model` are the canonical ids the chip pairs with
+ *     the figure.
+ *
+ * All numeric fields default to 0 and string fields to '' when missing
+ * — a degraded payload leaves the chip on its prior value rather than
+ * blanking out mid-conversation.
+ */
+export interface SSEContextUsageEvent {
+  kind: 'context_usage'
+  inputTokens: number
+  outputReserve: number
+  limit: number
+  percentage: number
+  provider: string
+  model: string
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -267,6 +317,7 @@ export type SSEEvent =
   | SSEThinkingEvent
   | SSEProviderChangedEvent
   | SSEModelActiveEvent
+  | SSEContextUsageEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -355,6 +406,19 @@ export function parseSSEPayload(payload: string): SSEEvent {
   if (type === 'model_active') {
     return {
       kind: 'model_active',
+      provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
+      model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
+    }
+  }
+
+  if (type === 'context_usage') {
+    return {
+      kind: 'context_usage',
+      inputTokens: typeof obj['input_tokens'] === 'number' ? (obj['input_tokens'] as number) : 0,
+      outputReserve:
+        typeof obj['output_reserve'] === 'number' ? (obj['output_reserve'] as number) : 0,
+      limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : 0,
+      percentage: typeof obj['percentage'] === 'number' ? (obj['percentage'] as number) : 0,
       provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
       model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
     }

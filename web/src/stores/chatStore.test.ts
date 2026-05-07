@@ -3069,6 +3069,153 @@ describe('chatStore - applyContentEvent dispatch', () => {
     showToastSpy.mockRestore()
   })
 
+  it('populates currentContextUsage from a context_usage event with the wire figures', () => {
+    // Phase 2 of the May 2026 context-window saturation fix. The engine
+    // emits {type:"context_usage", input_tokens, output_reserve, limit,
+    // percentage, provider, model} as the first artefact of every Stream.
+    // The store exposes a structured slice the chip component reads
+    // directly (rather than threading the raw payload through props).
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 12345,
+        output_reserve: 4096,
+        limit: 100000,
+        percentage: 12,
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 12345,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 12,
+    })
+  })
+
+  it('updates currentContextUsage on a subsequent context_usage event so the chip tracks each turn', () => {
+    // The engine emits a usage event at the start of every Stream so the
+    // chip reflects the latest turn. A fresh event must overwrite the
+    // prior figures (not merge) — the second turn's `input_tokens` is
+    // the figure the user is reading right now.
+    const store = useChatStore()
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 1000,
+        output_reserve: 4096,
+        limit: 100000,
+        percentage: 1,
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 80000,
+        output_reserve: 4096,
+        limit: 100000,
+        percentage: 80,
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 80000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 80,
+    })
+  })
+
+  it('clears currentContextUsage on session change (loadSessionMessages reset path)', async () => {
+    // The shared session-change reset clears criticalError; the same
+    // path must reset the usage chip so a stale figure from a prior
+    // session does not bleed into the new one. A fresh stream on the
+    // new session repopulates it.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([] as never)
+
+    const store = useChatStore()
+    store.sessions = [
+      {
+        id: 'fresh-session',
+        agentId: 'test-agent',
+        currentAgentId: 'test-agent',
+        createdAt: '2026-05-08T00:00:00Z',
+        updatedAt: '2026-05-08T00:00:00Z',
+        messageCount: 0,
+      },
+    ] as never
+    store.currentContextUsage = {
+      inputTokens: 80000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 80,
+    }
+
+    await store.loadSessionMessages('fresh-session')
+
+    expect(store.currentContextUsage).toBeNull()
+  })
+
+  it('does NOT clobber currentContextUsage when a context_usage event has zero figures (defensive payload)', () => {
+    // A degraded wire payload must not blank a healthy figure
+    // mid-conversation. Mirrors the model_active "defaults to empty
+    // strings" guard: the prior figure stays visible until a real new
+    // figure replaces it.
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 50000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 50,
+    }
+
+    store.applyContentEvent(JSON.stringify({ type: 'context_usage' }))
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 50000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 50,
+    })
+  })
+
+  it('does NOT touch currentProviderId / currentModelId from a context_usage event (chip-pivot is model_active-only)', () => {
+    // Separation-of-concerns pin: the usage chip and the model chip
+    // pivot on different events. context_usage carries provider / model
+    // for display alongside the figure, but the toolbar chip's pivot
+    // logic stays exclusively driven by model_active so failover toasts
+    // (which gate on lastProviderChangeKey) are not surprised by a
+    // usage-event side-effect.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 1000,
+        output_reserve: 4096,
+        limit: 100000,
+        percentage: 1,
+        provider: 'zai',
+        model: 'glm-4.6',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('anthropic')
+    expect(store.currentModelId).toBe('claude-sonnet-4-6')
+  })
+
   it('does NOT fire a model_active toast when a provider_changed just toasted the same transition', async () => {
     // Failover sequence on the wire: provider_changed (rich copy with
     // failure reason) → model_active (target same provider+model).
