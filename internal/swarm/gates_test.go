@@ -2,12 +2,14 @@ package swarm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/gates"
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
@@ -445,6 +447,168 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			}
 
 			Expect(m.Validate(nil)).To(Succeed())
+		})
+	})
+
+	Describe("multi-key coord-store payload composition for ext gates", func() {
+		BeforeEach(func() {
+			swarm.ResetExtGateRegistryForTest()
+		})
+
+		// captureRunner records the request payload the dispatcher hands the
+		// ext gate so each spec can pin the JSON shape the host composed.
+		captureRunner := func(captured *swarm.ExtGateRequest) swarm.ExtGateFunc {
+			return func(_ context.Context, req swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				*captured = req
+				return swarm.ExtGateResponse{Pass: true}, nil
+			}
+		}
+
+		It("with no inputs declared, forwards the single-key coord-store value verbatim (backward-compat)", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("legacy-gate", captureRunner(&got), nil)).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				"a-team/researcher/output": []byte(`{"summary":"hello"}`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "legacy", Kind: "ext:legacy-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(got.Payload)).To(Equal(`{"summary":"hello"}`))
+		})
+
+		It("with a multi-key inputs declaration, composes a JSON object keyed by the logical input names", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", captureRunner(&got), []gates.InputSpec{
+				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
+				{Name: "research", Member: "researcher", OutputKey: "output"},
+			})).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				"a-team/coordinator/task-plan": []byte(`"investigate flaky test"`),
+				"a-team/researcher/output":     []byte(`"the test races on the cancel branch"`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			var payload map[string]any
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			Expect(payload).To(HaveKeyWithValue("task_plan", "investigate flaky test"))
+			Expect(payload).To(HaveKeyWithValue("research", "the test races on the cancel branch"))
+		})
+
+		It("substitutes ${target} in the input member with the dispatching gate's Target", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", captureRunner(&got), []gates.InputSpec{
+				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
+				{Name: "research", Member: "${target}", OutputKey: "output"},
+			})).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				"a-team/coordinator/task-plan": []byte(`"plan"`),
+				"a-team/researcher/output":     []byte(`"resolved-via-target"`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			var payload map[string]any
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			Expect(payload).To(HaveKeyWithValue("research", "resolved-via-target"))
+		})
+
+		It("preserves embedded JSON values rather than nesting them as JSON-encoded strings", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("quorum-gate", captureRunner(&got), []gates.InputSpec{
+				{Name: "bull", Member: "bull", OutputKey: "output"},
+				{Name: "bear", Member: "bear", OutputKey: "output"},
+			})).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				"board/bull/output": []byte(`{"verdict":"buy","conf":0.8}`),
+				"board/bear/output": []byte(`{"verdict":"sell","conf":0.6}`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "quorum", Kind: "ext:quorum-gate", When: swarm.LifecyclePostSwarm,
+			}, swarm.GateArgs{
+				SwarmID: "board", ChainPrefix: "board", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			var payload map[string]any
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			bull, ok := payload["bull"].(map[string]any)
+			Expect(ok).To(BeTrue(), "bull should be a JSON object, not a string")
+			Expect(bull).To(HaveKeyWithValue("verdict", "buy"))
+			bear, ok := payload["bear"].(map[string]any)
+			Expect(ok).To(BeTrue(), "bear should be a JSON object, not a string")
+			Expect(bear).To(HaveKeyWithValue("verdict", "sell"))
+		})
+
+		It("falls back to a JSON string when a coord-store value is not valid JSON", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", captureRunner(&got), []gates.InputSpec{
+				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
+				{Name: "research", Member: "researcher", OutputKey: "output"},
+			})).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				"a-team/coordinator/task-plan": []byte(`investigate flaky test`),
+				"a-team/researcher/output":     []byte(`raw text not json`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			var payload map[string]any
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			Expect(payload).To(HaveKeyWithValue("task_plan", "investigate flaky test"))
+			Expect(payload).To(HaveKeyWithValue("research", "raw text not json"))
+		})
+
+		It("fails the dispatch with a typed GateError when a declared input key is missing from coord-store", func() {
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				Fail("ext gate runner should not be invoked when composition fails")
+				return swarm.ExtGateResponse{Pass: true}, nil
+			}, []gates.InputSpec{
+				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
+				{Name: "research", Member: "researcher", OutputKey: "output"},
+			})).To(Succeed())
+
+			// only task_plan is seeded; research key is missing
+			store := newGateStore(map[string][]byte{
+				"a-team/coordinator/task-plan": []byte(`"investigate"`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(ContainSubstring("research"))
+			Expect(gateErr.Reason).To(ContainSubstring("a-team/researcher/output"))
 		})
 	})
 

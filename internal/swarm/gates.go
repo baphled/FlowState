@@ -51,6 +51,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/gates"
 )
 
 // Lifecycle point constants. Each value matches the §3 spec string the
@@ -348,7 +349,11 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 		return runner.Run(ctx, gate, args)
 	}
 	if strings.HasPrefix(gate.Kind, gateKindExtPrefix) {
-		return RunGate(ctx, gate, gateInputFromArgs(gate, args))
+		input, err := gateInputFromArgs(gate, args)
+		if err != nil {
+			return err
+		}
+		return RunGate(ctx, gate, input)
 	}
 	return &GateError{
 		GateName: gate.Name,
@@ -362,30 +367,150 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 
 // gateInputFromArgs projects a GateArgs (the runner-facing envelope
 // carrying CoordStore + ChainPrefix) onto a GateInput (the ext-gate
-// wire shape carrying MemberID + Payload + Policy). Coord-store reads
-// are best-effort: a missing key surfaces as an empty Payload so the
-// ext gate can decide for itself whether to fail or pass-through.
+// wire shape carrying MemberID + Payload + Policy).
+//
+// Two payload composition modes are supported:
+//
+//   - Single-key (legacy / default): when the dispatched ext gate has
+//     no Inputs declaration registered, the host reads one coord-store
+//     key (the dispatching member's "<target>/<output_key>") and
+//     forwards the raw bytes verbatim. Existing gates that pre-date the
+//     multi-key field keep this behaviour with no manifest churn.
+//
+//   - Multi-key: when the gate has an Inputs declaration, the host
+//     reads each declared coord-store key, packs them into a JSON
+//     object keyed by the manifest's logical input names, and forwards
+//     that JSON as Payload. The "${target}" placeholder in InputSpec
+//     .Member resolves to the dispatching gate's Target so manifests
+//     can stay member-agnostic where useful. A missing declared key
+//     fails dispatch with a typed *GateError before the gate is
+//     invoked — the gate's failure_policy then governs continuation.
 //
 // Expected:
-//   - gate is the GateSpec being dispatched; supplies Target /
-//     OutputKey for the coord-store lookup.
+//   - gate is the GateSpec being dispatched; gate.Kind has the "ext:"
+//     prefix when this helper is reached.
 //   - args is the runtime envelope; CoordStore may be nil.
 //
 // Returns:
-//   - A populated GateInput. Payload is empty when no coord-store is
-//     wired or no value is registered at the target's output key.
+//   - A populated GateInput and nil error on the success path.
+//   - The zero GateInput plus a *GateError on a multi-key composition
+//     failure (missing declared key, etc.).
 //
 // Side effects:
-//   - Reads at most one key from args.CoordStore.
-func gateInputFromArgs(gate GateSpec, args GateArgs) GateInput {
+//   - Reads at most one coord-store key per declared input (multi-key
+//     mode) or one key total (single-key mode). No writes.
+func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
 	in := GateInput{MemberID: args.MemberID}
 	if args.CoordStore == nil {
-		return in
+		return in, nil
+	}
+	if payload, err := composeMultiKeyPayload(gate, args); err != nil {
+		return GateInput{}, err
+	} else if payload != nil {
+		in.Payload = payload
+		return in, nil
 	}
 	if payload, err := readMemberOutput(gate, args); err == nil {
 		in.Payload = payload
 	}
-	return in
+	return in, nil
+}
+
+// composeMultiKeyPayload reads the gate's declared inputs from the
+// coord-store and packs them into a JSON object suitable for the gate's
+// Payload. Returns (nil, nil) when the gate has no inputs declaration
+// so callers can fall back to the legacy single-key path.
+//
+// Each value is embedded as a JSON value when its raw bytes parse as
+// JSON, and as a JSON string otherwise — this matches what the existing
+// example gates (relevance-gate, future quorum-gate) expect: typed
+// objects when the upstream agent emitted JSON, plain strings when it
+// emitted prose.
+//
+// Expected:
+//   - gate.Kind has the "ext:" prefix; the lookup trims it to find the
+//     registered InputSpec slice.
+//   - args.CoordStore is non-nil.
+//
+// Returns:
+//   - (jsonBytes, nil) on success.
+//   - (nil, nil) when the gate has no inputs declaration.
+//   - (nil, *GateError) on a missing declared key or a coord-store
+//     read failure.
+//
+// Side effects:
+//   - Calls args.CoordStore.Get once per declared input.
+func composeMultiKeyPayload(gate GateSpec, args GateArgs) ([]byte, error) {
+	gateName := strings.TrimPrefix(gate.Kind, gateKindExtPrefix)
+	inputs, ok := LookupGateInputs(gateName)
+	if !ok || len(inputs) == 0 {
+		return nil, nil
+	}
+	composed := make(map[string]json.RawMessage, len(inputs))
+	for _, spec := range inputs {
+		member := spec.Member
+		if member == gates.TargetPlaceholder {
+			member = gate.Target
+		}
+		key := joinKey(args.ChainPrefix, member, spec.OutputKey)
+		raw, err := args.CoordStore.Get(key)
+		if err != nil {
+			return nil, &GateError{
+				GateName: gate.Name,
+				GateKind: gate.Kind,
+				When:     gate.When,
+				SwarmID:  args.SwarmID,
+				MemberID: args.MemberID,
+				Reason:   fmt.Sprintf("composing input %q: reading coord-store key %q: %s", spec.Name, key, err.Error()),
+				Cause:    err,
+			}
+		}
+		composed[spec.Name] = embedAsJSONValue(raw)
+	}
+	out, err := json.Marshal(composed)
+	if err != nil {
+		return nil, &GateError{
+			GateName: gate.Name,
+			GateKind: gate.Kind,
+			When:     gate.When,
+			SwarmID:  args.SwarmID,
+			MemberID: args.MemberID,
+			Reason:   fmt.Sprintf("encoding composed payload: %s", err.Error()),
+			Cause:    err,
+		}
+	}
+	return out, nil
+}
+
+// embedAsJSONValue returns raw verbatim when it parses as JSON, and a
+// JSON-encoded string of raw otherwise. Used by composeMultiKeyPayload
+// so a coord-store value that is itself JSON nests as a typed value
+// (object / array / number / bool / null) inside the composed payload,
+// while a non-JSON value (typically a prose agent output) shows up as
+// a string the gate can read directly.
+//
+// Expected:
+//   - raw is the bytes returned from coordination.Store.Get; may be
+//     empty.
+//
+// Returns:
+//   - The JSON-encoded form of raw. Marshalling a string never fails
+//     so the helper does not need an error return.
+//
+// Side effects:
+//   - None.
+func embedAsJSONValue(raw []byte) json.RawMessage {
+	var probe any
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		return json.RawMessage(raw)
+	}
+	encoded, err := json.Marshal(string(raw))
+	if err != nil {
+		// json.Marshal of a string never fails in practice; encode a
+		// JSON null so the composed payload stays well-formed.
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(encoded)
 }
 
 // schemaRegistry is the Phase 1 in-process JSON-schema lookup table.
@@ -501,13 +626,13 @@ func ClearSchemasForTest() {
 	schemaRegistry.schemas = make(map[string]*jsonschema.Resolved)
 }
 
-// PostMemberGatesFor returns the gates from spec slice whose When is
+// PostMemberGatesFor returns the gates from specs whose When is
 // "post-member" and whose Target matches memberID. Thin wrapper over
 // MemberGatesFor preserved for backwards compatibility with callers
 // that pre-date the multi-lifecycle expansion.
 //
 // Expected:
-//   - gates may be nil or empty; an empty slice is returned in that
+//   - specs may be nil or empty; an empty slice is returned in that
 //     case so callers can range over the result without a nil-guard.
 //   - memberID is the agent id whose stream just completed.
 //
@@ -516,8 +641,8 @@ func ClearSchemasForTest() {
 //
 // Side effects:
 //   - None.
-func PostMemberGatesFor(gates []GateSpec, memberID string) []GateSpec {
-	return MemberGatesFor(gates, LifecyclePostMember, memberID)
+func PostMemberGatesFor(specs []GateSpec, memberID string) []GateSpec {
+	return MemberGatesFor(specs, LifecyclePostMember, memberID)
 }
 
 // MemberGatesFor returns the gates whose When matches when (a member-
@@ -526,7 +651,7 @@ func PostMemberGatesFor(gates []GateSpec, memberID string) []GateSpec {
 // set firing around a specific member's stream.
 //
 // Expected:
-//   - gates may be nil or empty; an empty slice is returned in that
+//   - specs may be nil or empty; an empty slice is returned in that
 //     case.
 //   - when is "pre-member" or "post-member"; passing any other value
 //     yields an empty slice (no member-level dispatch happens for the
@@ -538,12 +663,12 @@ func PostMemberGatesFor(gates []GateSpec, memberID string) []GateSpec {
 //
 // Side effects:
 //   - None.
-func MemberGatesFor(gates []GateSpec, when, memberID string) []GateSpec {
+func MemberGatesFor(specs []GateSpec, when, memberID string) []GateSpec {
 	out := make([]GateSpec, 0)
 	if !IsMemberLifecyclePoint(when) {
 		return out
 	}
-	for _, g := range gates {
+	for _, g := range specs {
 		if g.When == when && g.Target == memberID {
 			out = append(out, g)
 		}
@@ -557,7 +682,7 @@ func MemberGatesFor(gates []GateSpec, when, memberID string) []GateSpec {
 // so a single filter on When suffices.
 //
 // Expected:
-//   - gates may be nil or empty; an empty slice is returned in that
+//   - specs may be nil or empty; an empty slice is returned in that
 //     case.
 //   - when is "pre" or "post"; passing any other value yields an
 //     empty slice.
@@ -567,12 +692,12 @@ func MemberGatesFor(gates []GateSpec, when, memberID string) []GateSpec {
 //
 // Side effects:
 //   - None.
-func SwarmGatesFor(gates []GateSpec, when string) []GateSpec {
+func SwarmGatesFor(specs []GateSpec, when string) []GateSpec {
 	out := make([]GateSpec, 0)
 	if !IsSwarmLifecyclePoint(when) {
 		return out
 	}
-	for _, g := range gates {
+	for _, g := range specs {
 		if g.When == when {
 			out = append(out, g)
 		}

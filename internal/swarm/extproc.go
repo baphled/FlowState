@@ -59,30 +59,48 @@ func (f ExtGateFunc) Evaluate(ctx context.Context, req ExtGateRequest) (ExtGateR
 var (
 	extGateRegistryMu sync.RWMutex
 	extGateRegistry   = map[string]ExtGateRunner{}
+	extGateInputs     = map[string][]gates.InputSpec{}
 )
 
 // RegisterExtGateFunc registers a Go function as a v0 gate runner.
 // Used by tests to skip the filesystem path; the runtime treats
 // func-registered and file-discovered runners identically.
 func RegisterExtGateFunc(name string, fn ExtGateFunc) error {
+	return RegisterExtGateFuncWithInputs(name, fn, nil)
+}
+
+// RegisterExtGateFuncWithInputs registers a Go function as a v0 gate
+// runner alongside an inputs declaration. The inputs slice mirrors the
+// shape a Manifest's Inputs field exposes; the dispatcher composes a
+// multi-key JSON payload from the coord-store before invoking fn. An
+// empty inputs slice keeps the legacy single-key payload behaviour.
+//
+// Used by tests to register a func-backed runner plus its inputs
+// without going through the filesystem path; production wiring uses
+// RegisterExtGateFromManifest, which feeds the manifest's Inputs into
+// the same registry slot.
+func RegisterExtGateFuncWithInputs(name string, fn ExtGateFunc, inputs []gates.InputSpec) error {
 	if name == "" {
 		return fmt.Errorf("ext gate registration: empty name")
 	}
 	if fn == nil {
 		return fmt.Errorf("ext gate registration %q: nil function", name)
 	}
-	return registerRunner(name, fn)
+	return registerRunner(name, fn, inputs)
 }
 
 // RegisterExtGateFromManifest registers a subprocess-backed runner
 // derived from m. Validates that the executable exists and is
-// executable; rejects at registration time so boot fails fast.
+// executable; rejects at registration time so boot fails fast. The
+// manifest's Inputs declaration is published into the same registry
+// slot so the multi-key composition path can resolve it by gate name
+// at dispatch time.
 func RegisterExtGateFromManifest(m gates.Manifest) error {
 	runner, err := newSubprocessRunner(m)
 	if err != nil {
 		return err
 	}
-	return registerRunner(m.Name, runner)
+	return registerRunner(m.Name, runner, m.Inputs)
 }
 
 // LookupExtGate returns the registered runner for name plus a found bit.
@@ -93,11 +111,37 @@ func LookupExtGate(name string) (ExtGateRunner, bool) {
 	return r, ok
 }
 
+// LookupGateInputs returns the registered inputs declaration for the
+// ext gate registered under name plus a found bit. Used by
+// gateInputFromArgs to decide whether to take the multi-key composition
+// path or the legacy single-key one.
+//
+// Expected:
+//   - name is the bare ext gate name (no "ext:" prefix).
+//
+// Returns:
+//   - The inputs slice as registered (may be nil/empty) and true when
+//     the gate is registered.
+//   - (nil, false) when no gate is registered under name.
+//
+// Side effects:
+//   - None (read-only access under the registry's RLock).
+func LookupGateInputs(name string) ([]gates.InputSpec, bool) {
+	extGateRegistryMu.RLock()
+	defer extGateRegistryMu.RUnlock()
+	inputs, ok := extGateInputs[name]
+	if !ok {
+		return nil, false
+	}
+	return inputs, true
+}
+
 // ResetExtGateRegistryForTest clears the registry. Test-only.
 func ResetExtGateRegistryForTest() {
 	extGateRegistryMu.Lock()
 	defer extGateRegistryMu.Unlock()
 	extGateRegistry = map[string]ExtGateRunner{}
+	extGateInputs = map[string][]gates.InputSpec{}
 }
 
 // DispatchExt resolves an ext:<name> against the registry and forwards
@@ -130,14 +174,18 @@ func DispatchExt(ctx context.Context, kind string, req ExtGateRequest) error {
 }
 
 // registerRunner is the shared insertion path for both Func and
-// Manifest registrations. Enforces no-double-register.
-func registerRunner(name string, runner ExtGateRunner) error {
+// Manifest registrations. Enforces no-double-register and publishes the
+// inputs declaration alongside the runner so the multi-key composition
+// path can resolve it by name without taking a back-channel through the
+// runner interface.
+func registerRunner(name string, runner ExtGateRunner, inputs []gates.InputSpec) error {
 	extGateRegistryMu.Lock()
 	defer extGateRegistryMu.Unlock()
 	if _, exists := extGateRegistry[name]; exists {
 		return fmt.Errorf("ext gate %q already registered", name)
 	}
 	extGateRegistry[name] = runner
+	extGateInputs[name] = inputs
 	return nil
 }
 

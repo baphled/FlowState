@@ -84,6 +84,94 @@ exec: /usr/bin/jq
 		Expect(err).ToNot(HaveOccurred())
 		Expect(m.AbsoluteExecPath()).To(Equal("/usr/bin/jq"))
 	})
+
+	Context("inputs declaration (multi-key coord-store payload)", func() {
+		It("parses a list of named inputs each with member + output_key", func() {
+			dir := writeManifest(`name: relevance-gate
+exec: ./gate.py
+inputs:
+  - name: task_plan
+    member: coordinator
+    output_key: task-plan
+  - name: research
+    member: ${target}
+    output_key: output
+`)
+
+			m, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(m.Inputs).To(HaveLen(2))
+			Expect(m.Inputs[0].Name).To(Equal("task_plan"))
+			Expect(m.Inputs[0].Member).To(Equal("coordinator"))
+			Expect(m.Inputs[0].OutputKey).To(Equal("task-plan"))
+			Expect(m.Inputs[1].Name).To(Equal("research"))
+			Expect(m.Inputs[1].Member).To(Equal("${target}"))
+			Expect(m.Inputs[1].OutputKey).To(Equal("output"))
+		})
+
+		It("treats an omitted inputs block as a nil/empty Inputs slice", func() {
+			dir := writeManifest(`name: simple
+exec: ./gate.sh
+`)
+
+			m, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(m.Inputs).To(BeEmpty())
+		})
+
+		It("rejects an inputs entry with an empty name", func() {
+			dir := writeManifest(`name: relevance-gate
+exec: ./gate.py
+inputs:
+  - name: ""
+    member: coordinator
+    output_key: task-plan
+`)
+			_, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+			Expect(err).To(MatchError(ContainSubstring("inputs[0].name")))
+		})
+
+		It("rejects an inputs entry with an empty member", func() {
+			dir := writeManifest(`name: relevance-gate
+exec: ./gate.py
+inputs:
+  - name: task_plan
+    member: ""
+    output_key: task-plan
+`)
+			_, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+			Expect(err).To(MatchError(ContainSubstring("inputs[0].member")))
+		})
+
+		It("rejects an inputs entry with an empty output_key", func() {
+			dir := writeManifest(`name: relevance-gate
+exec: ./gate.py
+inputs:
+  - name: task_plan
+    member: coordinator
+    output_key: ""
+`)
+			_, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+			Expect(err).To(MatchError(ContainSubstring("inputs[0].output_key")))
+		})
+
+		It("rejects duplicate input names", func() {
+			dir := writeManifest(`name: relevance-gate
+exec: ./gate.py
+inputs:
+  - name: task_plan
+    member: coordinator
+    output_key: task-plan
+  - name: task_plan
+    member: researcher
+    output_key: output
+`)
+			_, err := gates.LoadManifest(filepath.Join(dir, "manifest.yml"))
+			Expect(err).To(MatchError(ContainSubstring("duplicate")))
+		})
+	})
 })
 
 func writeManifest(body string) string {
