@@ -710,18 +710,18 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	// than panicking on a nil dereference.
 	sessionMgrHolder := &sessionManagerHolder{}
 	eng, setEnsureTools := createEngine(buildEngineParams(engineAssemblyParams{
-		setup:                   params,
-		traced:                  traced,
-		tools:                   tp,
-		contextStore:            contextStore,
-		chainStore:              chainStore,
-		broker:                  broker,
-		compression:             compression,
-		swarmRegistry:           params.swarmRegistry,
-		memoryClient:            params.memoryClient,
-		vaultHandler:            params.vaultHandler,
-		recallEmbeddingModel:    params.cfg.ResolvedEmbeddingModel(),
-		sessionEmbeddingLookup:  sessionMgrHolder.lookup,
+		setup:                  params,
+		traced:                 traced,
+		tools:                  tp,
+		contextStore:           contextStore,
+		chainStore:             chainStore,
+		broker:                 broker,
+		compression:            compression,
+		swarmRegistry:          params.swarmRegistry,
+		memoryClient:           params.memoryClient,
+		vaultHandler:           params.vaultHandler,
+		recallEmbeddingModel:   params.cfg.ResolvedEmbeddingModel(),
+		sessionEmbeddingLookup: sessionMgrHolder.lookup,
 	}))
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
@@ -793,7 +793,7 @@ type engineAssemblyParams struct {
 	// (Delivery G consumer wiring). See engine.Config field docs.
 	recallEmbeddingModel   string
 	sessionEmbeddingLookup func(string) (string, bool)
-	vaultHandler  toolsvault.Handler
+	vaultHandler           toolsvault.Handler
 }
 
 // buildEngineParams assembles the engineParams bundle from setupEngine

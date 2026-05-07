@@ -99,16 +99,16 @@ var _ = Describe("WebSocket session handler", func() {
 // failure. Both seams need to consult provider.IsCriticalStreamError so
 // the WS wire mirrors the SSE wire:
 //
-//   1. Critical chunk.Error → emit a critical-class WS message
-//      ({"error":"critical stream error", ...}) and stop streaming
-//      further chunks for that turn. Subsequent buffered chunks the
-//      streamer fanned out behind the failure must NOT reach the
-//      client.
+//  1. Critical chunk.Error → emit a critical-class WS message
+//     ({"error":"critical stream error", ...}) and stop streaming
+//     further chunks for that turn. Subsequent buffered chunks the
+//     streamer fanned out behind the failure must NOT reach the
+//     client.
 //
-//   2. Non-critical chunk.Error → emit the existing "stream error" WS
-//      message and continue streaming. Chunks after the transient
-//      error must still reach the client; the consumer must NOT break
-//      on every error.
+//  2. Non-critical chunk.Error → emit the existing "stream error" WS
+//     message and continue streaming. Chunks after the transient
+//     error must still reach the client; the consumer must NOT break
+//     on every error.
 //
 // Both specs assert behaviour on the wire (the JSON the WS reader
 // observes), not internal function names.

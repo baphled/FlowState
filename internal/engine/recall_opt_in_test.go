@@ -151,9 +151,9 @@ var _ = Describe("RecallBroker opt-in gate (P13)", Label("p13", "recall", "opt-i
 //   - vault: Bug Fixes/Recall Diagnostic - Embedding Model Stamp (May 2026).md
 var _ = Describe("RecallBroker embedding-model dimension diagnostic", Label("recall", "diagnostic", "embedding-model"), func() {
 	var (
-		broker  *countingBroker
-		counter *contextAssemblyTokenCounter
-		tmpDir  string
+		broker   *countingBroker
+		counter  *contextAssemblyTokenCounter
+		tmpDir   string
 		manifest agent.Manifest
 	)
 
@@ -201,12 +201,12 @@ var _ = Describe("RecallBroker embedding-model dimension diagnostic", Label("rec
 			Expect(err).NotTo(HaveOccurred())
 
 			eng := engine.New(engine.Config{
-				ChatProvider:          &contextAssemblyProvider{},
-				Manifest:              manifest,
-				TokenCounter:          counter,
-				Store:                 store,
-				RecallBroker:          broker,
-				RecallEmbeddingModel:  "nomic-embed-text",
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				RecallBroker:         broker,
+				RecallEmbeddingModel: "nomic-embed-text",
 				SessionEmbeddingLookup: func(_ string) (string, bool) {
 					return "nomic-embed-text", true
 				},
@@ -231,12 +231,12 @@ var _ = Describe("RecallBroker embedding-model dimension diagnostic", Label("rec
 			Expect(err).NotTo(HaveOccurred())
 
 			eng := engine.New(engine.Config{
-				ChatProvider:          &contextAssemblyProvider{},
-				Manifest:              manifest,
-				TokenCounter:          counter,
-				Store:                 store,
-				RecallBroker:          broker,
-				RecallEmbeddingModel:  "nomic-embed-text",
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				RecallBroker:         broker,
+				RecallEmbeddingModel: "nomic-embed-text",
 				SessionEmbeddingLookup: func(_ string) (string, bool) {
 					return "all-minilm", true
 				},
@@ -267,12 +267,12 @@ var _ = Describe("RecallBroker embedding-model dimension diagnostic", Label("rec
 			Expect(err).NotTo(HaveOccurred())
 
 			eng := engine.New(engine.Config{
-				ChatProvider:          &contextAssemblyProvider{},
-				Manifest:              manifest,
-				TokenCounter:          counter,
-				Store:                 store,
-				RecallBroker:          broker,
-				RecallEmbeddingModel:  "nomic-embed-text",
+				ChatProvider:         &contextAssemblyProvider{},
+				Manifest:             manifest,
+				TokenCounter:         counter,
+				Store:                store,
+				RecallBroker:         broker,
+				RecallEmbeddingModel: "nomic-embed-text",
 				SessionEmbeddingLookup: func(_ string) (string, bool) {
 					// Session predates Delivery G — the field exists
 					// but is empty on disk because the sidecar was
