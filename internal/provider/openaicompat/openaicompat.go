@@ -195,6 +195,15 @@ func RunStream(
 		stream := client.Chat.Completions.NewStreaming(ctx, params)
 		var acc openaiAPI.ChatCompletionAccumulator
 		emitted := make(map[int]bool)
+		// inlineExtractor scans reasoning_content for inline-XML
+		// `<tool_call>...</tool_call>` blocks (glm-4.5/4.6 variant) and
+		// holds any partial block across stream chunks. Its Thinking
+		// output is what flows downstream; any closed tool calls are
+		// buffered and emitted at end-of-stream (see recoveredCalls)
+		// so they cannot double-execute alongside a structured call
+		// the SDK already produced.
+		var inlineExtractor inlineToolCallExtractor
+		var recoveredCalls []provider.ToolCall
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -210,8 +219,19 @@ func RunStream(
 				// extra-fields map (see openai-go ChoiceDelta.JSON.ExtraFields).
 				// extractReasoningContent returns the empty string when the
 				// field is absent, so plain OpenAI providers are unaffected.
+				//
+				// May 2026 inline-XML recovery: glm-4.5/4.6 sometimes
+				// emit tool calls as `<tool_call>...</tool_call>` markup
+				// inside this reasoning channel. Funnel reasoning text
+				// through inlineExtractor so the markup is stripped
+				// from downstream Thinking and the recovered calls are
+				// queued for end-of-stream emission.
 				if reasoning := extractReasoningContent(delta); reasoning != "" {
-					shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: reasoning})
+					result := inlineExtractor.Feed(reasoning)
+					if result.Thinking != "" {
+						shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: result.Thinking})
+					}
+					recoveredCalls = append(recoveredCalls, result.ToolCalls...)
 				}
 			}
 			if tc, ok := acc.JustFinishedToolCall(); ok {
@@ -228,6 +248,8 @@ func RunStream(
 			}
 			if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
 				flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
+				flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
+				recoveredCalls = nil
 				shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
 			}
 		}
@@ -236,8 +258,60 @@ func RunStream(
 			return
 		}
 		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
+		flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
 	}()
 	return ch
+}
+
+// flushInlineExtractor drains any remaining buffered reasoning text
+// from the extractor and emits queued recovered tool calls.
+//
+// Recovered calls are SUPPRESSED when the SDK has already emitted any
+// structured tool call on this stream — that case is the providers
+// that emit BOTH a structured tool_calls array AND a reasoning
+// look-alike string; honouring both would double-execute. The
+// structured array wins; recovery is the fallback only.
+//
+// Expected:
+//   - ctx is the caller context.
+//   - ch is the downstream StreamChunk channel.
+//   - extractor is non-nil; its remaining buffer is flushed as Thinking.
+//   - recovered are the inline-XML tool calls assembled during the stream.
+//   - emitted tracks structured tool-call indexes already forwarded; a
+//     non-empty map suppresses recovery.
+//
+// Side effects:
+//   - Sends one Thinking chunk if any unparsed reasoning remains, and
+//     one tool_call chunk per recovered call when not suppressed.
+func flushInlineExtractor(
+	ctx context.Context,
+	ch chan<- provider.StreamChunk,
+	extractor *inlineToolCallExtractor,
+	recovered []provider.ToolCall,
+	emitted map[int]bool,
+) {
+	if extractor != nil {
+		if remaining := extractor.Flush(); remaining != "" {
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: remaining})
+		}
+	}
+	if len(recovered) == 0 {
+		return
+	}
+	if len(emitted) > 0 {
+		// Structured tool calls already won; recovery would
+		// double-execute. Drop the recovered set silently — the
+		// canonical call is already on the wire.
+		return
+	}
+	for i := range recovered {
+		tc := recovered[i]
+		shared.SendChunk(ctx, ch, provider.StreamChunk{
+			EventType:  "tool_call",
+			ToolCallID: tc.ID,
+			ToolCall:   &tc,
+		})
+	}
 }
 
 // wrapStreamError classifies a stream error as a *provider.Error.
