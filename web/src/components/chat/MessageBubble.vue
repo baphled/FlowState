@@ -265,6 +265,17 @@ async function handleRevert(): Promise<void> {
 
     <p v-else-if="isThinking" class="thinking">{{ props.message.content }}</p>
 
+    <!--
+      Soft-error affordance copy reword (May 7 2026, follow-up to commit
+      0f27ac98). User feedback: "Why do we have a message about the agent
+      not having a response. That seems pretty weird." The previous
+      "No response produced / agent thought through this turn but
+      produced no response" wording read as a system bug report and gave
+      the user nothing actionable. The reword aims for the same register
+      as the amber `role="status"` palette: less alarming than an error,
+      conversational, and bearing a clear next step (re-prompt). The
+      trigger predicate, palette, and role are unchanged — copy only.
+    -->
     <div
       v-else-if="isThinkingOnlyDegraded"
       class="thinking-only-affordance"
@@ -273,9 +284,9 @@ async function handleRevert(): Promise<void> {
     >
       <span class="thinking-only-icon" aria-hidden="true">!</span>
       <div class="thinking-only-content">
-        <span class="thinking-only-title">No response produced</span>
+        <span class="thinking-only-title">Reply didn't come through</span>
         <span class="thinking-only-message">
-          The agent thought through this turn but produced no response.
+          The model worked through this turn but stopped before replying. Try sending the prompt again.
         </span>
       </div>
     </div>

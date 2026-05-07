@@ -569,6 +569,14 @@ describe('MessageBubble', () => {
   // a stalled-stream lookalike. The bubble must show a soft-error
   // affordance distinct from the critical-error banner and from a true
   // stall.
+  //
+  // User-feedback rationale (May 7 2026): the original copy ("No response
+  // produced / The agent thought through this turn but produced no
+  // response.") read as a system bug report rather than a recovery hint
+  // and gave the user nothing actionable. The reword pins the same render
+  // branch but with conversational, action-bearing copy: tells the user
+  // the model stopped before replying AND that they should try again.
+  // The affordance must remain (a) informational and (b) actionable.
   describe('thinking-only degraded turn affordance', () => {
     it('renders a soft-error affordance when content is empty but thinkingBlocks + stopReason are present', () => {
       const wrapper = mountWithStubs(
@@ -584,7 +592,13 @@ describe('MessageBubble', () => {
 
       const affordance = wrapper.find('[data-testid="thinking-only-affordance"]')
       expect(affordance.exists()).toBe(true)
-      expect(affordance.text()).toMatch(/thought.*no response|no response/i)
+      // Pin the user outcome, not the exact phrasing: the affordance
+      // must communicate (a) the model stopped without replying, and
+      // (b) what the user can do next (re-prompt). Two assertions, one
+      // for each user-visible contract.
+      const text = affordance.text()
+      expect(text).toMatch(/stopped before replying|didn't (come through|reply)|no reply/i)
+      expect(text).toMatch(/try (sending|asking|again)|send.*again|ask again/i)
     })
 
     it('does NOT render the affordance for a normal content-bearing assistant message', () => {

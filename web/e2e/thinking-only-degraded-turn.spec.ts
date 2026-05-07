@@ -33,9 +33,13 @@ import { test, expect, type Page, type Route } from '@playwright/test'
  *     downstream specs / accessibility tooling can locate it.
  *   - It uses `role="status"` (informational) — distinct from the
  *     critical-error banner's `role="alert"` (assertive).
- *   - Visible text reads as "thought ... no response" (or equivalent),
- *     so the user can tell the difference between a stall and a
- *     degraded turn.
+ *   - Visible text communicates BOTH (a) what happened (the model
+ *     stopped without replying) and (b) what to do next (try again),
+ *     so the user can recover without thinking the chat is broken.
+ *     Reword landed May 7 2026 after user feedback that the prior
+ *     "No response produced / agent thought through this turn but
+ *     produced no response" copy read as a system bug report instead
+ *     of a recovery hint.
  *   - A normal content-bearing assistant message in the same session
  *     does NOT trigger the affordance (regression cover).
  *   - The critical-error banner does NOT appear — soft-error and
@@ -171,8 +175,12 @@ test.describe('Thinking-only degraded turn — live UI', () => {
     const affordance = page.locator('[data-testid="thinking-only-affordance"]')
     await expect(affordance).toBeVisible()
     await expect(affordance).toHaveAttribute('role', 'status')
-    await expect(affordance).toContainText(/thought/i)
-    await expect(affordance).toContainText(/no response/i)
+    // Pin user outcome: affordance conveys (a) the model stopped before
+    // replying, and (b) what the user can do (try again). Don't pin the
+    // exact phrasing — leaves room for copy refinement without
+    // round-tripping the spec.
+    await expect(affordance).toContainText(/stopped before replying|didn't (come through|reply)|no reply/i)
+    await expect(affordance).toContainText(/try (sending|asking|again)|send.*again|ask again/i)
 
     // Soft-error surface is distinct from the critical-error banner.
     await expect(page.locator('[data-testid="critical-error-banner"]')).toHaveCount(0)
