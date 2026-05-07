@@ -82,6 +82,23 @@ export interface SSECriticalErrorEvent {
  */
 export const CRITICAL_STREAM_ERROR_MESSAGE = 'critical stream error'
 
+/**
+ * CONTEXT_WINDOW_EXCEEDED_MESSAGE is the sibling canonical safe-message
+ * the engine emits when its proactive context-window overflow gate
+ * refuses a request (see `clientError` `case
+ * "stream_critical_context_exceeded"` in `internal/api/errors.go`). The
+ * wire shape is identical to a generic `stream_critical` event so the
+ * chat store routes both through the same persistent banner; the
+ * difference is the verbatim user-visible body, which here names the
+ * failure mode and hints at recoverable user actions ("trim recent
+ * tool results", "fresh session"). The Vue parser recognises this
+ * exact text and emits `kind: 'stream_critical'`, letting the existing
+ * CriticalErrorBanner render the actionable copy without a new union
+ * variant.
+ */
+export const CONTEXT_WINDOW_EXCEEDED_MESSAGE =
+  'context window exceeded — start a fresh session or trim recent tool results before retrying'
+
 export interface SSEDoneEvent {
   kind: 'done'
 }
@@ -364,12 +381,17 @@ export function parseSSEPayload(payload: string): SSEEvent {
     const errorText = obj['error'] as string
     // Critical-class fan-out gate: the engine's "stream_critical" category
     // produces the canonical safeMsg `CRITICAL_STREAM_ERROR_MESSAGE`. The
-    // wire shape is otherwise identical to a transient "stream_error"
-    // event, so we discriminate on the safeMsg text. The correlation id
-    // is mandatory on the wire (writeSSEErrorMsg always emits it) but we
-    // tolerate its absence with an empty string so a degraded payload
-    // still surfaces the banner.
-    if (errorText === CRITICAL_STREAM_ERROR_MESSAGE) {
+    // sibling category "stream_critical_context_exceeded" produces
+    // `CONTEXT_WINDOW_EXCEEDED_MESSAGE` for the proactive context-window
+    // overflow gate. Both wire shapes are identical to a transient
+    // "stream_error" event, so we discriminate on the safeMsg text. The
+    // correlation id is mandatory on the wire (writeSSEErrorMsg always
+    // emits it) but we tolerate its absence with an empty string so a
+    // degraded payload still surfaces the banner.
+    if (
+      errorText === CRITICAL_STREAM_ERROR_MESSAGE ||
+      errorText === CONTEXT_WINDOW_EXCEEDED_MESSAGE
+    ) {
       return {
         kind: 'stream_critical',
         error: errorText,

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -937,8 +938,24 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				// helper IsCriticalStreamError has been wired here
 				// so the fix is one branch and one early return,
 				// not a refactor of the surrounding dispatcher.
+				//
+				// The proactive context-window overflow gate
+				// (engine.checkContextWindowOverflow) shares this
+				// path: it wraps a *provider.Error with
+				// ErrorTypeContextWindowExceeded which classifies as
+				// SeverityCritical, so the gate fires here. The
+				// distinct safeMsg category routes a user-actionable
+				// recovery copy through the same banner instead of
+				// the generic "critical stream error" wording fatal
+				// errors share.
 				if provider.IsCriticalStreamError(chunk.Error) {
-					writeSSEClientError(w, flusher, chunk.Error, "stream_critical")
+					category := "stream_critical"
+					var pErr *provider.Error
+					if errors.As(chunk.Error, &pErr) && pErr != nil &&
+						pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+						category = "stream_critical_context_exceeded"
+					}
+					writeSSEClientError(w, flusher, chunk.Error, category)
 					writeSSEDone(w, flusher)
 					return
 				}

@@ -213,7 +213,7 @@ func IsCriticalStreamError(err error) bool {
 //   - None.
 func severityFromProviderErrorType(t ErrorType) StreamErrorSeverity {
 	switch t {
-	case ErrorTypeAuthFailure, ErrorTypeBilling, ErrorTypeQuota, ErrorTypeModelNotFound:
+	case ErrorTypeAuthFailure, ErrorTypeBilling, ErrorTypeQuota, ErrorTypeModelNotFound, ErrorTypeContextWindowExceeded:
 		return SeverityCritical
 	case ErrorTypeRateLimit, ErrorTypeOverload, ErrorTypeNetworkError, ErrorTypeServerError:
 		return SeverityTransient

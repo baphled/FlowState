@@ -301,6 +301,15 @@ const (
 	ErrorTypeNetworkError ErrorType = "network_error"
 	// ErrorTypeServerError indicates the provider returned a server-side failure.
 	ErrorTypeServerError ErrorType = "server_error"
+	// ErrorTypeContextWindowExceeded indicates the request was refused
+	// because its estimated input-token count exceeded the configured
+	// per-model context window. The engine emits this BEFORE flushing to
+	// the upstream provider, via the proactive overflow gate that mirrors
+	// OpenCode's isOverflow check (compaction.ts:30-89). It must surface
+	// to the user as a SeverityCritical event so the Vue chat UI shows
+	// the persistent CriticalErrorBanner with recoverable-action copy
+	// (trim recent tool results, start a fresh session).
+	ErrorTypeContextWindowExceeded ErrorType = "context_window_exceeded"
 	// ErrorTypeUnknown indicates the provider error could not be classified.
 	ErrorTypeUnknown ErrorType = "unknown"
 )
@@ -384,6 +393,23 @@ type Error struct {
 	// scheduler should consult RateLimit.RetryAfter (when non-zero)
 	// in preference to a generic per-error-type cooldown.
 	RateLimit *RateLimit
+	// Model is the model identifier this error attributes to. Populated
+	// by the engine's proactive context-window overflow gate; empty for
+	// upstream-classified errors that did not carry the model on the
+	// wire (legacy provider error types continue to flow with this
+	// field zero-valued).
+	Model string
+	// EstimatedInputTokens is the engine's input-token estimate for the
+	// refused request, populated only by the proactive context-window
+	// overflow gate (ErrorTypeContextWindowExceeded). Zero for any
+	// other ErrorType.
+	EstimatedInputTokens int
+	// ContextLimit is the resolved per-model context window limit the
+	// estimate was compared against. Zero unless ErrorType is
+	// ErrorTypeContextWindowExceeded. Pairs with EstimatedInputTokens
+	// for operator log triage (slog "estimated_input_tokens"/"limit"
+	// kv pair, see engine.streamFromProvider).
+	ContextLimit int
 }
 
 // Error returns a human-readable description of the provider error.

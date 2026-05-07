@@ -44,6 +44,19 @@ func clientError(err error, category string) (safeMsg string, correlationID stri
 		// server-side under the correlation ID, never sent to the
 		// client.
 		safeMsg = "critical stream error"
+	case "stream_critical_context_exceeded":
+		// Sibling of stream_critical for the proactive context-window
+		// overflow gate (engine.checkContextWindowOverflow → wraps
+		// provider.ErrorTypeContextWindowExceeded). The wire shape is
+		// the same {error, correlation_id} envelope the chat store
+		// already routes to CriticalErrorBanner, but the safeMsg is
+		// distinct and user-actionable — the user can recover by
+		// trimming recent tool results or starting a fresh session,
+		// unlike a revoked-OAuth fatal error which requires operator
+		// intervention. The Vue parser (web/src/lib/sseEvent.ts)
+		// recognises the message text and routes the same way as the
+		// generic stream_critical category.
+		safeMsg = "context window exceeded — start a fresh session or trim recent tool results before retrying"
 	case "cancel_error":
 		safeMsg = "cancel failed"
 	case "swarm_error":

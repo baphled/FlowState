@@ -2499,13 +2499,166 @@ func runKnowledgeExtraction(extractor *recall.KnowledgeExtractor, msgs []provide
 //
 // Side effects:
 //   - Executes hook chain if configured. Hooks may mutate req.
+//   - When the proactive context-window overflow gate fires, returns
+//     (synthetic-channel, nil) carrying a single critical-error chunk
+//     and DOES NOT call the upstream provider. The synthetic-channel
+//     path is what surfaces the saturation as a stream_critical SSE
+//     event the Vue chat banner can render.
 func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	slog.Info("engine stream request", "provider", e.LastProvider(), "model", e.LastModel(), "messages", len(req.Messages))
+	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
+		slog.Warn("engine refused over-budget request",
+			"provider", req.Provider, "model", req.Model, "estimated_input_tokens", pErr.EstimatedInputTokens, "limit", pErr.ContextLimit)
+		return e.overflowRefusalChannel(pErr), nil
+	}
 	handler := e.baseStreamHandler()
 	if e.hookChain != nil {
 		handler = e.hookChain.Execute(handler)
 	}
 	return handler(ctx, req)
+}
+
+// contextWindowOverflowMessage is the canonical user-facing safe message
+// the api/errors.go layer emits when the proactive overflow gate refuses
+// a request. The wording must satisfy the user-actionable-copy contract
+// pinned by engine_test.go: it names the failure mode ("context window")
+// and hints at recoverable user actions ("trim recent tool results",
+// "fresh session"). The Vue CriticalErrorBanner renders this verbatim
+// as the user-visible body of the persistent banner.
+const contextWindowOverflowMessage = "context window exceeded — start a fresh session or trim recent tool results before retrying"
+
+// checkContextWindowOverflow returns a non-nil *provider.Error when the
+// engine's estimated input-token count for req exceeds the per-model
+// context limit configured for (req.Provider, req.Model). It mirrors
+// OpenCode's isOverflow gate (compaction.ts:30-89): the smallest viable
+// slice of context-management is detect-and-refuse before send. Auto-
+// compaction, old-tool-output pruning, and per-tool result truncation
+// are subsequent slices that build on this seam.
+//
+// The estimate uses the engine's wired tokenCounter when available
+// (TiktokenCounter or ApproximateCounter — the latter's character-based
+// 1-token-≈-4-chars heuristic is documented at
+// internal/context/token_budget.go ApproximateCounter.Count). When no
+// counter is wired, the gate is a deliberate no-op so legacy callers
+// without a counter continue to flush as before — failure is the model
+// "thinking into the void" later, not a spurious refusal here.
+//
+// Per-model limits flow through the engine's existing ResolveContextLength
+// pipeline (ResolveContextLength → failoverManager.ResolveContextLength →
+// provider.Models()), so adding a new model with a documented context
+// length is a registry concern, not a hardcoded table here. When the
+// resolver yields zero (unknown provider/model), the configured
+// systemPromptBudget fallback applies — operators with constrained
+// hardware override that fallback via cfg.SystemPromptBudget.
+//
+// Expected:
+//   - req is the assembled chat request, post-buildContextWindow.
+//
+// Returns:
+//   - nil when the request fits or the gate cannot evaluate (no counter).
+//   - A *provider.Error{ErrorType: ErrorTypeContextWindowExceeded} when
+//     the estimate exceeds the limit. Severity classification picks this
+//     up via severityFromProviderErrorType and routes the chunk through
+//     the SeverityCritical path.
+//
+// Side effects:
+//   - None.
+func (e *Engine) checkContextWindowOverflow(req *provider.ChatRequest) *provider.Error {
+	if e == nil || req == nil || e.tokenCounter == nil {
+		return nil
+	}
+	limit := e.ResolveContextLength(req.Provider, req.Model)
+	if limit <= 0 {
+		// No limit known and no fallback wired — pass through. The
+		// existing in-stream classification still catches a genuine
+		// upstream context-length-exceeded response if the provider
+		// returns one.
+		return nil
+	}
+
+	estimated := e.estimateRequestTokens(req)
+	if estimated <= limit {
+		return nil
+	}
+
+	return &provider.Error{
+		Provider:             req.Provider,
+		Model:                req.Model,
+		ErrorType:            provider.ErrorTypeContextWindowExceeded,
+		Message:              contextWindowOverflowMessage,
+		IsRetriable:          false,
+		EstimatedInputTokens: estimated,
+		ContextLimit:         limit,
+	}
+}
+
+// estimateRequestTokens approximates the prompt-token count for req
+// using the engine's configured tokenCounter. The estimate sums every
+// message's Content + Thinking and adds a small fixed budget for tool-
+// schema overhead per Tool. It is intentionally conservative; the gate
+// is allowed to over-fire (refuse a marginally-fitting request) but
+// must not under-fire (let an over-budget request through).
+//
+// Expected:
+//   - req is non-nil. The engine's tokenCounter is non-nil (caller
+//     guards this).
+//
+// Returns:
+//   - The estimated input-token count.
+//
+// Side effects:
+//   - None.
+func (e *Engine) estimateRequestTokens(req *provider.ChatRequest) int {
+	const perToolOverhead = 32
+	total := 0
+	for _, m := range req.Messages {
+		if m.Content != "" {
+			total += e.tokenCounter.Count(m.Content)
+		}
+		if m.Thinking != "" {
+			total += e.tokenCounter.Count(m.Thinking)
+		}
+		for _, tc := range m.ToolCalls {
+			total += e.tokenCounter.Count(tc.Name)
+			for k, v := range tc.Arguments {
+				total += e.tokenCounter.Count(k)
+				if s, ok := v.(string); ok {
+					total += e.tokenCounter.Count(s)
+				}
+			}
+		}
+	}
+	for _, t := range req.Tools {
+		total += e.tokenCounter.Count(t.Name) + e.tokenCounter.Count(t.Description) + perToolOverhead
+	}
+	return total
+}
+
+// overflowRefusalChannel returns a closed-after-first-chunk channel
+// carrying a single Done error chunk wrapping pErr. The synthetic-
+// channel shape lets the proactive gate surface refusal through the
+// same processStreamChunks → outChan → SSE consumer path as any other
+// upstream error, so callers see the saturation as a stream_critical
+// event without bypassing the chunk-level retry / classification logic.
+//
+// Expected:
+//   - pErr is the structured *provider.Error built by
+//     checkContextWindowOverflow. Non-nil.
+//
+// Returns:
+//   - A buffered channel containing exactly one chunk: {Error: pErr,
+//     Done: true}, then closed.
+//
+// Side effects:
+//   - None beyond channel allocation.
+func (e *Engine) overflowRefusalChannel(pErr *provider.Error) <-chan provider.StreamChunk {
+	ch := make(chan provider.StreamChunk, 1)
+	ch <- provider.StreamChunk{
+		Error: pErr,
+		Done:  true,
+	}
+	close(ch)
+	return ch
 }
 
 // baseStreamHandler returns the base handler function for streaming chat requests.

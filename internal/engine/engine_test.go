@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -753,6 +754,183 @@ var _ = Describe("Engine", func() {
 				Expect(chatProvider.capturedRequest.Model).To(Equal("gpt-4o"))
 				Expect(chatProvider.capturedRequest.Provider).To(Equal("test-chat-provider"))
 			})
+		})
+
+		// Pin the proactive context-window overflow check (matches OpenCode's
+		// isOverflow gate, see compaction.ts:30-89). The engine must compare
+		// estimated input tokens against the configured per-model limit BEFORE
+		// flushing to the upstream provider, refuse the request when the input
+		// exceeds the limit, and surface a structured critical error chunk that
+		// tells the user how to recover. This closes the glm-4.6 saturation
+		// failure mode where a 700KB tool-result wave + accumulated context
+		// drove the model into reasoning-only "thought into the void" turns.
+		Context("when input context exceeds the model limit", func() {
+			It("under-budget passes through and calls the upstream provider", func() {
+				// Regression guard: a normal-sized message must continue to
+				// reach the provider. Token-budget gating must not over-fire.
+				registry := provider.NewRegistry()
+				registry.Register(chatProvider)
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "test-chat-provider", Model: "test-model"},
+				})
+				manager.SetContextFallback(100_000) // generous limit
+
+				eng := engine.New(engine.Config{
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
+					TokenCounter:    ctxstore.NewApproximateCounter(),
+				})
+
+				chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks {
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil(),
+					"under-budget request must reach the provider")
+			})
+
+			It("over-budget refuses to send and emits a critical context-window error chunk", func() {
+				// The provider must NOT be called. The stream channel must
+				// emit a single error chunk, classified as SeverityCritical
+				// and carrying provider.ErrorTypeContextWindowExceeded so
+				// the SSE consumer routes it to the persistent banner path.
+				registry := provider.NewRegistry()
+				registry.Register(chatProvider)
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "test-chat-provider", Model: "test-model"},
+				})
+				manager.SetContextFallback(10) // tiny limit — anything realistic overflows
+
+				eng := engine.New(engine.Config{
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
+					TokenCounter:    ctxstore.NewApproximateCounter(),
+				})
+
+				// Build a message large enough that even at 1 token ≈ 4 chars
+				// the heuristic count exceeds the 10-token limit by an order
+				// of magnitude.
+				bigMsg := strings.Repeat("A bunch of words to push us over budget. ", 200)
+
+				chunks, err := eng.Stream(context.Background(), "test-agent", bigMsg)
+				Expect(err).NotTo(HaveOccurred(),
+					"refusal is delivered as an error chunk, not a synchronous error")
+
+				var received []provider.StreamChunk
+				for chunk := range chunks {
+					received = append(received, chunk)
+				}
+
+				Expect(chatProvider.capturedRequest).To(BeNil(),
+					"upstream provider must not be called when over budget")
+
+				Expect(received).NotTo(BeEmpty())
+				var errChunk *provider.StreamChunk
+				for i := range received {
+					if received[i].Error != nil {
+						errChunk = &received[i]
+						break
+					}
+				}
+				Expect(errChunk).NotTo(BeNil(), "expected an error chunk on the channel")
+				Expect(provider.IsCriticalStreamError(errChunk.Error)).To(BeTrue(),
+					"context-window overflow must classify as SeverityCritical")
+
+				var pErr *provider.Error
+				Expect(errors.As(errChunk.Error, &pErr)).To(BeTrue(),
+					"error must wrap a *provider.Error so the SSE seam can branch on ErrorType")
+				Expect(pErr.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			})
+
+			It("error chunk carries user-actionable recovery copy", func() {
+				// The user-visible message must hint at the recoverable
+				// action (trim recent tool results, start a fresh session).
+				// This is what the Vue CriticalErrorBanner renders verbatim.
+				registry := provider.NewRegistry()
+				registry.Register(chatProvider)
+				health := failover.NewHealthManager()
+				manager := failover.NewManager(registry, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "test-chat-provider", Model: "test-model"},
+				})
+				manager.SetContextFallback(10)
+
+				eng := engine.New(engine.Config{
+					Registry:        registry,
+					FailoverManager: manager,
+					Manifest:        manifest,
+					TokenCounter:    ctxstore.NewApproximateCounter(),
+				})
+
+				bigMsg := strings.Repeat("Tool output line. ", 500)
+				chunks, err := eng.Stream(context.Background(), "test-agent", bigMsg)
+				Expect(err).NotTo(HaveOccurred())
+
+				var errChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.Error != nil {
+						c := chunk
+						errChunk = &c
+						break
+					}
+				}
+				Expect(errChunk).NotTo(BeNil())
+				msg := errChunk.Error.Error()
+				Expect(msg).To(MatchRegexp(`(?i)context.*(window|limit)`),
+					"message must name the failure mode")
+				Expect(msg).To(MatchRegexp(`(?i)(trim|fresh|start a new|recent tool)`),
+					"message must hint at a recoverable user action")
+			})
+
+			DescribeTable("applies the per-model context limit",
+				func(limit int, expectOverflow bool) {
+					// Two distinct models with different limits drive the
+					// same input through the gate. The same payload must
+					// pass for the high-limit case and refuse for the
+					// low-limit case — pinning that the limit is read
+					// per-(provider, model), not hardcoded.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(limit)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					// 4_000-char message → heuristic ~1_000 tokens. Sits
+					// above the small-model limit (200) and below the
+					// large-model limit (200_000).
+					msg := strings.Repeat("x", 4_000)
+					chunks, _ := eng.Stream(context.Background(), "test-agent", msg)
+					for range chunks {
+					}
+
+					if expectOverflow {
+						Expect(chatProvider.capturedRequest).To(BeNil(),
+							"limit %d should refuse a ~1k-token message", limit)
+					} else {
+						Expect(chatProvider.capturedRequest).NotTo(BeNil(),
+							"limit %d should accept a ~1k-token message", limit)
+					}
+				},
+				Entry("small-model limit (200) refuses", 200, true),
+				Entry("large-model limit (200_000) passes", 200_000, false),
+			)
 		})
 	})
 
