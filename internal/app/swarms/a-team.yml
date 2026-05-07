@@ -1,0 +1,50 @@
+schema_version: "1.0.0"
+id: a-team
+description: >
+  A versatile generalist swarm for tasks that don't fit a fixed workflow.
+  The coordinator reads the task, decides which agents to engage (not every
+  task needs every agent), and routes dynamically. The critic plays a
+  mandatory adversarial role on any non-trivial run. The post-member
+  relevance gate enforces topic-fit on the researcher's output before any
+  downstream member runs — off-topic research is rejected with a redirect
+  signal so the coordinator can re-scope rather than letting drift cascade
+  through strategy and writing.
+
+# `coordinator` is the registered lead agent (internal/app/agents/coordinator.md).
+# Members resolve via the agent registry's case-insensitive name+alias lookup,
+# so `researcher` and `writer` route to the existing Researcher and Writer
+# manifests (whose aliases include the lowercase ids).
+lead: coordinator
+
+members:
+  - researcher
+  - strategist
+  - critic
+  - writer
+  - executor
+
+harness:
+  # Sequential — the A-Team pipeline is dependency-driven (research →
+  # strategy → critique → writing → optional execution) and parallelism
+  # would race the coordination_store.
+  parallel: false
+
+  # Post-member relevance gate around the researcher. The gate's
+  # ext-manifest declares two coord-store inputs (task_plan + research)
+  # which the host composes into a multi-key JSON payload before
+  # invoking the gate executable — see internal/gates/relevance-gate/
+  # manifest.yml. Naming convention follows planning-loop.yml's
+  # `post-member-<member>-<concern>` shape so log readers can scan the
+  # swarm catalogue uniformly.
+  gates:
+    - name: post-member-researcher-relevance
+      kind: ext:relevance-gate
+      when: post-member
+      target: researcher
+      output_key: output
+
+context:
+  # Coordination_store namespace for this swarm's runs. Pinned so the
+  # coordinator's documented chain keys (`a-team/{chainID}/task-plan`,
+  # `a-team/{chainID}/strategy`, etc.) are stable across reboots.
+  chain_prefix: a-team

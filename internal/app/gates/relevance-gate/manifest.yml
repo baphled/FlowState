@@ -13,7 +13,11 @@ policy:
 # Multi-key inputs declaration — host composes a JSON object
 # {"task_plan": <bytes>, "research": <bytes>} from the coord-store before
 # invoking the gate. The "${target}" placeholder for `research` resolves
-# to the dispatching gate's Target (the researcher) at composition time.
+# to the dispatching gate's Target (the researcher) at composition time
+# so the manifest stays member-agnostic. Without this declaration the
+# gate would receive a single-key payload (the researcher's output bytes
+# only) and have nothing to score against — see commit `0cb50144` for
+# the host-side composition path.
 inputs:
   - name: task_plan
     member: coordinator

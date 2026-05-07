@@ -230,6 +230,20 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: swarms seeded to %q", swarmDir)
 	}
 
+	// Seed the bundled gate bundles into cfg.GatesDir so the swarm
+	// runner's `ext:*` kinds resolve to a registered runner on a fresh
+	// install. Without this seed step the user has to manually
+	// `cp -r examples/gates/<name> ~/.config/flowstate/gates/` before
+	// any `ext:*` gate dispatch succeeds — see SeedGatesDir's godoc and
+	// embed_gates.go for the bundled set.
+	if cfg.GatesDir != "" {
+		if err := SeedGatesDir(EmbeddedGatesFS(), cfg.GatesDir); err != nil {
+			log.Printf("warning: seeding gates to %q: %v", cfg.GatesDir, err)
+		} else {
+			log.Printf("info: gates seeded to %q", cfg.GatesDir)
+		}
+	}
+
 	// Auto-materialise the bundled mem0 MCP wrapper before the tool
 	// pipeline assembles its MCP servers. DiscoverMCPServers probes
 	// the install location first, so a freshly-materialised binary is
