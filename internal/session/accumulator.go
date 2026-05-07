@@ -572,6 +572,29 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	s.turnStopReason = ""
 }
 
+// StopReasonThinkingOnly is the synthetic stop reason stamped on a
+// placeholder assistant Message when a turn produced reasoning without
+// an upstream `stop_reason` chunk to inherit. It exists because the Vue
+// UI affordance for thinking-only degraded turns (commit 0f27ac98) keys
+// on `stopReason !== ""` to distinguish a degraded turn from a still-
+// streaming bubble; without a non-empty value the existing render
+// branch sees nothing to anchor on and the bubble stays blank.
+//
+// Reasoning providers vary on whether they emit a structured
+// `stop_reason` event before Done. On glm-4.5/glm-4.6 via zai, the
+// provider can finish a turn after emitting only `reasoning_content`
+// tokens — no content, no tool_call, no stop_reason — and the
+// accumulator has no upstream value to copy onto the synthesised
+// placeholder. Stamping a synthetic "thinking_only" value here keeps
+// the UI invariant from 0f27ac98 intact without touching the Vue
+// render branch and without inventing a real stop_reason that would
+// confuse downstream consumers (telemetry, model-side replay).
+//
+// See `Bug Fixes/Empty-Content Thinking-Only Assistant Turn (May 2026)`
+// in the FlowState vault for the forensic trace; reproducer session
+// 718b5d51-f01b-45f0-80bb-31329a9d44e7.
+const StopReasonThinkingOnly = "thinking_only"
+
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
 // without an enclosing assistant artefact.
@@ -603,14 +626,24 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 //     1. contentBuf is empty (flushContent emitted nothing this turn), AND
 //     2. thinkingBlocks is non-empty (the model emitted reasoning), AND
 //     3. NOT (turnHadToolCall && providerProducesUnifiedAssistant(s.lastProviderID)) —
-//        the suppression only applies to providers whose wire format
-//        natively packs assistant content + tool_use into one message
-//        (Anthropic). On every other provider, a tool-bearing turn that
-//        produced reasoning STILL needs the placeholder to carry the
-//        accumulated ThinkingBlocks across the persisted history. This
-//        reverses the over-aggressive blanket tool-call gate
-//        introduced alongside the original synthesis fix
-//        (commit f918bb9f) — see bug-fix note for the forensic trace.
+//     the suppression only applies to providers whose wire format
+//     natively packs assistant content + tool_use into one message
+//     (Anthropic). On every other provider, a tool-bearing turn that
+//     produced reasoning STILL needs the placeholder to carry the
+//     accumulated ThinkingBlocks across the persisted history. This
+//     reverses the over-aggressive blanket tool-call gate
+//     introduced alongside the original synthesis fix
+//     (commit f918bb9f) — see bug-fix note for the forensic trace.
+//   - The persisted Message ALWAYS carries a non-empty StopReason: the
+//     upstream `turnStopReason` when one was captured, otherwise the
+//     synthetic StopReasonThinkingOnly fallback so the Vue UI
+//     affordance from commit 0f27ac98 (`stopReason !== ""`) can locate
+//     the placeholder. A raw-thinking turn from a reasoning provider
+//     (glm-4.5 via zai, reproducer session
+//     718b5d51-f01b-45f0-80bb-31329a9d44e7 message index 9) finishes
+//     without ever emitting a structured `stop_reason` event; without
+//     the fallback the placeholder would persist with StopReason=""
+//     and the chat UI would render a blank bubble.
 //   - Resets s.thinkingBlocks and s.turnStopReason on success.
 //   - Does nothing when any of the gates is unmet.
 func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumState) {
@@ -633,13 +666,24 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	// retro-edit the persisted message.
 	blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
 	copy(blocks, s.thinkingBlocks)
+	stopReason := s.turnStopReason
+	if stopReason == "" {
+		// Reasoning providers can finish a turn after emitting only
+		// reasoning tokens with no structured stop_reason event. The
+		// Vue UI affordance from 0f27ac98 keys on `stopReason !== ""`
+		// to locate the placeholder, so stamp the synthetic
+		// "thinking_only" value here when no upstream reason was
+		// captured. Keeps the UI invariant intact without touching
+		// the Vue render branch.
+		stopReason = StopReasonThinkingOnly
+	}
 	appender.AppendMessage(s.sessionID, Message{
 		Role:           "assistant",
 		Content:        "",
 		AgentID:        s.agentID,
 		ModelName:      s.lastModelID,
 		ProviderName:   s.lastProviderID,
-		StopReason:     s.turnStopReason,
+		StopReason:     stopReason,
 		ThinkingBlocks: blocks,
 	})
 	s.thinkingBlocks = nil
