@@ -810,8 +810,15 @@ func (m *Manager) sweepOrphansLocked() {
 		if sess.UpdatedAt.After(cutoff) {
 			continue
 		}
+		// Promote status to abandoned but PRESERVE UpdatedAt — the
+		// pre-sweep mtime is the forensic signal "this session went
+		// stale at time T" (i.e. roughly when the parent crashed).
+		// Stamping time.Now() here would overwrite that timeline with
+		// "we discovered the orphan at boot time T+N" and destroy
+		// the answer operators need to "when did the parent crash?".
+		// The sweep is a status promotion, not a fresh activity
+		// event, so the mtime stays.
 		sess.Status = string(StatusAbandoned)
-		sess.UpdatedAt = time.Now()
 		m.persistLocked(sess)
 	}
 }
