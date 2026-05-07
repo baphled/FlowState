@@ -246,3 +246,145 @@ var _ = Describe("ext:relevance-gate (bundled gate)", func() {
 		Expect(byName["research"].OutputKey).To(Equal("output"))
 	})
 })
+
+// quorumGateManifestPath resolves the path of the bundled quorum-gate
+// manifest as it lives under internal/app/gates/quorum-gate/. The
+// quorum-gate spec runs against the actual bundled gate.py rather
+// than a synthetic stub so a regression in the gate executable (e.g.
+// an accidental change to the divergence rule) surfaces in CI rather
+// than at first Board Room dispatch.
+func quorumGateManifestPath() string {
+	abs, err := filepath.Abs(filepath.Join("..", "app", "gates", "quorum-gate", "manifest.yml"))
+	Expect(err).ToNot(HaveOccurred())
+	return abs
+}
+
+var _ = Describe("ext:quorum-gate (bundled gate)", func() {
+	// Behavioural specs for the bundled quorum-gate executable. The
+	// gate enforces the Board Room swarm's adversarial-debate
+	// contract: all five analyst positions (bull, bear, market,
+	// financial, technical) must be present at dispatch time AND the
+	// bull and bear analysts must reach divergent decisions. These
+	// specs run the actual gate.py shipped under
+	// internal/app/gates/quorum-gate/ so a regression in the
+	// executable surfaces here, not at first Board Room dispatch.
+	//
+	// The host-side composition path packs the coord-store inputs
+	// declared on the manifest into a flat multi-key JSON payload
+	// before invoking the gate — see commit `0cb50144`. These specs
+	// feed that composed payload directly via
+	// swarm.ExtGateRequest{Payload: ...} so they pin the gate-
+	// executable contract independent of the host composition path
+	// (which has its own coverage in gates_test).
+
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+		manifest, err := gates.LoadManifest(quorumGateManifestPath())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(swarm.RegisterExtGateFromManifest(manifest)).To(Succeed())
+	})
+
+	It("passes when all five positions are present and bull diverges from bear", func() {
+		runner, ok := swarm.LookupExtGate("quorum-gate")
+		Expect(ok).To(BeTrue())
+
+		// Composed payload mirrors what composeMultiKeyPayload emits:
+		// the five logical input names at the top level, each value
+		// itself a JSON object embedded verbatim. Bull and bear
+		// reach different decisions ("buy" vs "sell") — the
+		// adversarial-divergence contract holds.
+		payload := []byte(`{` +
+			`"bull":{"decision":"buy","thesis":"strong fundamentals"},` +
+			`"bear":{"decision":"sell","thesis":"valuation stretched"},` +
+			`"market":{"decision":"hold","thesis":"timing ambiguous"},` +
+			`"financial":{"decision":"buy","thesis":"unit economics work"},` +
+			`"technical":{"decision":"buy","thesis":"feasible at scale"}` +
+			`}`)
+
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			MemberID: "technical-analyst", When: "post-member", Payload: payload,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Pass).To(BeTrue(), "expected pass when all five positions present and bull≠bear, got reason=%q", resp.Reason)
+	})
+
+	It("rejects collapsed adversarial review when bull and bear converge", func() {
+		runner, ok := swarm.LookupExtGate("quorum-gate")
+		Expect(ok).To(BeTrue())
+
+		// Bull and bear both recommend "buy" — adversarial review has
+		// collapsed. The gate must refuse and surface a diagnostic
+		// the operator can read.
+		payload := []byte(`{` +
+			`"bull":{"decision":"buy","thesis":"upside dominates"},` +
+			`"bear":{"decision":"buy","thesis":"risks priced in"},` +
+			`"market":{"decision":"buy","thesis":"market expanding"},` +
+			`"financial":{"decision":"buy","thesis":"margins improving"},` +
+			`"technical":{"decision":"buy","thesis":"team ships"}` +
+			`}`)
+
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			MemberID: "technical-analyst", When: "post-member", Payload: payload,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Pass).To(BeFalse(), "expected fail for converged bull/bear")
+		Expect(resp.Reason).To(ContainSubstring("adversarial review collapsed"))
+	})
+
+	It("rejects the dispatch when an analyst position is missing", func() {
+		runner, ok := swarm.LookupExtGate("quorum-gate")
+		Expect(ok).To(BeTrue())
+
+		// Only four positions present — the financial analyst's slot
+		// is absent. The gate must name the missing analyst in the
+		// reason so operators can see which slot failed without
+		// reading the raw payload.
+		payload := []byte(`{` +
+			`"bull":{"decision":"buy"},` +
+			`"bear":{"decision":"sell"},` +
+			`"market":{"decision":"hold"},` +
+			`"technical":{"decision":"buy"}` +
+			`}`)
+
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			MemberID: "technical-analyst", When: "post-member", Payload: payload,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.Pass).To(BeFalse(), "expected fail when an analyst position is missing")
+		Expect(resp.Reason).To(ContainSubstring("financial"),
+			"expected the missing analyst (financial) named in reason, got %q", resp.Reason)
+	})
+
+	It("declares the five-key inputs the host's composition path needs", func() {
+		// LookupGateInputs is the registry-level entry point the
+		// composeMultiKeyPayload code path consults at dispatch time.
+		// Pinning the registered inputs from the bundled manifest
+		// guarantees the flat multi-key payload shape the gate.py
+		// expects ({"bull":..., "bear":..., ...}) cannot drift away
+		// from what the gate executable actually parses.
+		inputs, ok := swarm.LookupGateInputs("quorum-gate")
+		Expect(ok).To(BeTrue())
+		Expect(inputs).To(HaveLen(5))
+
+		byName := map[string]gates.InputSpec{}
+		for _, in := range inputs {
+			byName[in.Name] = in
+		}
+		Expect(byName).To(HaveKey("bull"))
+		Expect(byName).To(HaveKey("bear"))
+		Expect(byName).To(HaveKey("market"))
+		Expect(byName).To(HaveKey("financial"))
+		Expect(byName).To(HaveKey("technical"))
+
+		Expect(byName["bull"].Member).To(Equal("bull-analyst"))
+		Expect(byName["bull"].OutputKey).To(Equal("output"))
+		Expect(byName["bear"].Member).To(Equal("bear-analyst"))
+		Expect(byName["bear"].OutputKey).To(Equal("output"))
+		Expect(byName["market"].Member).To(Equal("market-analyst"))
+		Expect(byName["market"].OutputKey).To(Equal("output"))
+		Expect(byName["financial"].Member).To(Equal("financial-analyst"))
+		Expect(byName["financial"].OutputKey).To(Equal("output"))
+		Expect(byName["technical"].Member).To(Equal("technical-analyst"))
+		Expect(byName["technical"].OutputKey).To(Equal("output"))
+	})
+})

@@ -815,6 +815,31 @@ var _ = Describe("SeedGatesDir", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.Mode().Perm() & 0o111).NotTo(BeZero())
 		})
+
+		It("seeds the quorum-gate bundle with manifest.yml + executable gate.py", func() {
+			// Concrete end-to-end pin: the bundled quorum-gate must
+			// land on disk with an executable gate.py so app.New's
+			// RegisterDiscoveredGates accepts it. Without this, the
+			// Board Room swarm's `ext:quorum-gate` dispatch fails with
+			// "ext gate not registered" the first time the
+			// technical-analyst finishes its turn.
+			gatesDest := filepath.Join(destDir, "gates")
+
+			err := app.SeedGatesDir(app.EmbeddedGatesFS(), gatesDest)
+
+			Expect(err).NotTo(HaveOccurred())
+			body, err := os.ReadFile(filepath.Join(gatesDest, "quorum-gate", "manifest.yml"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("name: quorum-gate"))
+			// The five-key multi-input declaration is what lets the
+			// host's composeMultiKeyPayload pack all five analyst
+			// outputs into a flat JSON object before the gate runs.
+			Expect(string(body)).To(ContainSubstring("inputs:"))
+
+			info, err := os.Stat(filepath.Join(gatesDest, "quorum-gate", "gate.py"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Mode().Perm() & 0o111).NotTo(BeZero())
+		})
 	})
 })
 
