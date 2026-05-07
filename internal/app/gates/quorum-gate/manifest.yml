@@ -1,0 +1,37 @@
+name: quorum-gate
+description: >
+  Validates the Board Room swarm's adversarial-debate contract: all five
+  analyst positions (bull, bear, market, financial, technical) must be
+  present in the composed payload, and the bull and bear analysts'
+  decisions must diverge. A converged bull/bear pair signals adversarial
+  review has collapsed and the swarm halts.
+version: "0.1.0"
+exec: ./gate.py
+timeout: 5s
+policy: {}
+# Multi-key inputs declaration — host composes a flat JSON object
+# {"bull":<bytes>, "bear":<bytes>, "market":<bytes>, "financial":<bytes>,
+# "technical":<bytes>} from the coord-store before invoking the gate.
+# Unlike relevance-gate, no `${target}` placeholder is needed here:
+# every analyst slot is a fixed, named member rather than the
+# dispatching gate's Target. The gate fires post-member around
+# technical-analyst (the last analyst in roster order) once the swarm's
+# sequential dispatch has populated all five slots — see commit
+# `0cb50144` for the host-side composition path and the Board Room
+# feature note (May 2026) for the harness.parallel decision.
+inputs:
+  - name: bull
+    member: bull-analyst
+    output_key: output
+  - name: bear
+    member: bear-analyst
+    output_key: output
+  - name: market
+    member: market-analyst
+    output_key: output
+  - name: financial
+    member: financial-analyst
+    output_key: output
+  - name: technical
+    member: technical-analyst
+    output_key: output
