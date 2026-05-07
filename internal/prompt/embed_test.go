@@ -20,6 +20,21 @@ import (
 // `c5595a77 fix(engine,prompt): anchor agent on user prompt after tool-result waves`.
 const canonicalAnchorSentence = "Anchor every response on the user's most recent user-role message"
 
+// todoDisciplineHeader is the section marker that flags the prompt carries the
+// universal todo-list discipline. Sibling to "Turn Rules" — both are always-on
+// behavioural guards independent of the tool loop.
+const todoDisciplineHeader = "Todo Discipline"
+
+// canonicalTodoMandate is the exact substring every prompt that handles
+// multi-step work MUST carry. The clause is intentionally identical across
+// prompts so the discipline is consistent regardless of which agent answers.
+// Names the actual tool (`todowrite`, registered at internal/tool/todo/todo.go)
+// so agents have no ambiguity about which tool to call. Pairs with session
+// `089c7cd5-37d8-4a59-868d-366d2dca0cfb` where default-assistant ran six
+// assistant turns without ever creating a todo list despite an explicit user
+// instruction at index 0.
+const canonicalTodoMandate = "Always use the `todowrite` tool to track multi-step work; do not start work on a multi-step task without first recording it."
+
 var _ = Describe("Embed", func() {
 	Describe("GetPrompt", func() {
 		It("returns the default-assistant prompt content", func() {
@@ -79,6 +94,54 @@ var _ = Describe("Turn Rules anchor directive propagation", func() {
 				content := readFile(path)
 				Expect(content).To(ContainSubstring(canonicalAnchorSentence),
 					"prompt missing canonical anchor sentence: %s", path)
+			}
+		})
+	})
+})
+
+var _ = Describe("Todo Discipline directive propagation", func() {
+	// Every agent that handles multi-step work MUST mandate use of the
+	// `todowrite` tool. The bug surfaced in session
+	// `089c7cd5-37d8-4a59-868d-366d2dca0cfb` — `default-assistant`
+	// (zai/glm-4.6) ran six assistant turns + many tool calls but never
+	// created a todo list, despite the user's explicit instruction at index 0.
+	// Filesystem-globbing keeps the contract automatic; new prompts inherit
+	// the check without spec edits.
+
+	// promptsExempt is the documented allow-list for prompts under
+	// internal/prompt/prompts/ that are out of scope of the todo-discipline
+	// contract. Each entry MUST cite a reason. When an exemption goes stale,
+	// remove the entry and run the spec to confirm propagation.
+	var promptsExempt = map[string]string{
+		// harness_critic.md is a single-shot, fixed-format reviewer that emits
+		// a VERDICT/CONFIDENCE/RUBRIC block for one plan and stops. It has no
+		// multi-step "work" — todowrite would be noise. See internal/prompt/
+		// prompts/harness_critic.md for the rigid output shape.
+		"harness_critic.md": "single-shot fixed-format reviewer; produces one VERDICT/CONFIDENCE block, no multi-step work",
+	}
+
+	Describe("internal/prompt/prompts/*.md", func() {
+		It("every embedded prompt declares a Todo Discipline section", func() {
+			for _, path := range listMarkdownFiles("prompts") {
+				if reason, exempt := promptsExempt[filepath.Base(path)]; exempt {
+					By("skipping " + path + " — " + reason)
+					continue
+				}
+				content := readFile(path)
+				Expect(content).To(ContainSubstring(todoDisciplineHeader),
+					"prompt missing '%s' section: %s", todoDisciplineHeader, path)
+			}
+		})
+
+		It("every embedded prompt carries the canonical todo mandate sentence", func() {
+			for _, path := range listMarkdownFiles("prompts") {
+				if reason, exempt := promptsExempt[filepath.Base(path)]; exempt {
+					By("skipping " + path + " — " + reason)
+					continue
+				}
+				content := readFile(path)
+				Expect(content).To(ContainSubstring(canonicalTodoMandate),
+					"prompt missing canonical todo mandate sentence: %s", path)
 			}
 		})
 	})

@@ -27,6 +27,20 @@ const canonicalAnchorSentence = "Anchor every response on the user's most recent
 // shape guard alongside the anchor clause. Both halves are required.
 const turnRulesHeader = "Turn Rules"
 
+// todoDisciplineHeader is the section marker that flags the agent carries the
+// universal todo-list discipline. Sibling to "Turn Rules" — both are always-on
+// behavioural guards independent of the tool loop.
+const todoDisciplineHeader = "Todo Discipline"
+
+// canonicalTodoMandate is the case-sensitive substring every agent prompt MUST
+// carry on its Todo Discipline section. The clause names the actual tool
+// (`todowrite`, registered at internal/tool/todo/todo.go) so agents have no
+// ambiguity about which tool to call. Pairs with session
+// `089c7cd5-37d8-4a59-868d-366d2dca0cfb` where default-assistant ran six
+// assistant turns without ever creating a todo list despite an explicit user
+// instruction at index 0.
+const canonicalTodoMandate = "Always use the `todowrite` tool to track multi-step work; do not start work on a multi-step task without first recording it."
+
 // exemptedPrompts is the documented allow-list for prompts that are out of
 // scope of the propagation contract. Each entry MUST cite a reason and a
 // long-lived owner.
@@ -73,6 +87,58 @@ var _ = Describe("Turn Rules anchor directive on agent prompts", func() {
 			content := readFile(path)
 			Expect(content).To(ContainSubstring(canonicalAnchorSentence),
 				"agent prompt missing canonical anchor sentence: %s", path)
+		}
+	})
+})
+
+// todoExempt is the documented allow-list for agent prompts excluded from the
+// Todo Discipline contract. Each entry MUST cite a reason and (where
+// applicable) the trigger that retires the exemption. The list is kept
+// deliberately separate from `exemptedPrompts` (Turn Rules) — the two
+// disciplines have different exemption rationales and may diverge over time.
+var todoExempt = map[string]string{
+	// planner.md is the active scope of the `Agent Prompt Upgrade` plan
+	// (vault: 1. Projects/FlowState/Plans/Agent Prompt Upgrade.md). The
+	// 2026-05 propagation slice (Todo Discipline) explicitly leaves it
+	// untouched to avoid stomping in-flight plan changes — the plan owns
+	// the canonical "single-task discipline" + "completion signal"
+	// rewrites and includes its own todo-flavoured discipline. Remove
+	// this exemption once that plan ships its rewrite.
+	"planner.md": "owned by Agent Prompt Upgrade plan; do not modify until that plan ships",
+}
+
+var _ = Describe("Todo Discipline directive on agent prompts", func() {
+	// Bug provenance: session `089c7cd5-37d8-4a59-868d-366d2dca0cfb` —
+	// `default-assistant` (zai/glm-4.6) ran six assistant turns + many tool
+	// calls but never created a todo list, despite the user's explicit
+	// instruction at index 0 to use the todo list. The fix mandates every
+	// multi-step-capable agent carries the same canonical mandate sentence
+	// pinning the actual tool name (`todowrite`).
+	//
+	// Filesystem-globbing keeps the contract automatic: any new
+	// internal/app/agents/*.md file is checked without spec edits.
+
+	It("every agent prompt declares a Todo Discipline section", func() {
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := todoExempt[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(todoDisciplineHeader),
+				"agent prompt missing '%s' section: %s", todoDisciplineHeader, path)
+		}
+	})
+
+	It("every agent prompt carries the canonical todo mandate sentence", func() {
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := todoExempt[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(canonicalTodoMandate),
+				"agent prompt missing canonical todo mandate sentence: %s", path)
 		}
 	})
 })
