@@ -2,6 +2,8 @@ package engine_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -11,9 +13,89 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
+
+// newTempContextStore returns a FileContextStore rooted in a per-test
+// temp directory, with cleanup deferred to the spec. The chain-store
+// dual-write only fires when storeResponse sees a non-nil context
+// store, so background-hook tests need one wired up.
+func newTempContextStore(prefix string) *recall.FileContextStore {
+	tmpDir, err := os.MkdirTemp("", prefix)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := recall.NewFileContextStore(filepath.Join(tmpDir, "context.json"), "")
+	Expect(err).NotTo(HaveOccurred())
+	return store
+}
+
+// capturingChainStore records every Append call's agentID + message in
+// arrival order. Tests use it as the observation point for the
+// "background goroutine stamps the spawn-time manifest, not the live
+// engine-state manifest" behaviour pinned by the per-session-binding
+// fix.
+type capturingChainStore struct {
+	mu       sync.Mutex
+	appends  []chainAppend
+	released chan struct{} // closed by the test once it has mutated e.manifest
+	signal   chan struct{} // closed once the first Append has parked at the gate
+	once     sync.Once
+}
+
+type chainAppend struct {
+	agentID string
+	role    string
+	content string
+}
+
+func newCapturingChainStore() *capturingChainStore {
+	return &capturingChainStore{
+		released: make(chan struct{}),
+		signal:   make(chan struct{}),
+	}
+}
+
+func (s *capturingChainStore) Append(agentID string, msg provider.Message) error {
+	// Park the first Append until the test mutates e.manifest. This
+	// is the deterministic seam that exposes whether the goroutine
+	// reads e.manifest.ID live (post-mutation = "beta") or from the
+	// snapshot it inherited at spawn (= "alpha").
+	s.once.Do(func() { close(s.signal) })
+	<-s.released
+
+	s.mu.Lock()
+	s.appends = append(s.appends, chainAppend{
+		agentID: agentID,
+		role:    msg.Role,
+		content: msg.Content,
+	})
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *capturingChainStore) Search(_ context.Context, _ string, _ int) ([]recall.SearchResult, error) {
+	return nil, nil
+}
+
+func (s *capturingChainStore) GetByAgent(_ string, _ int) ([]provider.Message, error) {
+	return nil, nil
+}
+
+func (s *capturingChainStore) ChainID() string { return "test-chain" }
+
+func (s *capturingChainStore) waitParked() { <-s.signal }
+func (s *capturingChainStore) release()    { close(s.released) }
+
+func (s *capturingChainStore) snapshot() []chainAppend {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]chainAppend, len(s.appends))
+	copy(out, s.appends)
+	return out
+}
 
 // gatingProvider is a thread-safe Provider that records every Stream
 // invocation's system prompt and tool names, then parks each call on a
@@ -425,6 +507,186 @@ var _ = Describe("Cross-session manifest binding", func() {
 				Expect(cap.systemPrompt).To(ContainSubstring("SOLO_SYSTEM_PROMPT"))
 				Expect(cap.toolNames).To(ContainElement("solo_tool"))
 			}
+		})
+	})
+
+	// Background-hook tightening: a Stream() spawned with manifest
+	// alpha must complete its detached post-stream work — the chain
+	// store dual-write that fires from the streamWithToolLoop
+	// goroutine — using alpha's identity, even when a concurrent
+	// Stream on the same engine has called SetManifest(beta) before
+	// the goroutine reaches its e.manifest.ID read.
+	//
+	// Pre-fix, dualWriteToChainStore reads e.manifest.ID directly:
+	// the post-mutation field wins and the chain store records the
+	// wrong agent. Post-fix, the bound manifest threaded through ctx
+	// from Stream() entry into the detached goroutine is the source
+	// of truth.
+	Describe("background hook stamping under concurrent SetManifest", func() {
+		It("dualWriteToChainStore stamps the spawn-time agent ID, not the post-mutation one", func() {
+			gp := &gatingProvider{}
+			chain := newCapturingChainStore()
+
+			alphaManifest := agent.Manifest{
+				ID:                "alpha",
+				Name:              "Alpha",
+				Instructions:      agent.Instructions{SystemPrompt: "ALPHA_SYSTEM_PROMPT"},
+				Capabilities:      agent.Capabilities{Tools: []string{"alpha_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			betaManifest := agent.Manifest{
+				ID:                "beta",
+				Name:              "Beta",
+				Instructions:      agent.Instructions{SystemPrompt: "BETA_SYSTEM_PROMPT"},
+				Capabilities:      agent.Capabilities{Tools: []string{"beta_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: gp,
+				ChainStore:   chain,
+				Manifest:     alphaManifest,
+				Tools: []tool.Tool{
+					&mockTool{name: "alpha_tool", description: "alpha"},
+					&mockTool{name: "beta_tool", description: "beta"},
+				},
+			})
+			eng.SetContextStore(newTempContextStore("xsess-mfst-alpha"), "session-alpha")
+
+			ctxAlpha := context.WithValue(context.Background(), session.IDKey{}, "session-alpha")
+
+			// Pre-arm the provider gate so the call parks rather than
+			// drains on the auto-released default. Released explicitly
+			// below once the test has confirmed the request was captured.
+			gateAlpha := gp.armGate(0)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				chunks, err := eng.Stream(ctxAlpha, "", "hello alpha")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain
+				}
+			}()
+
+			// Wait until the provider has captured alpha's request,
+			// then let it drain. The detached streamWithToolLoop
+			// goroutine then drives completeResponse →
+			// dualWriteToChainStore where it parks at the chain
+			// store's gate.
+			gp.waitForCaptures(1)
+			close(gateAlpha)
+
+			chain.waitParked()
+
+			// Mid-flight mutation: a concurrent Stream(beta) would
+			// fire SetManifest(beta). Simulate that race with a
+			// direct call so the test stays deterministic.
+			eng.SetManifest(betaManifest)
+
+			// Release the chain store gate. The goroutine resumes
+			// and stamps the agent ID on its Append call. Pre-fix
+			// it reads the post-mutation e.manifest.ID = "beta".
+			chain.release()
+			wg.Wait()
+
+			appends := chain.snapshot()
+			Expect(appends).NotTo(BeEmpty(), "the streamWithToolLoop goroutine must have appended an assistant message")
+
+			// Spec — every chain-store append fired by the alpha
+			// stream MUST carry alpha's ID, even though the engine's
+			// live manifest has since been swung to beta.
+			for _, a := range appends {
+				Expect(a.agentID).To(Equal("alpha"),
+					"expected chain-store append to carry the spawn-time agent ID; got %q (post-mutation engine.manifest = %q)", a.agentID, "beta")
+			}
+		})
+
+		// Same shape via the agent registry path: Stream(ctx, "alpha", …)
+		// resolves alpha from the registry, snapshots into ctx, and the
+		// goroutine must keep alpha as the chain-store agent even when a
+		// concurrent Stream(ctx, "beta", …) is also in flight and triggers
+		// SetManifest(beta) at registry-resolution time.
+		It("two concurrent Streams with different agentIDs stamp their own agent on chain-store appends", func() {
+			gp := &gatingProvider{}
+			chain := newCapturingChainStore()
+
+			plannerManifest := &agent.Manifest{
+				ID:                "planner",
+				Name:              "Planner",
+				Instructions:      agent.Instructions{SystemPrompt: "PLANNER_SYSTEM_PROMPT"},
+				Capabilities:      agent.Capabilities{Tools: []string{"plan_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			techLeadManifest := &agent.Manifest{
+				ID:                "tech-lead",
+				Name:              "Tech Lead",
+				Instructions:      agent.Instructions{SystemPrompt: "TECH_LEAD_SYSTEM_PROMPT"},
+				Capabilities:      agent.Capabilities{Tools: []string{"lead_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			registry := agent.NewRegistry()
+			registry.Register(plannerManifest)
+			registry.Register(techLeadManifest)
+
+			eng := engine.New(engine.Config{
+				ChatProvider:  gp,
+				ChainStore:    chain,
+				AgentRegistry: registry,
+				Manifest:      *plannerManifest,
+				Tools: []tool.Tool{
+					&mockTool{name: "plan_tool", description: "planner tool"},
+					&mockTool{name: "lead_tool", description: "tech-lead tool"},
+				},
+			})
+			eng.SetContextStore(newTempContextStore("xsess-mfst-multi"), "session-multi")
+
+			// Pre-arm both provider gates so neither call drains
+			// before the other has been captured.
+			gateP := gp.armGate(0)
+			gateL := gp.armGate(1)
+
+			ctxPlanner := context.WithValue(context.Background(), session.IDKey{}, "session-planner")
+			ctxLead := context.WithValue(context.Background(), session.IDKey{}, "session-lead")
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				chunks, err := eng.Stream(ctxPlanner, "planner", "plan it")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain
+				}
+			}()
+			gp.waitForCaptures(1)
+			go func() {
+				defer wg.Done()
+				chunks, err := eng.Stream(ctxLead, "tech-lead", "lead it")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain
+				}
+			}()
+			gp.waitForCaptures(2)
+
+			// Drain both provider streams. The two detached
+			// streamWithToolLoop goroutines now race into
+			// dualWriteToChainStore. The chain-store gate parks
+			// both — release once both have arrived.
+			close(gateP)
+			close(gateL)
+
+			chain.waitParked()
+			chain.release()
+			wg.Wait()
+
+			appends := chain.snapshot()
+			Expect(appends).To(HaveLen(2), "both streams must have appended one assistant message")
+
+			ids := []string{appends[0].agentID, appends[1].agentID}
+			Expect(ids).To(ConsistOf("planner", "tech-lead"),
+				"each stream's chain-store append must carry its own agent ID; pre-fix both stamp whichever manifest most recently won SetManifest")
 		})
 	})
 })
