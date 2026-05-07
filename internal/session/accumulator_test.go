@@ -586,22 +586,32 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"))
 		})
 
-		It("does not synthesise when the turn produced a tool call (existing tool-call shape handles wrapping)", func() {
-			// Regression guard: thinking-then-tool-call is a normal turn shape.
-			// The persisted history is [thinking, tool_call] with no trailing
-			// assistant placeholder — adding one here would change the wire
-			// format for every reasoning-capable provider that also uses
-			// tools. The synthesis path is gated on no-tool-call-this-turn.
+		It("does not synthesise on a tool-bearing turn from a unified-assistant provider (Anthropic)", func() {
+			// Regression guard for unified-assistant providers: Anthropic's
+			// wire format packs `text`, `thinking`, and `tool_use` content
+			// blocks into a single assistant message per round. The
+			// accumulator's tool_call message is the persisted turn artefact;
+			// adding an empty-content placeholder would double-stamp the
+			// history for every Anthropic turn that uses tools.
+			//
+			// The provider-aware predicate keys on the engine-stamped
+			// chunk.ProviderID, so this test sets ProviderID="anthropic" on
+			// the chunks the accumulator's lastProviderID will latch onto.
 			rawCh := make(chan provider.StreamChunk, 4)
-			rawCh <- provider.StreamChunk{Thinking: "deciding which tool", Signature: "sig-T"}
+			rawCh <- provider.StreamChunk{
+				Thinking:   "deciding which tool",
+				Signature:  "sig-T",
+				ProviderID: "anthropic",
+			}
 			rawCh <- provider.StreamChunk{
 				ToolCall: &provider.ToolCall{
 					ID:        "call-1",
 					Name:      "search",
 					Arguments: map[string]any{"query": "anything"},
 				},
+				ProviderID: "anthropic",
 			}
-			rawCh <- provider.StreamChunk{Done: true}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "anthropic"}
 			close(rawCh)
 
 			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
@@ -614,8 +624,127 @@ var _ = Describe("AccumulateStream", func() {
 				}
 			}
 			Expect(assistantMsgs).To(BeEmpty(),
-				"thinking-then-tool-call must NOT produce a synthesised placeholder; "+
-					"the tool_call is the visible shape of the turn")
+				"thinking-then-tool-call on a unified-assistant provider must NOT "+
+					"produce a synthesised placeholder; the tool_call is the "+
+					"visible shape of the Anthropic turn")
+		})
+
+		It("synthesises a placeholder on a tool-bearing turn from a non-unified provider (zai/openaicompat)", func() {
+			// Bug pin (May 2026, follow-up): user-visible "agent returns empty
+			// response after tool use" symptom. OpenAI-compat reasoning
+			// providers (zai/glm-4.6, DeepSeek-R1) emit `reasoning_content`
+			// on its own channel, separate from `content` and `tool_calls`.
+			// On a thinking-then-tool-call turn ending with Done, the prior
+			// over-aggressive turnHadToolCall gate suppressed synthesis
+			// unconditionally — the persisted history was [thinking,
+			// tool_call] with no enclosing assistant message, and the
+			// chat UI rendered thinking → gap → tool widget with nothing
+			// to close the turn.
+			//
+			// The fix gates the suppression on
+			// providerProducesUnifiedAssistant(s.lastProviderID), so on zai
+			// (and every other openaicompat-style provider) the placeholder
+			// IS synthesised, attaching the accumulated ThinkingBlocks under
+			// a single assistant message per turn — matching the
+			// one-assistant-message-per-turn pattern other harnesses
+			// converge on.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "deciding which tool",
+				Signature:  "sig-zai",
+				ProviderID: "zai",
+				ModelID:    "glm-4.6",
+			}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "call-zai",
+					Name:      "search",
+					Arguments: map[string]any{"query": "anything"},
+				},
+				ProviderID: "zai",
+				ModelID:    "glm-4.6",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-4.6"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"thinking-then-tool-call on a non-unified provider MUST produce "+
+					"a synthesised assistant placeholder so the turn's reasoning "+
+					"is not stranded; the chat UI needs an assistant message to "+
+					"close the turn after the tool widget renders")
+			Expect(assistantMsgs[0].Content).To(BeEmpty(),
+				"the placeholder carries no content because the model emitted "+
+					"reasoning_content only — no visible content tokens")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the accumulated thinking block must attach to the placeholder "+
+					"so persisted history holds the reasoning under an assistant turn")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("deciding which tool"))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Signature).To(Equal("sig-zai"))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"),
+				"the engine-stamped provider carries onto the placeholder so "+
+					"per-turn attribution survives reload")
+			Expect(assistantMsgs[0].ModelName).To(Equal("glm-4.6"))
+			Expect(assistantMsgs[0].AgentID).To(Equal("agent-1"))
+		})
+
+		It("synthesises a placeholder on every round of a multi-round tool loop (zai/openaicompat)", func() {
+			// Bug pin: a multi-round tool loop on zai accumulates
+			// ThinkingBlocks across every round (round 1 reasoning + tool A,
+			// round 2 reasoning + tool B, ..., round N reasoning + Done).
+			// flushContent never resets thinkingBlocks because contentBuf is
+			// always empty; applyToolCall sets turnHadToolCall=true on
+			// round 1 and never clears it. Before this fix, the final Done
+			// (after round N's reasoning) hit the gate, the synthesis was
+			// suppressed, and every round's reasoning was dropped from the
+			// persisted history.
+			//
+			// With the provider-aware gate, the final synthesis fires for
+			// non-unified providers and ALL accumulated ThinkingBlocks
+			// attach to the placeholder. The user sees one assistant
+			// message per turn carrying the full reasoning chain.
+			rawCh := make(chan provider.StreamChunk, 8)
+			rawCh <- provider.StreamChunk{Thinking: "round 1 thought", Signature: "sig-r1", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{
+				ToolCall:   &provider.ToolCall{ID: "call-r1", Name: "search", Arguments: map[string]any{"q": "a"}},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Thinking: "round 2 thought", Signature: "sig-r2", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{
+				ToolCall:   &provider.ToolCall{ID: "call-r2", Name: "search", Arguments: map[string]any{"q": "b"}},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Thinking: "round 3 thought", Signature: "sig-r3", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"the end-of-turn synthesis must fire exactly once for the whole "+
+					"multi-round tool loop, carrying every round's reasoning")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(3),
+				"all three rounds' thinking blocks must attach to the placeholder; "+
+					"silently dropping them is the user-visible 'empty response after "+
+					"tool use' regression this fix closes")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("round 1 thought"))
+			Expect(assistantMsgs[0].ThinkingBlocks[1].Thinking).To(Equal("round 2 thought"))
+			Expect(assistantMsgs[0].ThinkingBlocks[2].Thinking).To(Equal("round 3 thought"))
 		})
 
 		It("does not regress the content-bearing turn — content and thinking still co-attach to the assistant message", func() {
@@ -1080,21 +1209,25 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty())
 		})
 
-		It("does not synthesise a placeholder when a tool call preceded channel close (thinking-then-tool-call shape)", func() {
-			// Regression guard mirroring the existing Done-path
-			// tool-call gate: thinking-then-tool-call is a normal turn
-			// shape regardless of whether the stream ends with Done or
-			// raw-channel close. Adding a placeholder here would change
-			// the wire format for every reasoning-capable provider that
-			// also uses tools.
+		It("does not synthesise a placeholder on close-without-Done for a tool-bearing turn from a unified-assistant provider (Anthropic)", func() {
+			// Regression guard mirroring the Done-path Anthropic gate:
+			// Anthropic packs assistant content + tool_use into one
+			// message per round, so the tool_call is the persisted
+			// turn artefact and an extra placeholder would double-stamp
+			// the history.
 			rawCh := make(chan provider.StreamChunk, 3)
-			rawCh <- provider.StreamChunk{Thinking: "deciding which tool", Signature: "sig-T"}
+			rawCh <- provider.StreamChunk{
+				Thinking:   "deciding which tool",
+				Signature:  "sig-T",
+				ProviderID: "anthropic",
+			}
 			rawCh <- provider.StreamChunk{
 				ToolCall: &provider.ToolCall{
 					ID:        "call-close",
 					Name:      "search",
 					Arguments: map[string]any{"query": "anything"},
 				},
+				ProviderID: "anthropic",
 			}
 			close(rawCh)
 
@@ -1108,8 +1241,51 @@ var _ = Describe("AccumulateStream", func() {
 				}
 			}
 			Expect(assistantMsgs).To(BeEmpty(),
-				"thinking-then-tool-call ending with rawCh-close must NOT produce a "+
-					"synthesised placeholder; the tool_call is the visible shape of the turn")
+				"thinking-then-tool-call ending with rawCh-close on a unified-assistant "+
+					"provider must NOT produce a synthesised placeholder; the tool_call "+
+					"is the visible shape of the Anthropic turn")
+		})
+
+		It("synthesises a placeholder on close-without-Done for a tool-bearing turn from a non-unified provider (zai/openaicompat)", func() {
+			// Bug pin (May 2026, follow-up): the close-without-Done path
+			// must mirror the Done-path provider-aware gate. A reasoning
+			// provider whose stream ends after a tool_call without ever
+			// emitting a terminal Done (the openaicompat layer only emits
+			// Done when FinishReason != "" — see
+			// internal/provider/openaicompat/openaicompat.go:229-238)
+			// otherwise drops the turn's reasoning at end-of-stream.
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "deciding which tool",
+				Signature:  "sig-zai-close",
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "call-zai-close",
+					Name:      "search",
+					Arguments: map[string]any{"query": "anything"},
+				},
+				ProviderID: "zai",
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"thinking-then-tool-call ending with rawCh-close on a non-unified "+
+					"provider MUST produce a synthesised placeholder; otherwise the "+
+					"turn's reasoning is silently dropped at end-of-stream")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(Equal("deciding which tool"))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
 		})
 	})
 })
