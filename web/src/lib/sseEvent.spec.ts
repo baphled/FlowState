@@ -63,6 +63,29 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('classifies the context-window-exceeded canonical safeMsg as stream_critical and forwards the actionable copy verbatim', () => {
+    // The engine emits a structured `*provider.Error` with
+    // `ErrorTypeContextWindowExceeded` when the proactive overflow gate
+    // refuses a request that would exceed the configured per-model
+    // context limit. The api/errors.go layer maps this to a distinct
+    // canonical safeMsg that names the failure mode and recommends a
+    // recoverable action (trim recent tool results / start a fresh
+    // session). The wire shape is the same `{error, correlation_id}`
+    // envelope as the existing `stream_critical` event so the chat
+    // store still routes it to the persistent CriticalErrorBanner —
+    // the only difference is the verbatim message body the user sees.
+    const wireMsg =
+      'context window exceeded — start a fresh session or trim recent tool results before retrying'
+    const payload = JSON.stringify({ error: wireMsg, correlation_id: 'ctxabc' })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('stream_critical')
+    if (ev.kind === 'stream_critical') {
+      expect(ev.error).toMatch(/context.*(window|limit)/i)
+      expect(ev.error).toMatch(/(trim|fresh|start a new|recent tool)/i)
+      expect(ev.correlationId).toBe('ctxabc')
+    }
+  })
+
   it('classifies a tool_call by the type discriminant', () => {
     const ev = parseSSEPayload('{"type":"tool_call","name":"bash","status":"running","input":"ls"}')
     expect(ev.kind).toBe('tool_call')

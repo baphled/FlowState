@@ -1,6 +1,8 @@
 package context_test
 
 import (
+	"strings"
+
 	"github.com/baphled/flowstate/internal/context"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,6 +38,30 @@ var _ = Describe("TokenBudget", func() {
 			It("returns zero for empty text", func() {
 				counter := context.NewApproximateCounter()
 				Expect(counter.Count("")).To(Equal(0))
+			})
+
+			It("estimates a known-size payload to within ±20% of the expected token count", func() {
+				// Heuristic invariant: ApproximateCounter is the fallback
+				// the proactive context-window overflow check relies on
+				// when no provider-specific tokeniser is wired. A ~4-chars-
+				// per-token approximation is the documented contract; a
+				// regression that drifted the ratio (say to 1-token-per-char)
+				// would silently break the overflow gate by overestimating
+				// every payload. ±20% protects the gate's accuracy without
+				// freezing the exact arithmetic.
+				const charsPerTokenAnchor = 4
+				payload := strings.Repeat("x", 4_000)
+				expected := len(payload) / charsPerTokenAnchor // 1_000
+
+				counter := context.NewApproximateCounter()
+				got := counter.Count(payload)
+
+				lowerBound := expected * 80 / 100
+				upperBound := expected * 120 / 100
+				Expect(got).To(BeNumerically(">=", lowerBound),
+					"heuristic underestimated by more than 20%%; expected ~%d got %d", expected, got)
+				Expect(got).To(BeNumerically("<=", upperBound),
+					"heuristic overestimated by more than 20%%; expected ~%d got %d", expected, got)
 			})
 		})
 
