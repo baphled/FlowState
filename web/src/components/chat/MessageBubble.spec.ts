@@ -559,4 +559,101 @@ describe('MessageBubble', () => {
       expect(wrapper.attributes('data-status')).toBe('failed')
     })
   })
+
+  // Thinking-only degraded turn — the bug-fix follow-up flagged in
+  // `Empty-Content Thinking-Only Assistant Turn (May 2026)`. When the
+  // backend session accumulator synthesises a placeholder assistant
+  // message (empty content + thinking blocks + a non-empty stop_reason)
+  // because the provider produced reasoning tokens but never emitted
+  // visible content, the chat must NOT render that as a blank bubble —
+  // a stalled-stream lookalike. The bubble must show a soft-error
+  // affordance distinct from the critical-error banner and from a true
+  // stall.
+  describe('thinking-only degraded turn affordance', () => {
+    it('renders a soft-error affordance when content is empty but thinkingBlocks + stopReason are present', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          stopReason: 'end_turn',
+          thinkingBlocks: [
+            { thinking: 'considering options', signature: 'sig-1' },
+          ],
+        }),
+      )
+
+      const affordance = wrapper.find('[data-testid="thinking-only-affordance"]')
+      expect(affordance.exists()).toBe(true)
+      expect(affordance.text()).toMatch(/thought.*no response|no response/i)
+    })
+
+    it('does NOT render the affordance for a normal content-bearing assistant message', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: 'here is a real reply',
+          stopReason: 'end_turn',
+          thinkingBlocks: [
+            { thinking: 'considering options', signature: 'sig-1' },
+          ],
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
+      expect(wrapper.text()).toContain('here is a real reply')
+    })
+
+    it('does NOT render the affordance for a true stall (empty content, no thinkingBlocks)', () => {
+      // The placeholder shape is specifically (content === "") AND
+      // thinkingBlocks.length > 0 AND stopReason !== "". A true stall —
+      // an empty bubble with nothing else attached — must NOT trigger
+      // the soft-error affordance, because it really is a stall and a
+      // different surface owns that signal.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the affordance when thinkingBlocks is empty even with a stopReason', () => {
+      // A placeholder synthesised by something other than the backend
+      // accumulator's degraded-turn path (e.g. a mid-stream hard error
+      // that surfaced via stream_critical) must not collide with this
+      // rendering branch. CriticalErrorBanner owns the critical case.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          stopReason: 'end_turn',
+          thinkingBlocks: [],
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
+    })
+
+    it('uses role="status" so the affordance is announced as informational, not assertive', () => {
+      // Distinct from CriticalErrorBanner which uses role="alert" — this
+      // is a soft, post-hoc notification of a degraded turn, not an
+      // urgent failure.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          stopReason: 'end_turn',
+          thinkingBlocks: [
+            { thinking: 'reasoning step', signature: 'sig-2' },
+          ],
+        }),
+      )
+
+      const affordance = wrapper.find('[data-testid="thinking-only-affordance"]')
+      expect(affordance.exists()).toBe(true)
+      expect(affordance.attributes('role')).toBe('status')
+    })
+  })
 })

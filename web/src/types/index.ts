@@ -1,5 +1,31 @@
 /** Domain types mirroring the FlowState Go structs. */
 
+/**
+ * ThinkingBlock mirrors `provider.ThinkingBlock` on the Go side. Carried on
+ * an assistant message so that a session reload can reconstruct the exact
+ * thinking blocks the backend persisted (signed or redacted variants).
+ *
+ * The chat UI does not visibly render the contents — these are private
+ * model reasoning. They are surfaced here for two reasons:
+ *
+ *   1. The presence of a non-empty `thinkingBlocks` array on an
+ *      otherwise-empty assistant message is the signature of the
+ *      backend accumulator's "thinking-only degraded turn" placeholder
+ *      (see `Empty-Content Thinking-Only Assistant Turn (May 2026)` in
+ *      the FlowState vault). The chat UI uses that combination —
+ *      `content === ""` + `thinkingBlocks.length > 0` + non-empty
+ *      `stopReason` — to render a soft-error affordance instead of a
+ *      blank bubble that would look like a stall.
+ *   2. A future on-demand "show reasoning" disclosure can read these
+ *      directly without a separate fetch.
+ */
+export interface ThinkingBlock {
+  thinking?: string
+  signature?: string
+  redacted?: boolean
+  data?: string
+}
+
 export interface Message {
   id: string
   role: string
@@ -40,6 +66,30 @@ export interface Message {
    * during the reasoning phase and the data is captured for later display.
    */
   thinkingContent?: string
+  /**
+   * thinkingBlocks carries the structured per-block thinking content
+   * the backend accumulator persisted on this assistant message
+   * (Anthropic extended-thinking signed/redacted blocks, or the
+   * synthetic blocks the May 2026 thinking-only-degraded-turn fix
+   * attaches when a reasoning provider produces no visible content).
+   * Mirrors `session.Message.ThinkingBlocks` on the Go side.
+   *
+   * Read by the MessageBubble degraded-turn affordance to distinguish
+   * the placeholder shape from a true stall — see
+   * `Empty-Content Thinking-Only Assistant Turn (May 2026)` in the
+   * FlowState vault.
+   */
+  thinkingBlocks?: ThinkingBlock[]
+  /**
+   * stopReason is the upstream provider's terminal stop reason for the
+   * turn that produced this message. Empty when unknown. Mirrors
+   * `session.Message.StopReason` on the Go side.
+   *
+   * Combined with `content === ""` and a non-empty `thinkingBlocks`
+   * array, identifies the synthesised assistant placeholder for a
+   * thinking-only degraded turn.
+   */
+  stopReason?: string
 }
 
 export interface ChatRequest {
