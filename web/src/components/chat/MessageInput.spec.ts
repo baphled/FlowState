@@ -3,7 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MessageInput from './MessageInput.vue'
 import { useChatStore } from '@/stores/chatStore'
-import type { Agent } from '@/types'
+import type { Agent, Swarm } from '@/types'
 
 /**
  * Drives the textarea state in tests: pushes the value through Vue's
@@ -29,6 +29,13 @@ function makeAgents(): Agent[] {
   return [
     { id: 'planner', name: 'Planner Agent', description: 'Plans tasks' },
     { id: 'coder', name: 'Coder Agent', description: 'Writes code' },
+  ]
+}
+
+function makeSwarms(): Swarm[] {
+  return [
+    { id: 'a-team', description: 'Alpha codegen swarm', lead: 'planner', members: ['coder'] },
+    { id: 'planning-loop', description: 'Planning loop', lead: 'planner', members: [] },
   ]
 }
 
@@ -307,6 +314,53 @@ describe('MessageInput slash and mention triggers', () => {
     const textarea = inputWrapper.element as HTMLTextAreaElement
     // The slash item must have been rejected — only the "@" trigger character remains.
     expect(textarea.value).not.toContain('/clear')
+    wrapper.unmount()
+  })
+
+  // Web Swarm Mention Parity (May 2026) — the @-picker surfaces both
+  // agents (group "Agents") and swarms (group "Swarms"). The TUI has
+  // had this since the Multi-Agent Chat UX work; this pin confirms the
+  // web surface reaches parity. The picker pattern itself is reused
+  // verbatim — the only delta is populating the previously-empty swarm
+  // slice in mentionItems from the chat store.
+  it('shows registered swarms in the @-picker alongside agents', async () => {
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+    store.swarms = makeSwarms()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    await typeInto(wrapper.get('[data-testid="message-input"]'), '@', 1)
+
+    expect(wrapper.find('[data-testid="fuzzy-search-backdrop"]').exists()).toBe(true)
+    // Swarms must appear with their id as the testid suffix, mirroring
+    // the agent items the picker already renders.
+    expect(wrapper.find('[data-testid="fuzzy-search-item-a-team"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-planning-loop"]').exists()).toBe(true)
+    // Agents are still present — swarms add to the mentionItems list,
+    // they don't replace it.
+    expect(wrapper.find('[data-testid="fuzzy-search-item-planner"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('inserts a swarm @-mention token when a swarm picker entry is selected', async () => {
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+    store.swarms = makeSwarms()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    await typeInto(wrapper.get('[data-testid="message-input"]'), '@a-t', 4)
+
+    await wrapper.get('[data-testid="fuzzy-search-item-a-team"]').trigger('click')
+    await flushPromises()
+
+    const textarea = wrapper.get('[data-testid="message-input"]').element as HTMLTextAreaElement
+    // The token inserted carries the @ prefix so the orchestrator's
+    // ScanMentions path resolves it to a swarm dispatch on send.
+    expect(textarea.value).toBe('@a-team ')
     wrapper.unmount()
   })
 

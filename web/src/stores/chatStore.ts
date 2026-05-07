@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
-import type { Agent, Message, Model, SessionSummary } from '@/types'
+import type { Agent, Message, Model, SessionSummary, Swarm } from '@/types'
 import {
   createSession,
   fetchAgents,
   fetchModels,
   fetchSessionMessages,
   fetchSessions,
+  fetchSwarms,
   sendSessionMessage,
   truncateSessionMessages,
   updateSessionAgent,
@@ -284,6 +285,11 @@ export const useChatStore = defineStore('chat', {
   state: () => ({
     availableAgentDetails: [] as Agent[],
     availableAgents: [] as string[],
+    // swarms backs the @-picker's swarm slice in MessageInput — populated
+    // by loadSwarms() at bootstrap. The Vue web chat had this slice
+    // stubbed empty pending backend wiring (Web Swarm Mention Parity,
+    // May 2026); now it carries the real registry projection.
+    swarms: [] as Swarm[],
     availableModels: [] as Model[],
     agentId: '',
     currentModelId: '',
@@ -486,6 +492,7 @@ export const useChatStore = defineStore('chat', {
 
     async restoreStateFromBackend(): Promise<void> {
       await this.loadAgents()
+      await this.loadSwarms()
       await this.loadSessions()
       await this.loadModels()
 
@@ -720,6 +727,24 @@ export const useChatStore = defineStore('chat', {
       const agents = await fetchAgents()
       this.availableAgentDetails = agents
       this.availableAgents = agents.map((agent) => agent.id)
+    },
+
+    /**
+     * loadSwarms refreshes the registered-swarm list backing the
+     * MessageInput's @-picker. Mirrors loadAgents — fetches the list
+     * and populates state. The store is left to MessageInput / any
+     * future swarm panel to read; loadSwarms does NOT touch agentId
+     * or session state.
+     *
+     * No-throw on empty list — `[]` is a legitimate state when the
+     * backend has no registered swarms (the bare-server test path).
+     * Errors propagate so callers can surface them via the existing
+     * top-level error path; today the only caller is bootstrap, which
+     * runs alongside the other restore steps.
+     */
+    async loadSwarms(): Promise<void> {
+      const swarms = await fetchSwarms()
+      this.swarms = swarms
     },
 
     async setAgent(agentId: string): Promise<void> {

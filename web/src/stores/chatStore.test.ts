@@ -26,6 +26,7 @@ import {
   fetchModels,
   fetchSessionMessages,
   fetchSessions,
+  fetchSwarms,
   sendSessionMessage,
   subscribeSessionStream,
   truncateSessionMessages,
@@ -75,6 +76,10 @@ vi.mock('../api', () => ({
   fetchAgents: vi.fn(() => Promise.resolve([
     { id: 'agent-1', name: 'Agent One' },
     { id: 'agent-2', name: 'Agent Two' },
+  ])),
+  fetchSwarms: vi.fn(() => Promise.resolve([
+    { id: 'planning-loop', description: 'Planning swarm', lead: 'planner', members: ['explorer', 'analyst'] },
+    { id: 'solo', description: 'Solo', lead: 'executor', members: [] },
   ])),
   fetchSessions: vi.fn(() => Promise.resolve([
     { id: 'session-1', agentId: 'agent-1', title: 'Session 1', createdAt: '', updatedAt: '', messageCount: 0 },
@@ -3831,5 +3836,47 @@ describe('chatStore - bootstrap (singleton wrapper around restoreStateFromBacken
 
     await expect(a).rejects.toThrow('network blip')
     await expect(b).rejects.toThrow('network blip')
+  })
+})
+
+// Web Swarm Mention Parity (May 2026) — `loadSwarms` mirrors
+// `loadAgents`: a single GET to /api/swarms populating the chat
+// store's `swarms` slice. The MessageInput's @-picker reads this
+// slice so swarms appear alongside agents. Bootstrap calls loadSwarms
+// alongside loadAgents.
+describe('chatStore - loadSwarms (Web Swarm Mention Parity)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('populates `swarms` from fetchSwarms', async () => {
+    const store = useChatStore()
+    expect(store.swarms).toEqual([])
+
+    await store.loadSwarms()
+
+    expect(vi.mocked(fetchSwarms)).toHaveBeenCalledTimes(1)
+    expect(store.swarms).toHaveLength(2)
+    expect(store.swarms[0].id).toBe('planning-loop')
+    expect(store.swarms[0].lead).toBe('planner')
+    expect(store.swarms[1].id).toBe('solo')
+  })
+
+  it('runs as part of restoreStateFromBackend so the @-picker has swarms after bootstrap', async () => {
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(vi.mocked(fetchSwarms)).toHaveBeenCalledTimes(1)
+    expect(store.swarms.map((s) => s.id)).toEqual(['planning-loop', 'solo'])
+  })
+
+  it('does not throw when the swarm endpoint returns an empty list', async () => {
+    vi.mocked(fetchSwarms).mockResolvedValueOnce([])
+
+    const store = useChatStore()
+    await expect(store.loadSwarms()).resolves.not.toThrow()
+    expect(store.swarms).toEqual([])
   })
 })
