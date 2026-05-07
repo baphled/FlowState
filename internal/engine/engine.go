@@ -2327,6 +2327,15 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		req.Model = override
 	}
 
+	// Compute the context_usage payload BEFORE streamFromProvider so
+	// the gate's refusal path (which builds the synthetic refusal
+	// channel inline) and the success path see the same usage event.
+	// The chunk is forwarded to outChan as the first artefact, ahead
+	// of any provider chunks (and ahead of the gate refusal chunk on
+	// overflow), so the chat UI's chip updates even when the gate
+	// refuses the request.
+	usageChunk, hasUsage := e.buildContextUsageChunk(&req)
+
 	providerChunks, err := e.streamFromProvider(streamCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
 	if err != nil {
@@ -2338,6 +2347,14 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	go func() {
 		defer close(outChan)
+		// Emit context_usage first so the chip pivots before any
+		// content/tool/error chunk lands. Forwarded only when the
+		// gate has enough information to compute it (token counter
+		// wired AND limit > 0); otherwise dropped silently — a
+		// missing chip is a better degradation than a malformed one.
+		if hasUsage {
+			outChan <- usageChunk
+		}
 		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan)
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
@@ -2527,13 +2544,66 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 // as the user-visible body of the persistent banner.
 const contextWindowOverflowMessage = "context window exceeded — start a fresh session or trim recent tool results before retrying"
 
+// Output-reserve constants. See checkContextWindowOverflow for rationale.
+const (
+	// defaultOutputReserve is the reserve applied when the caller did
+	// not stamp MaxTokens on the request. Mirrors OpenCode's
+	// compaction.ts:30-39 default reserve when its model registry has
+	// no explicit OutputLimit. The value is conservative — most
+	// production turns use a fraction of this — but pre-this-fix the
+	// gate left zero room for output, so the model would either
+	// truncate immediately or hang in reasoning-only "thought into
+	// the void" turns.
+	defaultOutputReserve = 4096
+	// minOutputReserve floors the reserve so a small caller-supplied
+	// MaxTokens cannot sneak a request through by shrinking the
+	// reserve below a usable size. The 1024 floor matches the
+	// smallest plausible non-empty assistant turn.
+	minOutputReserve = 1024
+)
+
+// outputReserveFor returns the output reserve to subtract from the raw
+// context limit before comparing against the estimated input. The reserve
+// is `max(req.MaxTokens, minOutputReserve)` when MaxTokens is non-zero,
+// otherwise `defaultOutputReserve`. Centralised so the gate and the
+// context_usage event emitter agree on the same value.
+//
+// Expected:
+//   - req is non-nil. MaxTokens may be zero.
+//
+// Returns:
+//   - The reserve in tokens. Always > 0.
+//
+// Side effects:
+//   - None.
+func outputReserveFor(req *provider.ChatRequest) int {
+	if req.MaxTokens > 0 {
+		if req.MaxTokens < minOutputReserve {
+			return minOutputReserve
+		}
+		return req.MaxTokens
+	}
+	return defaultOutputReserve
+}
+
 // checkContextWindowOverflow returns a non-nil *provider.Error when the
 // engine's estimated input-token count for req exceeds the per-model
-// context limit configured for (req.Provider, req.Model). It mirrors
-// OpenCode's isOverflow gate (compaction.ts:30-89): the smallest viable
-// slice of context-management is detect-and-refuse before send. Auto-
-// compaction, old-tool-output pruning, and per-tool result truncation
-// are subsequent slices that build on this seam.
+// context limit configured for (req.Provider, req.Model), reserving
+// space for the eventual response. It mirrors OpenCode's isOverflow
+// gate (compaction.ts:30-89): the smallest viable slice of context-
+// management is detect-and-refuse before send. Auto-compaction, old-
+// tool-output pruning, and per-tool result truncation are subsequent
+// slices that build on this seam.
+//
+// The reserve formula closes the May 2026 saturation bug where the gate
+// compared estimated input against the raw context limit, leaving zero
+// budget for the response when the input filled 100% of the window. The
+// model would either truncate immediately or hang in reasoning-only
+// "thought into the void" turns.
+//
+//	reserve = max(req.MaxTokens or defaultOutputReserve, minOutputReserve)
+//	usable  = max(1, limit - reserve)
+//	refuse if estimated > usable
 //
 // The estimate uses the engine's wired tokenCounter when available
 // (TiktokenCounter or ApproximateCounter — the latter's character-based
@@ -2557,9 +2627,9 @@ const contextWindowOverflowMessage = "context window exceeded — start a fresh 
 // Returns:
 //   - nil when the request fits or the gate cannot evaluate (no counter).
 //   - A *provider.Error{ErrorType: ErrorTypeContextWindowExceeded} when
-//     the estimate exceeds the limit. Severity classification picks this
-//     up via severityFromProviderErrorType and routes the chunk through
-//     the SeverityCritical path.
+//     the estimate exceeds the usable budget. Severity classification
+//     picks this up via severityFromProviderErrorType and routes the
+//     chunk through the SeverityCritical path.
 //
 // Side effects:
 //   - None.
@@ -2577,7 +2647,12 @@ func (e *Engine) checkContextWindowOverflow(req *provider.ChatRequest) *provider
 	}
 
 	estimated := e.estimateRequestTokens(req)
-	if estimated <= limit {
+	reserve := outputReserveFor(req)
+	usable := limit - reserve
+	if usable < 1 {
+		usable = 1
+	}
+	if estimated <= usable {
 		return nil
 	}
 
@@ -2590,6 +2665,87 @@ func (e *Engine) checkContextWindowOverflow(req *provider.ChatRequest) *provider
 		EstimatedInputTokens: estimated,
 		ContextLimit:         limit,
 	}
+}
+
+// contextUsagePayload is the JSON shape of the context_usage SSE event.
+// Pre-marshalled into chunk.Content so the SSE writer in
+// internal/api/server.go can re-emit it verbatim with the canonical
+// `"type":"context_usage"` discriminant injected by writeSSEContextUsage.
+//
+// Field semantics:
+//   - InputTokens — engine-side estimate of the prompt cost
+//     (estimateRequestTokens; conservative tiktoken / character-based).
+//   - OutputReserve — the reserve subtracted from limit to compute
+//     usable. Matches outputReserveFor for the same request.
+//   - Limit — the resolved per-(provider, model) context window in tokens.
+//   - Percentage — round(input_tokens / limit * 100). Capped at 999
+//     so a degraded estimate cannot break the chip's three-digit
+//     formatter.
+//   - Provider / Model — canonical ids the chip displays alongside
+//     the usage figure.
+type contextUsagePayload struct {
+	InputTokens   int    `json:"input_tokens"`
+	OutputReserve int    `json:"output_reserve"`
+	Limit         int    `json:"limit"`
+	Percentage    int    `json:"percentage"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+}
+
+// buildContextUsageChunk computes the context_usage payload for req and
+// returns it as a StreamChunk{EventType: "context_usage"}. Emitted as
+// the first artefact on every Stream that has enough information to
+// compute it: token counter wired AND resolved limit > 0. When either
+// is missing the chunk is suppressed (returns hasUsage=false) — a
+// missing chip is a better degradation than a chip showing zeros.
+//
+// Expected:
+//   - req is the assembled chat request, post-buildContextWindow.
+//
+// Returns:
+//   - chunk with EventType="context_usage" and JSON payload in Content.
+//   - hasUsage=false when the engine cannot compute a meaningful figure.
+//
+// Side effects:
+//   - None beyond JSON marshalling.
+func (e *Engine) buildContextUsageChunk(req *provider.ChatRequest) (provider.StreamChunk, bool) {
+	if e == nil || req == nil || e.tokenCounter == nil {
+		return provider.StreamChunk{}, false
+	}
+	limit := e.ResolveContextLength(req.Provider, req.Model)
+	if limit <= 0 {
+		return provider.StreamChunk{}, false
+	}
+
+	estimated := e.estimateRequestTokens(req)
+	reserve := outputReserveFor(req)
+	pct := 0
+	if limit > 0 {
+		pct = (estimated * 100) / limit
+		if pct > 999 {
+			pct = 999
+		}
+	}
+
+	payload := contextUsagePayload{
+		InputTokens:   estimated,
+		OutputReserve: reserve,
+		Limit:         limit,
+		Percentage:    pct,
+		Provider:      req.Provider,
+		Model:         req.Model,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		// Marshal cannot fail for a struct of primitives, but if it
+		// somehow did we suppress the event rather than emitting a
+		// malformed chunk the parser would classify as "unknown".
+		return provider.StreamChunk{}, false
+	}
+	return provider.StreamChunk{
+		EventType: "context_usage",
+		Content:   string(body),
+	}, true
 }
 
 // estimateRequestTokens approximates the prompt-token count for req

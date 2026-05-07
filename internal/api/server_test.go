@@ -1154,6 +1154,102 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
 
+	// context_usage SSE round-trip.
+	//
+	// Phase 2 of the May 2026 context-window saturation fix. The engine
+	// emits a chunk{EventType:"context_usage", Content:<json>} as the
+	// first artefact of every Stream. Content is the marshalled
+	// engine.contextUsagePayload (input_tokens / output_reserve / limit
+	// / percentage / provider / model). The dispatcher in
+	// handleSessionStream routes that chunk to writeSSEContextUsage,
+	// which injects the "type":"context_usage" discriminant the
+	// frontend's parseSSEPayload union dispatches on. The chip then
+	// renders the live usage figure alongside the model picker.
+	It("emits a typed context_usage SSE event when the engine prepends a usage chunk", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{
+			EventType: "context_usage",
+			Content: `{"input_tokens":1234,"output_reserve":4096,"limit":100000,` +
+				`"percentage":1,"provider":"zai","model":"glm-4.6"}`,
+		}
+		source <- provider.StreamChunk{Content: "answer body"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_usage"`)),
+			"expected typed context_usage SSE event; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring(`"input_tokens":1234`)),
+			"input_tokens must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"output_reserve":4096`)),
+			"output_reserve must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"limit":100000`)),
+			"limit must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"provider":"zai"`)),
+			"provider must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"model":"glm-4.6"`)),
+			"model must round-trip onto the wire")
+
+		// MUST NOT leak the JSON payload as a plain content chunk.
+		for _, e := range evts {
+			if strings.Contains(e, `"input_tokens":1234`) && !strings.Contains(e, `"type":"context_usage"`) {
+				Fail("context_usage payload leaked into a plain content chunk: " + e)
+			}
+		}
+
+		Expect(evts).To(ContainElement(ContainSubstring("answer body")))
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
 	It("does not replay history when broker is live — only broker-published events appear", func() {
 		// Regression guard for the SSE duplication bug: when handleSessionStream
 		// is connected to a live broker, it must NOT replay sess.Messages before

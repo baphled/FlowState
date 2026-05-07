@@ -1034,6 +1034,17 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				// chip pivots from the user's selection to the actual model
 				// the moment streaming starts.
 				writeSSEModelActive(w, flusher, chunk.Content)
+			case "context_usage":
+				// Always-on context-window usage affordance (May 2026
+				// output-reserve fix). The engine emits a chunk{EventType:
+				// "context_usage", Content:<json>} as the first artefact of
+				// every Stream that has enough information to compute it.
+				// Content is the marshalled contextUsagePayload (input /
+				// reserve / limit / percentage / provider / model). The
+				// frontend's discriminated union "context_usage" branch
+				// updates the toolbar usage chip so the user sees how
+				// close the request is to saturating the model's window.
+				writeSSEContextUsage(w, flusher, chunk.Content)
 			case "":
 				if chunk.Content != "" {
 					writeSSEContent(w, flusher, chunk.Content)
@@ -1784,6 +1795,81 @@ func writeSSEModelActive(w http.ResponseWriter, flusher http.Flusher, payload st
 		Type:     "model_active",
 		Provider: parsed.Provider,
 		Model:    parsed.Model,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseContextUsage represents the always-on context-window usage event
+// emitted at the start of every Stream when the engine has enough
+// information to compute it (token counter wired AND limit > 0). The
+// chat UI renders this as a usage chip alongside the model picker.
+//
+// Field semantics:
+//   - InputTokens — engine-side estimate of the prompt cost.
+//   - OutputReserve — the reserve subtracted from limit before the
+//     overflow gate compares input against usable.
+//   - Limit — resolved per-(provider, model) context window in tokens.
+//   - Percentage — round(input / limit * 100). Capped at 999 by the
+//     engine so the chip's three-digit formatter is safe.
+//   - Provider / Model — canonical ids the chip displays.
+//
+// Mirrors the wire-shape contract of sseModelActive: the engine
+// marshals the payload (no type field — that's the SSE writer's
+// contract) and writeSSEContextUsage injects the discriminant.
+type sseContextUsage struct {
+	Type          string `json:"type"`
+	InputTokens   int    `json:"input_tokens"`
+	OutputReserve int    `json:"output_reserve"`
+	Limit         int    `json:"limit"`
+	Percentage    int    `json:"percentage"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+}
+
+// writeSSEContextUsage emits a typed context_usage SSE event by
+// re-parsing the payload JSON marshalled by the engine and re-emitting
+// it with the canonical "type":"context_usage" discriminant injected.
+//
+// Same pattern as writeSSEModelActive: the engine marshals the figures
+// (no type field — that's the SSE writer's contract). Injecting the
+// type field here keeps the emitter side unaware of the frontend
+// dispatch convention.
+//
+// Expected:
+//   - payload is the JSON encoded by engine.contextUsagePayload.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded context_usage event.
+//   - Flushes response buffer.
+//   - On a malformed payload, drops the event silently rather than
+//     emitting a malformed SSE event the frontend's parser would
+//     classify as "unknown" and discard. The chip stays on the
+//     prior value rather than blanking out mid-conversation.
+func writeSSEContextUsage(w http.ResponseWriter, flusher http.Flusher, payload string) {
+	var parsed struct {
+		InputTokens   int    `json:"input_tokens"`
+		OutputReserve int    `json:"output_reserve"`
+		Limit         int    `json:"limit"`
+		Percentage    int    `json:"percentage"`
+		Provider      string `json:"provider"`
+		Model         string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return
+	}
+	data := sseContextUsage{
+		Type:          "context_usage",
+		InputTokens:   parsed.InputTokens,
+		OutputReserve: parsed.OutputReserve,
+		Limit:         parsed.Limit,
+		Percentage:    parsed.Percentage,
+		Provider:      parsed.Provider,
+		Model:         parsed.Model,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {

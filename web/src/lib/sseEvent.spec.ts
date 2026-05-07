@@ -210,6 +210,73 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('classifies a context_usage event by the type discriminant and unpacks the figures', () => {
+    // Phase 2 of the May 2026 context-window saturation fix. The engine
+    // emits {"type":"context_usage", input_tokens, output_reserve, limit,
+    // percentage, provider, model} as the first artefact of every Stream.
+    // The chat UI's chip renders the input + percentage figure alongside
+    // the model picker so the user sees how close the request is to
+    // saturating the model's window — including on the gate-refused
+    // overflow path where the chunk arrives before the refusal error.
+    const payload = JSON.stringify({
+      type: 'context_usage',
+      input_tokens: 12345,
+      output_reserve: 4096,
+      limit: 100000,
+      percentage: 12,
+      provider: 'zai',
+      model: 'glm-4.6',
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('context_usage')
+    if (ev.kind === 'context_usage') {
+      expect(ev.inputTokens).toBe(12345)
+      expect(ev.outputReserve).toBe(4096)
+      expect(ev.limit).toBe(100000)
+      expect(ev.percentage).toBe(12)
+      expect(ev.provider).toBe('zai')
+      expect(ev.model).toBe('glm-4.6')
+    }
+  })
+
+  it('treats a context_usage event with missing numeric fields as well-formed (defaults to zero)', () => {
+    // Defensive: a degraded wire payload (a future emitter that ships
+    // only the type) must not crash the union. The store's handler
+    // treats zero-figures as "no information" and leaves the chip on
+    // its prior value rather than blanking it mid-conversation.
+    const ev = parseSSEPayload('{"type":"context_usage"}')
+    expect(ev.kind).toBe('context_usage')
+    if (ev.kind === 'context_usage') {
+      expect(ev.inputTokens).toBe(0)
+      expect(ev.outputReserve).toBe(0)
+      expect(ev.limit).toBe(0)
+      expect(ev.percentage).toBe(0)
+      expect(ev.provider).toBe('')
+      expect(ev.model).toBe('')
+    }
+  })
+
+  it('preserves the percentage figure verbatim (no clamp / no rounding on the parser side)', () => {
+    // The engine caps percentage at 999 before sending — the parser
+    // forwards the figure as-is so the store/component can decide how
+    // to render it. This pin guards against a future parser-side clamp
+    // that would mask an engine-side bug producing out-of-range figures.
+    const payload = JSON.stringify({
+      type: 'context_usage',
+      input_tokens: 50,
+      output_reserve: 4096,
+      limit: 100,
+      percentage: 50,
+      provider: 'zai',
+      model: 'glm-4.6',
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('context_usage')
+    if (ev.kind === 'context_usage') {
+      expect(ev.percentage).toBe(50)
+    }
+  })
+
   it('classifies a thinking event by the type discriminant and unpacks content', () => {
     // Drop #2 — thinking SSE event. The Go side emits
     // {"type":"thinking","content":"<reasoning text>"} when the provider

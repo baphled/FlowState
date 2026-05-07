@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -931,6 +932,303 @@ var _ = Describe("Engine", func() {
 				Entry("small-model limit (200) refuses", 200, true),
 				Entry("large-model limit (200_000) passes", 200_000, false),
 			)
+
+			// Phase 2 — output reserve. Pre-this-fix the gate compared
+			// estimated input tokens against the raw context limit, leaving
+			// zero budget for the response when the input filled 100% of
+			// the window. The model would either truncate immediately or
+			// hang in reasoning-only "thought into the void" turns. Mirrors
+			// OpenCode's `usable = input_limit - output_reserve` reference
+			// at compaction.ts:30-39. Reserve formula:
+			//   reserve = max(req.MaxTokens or 4096, 1024)
+			//   usable  = max(1, limit - reserve)
+			//   refuse if estimated > usable
+			Context("output-reserve guard (Phase 2)", func() {
+				It("refuses an input that fits the raw limit but exceeds limit-reserve", func() {
+					// limit=5_000, no MaxTokens → reserve=4_096 →
+					// usable=904. A ~1_500-token input was passing under
+					// the old check (≤ limit) and now must refuse.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(5_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					// 6_000 chars → heuristic ~1_500 tokens. Sits above
+					// usable (904) and below the raw limit (5_000).
+					msg := strings.Repeat("x", 6_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).To(BeNil(),
+						"input fits raw limit (5_000) but exceeds limit-reserve (904) — must refuse")
+				})
+
+				It("preserves backward-compat under the new boundary (limit-reserve)", func() {
+					// Regression guard: a small input well under
+					// limit-reserve must continue to pass.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					// limit=200_000, reserve=4_096 → usable=195_904. A
+					// ~1k-token message still passes.
+					manager.SetContextFallback(200_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					msg := strings.Repeat("x", 4_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).NotTo(BeNil(),
+						"under-limit-reserve input must pass through")
+				})
+
+				It("applies the reserve to the systemPromptBudget fallback when no failover manager is wired", func() {
+					// Resolver fallback path: no FailoverManager → engine
+					// uses systemPromptBudget. With cfg.SystemPromptBudget
+					// =5_000 and reserve=4_096 the usable is 904, so a
+					// ~1_500-token input refuses even via the fallback
+					// path. Pre-this-fix the gate compared against the
+					// raw fallback (5_000) and let it through.
+					eng := engine.New(engine.Config{
+						ChatProvider:       chatProvider,
+						Manifest:           manifest,
+						TokenCounter:       ctxstore.NewApproximateCounter(),
+						SystemPromptBudget: 5_000,
+					})
+
+					msg := strings.Repeat("x", 6_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).To(BeNil(),
+						"fallback path must apply the same reserve — input fits raw 5_000 but exceeds usable 904")
+				})
+
+				It("clamps a small caller-supplied MaxTokens up to the 1024 floor", func() {
+					// limit=5_000, MaxTokens=100 → reserve=max(100, 1024)
+					// =1024 → usable=3_976. A ~5_000-token input must
+					// still refuse — small MaxTokens cannot sneak through
+					// by shrinking the reserve below the floor. The
+					// MaxTokens=100 stamp arrives via applyCategoryParams
+					// from a CategoryConfig with MaxTokens=100.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(5_000)
+
+					mfst := manifest
+					mfst.OrchestratorMeta = agent.OrchestratorMetadata{Category: "tiny"}
+					resolver := engine.NewCategoryResolver(map[string]engine.CategoryConfig{
+						"tiny": {MaxTokens: 100},
+					})
+
+					eng := engine.New(engine.Config{
+						Registry:         registry,
+						FailoverManager:  manager,
+						Manifest:         mfst,
+						TokenCounter:     ctxstore.NewApproximateCounter(),
+						CategoryResolver: resolver,
+					})
+
+					// ~5_000 tokens, well above usable=3_976.
+					msg := strings.Repeat("x", 20_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).To(BeNil(),
+						"small MaxTokens must clamp to the 1024 floor — large input must still refuse")
+				})
+
+				It("uses the 4096 default reserve when MaxTokens is zero", func() {
+					// limit=5_000, MaxTokens=0 → reserve=4_096 → usable=904.
+					// A ~1_500-token input refuses under the default
+					// reserve. Sibling of case 1 — pins that default
+					// reserve picks 4_096 not the 1024 floor.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(5_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					// ~250-token message — under usable(904), passes.
+					small := strings.Repeat("x", 1_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", small)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+					Expect(chatProvider.capturedRequest).NotTo(BeNil(),
+						"~250-token input must pass with default reserve")
+				})
+			})
+
+			// Phase 2 — context_usage SSE event. The engine emits a
+			// single context_usage chunk at the start of every Stream so
+			// the chat UI can render a live usage chip. Shape:
+			//   {type: "context_usage", input_tokens, output_reserve,
+			//    limit, percentage, model, provider}
+			// Forwarded ahead of any provider chunks (and ahead of the
+			// gate refusal chunk on overflow) so the chip updates even
+			// when the gate refuses.
+			Context("context_usage event (Phase 2)", func() {
+				It("emits a context_usage chunk with the computed shape on a passing request", func() {
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(100_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+					Expect(err).NotTo(HaveOccurred())
+
+					var received []provider.StreamChunk
+					for chunk := range chunks {
+						received = append(received, chunk)
+					}
+
+					var usage *provider.StreamChunk
+					for i := range received {
+						if received[i].EventType == "context_usage" {
+							c := received[i]
+							usage = &c
+							break
+						}
+					}
+					Expect(usage).NotTo(BeNil(),
+						"a context_usage chunk must be emitted on every Stream")
+
+					var payload map[string]interface{}
+					Expect(json.Unmarshal([]byte(usage.Content), &payload)).To(Succeed(),
+						"context_usage chunk Content must be JSON")
+
+					Expect(payload).To(HaveKey("input_tokens"))
+					Expect(payload).To(HaveKey("output_reserve"))
+					Expect(payload).To(HaveKey("limit"))
+					Expect(payload).To(HaveKey("percentage"))
+					Expect(payload).To(HaveKey("model"))
+					Expect(payload).To(HaveKey("provider"))
+
+					Expect(payload["limit"]).To(BeNumerically("==", 100_000))
+					Expect(payload["output_reserve"]).To(BeNumerically("==", 4_096))
+					Expect(payload["input_tokens"]).To(BeNumerically(">", 0))
+					Expect(payload["percentage"]).To(BeNumerically(">=", 0))
+					Expect(payload["provider"]).To(Equal("test-chat-provider"))
+					Expect(payload["model"]).To(Equal("test-model"))
+				})
+
+				It("emits the context_usage chunk before the gate refusal error chunk on overflow", func() {
+					// Wire ordering pin: when the gate refuses, the chip
+					// still needs to update (so the user sees they hit
+					// 100%+). The usage chunk MUST arrive before the
+					// refusal error chunk on outChan.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(10)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					bigMsg := strings.Repeat("words ", 500)
+					chunks, err := eng.Stream(context.Background(), "test-agent", bigMsg)
+					Expect(err).NotTo(HaveOccurred())
+
+					var usageIdx, errIdx = -1, -1
+					i := 0
+					for chunk := range chunks {
+						if chunk.EventType == "context_usage" && usageIdx == -1 {
+							usageIdx = i
+						}
+						if chunk.Error != nil && errIdx == -1 {
+							errIdx = i
+						}
+						i++
+					}
+					Expect(usageIdx).NotTo(Equal(-1), "context_usage chunk must be emitted on overflow path")
+					Expect(errIdx).NotTo(Equal(-1), "refusal error chunk must be emitted")
+					Expect(usageIdx).To(BeNumerically("<", errIdx),
+						"context_usage must arrive before the refusal chunk")
+				})
+
+				It("does not emit a context_usage chunk when no limit is known (no counter)", func() {
+					// Sibling guard: when tokenCounter is unwired the
+					// gate is a no-op AND no usage chunk fires (we have
+					// no input_tokens to report).
+					eng := engine.New(engine.Config{
+						ChatProvider: chatProvider,
+						Manifest:     manifest,
+						// No TokenCounter wired
+					})
+
+					chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+					Expect(err).NotTo(HaveOccurred())
+
+					for chunk := range chunks {
+						Expect(chunk.EventType).NotTo(Equal("context_usage"),
+							"no usage event when token counter is unwired")
+					}
+				})
+			})
 		})
 	})
 

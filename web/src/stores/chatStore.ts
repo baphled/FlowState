@@ -324,6 +324,35 @@ export const useChatStore = defineStore('chat', {
     // for support. The raw provider error never reaches the client —
     // only the canonical safeMsg + correlation id.
     criticalError: null as { message: string; correlationId: string } | null,
+    // currentContextUsage carries the live figures the toolbar usage
+    // chip renders. Populated by applyContentEvent on every
+    // `context_usage` SSE event the engine prepends to a stream (Phase
+    // 2 of the May 2026 context-window saturation fix — companion to
+    // the proactive overflow gate). The chip displays
+    // `{inputTokens}/{limit}` plus a `{percentage}%` label, with
+    // threshold colours that match the CriticalErrorBanner palette
+    // (≥75% warning, ≥90% danger).
+    //
+    // Why a structured slice rather than threading raw payload via
+    // props: the chip lives at the toolbar level (web/src/views/
+    // ChatView.vue between the provider-label and ModelPicker) while
+    // the dispatch lives in the store. A central slice keeps one
+    // source of truth and lets the chip render purely from store
+    // state.
+    //
+    // Cleared on session change (loadSessionMessages) so a stale
+    // figure from a prior session does not bleed into the new one. A
+    // fresh stream on the new session repopulates it.
+    //
+    // Defensive empty-figure payloads (a future emitter that ships
+    // only the type) MUST NOT clobber a healthy figure — handled in
+    // the dispatch (mirror of the model_active guard).
+    currentContextUsage: null as {
+      inputTokens: number
+      outputReserve: number
+      limit: number
+      percentage: number
+    } | null,
     // lastToolName tracks the tool whose result is expected next over the
     // SSE stream. The server emits `tool_call` then `tool_result` as a pair
     // (see internal/api/sse_consumer.go WriteToolCall/WriteToolResult), but
@@ -871,6 +900,10 @@ export const useChatStore = defineStore('chat', {
       // to the failing session — the new one starts clean. A fresh
       // critical event on the new session will repopulate this.
       this.criticalError = null
+      // Same rationale for the usage chip — it tracks the live stream
+      // on the prior session and is meaningless on a different one.
+      // The next stream's first context_usage event repopulates it.
+      this.currentContextUsage = null
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -1438,6 +1471,14 @@ export const useChatStore = defineStore('chat', {
             model: event.model,
           })
           return
+        case 'context_usage':
+          this.handleContextUsageEvent({
+            inputTokens: event.inputTokens,
+            outputReserve: event.outputReserve,
+            limit: event.limit,
+            percentage: event.percentage,
+          })
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1687,6 +1728,58 @@ export const useChatStore = defineStore('chat', {
         variant: 'default',
         duration: 5000,
       })
+    },
+
+    /**
+     * context_usage handler — Phase 2 of the May 2026 context-window
+     * saturation fix.
+     *
+     * The Go SSE pipeline emits a `context_usage` event as the first
+     * artefact of every Stream that has enough information to compute
+     * it (token counter wired AND resolved limit > 0). The handler
+     * updates `currentContextUsage` so the toolbar usage chip can
+     * render the live figure alongside the model picker.
+     *
+     * Behaviour:
+     *   - All-zero / empty payload (defensive: a future emitter that
+     *     ships only the `type` field) leaves the prior figure
+     *     untouched. Better to keep the prior chip visible than blank
+     *     it mid-conversation. Mirrors the model_active "empty fields
+     *     leave prior values" guard.
+     *   - The handler MUST NOT touch currentProviderId /
+     *     currentModelId. The toolbar chip's pivot is exclusively
+     *     model_active-driven so failover toasts (which gate on
+     *     lastProviderChangeKey) cannot be surprised by a usage-event
+     *     side-effect. The provider/model fields on the wire are for
+     *     display alongside the figure and are not surfaced into the
+     *     store here (the chip reads them from the chip-pivot state).
+     */
+    handleContextUsageEvent(info: {
+      inputTokens: number
+      outputReserve: number
+      limit: number
+      percentage: number
+    }): void {
+      // Defensive guard — an all-zero payload (limit=0 in particular
+      // would render `1234/0` in the chip, which is meaningless). The
+      // engine suppresses the chunk when limit<=0 so a zero-limit
+      // figure should never reach this handler in practice; the guard
+      // is a belt-and-braces defence against a future emitter regression.
+      if (
+        info.inputTokens === 0 &&
+        info.outputReserve === 0 &&
+        info.limit === 0 &&
+        info.percentage === 0
+      ) {
+        return
+      }
+
+      this.currentContextUsage = {
+        inputTokens: info.inputTokens,
+        outputReserve: info.outputReserve,
+        limit: info.limit,
+        percentage: info.percentage,
+      }
     },
 
     handleProviderChangedEvent(info: { from?: unknown; to?: unknown; reason?: unknown }): void {
