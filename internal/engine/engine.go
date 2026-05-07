@@ -2833,7 +2833,7 @@ func (e *Engine) processStreamChunks(
 			// path; anthropic and ollama continue to stamp EventType so this check
 			// is strictly more permissive for them without behavioural change.
 			if chunk.ToolCall != nil {
-				e.publishToolReasoningEvent(sessionID, chunk.ToolCall.Name, responseContent.String())
+				e.publishToolReasoningEvent(ctx, sessionID, chunk.ToolCall.Name, responseContent.String())
 				e.forwardToolCallChunk(sessionID, chunk, &thinkingContent, sawTextOrThinking, outChan)
 				sawTextOrThinking = true // the tool_call chunk acts as the turn-open marker
 				toolCalls = append(toolCalls, chunk.ToolCall)
@@ -2903,20 +2903,25 @@ func (e *Engine) processStreamChunks(
 // the tool_call with the model's preceding rationale. No-op when the
 // event bus is unset or no reasoning text has accumulated.
 //
+// Stamps AgentID via activeAgentID(ctx) so the reasoning event carries
+// the manifest the in-flight Stream() resolved at entry, not whichever
+// manifest a concurrent Stream() most recently swung onto e.manifest.
+//
 // Expected:
+//   - ctx may carry a per-stream manifest binding from Stream().
 //   - sessionID identifies the session the reasoning belongs to.
 //   - toolName is the name of the tool the model is about to call.
 //   - reasoning is the response content accumulated prior to the tool_use.
 //
 // Side effects:
 //   - Publishes EventToolReasoning on e.bus when reasoning is non-empty.
-func (e *Engine) publishToolReasoningEvent(sessionID, toolName, reasoning string) {
+func (e *Engine) publishToolReasoningEvent(ctx context.Context, sessionID, toolName, reasoning string) {
 	if e.bus == nil || reasoning == "" {
 		return
 	}
 	e.bus.Publish(events.EventToolReasoning, events.NewToolReasoningEvent(events.ToolReasoningEventData{
 		SessionID:        sessionID,
-		AgentID:          e.manifest.ID,
+		AgentID:          e.activeAgentID(ctx),
 		ToolName:         toolName,
 		ReasoningContent: reasoning,
 	}))
@@ -3379,7 +3384,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	e.buildStateMu.Lock()
 	e.lastContextResult = result
 	e.buildStateMu.Unlock()
-	e.publishContextWindowEvents(sessionID, manifestCopy.Instructions.SystemPrompt, tokenBudget, result)
+	e.publishContextWindowEvents(ctx, sessionID, manifestCopy.Instructions.SystemPrompt, tokenBudget, result)
 
 	return result.Messages
 }
@@ -4342,7 +4347,7 @@ func (e *Engine) dispatchContextAssemblyHooks(
 	}
 	payload := &plugin.ContextAssemblyPayload{
 		SessionID:   sessionID,
-		AgentID:     e.manifest.ID,
+		AgentID:     e.activeAgentID(ctx),
 		UserMessage: userMessage,
 		TokenBudget: tokenBudget,
 	}
@@ -4356,7 +4361,11 @@ func (e *Engine) dispatchContextAssemblyHooks(
 
 // publishContextWindowEvents emits prompt and context window events when the event bus is configured.
 //
+// Stamps AgentID via activeAgentID(ctx) so the bound manifest from the
+// in-flight Stream() call wins over a concurrently-mutated e.manifest.
+//
 // Expected:
+//   - ctx may carry a per-stream manifest binding from Stream().
 //   - sessionID identifies the active session.
 //   - systemPrompt is the assembled system prompt text.
 //   - tokenBudget is the configured token limit.
@@ -4364,20 +4373,21 @@ func (e *Engine) dispatchContextAssemblyHooks(
 //
 // Side effects:
 //   - Publishes EventPromptGenerated and EventContextWindowBuilt if bus is non-nil.
-func (e *Engine) publishContextWindowEvents(sessionID string, systemPrompt string, tokenBudget int, result ctxstore.BuildResult) {
+func (e *Engine) publishContextWindowEvents(ctx context.Context, sessionID string, systemPrompt string, tokenBudget int, result ctxstore.BuildResult) {
 	if e.bus == nil {
 		return
 	}
+	agentID := e.activeAgentID(ctx)
 	e.bus.Publish(events.EventPromptGenerated, events.NewPromptEvent(events.PromptEventData{
 		SessionID:  sessionID,
-		AgentID:    e.manifest.ID,
+		AgentID:    agentID,
 		FullPrompt: systemPrompt,
 		TokenCount: result.TokensUsed,
 		Truncated:  result.Truncated,
 	}))
 	e.bus.Publish(events.EventContextWindowBuilt, events.NewContextWindowEvent(events.ContextWindowEventData{
 		SessionID:       sessionID,
-		AgentID:         e.manifest.ID,
+		AgentID:         agentID,
 		TokenBudget:     tokenBudget,
 		TokensUsed:      result.TokensUsed,
 		BudgetRemaining: result.BudgetRemaining,
@@ -4437,7 +4447,7 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 
 	assistantMsg := provider.Message{Role: "assistant", Content: content, Thinking: thinking, ModelID: e.LastModel()}
 	msgID := e.store.AppendReturningID(assistantMsg)
-	e.dualWriteToChainStore(assistantMsg)
+	e.dualWriteToChainStore(ctx, assistantMsg)
 	e.embedMessage(ctx, content, msgID)
 }
 
@@ -4461,18 +4471,27 @@ func (e *Engine) completeResponse(ctx context.Context, sessionID string, content
 
 // dualWriteToChainStore appends an assistant message to the chain store if one is configured.
 //
+// Stamps the chain-store append with the agent ID bound to ctx via
+// WithBoundManifest so a goroutine spawned by Stream() with manifest A
+// completes its dual-write under A's identity, even when a concurrent
+// Stream() call has since mutated e.manifest to B. Falls back to the
+// engine's live manifest when ctx carries no binding (legacy non-Stream
+// callers).
+//
 // Expected:
+//   - ctx may carry a per-stream manifest binding from Stream().
 //   - msg is the assistant message to dual-write.
 //
 // Side effects:
 //   - Appends msg to chainStore if non-nil.
 //   - Logs a warning if the chain store append fails.
-func (e *Engine) dualWriteToChainStore(msg provider.Message) {
+func (e *Engine) dualWriteToChainStore(ctx context.Context, msg provider.Message) {
 	if e.chainStore == nil {
 		return
 	}
-	if err := e.chainStore.Append(e.manifest.ID, msg); err != nil {
-		slog.Warn("chain store dual-write failed", "agentID", e.manifest.ID, "error", err)
+	agentID := e.activeAgentID(ctx)
+	if err := e.chainStore.Append(agentID, msg); err != nil {
+		slog.Warn("chain store dual-write failed", "agentID", agentID, "error", err)
 	}
 }
 
