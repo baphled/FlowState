@@ -928,6 +928,61 @@ func NewGateFailedEvent(data GateEventData, ts ...time.Time) *GateFailedEvent {
 	}
 }
 
+// StreamingHeartbeatEventData holds data for streaming heartbeat events
+// emitted by the engine during a turn (Streaming Coherence — Slice F,
+// May 2026).
+//
+// The engine publishes one event at most every ~15s during a turn so
+// the chat UI's stall watchdog re-arms even when the provider pauses
+// content emission. The payload's Phase discriminant lets the
+// frontend's adaptive watchdog pick a per-phase threshold:
+//   - "generating" — model is producing content tokens.
+//   - "thinking" — model is producing reasoning tokens (no content).
+//   - "tool_executing" — engine is running a tool, waiting for its
+//     result before resuming the model.
+//   - "queued" — engine is waiting on an upstream queue (rate-limit
+//     backoff, sandbox queue, model warmup).
+//
+// SessionID identifies the session the heartbeat is bound to;
+// downstream consumers (api/SSE bridge) project it onto the SSE wire
+// for that session only.
+type StreamingHeartbeatEventData struct {
+	SessionID string
+	AgentID   string
+	Phase     string
+}
+
+// StreamingHeartbeatEvent represents a one-tick liveness signal from
+// the engine during a turn. See StreamingHeartbeatEventData for the
+// per-phase semantics.
+type StreamingHeartbeatEvent struct {
+	BaseEvent
+	Data StreamingHeartbeatEventData
+}
+
+// NewStreamingHeartbeatEvent creates a streaming heartbeat event.
+//
+// Expected:
+//   - data carries the heartbeat payload (SessionID populated; Phase from
+//     the closed vocabulary above).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A StreamingHeartbeatEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewStreamingHeartbeatEvent(data StreamingHeartbeatEventData, ts ...time.Time) *StreamingHeartbeatEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &StreamingHeartbeatEvent{
+		BaseEvent: BaseEvent{eventType: EventStreamingHeartbeat, timestamp: t},
+		Data:      data,
+	}
+}
+
 // ProviderResponseEventData holds data for provider response events emitted
 // when a streaming provider call completes successfully.
 //
@@ -1586,4 +1641,5 @@ var (
 	_ Event = (*GateEvaluatingEvent)(nil)
 	_ Event = (*GatePassedEvent)(nil)
 	_ Event = (*GateFailedEvent)(nil)
+	_ Event = (*StreamingHeartbeatEvent)(nil)
 )

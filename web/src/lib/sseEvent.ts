@@ -406,6 +406,30 @@ export interface SSEGateFailedEvent {
   coordStoreKeys: string[]
 }
 
+/**
+ * SSEStreamingHeartbeatEvent — engine-emitted liveness tick.
+ *
+ * Streaming Coherence Slice F (May 2026). The engine publishes
+ * `streaming.heartbeat` on the bus at most every ~15s during a turn;
+ * the SSE bridge projects it onto the wire under the `streaming.heartbeat`
+ * type discriminant. The chat store's adaptive watchdog re-arms on
+ * every heartbeat so a long-thinking turn does not trip the 60s
+ * stall timeout.
+ *
+ * Payload's Phase discriminant lets the frontend pick a per-phase
+ * threshold for the next watchdog window:
+ *   - "generating" — 45s (the standard short window).
+ *   - "thinking" — 120s (reasoning providers can pause for minutes).
+ *   - "tool_executing" — 180s (long shell scripts, sandboxed builds).
+ *   - "queued" — 300s (rate-limit backoff, sandbox queue).
+ *
+ * Empty / unrecognised phase falls back to the legacy 60s flat threshold.
+ */
+export interface SSEStreamingHeartbeatEvent {
+  kind: 'streaming_heartbeat'
+  phase: string
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -437,6 +461,7 @@ export type SSEEvent =
   | SSEContextUsageEvent
   | SSEContextCompactedEvent
   | SSEGateFailedEvent
+  | SSEStreamingHeartbeatEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -558,6 +583,19 @@ export function parseSSEPayload(payload: string): SSEEvent {
       // the chip tooltip falls back to the generic "saved Ns tokens"
       // copy when the discriminant is empty / unrecognised.
       trigger: typeof obj['trigger'] === 'string' ? (obj['trigger'] as string) : '',
+    }
+  }
+
+  if (type === 'streaming.heartbeat' || type === 'streaming_heartbeat') {
+    // Streaming Coherence Slice F (May 2026) — engine liveness tick.
+    // Tolerate both wire formats: the canonical dotted variant per the
+    // Engine Bus Event Taxonomy ADR ("streaming.heartbeat"), and the
+    // underscore-only variant some SSE bridges normalise to. Phase is
+    // optional; an empty value tells the frontend's adaptive watchdog
+    // to fall back to the legacy 60s flat threshold.
+    return {
+      kind: 'streaming_heartbeat',
+      phase: typeof obj['phase'] === 'string' ? (obj['phase'] as string) : '',
     }
   }
 

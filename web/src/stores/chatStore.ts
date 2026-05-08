@@ -12,7 +12,7 @@ import {
   updateSessionAgent,
   updateSessionModel,
 } from '@/api'
-import { useSessionStream, type SessionStream } from '@/composables/useSessionStream'
+import { stallTimeoutForPhase, useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
 import { dismissToast, showToast, updateToast } from '@/composables/useToast'
@@ -382,6 +382,21 @@ export const useChatStore = defineStore('chat', {
     // Pinia reactivity proxies the record so the QueuedPromptStrip watcher
     // re-renders when slots change.
     queuedPrompts: {} as Record<string, string[]>,
+    // Per-session streaming phase (Slice F — Streaming Coherence May 2026).
+    //
+    // The engine emits `streaming.heartbeat` events carrying a `phase`
+    // discriminant ("generating" | "thinking" | "tool_executing" |
+    // "queued") that the watchdog reads to pick a per-phase threshold:
+    //
+    //   generating     →  45s
+    //   thinking       → 120s
+    //   tool_executing → 180s
+    //   queued         → 300s
+    //
+    // Falls back to the legacy 60s flat threshold when the phase is
+    // empty / unrecognised. Stored per-session so a stalled session A
+    // does not borrow session B's longer threshold.
+    streamingPhase: {} as Record<string, string>,
     isLoading: false,
     isStreaming: false,
     isLoadingSessions: false,
@@ -1199,6 +1214,10 @@ export const useChatStore = defineStore('chat', {
       // misattribute the failure. A fresh halt on the new session
       // repopulates the banner.
       this.lastGateFailure = null
+      // Streaming Coherence Slice F — clear stale per-session phase
+      // for the target session so its watchdog starts at the legacy
+      // 60s default until the next engine heartbeat updates the phase.
+      delete this.streamingPhase[sessionId]
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -1657,9 +1676,15 @@ export const useChatStore = defineStore('chat', {
       const target = sessionId ?? this.currentSessionId ?? ''
       if (!target) return
       const stream = streams.get(target)
-      if (stream) {
-        stream.armWatchdog(() => this.handleStreamStall(target))
-      }
+      if (!stream) return
+      // Streaming Coherence Slice F (May 2026) — adaptive watchdog.
+      // The engine's last heartbeat for this session updated
+      // streamingPhase[sessionId]; pick the per-phase threshold
+      // (generating 45s / thinking 120s / tool_executing 180s /
+      // queued 300s) or fall back to the legacy 60s flat default.
+      const phase = this.streamingPhase[target] || ''
+      const timeoutMs = stallTimeoutForPhase(phase)
+      stream.armWatchdog(() => this.handleStreamStall(target), timeoutMs)
     },
 
     // Stall trip handler. Stream stalled — unsticky the input gate so the
@@ -1754,14 +1779,6 @@ export const useChatStore = defineStore('chat', {
     },
 
     applyContentEvent(payload: string): void {
-      // Any SSE event counts as "the stream is alive" — re-arm the
-      // watchdog so a slow but progressing stream is never killed.
-      // The watchdog only trips on dead streams. Pass currentSessionId so a
-      // trip can reconcile against the right session (the C-3 chunk-handler
-      // guard ensures applyContentEvent only runs while currentSessionId
-      // still matches the streaming session).
-      this.armStallWatchdog(this.currentSessionId ?? undefined)
-
       // Classify into the discriminated union — see web/src/lib/sseEvent.ts
       // for the source-of-truth list of event variants tracked from the Go
       // emitter. The exhaustive switch below means a new event type added
@@ -1775,6 +1792,23 @@ export const useChatStore = defineStore('chat', {
       // field even when wrapping a provider DelegationInfo), so the
       // structural fallback was dead code.
       const event: SSEEvent = parseSSEPayload(payload)
+
+      // Streaming Coherence Slice F (May 2026) — record the latest
+      // engine heartbeat phase BEFORE arming the watchdog so the
+      // adaptive threshold (45/120/180/300s) is in effect when the
+      // arm runs below.
+      if (event.kind === 'streaming_heartbeat' && this.currentSessionId) {
+        this.streamingPhase[this.currentSessionId] = event.phase || ''
+      }
+
+      // Any SSE event counts as "the stream is alive" — re-arm the
+      // watchdog so a slow but progressing stream is never killed.
+      // The watchdog only trips on dead streams. Pass currentSessionId so a
+      // trip can reconcile against the right session (the C-3 chunk-handler
+      // guard ensures applyContentEvent only runs while currentSessionId
+      // still matches the streaming session).
+      this.armStallWatchdog(this.currentSessionId ?? undefined)
+
       switch (event.kind) {
         case 'done':
           this.handleStreamDone()
@@ -1855,6 +1889,21 @@ export const useChatStore = defineStore('chat', {
             // events that pre-date the field.
             trigger: event.trigger,
           })
+          return
+        case 'streaming_heartbeat':
+          // Streaming Coherence Slice F (May 2026) — adaptive watchdog.
+          // The engine's heartbeat ticks every ~15s during a turn so
+          // the stall watchdog re-arms even when content emission
+          // pauses (long thinking, sandboxed tool execution). The
+          // phase discriminant updates the per-session phase slot;
+          // the watchdog reads it to pick a per-phase threshold on
+          // its next arm.
+          if (this.currentSessionId) {
+            this.streamingPhase[this.currentSessionId] = event.phase || ''
+          }
+          // The armStallWatchdog call at the top of applyContentEvent
+          // already re-armed the watchdog for this chunk; nothing else
+          // to do here.
           return
         case 'gate_failed':
           // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):

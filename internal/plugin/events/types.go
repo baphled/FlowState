@@ -94,4 +94,17 @@ const (
 	EventGateEvaluating = "gate.evaluating"
 	EventGatePassed     = "gate.passed"
 	EventGateFailed     = "gate.failed"
+	// Streaming Coherence — Slice F (May 2026): streaming heartbeat.
+	// The engine emits one heartbeat at most every ~15s during a turn
+	// so the chat UI's stall watchdog re-arms even when the provider
+	// pauses content emission (long thinking, sandboxed tool execution,
+	// queued delegation). Forwarded over SSE as `streaming.heartbeat`
+	// per the Engine Bus Event Taxonomy ADR's naming + payload shape
+	// rules (lower-snake-case dotted variant, payload carries the
+	// turn-phase discriminant the frontend's adaptive watchdog reads).
+	//
+	// Anthropic provider `ping` events MUST be forwarded as this
+	// heartbeat rather than silently dropped — the ADR's anti-pattern
+	// callout names that explicitly.
+	EventStreamingHeartbeat = "streaming.heartbeat"
 )

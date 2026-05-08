@@ -4625,6 +4625,55 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     expect(store.shiftQueuedPromptFor('sess-A')).toBe(null)
   })
 
+  // Slice F — Streaming Heartbeat + Adaptive Watchdog (Streaming Coherence May 2026).
+  it('records the latest engine heartbeat phase for the active session (Slice F)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-hb'
+    store.applyContentEvent(JSON.stringify({ type: 'streaming.heartbeat', phase: 'thinking' }))
+    expect(store.streamingPhase['sess-hb']).toBe('thinking')
+  })
+
+  it('adaptive watchdog uses per-phase thresholds (Slice F)', async () => {
+    // The store reads the latest phase and passes the matching threshold
+    // to the session stream's armWatchdog. We verify by faking timers and
+    // observing that a 45s advance trips while in `generating` but a
+    // 60s advance is needed to trip in `thinking` mode (which has a
+    // 120s threshold).
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'sess-1'
+
+      // Hold sendMessage so the SSE stays open.
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      const sendPromise = store.sendMessage('test phase watchdog')
+      await Promise.resolve()
+      await Promise.resolve()
+      const es = FakeEventSource.instances[0]
+
+      // Phase=thinking → 120s threshold. Advance 60s — does NOT trip.
+      es.fire('message', { type: 'streaming.heartbeat', phase: 'thinking' })
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(store.error).toBeNull()
+      expect(store.isLoading).toBe(true)
+
+      // Now advance another 65s (total 125s since the heartbeat re-armed
+      // the watchdog at 120s) — trips.
+      await vi.advanceTimersByTimeAsync(65_000)
+      expect(store.error).toBeTruthy()
+
+      resolveSend({ id: 'sess-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+      await sendPromise
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('opens an independent EventSource for each session', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
