@@ -160,6 +160,48 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			Expect(m.Validate(nil)).To(Succeed())
 		})
 
+		It("pins the example-tree A-Team prompts to the canonical coord-store key contract", func() {
+			// Three-way contract pin (Slice B, May 2026 — bug-fix
+			// `A-Team Swarm Key Contract Alignment`). The embedded
+			// swarm yml above declares `output_key: output` for the
+			// post-member relevance gate target (researcher), and the
+			// bundled relevance-gate manifest reads `${target}/output`.
+			// The legacy example-tree prompts under
+			// examples/swarms/a-team/agents/ historically wrote to and
+			// read from `a-team/{chainID}/research` — three files,
+			// three different conventions. This spec pins the chosen
+			// canonical key contract (vault note: A-Team Swarm
+			// Integration (May 2026)):
+			//
+			//   coordinator → a-team/{chainID}/task-plan
+			//   researcher  → a-team/{chainID}/output    (NOT /research)
+			//   strategist  → a-team/{chainID}/strategy
+			//   critic      → a-team/{chainID}/critique
+			//   writer      → a-team/{chainID}/final-output
+			//
+			// The example tree is the operator-facing reference copy
+			// folks `cp -r` from when standing up a custom A-Team. If
+			// it drifts off the canonical contract again, the
+			// relevance gate's payload composition (which reads
+			// `${target}/output`) silently misses the researcher's
+			// findings — the failure mode this spec exists to prevent.
+			exampleAgents := filepath.Join("..", "..", "examples", "swarms", "a-team", "agents")
+
+			researcherPrompt, err := os.ReadFile(filepath.Join(exampleAgents, "researcher.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(researcherPrompt)).To(ContainSubstring("a-team/{chainID}/output"),
+				"researcher prompt must write to a-team/{chainID}/output to align with the relevance-gate's ${target}/output input")
+			Expect(string(researcherPrompt)).NotTo(ContainSubstring("a-team/{chainID}/research"),
+				"researcher prompt still references the retired /research key — see vault note 'A-Team Swarm Key Contract Alignment'")
+
+			for _, member := range []string{"strategist.md", "critic.md", "writer.md"} {
+				body, err := os.ReadFile(filepath.Join(exampleAgents, member))
+				Expect(err).NotTo(HaveOccurred(), "reading %s", member)
+				Expect(string(body)).NotTo(ContainSubstring("a-team/{chainID}/research"),
+					"%s still reads from the retired /research key — must read /output to match the canonical contract", member)
+			}
+		})
+
 		It("registers @a-team in the swarm registry against the bundled agent set", func() {
 			// End-to-end pin: seed the embedded swarms FS into a tmp dir,
 			// build the agent registry from the embedded agent manifests

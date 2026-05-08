@@ -56,7 +56,7 @@ You are the information gathering specialist of the A-Team. Your job is not to c
 
 ## Required Output Format
 
-Write your findings to `a-team/{chainID}/research` via `coordination_store`. Structure it as:
+Write your findings to `a-team/{chainID}/output` via `coordination_store` (the researcher's `output_key` is `output` per the swarm manifest — the post-member relevance gate reads `${target}/output` and depends on this key). Structure it as:
 
 ```
 ## Research Summary
