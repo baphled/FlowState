@@ -6,7 +6,7 @@
  * Environment variables:
  * - MEM0_QDRANT_URL: Qdrant server URL (default: http://localhost:6333)
  * - MEM0_OLLAMA_URL: Ollama server URL (default: http://localhost:11434)
- * - MEM0_COLLECTION: Qdrant collection name (default: opencode_memory)
+ * - MEM0_COLLECTION: Qdrant collection name (default: flowstate-recall)
  * - MEM0_EMBEDDING_MODEL: Embedding model (default: nomic-embed-text)
  * - MEM0_ENABLED: Mem0Backend is default; set to 'false' to use InMemoryBackend
  */
@@ -14,7 +14,7 @@
 export const CONFIG = {
     qdrantUrl: process.env.MEM0_QDRANT_URL || 'http://localhost:6333',
     ollamaUrl: process.env.MEM0_OLLAMA_URL || 'http://localhost:11434',
-    collection: process.env.MEM0_COLLECTION || 'opencode_memory',
+    collection: process.env.MEM0_COLLECTION || 'flowstate-recall',
     embeddingModel: process.env.MEM0_EMBEDDING_MODEL || 'nomic-embed-text',
 };
 import * as readline from 'readline';
