@@ -1432,43 +1432,86 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectSwarmEvent converts an EventBus event into a SwarmEvent for the frontend.
+//
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Web SSE consumer".
+// The tool.execute.* variants now key on InternalToolCallID (the FlowState
+// session-scoped, failover-stable correlation id) and expose the upstream
+// provider tool-use id alongside the result body in metadata. The legacy
+// <sessionID>:<toolName> id-fabrication remains as a defensive fallback for
+// any code path that does not yet route through executeToolCall.
+//
+// Every projected event is stamped with streaming.CurrentSchemaVersion — the
+// pre-bridge projector forgot to set this and shipped SchemaVersion: 0 events
+// to the wire; corrected here in passing.
 func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 	switch e := ev.(type) {
 	case *events.ToolExecuteResultEvent:
+		id := e.Data.InternalToolCallID
+		if id == "" {
+			id = e.Data.SessionID + ":" + e.Data.ToolName
+		}
+		metadata := map[string]interface{}{
+			"tool_name": e.Data.ToolName,
+			"ok":        true,
+			"content":   e.Data.Result,
+		}
+		if e.Data.ToolCallID != "" {
+			metadata["provider_tool_use_id"] = e.Data.ToolCallID
+		}
 		return streaming.SwarmEvent{
-			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
-			Type:      streaming.EventToolResult,
-			Status:    "completed",
-			AgentID:   e.Data.SessionID,
-			Timestamp: time.Now(),
-			Metadata: map[string]interface{}{
-				"tool_name": e.Data.ToolName,
-				"ok":        true,
-			},
+			ID:            id,
+			Type:          streaming.EventToolResult,
+			Status:        "completed",
+			AgentID:       e.Data.SessionID,
+			Timestamp:     time.Now(),
+			SchemaVersion: streaming.CurrentSchemaVersion,
+			Metadata:      metadata,
 		}
 	case *events.ToolExecuteErrorEvent:
+		id := e.Data.InternalToolCallID
+		if id == "" {
+			id = e.Data.SessionID + ":" + e.Data.ToolName
+		}
+		errMsg := ""
+		if e.Data.Error != nil {
+			errMsg = e.Data.Error.Error()
+		}
+		metadata := map[string]interface{}{
+			"tool_name": e.Data.ToolName,
+			"ok":        false,
+			"error":     errMsg,
+		}
+		if e.Data.ToolCallID != "" {
+			metadata["provider_tool_use_id"] = e.Data.ToolCallID
+		}
 		return streaming.SwarmEvent{
-			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
-			Type:      streaming.EventToolResult,
-			Status:    "error",
-			AgentID:   e.Data.SessionID,
-			Timestamp: time.Now(),
-			Metadata: map[string]interface{}{
-				"tool_name": e.Data.ToolName,
-				"ok":        false,
-				"error":     e.Data.Error,
-			},
+			ID:            id,
+			Type:          streaming.EventToolResult,
+			Status:        "error",
+			AgentID:       e.Data.SessionID,
+			Timestamp:     time.Now(),
+			SchemaVersion: streaming.CurrentSchemaVersion,
+			Metadata:      metadata,
 		}
 	case *events.ToolEvent:
+		id := e.Data.InternalToolCallID
+		if id == "" {
+			id = e.Data.SessionID + ":" + e.Data.ToolName
+		}
+		metadata := map[string]interface{}{
+			"tool_name": e.Data.ToolName,
+		}
+		if e.Data.ToolCallID != "" {
+			metadata["provider_tool_use_id"] = e.Data.ToolCallID
+		}
 		return streaming.SwarmEvent{
-			ID:        e.Data.SessionID + ":" + e.Data.ToolName,
-			Type:      streaming.EventToolCall,
-			Status:    "started",
-			AgentID:   e.Data.SessionID,
-			Timestamp: time.Now(),
-			Metadata: map[string]interface{}{
-				"tool_name": e.Data.ToolName,
-			},
+			ID:            id,
+			Type:          streaming.EventToolCall,
+			Status:        "started",
+			AgentID:       e.Data.SessionID,
+			Timestamp:     time.Now(),
+			SchemaVersion: streaming.CurrentSchemaVersion,
+			Metadata:      metadata,
 		}
 	case *events.BackgroundTaskStartedEvent:
 		return streaming.SwarmEvent{
