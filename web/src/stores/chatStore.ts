@@ -1890,12 +1890,20 @@ export const useChatStore = defineStore('chat', {
           })
         }
       }
-      // Per-session state (Slice A) — clear isStreaming on the current
-      // session's slot. The send finally block clears isLoading
-      // (separate concern: gate vs. liveness affordance).
-      this.setSessionStreaming(this.currentSessionId, { isStreaming: false })
-      // Per-session SSE singleton (Slice B) — clear the watchdog on
-      // the current session's stream.
+      // Streaming Coherence Slice D (May 2026) — activity-indicator
+      // continuity. Pre-slice this method flipped isStreaming=false on
+      // EVERY [DONE] sentinel, including the intermediate Done events
+      // engine pipelines emit between tool rounds. The user observed
+      // the activity indicator flickering off-and-on between rounds.
+      //
+      // The simpler shape from the Streaming Liveness ADR: keep
+      // isStreaming true until the *outer* turn completes. The send
+      // finally block clears both isLoading and isStreaming when the
+      // post-await reconcile resolves; for intermediate DONEs we no
+      // longer touch the streaming flag.
+      //
+      // The watchdog is still cleared on every Done so a stalled
+      // intermediate round trips correctly.
       const stream = this.currentSessionId ? streams.get(this.currentSessionId) : undefined
       if (stream) {
         stream.clearWatchdog()
