@@ -87,5 +87,23 @@ var _ = Describe("Bash Tool", func() {
 				Expect(result.Error).To(HaveOccurred())
 			})
 		})
+
+		Context("with output exceeding the truncation cap", func() {
+			It("returns a truncated payload with the recovery hint embedded", func() {
+				// 60KB of output via printf + repeat.
+				input := tool.Input{
+					Name: "bash",
+					Arguments: map[string]interface{}{
+						"command": `awk 'BEGIN{for(i=0;i<3500;i++) print "line-" i}'`,
+					},
+				}
+				result, err := bashTool.Execute(context.Background(), input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Error).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("truncated"))
+				Expect(result.Output).To(ContainSubstring("grep"))
+				Expect(result.Output).To(ContainSubstring("offset"))
+			})
+		})
 	})
 })

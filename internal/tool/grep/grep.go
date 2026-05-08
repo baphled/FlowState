@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 const defaultMode = "content"
@@ -149,7 +151,20 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{Error: err}, err
 	}
 
-	return tool.Result{Output: strings.Join(results, "\n")}, nil
+	output := strings.Join(results, "\n")
+	output = capOutput(ctx, output)
+	return tool.Result{Output: output}, nil
+}
+
+// capOutput applies the shared truncation envelope using the session ID
+// from ctx so oversized grep results never blow up the model context.
+func capOutput(ctx context.Context, output string) string {
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(output, truncate.Options{
+		SessionID: sessionID,
+		ToolName:  "grep",
+	})
+	return r.Content
 }
 
 // matchResult stores search output for one file.

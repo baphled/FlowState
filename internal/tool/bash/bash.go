@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 const timeout = 30 * time.Second
@@ -107,14 +109,27 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	out, err := cmd.CombinedOutput()
+	trimmed := strings.TrimSpace(string(out))
+	capped := capOutput(ctx, trimmed)
 	if err != nil {
 		return tool.Result{
-			Output: strings.TrimSpace(string(out)),
+			Output: capped,
 			Error:  fmt.Errorf("command failed: %w", err),
 		}, nil
 	}
 
 	return tool.Result{
-		Output: strings.TrimSpace(string(out)),
+		Output: capped,
 	}, nil
+}
+
+// capOutput applies the shared truncation envelope using the session ID
+// from ctx. Output stays unchanged when under the byte/line budget.
+func capOutput(ctx context.Context, output string) string {
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(output, truncate.Options{
+		SessionID: sessionID,
+		ToolName:  "bash",
+	})
+	return r.Content
 }
